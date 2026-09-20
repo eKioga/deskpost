@@ -1,0 +1,52 @@
+{
+  "description": "The Library's Virtual Desk boundary, as plugin hooks. CANONICAL, in the Codex layout: events nest under the top-level \"hooks\" key, because Codex accepts only \"description\" or \"hooks\" at the root and rejects the whole file with 'unknown field `PreToolUse`' if an event is placed there. Claude's form is GENERATED from this file by tools/PluginPackage.ps1 and differs in exactly one mechanical way: the plugin root variable is ${CLAUDE_PLUGIN_ROOT} rather than ${PLUGIN_ROOT}. Do not hand-edit the generated copy; plugin.generated-files-match fails the gate on a drift.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__basic-memory__.*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/Guard-BasicMemoryRead.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Checking the Virtual Desk boundary"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Bash|exec)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/Guard-ShellShelfRead.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Checking the Shelf boundary"
+          }
+        ]
+      },
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/Guard-ShelfBookRead.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Checking the Shelf boundary"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/Get-VirtualDeskContext.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Loading the Virtual Desk"
+          }
+        ]
+      }
+    ]
+  }
+}

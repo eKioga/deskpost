@@ -1,0 +1,21 @@
+# Portable source template. Run tools/Initialize-CodexLibrary.ps1 to create config.toml.
+
+[features]
+hooks = true
+
+[mcp_servers.basic-memory]
+url = "__BASIC_MEMORY_URL__"
+enabled = "__BASIC_MEMORY_ENABLED__"
+required = "__BASIC_MEMORY_REQUIRED__"
+default_tools_approval_mode = "writes"
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+
+[mcp_servers.validated-book-reader]
+command = "powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "__VALIDATED_READER_PATH__"]
+enabled = true
+required = true
+default_tools_approval_mode = "auto"
+startup_timeout_sec = 20
+tool_timeout_sec = 60

@@ -1,0 +1,443 @@
+{
+  "version": 1,
+  "description": "Declared role of every script in tools/. Invoke-LibraryChecks.ps1 compares this against the permission allowlist. A file glob cannot do this job: some scripts are dot-sourced, some are test runners, and some are internal implementations reached only through another helper.",
+  "roles": {
+    "public": "A helper the Librarian invokes directly. Must have a permission allowlist entry.",
+    "internal": "Dot-sourced, or reached only by delegation from a public helper. Must NOT be allowlisted.",
+    "test": "A test runner, invoked by Invoke-LibraryChecks.ps1 rather than by the Librarian. Must NOT be allowlisted."
+  },
+  "helpers": {
+    "Add-CatalogEntry.ps1": {
+      "role": "public",
+      "summary": "List an existing shared Book or Project Hub that is missing from its Catalog. Additive only: issues one edit_note find_replace against the collection heading, adds exactly one line, removes nothing, and reports already_listed without writing when the slug is present."
+    },
+    "Add-ShelfBookPage.ps1": {
+      "role": "public",
+      "summary": "Add one new page to an open, curated Shelf Book. Additive, create-new, under the Book's lock."
+    },
+    "Add-ShelfBookTopic.ps1": {
+      "role": "public",
+      "summary": "Graduate a whole Notebook topic into an open, curated Shelf Book. Retry-safe: bound manifest, per-page progress journal, identical pages idempotent, divergent collisions refused."
+    },
+    "Add-ShelfNote.ps1": {
+      "role": "public",
+      "summary": "Capture one note into a capture-enabled Shelf Book."
+    },
+    "Archive-ProjectHub.ps1": {
+      "role": "public",
+      "summary": "Move an active Project Hub to the archive shelf."
+    },
+    "Archive-SharedBook.ps1": {
+      "role": "public",
+      "summary": "Move a shared Book to the archive shelf. On listing the entry it also repairs the pilot-era emptiness sentence in archive/README.md: one find_replace of one verbatim sentence with expected_replacements = 1, which can never remove an entry, never throws, and reports its outcome as emptiness_claim. The gate check shared.archive-catalog-consistency is the detector."
+    },
+    "Archive-ShelfBook.ps1": {
+      "role": "public",
+      "summary": "Retire a Shelf Book from the active Shelf into shelf/_archive/<slug>, restore one, or list what is archived. Archive and Restore are gated: preflight, exact plan_id bound to the catalog digest and every page hash, one approval, verified byte-identical move. The removed catalog entry is stored verbatim so a restore puts back what the reader wrote. An archived Shelf Book is NOT openable on the Desk and is covered by neither Discovery nor full text -- List is the only way to see it."
+    },
+    "AtomicFile.ps1": {
+      "role": "internal",
+      "summary": "Atomic whole-file replacement (MoveFileEx first, File.Replace as fallback) and the matching retrying read. Dot-sourced; the two are one contract and using one without the other is the bug. Split out of BookWriteGuard.ps1 on 2026-09-09 so BookRootSchema.ps1 can read a seat's atomically written binding without pulling per-Book locking and journaling into every read-only guard's load path. Dot-sources nothing, and must not start."
+    },
+    "BookDiscovery.ps1": {
+      "role": "internal",
+      "summary": "Discovery: query the closed-readable Book manifests and return Book slug, canonical page path, matched heading, and overlap status -- never body text. Reads no closed Book's body; an open capture Book's pages are extracted live because the store deliberately does not hold them. Dot-sourced by the validated reader adapter; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "BookFullText.ps1": {
+      "role": "internal",
+      "summary": "Full text (plan item 2.3): matching lines with canonical page paths, confined to Shelf Books OPEN on the Desk. Re-reads the Desk after the scan so a Book closed mid-query returns nothing. Dot-sourced by the validated reader adapter; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "BookManifest.ps1": {
+      "role": "internal",
+      "summary": "Build one Shelf Book's closed-readable Discovery metadata manifest, withholding page metadata for capture Books at generation. Body schema 2 adds the sanitized (url, ref, commit_oid) upstream roll-up and a count of pages whose ## Sources block does not parse, per ADR-0011; a capture Book carries neither, proved by a leak canary. A stored schema-1 manifest stays readable, but only -Rebuild upgrades one. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "BookManifestStore.ps1": {
+      "role": "internal",
+      "summary": "Store Discovery manifests per Book: dirty marker, versioned generations, commit pointer written last, and a read path that refuses stale metadata. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "BookManifestTransaction.ps1": {
+      "role": "internal",
+      "summary": "The single manifest-generation transaction: generate, store, and commit one Book's manifest under that Book's own lock, held from before the dirty marker until after the commit pointer."
+    },
+    "BookRootSchema.ps1": {
+      "role": "internal",
+      "summary": "The Virtual Desk's Book-root state schema (plan item 3.2), specified once: books/<slug> active shared, archive/<slug> archived shared, shelf/<slug> local, plus the pre-symmetry bare slug. Owns the validation pattern, the producer New-BookRoot, the consumer Split-BookRoot and its wiki_root, the reader-facing label, and the slug-collision rule. Dot-sourced by Set-VirtualDesk, Get-DeskOverview, SearchBoundaries, the reader adapter, the Desk guard hooks and .claude/hooks/ShelfBoundary.ps1 beneath the two Shelf guards; -SelfTest is run by Invoke-LibraryChecks and drives those consumers as real processes."
+    },
+    "BookWriteGuard.ps1": {
+      "role": "internal",
+      "summary": "Per-Book exclusive lock and pre-write journaling with verified rollback. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "CodexHome.ps1": {
+      "role": "internal",
+      "summary": "Resolve where Codex keeps its state. CODEX_HOME is an environment variable and is redirected on this machine, so the sessions root is resolved through one function rather than assumed to sit under the user profile; the meter and the token baseline both read it."
+    },
+    "Compile-RawBatchToNotebook.ps1": {
+      "role": "public",
+      "summary": "Materialize one finished synthesis from an explicitly named raw batch as a source-hashed, indexed Notebook article. Additive creation applies directly; divergent replacement requires a content-bound preflight and approval."
+    },
+    "Copy-LocalPagesToProject.ps1": {
+      "role": "public",
+      "summary": "Copy selected Notebook pages into an active Project Hub. -DestinationDirectory names the directory below projects/<slug>/ that the pages land in, so ADR-0003's decisions/NNNN-slug.md shape is reachable; it is never inferred from the source folder name, each segment is lowercase-with-hyphens so the write stays contained, and _project, connections and README are refused because Edit-ProjectHub owns the Hub root."
+    },
+    "DeploymentScan.ps1": {
+      "role": "internal",
+      "summary": "Two scans over what a commit would publish, sharing one set of scope rules and documentation allowances. public.no-deployment-defaults reads the WORKING TREE -- what git tracks, less PLAN records and machine-local settings -- for a deployment fact: the exact values this workspace is configured with, read from the gitignored generated state so the denylist is never itself a default, plus the structural shape of an MCP endpoint or a collection path under a UNC root or mapped drive. public.identity-scan reads the INDEX instead -- git diff --cached and git cat-file blob, plus the commit message on the commit-msg hook -- against a denylist at %USERPROFILE%/.library/identity-denylist.txt that is never in a repository, with an approved-attribution allowlist beside it as the only exception. Dot-sourced; -SelfTest and -IdentityScan are the two direct entry points."
+    },
+    "Edit-ProjectHub.ps1": {
+      "role": "public",
+      "summary": "Edit one page of an open active Project Hub."
+    },
+    "Enter-LibrarySeat.ps1": {
+      "role": "public",
+      "summary": "Sit down at a seat from a conversation that has already started: bind this agent process to an existing seat, or create one after a single confirmation bound to a plan_id. The claim handle is held by a spawned holder that outlives this helper and dies with the agent (ADR-0018). Entering an existing seat leaves the Desk exactly as it was; creating one reads the Active Project Catalog outside every lock and commits as one registry-locked transaction with an explicit abort."
+    },
+    "Export-CollectionToVault.ps1": {
+      "role": "public",
+      "summary": "Mirror a collection's books/ and projects/ (and with them the two catalogs) into an Obsidian vault at <vault>/40-Resources/Library, one-way and byte-exact, links never rewritten. PLAN-public-release.md step 15; replaces the retired library-mirror exporter. Captures the source under a collection-wide export lock that every Book writer and every claim-gated mutator refuses on, stages a whole generation beside the mirror with a hash manifest, re-verifies every managed destination file against the old manifest immediately before activation, and swaps generations with two renames and a journal entry between them (ADR-0034). The previous generation is retained, re-hashed after the swap so an edit that landed in the activation window is recovered to 40-Resources/Library-recovered/<run-id>/, and deleted only after that check passes. Unmanaged vault files are carried forward and never touched; a source path landing on one refuses. -Preflight, plan_id, -ResumeRunId for an interrupted run, -AdoptExistingMirror for a first run over a mirror another tool wrote. -VaultRoot has no default in code: it comes from the argument or LIBRARY_VAULT_ROOT."
+    },
+    "Export-PublicTree.ps1": {
+      "role": "public",
+      "summary": "Copy the reviewed public allowlist in tools/PublicTreeAllowlist.ps1 into a staging tree, scan that tree with this workspace's deployment denylist, the identity denylist and gitleaks, discard the WHOLE staging folder on any hit, and only then run git init, git add and one commit -- scanning the index before the commit, because after it the staged set is empty and the scan would pass over nothing. Also refuses an allowlisted path git does not track, and refuses the commit identity git would stamp if it is on the denylist. PLAN-public-release.md step 14. -Preflight and plan_id like every other helper."
+    },
+    "Export-MirrorOpsRepo.ps1": {
+      "role": "public",
+      "summary": "Generate the private ops repository's tree -- .forgejo/workflows/publish.yml and scan-and-publish.sh -- by extracting the two fenced blocks from docs/mirror-publishing-job.md. PLAN-public-release.md step 12, server half. The document stays canonical because tools/Test-AllowlistRuleParity.ps1 pins the allowlist rule by extracting the shell half FROM that document and comparing it against DeploymentScan.ps1: hand-copying the scanner into an ops repo would leave the parity suite testing a document while a divergent copy ran the gate, green through exactly the drift it exists to catch. Each block is located by a marker asserted to occur exactly once and then asserted to contain what it claims, so a moved marker fails loudly rather than deploying a truncated gate that passes everything. Refuses a workflow declaring runs-on: self-hosted, which matches no runner on this instance and would queue the job forever. Writes UTF-8 without a BOM and with LF endings, then reads the bytes back and asserts both. -Preflight and -SelfTest."
+    },
+    "Find-ShelfDuplicateTopics.ps1": {
+      "role": "public",
+      "summary": "Flag likely duplicate topics across Shelf Books."
+    },
+    "Get-BookCurrency.ps1": {
+      "role": "public",
+      "summary": "Currency check: ask a Book's recorded upstreams what version they are now. Read-only and ungated -- it writes nothing at all. -Book <slug> reads notebook/<slug>/ or an OPEN Shelf Book and can name the cited files that changed; -All reads the Discovery manifests through the committed-generation API and joins them against the LIVE catalogs, never the stale shared roster, and reports only whether a tip has moved. A matching pin proves the source has not moved; it never proves an article reflects it, and no output may be worded as verifying a Book."
+    },
+    "Get-DeskOverview.ps1": {
+      "role": "public",
+      "summary": "Read-only Desk, Notebook, and capture-Book orientation. Every Notebook topic carries an owner_label -- yours (<seat>), seat <other>, shared, excluded or unmapped -- so a reader can tell their own material from another seat's without running a reset preflight. notebook.quarantine reports how many quarantines a reset has left, how many topics they hold, and the oldest one's age with the source that dated it; it names the -List route because that read needs no seat and this helper throws without one -- a refusal that since 2026-09-18 lists the registered seats, because this is the helper the malformed-seat refusal names as the way to list them."
+    },
+    "Get-LibraryTriageInventory.ps1": {
+      "role": "public",
+      "summary": "Read-only inventory of both triage sources. For the Notebook: every page, its known copy records, and the workspace paths it NAMES with whether git tracks them. For the capture Books: every note with its review state and copy records, never its body. copy_status is evidence-based and hash-bound; the reference scan is the second signal, because a page whose substance went into a tracked design record rather than a published page reads no-known-copy-record and is not at risk. A reference is a pointer, never proof of coverage. `topics` rolls the Notebook pages up per topic -- the grain a reset actually acts at -- with known_books and known_projects kept apart (ADR-0022) and pages_without_current_copy carrying the rule that only a current copy is proof; the master index is excluded and loose files group under an empty topic. The two halves are counted separately and never summed: the Notebook counters are what the reset preflight renders as its advisory, and a Holding Shelf note is what SURVIVES a reset. Returns a report when either source is absent -- a workspace just after a Reset is a populated Holding Shelf and no Notebook. -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "Get-MeterStatus.ps1": {
+      "role": "public",
+      "summary": "Read-only, stale-aware report of the Codex delegate's rate-limit window, derived from local rollout files."
+    },
+    "Get-TokenBaseline.ps1": {
+      "role": "public",
+      "summary": "Read-only cross-engine token baseline from local Claude and Codex session histories, with separate accounting formulas, sanitized labels, and replayable byte-prefix source manifests."
+    },
+    "Get-WikiMigrationInventory.ps1": {
+      "role": "public",
+      "summary": "Read-only inventory of an external wiki before import."
+    },
+    "GitSource.ps1": {
+      "role": "internal",
+      "summary": "The single hardened boundary for every git invocation: an allowlisted child environment, config isolation that closes the url.*.insteadOf -> ext:: rewrite the protocol flags do not, one bounded-fetch primitive carrying the timeout / filter acknowledgement / transfer ceiling, the upstream URL grammar and host policy as separate gates, and repository discovery that walks the filesystem first and stops at the batch root. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "HookRegistry.ps1": {
+      "role": "internal",
+      "summary": "Which hooks the Library requires and the events each must be registered under, specified once. Marks the two Desk guards, the shell guard and the Desk context hook as load-bearing and the guidance hooks as optional. Registration is judged structurally, so a guard still named in settings.json but moved to an event it cannot act on is reported as missing. Dot-sourced by Invoke-LibraryChecks at commit time and by .claude/hooks/Guard-SettingsIntegrity.ps1 at edit time."
+    },
+    "Import-ExternalWikiToShelf.ps1": {
+      "role": "public",
+      "summary": "Copy an approved external wiki into a new Shelf Book."
+    },
+    "Initialize-CodexLibrary.ps1": {
+      "role": "public",
+      "summary": "Generate idempotent machine-local Codex MCP and hook bindings from tracked path-free templates for the current copy of the Library."
+    },
+    "Invoke-LibraryChecks.ps1": {
+      "role": "public",
+      "summary": "Run every self-test and static check. The acceptance gate for each phase."
+    },
+    "Invoke-LibraryTriage.ps1": {
+      "role": "public",
+      "summary": "Triage material out of the Notebook or a capture Book to any reachable destination -- Holding Shelf, Notebook, Shelf Book, Project Hub, new shared Book, or in-place Review/Discard. Takes -ActionJson for an approved batch with a durable journal and per-action retry, -PlanPath to re-run a stored plan, or -Source/-Page/-MatchText/-To for one note, which composes into a one-action plan so a single note and a batch of twenty share one write-set digest. Confirmation is per kind, not per surface: review, notebook, holding and shelf-book run on one call, while discard, project and book take a preflight, an exact plan_id, and one approval. Writing INTO a capture Book is ungated; any action whose SOURCE is a capture Book needs that Book open. Reads plans and journals from the legacy internal/handoff-* directories and writes only triage-named records."
+    },
+    "Invoke-SeatClaimHolder.ps1": {
+      "role": "internal",
+      "summary": "The claim holder process. Spawned by Start-SeatClaimHolder; never run by hand. Verifies the agent's start time, opens the seat's claim handle, and abandons itself unless its attempt record commits before its deadline -- so a helper killed mid-handshake leaves a handle that lets go by itself. Takes no lock, because the helper waits for it while holding the registry lock."
+    },
+    "LibraryDeployment.ps1": {
+      "role": "internal",
+      "summary": "Resolve this deployment's Basic Memory endpoint and collection id from one chain -- explicit argument, then AI_LIBRARY_MCP_URL / AI_LIBRARY_PROJECT_ID, then the generated .claude/.library-mcp-url and .claude/.library-project -- and refuse naming all three routes when none supplies one. Replaces the endpoint fallback that sat in fourteen tracked files and the collection id that sat in seventeen. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "LibraryOutput.ps1": {
+      "role": "internal",
+      "summary": "Shared output contract: objects in-process, one JSON object at a process boundary. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "LibrarySeat.ps1": {
+      "role": "internal",
+      "summary": "Seats: the registry, the exclusive session claim, the advisory activity record, and the migration off the single-Desk layout. Dot-sourced. BookRootSchema.ps1 owns where a seat's Desk files live; this owns which seats exist, which Project each is bound to, and whether one is being worked right now. The claim is a non-blocking exclusion probe and activity.json is advice -- neither is an ordered lock and neither may be waited on."
+    },
+    "MaintenanceBarrier.ps1": {
+      "role": "internal",
+      "summary": "The maintenance barrier: one marker under internal/ that every claim-gated mutator and both seat entry routes refuse on for the length of a cutover. Raised by exclusive create, durable across its own process on purpose, and FAIL CLOSED -- a damaged record reads as engaged rather than absent. Dot-sourced by LibrarySeat.ps1, which is where the claim-gated set inherits the refusal."
+    },
+    "ManifestJournal.ps1": {
+      "role": "internal",
+      "summary": "The progress journal a manifest backfill writes, reads, and resumes from -- one format for both collections' runners. Dot-sourced."
+    },
+    "McpDirectoryListing.ps1": {
+      "role": "internal",
+      "summary": "Page through the shared collection's MCP list_directory and return every *.md path under one directory, proved complete against the server's own declared total rather than inferred. Replaces the single unpaged call both callers made, whose only guard -- that the directory's root note appeared -- a truncation could satisfy by sort order. Dot-sourced. Detector: the gate's mcp-directory-listing.selftest."
+    },
+    "McpToolInventory.ps1": {
+      "role": "internal",
+      "summary": "What tools this workspace's own MCP adapters actually declare, asked of each adapter over JSON-RPC rather than kept as a second hand-maintained list, and which of them the reader's permission allowlist does not name. Closes the half of helpers.manifest-matches-allowlist that read tools/*.ps1 only, so a new MCP tool raised nothing and prompted once per session until someone noticed. A server this workspace does not launch is reported as un-enumerable with its reason, never counted as clean. Dot-sourced by Invoke-LibraryChecks; -SelfTest is run by it as mcp-tool-inventory.selftest."
+    },
+    "Move-LibraryFolder.ps1": {
+      "role": "public",
+      "summary": "Move one folder to a new path under the cutover protocol of PLAN-public-release.md step 6: a maintenance barrier raised before anything is read, a hashed preflight bound to a plan_id re-derived under the barrier, a verified copy, rename-aside instead of delete, boundary-aware pointer rewriting with byte-exact readback, a final source-to-destination verification, an executable rollback checkpoint, and a journal under internal/move-journals/. -Action Status is the read-only route and needs no seat."
+    },
+    "New-HubMigrationSnapshot.ps1": {
+      "role": "public",
+      "summary": "Read-only producer of the pre-migration snapshot and item manifest that tools/Test-HubMigrationAcceptance.ps1 verifies against. It resolves a reader-approved migration plan against the live Hub, simulates the three writes with Edit-ProjectHub's own body functions -- including its Now guard -- and computes every snapshot field with the verifier's own parsers, so producer, writer, and verifier cannot disagree. Writes nothing outside the caller's output directory and performs no migration. -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "New-ProjectHub.ps1": {
+      "role": "public",
+      "summary": "Create a Project Hub in the shared collection."
+    },
+    "New-ShelfBook.ps1": {
+      "role": "public",
+      "summary": "Create a new, empty Shelf Book -- curated, or capture-enabled with -Capture. Fills the gap where every other route needed material that already existed, and keeps the derived catalog out of hand edits: it composes the entry with the Shelf composer and commits it inside the render lock. Takes no Book lock, matching Publish-BookCopy.ps1 and for the same reason. Refuses an existing Book root and an orphaned catalog entry, applies directly because it can only create, and reads back through Get-ShelfBook rather than through what it wrote."
+    },
+    "NotebookIndex.ps1": {
+      "role": "internal",
+      "summary": "The serialized renderer for notebook/_master-index.md, and the rules for a topic that cannot be rendered. Derives the index from the topic directories plus each topic index H1, under one render lock whose critical section is deliberately tiny: a caller commits its promotion or H1 rewrite inside it and nothing else. Refuses a topic with no index, no column-zero H1, or more than one, without touching the previous index. Reachable directly as -Render to repair drift, and -SelfTest."
+    },
+    "NotebookOwnership.ps1": {
+      "role": "internal",
+      "summary": "Which seat owns which Notebook topic, and the quarantine a reset moves topics into. Dot-sourced. `notebook/` is shared by every seat, so reset selects by ownership under its own lock, revalidates before each move, and RENAMES topics into internal/notebook-reset-quarantine/ rather than deleting them -- a metadata journal cannot restore a recursively deleted tree, so recoverability is a property of the move."
+    },
+    "PublicTreeAllowlist.ps1": {
+      "role": "internal",
+      "summary": "The reviewed allowlist of product paths that may reach a public repository, and the resolver that turns it into a file set. Dot-sourced by Export-PublicTree.ps1, which asks what to copy, and by DeploymentScan.ps1, whose file set is 'tracked files AND anything the allowlist would export' -- so a path a rule admits that git has never seen is scanned the day the rule is written. PLAN-public-release.md step 14."
+    },
+    "Publish-BookCopy.ps1": {
+      "role": "public",
+      "summary": "Publish a Book to the Shelf, or delegate to the shared publisher."
+    },
+    "Publish-SharedBookCandidate.ps1": {
+      "role": "internal",
+      "summary": "Shared-collection publisher. Reached only via Publish-BookCopy.ps1:26 with -Destination Shared."
+    },
+    "Publish-ShelfBookBatchToShared.ps1": {
+      "role": "public",
+      "summary": "Execute an explicit batch of curated Shelf Book publish-or-delete actions under one exact approval, preserving and journalling any failed item while later items continue."
+    },
+    "Publish-ShelfBookToShared.ps1": {
+      "role": "public",
+      "summary": "Publish a curated Shelf Book to the shared collection, verify every page and its Catalog entry, then permanently delete the local copy under one composite plan_id and one approval. A local workflow journal records whether publication, deletion, or both completed; shared publication is never rolled back."
+    },
+    "RawBatchOwnership.ps1": {
+      "role": "internal",
+      "summary": "Raw batch ownership (plan item 3.1): the record file mapping each canonical source batch under raw/ to a Project SLUG ONLY, the offline validation, and the read-time join that derives that Project's liveness from the active and archived Project Catalogs -- so archiving a Project cannot leave a stale copy behind. Calls RawSearch.ps1 for the roster, the batch resolver, and provenance rather than reimplementing any of them. Dot-sourced by Set-RawBatchOwner.ps1; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "RawSearch.ps1": {
+      "role": "internal",
+      "summary": "Scoped raw search (plan item 2.4): matching lines from ONE named source batch under raw/, every hit carrying a machine-readable provenance label so a retained copy of the Library's retired instructions can never be cited as current. Never scans across raw/; an unrecognised batch is reported with the real roster. Dot-sourced by Search-RawBatch.ps1; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "Remove-MemoryProject.ps1": {
+      "role": "public",
+      "summary": "Deregister and delete an entire Basic Memory project (a sibling of ai-library, not a Book or Hub) after a preflight, an exact plan_id, and one approval. Uses delete_project so the registration and the files are removed in one server-side operation. Hard-refuses the pinned ai-library collection by both name and id."
+    },
+    "Remove-NotebookQuarantine.ps1": {
+      "role": "public",
+      "summary": "Destroy one quarantine directory for good and remove the ownership rows of the material it held. Preflight, exact plan_id, one approval; NOT recoverable. The rows go first and the files second, so a failure leaves material a restore can still adopt rather than rows citing material that no longer exists. It refuses material owned by a seat that is still registered, and keeps a row whose topic exists live."
+    },
+    "Remove-SeatArchive.ps1": {
+      "role": "public",
+      "summary": "Destroy one retired seat's archive for good. Preflight, exact plan_id, one approval; NOT recoverable -- the archive is the retirement record AND the only durable copy of that seat's Desk, conversation history and binding. It refuses when deleting it would leave ownership rows accounted for by nothing, measured by recomputing every row's incarnation status against the records that would remain."
+    },
+    "Remove-SharedEntry.ps1": {
+      "role": "public",
+      "summary": "Permanently delete one shared Book or Project Hub from the Basic Memory collection after a preflight, an exact plan_id bound to the page set, and one approval. Refuses while the entry is open on the Desk, stages every page body under internal/shared-delete-staging/ before deleting, and removes the Catalog entry first so a failure never leaves the Catalog pointing at deleted pages."
+    },
+    "Remove-ShelfBook.ps1": {
+      "role": "public",
+      "summary": "Permanently delete one curated Shelf Book after a preflight, exact content-bound plan_id, and one approval. Closes the Book if necessary, stages and verifies it, removes its Catalog entry, and creates no local archive copy. Rollback remains available until permanent staged deletion begins."
+    },
+    "Rename-ShelfBook.ps1": {
+      "role": "public",
+      "summary": "Rename a Shelf Book's slug and title, with a per-Book lock, pre-write journal, and verified rollback."
+    },
+    "Reset-LocalNotebook.ps1": {
+      "role": "public",
+      "summary": "Quarantine this seat's Notebook topics and rebuild the scaffold, preserving the Virtual Desk. -AllIdleSeats widens it to every foreign seat that is idle right now, naming and skipping the ones in use and recording whose each topic was in the quarantine journal (ADR-0023); it is refused beside -WholeTree, which still covers only retired seats. It deletes nothing -- topics are MOVED into internal/notebook-reset-quarantine/ and Restore-NotebookQuarantine.ps1 brings them back (ADR-0016). Open Books and Project Hubs stay open by default; -ClearDesk clears them too, which is the full Library Reset that \"start fresh\" routes to. The preflight reports desk_action so the reader approves a named shape. See ADR-0010."
+    },
+    "Restore-BookSource.ps1": {
+      "role": "public",
+      "summary": "Rebuild notebook/<slug>/ from a published shared Book, so a Book whose Notebook source is gone -- after a Notebook Reset, typically -- can be refreshed and currency-checked again. Create-only and therefore ungated: it refuses ANY existing notebook/<slug>, empty or not, under Enter-BookLock taken before the collision is inspected and held through promotion and readback. Requires the Book open on the Desk, selects the publication journal by the timestamp inside it filtered to state complete, proves the record set against the journal's own source_digest_sha256, and verifies every rebuilt page against its recorded SHA-256 before anything is promoted. Surfaces no page text."
+    },
+    "Restore-NotebookQuarantine.ps1": {
+      "role": "public",
+      "summary": "Bring a reset's quarantined Notebook material back: move the topics home, re-render the master index, and put each topic's ownership row into a state a reset can read. Preflight, exact plan_id, one approval. -List shows what each quarantine holds, with an article count and an age, and -Quarantine <name> -Show names the articles in one of them; both are reads and neither needs a seat. It never writes over a topic that exists in notebook/ again, and a row naming another incarnation needs -Adopt -- a live seat's is refused outright."
+    },
+    "Retire-Seat.ps1": {
+      "role": "public",
+      "summary": "Retire a seat recoverably: archive its Desk and binding to internal/seat-archive/, then remove it from the registry. Preflight, exact plan_id, one approval. Refuses a seat with a live session, because retirement is what makes a seat's material eligible for a whole-tree reset. The Desk is the only durable record of what was open, so it is archived rather than discarded."
+    },
+    "Search-RawBatch.ps1": {
+      "role": "public",
+      "summary": "Search one named source batch under raw/ for a literal term, or list the real batch roster with -List. Reports an unrecognised batch rather than guessing, names every file it could not read, and labels every line's provenance -- lines from the retained Pilot-era copy are marked historical and are never current policy."
+    },
+    "SearchBoundaries.ps1": {
+      "role": "internal",
+      "summary": "Plan item 2.5's boundaries for every search tier: query length, result count, matched bytes, per-line length, wall clock, files scanned, per-file size, Unicode normalisation, control-character sanitisation, canonical-path containment with reparse-point rejection, and the one parser of .open-books. Dot-sourced; covered by book-fulltext.selftest."
+    },
+    "SeatConversation.ps1": {
+      "role": "internal",
+      "summary": "Which conversation a seat last recorded, and what that conversation is called: the newer of the binding's own session_id and the launcher's advisory one, the transcript head read that is the only place an ai-title exists, six distinct statuses for the six ways a title can be missing, and the never-blank cell that reports them. Dot-sourced by SeatPicker.ps1 and Get-DeskOverview.ps1. Extracted 2026-09-10 for PLAN-seat-launch.md step 14, when the Desk overview needed the same two answers for its own seat: the derivation and the wording live here once and each surface renders its own shape, because the overview must NOT call the picker's row builder -- that one reads a title for every registered seat, which the cosmetic tier forbids on this reader's Desk."
+    },
+    "SeatCreation.ps1": {
+      "role": "internal",
+      "summary": "The one gate both seat-creation routes pass through: the Project Hub must exist and be ACTIVE, the project must be unbound, and no ownership row or seat archive may still cite the seat slug. Dot-sourced. Written 2026-09-10 because Start-LibrarySeat.ps1 and Enter-LibrarySeat.ps1 validated different things, which let a seat be bound to a Hub that does not exist and made one-seat-per-project unenforceable. The validations are shared; the approval ceremony is not. Creating a seat now needs the shared collection; entering one still does not."
+    },
+    "SeatPicker.ps1": {
+      "role": "internal",
+      "summary": "The terminal seat picker behind Start-LibrarySeat.ps1 with no -Seat: the numbered roster in whichever of its two layouts the terminal has room for, the choice grammar, the creation and retirement prompts, and the Orca tab rename -- which is performed rather than offered since 2026-09-14 (ADR-0021), because the only other answer left the tab carrying the Quick Command's label, the same string on every tab that button opens. Two rules choose the layout and both end in the cards: a terminal under 120 columns, and a table measured wider than the terminal whatever its width. The table's derived widths have no upper bound from two directions -- an orphaned seat's state cell is 47 characters where a healthy one is 4 and the widths are shared, so one row widens the state column for every row; and the conversation cell is capped at 52 on its title path but uncapped on its entry_note path. Cutting the table's last column to fit was tried on 2026-09-11 and reverted the same hour, because it deleted the conversation title the reader is choosing between and case 19f caught it. No total is recorded anywhere -- it is a property of whichever seats exist and it moved by 58 characters during one session. Every glyph is built from its code point and a check fails on any non-ASCII byte in the file: these sources are stored BOM-less, so PowerShell 5.1 reads a literal box character as ANSI and the file does not parse. A redirected run renders plain ASCII, uncoloured, and changes no console encoding. The conversation record and its title moved to SeatConversation.ps1 on 2026-09-10, when the Desk overview needed the same answers. Dot-sourced. Written 2026-09-10 for PLAN-seat-launch.md step 12, as the entry route beside the one-click one for a session with hooks disabled, a non-Orca terminal, or a recovery. It decides where to sit and authorises nothing: the claim, the creation gate and the retirement gate all stay where they were."
+    },
+    "Set-NotebookTopicOwner.ps1": {
+      "role": "public",
+      "summary": "Record which seat owns a Notebook topic, or declare it shared or excluded. Ungated and additive: it writes one record under the ownership lock and touches no Notebook material. -List reports every topic on disk beside what the record says about it. A topic that is unmapped blocks a reset until it is mapped, which is deliberate -- a reset will not guess at material nobody has claimed."
+    },
+    "Set-RawBatchOwner.ps1": {
+      "role": "public",
+      "summary": "Declare, withdraw, and report which Project owns each source batch under raw/. Ownership is declared and never inferred from a directory name, and an undeclared batch is reported as unmapped. Liveness is derived on every read rather than stored, and -Offline reports it as undetermined rather than as anything more confident. A batch whose owning Project is archived is OFFERED for eviction; nothing here deletes or modifies anything under raw/."
+    },
+    "Set-ShelfBookPageStub.ps1": {
+      "role": "public",
+      "summary": "Replace one page of an open, curated Shelf Book with a superseded-stub pointing at the canonical copy, in the shape docs/duplicate-topic-resolution.md specifies. Gated: preflight, exact plan_id bound to the page's current content hash, one approval, prior body journaled with verified rollback. Idempotent by content -- a page already holding exactly this stub is reported already-stubbed with no write."
+    },
+    "Set-TopicOverlap.ps1": {
+      "role": "public",
+      "summary": "Record, update, list, and validate topic-scoped overlap records between Shelf Books. Reads shelf/_catalog.md only -- never a Book body -- so it runs with an empty Desk."
+    },
+    "Set-VirtualDesk.ps1": {
+      "role": "public",
+      "summary": "Open, close, list, or clear Books and Projects on the Desk."
+    },
+    "SharedBookSource.ps1": {
+      "role": "internal",
+      "summary": "Read the shared collection's Book Catalog, page lists, and page bodies over MCP, and build a shared Book's manifest through the same generator the Shelf uses. Fails closed on a truncated listing, a substituted read, and an unreadable _book page. Dot-sourced."
+    },
+    "SharedCollectionFiles.ps1": {
+      "role": "internal",
+      "summary": "Filesystem-side view of the shared collection, for the one defect the MCP surface cannot reach: archiving moves notes, so the emptied books/<slug>/ or projects/<slug>/ survives with zero files in it and every index-backed surface reports it absent. Resolves the collection root by marker files rather than assuming a path, reports the topmost husk of a nest only, and removes a directory only while it provably holds no file. Detector: the gate's shared.archive-leaves-no-husk."
+    },
+    "ShelfCatalog.ps1": {
+      "role": "internal",
+      "summary": "The serialized renderer for shelf/_catalog.md. Each Book's block is authoritative in shelf/<slug>/_catalog-entry.md, and the catalog is rendered from the tracked header at docs/templates/shelf-catalog-header.md plus those entries, sorted, under one render lock; the entry write and the catalog render commit together. An entry is validated against the slug of the directory it was found in. Reachable directly as -Migrate for the day-one split, -Render, and -SelfTest."
+    },
+    "ShelfNoteCommon.ps1": {
+      "role": "internal",
+      "summary": "Shared frontmatter, catalog, and reader-map helpers. Dot-sourced; never invoked."
+    },
+    "SourcesBlock.ps1": {
+      "role": "internal",
+      "summary": "The one authority for a compiled article's ## Sources block: the emitter (file line lifted verbatim so already-published pages stay parseable, plus the new Upstream pin line), the parser that reads both back, and the longest-root rule that maps a cited path onto its pin and names the files that map to none, and the sanitized (url, ref, commit_oid) roll-up the Discovery manifest carries under ADR-0011. Prose inside the block is skipped as decoration on any bullet, a canonical '- ' one included; Test-SourcesClaimBearing is the single rule separating a claim from prose and looks for a claim's markers ANYWHERE on the line, ordinally, so a de-backticked file line and a corrupted hash stay refusals while a page saying 'sha256sum' does not. A file line may close with a trailing annotation, which five real published pages carry; an annotation smuggling a second claim is refused. A block with no pin and no cited file is not a compiled article rather than a defect. Dot-sourced; -SelfTest is run by Invoke-LibraryChecks."
+    },
+    "Start-LibrarySeat.ps1": {
+      "role": "public",
+      "summary": "Create or enter a seat, hold its exclusive session claim for the life of the session, and start the agent there. There is no default seat, so this is how work at one begins: it exports LIBRARY_SEAT and LIBRARY_SEAT_CLAIM, and every seat-aware mutator requires that claim. Migrating a pre-seat Desk in is additive and verified byte-for-byte; retiring the legacy files is -RetireLegacyDesk and needs no active session plus an adapter restart."
+    },
+    "Sync-RawUpstream.ps1": {
+      "role": "public",
+      "summary": "Fetch a git upstream into a NEW raw/ source batch, thinly (--depth 1 --filter=blob:none --sparse). The front door of the URL route: afterwards the ordinary compiler runs unchanged. Create-only and therefore ungated -- it refuses a batch name that already exists, because updating a checkout in place would silently invalidate every source hash already cited from it. Clones into staging outside raw/ and promotes by rename only if the destination is still absent. Declares no ownership; it names the Set-RawBatchOwner command instead."
+    },
+    "PluginPackage.ps1": {
+      "role": "internal",
+      "summary": "The canonical Codex-layout plugin package under plugin/, the Claude files generated from it, and the one table that composes an installed MCP tool name. Nothing here lists a tool: the tool names are still asked of the adapter over JSON-RPC, as docs/mcp-tool-allowlist-check.md requires, and what the table supplies is the PREFIX the adapter cannot know because the harness composes it at install time from the plugin id and the server id. Three forms: mcp__<server>__<tool> for a workspace .mcp.json and for Codex, mcp__plugin_<plugin>_<server>__<tool> for a Claude plugin. Dot-sourced; -Write regenerates, -SelfTest covers the rule, the root rewrite and the drift comparison."
+    },
+    "Test-AllowlistRuleParity.ps1": {
+      "role": "test",
+      "summary": "One allowlist rule, two implementations, run over one fixture. tools/DeploymentScan.ps1 excuses a denied term only when an approved-attribution string covers the whole match at that exact position; the mirror publishing job's server scanner deletes allowlisted strings first and greps the residue. The shell half is EXTRACTED from docs/mirror-publishing-job.md rather than retyped, so the suite compares the document that will be deployed. Pins two flag-level divergences (the server's removal is case-sensitive where the local containment is not; deleting an allowlisted string can splice a denied term that was never present) and one shared blind spot."
+    },
+    "Test-ArchiveSearchCoverage.ps1": {
+      "role": "test",
+      "summary": "Fixture-only suite for ADR-0012: archiving a Shelf Book MOVES its Discovery manifest into the archive store rather than retiring it, Discovery covers and labels the archived Book, the coverage count includes it, restoring leaves no archive store behind, and an active and archived Book of one slug never share a manifest."
+    },
+    "Test-BookCurrencyShelfPath.ps1": {
+      "role": "test",
+      "summary": "Fixture-only, fully offline suite for the currency check's -Book tier on its SHELF path: the Virtual Desk guard in both directions and per seat, a missing Desk file reading as closed, a shared root of the same slug not opening the Shelf Book, the exclusion of _book.md and _index.md, the Notebook source winning when both exist, and Shelf-read article text reaching the pin mapping and the host allowlist. Every Book that must be refused carries a decoy article, so a dropped guard reports a WRONG VERDICT rather than a missing file."
+    },
+    "Test-CodexPortability.ps1": {
+      "role": "test",
+      "summary": "Exercise generated Codex bindings, validated-reader handshakes, both Codex hooks, relocation with spaces, Claude independence, and plugin-free startup in disposable fixtures."
+    },
+    "Test-HubMigrationAcceptance.ps1": {
+      "role": "public",
+      "summary": "Read-only post-migration verifier for the Library Development Hub: exact section, item, history-prefix, Desk, briefing, workflow-byte, and shared-gate assertions from explicit ephemeral snapshot and manifest inputs."
+    },
+    "Test-LibraryFolderMove.ps1": {
+      "role": "test",
+      "summary": "The maintenance barrier and the folder cutover, driven against their own fixtures: the barrier's three states, a real claim-gated mutator and both real launchers refused under one, the live-seat, orphaned-seat and Book-lock engage refusals, the hashed preflight, three pointer spellings with their negatives, a confirmed cutover, a refused plan_id, and the rollback. Run by Invoke-LibraryChecks.ps1 as maintenance.folder-move."
+    },
+    "Test-LibraryHelpers.ps1": {
+      "role": "test",
+      "summary": "Boundary suite for the local-only helpers this iteration touches, including the 1.1 rename migrator's fault-injection and rollback cases and the 2.1 overlap-record validation. Reports its own case count when run."
+    },
+    "Test-LibraryHooks.ps1": {
+      "role": "test",
+      "summary": "Boundary suite for every .claude/hooks script, each spawned as the real process the harness runs and fed a real payload. Covers the shell guard that closed the 2026-09-06 `wc -c` hole, the Read/Grep/Glob/Write/Edit guard after the ShelfBoundary refactor, just-in-time playbook routing against the tracked playbook headings, the post-compact serve-ledger clear, the ConfigChange settings guard, and the search-hit reminder. Asserts the live settings.json registers them all."
+    },
+    "Test-ManifestBackfill.ps1": {
+      "role": "test",
+      "summary": "Fixture-only suite for the rung 5 backfill: first backfill at generation 1, idempotence, -Rebuild change detection, dirty repair, leak canaries, lock-skip, failure-survival, journal resume, prune, and the closed-Book approval. Reports its own case count when run."
+    },
+    "Test-McpHelpers.ps1": {
+      "role": "test",
+      "summary": "Boundary suite for MCP-dependent helpers, including Project Hub edit write/readback, against a fault-injectable stub endpoint on loopback. Reports its own case count when run."
+    },
+    "Test-NotebookRenderLock.ps1": {
+      "role": "test",
+      "summary": "PLAN-multi-desk.md step 28a. Proves with real processes that the Notebook render lock stayed narrow: an existing-topic write with an unchanged H1 completes while the render lock is held elsewhere, a visibility commit is refused while it is held, two concurrent commits keep both topics and hold the lock over disjoint windows, two writes into different existing topics overlap, and a concurrent reader never sees a torn index."
+    },
+    "Test-NotebookSweep.ps1": {
+      "role": "test",
+      "summary": "The cross-seat sweep end to end: which seats' Notebook topics Reset-LocalNotebook.ps1 -AllIdleSeats takes, which it names and leaves, what its preflight shows before the reader approves, and what the one quarantine it makes records about whose each topic was. Run by Invoke-LibraryChecks.ps1 as notebook.idle-seat-sweep."
+    },
+    "Test-RecoveryRoutes.ps1": {
+      "role": "test",
+      "summary": "The recovery routes, driven as real processes against their own fixtures: quarantine restore and purge, the Desk restore from a seat archive, and the seat-archive purge's stranding refusal. Run by Invoke-LibraryChecks.ps1 as `recovery.routes`. Its own workspaces, because a purge really destroys."
+    },
+    "Test-SeatLifecycle.ps1": {
+      "role": "test",
+      "summary": "The seat lifecycle driven through the real launcher and the real retirement helper as separate processes against a fixture workspace: creation and its registry entry, a project collision refused, the seat<->project binding refused in both directions, a second live claim refused naming the fix, -Preflight refused on a live-claimed seat, retirement refusing that seat before a plan_id is issued, Retire-Seat's plan body reached and coherent, the plan_id bound to the Desk it planned, the Desk archived and recoverable byte-for-byte, and malformed, unknown and unparseable input failing closed. -NoLaunch leaves the seat unclaimed, which is the only state in which the retirement plan body is reachable; no case launches an agent."
+    },
+    "Test-SharedManifestBackfill.ps1": {
+      "role": "test",
+      "summary": "Offline suite for the shared manifest backfill, against a fault-injectable loopback MCP stub: approval refusals, capture exclusion, substituted reads, truncated listings, resume, rebuild, and prune."
+    },
+    "Test-ShelfNoteBoundary.ps1": {
+      "role": "test",
+      "summary": "Capture and triage boundary suite over a disposable fixture. Reports its own case count when run."
+    },
+    "Test-ShelfWriterRouting.ps1": {
+      "role": "test",
+      "summary": "Proves every Shelf writer routes its mutation through the manifest transaction: a static scan for a writer that never opens a window, and a fixture run of each writer proving the committed manifest describes the Book."
+    },
+    "Test-TwoSeatAcceptance.ps1": {
+      "role": "test",
+      "summary": "Two seats, real processes: the cross-seat properties no static check can prove. Asserts that a Book open at one seat is closed at the other for READS AND SEARCH alike -- the half-migration failure Release 2 exists to prevent -- that a reset at one seat cannot move the others Notebook topic, that a rename rewrites every seat holding the Book, that an unknown or malformed seat fails closed, and that a second session cannot claim a held seat."
+    },
+    "Test-VaultExport.ps1": {
+      "role": "test",
+      "summary": "The acceptance suite for Export-CollectionToVault.ps1: PLAN-public-release.md step 15's five named cases (fresh export; unchanged re-export writes nothing; an edited destination refuses; an interrupted run resumes; a removed source page is removed), plus the unmanaged-file carry forward, the collision refusal, overlapping roots, activation-window recovery, rollback of a run faulted before the swap, and the export lock in both directions. Dot-sourced and run in-process by Export-CollectionToVault.ps1 -SelfTest; Invoke-LibraryChecks.ps1 runs it as collection-vault-export.selftest."
+    },
+    "TriagePlanCommon.ps1": {
+      "role": "internal",
+      "summary": "Shared triage action schema: the kind-by-source matrix, canonical write, touch and delete sets, the list-valued Desk requirement, and the content-bound action digest. Dot-sourced; never invoked."
+    },
+    "Update-BookManifests.ps1": {
+      "role": "public",
+      "summary": "Backfill or rebuild Discovery manifests for every Book on the local Shelf (or one with -Book): a journalled, resumable pass through the mutation window per Book, plus orphan-store pruning. Reads closed Books' bodies, so a run with a closed Book in scope requires the preflight's plan_id and -UserConfirmed."
+    },
+    "Update-SharedBookManifests.ps1": {
+      "role": "public",
+      "summary": "Backfill or rebuild the Discovery manifest of every shared-collection Book, preflighted with explicit closed-content approval, journalled and resumable, and prune shared stores whose Books no longer exist. Writes nothing to the shared collection."
+    }
+  }
+}

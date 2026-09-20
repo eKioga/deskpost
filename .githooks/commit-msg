@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Library commit-message gate: the identity scan's second boundary.
+#
+# PLAN-public-release.md step 12, local half. The pre-commit hook scans the blobs this commit will
+# publish; a commit MESSAGE is not a blob until after this hook has passed it, so no file scan can
+# reach it. That is the only reason this hook exists, and it is not a small gap: a message is where
+# a path gets pasted -- "fixed the trust store at C:\Users\<name>\.codex" -- by the same reflex that
+# puts one in a comment.
+#
+# It scans the staged blobs again along with the message. That is deliberate redundancy rather than
+# waste: `--no-verify` skips both hooks, but a pre-commit that fails for an unrelated reason and is
+# retried is a real sequence, and the scan is fast.
+#
+# Installed via:  git config core.hooksPath .githooks
+# The denylist lives at %USERPROFILE%\.library\identity-denylist.txt and is never in a repository.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/DeploymentScan.ps1" -IdentityScan -CommitMessageFile "$1"
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo ""
+    echo "commit-msg: the identity scan refused this commit. Commit aborted."
+    echo "Remove the value or generalise it. If it is approved attribution, add it to"
+    echo "%USERPROFILE%\\.library\\identity-allowlist.txt -- that list is the only exception."
+    exit 1
+fi
+
+exit 0

@@ -1,0 +1,234 @@
+{
+    "permissions": {
+        "allow": [
+            "mcp__validated-book-reader__read_open_book_page",
+            "mcp__validated-book-reader__read_book_catalog",
+            "mcp__validated-book-reader__read_project_catalog",
+            "mcp__validated-book-reader__suggest_active_projects",
+            "mcp__validated-book-reader__read_open_project_page",
+            "mcp__validated-book-reader__read_open_project_briefing",
+            "mcp__validated-book-reader__discover_book_pages",
+            "mcp__validated-book-reader__search_open_books",
+            "Bash(echo \"exit:$?\")",
+            "Bash(xargs sha256sum)",
+            "Read(//tmp/**)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-VirtualDesk.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Reset-LocalNotebook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Publish-BookCopy.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Publish-ShelfBookToShared.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Publish-ShelfBookBatchToShared.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/New-ProjectHub.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Archive-ProjectHub.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Compile-RawBatchToNotebook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Copy-LocalPagesToProject.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Edit-ProjectHub.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-DeskOverview.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-MeterStatus.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-TokenBaseline.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Add-ShelfNote.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Add-ShelfBookPage.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Add-ShelfBookTopic.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Rename-ShelfBook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Invoke-LibraryChecks.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Test-HubMigrationAcceptance.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/New-HubMigrationSnapshot.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Initialize-CodexLibrary.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Restore-BookSource.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Update-BookManifests.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Update-SharedBookManifests.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-TopicOverlap.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Remove-SharedEntry.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Add-CatalogEntry.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-WikiMigrationInventory.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Import-ExternalWikiToShelf.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Archive-SharedBook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Find-ShelfDuplicateTopics.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Search-RawBatch.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-RawBatchOwner.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Archive-ShelfBook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Remove-ShelfBook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-ShelfBookPageStub.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Remove-MemoryProject.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-LibraryTriageInventory.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Sync-RawUpstream.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Get-BookCurrency.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Invoke-LibraryTriage.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Start-LibrarySeat.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Retire-Seat.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-NotebookTopicOwner.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Start-LibrarySeat.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Retire-Seat.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Enter-LibrarySeat.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Restore-NotebookQuarantine.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Remove-NotebookQuarantine.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Remove-SeatArchive.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/New-ShelfBook.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Move-LibraryFolder.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-CollectionToVault.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-PublicTree.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-MirrorOpsRepo.ps1\"*)"
+        ],
+        "deny": []
+    },
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "mcp__basic-memory__.*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Guard-BasicMemoryRead.ps1"
+                        ]
+                    }
+                ]
+            },
+            {
+                "matcher": "Read|Grep|Glob|Write|Edit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Guard-ShelfBookRead.ps1"
+                        ]
+                    }
+                ]
+            },
+            {
+                "matcher": "Bash|PowerShell",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Guard-ShellShelfRead.ps1"
+                        ]
+                    },
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Get-PlaybookContext.ps1"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "mcp__validated-book-reader__discover_book_pages|mcp__validated-book-reader__search_open_books|Bash|PowerShell",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Add-SearchHitReminder.ps1"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Get-VirtualDeskContext.ps1"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "PostCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Restore-CompactedGuidance.ps1"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Restore-CompactedGuidance.ps1"
+                        ]
+                    },
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Get-SeatStartContext.ps1"
+                        ]
+                    }
+                ]
+            }
+        ],
+        "ConfigChange": [
+            {
+                "matcher": "project_settings|local_settings",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell.exe",
+                        "args": [
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Guard-SettingsIntegrity.ps1"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

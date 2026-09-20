@@ -1,0 +1,215 @@
+{
+  "description": "Hook payload field sets, measured from real payloads rather than assumed. A hook reads a payload field through Get-HookField, which answers $null for a name that is not there, so a renamed or guessed field costs the hook its whole job with no error anywhere. This file records what each event actually carries; the gate check hooks.payload-fields-are-captured fails on any Get-HookField read of the payload that no captured event here covers. Re-measure it by creating .claude/hooks/.capture/ and exercising the events. A `clients` object on an event carries the SAME event as a DIFFERENT client sends it; the base `fields` are Claude Code's. A hook that runs in both harnesses must have every field it reads covered by EVERY client that fires it, which is what tools/HookRegistry.ps1 enforces -- a read satisfied by one client alone is a hook that is silently dead in the other.",
+  "events": {
+    "PreToolUse": {
+      "captured": "2026-09-19, Claude Code 2.1.278 on Windows 11, at the library-dev seat; field names and nesting verbatim, identity values replaced",
+      "fields": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "scratchpad_dir",
+        "prompt_id",
+        "permission_mode",
+        "effort",
+        "hook_event_name",
+        "tool_name",
+        "tool_input",
+        "tool_use_id"
+      ],
+      "envelope": {
+        "session_id": "00000000-0000-4000-8000-000000000000",
+        "transcript_path": "C:\\fixture\\.claude\\projects\\FIXTURE\\00000000-0000-4000-8000-000000000000.jsonl",
+        "cwd": "C:\\fixture\\workspace",
+        "scratchpad_dir": "C:\\fixture\\scratchpad",
+        "prompt_id": "11111111-1111-4111-8111-111111111111",
+        "permission_mode": "auto",
+        "effort": {
+          "level": "xhigh"
+        },
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo payload-probe",
+          "description": "payload probe"
+        },
+        "tool_use_id": "toolu_fixture"
+      },
+      "clients": {
+        "codex-cli": {
+          "captured": "2026-09-20, codex-cli 0.153.4 on Windows 11, at the library-dev seat, through D:/Library/.codex/hooks.json; field names and nesting verbatim, identity values replaced",
+          "fields": [
+            "session_id",
+            "turn_id",
+            "transcript_path",
+            "cwd",
+            "hook_event_name",
+            "model",
+            "permission_mode",
+            "tool_name",
+            "tool_input",
+            "tool_use_id"
+          ],
+          "envelope": {
+            "session_id": "00000000-0000-4000-8000-000000000000",
+            "turn_id": "11111111-1111-4111-8111-111111111111",
+            "transcript_path": "C:\\fixture\\codex-home\\sessions\\2026\\09\\20\\rollout-FIXTURE.jsonl",
+            "cwd": "C:\\fixture\\workspace",
+            "hook_event_name": "PreToolUse",
+            "model": "gpt-6-astra",
+            "permission_mode": "bypassPermissions",
+            "tool_name": "Bash",
+            "tool_input": {
+              "command": "echo payload-probe"
+            },
+            "tool_use_id": "exec-fixture"
+          }
+        }
+      }
+    },
+    "PostToolUse": {
+      "captured": "2026-09-19, Claude Code 2.1.278 on Windows 11, at the library-dev seat; field names and nesting verbatim, identity values replaced",
+      "fields": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "scratchpad_dir",
+        "prompt_id",
+        "permission_mode",
+        "effort",
+        "hook_event_name",
+        "tool_name",
+        "tool_input",
+        "tool_response",
+        "tool_use_id",
+        "duration_ms"
+      ],
+      "envelope": {
+        "session_id": "00000000-0000-4000-8000-000000000000",
+        "transcript_path": "C:\\fixture\\.claude\\projects\\FIXTURE\\00000000-0000-4000-8000-000000000000.jsonl",
+        "cwd": "C:\\fixture\\workspace",
+        "scratchpad_dir": "C:\\fixture\\scratchpad",
+        "prompt_id": "11111111-1111-4111-8111-111111111111",
+        "permission_mode": "auto",
+        "effort": {
+          "level": "xhigh"
+        },
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "echo payload-probe",
+          "description": "payload probe"
+        },
+        "tool_response": "fixture tool response",
+        "tool_use_id": "toolu_fixture",
+        "duration_ms": 1
+      }
+    },
+    "UserPromptSubmit": {
+      "captured": "2026-09-19, Claude Code 2.1.278 on Windows 11, at the library-dev seat; field names and nesting verbatim, identity values replaced",
+      "fields": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "scratchpad_dir",
+        "prompt_id",
+        "permission_mode",
+        "hook_event_name",
+        "prompt"
+      ],
+      "envelope": {
+        "session_id": "00000000-0000-4000-8000-000000000000",
+        "transcript_path": "C:\\fixture\\.claude\\projects\\FIXTURE\\00000000-0000-4000-8000-000000000000.jsonl",
+        "cwd": "C:\\fixture\\workspace",
+        "scratchpad_dir": "C:\\fixture\\scratchpad",
+        "prompt_id": "11111111-1111-4111-8111-111111111111",
+        "permission_mode": "auto",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "payload probe"
+      },
+      "clients": {
+        "codex-cli": {
+          "captured": "2026-09-20, codex-cli 0.153.4 on Windows 11, at the library-dev seat, through D:/Library/.codex/hooks.json; field names and nesting verbatim, identity values replaced",
+          "fields": [
+            "session_id",
+            "turn_id",
+            "transcript_path",
+            "cwd",
+            "hook_event_name",
+            "model",
+            "permission_mode",
+            "prompt"
+          ],
+          "envelope": {
+            "session_id": "00000000-0000-4000-8000-000000000000",
+            "turn_id": "11111111-1111-4111-8111-111111111111",
+            "transcript_path": "C:\\fixture\\codex-home\\sessions\\2026\\09\\20\\rollout-FIXTURE.jsonl",
+            "cwd": "C:\\fixture\\workspace",
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-6-astra",
+            "permission_mode": "bypassPermissions",
+            "prompt": "payload probe"
+          }
+        }
+      }
+    },
+    "ConfigChange": {
+      "captured": "2026-09-19, Claude Code 2.1.278 on Windows 11, at the library-dev seat; field names and nesting verbatim, identity values replaced",
+      "fields": [
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "scratchpad_dir",
+        "prompt_id",
+        "hook_event_name",
+        "source",
+        "file_path"
+      ],
+      "envelope": {
+        "session_id": "00000000-0000-4000-8000-000000000000",
+        "transcript_path": "C:\\fixture\\.claude\\projects\\FIXTURE\\00000000-0000-4000-8000-000000000000.jsonl",
+        "cwd": "C:\\fixture\\workspace",
+        "scratchpad_dir": "C:\\fixture\\scratchpad",
+        "prompt_id": "11111111-1111-4111-8111-111111111111",
+        "hook_event_name": "ConfigChange",
+        "source": "local_settings",
+        "file_path": "C:\\fixture\\workspace\\.claude\\settings.local.json"
+      }
+    },
+    "SessionStart": {
+      "captured": "2026-09-09, Claude Code, PLAN-seat-launch.md step 0c; recorded into tools/Test-LibraryHooks.ps1's New-SessionStartPayload, raw files not retained",
+      "fields": [
+        "hook_event_name",
+        "session_id",
+        "cwd",
+        "transcript_path",
+        "source",
+        "context_tokens",
+        "estimated_cache_write_usd",
+        "prompt_cache_likely_expired",
+        "seconds_since_last_response"
+      ],
+      "source_values": [
+        "startup",
+        "clear",
+        "fork",
+        "compact",
+        "resume"
+      ],
+      "resume_and_fork_only": [
+        "context_tokens",
+        "estimated_cache_write_usd",
+        "prompt_cache_likely_expired",
+        "seconds_since_last_response"
+      ]
+    },
+    "PostCompact": {
+      "uncaptured": "not reachable in --print mode, so no run can be made to emit one; every field the PostCompact hook reads is verified through SessionStart",
+      "fields": [
+        "hook_event_name",
+        "session_id",
+        "compact_reason"
+      ]
+    }
+  },
+  "unverified_reads": []
+}

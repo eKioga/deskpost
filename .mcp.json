@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "validated-book-reader": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".claude/adapters/Validated-BookReader.ps1"
+      ]
+    }
+  }
+}

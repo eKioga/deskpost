@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Library pre-commit gate.
+#
+# This runs independently of Claude, which is the whole point: a checks runner invoked by the
+# Librarian cannot detect settings that failed to load *before* the session began, and a hook
+# defined inside settings.json cannot validate the file that defines it. A malformed settings file
+# has already disabled the permission allowlist and both guard hooks once, silently.
+#
+# -Fast skips the spawned self-test suites so ordinary commits stay quick. Run the full suite
+# before a phase gate:
+#     powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1 -IncludeShared
+#
+# Installed via:  git config core.hooksPath .githooks
+# Invoke-LibraryChecks asserts that installation, so an uninstalled hook fails the full suite.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo ""
+    echo "pre-commit: Library checks failed. Commit aborted."
+    echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
+    exit 1
+fi
+
+exit 0
