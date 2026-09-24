@@ -31,6 +31,11 @@ $ErrorActionPreference = 'Stop'
 # Fixtures work at a seat named 'fixture'. Set in this process so CHILD helper processes
 # inherit it: they default -Seat to LIBRARY_SEAT, and there is no default seat to fall back on.
 $env:LIBRARY_SEAT = 'fixture'
+# And the caller's workspace and claim are cleared, for the same reason: a seated session exports
+# both, and a child hook resolves LIBRARY_WORKSPACE before its own location, so a case meaning "no
+# workspace" judged the reader's real workspace instead (the Report Inbox, 2026-09-23; five cases red
+# from a seated session). kernel/test/selftest.ts blanks it for its children the same way.
+Remove-Item Env:LIBRARY_WORKSPACE, Env:LIBRARY_SEAT_CLAIM -ErrorAction SilentlyContinue
 
 $repo = Split-Path -Parent $PSScriptRoot
 $hooks = Join-Path $repo '.claude/hooks'
@@ -45,11 +50,16 @@ function Assert([bool]$Condition, [string]$Message) {
 # for one reason: a here-string piped into a child powershell.exe on Windows is subject to console
 # encoding, and a payload containing a non-ASCII page title would arrive mangled. Both routes land in
 # the same Read-HookPayload call one line apart, so what is exercised is the same reader.
-function Invoke-Hook([string]$Name, [hashtable]$Payload, [string]$StateDirectory) {
+function Invoke-Hook([string]$Name, [hashtable]$Payload, [string]$StateDirectory, [string]$WorkspacePath) {
     $json = $Payload | ConvertTo-Json -Compress -Depth 8
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
     $script = Join-Path $hooks $Name
-    (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -StateDirectory $StateDirectory -InputJsonBase64 $encoded 2>&1 | Out-String).Trim()
+    # -WorkspacePath is passed ONLY when a case supplies one. Every case written before step 20
+    # relies on the guard anchoring itself at its own script location, and passing the flag
+    # unconditionally would silently re-anchor all of them at once.
+    $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-StateDirectory', $StateDirectory, '-InputJsonBase64', $encoded)
+    if ($WorkspacePath) { $argv += @('-WorkspacePath', $WorkspacePath) }
+    (& powershell.exe @argv 2>&1 | Out-String).Trim()
 }
 
 function Get-HookField-FromOutput([string]$Output, [string]$Field) {
@@ -379,9 +389,28 @@ wc -c shelf/demo/wiki/_index.md
         $payload
     }
 
+    # PostCompact EMITS NOTHING, AND THAT IS THE MEASURED CONTRACT SINCE 2026-09-22. These three
+    # lines used to assert that PostCompact re-serves the standing rules, and it did -- into a void.
+    # Claude Code accepts no `hookSpecificOutput` for that event and discards the whole object. Its
+    # own transcript line, from a real /compact in a seated session rather than from a fixture:
+    #
+    #   PostCompact [... Restore-CompactedGuidance.ps1] failed: Hook JSON output validation failed
+    #   - hookSpecificOutput.hookEventName: expected one of "PreToolUse" | "UserPromptSubmit" |
+    #   "UserPromptExpansion" | "SessionStart" | "Setup" | "PreModelSwitch" | ...
+    #
+    # This is the trap the verification rules name in as many words: a fixture that SUPPLIES the
+    # input proves the code works when given it, never that what it produces ARRIVES. Every
+    # assertion below passed for as long as this hook emitted a shape no session ever received.
     $compacted = Invoke-Compacted @{ hook_event_name = 'PostCompact'; session_id = 'session-a'; compact_reason = 'auto' }
-    $message = Get-HookField-FromOutput $compacted 'additionalContext'
-    Assert ($null -ne $message -and $message.Contains('A fix without a check is a fix that comes back')) 'PostCompact did not re-serve the standing rules'
+    Assert ([string]::IsNullOrWhiteSpace($compacted)) 'PostCompact emitted output, and the harness rejects every hookSpecificOutput shape for that event'
+    Assert ($compacted -cnotmatch 'PostCompact') 'PostCompact named itself as a hookEventName, which makes the harness discard the whole object'
+
+    # AND THE CONTENT ASSERTIONS MOVE TO THE ROUTE THAT ACTUALLY DELIVERS. One /compact fires BOTH
+    # events -- measured 0.4s apart in one transcript -- and `SessionStart:compact` is the one whose
+    # output validated and reached the model as a `hook_additional_context` attachment. Its own
+    # session id, so the ledger assertion below still judges what PostCompact cleared.
+    $message = Get-HookField-FromOutput (Invoke-Compacted (New-SessionStartPayload 'compact' 'session-compact')) 'additionalContext'
+    Assert ($null -ne $message -and $message.Contains('A fix without a check is a fix that comes back')) 'a compaction did not re-serve the standing rules'
     Assert ($null -ne $message -and $message.Contains('library-development.md')) 'the restatement did not name the rule that stopped being loaded'
     # BOUNDED. The rule file is 9.7KB; only its opening section may be served, or the hook becomes
     # the context cost it was written to avoid.
@@ -470,6 +499,43 @@ wc -c shelf/demo/wiki/_index.md
     $liveProblems = @(Get-HookRegistrationProblems -Settings @($liveTree))
     Assert (-not $liveProblems.Count) "the live .claude/settings.json does not register every Library hook: $(($liveProblems | ForEach-Object { $_.detail }) -join '; ')"
 
+    # === 5a. THE BINARY'S SPELLING, AND THE ENABLED PLUGIN (S42) ====================================
+    #
+    # A workspace guarded wholly by the Claude Code plugin read as having no guard at all: its hooks are
+    # the plugin's, spelled `"<root>/bin/library" hook <verb>`, and this file knew only script names.
+    Assert (Test-HookEntryNamesHook '"C:/p/bin/library" hook shelf-read' 'Guard-ShelfBookRead.ps1') 'the binary spelling of the shelf guard was not recognised'
+    Assert (-not (Test-HookEntryNamesHook '"C:/p/bin/library" hook shell-shelf-read' 'Guard-ShelfBookRead.ps1')) "'hook shell-shelf-read' was read as the shelf guard"
+    Assert (-not (Test-HookEntryNamesHook '"C:/p/bin/library" hook shelf-reader' 'Guard-ShelfBookRead.ps1')) "'hook shelf-reader' was read as the shelf guard"
+    $pluginRoot = Join-Path $fixture 'plugin-s42'
+    $pluginConfig = Join-Path $pluginRoot 'claude-config'
+    $pluginInstall = Join-Path $pluginRoot 'install'
+    $pluginWorkspace = Join-Path $pluginRoot 'ws'
+    foreach ($directory in @((Join-Path $pluginConfig 'plugins'), (Join-Path $pluginInstall '.claude-plugin/hooks'), (Join-Path $pluginWorkspace '.claude'))) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    Copy-Item -LiteralPath (Join-Path $repo '.claude-plugin/hooks/hooks.json') -Destination (Join-Path $pluginInstall '.claude-plugin/hooks/hooks.json')
+    Copy-Item -LiteralPath (Join-Path $repo '.claude-plugin/.mcp.json') -Destination (Join-Path $pluginInstall '.claude-plugin/.mcp.json')
+    [IO.File]::WriteAllText((Join-Path $pluginInstall '.claude-plugin/plugin.json'), '{"name":"deskpost","hooks":"./.claude-plugin/hooks/hooks.json","mcpServers":"./.claude-plugin/.mcp.json"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $pluginConfig 'settings.json'), '{"enabledPlugins":{"deskpost@deskpost":true}}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $pluginConfig 'plugins/installed_plugins.json'),
+        (@{ version = 2; plugins = @{ 'deskpost@deskpost' = @(@{ scope = 'user'; installPath = $pluginInstall }) } } | ConvertTo-Json -Depth 6), $utf8)
+    $savedConfig = $env:CLAUDE_CONFIG_DIR
+    try {
+        $env:CLAUDE_CONFIG_DIR = $pluginConfig
+        $pluginHooks = Get-EnabledClaudePluginHooks -Workspace $pluginWorkspace
+        Assert ($null -ne $pluginHooks -and $null -ne $pluginHooks.tree -and $pluginHooks.declares_reader) 'the enabled, installed plugin was not read'
+        if ($null -ne $pluginHooks -and $null -ne $pluginHooks.tree) {
+            $pluginProblems = @(Get-HookRegistrationProblems -Settings @($pluginHooks.tree) | Where-Object { -not $_.optional })
+            Assert (-not $pluginProblems.Count) "the plugin's own registrations did not register the load-bearing hooks: $(($pluginProblems | ForEach-Object { $_.detail }) -join '; ')"
+            Assert (-not ((ConvertTo-Json $pluginHooks.tree -Depth 12 -Compress).Contains('${CLAUDE_PLUGIN_ROOT}'))) 'the plugin root variable was not replaced by the install path'
+        }
+        [IO.File]::WriteAllText((Join-Path $pluginWorkspace '.claude/settings.local.json'), '{"enabledPlugins":{"deskpost@deskpost":false}}', $utf8)
+        Assert ($null -eq (Get-EnabledClaudePluginHooks -Workspace $pluginWorkspace)) "a plugin this workspace's settings switch off was still read"
+    }
+    finally {
+        if ($null -eq $savedConfig) { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:CLAUDE_CONFIG_DIR = $savedConfig }
+    }
+
     # `source`, MEASURED, NOT `config_source`, WHICH THIS FIXTURE INVENTED. From 2026-09-06 to
     # 2026-09-19 this line spelled the field `config_source`, the hook read `config_source`, and
     # every denial below passed -- while the real payload carried `source` and the guard exited 0 on
@@ -516,6 +582,19 @@ wc -c shelf/demo/wiki/_index.md
     [IO.File]::WriteAllText($fixtureSettings, "{ this is not json", $utf8)
     Assert (Test-Denied (Invoke-SettingsGuard 'project_settings')) 'an unparseable settings file was accepted'
 
+    # THREE FILES THAT PARSE, REGISTER NOTHING A HARNESS WILL LOAD, AND WERE ALLOWED IN SILENCE (S36,
+    # each measured before the fix). The guard fails OPEN on a throw, by design, so a walk that threw
+    # on an ordinary malformed file was the boundary opening: `{}` and `[null]` made the registry walk
+    # throw, and `Hooks` was read case-insensitively as registered. Each must be refused now.
+    foreach ($unloadable in @(
+            @{ text = '{}'; why = 'a settings file emptied to {}' },
+            @{ text = '{"hooks":{"PreToolUse":[null]}}'; why = 'a hooks block whose entry is null' },
+            @{ text = [IO.File]::ReadAllText($liveSettings).Replace('"hooks"', '"Hooks"'); why = "a hooks block under 'Hooks'" })) {
+        [IO.File]::WriteAllText($fixtureSettings, $unloadable.text, $utf8)
+        $out = Invoke-SettingsGuard 'project_settings'
+        Assert (Test-Denied $out) "$($unloadable.why) was allowed, with every guard unregistered: '$out'"
+    }
+
     # An OPTIONAL hook dropped: allowed, and said out loud rather than silently.
     $withoutOptional = [IO.File]::ReadAllText($liveSettings).Replace('Add-SearchHitReminder.ps1', 'Add-Removed.ps1')
     [IO.File]::WriteAllText($fixtureSettings, $withoutOptional, $utf8)
@@ -523,6 +602,32 @@ wc -c shelf/demo/wiki/_index.md
     Assert (-not (Test-Denied $out)) 'dropping an optional guidance hook was refused'
     Assert ((Get-HookField-FromOutput $out 'systemMessage') -match 'Add-SearchHitReminder') 'an optional hook disappeared without a word'
     Remove-Item -LiteralPath $fixtureSettings -Force
+
+    # A CODEX MATCHER THAT CANNOT FIRE (S38). Codex names Basic Memory's tools
+    # `mcp__basic_memory__<tool>`, so the `^mcp__basic-memory__.*$` every Codex binding carried until S38
+    # registered a guard that never ran -- and the Basic Memory row had no matcher rule, so it read clean.
+    # The rule asks what a matcher FIRES ON now; each case below was measured against it before the fix.
+    # From TEXT, as a harness reads the file: a document built from nested @() literals unrolls its
+    # one-element lists, and the registry then reads every hook as absent.
+    $codexDoc = {
+        param([string]$Matcher)
+        $entry = { param($File) '[{"type":"command","command":"powershell -File ' + $File + '"}]' }
+        ('{"hooks":{"PreToolUse":[' +
+            '{"matcher":' + (ConvertTo-Json $Matcher) + ',"hooks":' + (& $entry 'Guard-BasicMemoryRead.ps1') + '},' +
+            '{"matcher":"^(Bash|exec)$","hooks":' + (& $entry 'Guard-ShellShelfRead.ps1') + '},' +
+            '{"matcher":"^apply_patch$","hooks":' + (& $entry 'Guard-ShelfBookRead.ps1') + '}],' +
+            '"UserPromptSubmit":[{"hooks":' + (& $entry 'Get-VirtualDeskContext.ps1') + '}]}}') | ConvertFrom-Json
+    }
+    foreach ($case in @(
+            @{ matcher = '^mcp__basic-memory__.*$'; fires = $false; why = "the pre-S38 hyphenated matcher" },
+            @{ matcher = '^mcp__basic_memory__.*$'; fires = $true;  why = "Codex's own spelling" },
+            @{ matcher = '^mcp__basic[-_]memory__.*$'; fires = $true; why = "the plugin's union of both harnesses" },
+            @{ matcher = '^mcp__basic_memory__(';  fires = $false; why = 'a matcher that is not a regex' })) {
+        $problems = @(Get-CodexRegistrationProblems -Document (& $codexDoc $case.matcher))
+        $named = @($problems | Where-Object { $_ -match 'Basic Memory guard''s matcher does not match mcp__basic_memory__list_directory' }).Count
+        if ($case.fires) { Assert ($problems.Count -eq 0) "$($case.why) was reported unable to fire: $($problems -join ' ')" }
+        else { Assert ($problems.Count -eq 1 -and $named -eq 1) "$($case.why) was not reported as a guard that cannot fire (got: $($problems -join ' '))" }
+    }
 
     # === 6. A hit is a location ===================================================================
     function Invoke-Reminder([string]$ToolName, [hashtable]$ToolInput) {
@@ -876,6 +981,384 @@ wc -c shelf/demo/wiki/_index.md
     }
     finally {
         if (-not $capturePreExisting) { Remove-Item -LiteralPath $captureDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # === 15. ANOTHER WORKSPACE'S SHELF (PLAN-public-release.md step 20) ============================
+    #
+    # THE GAP THESE THREE CLOSE. Every guard anchored "the workspace" at its own script location, so
+    # it judged paths against the workspace it was installed in and nothing else. An absolute read
+    # into a DIFFERENT Library's closed Shelf resolved `outside`, and the guard exited 0 having said
+    # nothing at all. The Shelf rule was correct the whole time and was simply never asked.
+    #
+    # A FOREIGN SHELF IS CLOSED WITHOUT A LOOKUP, and that is the design rather than a shortcut: a
+    # Desk belongs to a seat in a session, this session holds no seat over there, so nothing is open
+    # there whatever that workspace's own Desk files say. Reading them would be a confident answer
+    # from the wrong Desk.
+    $wsHere    = Join-Path $fixture 'ws-here'      # the workspace the guard is anchored in
+    $wsOther   = Join-Path $fixture 'ws-other'     # registered, marker present
+    $wsBroken  = Join-Path $fixture 'ws-broken'    # registered, marker DELETED
+    $wsNowhere = Join-Path $fixture 'ws-nowhere'   # in no workspace at all
+    $regRoot   = Join-Path $fixture 'registry'
+
+    foreach ($d in @($wsHere, $wsOther, $wsBroken, $wsNowhere, $regRoot)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    foreach ($w in @($wsHere, $wsOther, $wsBroken)) {
+        New-Item -ItemType Directory -Path (Join-Path $w 'shelf/demo/wiki') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $w 'shelf/demo/wiki/_index.md'), "# Demo`n", $utf8)
+    }
+    # The marker is what makes a directory a workspace. ws-broken is registered WITHOUT one, which is
+    # the third case rather than an accident of setup.
+    foreach ($w in @($wsHere, $wsOther)) {
+        New-Item -ItemType Directory -Path (Join-Path $w '.library') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $w '.library/workspace.json'), '{"id":"fixture"}', $utf8)
+    }
+    [IO.File]::WriteAllText((Join-Path $regRoot 'workspaces.json'), (@{ workspaces = @(
+        @{ id = 'other';  path = $wsOther },
+        @{ id = 'broken'; path = $wsBroken }
+    ) } | ConvertTo-Json -Depth 4), $utf8)
+
+    function Invoke-ReadIn([string]$Path, [string]$Anchor) {
+        Invoke-Hook 'Guard-ShelfBookRead.ps1' @{ tool_name = 'Read'; tool_input = @{ file_path = $Path } } $stateDir $Anchor
+    }
+    function Invoke-ShellIn([string]$Command, [string]$Anchor) {
+        Invoke-Hook 'Guard-ShellShelfRead.ps1' @{ tool_name = 'Bash'; tool_input = @{ command = $Command } } $stateDir $Anchor
+    }
+
+    $savedRegistry = $env:LIBRARY_WORKSPACES
+    try {
+        # --- CASE A: no workspace anywhere -> SILENT ----------------------------------------------
+        # A machine where `library init` has never run: no registry file, an anchor that is not a
+        # workspace, and a path in neither. Nothing may be said.
+        $env:LIBRARY_WORKSPACES = Join-Path $fixture 'registry-that-does-not-exist'
+        $silent = Invoke-ReadIn (Join-Path $wsNowhere 'notes.md') $wsNowhere
+        Assert (-not (Test-Denied $silent)) "no workspace anywhere was not silent; got '$silent'"
+        $silentShell = Invoke-ShellIn ("cat " + (Join-Path $wsNowhere 'notes.md')) $wsNowhere
+        Assert (-not (Test-Denied $silentShell)) "no workspace anywhere was not silent for the shell guard; got '$silentShell'"
+
+        $env:LIBRARY_WORKSPACES = $regRoot
+
+        # --- CASE B: absolute read into a registered workspace's closed Shelf, from elsewhere ------
+        $foreign = Invoke-ReadIn (Join-Path $wsOther 'shelf/demo/wiki/_index.md') $wsHere
+        Assert (Test-Denied $foreign) "an absolute Read into another registered workspace's Shelf was not denied"
+        $foreignReason = Get-HookField-FromOutput $foreign 'permissionDecisionReason'
+        Assert ($null -ne $foreignReason -and $foreignReason.Contains('not this workspace')) "the cross-workspace denial did not say whose workspace it was; got '$foreignReason'"
+
+        # The shell route is the same boundary with a different tool, and it was ALREADY wrong rather
+        # than merely silent: its tokeniser matches `shelf/...` inside an absolute foreign path and
+        # then asks THIS Desk about the Book, so a foreign Book whose slug happens to be open here
+        # would have been allowed. Opening `shelf/demo` locally is what makes that visible.
+        Set-OpenBooks @('shelf/demo')
+        $foreignShell = Invoke-ShellIn ("cat " + (Join-Path $wsOther 'shelf/demo/wiki/_index.md')) $wsHere
+        Assert (Test-Denied $foreignShell) "a shell read of another workspace's Shelf was allowed because a same-named Book is open here"
+        Set-OpenBooks @()
+
+        # THE NEGATIVE THAT KEEPS THIS HONEST. The guard's OWN workspace must still be judged by the
+        # ordinary rules and not refused by the cross-workspace one. A rule that denied both would
+        # pass every assertion above and brick the product.
+        Set-OpenBooks @('shelf/demo')
+        $ownOpen = Invoke-ReadIn (Join-Path $wsHere 'shelf/demo/wiki/_index.md') $wsHere
+        Assert (-not (Test-Denied $ownOpen)) "an OPEN Book in the guard's own workspace was denied by the cross-workspace rule; got '$ownOpen'"
+        Set-OpenBooks @()
+        $ownClosed = Invoke-ReadIn (Join-Path $wsHere 'shelf/demo/wiki/_index.md') $wsHere
+        Assert (Test-Denied $ownClosed) "a CLOSED Book in the guard's own workspace stopped being denied"
+
+        # A non-surface path next door is not this rule's business either.
+        [IO.File]::WriteAllText((Join-Path $wsOther 'README.md'), "# hi`n", $utf8)
+        $foreignReadme = Invoke-ReadIn (Join-Path $wsOther 'README.md') $wsHere
+        Assert (-not (Test-Denied $foreignReadme)) "a foreign non-surface file was denied; got '$foreignReadme'"
+
+        # --- CASE C: marker deleted -> REFUSED ----------------------------------------------------
+        # ws-broken is in the registry with no `.library/workspace.json`. This machine cannot say what
+        # is open there, or even which of its paths are surfaces, so every path into it refuses.
+        $broken = Invoke-ReadIn (Join-Path $wsBroken 'shelf/demo/wiki/_index.md') $wsHere
+        Assert (Test-Denied $broken) 'a read into a registered workspace with no marker was not refused'
+        $brokenReason = Get-HookField-FromOutput $broken 'permissionDecisionReason'
+        Assert ($null -ne $brokenReason -and $brokenReason.Contains('marker')) "the marker-missing denial did not name the marker; got '$brokenReason'"
+        $brokenAny = Invoke-ReadIn (Join-Path $wsBroken 'anything.txt') $wsHere
+        Assert (Test-Denied $brokenAny) 'a non-surface path into a marker-less workspace was allowed'
+
+        # --- THE COST, measured rather than asserted ----------------------------------------------
+        # The step says a path in no workspace, from a cwd in no workspace, is silent "in under
+        # 50 ms". A child powershell.exe costs far more than that before the hook runs a line, so
+        # what is measured here is the CLASSIFICATION -- the part step 20 actually added.
+        . (Join-Path $repo 'tools/WorkspaceRegistry.ps1')
+        $probe = Join-Path $wsNowhere 'notes.md'
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        for ($i = 0; $i -lt 200; $i++) { Get-CrossWorkspaceDenial -Target $probe -HookWorkspace $wsHere | Out-Null }
+        $sw.Stop()
+        $perCall = $sw.Elapsed.TotalMilliseconds / 200
+        Assert ($perCall -lt 50) ("classifying a path in no workspace cost {0:N2} ms per call, over the 50 ms the step allows" -f $perCall)
+
+        # === THE PACKAGED LAYOUT (step 19) ========================================================
+        # Every case above runs the hooks from `.claude/hooks`, two levels below a workspace that is
+        # also the program. A plugin install breaks that coincidence: the hooks sit ONE level below
+        # the package root, and the workspace is somewhere else entirely.
+        #
+        # Measured on 2026-09-20 before ProgramRoot.ps1 existed: all four hooks exited 1 with an
+        # empty stdout in that layout, because their dependency dot-sources sat ABOVE the try block.
+        # Claude Code's documentation is explicit that this does not block -- "Without valid JSON on
+        # stdout, Claude Code treats exit code 1 as a non-blocking error and proceeds with the
+        # action" -- so the Desk boundary did not fail closed, it failed OPEN and said nothing.
+        #
+        # These two cases pin the half that is fixed. The half that is not is deliberate and is
+        # asserted as such below: the WORKSPACE is still derived from the hook's own location, so the
+        # package judges correctly only when told which workspace it is guarding.
+        function Invoke-HookAt([string]$ScriptPath, [hashtable]$Payload, [string]$WorkspacePath) {
+            $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Payload | ConvertTo-Json -Compress -Depth 8)))
+            $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath, '-StateDirectory', $stateDir, '-InputJsonBase64', $enc)
+            if ($WorkspacePath) { $argv += @('-WorkspacePath', $WorkspacePath) }
+            (& powershell.exe @argv 2>&1 | Out-String).Trim()
+        }
+        $closedPage = Join-Path $wsHere 'shelf/demo/wiki/_index.md'
+
+        # THE PACKAGE IS BUILT THE WAY ONE IS REALLY INSTALLED, and its contents come from the
+        # MANIFEST rather than from this file's memory of what a package holds.
+        #
+        # Measured 2026-09-20: Claude Code installs a plugin by copying the directory its
+        # marketplace entry names as the source, and nothing above it -- `openai-codex` declares
+        # `./plugins/codex`, that subtree holds 43 files and the installed cache holds the same 43.
+        # So the package must be self-contained, which is why step 19 made the plugin root the
+        # PROGRAM root: an install is a copy of this repository's tracked tree.
+        #
+        # `$hookRelatives` is read out of the PROGRAM'S OWN `.claude/settings.json` -- the hook block
+        # `library init` rebuilds into a workspace -- instead of typed here. Until S37 it was read out
+        # of the plugin manifest, which since S37 names the compiled kernel (`bin/library hook <verb>`)
+        # and no script at all; tools/PluginPackage.ps1's self-test judges that manifest. What this
+        # section still owns is the PowerShell layout a direct install registers by absolute path into
+        # the program, and a registration naming a file the program does not carry is the same fault
+        # -- the hook that "cannot start".
+        $pkg = Join-Path $fixture 'pkg'
+        New-Item -ItemType Directory -Path $pkg -Force | Out-Null
+        $programSettings = [IO.File]::ReadAllText((Join-Path $repo '.claude/settings.json'), $utf8)
+        $hookRelatives = [Collections.Generic.List[string]]::new()
+        foreach ($m in [regex]::Matches($programSettings, '\$\{CLAUDE_PROJECT_DIR\}/(\.claude/hooks/[A-Za-z0-9_.-]+\.ps1)')) {
+            $relative = $m.Groups[1].Value
+            if (-not $hookRelatives.Contains($relative)) { [void]$hookRelatives.Add($relative) }
+        }
+        Assert ($hookRelatives.Count -ge 4) "the program's own hook block named $($hookRelatives.Count) hook scripts; it registers at least the four load-bearing ones"
+
+        # The whole harness surface and the program, copied as an install copies them.
+        Copy-Item -Path (Join-Path $repo '.claude/hooks')    -Destination (Join-Path $pkg '.claude/hooks')    -Recurse -Force
+        Copy-Item -Path (Join-Path $repo 'tools')            -Destination (Join-Path $pkg 'tools')            -Recurse -Force
+        # The adapter too: `library init` registers it for a direct install, so the program carries it and case
+        # (i) below drives it exactly as a harness would.
+        Copy-Item -Path (Join-Path $repo '.claude/adapters') -Destination (Join-Path $pkg '.claude/adapters') -Recurse -Force
+
+        # EVERY FILE THE HOOK BLOCK NAMES IS PRESENT IN THE PACKAGE. This is the assertion that would
+        # have failed for the whole life of the `plugin/` package, which declared four hook scripts,
+        # an adapter and a skills directory and shipped none of them.
+        foreach ($relative in $hookRelatives) {
+            Assert (Test-Path -LiteralPath (Join-Path $pkg $relative) -PathType Leaf) `
+                "the program's hook block names '$relative' and an installed program would not carry it"
+        }
+
+        # (a) A package that carries its own tools/ finds them, and judges exactly as the
+        #     in-workspace layout does once it is told the workspace.
+        $packaged = Invoke-HookAt (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $closedPage } } $wsHere
+        Assert (Test-Denied $packaged) "the packaged guard did not deny a closed Shelf Book; got '$packaged'"
+
+        # (b) A hook with NO program root above it must REFUSE, not fall silent. This is the exact
+        #     shape that failed open: hooks present, their code absent. The fixture lives under the
+        #     temp directory, whose ancestors carry no tools/BookRootSchema.ps1, so the walk really
+        #     does run out rather than finding the live repository by accident.
+        $orphan = Join-Path $fixture 'orphan'
+        New-Item -ItemType Directory -Path $orphan -Force | Out-Null
+        Copy-Item -Path (Join-Path $repo '.claude/hooks') -Destination (Join-Path $orphan '.claude/hooks') -Recurse -Force
+        $orphaned = Invoke-HookAt (Join-Path $orphan '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $closedPage } } $wsHere
+        Assert (Test-Denied $orphaned) "a guard that could not find its own code did not refuse; got '$orphaned'"
+        $orphanReason = Get-HookField-FromOutput $orphaned 'permissionDecisionReason'
+        Assert ($null -ne $orphanReason -and $orphanReason.Contains('could not load')) `
+            "the load-failure denial did not say the guard could not load its rules; got '$orphanReason'"
+
+        # (c) ONWARDS: THE HALF THAT LANDED ON 2026-09-20 (S12), and these cases are the inversion
+        #     the line that stood here asked for. It read:
+        #
+        #       Assert (-not (Test-Denied $unanchored)) "the packaged guard judged without being told
+        #       its workspace -- step 20's selection may have landed, in which case invert this
+        #       assertion"
+        #
+        #     Inverting it literally would have been worth almost nothing. Without -WorkspacePath the
+        #     old guard anchored on its own location and said nothing; the new one refuses that
+        #     anchor and ALSO says nothing, because the case supplied no workspace from anywhere.
+        #     Same output, opposite reason -- an assertion that cannot tell the fix from the defect.
+        #
+        #     What actually changed is WHERE the workspace comes from, so the cases below vary that
+        #     and nothing else: the working directory, the environment, and a selection the registry
+        #     contradicts. Every one of them runs the hook with NO -WorkspacePath and NO
+        #     -StateDirectory, which is exactly how the harness runs it in an installed plugin.
+        #
+        # The child's working directory is what these cases manipulate, so they cannot go through
+        # Invoke-HookAt: `&` inherits this process's directory and Set-Location does not change it
+        # for a native child. Start-Process takes the directory explicitly.
+        function Invoke-HookFrom([string]$ScriptPath, [hashtable]$Payload, [string]$WorkingDirectory) {
+            $enc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Payload | ConvertTo-Json -Compress -Depth 8)))
+            $outFile = Join-Path $fixture ('hookout-' + [guid]::NewGuid().ToString('n') + '.txt')
+            $errFile = Join-Path $fixture ('hookerr-' + [guid]::NewGuid().ToString('n') + '.txt')
+            $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $ScriptPath + '"'), '-InputJsonBase64', $enc)
+            Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WorkingDirectory $WorkingDirectory `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile -NoNewWindow -Wait | Out-Null
+            $text = ''
+            if (Test-Path -LiteralPath $outFile) { $text = [IO.File]::ReadAllText($outFile) }
+            $text.Trim()
+        }
+
+        # ws-here needs a Desk of its own, because the state directory is no longer the package's:
+        # a packaged guard derives it from the workspace it resolved, which is the whole point.
+        $hereState = Join-Path $wsHere '.claude'
+        $hereDesk = Get-DeskStateDirectory -StateDirectory $hereState -Seat 'fixture'
+        New-Item -ItemType Directory -Path $hereDesk -Force | Out-Null
+        [IO.File]::WriteAllText((Get-DeskFileInDirectory -DeskDirectory $hereDesk -Kind 'books'), '', $utf8)
+        [IO.File]::WriteAllText((Get-DeskFileInDirectory -DeskDirectory $hereDesk -Kind 'projects'), '', $utf8)
+
+        # (c) THE PRODUCT SHAPE: plugin installed somewhere else, reader sitting in their workspace,
+        #     reading a closed Shelf Book. Nothing tells the guard where it is except the working
+        #     directory. This is the assertion the old line was a placeholder for, and it is the one
+        #     that fails if the workspace ever goes back to being derived from $PSScriptRoot.
+        $fromCwd = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $closedPage } } $wsHere
+        Assert (Test-Denied $fromCwd) `
+            "a packaged guard run from inside a workspace did not deny its closed Shelf Book; got '$fromCwd'"
+
+        # (d) THE SAME GUARD, THE SAME PACKAGE, A CWD IN NO WORKSPACE, A TARGET IN NO WORKSPACE.
+        #     Silent, which is the step's own rule and also the negative that keeps (c) honest: a
+        #     guard that denied everything would satisfy (c) and brick every session outside a
+        #     workspace.
+        $nowhereTarget = Join-Path $wsNowhere 'notes.md'
+        $fromNowhere = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $nowhereTarget } } $wsNowhere
+        Assert (-not (Test-Denied $fromNowhere)) `
+            "a packaged guard with no workspace anywhere was not silent; got '$fromNowhere'"
+
+        # (e) A CWD IN NO WORKSPACE, A TARGET IN A REGISTERED ONE. Denied -- and this is the case
+        #     that shows the cross-workspace half needs no local anchor at all, which is why the
+        #     guard passes '' rather than inventing one.
+        $foreignFromNowhere = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = (Join-Path $wsOther 'shelf/demo/wiki/_index.md') } } $wsNowhere
+        Assert (Test-Denied $foreignFromNowhere) `
+            "a packaged guard with no workspace of its own did not refuse a read into a registered one; got '$foreignFromNowhere'"
+
+        # (f) THE DECOY, AND IT IS THE OLD DEFECT'S GRAVE -- now planted INSIDE THE PACKAGE, which
+        #     is a strictly harder case than the one that stood here and is the one step 19's
+        #     layout created.
+        #
+        #     The hooks sit at `<package>/.claude/hooks`, so `Split-Path -Parent (Split-Path -Parent
+        #     $PSScriptRoot)` -- the anchor every guard offers the resolver -- is the PACKAGE ROOT.
+        #     That directory carries `tools/BookRootSchema.ps1`, because an installed package is a
+        #     copy of the program. Until 2026-09-20 `Test-LibraryWorkspaceAnchor` accepted exactly
+        #     that shape as "an un-split checkout", so a packaged guard resolving nothing else would
+        #     have anchored on its own installation, resolved `shelf/decoy` inside it, found the
+        #     Book closed and denied on behalf of a workspace that is a plugin cache.
+        #
+        #     The anchor now requires the workspace marker. This case is what says so: the package
+        #     has a `shelf/` and a full program tree and no marker, and the guard must be silent.
+        #     A folder called `shelf` in a directory that is not a workspace is a folder called
+        #     shelf. Falsified by restoring the `tools/BookRootSchema.ps1` clause, which reddens it.
+        New-Item -ItemType Directory -Path (Join-Path $pkg 'shelf/decoy/wiki') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $pkg 'shelf/decoy/wiki/_index.md'), "# Decoy`n", $utf8)
+        $decoyPage = Join-Path $pkg 'shelf/decoy/wiki/_index.md'
+        Assert (Test-Path -LiteralPath (Join-Path $pkg 'tools/BookRootSchema.ps1') -PathType Leaf) `
+            'the decoy package carries no program tree, so it is not the shape that made this case necessary'
+        Assert (-not (Test-Path -LiteralPath (Join-Path $pkg '.library/workspace.json'))) `
+            'the decoy package has a workspace marker, so a silent result would prove nothing'
+        $decoy = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $decoyPage } } $wsNowhere
+        Assert (-not (Test-Denied $decoy)) `
+            ("the packaged guard judged a Shelf inside its own installation's parent, so the workspace is " +
+             "still being derived from the hook's location; got '$decoy'")
+
+        # (g) A SELECTION THE REGISTRY CONTRADICTS IS A REFUSAL, NOT A FALLBACK. ws-broken is
+        #     registered with its marker deleted, so naming it as the workspace cannot be honoured
+        #     and must not quietly resolve to something else.
+        $brokenSelection = Invoke-HookAt (Join-Path $pkg '.claude/hooks/Guard-ShelfBookRead.ps1') `
+            @{ tool_name = 'Read'; tool_input = @{ file_path = $closedPage } } $wsBroken
+        Assert (Test-Denied $brokenSelection) "selecting a marker-less registered workspace was not refused; got '$brokenSelection'"
+        $brokenSelectionReason = Get-HookField-FromOutput $brokenSelection 'permissionDecisionReason'
+        Assert ($null -ne $brokenSelectionReason -and $brokenSelectionReason.Contains('marker')) `
+            "the refused selection did not name the marker; got '$brokenSelectionReason'"
+
+        # (h2) THE FOURTH HOOK. `Guard-BasicMemoryRead` reads no filesystem path, so it looked as
+        #      though it needed no workspace -- and it needs one for the same reason as the rest: the
+        #      DESK it consults lives in the workspace's `.claude/`, and a packaged guard that
+        #      derived that from its own location pointed at a Desk inside its own installation,
+        #      where there is none. Its answers are asserted as two DIFFERENT refusals, because
+        #      "denied" alone is satisfied by a guard that refuses everything for the wrong reason.
+        $bmState = Join-Path $wsHere '.claude'
+        [IO.File]::WriteAllText((Join-Path $bmState '.library-project'), "00000000-0000-0000-0000-000000000000`n", $utf8)
+        $sharedRead = @{ tool_name = 'mcp__basic-memory__read_note'; tool_input = @{
+            project_id = '00000000-0000-0000-0000-000000000000'
+            identifier = 'books/not-open-here/wiki/_book' } }
+
+        # Inside a workspace: the ordinary Desk refusal, reached because the Desk was found.
+        $bmInside = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-BasicMemoryRead.ps1') $sharedRead $wsHere
+        Assert (Test-Denied $bmInside) "the packaged Basic Memory guard did not deny a closed shared Book; got '$bmInside'"
+        $bmInsideReason = Get-HookField-FromOutput $bmInside 'permissionDecisionReason'
+        Assert ($null -ne $bmInsideReason -and -not $bmInsideReason.Contains('no Library workspace')) `
+            "the packaged guard reported no workspace while running inside one; got '$bmInsideReason'"
+
+        # In no workspace: a DIFFERENT refusal, naming the actual condition rather than the Desk.
+        $bmNowhere = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-BasicMemoryRead.ps1') $sharedRead $wsNowhere
+        Assert (Test-Denied $bmNowhere) "the packaged Basic Memory guard did not fail closed with no workspace; got '$bmNowhere'"
+        $bmNowhereReason = Get-HookField-FromOutput $bmNowhere 'permissionDecisionReason'
+        Assert ($null -ne $bmNowhereReason -and $bmNowhereReason.Contains('no Library workspace')) `
+            "the no-workspace refusal did not name the condition; got '$bmNowhereReason'"
+        Assert ($bmInsideReason -cne $bmNowhereReason) `
+            'both Basic Memory refusals carry the same reason, so one of them is not being reached'
+
+        # (h) THE SHELL GUARD TAKES THE SAME ROUTE, and is asserted separately rather than assumed:
+        #     it resolves its own workspace in its own file, and a fix applied to one guard and not
+        #     the other is this repository's most repeated shape.
+        $shellFromCwd = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShellShelfRead.ps1') `
+            @{ tool_name = 'Bash'; tool_input = @{ command = 'cat shelf/demo/wiki/_index.md' } } $wsHere
+        Assert (Test-Denied $shellFromCwd) `
+            "a packaged shell guard run from inside a workspace did not deny a closed Shelf Book; got '$shellFromCwd'"
+        $shellFromNowhere = Invoke-HookFrom (Join-Path $pkg '.claude/hooks/Guard-ShellShelfRead.ps1') `
+            @{ tool_name = 'Bash'; tool_input = @{ command = 'cat shelf/demo/wiki/_index.md' } } $wsNowhere
+        Assert (-not (Test-Denied $shellFromNowhere)) `
+            "a packaged shell guard with no workspace judged a relative Shelf path anyway; got '$shellFromNowhere'"
+
+        # (i) THE PACKAGED READER MUST REFUSE, NOT DIE. The adapter's own comment says an
+        #     unresolvable workspace "does not kill the adapter", because a throw at load makes the
+        #     client report a broken MCP server instead of the actual problem -- and the line under
+        #     that comment did exactly that: with no -StateDirectory to derive a binding from,
+        #     `Split-Path -Parent ''` threw a parameter-binding error and the process exited 1
+        #     before answering anything.
+        #
+        #     MEASURED, NOT REASONED ABOUT. On 2026-09-21 the deskpost plugin was installed and every
+        #     session reported `plugin:deskpost:validated-book-reader` as `"status": "failed"`.
+        #     Running the packaged adapter by hand outside a workspace reproduced the cause.
+        #
+        #     THIS IS UNREACHABLE FROM A CHECKOUT, which is why it belongs in the package fixture and
+        #     nowhere else: in the repository the adapter's own anchor IS a workspace, so resolution
+        #     always succeeds and the else branch never runs. Only a copy with no marker above it
+        #     reaches the branch the reader's install takes every time.
+        $adapterIn = Join-Path $fixture 'adapter-in.jsonl'
+        [IO.File]::WriteAllLines($adapterIn, @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"hook-suite","version":"1"}}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_book_catalog","arguments":{}}}'
+        ), $utf8)
+        $adapterOut = Join-Path $fixture 'adapter-out.txt'
+        $adapterErr = Join-Path $fixture 'adapter-err.txt'
+        $adapterPath = Join-Path $pkg '.claude/adapters/Validated-BookReader.ps1'
+        $adapterProc = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $adapterPath + '"')) `
+            -RedirectStandardInput $adapterIn -RedirectStandardOutput $adapterOut -RedirectStandardError $adapterErr `
+            -WorkingDirectory $wsNowhere -NoNewWindow -PassThru -Wait
+        $adapterText = ''
+        if (Test-Path -LiteralPath $adapterOut) { $adapterText = [IO.File]::ReadAllText($adapterOut) }
+
+        # The exit code is asserted on its own: a reader that dies at load answers nothing, and every
+        # assertion about its ANSWERS would then pass vacuously for the wrong reason.
+        Assert ($adapterProc.ExitCode -eq 0) `
+            "the packaged reader exited $($adapterProc.ExitCode) with no workspace; it must stay up and refuse"
+        Assert ($adapterText.Contains('AI Library Validated Book Reader')) `
+            'the packaged reader did not answer initialize with no workspace'
+        Assert ($adapterText.Contains('not bound to a Library workspace')) `
+            "the packaged reader did not refuse a call with no workspace; got '$adapterText'"
+    }
+    finally {
+        if ($null -eq $savedRegistry) { Remove-Item Env:LIBRARY_WORKSPACES -ErrorAction SilentlyContinue }
+        else { $env:LIBRARY_WORKSPACES = $savedRegistry }
     }
 }
 finally {

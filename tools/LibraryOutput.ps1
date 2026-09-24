@@ -49,7 +49,14 @@ function Write-LibraryResult {
     foreach ($property in $Result.PSObject.Properties) {
         $payload[$property.Name] = $property.Value
     }
-    ([pscustomobject]$payload) | ConvertTo-Json -Depth $Depth -Compress
+    # ASCII ON THE WIRE, EVERY CHARACTER ABOVE U+007F AS \uXXXX (2026-09-22, S34, measured). A child
+    # powershell.exe writes stdout in the console's OEM code page -- 437 on this machine -- and an em
+    # dash does not survive it: `Add-CatalogEntry.ps1 -Preflight -Json` reported the entry it would
+    # write as `... Fixture]] - Curated ...` while it writes U+2014, so the preview a reader approves
+    # is not the line that lands. The escaped document is the same JSON, and no code page can bend it.
+    # `$document`, never `$json`: PowerShell names are case-insensitive, and that one IS the -Json switch.
+    $document = ([pscustomobject]$payload) | ConvertTo-Json -Depth $Depth -Compress
+    [regex]::Replace($document, '[^\u0000-\u007f]', { param($match) '\u{0:x4}' -f [int][char]$match.Value })
 }
 
 function Write-LibraryFailure {
@@ -110,6 +117,23 @@ Write-LibraryResult -Result ([pscustomobject]@{ operation = 'Inner'; plan_id = '
 
         $childJson = & $innerPath -Json
         Assert ((($childJson | ConvertFrom-Json).plan_id) -ceq 'inner-999') 'JSON composition lost plan_id'
+
+        # 4. A non-ASCII value crosses a REAL process boundary intact. Read as raw bytes from a
+        #    redirected child, because the in-process string never meets the console code page that
+        #    turned an em dash into a hyphen (S34).
+        $wirePath = Join-Path $fixture 'wire.ps1'
+        @"
+param([switch]`$Json)
+. '$adapterPath'
+Write-LibraryResult -Result ([pscustomobject]@{ entry = "a `$([char]0x2014) b `$([char]0xE9)" }) -Json:`$Json
+"@ | Set-Content -LiteralPath $wirePath -Encoding utf8
+        $wireOut = Join-Path $fixture 'wire.out'
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wirePath, '-Json') `
+            -RedirectStandardOutput $wireOut -NoNewWindow -Wait
+        $bytes = [IO.File]::ReadAllBytes($wireOut)
+        Assert (@($bytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'JSON mode put non-ASCII bytes on stdout, which a console code page can rewrite'
+        $wire = [Text.Encoding]::ASCII.GetString($bytes) | ConvertFrom-Json
+        Assert ($wire.entry -ceq "a $([char]0x2014) b $([char]0xE9)") "a non-ASCII value did not survive the process boundary: '$($wire.entry)'"
     }
     finally {
         Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
@@ -119,6 +143,6 @@ Write-LibraryResult -Result ([pscustomobject]@{ operation = 'Inner'; plan_id = '
         [Console]::Error.WriteLine("LibraryOutput self-test FAILED: $($failures -join '; ')")
         exit 1
     }
-    Write-Host 'LibraryOutput self-test passed (8 checks).'
+    Write-Host 'LibraryOutput self-test passed (10 checks).'
     exit 0
 }

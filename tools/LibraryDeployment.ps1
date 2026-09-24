@@ -39,17 +39,48 @@
 
 Set-StrictMode -Version Latest
 
-# This file sits at <workspace>/tools/, so its own location is where the workspace is, unless a
-# caller with better information says otherwise.
-$script:LibraryDeploymentDefaultRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+
+# WHERE THE WORKSPACE COMES FROM WHEN THE CALLER DOES NOT NAME ONE.
+#
+# Until step 22 this file sat at <workspace>/tools/ and its own location answered the question, so
+# the line here read "its own location is where the workspace is". The split made that false: the
+# program root carries no `.claude/.library-*` at all, and a caller that did not pass
+# -WorkspacePath was therefore asking the PROGRAM for the reader's endpoint and being told there
+# isn't one. Measured on 2026-09-21 in the first full gate after the migration -- EIGHT suites
+# refused with "No Basic Memory endpoint is configured" while `LIBRARY_WORKSPACE` named a workspace
+# that had one, and the same call answered correctly the moment the path was passed by hand. That
+# second answer is the control: it proves the file is readable and the fault is in who was asked.
+#
+# So the workspace is resolved the way every other tool resolves it -- explicit, then
+# LIBRARY_WORKSPACE, then a walk up from the current directory -- and the location-derived root
+# survives only as the LAST resort. It still has one real caller: an un-split checkout whose reader
+# ran `Initialize-CodexLibrary.ps1` and never `library init` has deployment state and no workspace
+# marker, so nothing above would find it and removing this would break them.
+#
+# A CONFLICT IS FATAL rather than papered over. Three sources disagreeing about which Library this
+# process is about is not something to pick a winner for: answering with the legacy root would read
+# one reader's endpoint while every other tool in the same run read another's.
+$script:LibraryDeploymentLegacyRoot = Split-Path -Parent $PSScriptRoot
 
 $script:LibraryMcpUrlFileName = '.library-mcp-url'
 $script:LibraryCollectionIdFileName = '.library-project'
 $script:LibrarySharedRootFileName = '.library-shared-root'
 
+function Get-LibraryDeploymentWorkspaceRoot([string]$WorkspacePath) {
+    if (-not [string]::IsNullOrWhiteSpace($WorkspacePath)) { return $WorkspacePath }
+    # NOT CACHED, deliberately. `Resolve-LibraryWorkspace` reads the environment at its own
+    # parameter default, and this file's self-test -- like any suite that drives two workspaces in
+    # one process -- changes that variable between cases. A cache would answer the second case with
+    # the first case's workspace and pass for the wrong reason.
+    $resolved = Resolve-LibraryWorkspace
+    if ([string]$resolved.kind -ceq 'conflict') { throw ([string]$resolved.reason) }
+    if ([string]$resolved.kind -ceq 'resolved') { return [string]$resolved.workspace }
+    $script:LibraryDeploymentLegacyRoot
+}
+
 function Get-LibraryDeploymentStatePath([string]$WorkspacePath, [string]$FileName) {
-    $root = if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $script:LibraryDeploymentDefaultRoot } else { $WorkspacePath }
-    Join-Path $root (Join-Path '.claude' $FileName)
+    Join-Path (Get-LibraryDeploymentWorkspaceRoot $WorkspacePath) (Join-Path '.claude' $FileName)
 }
 
 function Read-LibraryDeploymentState([string]$Path) {
@@ -188,6 +219,41 @@ function Invoke-LibraryDeploymentSelfTest {
         [IO.File]::WriteAllText((Join-Path $state '.library-project'), "11111111-1111-4111-8111-111111111111`n", $utf8)
         Assert ((Resolve-LibraryMcpUrl -WorkspacePath $sandbox) -ceq 'http://fixture.invalid:8000/mcp') 'generated state did not supply the endpoint'
         Assert ((Resolve-LibraryCollectionId -WorkspacePath $sandbox) -ceq '11111111-1111-4111-8111-111111111111') 'generated state did not supply the collection id'
+
+        # 3c. AND IT ARRIVES WITHOUT BEING HANDED OVER, which is the case this file was on the wrong
+        # side of until 2026-09-21. Every assertion above passes -WorkspacePath, so every one of them
+        # proves the chain works WHEN GIVEN the workspace and not one of them proves the workspace
+        # reaches it. The split made the difference load-bearing: the eight full-gate suites that
+        # began refusing called these resolvers with nothing at all, from a process whose only
+        # statement about which Library it was about was LIBRARY_WORKSPACE.
+        $savedWorkspaceVar = $env:LIBRARY_WORKSPACE
+        try {
+            $env:LIBRARY_WORKSPACE = $sandbox
+            # Each read is caught and compared rather than asserted bare: the two that refuse do so
+            # by THROWING, and a throw here would abandon the remaining cases and report the suite as
+            # a crash rather than naming which resolver the workspace failed to reach.
+            $arrivedUrl = ''
+            try { $arrivedUrl = Resolve-LibraryMcpUrl } catch { $arrivedUrl = 'THREW: ' + [string]$_.Exception.Message }
+            Assert ($arrivedUrl -ceq 'http://fixture.invalid:8000/mcp') "LIBRARY_WORKSPACE did not reach the endpoint resolver; got '$arrivedUrl'"
+            $arrivedId = ''
+            try { $arrivedId = Resolve-LibraryCollectionId } catch { $arrivedId = 'THREW: ' + [string]$_.Exception.Message }
+            Assert ($arrivedId -ceq '11111111-1111-4111-8111-111111111111') "LIBRARY_WORKSPACE did not reach the collection id resolver; got '$arrivedId'"
+            Assert ((Resolve-LibrarySharedCollectionRoot) -ceq 'C:\fixture\collection') 'LIBRARY_WORKSPACE did not reach the share root resolver'
+            # THE DISCRIMINATOR, because the three above would pass just as well if the resolver were
+            # reading some other tree that happened to hold the same values. A workspace with no
+            # deployment state must produce the refusal, and it can only do that if the resolver went
+            # where it was told rather than where it lives.
+            $emptyWorkspace = Join-Path ([IO.Path]::GetTempPath()) ('library-deployment-empty-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $emptyWorkspace -Force | Out-Null
+            try {
+                $env:LIBRARY_WORKSPACE = $emptyWorkspace
+                $strayRefusal = ''
+                try { Resolve-LibraryMcpUrl | Out-Null } catch { $strayRefusal = [string]$_.Exception.Message }
+                Assert ($strayRefusal -ne '') 'a workspace holding no deployment state resolved an endpoint anyway, so the resolver is reading a tree other than the one it was told about'
+            }
+            finally { Remove-Item -LiteralPath $emptyWorkspace -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        finally { $env:LIBRARY_WORKSPACE = $savedWorkspaceVar }
 
         # 4. The environment outranks generated state, and an explicit argument outranks both.
         $env:AI_LIBRARY_MCP_URL = 'http://env.invalid:9000/mcp'

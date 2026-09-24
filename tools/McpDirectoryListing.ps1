@@ -31,8 +31,13 @@
     moving anything. Both are better than what this replaced, which was a manifest that silently
     described half a Book and an archive that would silently leave half a Hub behind.
 #>
-[CmdletBinding()]
-param([switch]$SelfTest)
+# NO param() BLOCK: this file is DOT-SOURCED by Archive-ProjectHub.ps1 and SharedBookSource.ps1, and
+# a dot-sourced script's parameters are bound in the CALLER'S scope with their defaults. A consumer
+# that took a `-SelfTest` of its own would have had it silently reset to $false by this line. Neither
+# consumer does today -- so this was latent rather than live -- but the identical shape in
+# tools/WorkspaceRegistry.ps1 cost a session on 2026-09-20: `-SelfTest` was cleared, the suite did
+# not run, and the REAL initialiser ran against this repository instead and reported success.
+# `powershell.dot-sourced-files-declare-no-parameters` is what keeps this from coming back.
 
 function Read-McpDirectoryListing {
     <#
@@ -132,7 +137,7 @@ function Read-McpDirectoryListing {
     $ordered
 }
 
-if ($SelfTest) {
+if ($MyInvocation.InvocationName -ne '.' -and $args -contains '-SelfTest') {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
     $failures = [Collections.Generic.List[string]]::new()

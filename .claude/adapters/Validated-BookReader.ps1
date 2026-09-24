@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$StateDirectory,
+    # STEP 20. The workspace this server is bound to, for the whole of its life. Explicit wins;
+    # LIBRARY_WORKSPACE, the working directory's marker, and this program's own root follow, in
+    # that order. See tools/WorkspaceRegistry.ps1.
+    [string]$WorkspacePath,
     [string]$Seat,
     [string]$McpUrl = $env:AI_LIBRARY_MCP_URL,
     [string]$ProjectSlug,
@@ -16,13 +20,134 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
 
-if ([string]::IsNullOrWhiteSpace($StateDirectory)) { $StateDirectory = Split-Path -Parent $PSScriptRoot }
-# THE WORKSPACE COMES FROM THE STATE DIRECTORY, WHICH STILL MEANS `.claude`. It must NOT come from
-# the Desk directory: with seats that is `.claude/seats/<seat>`, so `Split-Path -Parent` on it yields
-# `.claude/seats` and every Shelf path built from it points at nothing. Two functions below did
-# exactly that and were correct only while the two happened to be the same directory -- the same
-# conflation that produced the `.claude\.claude` bug recorded further down this file.
-$script:Workspace = Split-Path -Parent $StateDirectory
+# THE WORKSPACE USED TO COME FROM THE STATE DIRECTORY, which meant `.claude`, and the note kept
+# here was about a narrower mistake: it must not come from the DESK directory, because with seats
+# that is `.claude/seats/<seat>` and `Split-Path -Parent` on it yields `.claude/seats`, so every
+# Shelf path built from it points at nothing. Two functions below did exactly that and were correct
+# only while the two happened to be the same directory -- the same conflation that produced the
+# `.claude\.claude` bug recorded further down this file.
+#
+# STEP 20 (2026-09-20) REPLACES THE WHOLE CHAIN, because the state directory itself defaulted to
+# this file's own location. Installed as a plugin, `.claude/adapters/` sits inside the PACKAGE, so
+# the server bound to the package's parent and every Desk it consulted was one that does not exist.
+#
+# THE SERVER BINDS ONE WORKSPACE IDENTITY AT SESSION START AND KEEPS IT. An MCP server is a
+# long-running process: the workspace under it can be re-initialised, moved or deleted while it is
+# still answering. So the ROOT and the marker's ID are both recorded here, and every tool call is
+# checked against them -- a call naming a different workspace is refused, and so is a call made
+# after the identity this server validated has stopped being the one on disk.
+. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) (Join-Path 'tools' 'WorkspaceRegistry.ps1'))
+# AN EXPLICIT -StateDirectory NAMES THE WORKSPACE, and this line is what keeps a contract that
+# predates the resolver. `.claude` belongs to a workspace, so a caller that hands this server a
+# state directory has already said which workspace it is answering for -- which is how
+# `desk.two-seat-acceptance` drives a real adapter against a fixture. Reading it as merely a hint
+# and letting the working directory win would have pointed that suite at THIS repository while its
+# tools read a fixture, and every assertion in it would have been about the wrong Desk.
+$script:SelectedWorkspace = $WorkspacePath
+if ([string]::IsNullOrWhiteSpace($script:SelectedWorkspace) -and $PSBoundParameters.ContainsKey('StateDirectory') -and
+    -not [string]::IsNullOrWhiteSpace($StateDirectory)) {
+    $script:SelectedWorkspace = Split-Path -Parent $StateDirectory
+}
+$script:WorkspaceResolution = Resolve-LibraryWorkspace -Explicit $script:SelectedWorkspace `
+    -Anchor (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+
+function Set-AdapterWorkspaceBinding([string]$Workspace) {
+    <#
+        Bind, or re-bind, the one workspace this process answers for.
+
+        A FUNCTION RATHER THAN THREE ASSIGNMENTS, because the self-tests repoint the adapter at a
+        sandbox and three of them set `$script:Workspace` directly. A binding those three did not
+        update would be checked against the real repository while the tools read a fixture -- which
+        is a suite that passes because its own guard is misconfigured, not because the guard works.
+    #>
+    $script:Workspace = $Workspace
+    $marker = $null
+    try { $marker = Read-WorkspaceMarker -Workspace $Workspace } catch { $marker = $null }
+    $script:BoundWorkspace = ConvertTo-WorkspaceRoot $Workspace
+    $script:BoundWorkspaceHadMarker = $null -ne $marker
+    $script:BoundWorkspaceId = if ($marker) { [string](Get-WorkspaceMarkerField $marker 'id') } else { '' }
+}
+
+# A CONFLICT OR AN UNRESOLVABLE WORKSPACE DOES NOT KILL THE ADAPTER, for the same reason an
+# unconfigured endpoint does not: this is a process the client launched, and a throw at load makes
+# the client report a broken MCP server instead of the actual problem. The refusal is raised at the
+# transport, where it answers one tool call and leaves the reader running.
+$script:WorkspaceRefusal = $null
+if ($script:WorkspaceResolution.kind -ceq 'resolved') {
+    Set-AdapterWorkspaceBinding ([string]$script:WorkspaceResolution.workspace)
+}
+else {
+    # THE UNRESOLVED CASE IS EXACTLY THE ONE WITH NO -StateDirectory TO DERIVE A BINDING FROM, and
+    # deriving one anyway is what killed the adapter at load -- `Split-Path -Parent ''` throws
+    # "Cannot bind argument to parameter 'Path' because it is an empty string", which is precisely
+    # the "throw at load makes the client report a broken MCP server" the comment above forbids.
+    # MEASURED on an installed plugin, not reasoned about: a packaged reader launched outside a
+    # workspace exited 1 with that binding error before it could refuse anything, so the harness
+    # reported a failed server and the reader never saw the sentence below. Unreachable from a
+    # checkout, because there the anchor IS a workspace -- which is why only the packaged fixture
+    # catches it.
+    if (-not [string]::IsNullOrWhiteSpace($StateDirectory)) {
+        Set-AdapterWorkspaceBinding (Split-Path -Parent $StateDirectory)
+    }
+    else {
+        Set-AdapterWorkspaceBinding (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+    }
+    $script:WorkspaceRefusal = if ($script:WorkspaceResolution.kind -ceq 'conflict') {
+        "This reader is not bound to a workspace: $($script:WorkspaceResolution.reason)"
+    }
+    else {
+        ('This reader is not bound to a Library workspace, so no Book or Project can be open. Launch it from ' +
+         'inside a workspace, set LIBRARY_WORKSPACE, or create one with `library init <folder>`.')
+    }
+}
+if ([string]::IsNullOrWhiteSpace($StateDirectory)) { $StateDirectory = Join-Path $script:Workspace '.claude' }
+$script:StateDirectory = $StateDirectory
+# KEPT APART FROM $script:StateDirectory, which every self-test repoints at a sandbox it then deletes:
+# the shared self-test reads the collection this adapter is CONFIGURED for, and -SelfTest runs the Shelf
+# half first (S38).
+$script:ConfiguredStateDirectory = $StateDirectory
+
+function Assert-BoundWorkspace($Arguments) {
+    <#
+        Refuse a tool call this server may not answer.
+
+        TWO REFUSALS, AND THE SECOND IS THE ONE THAT NEEDS A LONG-RUNNING PROCESS TO MATTER:
+
+          names another workspace   an argument naming a root other than the bound one
+          identity moved            a marker that was present at bind time and is now gone, or now
+                                    holds a different id -- the workspace was re-initialised or
+                                    removed under a server still answering for it
+
+        A WORKSPACE THAT HAD NO MARKER AT BIND TIME HAS NO IDENTITY TO LOSE, and is not checked. That
+        is every clone of this repository before `library init` runs in it, so making absence a
+        refusal would have bricked the reader on the day this shipped.
+    #>
+    if ($script:WorkspaceRefusal) { throw $script:WorkspaceRefusal }
+
+    $named = Get-OptionalArgument $Arguments 'workspace'
+    if ($null -ne $named -and -not [string]::IsNullOrWhiteSpace([string]$named)) {
+        $requested = ConvertTo-WorkspaceRoot ([string]$named)
+        if (-not $requested -or -not $requested.Equals([string]$script:BoundWorkspace, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ("this reader is bound to the workspace $($script:BoundWorkspace) for the whole of this session and " +
+                   "cannot answer for '$named'. Open a seat in that workspace and read the page there.")
+        }
+    }
+
+    if (-not $script:BoundWorkspaceHadMarker) { return }
+    $marker = $null
+    try { $marker = Read-WorkspaceMarker -Workspace $script:BoundWorkspace }
+    catch { throw "the workspace marker for $($script:BoundWorkspace) is no longer readable, so this reader can no longer establish which workspace it is answering for." }
+    if ($null -eq $marker) {
+        throw ("the workspace marker for $($script:BoundWorkspace) has been removed since this reader started, so it " +
+               'can no longer establish what is open there. Restart the reader once the workspace is whole.')
+    }
+    $current = [string](Get-WorkspaceMarkerField $marker 'id')
+    if ($current -cne [string]$script:BoundWorkspaceId) {
+        throw ("$($script:BoundWorkspace) has been re-initialised since this reader started -- it bound workspace " +
+               "'$($script:BoundWorkspaceId)' and the marker now says '$current'. Restart the reader to bind the new one.")
+    }
+}
+
 $script:RemoteSessionId = $null
 $script:RemoteRequestId = 100
 
@@ -34,6 +159,8 @@ $script:RemoteRequestId = 100
 . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) (Join-Path 'tools' 'BookRootSchema.ps1'))
 # The deployment resolver, for the Basic Memory endpoint the NAS address used to supply from line 26.
 . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) (Join-Path 'tools' 'LibraryDeployment.ps1'))
+# The binary's spelling of a hook and the enabled plugin's registrations, for the launch check (S42).
+. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) (Join-Path 'tools' 'HookRegistry.ps1'))
 # -Optional, for the same reason the seat resolution below is recorded rather than thrown: this is a
 # long-running process the client launched, and a throw at load takes the whole validated reader down
 # so the client reports a broken MCP server instead of an unconfigured endpoint. The refusal is
@@ -701,13 +828,18 @@ function New-McpResult($Id, [object]$Result) { ConvertTo-AsciiJson (@{ jsonrpc =
 function New-McpError($Id, [string]$Message) { New-McpResult -Id $Id -Result @{ content = @(@{ type = 'text'; text = "Book read rejected: $Message" }); isError = $true } }
 
 function New-SelfTestSandbox {
+    # THE PIN IS THE CALLER'S TO CHOOSE (S38). Every sandbox was pinned to the all-zeroes collection,
+    # which is right for the offline halves -- they read nothing through the pin -- and was why the
+    # shared half failed on every -IncludeShared gate since the pin became authoritative: it reads real
+    # shared Books, and no real collection is 00000000-0000-0000-0000-000000000000.
+    param([string]$ProjectId = '00000000-0000-0000-0000-000000000000')
     $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('validated-book-reader-' + [guid]::NewGuid().ToString('N'))
     $fixture = Join-Path $sandbox '.claude'
     $shelfWiki = Join-Path $sandbox (Join-Path 'shelf' (Join-Path 'selftest-book' 'wiki'))
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     New-Item -ItemType Directory -Path $shelfWiki -Force | Out-Null
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    [IO.File]::WriteAllText((Join-Path $fixture '.library-project'), "00000000-0000-0000-0000-000000000000`n", $utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $fixture '.library-project'), "$ProjectId`n", $utf8NoBom)
     $deskDirectory = Get-DeskStateDirectory -StateDirectory $fixture -Seat 'selftest'
     New-Item -ItemType Directory -Path $deskDirectory -Force | Out-Null
     Write-AtomicText -Path (Get-DeskFileInDirectory -DeskDirectory $deskDirectory -Kind 'books') -Text "books/godot-engine-architecture-reference`nshelf/selftest-book`n" | Out-Null
@@ -729,7 +861,7 @@ function Invoke-ShelfSelfTest {
         # Three bindings, because they are three different things: the sandbox is the workspace a
         # Shelf page resolves against, the fixture is the state directory holding the workspace pin,
         # and the seat's Desk is what says which Books are open.
-        $script:Workspace = $paths.sandbox
+        Set-AdapterWorkspaceBinding $paths.sandbox
         $script:StateDirectory = $paths.fixture
         $fixture = $paths.desk
         $catalog = Read-ValidatedBookCatalog -Location Shelf -DeskStateDirectory $fixture
@@ -810,8 +942,12 @@ function Invoke-ShelfSelfTest {
 }
 
 function Invoke-SelfTest {
-    $paths = New-SelfTestSandbox
-    $script:Workspace = $paths.sandbox
+    # PINNED TO THE COLLECTION THIS ADAPTER IS CONFIGURED FOR (S38): the bound workspace's own pin, read
+    # before the sandbox replaces the state directory -- the collection the Books below are read from on
+    # every other call. Every read here is a read; the self-test writes nothing to the collection.
+    $configuredPin = Get-LibraryProjectId -Directory $script:ConfiguredStateDirectory
+    $paths = New-SelfTestSandbox -ProjectId $configuredPin
+    Set-AdapterWorkspaceBinding $paths.sandbox
     $script:StateDirectory = $paths.fixture
     $fixture = $paths.desk
     try {
@@ -862,10 +998,48 @@ function Invoke-DispatchSelfTest {
         @{ name = 'no_params_object';            request = '{"jsonrpc":"2.0","id":7,"method":"tools/call"}';                                                                                         expect = 'This adapter exposes only validated' }
         @{ name = 'search_guard_preserved';      request = '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"search_open_books","arguments":{}}}';                                     expect = "missing required parameter 'query'." }
         @{ name = 'discovery_blank_query';       request = '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"discover_book_pages","arguments":{"query":"   "}}}';                      expect = "parameter 'query' must be a non-empty string." }
+        # STEP 20: THE SERVER ANSWERS FOR ONE WORKSPACE AND SAYS SO. An MCP server is long-running,
+        # so "which workspace" is a per-call question rather than a per-process one, and a call that
+        # names a different one is refused rather than answered from the Desk it happens to hold.
+        @{ name = 'other_workspace_refused';     request = '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_book_catalog","arguments":{"location":"shelf","workspace":"D:\\NotThisWorkspace"}}}'; expect = 'is bound to the workspace' }
     )
     # The regression half: an OPTIONAL argument must still be read, and its absence must still mean
     # the default rather than a refusal. Shelf-scoped so it stays local.
     $optionalCase = @{ name = 'optional_argument_still_read'; request = '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_book_catalog","arguments":{"location":"shelf"}}}' }
+
+    # THE POSITIVE CONTROL FOR THE BINDING, and without it `other_workspace_refused` proves nothing:
+    # a guard that refused EVERY call carrying a `workspace` argument would pass that case and break
+    # the tool. Naming the workspace this server is actually bound to must read exactly as naming none.
+    #
+    # THE BINDING IS NOW MADE, NOT GUESSED, and that is the whole of this case's history. It used to
+    # read `Split-Path -Parent (Split-Path -Parent $PSScriptRoot)` -- the program root -- with a
+    # comment explaining that the child's cwd would resolve to the same answer either way. Step 22
+    # made that false twice over: the program root carries no workspace marker, so the child binds
+    # nothing and every case above fails with the binding refusal instead of its own; and when
+    # LIBRARY_WORKSPACE is set in the environment the child inherits it, binds the reader's real
+    # workspace, and this case fails because it names a different one. The check therefore reported
+    # on the machine and the shell it was run from rather than on the adapter.
+    #
+    # An explicit -StateDirectory names the workspace (see this file's line 40), so the child is
+    # pointed at a FIXTURE with no state in it at all. Nothing here needs the workspace to contain
+    # anything: what is asserted below is that naming it reads IDENTICALLY to naming none, which two
+    # matching refusals satisfy exactly as well as two matching answers.
+    $dispatchWorkspace = Join-Path ([IO.Path]::GetTempPath()) ('validated-book-reader-ws-' + [guid]::NewGuid().ToString('N'))
+    $dispatchState = Join-Path $dispatchWorkspace '.claude'
+    New-Item -ItemType Directory -Path $dispatchState -Force | Out-Null
+    # ONE FILE MAKES THE SHELF READ REAL. `Read-ShelfCatalog` needs `shelf/_catalog.md` and nothing
+    # else, so the fixture supplies it and the two cases below compare two ANSWERS rather than two
+    # matching refusals -- which satisfy the equality but prove less about the path they took.
+    New-Item -ItemType Directory -Path (Join-Path $dispatchWorkspace 'shelf') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $dispatchWorkspace (Join-Path 'shelf' '_catalog.md')),
+        "# Local Shelf`n`nA fixture Shelf, for the dispatch self-test.`n", [Text.UTF8Encoding]::new($false))
+    $boundWorkspace = $dispatchWorkspace
+    $boundCase = @{
+        name    = 'bound_workspace_accepted'
+        request = ([pscustomobject]@{ jsonrpc = '2.0'; id = 12; method = 'tools/call'; params = [pscustomobject]@{
+                        name = 'read_book_catalog'; arguments = [pscustomobject]@{ location = 'shelf'; workspace = $boundWorkspace } } } |
+                   ConvertTo-Json -Compress -Depth 8)
+    }
 
     # The notification regression. A JSON-RPC notification carries no id, and an UNKNOWN one reaches
     # the dispatch's default arm -- whose own `if ($null -ne $request.id)` guard was the read that
@@ -877,14 +1051,14 @@ function Invoke-DispatchSelfTest {
 
     $stem = Join-Path ([IO.Path]::GetTempPath()) ('validated-book-reader-dispatch-' + [guid]::NewGuid().ToString('N'))
     $requestPath = "$stem.jsonl"; $outPath = "$stem.out"; $errPath = "$stem.err"
-    $lines = @(@($cases | ForEach-Object { $_.request }) + @($notificationLine) + @($optionalCase.request)) -join "`n"
+    $lines = @(@($cases | ForEach-Object { $_.request }) + @($notificationLine) + @($optionalCase.request) + @($boundCase.request)) -join "`n"
     [IO.File]::WriteAllText($requestPath, $lines + "`n", [Text.UTF8Encoding]::new($false))
 
     try {
         # Spawned WITHOUT -DispatchSelfTest: the child is an ordinary server run reading stdin, which
         # is the point, and is also what stops this recursing.
         $process = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath) `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-StateDirectory', $dispatchState) `
             -WorkingDirectory (Split-Path -Parent $PSScriptRoot) `
             -RedirectStandardInput $requestPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
             -NoNewWindow -PassThru
@@ -904,9 +1078,12 @@ function Invoke-DispatchSelfTest {
 
         $results = [ordered]@{}
         $failures = [Collections.Generic.List[string]]::new()
+        # THE ID IS READ OFF THE REQUEST, not derived from the loop index. It was `$i + 1`, which was
+        # true only while the cases were numbered 1..N in order -- so appending a case with any other
+        # id would have looked up the wrong response and reported a mismatch nobody could place.
         for ($i = 0; $i -lt $cases.Count; $i++) {
             $case = $cases[$i]
-            $id = [string]($i + 1)
+            $id = [string](($case.request | ConvertFrom-Json).id)
             if (-not $responses.ContainsKey($id)) { $failures.Add("$($case.name): no response"); $results[$case.name] = $false; continue }
             $result = $responses[$id]
             $text = if ($null -ne $result.PSObject.Properties['content']) { [string](@($result.content)[0].text) } else { '' }
@@ -928,22 +1105,72 @@ function Invoke-DispatchSelfTest {
         else { $failures.Add("$($optionalCase.name): no response") }
         $results[$optionalCase.name] = $optionalOk
 
+        # EQUALITY, NOT SUCCESS. What this case exists to prove is that naming the bound workspace
+        # reads exactly as naming none -- so the two answers are compared with each other rather than
+        # against a state of the world. Asserting success instead made the case depend on the machine
+        # having a populated Shelf, which the comment above it had explicitly promised it would not.
+        $boundOk = $false
+        if ($responses.ContainsKey('12') -and $responses.ContainsKey('10')) {
+            $boundResult = $responses['12']
+            $noneResult = $responses['10']
+            $boundText = if ($null -ne $boundResult.PSObject.Properties['content']) { [string](@($boundResult.content)[0].text) } else { '' }
+            $noneText = if ($null -ne $noneResult.PSObject.Properties['content']) { [string](@($noneResult.content)[0].text) } else { '' }
+            $boundError = $null -ne $boundResult.PSObject.Properties['isError'] -and [bool]$boundResult.isError
+            $noneError = $null -ne $noneResult.PSObject.Properties['isError'] -and [bool]$noneResult.isError
+            # AND NOT THE BINDING REFUSAL, which is the discriminator equality alone cannot supply:
+            # a server that refused both calls for the same wrong reason would satisfy equality while
+            # the guard it is meant to prove was rejecting the workspace it is itself bound to.
+            $boundOk = ($boundError -eq $noneError) -and ($boundText -ceq $noneText) -and
+                       -not $boundText.Contains('is bound to the workspace')
+            if (-not $boundOk) {
+                $failures.Add("$($boundCase.name): naming the bound workspace did not read as naming none -- named: '$boundText'; unnamed: '$noneText'")
+            }
+        }
+        else { $failures.Add("$($boundCase.name): no response") }
+        $results[$boundCase.name] = $boundOk
+
         # Two independent tells, because either alone can lie. stdout stopping is what a dead loop
         # looks like from the client's side; stderr is where the crash itself lands. A run that
         # answered id 10 but wrote to stderr is still a regression -- this file was never read
         # before, so a child that complained on the way through went unnoticed.
         $childErr = if (Test-Path -LiteralPath $errPath -PathType Leaf) { [IO.File]::ReadAllText($errPath) } else { '' }
-        $notificationOk = $responses.ContainsKey('10') -and [string]::IsNullOrWhiteSpace($childErr)
+        # '12' and not '10': the notification is injected before the last two requests, and the tell
+        # is that everything AFTER it was answered. Leaving this at '10' would have kept passing
+        # while the final request went unanswered, which is the exact failure it exists to catch.
+        # THE GUARD WARNING IS A DIAGNOSTIC, NOT A CRASH, and reading it as one made this case report
+        # a perfectly live dispatch loop as a broken one. The adapter writes that banner to stderr on
+        # purpose when the settings it can see register no guards -- which a fixture workspace never
+        # does -- so it is subtracted by name and whatever is LEFT is what a crash would have written.
+        # Subtracted rather than ignored: an unrecognised line still fails, which is the safe
+        # direction if the banner is ever reworded.
+        $residualErr = ([regex]::Replace($childErr, '(?ms)^!!! LIBRARY GUARD WARNING.*?^!{20,}\s*?$', '')).Trim()
+        $guardWarned = $childErr.Contains('LIBRARY GUARD WARNING')
+        $notificationOk = $responses.ContainsKey('10') -and $responses.ContainsKey('12') -and [string]::IsNullOrWhiteSpace($residualErr)
         if (-not $notificationOk) {
-            $detail = if ([string]::IsNullOrWhiteSpace($childErr)) { 'the request after it went unanswered' } else { ($childErr.Trim() -replace '\s+', ' ') }
+            $detail = if ([string]::IsNullOrWhiteSpace($residualErr)) { 'the request after it went unanswered' } else { ($residualErr -replace '\s+', ' ') }
             $failures.Add("unknown_notification_survived: an id-less notification broke the dispatch loop: $detail")
         }
         $results['unknown_notification_survived'] = $notificationOk
+
+        # AND THE PROTOCOL CHANNEL ITSELF. stdout carries JSON-RPC frames and nothing else; the parse
+        # loop above skips anything that is not JSON, so a human sentence printed into that stream
+        # would be invisible to every assertion here while breaking a real client's decoder.
+        $strayFrames = @(@([IO.File]::ReadAllText($outPath) -split "`r?`n") | Where-Object {
+            if ([string]::IsNullOrWhiteSpace($_)) { return $false }
+            try { $null = $_ | ConvertFrom-Json; return $false } catch { return $true }
+        })
+        $framesOnly = -not $strayFrames.Count
+        if (-not $framesOnly) {
+            $failures.Add("dispatch_stream_carries_only_frames: stdout carried $($strayFrames.Count) line(s) that are not JSON-RPC frames, beginning '$(([string]@($strayFrames)[0]).Trim())'")
+        }
+        $results['dispatch_stream_carries_only_frames'] = $framesOnly
+        $results['guard_warning_on_stderr'] = $guardWarned
 
         if ($failures.Count) { throw "Dispatch self-test failed: $(($failures -join '; '))" }
         [pscustomobject]([ordered]@{ status = 'passed'; scope = 'dispatch'; checks = $cases.Count + 2 } + $results + [ordered]@{ additional_properties_enforced = $false; shared_library_write = $false })
     }
     finally {
+        if (Test-Path -LiteralPath $dispatchWorkspace) { Remove-Item -LiteralPath $dispatchWorkspace -Recurse -Force -ErrorAction SilentlyContinue }
         foreach ($path in @($requestPath, $outPath, $errPath)) {
             if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
         }
@@ -971,7 +1198,7 @@ function Invoke-DispatchSelfTest {
 function Invoke-ProjectResolutionSelfTest {
     $paths = New-SelfTestSandbox
     try {
-        $script:Workspace = $paths.sandbox
+        Set-AdapterWorkspaceBinding $paths.sandbox
         $script:StateDirectory = $paths.fixture
         $desk = $paths.desk
         # Read the pin out of the fixture rather than restating it here: a second copy is how this
@@ -1107,6 +1334,11 @@ function Get-RegisteredHookScript($Settings) {
                         foreach ($m in [regex]::Matches([string]$value, '[^\\/]+\.ps1')) { [void]$names.Add($m.Value) }
                     }
                 }
+                # A hook spelled as the binary's verb (S42) stands for its script.
+                $text = Get-HookEntryText $hook
+                foreach ($script in @((Get-HookVerbForScript).Keys)) {
+                    if ($text -notmatch [regex]::Escape($script) -and (Test-HookEntryNamesHook $text $script)) { [void]$names.Add($script) }
+                }
             }
         }
     }
@@ -1124,8 +1356,12 @@ function Test-LaunchSettings([string]$Directory) {
         $files = @(@('settings.json', 'settings.local.json') |
             ForEach-Object { Join-Path $Directory $_ } |
             Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        # THE ENABLED PLUGIN'S HOOKS ARE REGISTERED HOOKS (S42), and a workspace guarded by it alone has
+        # none of its own. $Directory is the state directory, so the workspace is its parent.
+        $plugin = Get-EnabledClaudePluginHooks -Workspace (Split-Path -Parent $Directory)
+        $pluginNames = @(if ($null -ne $plugin -and $null -ne $plugin.tree) { Get-RegisteredHookScript $plugin.tree })
 
-        if (-not $files.Count) {
+        if (-not $files.Count -and -not $pluginNames.Count) {
             [void]$faults.Add('no .claude/settings.json or settings.local.json found')
             return $faults
         }
@@ -1140,7 +1376,7 @@ function Test-LaunchSettings([string]$Directory) {
 
         $registered = @{}
         foreach ($leaf in @($parsed.Keys)) { $registered[$leaf] = @(Get-RegisteredHookScript $parsed[$leaf]) }
-        $effective = @($registered.Values | ForEach-Object { $_ })
+        $effective = @(@($registered.Values | ForEach-Object { $_ }) + $pluginNames)
 
         foreach ($hook in $required) {
             if ($hook -notin $effective) { [void]$faults.Add("guard hook not registered: $hook") }
@@ -1265,12 +1501,17 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                     # adapter's whole lifetime. Inside the try, so any surprise becomes one tool
                     # error rather than a dead loop; Resolve-SeatName itself never throws.
                     Update-AdapterSeatResolution | Out-Null
+                    # STEP 20: THE BOUND WORKSPACE, CHECKED BEFORE ANY TOOL RUNS. Same position as
+                    # the seat resolution and for the same reason -- it is a per-call question, not
+                    # a per-process one, because the thing it asks about can change under a server
+                    # that is already running.
                     # params itself is read through the same guard: a tools/call carrying none at all
                     # would otherwise throw a strict-mode error out of the switch condition, before any
                     # tool name existed to blame it on.
                     $callParams = if ($null -ne $request.PSObject.Properties['params']) { $request.params } else { $null }
                     $callName = if ($null -ne $callParams -and $null -ne $callParams.PSObject.Properties['name']) { [string]$callParams.name } else { '' }
                     $callArguments = Get-CallArguments $callParams
+                    Assert-BoundWorkspace $callArguments
                     switch ($callName) {
                         'read_book_catalog' {
                             $requestedLocation = Get-OptionalArgument $callArguments 'location'

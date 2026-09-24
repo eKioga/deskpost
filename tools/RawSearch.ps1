@@ -316,8 +316,16 @@ function Add-RawSkip($Groups, [string]$Reason, [string]$Path) {
     if ($group.examples.Count -lt $script:RawSkipExampleCap) { [void]$group.examples.Add($Path) }
 }
 
+# `,` IS LOAD-BEARING, AND ITS ABSENCE WAS A DEFECT IN THIS HELPER'S JSON CONTRACT. PowerShell
+# ENUMERATES a collection on output, so `@()` returned from a function arrives at the caller as
+# NOTHING and `$skipList` was `$null` -- which `ConvertTo-Json` then spells `{}` rather than `null`.
+# Measured 2026-09-22 (S15): a clean batch reported `"files_skipped":{}` while the unrecognised-batch
+# branch four hundred lines below, which builds the same field as an INLINE `@()`, reported
+# `"files_skipped":[]`. One field, two shapes, decided by which branch answered -- and every consumer
+# here wraps the value in `@()`, so nothing in PowerShell ever noticed. A JSON consumer does.
+# Defect family 2, in its production direction.
 function ConvertTo-RawSkipList($Groups) {
-    @(@($Groups.Values) | Sort-Object -Property @{ Expression = { -[int]$_.count } }, @{ Expression = { [string]$_.reason } } |
+    , @(@($Groups.Values) | Sort-Object -Property @{ Expression = { -[int]$_.count } }, @{ Expression = { [string]$_.reason } } |
         ForEach-Object { [pscustomobject]@{ reason = $_.reason; count = $_.count; examples = @($_.examples) } })
 }
 

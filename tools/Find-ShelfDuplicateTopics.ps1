@@ -12,11 +12,15 @@ param(
     [string]$EmbeddingModel = 'tei-bge-small-en-v1-5',
     [string]$ApiKey = $env:TEI_API_KEY,
     [double]$SimilarityThreshold = 0.85,
-    [int]$BatchSize = 8
+    [int]$BatchSize = 8,
+    # The shared switch (S41): the same document as JSON, which is what the matrix row compares. Absent,
+    # the live object is returned, as before.
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 if ([string]::IsNullOrWhiteSpace($EmbeddingUrl)) {
     throw 'No embedding endpoint. Pass -EmbeddingUrl <url>, or set $env:TEI_EMBEDDING_URL before running. There is deliberately no default: the address of your inference server is yours, and a value committed here would ship in every clone.'
@@ -24,7 +28,14 @@ if ([string]::IsNullOrWhiteSpace($EmbeddingUrl)) {
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
     throw 'No embedding API key. Pass -ApiKey, or set $env:TEI_API_KEY before running. Never hardcode the key in this script or paste it into chat/logs.'
 }
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $shelfRoot = Join-Path $workspace 'shelf'
 if (-not (Test-Path -LiteralPath $shelfRoot -PathType Container)) { throw "No Shelf found at $shelfRoot" }
@@ -94,7 +105,7 @@ for ($x = 0; $x -lt $topics.Count; $x++) {
 }
 $pairs = @($pairs | Sort-Object -Property similarity -Descending)
 
-[pscustomobject]@{
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{
     operation = 'Find candidate duplicate topics across the Shelf'
     embedding_url = $EmbeddingUrl
     embedding_model = $EmbeddingModel
@@ -102,6 +113,10 @@ $pairs = @($pairs | Sort-Object -Property similarity -Descending)
     topics_scanned = $topics.Count
     books_scanned = @($bookDirs | Select-Object -ExpandProperty Name)
     candidate_pairs = $pairs
-    guidance = 'A high score is a lead, not a verdict — read both topics before deciding anything. See docs/duplicate-topic-resolution.md for the survivorship rule and the canonical + stub pattern. This tool only reads the Shelf; it never writes.'
+    # THE DASH IS SPELLED BY CODE POINT (S41). This file has no BOM, so Windows PowerShell 5.1 reads it as
+    # Windows-1252 and a literal U+2014 here reached every caller as three characters (U+00E2 U+20AC
+    # U+201D) -- found by reading the detector's JSON by hand before porting it. A literal non-ASCII
+    # character in a string of a .ps1 without a BOM is that defect wherever it is written.
+    guidance = "A high score is a lead, not a verdict $([char]0x2014) read both topics before deciding anything. See docs/duplicate-topic-resolution.md for the survivorship rule and the canonical + stub pattern. This tool only reads the Shelf; it never writes."
     shared_library_write = $false
-}
+})

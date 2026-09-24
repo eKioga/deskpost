@@ -1181,7 +1181,10 @@ why this is a tri-state rather than a tightened boolean: `outside` is allowed, `
 enumeration is always incomplete. Exactly two forms are recognised: a path that is not rooted at all,
 joined to the workspace, and a drive-rooted local path. Every other form is `invalid`, UNC included
 — because `\\localhost\D$\` *is* a UNC path, and admitting the class to spare the genuine
-remote ones would readmit the bypass wholesale.
+remote ones would readmit the bypass wholesale. **On macOS and Linux the second form is an absolute
+`/` path** ([ADR-0040](adr/0040-a-posix-workspace-is-an-absolute-path-bound-to-the-binary.md), S42):
+a backslash reads as a separator, `..` is resolved before the prefix test, the test is
+case-insensitive, and a leading `//` -- which POSIX leaves to the implementation -- is `invalid`.
 
 The cost, checked rather than assumed: a genuine remote path like
 `\\nas\share\basic-memory\...` is refused, and the refusal names the fix. Nothing in this

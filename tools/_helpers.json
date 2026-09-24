@@ -7,6 +7,22 @@
     "test": "A test runner, invoked by Invoke-LibraryChecks.ps1 rather than by the Librarian. Must NOT be allowlisted."
   },
   "helpers": {
+    "AcceptanceFixtures.ps1": {
+      "role": "internal",
+      "summary": "The eight fixture workspace shapes the supported-operation matrix runs over (PLAN-public-release.md step 23), built through the real writers rather than composed by hand. Dot-sourced by AcceptanceMatrix.ps1."
+    },
+    "AcceptanceKernelStub.ps1": {
+      "role": "test",
+      "summary": "A test double standing in for the TypeScript kernel, so Invoke-AcceptanceMatrix.ps1's comparison can be falsified before the kernel exists. Driven four ways: agreeing, divergent, divergent only where a delta approves it, and refusing. Never a kernel and never called by a helper."
+    },
+    "AcceptanceSharedCollection.ps1": {
+      "role": "internal",
+      "summary": "A disposable acceptance-<guid> Basic Memory project for each arm of each shared matrix row: created and accepted only when the project list changes by exactly that one, pinned into the arm's fixture, snapshotted after the SMB client's cache lifetimes, and deleted after the row. Refuses to delete any project this run did not create. Dot-sourced by Invoke-AcceptanceMatrix.ps1."
+    },
+    "AcceptanceMatrix.ps1": {
+      "role": "internal",
+      "summary": "The supported-operation matrix's shape and coverage rules, the normalisation applied before two implementations are compared, the comparison itself with its approved deltas, and the renderer for docs/supported-operation-matrix.md. Dot-sourced."
+    },
     "Add-CatalogEntry.ps1": {
       "role": "public",
       "summary": "List an existing shared Book or Project Hub that is missing from its Catalog. Additive only: issues one edit_note find_replace against the collection heading, adds exactly one line, removes nothing, and reports already_listed without writing when the slug is present."
@@ -71,6 +87,13 @@
       "role": "internal",
       "summary": "Resolve where Codex keeps its state. CODEX_HOME is an environment variable and is redirected on this machine, so the sessions root is resolved through one function rather than assumed to sit under the user profile; the meter and the token baseline both read it."
     },
+    "CodexBindings.ps1": {
+    "role": "internal",
+    "summary": "Render the Library's Codex bindings from the tracked templates -- .codex/hooks.json for both the program and a reader's workspace, and a workspace's .codex/config.toml -- by token substitution into text rather than by rebuilding a parsed document. Also reads Codex project trust out of $CODEX_HOME/config.toml, which is the gate that decides whether either file is read at all: measured 2026-09-22 on codex-cli 0.153.4, an untrusted project's .codex/ is ignored in silence. Dot-sourced by Initialize-CodexLibrary.ps1, Initialize-LibraryWorkspace.ps1 and Invoke-LibraryChecks.ps1."
+  },  "CollectionOwnership.ps1": {
+      "role": "internal",
+      "summary": "One writable workspace per collection: the ownership record under the collection's own .owner/ directory, the fence every shared write passes through Resolve-LibraryWriteEndpoint, and the four backend states each with its own refusal. The current owner is DERIVED from per-incarnation claim and release records, none of which is ever deleted or rewritten, so a transfer is atomic and a crash leaves a state this file can name. An unowned collection is permitted and says so: absence means the invariant is not yet armed, and the first acquire arms it for good. Dot-sourced; run with -SelfTest, whose acquire race is six real contending processes."
+    },
     "Compile-RawBatchToNotebook.ps1": {
       "role": "public",
       "summary": "Materialize one finished synthesis from an explicitly named raw batch as a source-hashed, indexed Notebook article. Additive creation applies directly; divergent replacement requires a content-bound preflight and approval."
@@ -98,6 +121,10 @@
     "Export-PublicTree.ps1": {
       "role": "public",
       "summary": "Copy the reviewed public allowlist in tools/PublicTreeAllowlist.ps1 into a staging tree, scan that tree with this workspace's deployment denylist, the identity denylist and gitleaks, discard the WHOLE staging folder on any hit, and only then run git init, git add and one commit -- scanning the index before the commit, because after it the staged set is empty and the scan would pass over nothing. Also refuses an allowlisted path git does not track, and refuses the commit identity git would stamp if it is on the denylist. PLAN-public-release.md step 14. -Preflight and plan_id like every other helper."
+    },
+    "Build-KernelRelease.ps1": {
+      "role": "public",
+      "summary": "Build the release artefacts of PLAN-public-release.md step 28 (S19): for each platform, `bun build --compile` of kernel/src/cli.ts at bin/library[.exe] inside the public program tree tools/PublicTreeAllowlist.ps1 admits, with release.json recording the plugin, binary and workspace schema versions, zipped with forward-slash entries; then SHA256SUMS over the archives and the two installers beside them. The tree ships with the binary because the kernel reads its own templates, manifests and PowerShell hooks, and a compiled kernel finds them one directory above its own (kernel/src/programroot.ts). Refuses an allowlisted file git does not track, and smoke-runs the host platform's binary with --version before zipping it."
     },
     "Export-MirrorOpsRepo.ps1": {
       "role": "public",
@@ -143,9 +170,17 @@
       "role": "public",
       "summary": "Copy an approved external wiki into a new Shelf Book."
     },
+    "Initialize-LibraryWorkspace.ps1": {
+      "role": "public",
+      "summary": "`library init <folder>`: write the workspace marker `.library/workspace.json`, register the workspace in the machine registry, install the operating rules into CLAUDE.md and AGENTS.md as one managed section between `<!-- library:begin -->` and `<!-- library:end -->`, and merge the harness settings without overwriting unrelated entries. Idempotent; refuses whole and writes nothing when a marker's section is malformed or a settings entry conflicts. In an un-split checkout the instruction files belong to the program and are left alone."
+    },
     "Initialize-CodexLibrary.ps1": {
       "role": "public",
       "summary": "Generate idempotent machine-local Codex MCP and hook bindings from tracked path-free templates for the current copy of the Library."
+    },
+    "Invoke-AcceptanceMatrix.ps1": {
+      "role": "test",
+      "summary": "The supported-operation matrix harness of PLAN-public-release.md step 23. Runs each row against the PowerShell tools and the TypeScript kernel over its own fixture workspace and compares normalised outcomes. With no -Kernel attached a differential row reports `pending`, never green. -SelfTest builds every fixture, runs one row end to end and falsifies the comparison against a stub kernel; -RenderDoc writes the generated region of docs/supported-operation-matrix.md."
     },
     "Invoke-LibraryChecks.ps1": {
       "role": "public",
@@ -299,6 +334,10 @@
       "role": "internal",
       "summary": "The terminal seat picker behind Start-LibrarySeat.ps1 with no -Seat: the numbered roster in whichever of its two layouts the terminal has room for, the choice grammar, the creation and retirement prompts, and the Orca tab rename -- which is performed rather than offered since 2026-09-14 (ADR-0021), because the only other answer left the tab carrying the Quick Command's label, the same string on every tab that button opens. Two rules choose the layout and both end in the cards: a terminal under 120 columns, and a table measured wider than the terminal whatever its width. The table's derived widths have no upper bound from two directions -- an orphaned seat's state cell is 47 characters where a healthy one is 4 and the widths are shared, so one row widens the state column for every row; and the conversation cell is capped at 52 on its title path but uncapped on its entry_note path. Cutting the table's last column to fit was tried on 2026-09-11 and reverted the same hour, because it deleted the conversation title the reader is choosing between and case 19f caught it. No total is recorded anywhere -- it is a property of whichever seats exist and it moved by 58 characters during one session. Every glyph is built from its code point and a check fails on any non-ASCII byte in the file: these sources are stored BOM-less, so PowerShell 5.1 reads a literal box character as ANSI and the file does not parse. A redirected run renders plain ASCII, uncoloured, and changes no console encoding. The conversation record and its title moved to SeatConversation.ps1 on 2026-09-10, when the Desk overview needed the same answers. Dot-sourced. Written 2026-09-10 for PLAN-seat-launch.md step 12, as the entry route beside the one-click one for a session with hooks disabled, a non-Orca terminal, or a recovery. It decides where to sit and authorises nothing: the claim, the creation gate and the retirement gate all stay where they were."
     },
+    "Set-CollectionOwner.ps1": {
+      "role": "public",
+      "summary": "Show, acquire, or release the writable role for this workspace's collection. -Status is the default and never writes: it reports the backend state, who holds the role at which incarnation, and the refusal a shared write would receive, in the words it would receive it. -Acquire is additive, reversible and idempotent. -Acquire -Force displaces another workspace and is therefore a preflight until -UserConfirmed is passed. -Release refuses while this workspace holds any Book lock."
+    },
     "Set-NotebookTopicOwner.ps1": {
       "role": "public",
       "summary": "Record which seat owns a Notebook topic, or declare it shared or excluded. Ungated and additive: it writes one record under the ownership lock and touches no Notebook material. -List reports every topic on disk beside what the record says about it. A topic that is unmapped blocks a reset until it is mapped, which is deliberate -- a reset will not guess at material nobody has claimed."
@@ -349,7 +388,7 @@
     },
     "PluginPackage.ps1": {
       "role": "internal",
-      "summary": "The canonical Codex-layout plugin package under plugin/, the Claude files generated from it, and the one table that composes an installed MCP tool name. Nothing here lists a tool: the tool names are still asked of the adapter over JSON-RPC, as docs/mcp-tool-allowlist-check.md requires, and what the table supplies is the PREFIX the adapter cannot know because the harness composes it at install time from the plugin id and the server id. Three forms: mcp__<server>__<tool> for a workspace .mcp.json and for Codex, mcp__plugin_<plugin>_<server>__<tool> for a Claude plugin. Dot-sourced; -Write regenerates, -SelfTest covers the rule, the root rewrite and the drift comparison."
+      "summary": "The canonical Codex-layout plugin manifests at the program root, the Claude files generated from it, and the one table that composes an installed MCP tool name. Nothing here lists a tool: the tool names are still asked of the adapter over JSON-RPC, as docs/mcp-tool-allowlist-check.md requires, and what the table supplies is the PREFIX the adapter cannot know because the harness composes it at install time from the plugin id and the server id. Three forms: mcp__<server>__<tool> for a workspace .mcp.json and for Codex, mcp__plugin_<plugin>_<server>__<tool> for a Claude plugin. Dot-sourced; -Write regenerates, -SelfTest covers the rule, the root rewrite and the drift comparison."
     },
     "Test-AllowlistRuleParity.ps1": {
       "role": "test",
@@ -399,6 +438,14 @@
       "role": "test",
       "summary": "The cross-seat sweep end to end: which seats' Notebook topics Reset-LocalNotebook.ps1 -AllIdleSeats takes, which it names and leaves, what its preflight shows before the reader approves, and what the one quarantine it makes records about whose each topic was. Run by Invoke-LibraryChecks.ps1 as notebook.idle-seat-sweep."
     },
+    "Test-NotebookMigration.ps1": {
+      "role": "test",
+      "summary": "ADR-0029's migration, judged over workspace-legacy-notebook -- every state of the shared Notebook, each built by the legacy writer that produces it -- through the kernel's front door: activation refused while anything is undecided, nothing moved by a refused run, no byte lost by a completed one, and the run killed at every step on both sides of each journal write, then resumed to the reference tree and rolled back to the legacy one. Run by Invoke-LibraryChecks.ps1 as notebook.migration."
+    },
+    "Test-KernelUpgrade.ps1": {
+      "role": "test",
+      "summary": "The upgrade and rollback fixture (S30): under a scratch install root, a workspace initialised through one installed version keeps every hook and adapter path pointed at <install>/current, and `library init --force` still succeeds, across an upgrade to a second version, a -Rollback to the first, and the first version's removal. Takes -Release, a folder tools/Build-KernelRelease.ps1 wrote, so it is run by hand after a build rather than in the gate; -PlantDefect initialises from the version's own path and must fail."
+    },
     "Test-RecoveryRoutes.ps1": {
       "role": "test",
       "summary": "The recovery routes, driven as real processes against their own fixtures: quarantine restore and purge, the Desk restore from a seat archive, and the seat-archive purge's stranding refusal. Run by Invoke-LibraryChecks.ps1 as `recovery.routes`. Its own workspaces, because a purge really destroys."
@@ -438,6 +485,10 @@
     "Update-SharedBookManifests.ps1": {
       "role": "public",
       "summary": "Backfill or rebuild the Discovery manifest of every shared-collection Book, preflighted with explicit closed-content approval, journalled and resumable, and prune shared stores whose Books no longer exist. Writes nothing to the shared collection."
+    },
+    "WorkspaceRegistry.ps1": {
+      "role": "internal",
+      "summary": "Which Library workspaces exist on this machine, and which one an accessed path belongs to (PLAN-public-release.md step 20). Dot-sourced by the two Shelf guard hooks. Reads the registry at %USERPROFILE%\\.library\\workspaces.json, or LIBRARY_WORKSPACES; the marker .library/workspace.json is the authority and the registry only an index over markers. Resolves a path to one of four kinds -- the hook's own workspace, another registered one, a registered one whose marker is gone (which fails CLOSED), or no workspace at all (silent). An unreadable registry throws, and both guards turn a throw into a denial. -SelfTest is run by Invoke-LibraryChecks as workspace-registry.selftest."
     }
   }
 }

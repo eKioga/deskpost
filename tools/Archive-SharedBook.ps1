@@ -5,6 +5,7 @@ param(
     [string]$McpUrl = $env:AI_LIBRARY_MCP_URL,
     [switch]$UserConfirmed,
     [switch]$Preflight,
+    [switch]$Json,
     [switch]$SelfTest
 )
 
@@ -15,8 +16,13 @@ Add-Type -AssemblyName System.Net.Http
 # directory. This is the filesystem side of the same operation. See SharedCollectionFiles.ps1.
 . (Join-Path $PSScriptRoot 'SharedCollectionFiles.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl -Optional:$SelfTest
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -Optional:$SelfTest -Operation 'archiving a shared Book'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId -Optional:$SelfTest
 $script:SlugPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
 # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Book' satisfies this
@@ -230,6 +236,7 @@ function Ensure-ArchiveIndex($BookTitle) {
         $body = "# Archive`n`nInactive Books remain available here when you need them again.`n`n## Archived Books`n`n$entry`n"
         $response = Invoke-Mcp 'tools/call' @{ name = 'write_note'; arguments = @{ project_id = $ProjectId; directory = 'archive'; title = 'README'; content = $body; note_type = 'note'; overwrite = $false; output_format = 'json' } }
         if ($null -ne (Get-RpcError $response) -or $response.result.isError) { throw 'Archive index creation was rejected.' }
+        Assert-McpWriteNotConflicted -Response $response -Path 'archive/README'
     }
     elseif ([string]$index.content -notmatch [regex]::Escape("[[$archiveDirectory/wiki/_book|$BookTitle]]")) {
         if ([string]$index.content -match '(?m)^## Archived Books\s*$') {
@@ -418,7 +425,7 @@ $plan = [pscustomobject]@{
     confirmation_required = $true
     shared_library_write = $false
 }
-if ($Preflight) { $plan; return }
+if ($Preflight) { Write-LibraryResult -Result $plan -Json:$Json; return }
 if (-not $UserConfirmed) { throw 'Archiving is not yet performed: review the move plan and rerun with -UserConfirmed.' }
 
 $moved = $false
@@ -439,7 +446,7 @@ try {
     # cleanup that cannot reach the share reports `unavailable` and the gate's
     # shared.archive-leaves-no-husk picks it up later. It never removes a directory holding a file.
     $huskCleanup = Invoke-SharedHuskCleanup -RelativePath $activeDirectory
-    [pscustomobject]@{ operation = 'Archive Book'; book_slug = $BookSlug; archive_path = $archiveDirectory; archive_complete = $true; active_catalog_updated = $true; emptiness_claim = $script:EmptinessClaim; source_tree = $huskCleanup.source_tree; source_tree_removed = $huskCleanup.status }
+    Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Archive Book'; book_slug = $BookSlug; archive_path = $archiveDirectory; archive_complete = $true; active_catalog_updated = $true; emptiness_claim = $script:EmptinessClaim; source_tree = $huskCleanup.source_tree; source_tree_removed = $huskCleanup.status })
 }
 catch {
     $location = if ($moved) { "The native move may have completed at '$archiveDirectory'; inspect the archive and Catalog before retrying." } else { 'The active Book was left in place.' }

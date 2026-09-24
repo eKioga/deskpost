@@ -239,32 +239,113 @@ function Get-PayloadContractProblems($Contract, $Shape, $Reads) {
 # Every filename a hook entry in a settings tree names, whether the path arrives through `command`
 # or through `args`. Both shapes are live: .claude/settings.json splits the interpreter from its
 # arguments, and .codex/hooks.json puts the whole invocation in one string.
+#
+# THE NAMES ARE ENUMERATED AND COMPARED CASE-SENSITIVELY, both since S36 and both measured. Reading
+# `.PSObject.Properties.Name` off the aggregate throws under StrictMode when there are no properties
+# (defect family 4): a settings file of `{}`, `5` or `true` made this walk throw, and
+# Guard-SettingsIntegrity.ps1 -- which fails open by design -- allowed it in silence, with every guard
+# unregistered. And `-contains` is case-insensitive where the harnesses that load these files are not:
+# a block under `Hooks` read as registered here and loads as nothing there.
 function Get-HookEntryText($Entry) {
     $parts = [Collections.Generic.List[string]]::new()
-    if ($Entry.PSObject.Properties.Name -contains 'command' -and $null -ne $Entry.command) {
+    if ($null -eq $Entry) { return '' }
+    $names = @($Entry.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names -ccontains 'command' -and $null -ne $Entry.command) {
         [void]$parts.Add([string]$Entry.command)
     }
-    if ($Entry.PSObject.Properties.Name -contains 'args' -and $null -ne $Entry.args) {
+    if ($names -ccontains 'args' -and $null -ne $Entry.args) {
         foreach ($arg in @($Entry.args)) { [void]$parts.Add([string]$arg) }
     }
     $parts -join ' '
+}
+
+# THE BINARY'S SPELLING OF A HOOK (S42). The Claude Code plugin, and `library init` on macOS and Linux,
+# register each hook the kernel has ported as `"<root>/bin/library" hook <verb>` rather than by its script,
+# so a registration names a required hook by either. Until S42 only the script counted, and a workspace
+# guarded wholly by the plugin read as having no guard at all. A verb without its word boundary would
+# match `hook shell-shelf-read` as `shelf-read`; the pattern below does not.
+$script:HookVerbForScript = [ordered]@{
+    'Guard-BasicMemoryRead.ps1'   = 'basic-memory-read'
+    'Guard-ShelfBookRead.ps1'     = 'shelf-read'
+    'Guard-ShellShelfRead.ps1'    = 'shell-shelf-read'
+    'Get-VirtualDeskContext.ps1'  = 'desk-context'
+    'Guard-SettingsIntegrity.ps1' = 'settings-integrity'
+}
+function Get-HookVerbForScript { $script:HookVerbForScript }
+
+function Test-HookEntryNamesHook([string]$Text, [string]$File) {
+    if ($Text -match [regex]::Escape($File)) { return $true }
+    if (-not $script:HookVerbForScript.Contains($File)) { return $false }
+    $Text -match ('(^|\s)hook\s+' + [regex]::Escape([string]$script:HookVerbForScript[$File]) + '(\s|$)')
+}
+
+# THE ENABLED DESKPOST PLUGIN'S OWN REGISTRATIONS, as one more settings tree (S42). A plugin's hooks are
+# not in the workspace's .claude/ at all, so a workspace guarded by the plugin alone was judged unguarded.
+# MEASURED, NOT RECALLED (claude 2.1.281, a plugin installed into a scratch CLAUDE_CONFIG_DIR): which plugins
+# are on is `enabledPlugins` in <config>/settings.json, keyed `<plugin>@<marketplace>`; where one is
+# installed is `installPath` in <config>/plugins/installed_plugins.json; and the manifest at
+# <installPath>/.claude-plugin/plugin.json names its hooks and servers files relative to that path. A
+# workspace's .claude/settings.json, then settings.local.json, may set `enabledPlugins` over the user's,
+# as for any setting. CONCEDED: only a user-scope install was measured; a project- or local-scope entry is
+# read when its `projectPath` is this workspace, which is a reading of the file, not a measurement.
+# ${CLAUDE_PLUGIN_ROOT} is replaced by the install path, so what the tree names can be checked on disk.
+function Get-EnabledClaudePluginHooks([string]$Workspace) {
+    $config = if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_CONFIG_DIR)) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+    $readJson = {
+        param([string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+        try { [IO.File]::ReadAllText($Path) | ConvertFrom-Json } catch { $null }
+    }
+    $key = $null; $enabled = $false
+    foreach ($settingsPath in @((Join-Path $config 'settings.json'), (Join-Path $Workspace '.claude/settings.json'), (Join-Path $Workspace '.claude/settings.local.json'))) {
+        $settings = & $readJson $settingsPath
+        if ($null -eq $settings -or -not $settings.PSObject.Properties['enabledPlugins'] -or $null -eq $settings.enabledPlugins) { continue }
+        foreach ($property in @($settings.enabledPlugins.PSObject.Properties)) {
+            if ($property.Name -cmatch '^deskpost@') { $key = $property.Name; $enabled = ($property.Value -eq $true) }
+        }
+    }
+    if (-not $enabled) { return $null }
+    $installed = & $readJson (Join-Path $config 'plugins/installed_plugins.json')
+    if ($null -eq $installed -or -not $installed.PSObject.Properties['plugins'] -or -not $installed.plugins.PSObject.Properties[$key]) { return $null }
+    $install = $null
+    foreach ($entry in @($installed.plugins.$key)) {
+        if ($null -eq $entry -or -not $entry.PSObject.Properties['installPath']) { continue }
+        $scope = if ($entry.PSObject.Properties['scope']) { [string]$entry.scope } else { 'user' }
+        $project = if ($entry.PSObject.Properties['projectPath']) { [string]$entry.projectPath } else { '' }
+        if ($scope -ceq 'user' -or ($project -and $project.TrimEnd('\', '/') -ieq $Workspace.TrimEnd('\', '/'))) { $install = [string]$entry.installPath; break }
+    }
+    if ([string]::IsNullOrWhiteSpace($install)) { return $null }
+    $manifest = & $readJson (Join-Path $install '.claude-plugin/plugin.json')
+    $hooksRelative = if ($null -ne $manifest -and $manifest.PSObject.Properties['hooks'] -and $manifest.hooks -is [string]) { [string]$manifest.hooks } else { 'hooks/hooks.json' }
+    $serversRelative = if ($null -ne $manifest -and $manifest.PSObject.Properties['mcpServers'] -and $manifest.mcpServers -is [string]) { [string]$manifest.mcpServers } else { '.mcp.json' }
+    $root = $install.Replace('\', '/').TrimEnd('/')
+    $hooksPath = Join-Path $install $hooksRelative
+    $tree = $null
+    if (Test-Path -LiteralPath $hooksPath -PathType Leaf) {
+        try { $tree = [IO.File]::ReadAllText($hooksPath).Replace('${CLAUDE_PLUGIN_ROOT}', $root) | ConvertFrom-Json } catch { $tree = $null }
+    }
+    $servers = & $readJson (Join-Path $install $serversRelative)
+    $declaresReader = $null -ne $servers -and $servers.PSObject.Properties['mcpServers'] -and $null -ne $servers.mcpServers -and
+        [bool]$servers.mcpServers.PSObject.Properties['validated-book-reader']
+    [pscustomobject]@{ key = $key; install_path = $install; tree = $tree; declares_reader = [bool]$declaresReader }
 }
 
 # The events each named hook file is registered under, as a hashtable of file -> string[] of events.
 function Get-RegisteredHookEvents($Settings) {
     $found = @{}
     if ($null -eq $Settings) { return $found }
-    if ($Settings.PSObject.Properties.Name -notcontains 'hooks' -or $null -eq $Settings.hooks) { return $found }
+    $settingsNames = @($Settings.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($settingsNames -cnotcontains 'hooks' -or $null -eq $Settings.hooks) { return $found }
     foreach ($eventProperty in $Settings.hooks.PSObject.Properties) {
         $eventName = $eventProperty.Name
         foreach ($matcherBlock in @($eventProperty.Value)) {
             if ($null -eq $matcherBlock) { continue }
-            if ($matcherBlock.PSObject.Properties.Name -notcontains 'hooks') { continue }
+            if (@($matcherBlock.PSObject.Properties | ForEach-Object { $_.Name }) -cnotcontains 'hooks') { continue }
             foreach ($entry in @($matcherBlock.hooks)) {
                 if ($null -eq $entry) { continue }
                 $text = Get-HookEntryText $entry
                 foreach ($required in $script:RequiredHooks) {
-                    if ($text -match [regex]::Escape($required.file)) {
+                    if (Test-HookEntryNamesHook $text $required.file) {
                         if (-not $found.ContainsKey($required.file)) { $found[$required.file] = @() }
                         if (@($found[$required.file]) -cnotcontains $eventName) {
                             $found[$required.file] = @(@($found[$required.file]) + $eventName)
@@ -317,4 +398,205 @@ function Get-HookRegistrationProblems {
         }
     }
     @($problems)
+}
+
+function Test-ClaudeHookShape {
+    <#
+        Does this hooks document have the shape a harness will actually load? Returns one fault per
+        place it does not.
+
+        THIS IS NOT A DIFF, AND THAT IS ITS ENTIRE REASON FOR EXISTING. Test-PluginGeneratedFiles
+        regenerates and compares against what is committed, so it proves the canonical file and the
+        generated one AGREE -- and a generator emitting a shape no harness accepts emits it
+        identically twice. `plugin.generated-files-match` was green for the whole life of a hooks
+        file whose three PreToolUse entries and whole UserPromptSubmit event were OBJECTS where an
+        ARRAY is required, because a one-element array unrolls on its way out of a function. An
+        installed plugin would have registered no hooks at all, which is S11's packaged fail-open
+        wearing different clothes: the boundary absent, and nothing saying so.
+
+        THE SHAPE IS A LITERAL HERE, AND IT IS PINNED TO TWO WORKING CONSUMERS rather than to this
+        file's own opinion -- a threshold cannot pin itself. Measured 2026-09-20: this workspace's
+        own `.claude/settings.json`, which demonstrably registers six events, and the installed
+        `openai-codex` plugin's `hooks/hooks.json`, which demonstrably fires. Both spell it
+
+            hooks: { <Event>: [ { matcher?: string, hooks: [ { type, command, ... } ] } ] }
+
+        arrays at BOTH levels, on every event, including the ones holding exactly one entry.
+    #>
+    param([Parameter(Mandatory)]$Document, [string]$Label = 'the hooks document')
+    $faults = [Collections.Generic.List[string]]::new()
+
+    $names = @($Document.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names -cnotcontains 'hooks') {
+        [void]$faults.Add("$Label has no top-level 'hooks' key")
+        return @($faults)
+    }
+    $events = $Document.hooks
+    # AN OBJECT, OR NOTHING BELOW MEANS ANYTHING (S36, measured). The walk reads events off the
+    # adapter's property list, so a STRING `hooks` was judged as one event named 'Length', and an ARRAY
+    # as eight -- 'SyncRoot' among them, whose value is the array itself, so its elements were judged
+    # as that event's entries. Either way the file was refused, for a reason that named no real fault.
+    if ($events -isnot [Management.Automation.PSCustomObject]) {
+        [void]$faults.Add("$Label has 'hooks' as a $(if ($null -eq $events) { 'null' } else { $events.GetType().Name }), not an object of events")
+        return @($faults)
+    }
+    $eventNames = @($events.PSObject.Properties | ForEach-Object { $_.Name })
+    if (-not $eventNames.Count) { [void]$faults.Add("$Label registers no events at all") }
+
+    foreach ($eventName in $eventNames) {
+        $entries = $events.$eventName
+        if (-not ($entries -is [Array])) {
+            [void]$faults.Add("$Label event '$eventName' is a $(if ($null -eq $entries) { 'null' } else { $entries.GetType().Name }), not an array; a one-element list that unrolled reads exactly like this")
+            continue
+        }
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            $entry = $entries[$i]
+            # A NULL ENTRY IS A FAULT, NOT A THROW (S36, measured). `$null.PSObject` throws under
+            # StrictMode, and the settings guard's catch turned `{"hooks":{"PreToolUse":[null]}}` into
+            # a silent allow.
+            if ($null -eq $entry) {
+                [void]$faults.Add("$Label event '$eventName' entry $i is null")
+                continue
+            }
+            $entryNames = @($entry.PSObject.Properties | ForEach-Object { $_.Name })
+            if ($entryNames -cnotcontains 'hooks') {
+                [void]$faults.Add("$Label event '$eventName' entry $i declares no 'hooks'")
+                continue
+            }
+            $commands = $entry.hooks
+            if (-not ($commands -is [Array])) {
+                [void]$faults.Add("$Label event '$eventName' entry $i has 'hooks' as a $(if ($null -eq $commands) { 'null' } else { $commands.GetType().Name }), not an array")
+                continue
+            }
+            for ($j = 0; $j -lt $commands.Count; $j++) {
+                if ($null -eq $commands[$j]) {
+                    [void]$faults.Add("$Label event '$eventName' entry $i hook $j is null")
+                    continue
+                }
+                $commandNames = @($commands[$j].PSObject.Properties | ForEach-Object { $_.Name })
+                foreach ($required in @('type', 'command')) {
+                    if ($commandNames -cnotcontains $required) {
+                        [void]$faults.Add("$Label event '$eventName' entry $i hook $j has no '$required'")
+                    }
+                }
+            }
+        }
+    }
+    @($faults)
+}
+
+# --- The Codex half of the same question ----------------------------------------------------------
+#
+# WHICH HOOKS A CODEX SESSION NEEDS, AND UNDER WHICH MATCHER. Four of the Library's nine hooks fire
+# in Codex; the other five are registered for Claude Code alone, because Codex fires no PostToolUse
+# for its own tools and has no ConfigChange event. The list lives here rather than inside a check
+# because two checks now ask it -- `codex.project-access-config` of the program's own `.codex/`, and
+# `workspace.codex-guards-registered` of a reader's workspace -- and a second copy of a boundary is
+# a second chance for one of them to be wrong about it.
+#
+# THE MATCHER IS PART OF THE REQUIREMENT, and both of these were guessed wrong once. A PreToolUse
+# payload captured from a real `codex exec` run on 2026-09-06 carries tool_name `Bash`: Codex
+# normalises its shell tool to the Claude Code name for hooks, and `exec` survives only inside
+# tool_use_id, so the original `^exec$` matched nothing, silently. `apply_patch` is NOT normalised --
+# the payload captured 2026-09-07 carries it verbatim -- so a matcher naming `Write` or `Edit` here
+# would be the same failure repeated: registered, and unable to fire.
+#
+# AND THE THIRD WAS NEVER ASKED AT ALL, until S38. The Basic Memory guard's matcher was `$null` here,
+# so any matcher read as registered -- and every Codex binding `library init` wrote carried
+# `^mcp__basic-memory__.*$`, while Codex names the tool `mcp__basic_memory__<tool>`: it spells a
+# server's hyphens as underscores (measured S37). So a `sample` is a TOOL NAME the registered matcher
+# must match as Codex would test it, where `matcher` is a pattern the matcher's own TEXT must match;
+# a matcher is a regex over tool names, and only a sample asks what it actually fires on.
+$script:CodexRequiredHooks = @(
+    @{ file = 'Guard-BasicMemoryRead.ps1';  event = 'PreToolUse';       matcher = $null; sample = 'mcp__basic_memory__list_directory';
+       matcherDetail = "the Codex Basic Memory guard's matcher does not match mcp__basic_memory__list_directory -- Codex spells a server's hyphens as underscores -- so it can never fire";
+       detail = 'Codex Basic Memory calls are not registered with the Desk guard' },
+    @{ file = 'Guard-ShellShelfRead.ps1';   event = 'PreToolUse';       matcher = '(^|\||\()Bash($|\||\))';
+       matcherDetail = "the Codex shell guard's matcher does not name the Bash tool, so it can never fire";
+       detail = 'Codex shell commands can read a closed Shelf Book' },
+    @{ file = 'Guard-ShelfBookRead.ps1';    event = 'PreToolUse';       matcher = 'apply_patch';
+       matcherDetail = "the Codex patch guard's matcher does not name apply_patch, so it can never fire";
+       detail = 'Codex apply_patch can write into a closed Shelf Book' },
+    @{ file = 'Get-VirtualDeskContext.ps1'; event = 'UserPromptSubmit'; matcher = $null;
+       detail = 'Codex does not load Virtual Desk context at prompt submission' }
+)
+
+function Get-CodexRequiredHooks { @($script:CodexRequiredHooks) }
+
+function Get-CodexRegistrationProblems {
+    <#
+        One string per Codex hook that is absent, registered under the wrong event, or bound to a
+        matcher it can never fire on. An empty result means all four are registered where they act.
+
+        It asks nothing about SHAPE -- Test-CodexHookShape does that -- and nothing about whether the
+        scripts exist, which is the caller's question because only the caller knows which program
+        tree the paths are supposed to point into.
+    #>
+    param([Parameter(Mandatory)]$Document)
+
+    $problems = [Collections.Generic.List[string]]::new()
+    $registered = Get-RegisteredHookEvents $Document
+    foreach ($required in $script:CodexRequiredHooks) {
+        if (-not $registered.ContainsKey($required.file)) {
+            [void]$problems.Add("$($required.detail): $($required.file) is absent.")
+            continue
+        }
+        if (@($registered[$required.file]) -cnotcontains $required.event) {
+            [void]$problems.Add("$($required.detail): $($required.file) is registered under $(@($registered[$required.file]) -join ', ') rather than $($required.event).")
+            continue
+        }
+        $sample = if ($required.ContainsKey('sample')) { [string]$required.sample } else { $null }
+        if ($null -eq $required.matcher -and $null -eq $sample) { continue }
+        $blocks = @($Document.hooks.$($required.event) | Where-Object {
+            @(@($_.hooks) | Where-Object { Test-HookEntryNamesHook (Get-HookEntryText $_) $required.file }).Count
+        })
+        # @() AROUND THE `if`, NOT INSIDE IT: an `if` used as a value unrolls what it returns, so an
+        # empty match reached `.Count` as $null and StrictMode threw -- which the first run of S38's rows
+        # reported as the check's whole detail.
+        $fires = @(if ($null -ne $sample) {
+            # A matcher that is not a regex fires on nothing, so it is a matcher that cannot fire.
+            $blocks | Where-Object { try { $sample -cmatch [string]$_.matcher } catch { $false } }
+        } else {
+            $blocks | Where-Object { [string]$_.matcher -cmatch $required.matcher }
+        })
+        if ($fires.Count -lt 1) {
+            [void]$problems.Add([string]$required.matcherDetail + '.')
+        }
+    }
+    @($problems)
+}
+
+function Test-CodexHookShape {
+    <#
+        Does this hooks document have the shape CODEX will actually load? One fault per place it
+        does not.
+
+        TWO RULES, AND THE FIRST IS CODEX'S ALONE. Codex accepts only `description` and `hooks` at
+        the root of this file and rejects the whole document --
+
+            failed to parse hooks config <path>: unknown field `PreToolUse`,
+                                                 expected `description` or `hooks`
+
+        -- if an event is placed there. The Library wrote it that way until 2026-09-06 and every
+        Codex session ran with no Library hook at all, while the file parsed as JSON throughout.
+
+        RE-MEASURED 2026-09-22 ON codex-cli 0.153.4, AND THE RE-MEASUREMENT IS WHY THIS JUDGE MATTERS
+        MORE THAN IT DID. The client names the file and the field in that warning -- but only when
+        the project is TRUSTED. In an untrusted project the same malformed file produces no line at
+        all, so the evidence a reader would diagnose from is exactly the evidence a session cannot
+        see. A judge that runs at commit time is the only window on it.
+
+        The second rule is the nested shape, which is Claude Code's too and is therefore asked once,
+        of Test-ClaudeHookShape: events under a `hooks` key, arrays at both levels.
+    #>
+    param([Parameter(Mandatory)]$Document, [string]$Label = 'the Codex hooks document')
+    $faults = [Collections.Generic.List[string]]::new()
+
+    $names = @($Document.PSObject.Properties | ForEach-Object { $_.Name })
+    $stray = @($names | Where-Object { $_ -cnotin @('description', 'hooks') })
+    if ($stray.Count) {
+        [void]$faults.Add("$Label puts $($stray -join ', ') at the root; Codex accepts only 'description' and 'hooks' there and rejects the whole file")
+    }
+    foreach ($fault in @(Test-ClaudeHookShape -Document $Document -Label $Label)) { [void]$faults.Add($fault) }
+    @($faults)
 }

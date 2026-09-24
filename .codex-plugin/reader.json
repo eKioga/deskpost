@@ -1,0 +1,12 @@
+{
+  "_note": "The Library's one MCP server, the validated reader, as the compiled kernel serves it (S37): the source of Claude's .claude-plugin/.mcp.json, which tools/PluginPackage.ps1 generates from it with ${CLAUDE_PLUGIN_ROOT}, and of the server id every installed tool name is composed from. Codex does not load this file; see .codex-plugin/mcp.json for why.",
+  "mcpServers": {
+    "validated-book-reader": {
+      "command": "${PLUGIN_ROOT}/bin/library",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

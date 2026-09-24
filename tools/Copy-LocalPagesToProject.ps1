@@ -15,7 +15,8 @@ param(
     [string]$JournalPath,
     [string]$ApprovedPlanId,
     [switch]$UserConfirmed,
-    [switch]$Preflight
+    [switch]$Preflight,
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
@@ -74,8 +75,18 @@ function ConvertTo-AsciiJson($Value) {
     [regex]::Replace($json, '[^\u0000-\u007f]', { param($match) '\u{0:x4}' -f [int][char]$match.Value })
 }
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+# STEP 21: the shared-collection write fence. tools/CollectionOwnership.ps1.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'copying local pages to a Project Hub'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Project' satisfies
 # this lowercase-only rule and travels on as a Project directory. See docs/capture-book-model.md.
@@ -169,7 +180,7 @@ $records = @($files | ForEach-Object {
 $sourceDigest = Hash (($records | ForEach-Object { "$($_.source)|$($_.sha256)" }) -join "`n")
 $manifestDigest = Hash (($records | ForEach-Object { "$($_.source)|$($_.path)|$($_.sha256)" }) -join "`n")
 $newProject = Join-Path $PSScriptRoot 'New-ProjectHub.ps1'
-$projectPlan = & $newProject -ProjectSlug $ProjectSlug -Title $Title -Purpose $Purpose -NextAction $NextAction -ProjectId $ProjectId -McpUrl $McpUrl -Preflight
+$projectPlan = & $newProject -ProjectSlug $ProjectSlug -Title $Title -Purpose $Purpose -NextAction $NextAction -ProjectId $ProjectId -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Preflight
 $projectDetails = "$ProjectSlug|$Title|$Purpose|$($NextAction -join "`n")|$($projectPlan.action)"
 $planId = 'project-copy-' + (Hash "$sourceDigest|$manifestDigest|$projectDetails")
 $plan = [pscustomobject]@{
@@ -188,7 +199,7 @@ $plan = [pscustomobject]@{
     confirmation_required = $true
     shared_library_write = $false
 }
-if ($Preflight) { $plan; return }
+if ($Preflight) { Write-LibraryResult -Result $plan -Json:$Json; return }
 if (-not $UserConfirmed) { throw 'Project copy is not yet performed: review the plan and rerun with -UserConfirmed.' }
 if ($ApprovedPlanId -cne $planId) { throw 'Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.' }
 # KEYED ON THE MANIFEST DIGEST, NOT THE SOURCE DIGEST (changed 2026-09-08 with -DestinationDirectory).
@@ -303,7 +314,7 @@ function Save-Journal([string]$State, [string]$ErrorText) {
 
 $recordsVerified = $false
 try {
-    if ($projectPlan.action -eq 'create') { & $newProject -ProjectSlug $ProjectSlug -Title $Title -Purpose $Purpose -NextAction $NextAction -ProjectId $ProjectId -McpUrl $McpUrl | Out-Null }
+    if ($projectPlan.action -eq 'create') { & $newProject -ProjectSlug $ProjectSlug -Title $Title -Purpose $Purpose -NextAction $NextAction -ProjectId $ProjectId -McpUrl $McpUrl -WorkspacePath $WorkspacePath | Out-Null }
     Initialize-Mcp
     foreach ($expected in $records) {
         $existing = Read-ExactOrNull $expected.path
@@ -314,6 +325,7 @@ try {
         [void]$attempted.Add($expected.path)
         $response = Invoke-Mcp 'tools/call' @{ name = 'write_note'; arguments = @{ project_id = $ProjectId; directory = (Split-Path -Parent $expected.path).Replace('\', '/'); title = [IO.Path]::GetFileNameWithoutExtension($expected.path); content = $expected.content; note_type = 'note'; overwrite = $overwrite; output_format = 'json' } }
         if ($response.result.isError) { throw "Write '$($expected.path)' was rejected." }
+        Assert-McpWriteNotConflicted -Response $response -Path ($expected.path.Substring(0, $expected.path.Length - 3))
         $readback = Read-ExactOrNull $expected.path; if ($null -eq $readback) { throw "Write '$($expected.path)' did not become readable." }; Assert-Matches $readback $expected; [void]$created.Add($expected.path)
     }
     $recordsVerified = $true
@@ -327,4 +339,4 @@ catch {
     if ($recordsVerified) { throw "Project copy was verified, but its local completion journal could not be saved: $failure" }
     throw
 }
-[pscustomobject]@{ operation = 'Copy Local Pages to Project'; project_slug = $ProjectSlug; plan_id = $planId; page_manifest_sha256 = $manifestDigest; created_records = $created; reused_records = $reused; journal_path = $JournalPath; shared_library_write = $true }
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Copy Local Pages to Project'; project_slug = $ProjectSlug; plan_id = $planId; page_manifest_sha256 = $manifestDigest; created_records = $created; reused_records = $reused; journal_path = $JournalPath; shared_library_write = $true })

@@ -269,6 +269,16 @@ exactly one top-level heading. If one does not, any write that changes which top
 until it is repaired — rendering around it would silently hide a topic that is really there. The
 refusal names the folder. The same applies to a Shelf Book with no `_catalog-entry.md`.
 
+**Another workspace holds the collection's writable role.** A collection can be attached to more
+than one workspace and exactly one of them may write to it; every other attachment is read-only,
+which is the default. The refusal names the workspace holding the role, the incarnation it holds and
+the machine it is on. `tools/Set-CollectionOwner.ps1 -Status` reports the same thing without writing
+anything; `-Acquire` claims the role for this workspace when nobody holds it, and `-Release` gives it
+back — which refuses while this workspace still holds a Book lock, because a release says no write of
+ours is in flight. A collection nobody has ever claimed is not fenced at all and says so. Why the
+role exists, and the four backend states each with their own refusal:
+[One Writable Workspace Per Collection](../../../docs/collection-ownership.md).
+
 **`output/` at the top level.** A deliverable goes under its project's slug,
 `output/<project-slug>/<name>.md`: `output/` is tracked and shared, so two projects both writing
 `output/report.md` would collide.

@@ -365,7 +365,11 @@ $script:ReaderMapLabelMaxLength = 300
 # that case, which is right for a search index and wrong for a link -- an empty label renders as
 # nothing for a reader to click.
 function Get-ReaderMapLabel([string]$Text, [string]$Path) {
-    $body = [regex]::Replace([string]$Text, '(?s)\A﻿?---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\z)', '')
+    # THE OPTIONAL BOM IS THE ESCAPE `\uFEFF`, NOT THE CHARACTER (S41). This file has no BOM, so Windows
+    # PowerShell reads it as Windows-1252, and a literal U+FEFF here became three characters, the last
+    # made optional: the strip required a literal U+00EF U+00BB before `---` and never fired. A page
+    # whose frontmatter held a line like `# comment` was labelled with that line. Measured by hand.
+    $body = [regex]::Replace([string]$Text, '(?s)\A\uFEFF?---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\z)', '')
     $fenced = $false
     foreach ($line in @($body.Replace("`r`n", "`n").Split("`n"))) {
         # A '# heading' inside a fenced block is code, not a title. Same fence rule as the manifest.

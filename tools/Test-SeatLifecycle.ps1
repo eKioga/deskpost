@@ -125,7 +125,10 @@ $catalogProjects = @(
     'pick-made-proj', 'pick-approved-proj', 'pick-fixed-proj', 'pick-reask-proj',
     # Case 22's own. Two for the SAME seat slug, because the case exists to reuse that slug: a
     # second incarnation is a new seat and a seat is bound to exactly one Project.
-    'recur-one-proj', 'recur-two-proj', 'bystand-proj', 'ghosted-proj', 'strand-proj'
+    'recur-one-proj', 'recur-two-proj', 'bystand-proj', 'ghosted-proj', 'strand-proj',
+    # Case 23's own, for the same reason as 19's and 22's: it LAUNCHES a stand-in agent, and a
+    # Project another case had bound would refuse the seat before the launch this case is about.
+    'handoff-proj'
 )
 $catalogBody = "# Active Projects`n`n## Projects`n`n" +
     (($catalogProjects | ForEach-Object { "- [[projects/$_/_project|$_]]" }) -join "`n") + "`n"
@@ -263,6 +266,9 @@ $claims = [Collections.Generic.List[object]]::new()
 # The stand-in agent processes case 12 spawns. Killed in the finally as well as in the case itself:
 # an assertion that throws mid-case must not leave a sleeping process behind on the reader's machine.
 $dummies = [Collections.Generic.List[object]]::new()
+# Scratch directories outside the fixture workspace, removed by the same finally that releases the
+# claims: a case that leaves temp folders behind is one that fills the disk on a suite run in a loop.
+$handoffDirs = [Collections.Generic.List[object]]::new()
 
 # A HELPER IS A PROCESS HERE, NOT A FUNCTION, because its contract includes a non-zero exit code and
 # an `exit` from an in-process call would end this suite instead of the helper.
@@ -343,6 +349,71 @@ try {
     $env:LIBRARY_SEAT_CLAIM = ''
 
     Assert-Equal 'aa-decoy=aa-decoy-proj' (Get-RegistrySummary) 'the fixture registry did not start with the decoy alone'
+
+    # --- 0. THE DEPLOYMENT COMES FROM THE WORKSPACE THE RUN NAMES, NOT FROM THE CWD ----------------
+    #
+    # S18 told the agent which workspace its seat is in. This is the same question asked of the
+    # ENDPOINT: the seat was resolved from -WorkspacePath and the Basic Memory endpoint was resolved
+    # by walking up from the working directory -- one root answering two questions, which is the
+    # defect step 22 split open and S18 found in five other places.
+    #
+    # IT LANDS ON THE ROUTE ORCA'S QUICK COMMAND TAKES. The tab opens in the PROGRAM worktree and
+    # runs `tools/Start-LibrarySeat.ps1 -WorkspacePath <the reader's workspace>`, and after step 22
+    # the program holds no `.claude/.library-mcp-url` at all. Measured 2026-09-21 from that exact
+    # command line, both ways round: with LIBRARY_WORKSPACE set the Active Project Catalog read and
+    # named ten Projects, and with only -WorkspacePath it refused with "No Basic Memory endpoint is
+    # configured" -- so creating a seat from the button was impossible while entering one worked.
+    #
+    # THE EXPORT AT THE TOP OF THIS FILE IS WHY NOTHING SAW IT, AND THIS IS THE ONE CASE THAT MUST
+    # SCOPE IT AWAY. That export exists so a helper which forgets to plumb -McpUrl through is still
+    # pointed at the stub rather than at the reader's real NAS -- a safety property worth keeping,
+    # and one that also means the resolution path is never exercised by anything else here. So the
+    # endpoint is written into the fixture workspace's own `.claude/` instead, which is where a split
+    # install keeps it, and the environment is emptied for the length of the case.
+    #
+    # IT ASSERTS THROUGH A REFUSAL RATHER THAN A CREATION, so it costs no seat and no cleanup: a
+    # Project slug that is not in the stub's catalog is refused by a message that LISTS the catalog,
+    # which can only be written by code that read it.
+    $savedCaseUrl = $env:AI_LIBRARY_MCP_URL
+    $savedCaseId = $env:AI_LIBRARY_PROJECT_ID
+    $deploymentFile = Join-Path $stateDir '.library-mcp-url'
+    try {
+        [IO.File]::WriteAllText($deploymentFile, ($savedCaseUrl + "`n"), $utf8)
+        $env:AI_LIBRARY_MCP_URL = ''
+        $env:AI_LIBRARY_PROJECT_ID = ''
+
+        $fromWorkspace = Start-Seat @('-Seat', 'deploy-probe', '-Project', 'not-an-active-proj', '-NoLaunch', '-Json')
+        Assert-True ($fromWorkspace.ExitCode -ne 0) 'a seat was bound to a Project the catalog does not list'
+        # Derived from the stub's own list rather than typed, so a change to that list cannot leave
+        # this asserting on a slug nothing serves.
+        Assert-True ($fromWorkspace.Text.Contains($catalogProjects[0])) `
+            "the launcher did not read the catalog through the endpoint in -WorkspacePath's own workspace: $($fromWorkspace.Text)"
+
+        # THE NEGATIVE CONTROL, and without it the assertion above passes on an ambient endpoint.
+        #
+        # IT CHANGES THE VALUE RATHER THAN DELETING THE FILE, and the first draft did the opposite.
+        # Deleting it asserts that NOTHING ELSE supplies an endpoint, which is a claim about the whole
+        # environment rather than about this code -- and the environment differs: run bare it holds,
+        # and under the gate, which exports a deployment into every spawned suite, it does not. That
+        # made the control fail for being right about the wrong thing.
+        #
+        # Pointing the same file at a CLOSED PORT is the stronger claim anyway. It proves the VALUE in
+        # the workspace's own file is what the launcher dials, not merely that something was found:
+        # change the value, and the outcome has to change with it.
+        [IO.File]::WriteAllText($deploymentFile, "http://127.0.0.1:1/mcp`n", $utf8)
+        $wrongEndpoint = Start-Seat @('-Seat', 'deploy-probe', '-Project', 'not-an-active-proj', '-NoLaunch', '-Json')
+        Assert-True ($wrongEndpoint.ExitCode -ne 0) 'a seat was created against a catalog that could not be read'
+        Assert-True ($wrongEndpoint.Text.Contains('Active Project Catalog could not be read')) `
+            "the launcher did not dial the endpoint named in -WorkspacePath's own workspace: $($wrongEndpoint.Text)"
+        Assert-True (-not $wrongEndpoint.Text.Contains($catalogProjects[0])) `
+            'the catalog answered although the workspace names a closed port, so something ambient was dialled instead'
+    }
+    finally {
+        $env:AI_LIBRARY_MCP_URL = $savedCaseUrl
+        $env:AI_LIBRARY_PROJECT_ID = $savedCaseId
+        if (Test-Path -LiteralPath $deploymentFile) { Remove-Item -LiteralPath $deploymentFile -Force }
+    }
+    Assert-Equal 'aa-decoy=aa-decoy-proj' (Get-RegistrySummary) 'a refused creation left a seat in the registry'
 
     # --- 1. Creation: the launcher mints the seat, its Desk and its registry entry -----------------
     $created = Start-Seat @('-Seat', 'alpha', '-Project', 'alpha-proj', '-NoLaunch', '-Json')
@@ -2044,14 +2115,25 @@ foreach ($child in $children) { [void]$child.WaitForExit(120000) }
         }
         $line = "& '" + (Join-Path $PSScriptRoot 'Start-LibrarySeat.ps1') + "' -WorkspacePath '$fixture'" +
                 " -TranscriptRoot '$pickerProjects' -TerminalHandle ''" + $literal + ' ' + (@($Extra) -join ' ')
-        $old = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        $emitted = @()
-        try { $emitted = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $line 2>&1) }
-        finally { $ErrorActionPreference = $old }
-        $code = $LASTEXITCODE
-        $out = @($emitted | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
-        $err = @($emitted | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+        # THE CHILD'S STDIN IS REDIRECTED AND ENDED HERE, NOT INHERITED (S44). Called with `&`, the child had
+        # this suite's own stdin: redirected when an agent's tool ran the gate, which is every run until S44,
+        # and the reader's KEYBOARD when a person ran it at a terminal -- so 19e's "a caller that cannot be
+        # asked" could be asked, the picker prompted 'Seat:' on the console, and the full gate hung. Found
+        # following the README on a fresh clone in Windows Sandbox (S7).
+        $start = [Diagnostics.ProcessStartInfo]::new('powershell.exe')
+        $start.Arguments = '-NoProfile -ExecutionPolicy Bypass -Command "' + $line.Replace('"', '\"') + '"'
+        $start.UseShellExecute = $false
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::Start($start)
+        $process.StandardInput.Close()
+        $errTask = $process.StandardError.ReadToEndAsync()
+        $outText = $process.StandardOutput.ReadToEnd()
+        if (-not $process.WaitForExit(300000)) { $process.Kill(); throw 'a picker run was still going after 300 s with its input ended, so it is prompting rather than refusing' }
+        $code = $process.ExitCode
+        $out = @($outText -split "`r?`n" | Where-Object { $_ -ne '' })
+        $err = @($errTask.GetAwaiter().GetResult() -split "`r?`n" | Where-Object { $_ -ne '' })
         [pscustomobject]@{
             ExitCode = $code; Stdout = $out; Stderr = $err
             Text = (((@($out) + @($err)) -join ' ') -replace '\s+', ' ')
@@ -2794,13 +2876,29 @@ foreach ($child in $children) { [void]$child.WaitForExit(120000) }
     # 'Stop' the first ErrorRecord the redirection produces terminates this suite DURING the
     # redirection, carrying the CHILD's message -- which reads as a suite bug rather than as the
     # refusal being measured.
+    # THE CHILD'S INPUT IS ENDED HERE, NOT INHERITED (S44). Called with `&`, the child read whatever this
+    # suite's own stdin was: ended when an agent's tool ran the gate, which is every run until S44, and the
+    # reader's KEYBOARD when a person ran it at a terminal -- where an empty Enter is an answer, so the picker
+    # asked 'Seat:' forever and the full gate hung. Found following the README on a fresh clone in Windows
+    # Sandbox (S7). A redirected stdin closed before the child reads it is the end of input on every host.
     $endedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $ended = @()
     $endedCode = 0
     try {
-        $ended = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ("& { . '" + (Join-Path $PSScriptRoot 'SeatPicker.ps1') + "'; Read-SeatPickerLine -Prompt 'Seat' }") 2>&1)
-        $endedCode = $LASTEXITCODE
+        $endedStart = [Diagnostics.ProcessStartInfo]::new('powershell.exe')
+        $endedStart.Arguments = '-NoProfile -ExecutionPolicy Bypass -Command "& { . ''' + (Join-Path $PSScriptRoot 'SeatPicker.ps1') + '''; Read-SeatPickerLine -Prompt ''Seat'' }"'
+        $endedStart.UseShellExecute = $false
+        $endedStart.RedirectStandardInput = $true
+        $endedStart.RedirectStandardOutput = $true
+        $endedStart.RedirectStandardError = $true
+        $endedProcess = [Diagnostics.Process]::Start($endedStart)
+        $endedProcess.StandardInput.Close()
+        $endedErr = $endedProcess.StandardError.ReadToEndAsync()
+        $endedOut = $endedProcess.StandardOutput.ReadToEnd()
+        if (-not $endedProcess.WaitForExit(60000)) { $endedProcess.Kill(); throw 'the picker given ended input was still running after 60 s, so it is re-prompting rather than stopping' }
+        $ended = @($endedOut, $endedErr.GetAwaiter().GetResult())
+        $endedCode = $endedProcess.ExitCode
     }
     finally { $ErrorActionPreference = $endedPreference }
     $endedText = ((@($ended | ForEach-Object { [string]$_ }) -join ' ') -replace '\s+', ' ')
@@ -3615,12 +3713,62 @@ foreach ($child in $children) { [void]$child.WaitForExit(120000) }
     [IO.File]::WriteAllBytes($registryPath, $registryBytes)
     Assert-Equal 'bystand' ([string](Get-SeatEntry -Registry (Read-SeatRegistry -StateDirectory $incState) -Seat 'bystand').seat) 'the fixture did not restore the registry it corrupted'
 
+    # --- 23. WHAT THE AGENT IS ACTUALLY HANDED, READ FROM THE AGENT ------------------------------
+    #
+    # The launcher exports the seat, the claim and -- since 2026-09-21 -- the workspace. The first
+    # two were never in doubt; the third was missing for as long as the program and the workspace
+    # were one directory, because the agent inherited a cwd it could walk up from and find the
+    # Library by accident. After step 22 it cannot: Orca starts this launcher with `-WorkspacePath`
+    # from a cwd that is not the workspace, and every helper the agent then ran resolved a DIFFERENT
+    # Library from its parent directory.
+    #
+    # A STAND-IN AGENT WRITES ITS OWN ENVIRONMENT DOWN, because the result object only says what the
+    # launcher MEANT to export. This suite runs from the program root, so the launch below is a seat
+    # started from outside the workspace -- the case that was broken -- and the value is compared
+    # against the fixture rather than merely asserted non-empty.
+    # OUTSIDE THE FIXTURE WORKSPACE, both of them: a stray file in the workspace root is material the
+    # sweep and reset cases would have to know about, and this case is not about them.
+    $handoffDir = Join-Path ([IO.Path]::GetTempPath()) ('seat-handoff-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $handoffDir -Force | Out-Null
+    [void]$handoffDirs.Add($handoffDir)
+    $handoffProbe = Join-Path $handoffDir 'agent-environment.txt'
+    $handoffSeat = 'handoff'
+    $handoffCreate = Start-Seat @('-Seat', $handoffSeat, '-Project', 'handoff-proj', '-NoLaunch', '-Json')
+    Assert-True ($handoffCreate.ExitCode -eq 0) "creating the handoff seat failed: $($handoffCreate.Text)"
+    # A .cmd RATHER THAN A POWERSHELL ONE-LINER, because the stand-in then needs NO arguments: an
+    # agent command carrying `-NoProfile -Command ...` would have to travel through this launcher's
+    # own parameter binder, where `-Command` is one of ITS parameter names.
+    $probeCmd = Join-Path $handoffDir 'agent-probe.cmd'
+    [IO.File]::WriteAllText($probeCmd, ("@echo off`r`n" +
+        "echo workspace=%LIBRARY_WORKSPACE%> `"$handoffProbe`"`r`n" +
+        "echo seat=%LIBRARY_SEAT%>> `"$handoffProbe`"`r`n" +
+        "echo claim=%LIBRARY_SEAT_CLAIM%>> `"$handoffProbe`"`r`n"), $utf8)
+    $handoffRun = Start-Seat @('-Seat', $handoffSeat, '-Command', $probeCmd, '-Json')
+    Assert-True ($handoffRun.ExitCode -eq 0) "the stand-in agent did not run: $($handoffRun.Text)"
+    Assert-True (Test-Path -LiteralPath $handoffProbe -PathType Leaf) 'the stand-in agent wrote nothing, so nothing below is reading what an agent received'
+    $handoff = @{}
+    foreach ($line in @([IO.File]::ReadAllLines($handoffProbe))) {
+        $split = ([string]$line).Trim().Split('=', 2)
+        if ($split.Count -eq 2) { $handoff[$split[0]] = $split[1] }
+    }
+    # THE SEAT AND THE CLAIM ARE THE POSITIVE CONTROL. Both were exported before this change, so if
+    # they do not arrive then the probe is broken and the workspace assertion below proves nothing.
+    Assert-Equal $handoffSeat ([string]$handoff['seat']) 'the stand-in agent did not receive the seat, so this probe is not reading a launched agent''s environment'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$handoff['claim'])) 'the stand-in agent did not receive the claim'
+    Assert-Equal $fixture ([string]$handoff['workspace']) 'THE AGENT WAS NOT TOLD WHICH WORKSPACE IT IS SITTING IN'
+    # AND NOT THE ONE IT WOULD HAVE DERIVED. This suite runs from the program root, which is what an
+    # agent walking up from its inherited working directory would have resolved instead.
+    Assert-True (([string]$handoff['workspace']) -cne (Split-Path -Parent $PSScriptRoot)) 'the agent received the PROGRAM root as its workspace'
+
 }
 catch { $failure = $_ }
 finally {
     foreach ($held in $claims) { Exit-SeatClaim -Claim $held }
     foreach ($stray in $dummies) {
         try { Stop-Process -Id $stray.Id -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    foreach ($scratch in $handoffDirs) {
+        try { Remove-Item -LiteralPath ([string]$scratch) -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     }
     $env:LIBRARY_SEAT = $savedSeat
     $env:LIBRARY_SEAT_CLAIM = $savedClaim
@@ -3639,4 +3787,4 @@ if ($null -ne $failure) {
     exit 1
 }
 
-"seat lifecycle: $($script:cases) assertion(s) over create, collision, binding, claim, agent ancestry, preflight, retire, archive, the terminal picker, the Desk overview's own line, the conversation history, retirement's identity and fail-closed"
+"seat lifecycle: $($script:cases) assertion(s) over create, collision, binding, claim, agent ancestry, preflight, retire, archive, the terminal picker, the Desk overview's own line, the conversation history, retirement's identity and fail-closed, and what a launched agent is actually handed"

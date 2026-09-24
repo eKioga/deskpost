@@ -1,0 +1,35 @@
+#!/bin/sh
+# The POSIX entry point for `library`. The dispatcher is library.ps1 beside this file.
+#
+# WHY THERE ARE THREE OF THESE AND NOT ONE. `library.cmd` is what cmd.exe and PowerShell resolve
+# through PATHEXT; this extensionless file is what a POSIX shell resolves, because PATHEXT does not
+# exist there and `library.cmd` is not a name any `sh` will run for `library`. Measured 2026-09-22
+# in a seated session: the program root WAS on the inherited PATH -- `/mnt/d/deskpost/app` appeared
+# in it -- and `command -v library` still failed, so the seated reader fell back to invoking
+# `library.cmd` by its absolute Windows path. One directory on PATH, two shells, two names.
+#
+# IT IS ALSO THE SHAPE macOS AND LINUX NEED, which is why it is worth having before the packaging
+# row rather than after: there, `pwsh` runs library.ps1 directly and nothing Windows is involved.
+set -e
+
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script="$dir/library.ps1"
+
+# PowerShell 7, wherever it is the real one: macOS, Linux, and any Windows shell that has it.
+if command -v pwsh >/dev/null 2>&1; then
+    exec pwsh -NoProfile -File "$script" "$@"
+fi
+
+# Windows PowerShell, reached from Git Bash or from WSL. UNDER WSL THE PATH MUST BE TRANSLATED:
+# `$script` is a Linux path there and powershell.exe cannot open one, which is the difference
+# between this working and reporting a file that is plainly present. Git Bash has no `wslpath` and
+# needs no translation, so the presence of that command is the test rather than a guess at the shell.
+if command -v powershell.exe >/dev/null 2>&1; then
+    if command -v wslpath >/dev/null 2>&1; then
+        script=$(wslpath -w "$script")
+    fi
+    exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$script" "$@"
+fi
+
+echo "library: no PowerShell on PATH. Install PowerShell 7 (pwsh), or run $script directly." >&2
+exit 1

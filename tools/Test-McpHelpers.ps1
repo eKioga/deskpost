@@ -58,6 +58,9 @@ $store = [hashtable]::Synchronized(@{
                 ReadWrongPath   = [hashtable]::Synchronized(@{})
                 WriteFailAlways = [Collections.ArrayList]::Synchronized([Collections.ArrayList]::new())
                 WriteFailOnce   = [Collections.ArrayList]::Synchronized([Collections.ArrayList]::new())
+                # path -> the body ANOTHER writer lands there immediately before this write: the race
+                # a no-overwrite create exists to lose safely.
+                WriteRaceOnce   = [hashtable]::Synchronized(@{})
                 MoveFail        = $false
             })
         Calls     = [Collections.ArrayList]::Synchronized([Collections.ArrayList]::new())
@@ -142,9 +145,18 @@ $serverScript = {
                             $result = New-Fail "Injected write failure for $path"
                         }
                         else {
+                            if ($Store.Faults.WriteRaceOnce.ContainsKey($path)) {
+                                $Store.Notes[$path] = @{ file_path = $path; title = $title; content = [string]$Store.Faults.WriteRaceOnce[$path]; frontmatter = @{ title = $title; type = 'note'; permalink = $path } }
+                                $Store.Faults.WriteRaceOnce.Remove($path)
+                            }
                             $overwrite = [bool](Get-Arg $toolArgs 'overwrite')
                             if ($Store.Notes.ContainsKey($path) -and -not $overwrite) {
-                                $result = New-Fail "Note already exists: $path"
+                                # AS THE DEPLOYED SERVER ANSWERS, MEASURED 2026-09-22 (S33): NOT an error.
+                                # isError is false and the refusal is `action: conflict` in the result,
+                                # with no file_path. This stub answered isError=true until then, so no
+                                # helper here was ever tested against the answer it really receives.
+                                $record = @{ title = $title; permalink = $path.Substring(0, $path.Length - 3); file_path = $null; checksum = $null; action = 'conflict'; error = 'NOTE_ALREADY_EXISTS' }
+                                $result = New-Ok $record ($record | ConvertTo-Json -Compress)
                             }
                             else {
                                 $frontmatter = @{ title = $title; type = [string](Get-Arg $toolArgs 'note_type'); permalink = $path }
@@ -268,6 +280,7 @@ function Reset-Store {
     $store.Faults.ReadWrongPath.Clear()
     $store.Faults.WriteFailAlways.Clear()
     $store.Faults.WriteFailOnce.Clear()
+    $store.Faults.WriteRaceOnce.Clear()
     $store.Faults.MoveFail = $false
     $store.Calls.Clear()
     Set-Note 'books/README.md' "# Book Catalog`n`n## Open a Book`n"
@@ -1164,6 +1177,24 @@ try {
         Assert-True (-not $body.Contains('review: pending')) "$path carried the note's review state"
     }
 
+    # === New-ProjectHub ===========================================================================
+    # A NO-OVERWRITE CREATE THAT LOSES A RACE MUST SAY SO (S33). Basic Memory answers a conflicting
+    # write with isError=false and `action: conflict`; the helper read only isError, then read back
+    # the page -- which existed, holding the other writer's body -- and reported `created`.
+    $newHub = Join-Path $toolsDir 'New-ProjectHub.ps1'
+    Reset-Store
+    Set-Note 'projects/README.md' "# Active Projects`n`n## Projects`n"
+    $madeHub = & $newHub -ProjectSlug 'fresh' -Title 'Fresh' -McpUrl $mcpUrl -ProjectId '00000000-0000-0000-0000-000000000000'
+    Assert-Equal 'True' $madeHub.created 'a Hub created into an empty slot was not reported created'
+    Assert-True (([string]$store.Notes['projects/fresh/_project.md'].content).StartsWith('# Fresh')) 'the created Hub root does not hold its own body'
+    Reset-Store
+    Set-Note 'projects/README.md' "# Active Projects`n`n## Projects`n"
+    $store.Faults.WriteRaceOnce['projects/raced/_project.md'] = "# Someone Else`n"
+    Assert-Refused { & $newHub -ProjectSlug 'raced' -Title 'Raced' -McpUrl $mcpUrl -ProjectId '00000000-0000-0000-0000-000000000000' } `
+        'already exists' 'a Hub root another writer created between the read and the write was reported created'
+    Assert-Equal "# Someone Else`n" ([string]$store.Notes['projects/raced/_project.md'].content) 'the losing creation changed the winner''s Hub root'
+    Assert-True ([string]$store.Notes['projects/README.md'].content -notmatch 'projects/raced/_project\|Raced') 'the losing creation listed its Hub in the catalog'
+
     # === Archive-ProjectHub =======================================================================
     Reset-Store
     Set-Note 'projects/arch/_project.md' "# Arch`n`n## Purpose`n`nFixture.`n`n## Now`n`n- [[projects/arch/notes/note|note]]`n"
@@ -1249,6 +1280,46 @@ try {
         'left in place' 'a rejected Book move reported the Book was left in place'
     Assert-True ($store.Notes.ContainsKey('books/movefail-book/wiki/_book.md')) 'the Book survived a rejected move'
     $store.Faults.MoveFail = $false
+
+    # === The other four no-overwrite writers lose a race the same way (S34) ========================
+    # New-ProjectHub was the first found (S33). These four also write with overwrite=false and read
+    # only isError, so a note another writer lands between the read and the write came back as
+    # `action: conflict` and each went on to a readback of THAT writer's note -- and refused later,
+    # under a sentence about a readback, a manifest offset or a Catalog line. The refusal now says
+    # what happened, and the winner's note is untouched.
+    $raceWinner = "# Someone Else`n"
+    Reset-Store
+    Set-Note 'projects/race-arch/_project.md' "# Race Arch`n`n## Now`n`nBody.`n"
+    Set-Note 'projects/race-arch/notes/note.md' "# Note`nBody.`n"
+    Set-Note 'projects/README.md' "# Active Projects`n`n## Projects`n`n- [[projects/race-arch/_project|Race Arch]]`n"
+    $store.Faults.WriteRaceOnce['archive/projects/README.md'] = $raceWinner
+    Assert-Refused { & $archiveProject -ProjectSlug 'race-arch' -McpUrl $mcpUrl -UserConfirmed } `
+        'a note already exists there' 'Archive-ProjectHub did not name a lost race on the archived Project Catalog'
+    Assert-Equal $raceWinner ([string]$store.Notes['archive/projects/README.md'].content) 'Archive-ProjectHub changed the archived Project Catalog it lost the race for'
+
+    Reset-Store
+    Set-Note 'books/race-book/wiki/_book.md' "# Race Book`n`n## Reader map`n`n- [[books/race-book/wiki/_index|Open the reader map]]`n"
+    Set-Note 'books/race-book/wiki/_index.md' "# Race Book - Reader Map`n`n- [[books/race-book/wiki/page|page]]`n"
+    Set-Note 'books/race-book/wiki/page.md' "# Page`nBody.`n"
+    Set-Note 'books/README.md' "# Book Catalog`n`n## Open a Book`n`n- [[books/race-book/wiki/_book|Race Book]]`n"
+    $store.Faults.WriteRaceOnce['archive/README.md'] = $raceWinner
+    Assert-Refused { & $archiveBook -BookSlug 'race-book' -McpUrl $mcpUrl -UserConfirmed } `
+        'a note already exists there' 'Archive-SharedBook did not name a lost race on the archive index'
+    Assert-Equal $raceWinner ([string]$store.Notes['archive/README.md'].content) 'Archive-SharedBook changed the archive index it lost the race for'
+
+    Reset-Store
+    $store.Faults.WriteRaceOnce['projects/race-copy/notes/topic/alpha.md'] = $raceWinner
+    $raceCopy = & $projectCopy @common -SourcePath 'notebook/topic' -ProjectSlug 'race-copy' -Title 'Race Copy' -Purpose 'Fixture project.' -Preflight
+    Assert-Refused { & $projectCopy @common -SourcePath 'notebook/topic' -ProjectSlug 'race-copy' -Title 'Race Copy' -Purpose 'Fixture project.' -UserConfirmed -ApprovedPlanId $raceCopy.plan_id } `
+        'a note already exists there' 'Copy-LocalPagesToProject did not name a lost race on a copied page'
+    Assert-Equal $raceWinner ([string]$store.Notes['projects/race-copy/notes/topic/alpha.md'].content) 'Copy-LocalPagesToProject changed the page it lost the race for'
+
+    Reset-Store
+    $store.Faults.WriteRaceOnce['books/race-publish/wiki/topic/alpha.md'] = $raceWinner
+    $racePublish = & $sharedPublish @common -Destination Shared -SourcePath 'notebook/topic' -BookSlug 'race-publish' -BookTitle 'Race Publish' -Summary 'A fixture Book.' -Preflight
+    Assert-Refused { & $sharedPublish @common -Destination Shared -SourcePath 'notebook/topic' -BookSlug 'race-publish' -BookTitle 'Race Publish' -Summary 'A fixture Book.' -UserConfirmed -ApprovedPlanId $racePublish.plan_id } `
+        'a note already exists there' 'Publish-SharedBookCandidate did not name a lost race on a published page'
+    Assert-Equal $raceWinner ([string]$store.Notes['books/race-publish/wiki/topic/alpha.md'].content) 'Publish-SharedBookCandidate changed the page it lost the race for'
 }
 finally {
     $store.Running = $false

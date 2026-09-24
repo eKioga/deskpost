@@ -1,0 +1,52 @@
+{
+  "description": "The Library's Virtual Desk boundary, as plugin hooks answered by the compiled kernel at bin/library (S37). CANONICAL, in the Codex layout: events nest under the top-level \"hooks\" key, because Codex accepts only \"description\" or \"hooks\" at the root and rejects the whole file with 'unknown field `PreToolUse`' if an event is placed there. Each matcher is the union of the tool names both harnesses give the guarded operation, so one file guards either -- Basic Memory's included, which Claude Code names `mcp__basic-memory__<tool>` and Codex, spelling a server's hyphens as underscores, `mcp__basic_memory__<tool>` (S38). Claude's form is GENERATED from this file by tools/PluginPackage.ps1 and differs in two mechanical ways: the plugin root variable is ${CLAUDE_PLUGIN_ROOT}, and every --reader-tool-prefix -- the Desk hook's and both Shelf guards', each of which names the reader -- is the plugin's composed name. A Windows release renders this file with `& ` before each command, because Codex runs a hook through powershell.exe there (measured, codex-cli 0.153.4). Do not hand-edit a generated copy; plugin.generated-files-match fails the gate on a drift.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__basic[-_]memory__.*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/library\" hook basic-memory-read",
+            "timeout": 30,
+            "statusMessage": "Checking the Virtual Desk boundary"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Bash|PowerShell|exec)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/library\" hook shell-shelf-read --reader-tool-prefix mcp__validated_book_reader__",
+            "timeout": 30,
+            "statusMessage": "Checking the Shelf boundary"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Read|Grep|Glob|Write|Edit|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/library\" hook shelf-read --reader-tool-prefix mcp__validated_book_reader__",
+            "timeout": 30,
+            "statusMessage": "Checking the Shelf boundary"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/library\" hook desk-context --reader-tool-prefix mcp__validated_book_reader__",
+            "timeout": 30,
+            "statusMessage": "Loading the Virtual Desk"
+          }
+        ]
+      }
+    ]
+  }
+}

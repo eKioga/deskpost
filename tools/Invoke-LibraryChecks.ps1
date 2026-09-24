@@ -12,26 +12,180 @@
 #>
 [CmdletBinding()]
 param(
+    # THE READER'S WORKSPACE: their Shelf, Notebook, output/ and internal records. Until step 22
+    # this was the same directory as the program, so one parameter answered both questions and
+    # every check closed over it. It no longer is. Measured on 2026-09-21, the day the split
+    # happened: 35 checks read only the program, 2 read only the workspace, and
+    # `shelf.catalog-renders-from-entries` reads BOTH -- it renders the workspace's Shelf through a
+    # template that ships with the program, so no single value can satisfy it.
+    #
+    # Resolved explicitly, then from LIBRARY_WORKSPACE, then by walking up from the current
+    # directory to a marker. When none of those answer, the workspace-reading checks SKIP rather
+    # than fail: a contributor holding a clone of the program and no Library of their own is a
+    # supported state, and a gate that failed for them would be reporting on the absence of a
+    # Library rather than on their change.
     [string]$WorkspacePath,
+    # THE PROGRAM: these checks, the tools they scan, docs/ and .claude/. Always the directory this
+    # file lives in, and a parameter only so a fixture can point at a copy of the tree.
+    [string]$ProgramPath,
     [switch]$IncludeShared,
     [switch]$Fast,
+    # ONLY THE CHECKS THAT READ THE READER'S MATERIAL, which is what `library doctor` answers. Added
+    # 2026-09-22 (S17) for `checks.reports-every-registered-check`, which compared this runner's
+    # WHOLE report against the kernel and differed on 395 of 432 fields: of 128 checks, some fifty
+    # scan THIS PROGRAM's PowerShell source ("130 sources scanned", the kernel's own self-test, the
+    # staged diff) and sixty-three are whole test suites. None of those is a fact about a workspace,
+    # all of them change with the program checkout rather than with the fixture, and a kernel that
+    # reproduced "130 PowerShell sources scanned" would be lying about which program answered.
+    #
+    # THE LINE IS THE ONE THIS FILE ALREADY DRAWS. `Invoke-WorkspaceCheck` is how a check declares
+    # that it reads a Shelf, a Notebook, output/, internal/ or the Desk, and it is what makes such a
+    # check skip when no workspace is attached. This switch keeps exactly those and drops the rest
+    # without running them -- AND the workspace checks registered inside the suite branch too, because
+    # those are suites, PowerShell test harnesses that drive PowerShell helpers, and a doctor is not a
+    # test runner. So a workspace-only report is the same with or without -Fast.
+    [switch]$WorkspaceOnly,
     [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# THE GATE NEVER HANDS A CHILD A KEYBOARD (S44). Every suite is started with `&`, so it inherits this
+# process's stdin, and its own children inherit it again. Run from an agent's tool -- every gate run until S44
+# -- that stdin is redirected and empty, so a child reading it meets the end of input. Run by a person at a
+# console, as the README says, it is the keyboard: the seat picker asked `Seat:` for ever, a hook reading its
+# payload waited in silence, and the full gate on a fresh clone in Windows Sandbox never finished (S7). Nothing
+# here reads input, so at a console the gate runs itself again with stdin redirected and closed, its output
+# still on the console, and reports that run's exit code. The marker stops a second relaunch whatever the host.
+if (-not [Console]::IsInputRedirected -and [string]$env:LIBRARY_CHECKS_STDIN_DETACHED -cne '1') {
+    $relaunchArguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)) { [void]$relaunchArguments.Add($argument) }
+    foreach ($name in @($PSBoundParameters.Keys)) {
+        $value = $PSBoundParameters[$name]
+        if ($value -is [Management.Automation.SwitchParameter]) { if ($value.IsPresent) { [void]$relaunchArguments.Add("-$name") } }
+        else { [void]$relaunchArguments.Add("-$name"); [void]$relaunchArguments.Add([string]$value) }
+    }
+    $relaunch = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'powershell.exe'))
+    $relaunch.Arguments = (@($relaunchArguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+    $relaunch.UseShellExecute = $false
+    $relaunch.RedirectStandardInput = $true
+    $relaunch.EnvironmentVariables['LIBRARY_CHECKS_STDIN_DETACHED'] = '1'
+    $detached = [Diagnostics.Process]::Start($relaunch)
+    $detached.StandardInput.Close()
+    $detached.WaitForExit()
+    exit $detached.ExitCode
+}
+
 # The Desk path is resolved, never composed -- see BookRootSchema's SEATS section.
 . (Join-Path $PSScriptRoot 'BookRootSchema.ps1')
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+# For Use-DeploymentEnvironment below: the endpoint and collection id a spawned suite needs, read
+# from the attached workspace rather than from wherever the child happens to be launched.
+. (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
-$workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
+if ([string]::IsNullOrWhiteSpace($ProgramPath)) { $ProgramPath = Split-Path -Parent $PSScriptRoot }
+$program = (Resolve-Path -LiteralPath $ProgramPath).Path
+
+# `Resolve-LibraryWorkspace` rather than `Resolve-ToolWorkspace`, because the tool form THROWS on
+# `none` and this is the one caller for which `none` is an answer rather than a failure. A
+# `conflict` stays fatal: three sources disagreeing about which Library is being checked is not
+# something to pick a winner for.
+$script:WorkspaceAbsentReason = ''
+$resolvedWorkspace = Resolve-LibraryWorkspace -Explicit $WorkspacePath
+if ([string]$resolvedWorkspace.kind -ceq 'conflict') { throw ([string]$resolvedWorkspace.reason) }
+if ([string]$resolvedWorkspace.kind -ceq 'none') {
+    $workspace = ''
+    $script:WorkspaceAbsentReason = ('no reader workspace is attached, so nothing was read from a Shelf, a Notebook or ' +
+                                     'internal/; pass -WorkspacePath <folder>, set LIBRARY_WORKSPACE, or run from inside ' +
+                                     'a workspace. `library init <folder>` creates one.')
+}
+else { $workspace = (Resolve-Path -LiteralPath ([string]$resolvedWorkspace.workspace)).Path }
+
+# SOME CHILDREN NEED IT AND MOST MUST NOT SEE IT. Several checks are whole suites run as their own
+# processes, and a child resolves its workspace from scratch. Before the split they needed nothing:
+# the program root they were launched from WAS a workspace, so their own walk-up found it. It is not
+# one any more, and the first full gate after the split failed four checks for exactly that.
+#
+# SETTING IT ONCE FOR THE WHOLE RUN IS THE OBVIOUS FIX AND IT IS WRONG. Measured on 2026-09-21: it
+# turned three green suites red, and all three had workspace RESOLUTION as their subject.
+# `workspace-init.selftest` asserts that a cwd inside a freshly initialised workspace resolves by
+# its marker, and got `environment` instead; `library-hooks.boundary-suite` and
+# `codex.portability-selftest` drive packaged guards that must resolve a FIXTURE. An ambient
+# variable is not a neutral default for a suite whose job is to decide where a workspace comes from.
+#
+# So it is scoped to the one child that asked for it, and restored afterwards.
+function Use-WorkspaceEnvironment {
+    param([Parameter(Mandatory = $true)][scriptblock]$Body)
+    $previous = $env:LIBRARY_WORKSPACE
+    $env:LIBRARY_WORKSPACE = $workspace
+    try { & $Body }
+    finally { $env:LIBRARY_WORKSPACE = $previous }
+}
+
+# THE OTHER HALF A CHILD LOST AT THE SPLIT, AND IT IS A DIFFERENT HALF. `LIBRARY_WORKSPACE` says
+# WHICH LIBRARY. These two say WHICH DEPLOYMENT -- the Basic Memory endpoint and the collection id --
+# and before step 22 they sat in the program's own `.claude/.library-*`, so every child found them by
+# being launched from there. They live in the reader's workspace now, and five suites that ask nothing
+# whatever about workspace resolution began refusing with "No Basic Memory endpoint is configured".
+#
+# NOT `LIBRARY_WORKSPACE`, DELIBERATELY, AND THE DIFFERENCE IS A SAFETY ONE. Handing these five the
+# reader's workspace would point every helper they drive at the reader's REAL Shelf the moment one
+# fixture forgot to pass an explicit path -- and `codex.portability-selftest` is one of the three S17
+# measured breaking under an ambient workspace, because resolution is its subject. A deployment value
+# carries no such hazard: it names a server to talk to, not a place to write.
+#
+# A value already in the environment is left alone, so a run that set one in its own shell keeps it.
+# ALL THREE OF THEM, which took one more round to find. The endpoint and the collection id are what
+# the refusals named, so they went in first; the share root is what the WRITE FENCE needs, and a
+# child that had the first two refused instead with "attached to a Basic Memory collection with no
+# filesystem view of it, so its writes cannot be fenced". Three files under `.claude/` hold this
+# deployment -- `.library-mcp-url`, `.library-project`, `.library-shared-root` -- and
+# `Get-DeploymentScanDenylist` already reads exactly that set. A subset of a deployment is not a
+# deployment.
+function Use-DeploymentEnvironment {
+    param([Parameter(Mandatory = $true)][scriptblock]$Body)
+    $savedUrl = $env:AI_LIBRARY_MCP_URL
+    $savedId = $env:AI_LIBRARY_PROJECT_ID
+    $savedShare = $env:LIBRARY_SHARED_COLLECTION_ROOT
+    try {
+        if ([string]::IsNullOrWhiteSpace($savedUrl)) {
+            $env:AI_LIBRARY_MCP_URL = Resolve-LibraryMcpUrl -WorkspacePath $workspace -Optional
+        }
+        if ([string]::IsNullOrWhiteSpace($savedId)) {
+            $env:AI_LIBRARY_PROJECT_ID = Resolve-LibraryCollectionId -WorkspacePath $workspace -Optional
+        }
+        if ([string]::IsNullOrWhiteSpace($savedShare)) {
+            $env:LIBRARY_SHARED_COLLECTION_ROOT = Resolve-LibrarySharedCollectionRoot -WorkspacePath $workspace
+        }
+        & $Body
+    }
+    finally {
+        $env:AI_LIBRARY_MCP_URL = $savedUrl
+        $env:AI_LIBRARY_PROJECT_ID = $savedId
+        $env:LIBRARY_SHARED_COLLECTION_ROOT = $savedShare
+    }
+}
+
 $results = [Collections.Generic.List[object]]::new()
 
 function Add-Result([string]$Name, [string]$Status, [string]$Detail) {
     [void]$results.Add([pscustomobject]@{ check = $Name; status = $Status; detail = $Detail })
 }
 
+# THE NAMES REGISTERED THROUGH Invoke-WorkspaceCheck, collected as they run, so -WorkspaceOnly
+# filters on the declaration each check already makes rather than on a second list of names.
+$script:WorkspaceCheckNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$script:InWorkspaceCheck = $false
+# Set on entry to the -Fast else branch, which is where every spawned suite is registered. NOT by
+# assigning -Fast: a script parameter reassigned in the body is defect family 4, and the gate says so.
+$script:InSuiteBranch = $false
+
 function Invoke-Check([string]$Name, [scriptblock]$Body) {
+    # A PROGRAM CHECK UNDER -WorkspaceOnly IS NOT RUN AT ALL, rather than run and filtered: several
+    # of them take seconds, and a doctor that paid for a scan of this program's source to throw the
+    # answer away would be slow for nothing.
+    if ($WorkspaceOnly -and -not $script:InWorkspaceCheck) { return }
     try {
         $detail = & $Body
         if ($null -eq $detail) { $detail = 'ok' }
@@ -47,13 +201,46 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
     }
 }
 
+# EVERY NAME A CHECK CAN BE REGISTERED UNDER, in one place. Two separate AST scans read this
+# runner's own source to derive the set of registered checks -- gate.fast-roster-matches-suites and
+# seats.contract-table-matches-code -- and on 2026-09-21 adding a second invoker broke both, each
+# reporting that a check it could plainly see was registered by nothing. A scan that knows one
+# invoker silently shrinks its set every time another is added, which is the same defect as a
+# hardcoded copy of a table.
+$script:CheckInvokerNames = @('Invoke-Check', 'Invoke-WorkspaceCheck')
+
+function Invoke-WorkspaceCheck([string]$Name, [scriptblock]$Body) {
+    <#
+        A check that reads the READER'S material -- a Shelf, a Notebook, output/, internal/ or the
+        Desk -- rather than the program. It skips, with the reason, when no workspace is attached.
+
+        SKIP AND FAIL ARE DIFFERENT ANSWERS AND ONLY ONE OF THEM IS TRUE HERE. Before the split
+        these three checks could not tell "this Shelf is inconsistent" from "there is no Shelf",
+        because the program always had one beside it. The moment the reader's material moved out,
+        the program's own pre-commit gate began reporting three failures about a Shelf that had
+        not gone wrong -- it had gone somewhere else. A contributor who clones the program and
+        never creates a Library would have seen exactly the same three.
+    #>
+    # A SUITE IS NOT A DOCTOR'S CHECK even when it reads the workspace, so -WorkspaceOnly drops it
+    # without running it -- and without recording its name, so the report does not carry it either.
+    if ($WorkspaceOnly -and $script:InSuiteBranch) { return }
+    [void]$script:WorkspaceCheckNames.Add($Name)
+    if ([string]::IsNullOrWhiteSpace($workspace)) {
+        Add-Result $Name 'skipped' $script:WorkspaceAbsentReason
+        return
+    }
+    $script:InWorkspaceCheck = $true
+    try { Invoke-Check $Name $Body }
+    finally { $script:InWorkspaceCheck = $false }
+}
+
 # --- Settings: parseable, and both guards plus the desk hook actually registered -----------------
 # The tracked project file wins once 0.4 lands; until then the .local file is the live one.
 Invoke-Check 'settings.parse' {
     # @(...) is load-bearing: a single match unrolls to a bare string, and .Count then fails
     # under StrictMode. The same defect class is recorded in docs/project-hub-design.md.
     $candidates = @(@('settings.json', 'settings.local.json') |
-        ForEach-Object { Join-Path $workspace (Join-Path '.claude' $_) } |
+        ForEach-Object { Join-Path $program (Join-Path '.claude' $_) } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     if (-not $candidates.Count) { throw 'No .claude/settings.json or settings.local.json found.' }
     foreach ($file in $candidates) {
@@ -71,7 +258,7 @@ Invoke-Check 'settings.parse' {
 Invoke-Check 'settings.hooks-registered' {
     . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
     $files = @(@('settings.json', 'settings.local.json') |
-        ForEach-Object { Join-Path $workspace (Join-Path '.claude' $_) } |
+        ForEach-Object { Join-Path $program (Join-Path '.claude' $_) } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     if (-not $files.Count) { throw 'No .claude/settings.json or settings.local.json found.' }
     # BOTH files, not the first one that exists. The harness merges them, so a hook moved from the
@@ -81,6 +268,34 @@ Invoke-Check 'settings.hooks-registered' {
     $problems = @(Get-HookRegistrationProblems -Settings $trees)
     $blocking = @($problems | Where-Object { -not $_.optional })
     if ($blocking.Count) { throw (($blocking | ForEach-Object { $_.detail }) -join '; ') }
+
+    # AND THE SHAPE OF THE PROGRAM'S OWN BLOCK, which nothing asked until 2026-09-22. Everything
+    # above WALKS the block, and the walk coerces with @(), so a bare object reads exactly as a
+    # one-element array does -- this check would report "all 9 hooks registered under the events
+    # they act on" about a settings.json Claude Code refuses to load and therefore skips ENTIRELY.
+    # That is the program's own boundary gone, in the tree every development session sits in.
+    #
+    # THE SAME JUDGE AS THE OTHER THREE. `workspace.guards-registered` asks this of the reader's
+    # workspace, `library init` asks it before it writes, and the plugin packager asks it of what
+    # it generates. This is the fourth consumer and the last settings document in the tree that
+    # was still judged by a walk alone.
+    #
+    # A TREE WITH NO `hooks` KEY IS SKIPPED RATHER THAN FAULTED: settings.local.json may hold none,
+    # and Test-ClaudeHookShape's "no top-level hooks key" fault is written for a hooks FILE.
+    $shapeFaults = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $tree = $trees[$i]
+        if ($null -eq $tree) { continue }
+        $treeNames = @($tree.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($treeNames -cnotcontains 'hooks' -or $null -eq $tree.hooks) { continue }
+        foreach ($fault in @(Test-ClaudeHookShape -Document $tree -Label (Split-Path -Leaf $files[$i]))) {
+            [void]$shapeFaults.Add($fault)
+        }
+    }
+    if ($shapeFaults.Count) {
+        throw ((@($shapeFaults) -join '; ') + ' -- a settings file whose hooks block is malformed is skipped ' +
+               'ENTIRELY by the harness, so every hook counted above would be silent in a session rooted here.')
+    }
     $required = @(Get-RequiredHooks)
     if ($problems.Count) {
         return "WARN: $(($problems | ForEach-Object { $_.detail }) -join '; ')"
@@ -88,11 +303,273 @@ Invoke-Check 'settings.hooks-registered' {
     "all $($required.Count) hooks registered under the events they act on"
 }
 
-Invoke-Check 'codex.project-access-config' {
-    $configTemplatePath = Join-Path $workspace (Join-Path '.codex' 'config.template.toml')
-    $hooksTemplatePath = Join-Path $workspace (Join-Path '.codex' 'hooks.template.json')
-    $configPath = Join-Path $workspace (Join-Path '.codex' 'config.toml')
+# --- And the same question asked of the READER'S workspace, which is where sitting is unsafe ------
+#
+# THE CHECK THAT WAS MISSING ON 2026-09-21, and the reason that day's gate was green about a
+# workspace nobody could safely sit in. `settings.hooks-registered` above reads the PROGRAM's
+# settings, and after the split the program is not where the reader sits. A session rooted in
+# `D:\deskpost\workspaces\eric` had no Desk boundary, no closed-Book guard and no shell Shelf guard;
+# `library init` merged only the permission allowlist, the plugin that was meant to supply the hooks
+# does not activate (S14), and nothing in 121 checks said a word about any of it. The one check that
+# had ever noticed -- `reader.launch-validation` -- saw it only while an ambient LIBRARY_WORKSPACE
+# was set, and that variable had to be scoped away because it broke three suites whose subject is
+# workspace resolution. So the fact went unwatched twice over.
+#
+# IT ASKS THREE QUESTIONS, and the second is the one no registration test asks: are the hooks
+# registered, do the paths they name still EXIST, and is the reader's server declared at all. In a
+# split workspace those paths are absolute pointers into the program, so a program that moves turns
+# every one of them into a silent no-op -- Claude Code treats a hook that exits non-zero with empty
+# stdout as a non-blocking error and proceeds, which is the boundary failing open and saying nothing.
+Invoke-WorkspaceCheck 'workspace.guards-registered' {
+    . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
+    if ($workspace -ceq $program) {
+        return 'the program and the workspace are one directory; settings.hooks-registered is the window on it'
+    }
+
+    $files = @(@('settings.json', 'settings.local.json') |
+        ForEach-Object { Join-Path $workspace (Join-Path '.claude' $_) } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    # THE ENABLED PLUGIN'S REGISTRATIONS COUNT (S42): they are hooks a session rooted here runs, and a
+    # workspace guarded by the plugin alone has nothing of its own to show for it.
+    $plugin = Get-EnabledClaudePluginHooks -Workspace $workspace
+    $pluginTree = if ($null -ne $plugin) { $plugin.tree } else { $null }
+    if (-not $files.Count -and $null -eq $pluginTree) {
+        throw ("$workspace registers no hooks at all: it has no .claude/settings.json, so a session rooted " +
+               'there runs with no Desk boundary and no closed-Book guard. Re-run `library init ' +
+               "$workspace` to register them.")
+    }
+    $ownTrees = @($files | ForEach-Object { [IO.File]::ReadAllText($_) | ConvertFrom-Json })
+    $trees = @($ownTrees + @(if ($null -ne $pluginTree) { $pluginTree }))
+    $problems = @(Get-HookRegistrationProblems -Settings $trees)
+    $blocking = @($problems | Where-Object { -not $_.optional })
+    if ($blocking.Count) {
+        throw ((($blocking | ForEach-Object { $_.detail }) -join '; ') +
+               " -- a session rooted in $workspace would run without them. Re-run ``library init $workspace``.")
+    }
+
+    # EVERY PATH, NOT EVERY REQUIRED PATH. A registration the Library does not require still runs in
+    # the reader's session, and one naming a script that has gone is a hook the harness reports as a
+    # non-blocking error on every matching call.
+    $unresolved = [Collections.Generic.List[string]]::new()
+    $registrations = 0
+    foreach ($tree in $trees) {
+        $names = @($tree.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($names -cnotcontains 'hooks' -or $null -eq $tree.hooks) { continue }
+        foreach ($eventProperty in @($tree.hooks.PSObject.Properties)) {
+            foreach ($matcherBlock in @($eventProperty.Value)) {
+                if ($null -eq $matcherBlock) { continue }
+                $blockNames = @($matcherBlock.PSObject.Properties | ForEach-Object { $_.Name })
+                if ($blockNames -cnotcontains 'hooks') { continue }
+                foreach ($entry in @($matcherBlock.hooks)) {
+                    if ($null -eq $entry) { continue }
+                    $registrations++
+                    foreach ($token in @((Get-HookEntryText $entry) -split '\s+')) {
+                        $candidate = ([string]$token).Trim('"')
+                        # THE KERNEL BINARY A REGISTRATION NAMES (S42) must be there, as a script must.
+                        if ($candidate -match '[\\/]bin[\\/]library(\.exe)?$' -and [IO.Path]::IsPathRooted($candidate)) {
+                            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { [void]$unresolved.Add("$($eventProperty.Name) -> $candidate") }
+                            continue
+                        }
+                        if ($candidate -cnotlike '*.ps1') { continue }
+                        # A workspace-relative or variable-bearing path is the harness's to expand
+                        # and cannot be judged from here; an absolute one is this check's whole point.
+                        if ($candidate -clike '*${*') { continue }
+                        if (-not [IO.Path]::IsPathRooted($candidate)) { continue }
+                        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                            [void]$unresolved.Add("$($eventProperty.Name) -> $candidate")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if ($unresolved.Count) {
+        throw ('a registered hook names a script that is not there, so it fails open silently: ' +
+               (@($unresolved) -join '; ') + ". Re-run ``library init $workspace`` to re-point them.")
+    }
+
+    # A FOURTH QUESTION, AND IT IS THE ONE THIS CHECK WAS GREEN OVER FOR THREE DAYS. Everything above
+    # WALKS the block -- and the walk coerces with @(), so a bare object reads exactly as a
+    # one-element array does. It therefore answers "the paths resolve" perfectly well about a block
+    # the harness will not load at all. Measured 2026-09-21, the first time a session was rooted in
+    # the reader's workspace: five of six events and two of three PreToolUse entries were objects
+    # where arrays are required, the harness reported each one "ignored" and then skipped the file
+    # ENTIRELY, and this check said "10 hook registration(s) resolve" throughout.
+    #
+    # THE JUDGE IS THE PACKAGE'S, NOT A SECOND COPY OF THE RULE. Test-ClaudeHookShape pins the shape
+    # to two working consumers rather than to an opinion, and it lives in HookRegistry.ps1 so this
+    # check, `library init` and the plugin packager all ask one question.
+    $shapeFaults = [Collections.Generic.List[string]]::new()
+    foreach ($tree in $trees) {
+        $treeNames = @($tree.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($treeNames -cnotcontains 'hooks' -or $null -eq $tree.hooks) { continue }
+        foreach ($fault in @(Test-ClaudeHookShape -Document $tree -Label "$workspace's registered hooks")) {
+            [void]$shapeFaults.Add($fault)
+        }
+    }
+    if ($shapeFaults.Count) {
+        throw ((@($shapeFaults) -join '; ') + ' -- a settings file whose hooks block is malformed is skipped ENTIRELY ' +
+               "by the harness, so a session rooted in $workspace would run with no Desk boundary and no closed-Book " +
+               "guard however many registrations are counted above. Re-run ``library init $workspace``.")
+    }
+
+    # The reader itself. A guarded workspace with no server has nothing to read a Book WITH, which is
+    # the state this machine's workspace was in from the migration until the guards landed.
+    $mcpPath = Join-Path $workspace '.mcp.json'
+    $serverDetail = 'no .mcp.json'
+    if (Test-Path -LiteralPath $mcpPath -PathType Leaf) {
+        $mcp = $null
+        try { $mcp = [IO.File]::ReadAllText($mcpPath) | ConvertFrom-Json } catch { $mcp = $null }
+        $mcpNames = @(if ($null -eq $mcp) { @() } else { @($mcp.PSObject.Properties | ForEach-Object { $_.Name }) })
+        if ($mcpNames -ccontains 'mcpServers') {
+            $serverNames = @($mcp.mcpServers.PSObject.Properties | ForEach-Object { $_.Name })
+            if ($serverNames -ccontains 'validated-book-reader') { $serverDetail = 'reader declared' }
+            else { $serverDetail = "declares $($serverNames.Count) server(s), none of them the validated reader" }
+        }
+    }
+    if ($serverDetail -cne 'reader declared' -and $null -ne $plugin -and $plugin.declares_reader) { $serverDetail = 'reader declared' }
+    if ($serverDetail -cne 'reader declared') {
+        return ("WARN: $workspace registers its guards but $serverDetail, so a session there can be " +
+                'refused a closed Book and still has no tool to read an open one. A plugin install ' +
+                'supplies the server instead; a direct one gets it from `library init`.')
+    }
+
+    # BOTH AT ONCE IS EVERY GUARD TWICE (S42): the plugin's registrations and the workspace's own each fire,
+    # and a second reader is declared beside the first. Not unsafe, and not what either install meant.
+    if ($null -ne $pluginTree -and -not @(Get-HookRegistrationProblems -Settings $ownTrees | Where-Object { -not $_.optional }).Count) {
+        return ("WARN: $workspace registers its guards itself AND through the enabled $($plugin.key) plugin, so every guard " +
+                'runs twice and two validated readers are declared. Keep one: disable the plugin for this workspace, or ' +
+                'remove the hooks `library init` wrote to .claude/settings.local.json.')
+    }
+    $through = if ($null -ne $pluginTree) { " (through the enabled $($plugin.key) plugin)" } else { '' }
+    "$registrations hook registration(s) resolve$through, and the validated reader is declared"
+}
+
+# --- And the same three questions asked of the READER'S workspace, for the other harness ----------
+#
+# THE CHECK THAT WAS MISSING ON 2026-09-22, AND ITS ABSENCE IS THE LAST THING HOLDING PHASE C OPEN.
+# `workspace.guards-registered` above reads `.claude/`, so it is structurally incapable of seeing a
+# Codex seat: the reader's workspace carried no `.codex/` configuration at all, which meant a Codex
+# session rooted there had no Desk boundary, no closed-Book guard and no shell guard -- exactly the
+# hole ADR-0036 closed for Claude Code, sitting open beside the half that was closed, with 116 checks
+# green over it.
+#
+# IT ASKS THE SAME THREE QUESTIONS AND THEN ONE MORE THAT ONLY CODEX HAS. Registered, paths resolve,
+# shape loads -- and TRUSTED, which is the gate that makes the other three worth asking.
+#
+# MEASURED 2026-09-22 ON codex-cli 0.153.4, because the plan assumed and the assumption was half
+# wrong. Codex reads `<project>/.codex/hooks.json` AND `<project>/.codex/config.toml`, walking up
+# from the session's working directory -- but only when the project carries
+# `[projects.'<path>'] trust_level = "trusted"` in `$CODEX_HOME/config.toml`. Untrusted, both are
+# ignored in SILENCE: the same deliberately malformed hooks file drew `failed to parse hooks config
+# ...` from the client when trusted and not one word when not. So the state this check exists to
+# report is, by construction, the state a session cannot report about itself.
+#
+# TRUST IS A WARNING AND NOT A FAILURE, and the line is drawn deliberately. Everything above it is a
+# fact about files in this repository's own gift, and a wrong answer there is a defect. Trust is a
+# per-machine, per-CODEX_HOME security decision recorded in a file no workspace owns, granted by the
+# reader's own client at first launch -- and this machine has two homes, because Orca substitutes
+# `CODEX_HOME` (docs/hook-enforced-boundaries.md). Failing the commit gate on it would block every
+# commit here on somebody having opened Codex. So it warns, names the home it actually read, and says
+# what the state means: the bindings are correct and inert.
+Invoke-WorkspaceCheck 'workspace.codex-guards-registered' {
+    . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
+    . (Join-Path $PSScriptRoot 'CodexBindings.ps1')
+    if ($workspace -ceq $program) {
+        return 'the program and the workspace are one directory; codex.project-access-config is the window on it'
+    }
+    # A packaged install that ships no Codex templates writes no Codex bindings, and a workspace with
+    # none is then correct rather than unguarded. Asked of the PROGRAM, because that is what decides.
+    $template = Join-Path $program (Join-Path '.codex' 'hooks.template.json')
+    if (-not (Test-Path -LiteralPath $template -PathType Leaf)) {
+        return 'this install ships no Codex hooks template, so `library init` writes no Codex bindings'
+    }
+
     $hooksPath = Join-Path $workspace (Join-Path '.codex' 'hooks.json')
+    if (-not (Test-Path -LiteralPath $hooksPath -PathType Leaf)) {
+        throw ("$workspace has no .codex/hooks.json, so a Codex seat opened there runs with no Desk boundary, " +
+               "no closed-Book guard and no shell guard. Re-run ``library init $workspace`` to write them.")
+    }
+    $doc = $null
+    try { $doc = [IO.File]::ReadAllText($hooksPath) | ConvertFrom-Json }
+    catch { throw "$hooksPath is not valid JSON, so Codex registers nothing from it: $($_.Exception.Message)" }
+
+    # SHAPE FIRST, because a document Codex rejects outright makes every later question vacuous: the
+    # registrations below can all be perfect in a file the client refuses to read.
+    $shapeFaults = @(Test-CodexHookShape -Document $doc -Label "$workspace's .codex/hooks.json")
+    if ($shapeFaults.Count) {
+        throw ((@($shapeFaults) -join '; ') + " -- Codex rejects the whole file, so a session rooted in $workspace " +
+               "would run with no Library hook at all however many are registered in it. Re-run ``library init $workspace``.")
+    }
+    $problems = @(Get-CodexRegistrationProblems -Document $doc)
+    if ($problems.Count) {
+        throw ((@($problems) -join ' ') + " A Codex seat in $workspace would run without them. Re-run ``library init $workspace``.")
+    }
+
+    # EVERY PATH, and this is the half `codex.project-access-config` was green over for a day while
+    # the program's own bindings pointed at a directory that no longer existed. These registrations
+    # are absolute pointers into the program, so a program that moves turns each of them into a hook
+    # that cannot start -- and a hook that cannot start is a boundary that is not there.
+    $unresolved = [Collections.Generic.List[string]]::new()
+    $registrations = 0
+    foreach ($eventProperty in @($doc.hooks.PSObject.Properties)) {
+        foreach ($matcherBlock in @($eventProperty.Value)) {
+            if ($null -eq $matcherBlock) { continue }
+            $blockNames = @($matcherBlock.PSObject.Properties | ForEach-Object { $_.Name })
+            if ($blockNames -cnotcontains 'hooks') { continue }
+            foreach ($entry in @($matcherBlock.hooks)) {
+                if ($null -eq $entry) { continue }
+                $registrations++
+                foreach ($token in @((Get-HookEntryText $entry) -split '\s+')) {
+                    $candidate = ([string]$token).Trim('"')
+                    if ($candidate -cnotlike '*.ps1') { continue }
+                    if ($candidate -clike '*${*') { continue }
+                    if (-not [IO.Path]::IsPathRooted($candidate)) { continue }
+                    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                        [void]$unresolved.Add("$($eventProperty.Name) -> $candidate")
+                    }
+                }
+            }
+        }
+    }
+    if ($unresolved.Count) {
+        throw ('a registered Codex hook names a script that is not there, so it cannot start and the boundary is ' +
+               'absent: ' + (@($unresolved) -join '; ') + ". Re-run ``library init $workspace`` to re-point them.")
+    }
+
+    # THE GATE THAT MAKES THE ABOVE MEAN ANYTHING. Reported before the reader's server, because an
+    # untrusted project has neither.
+    $trust = Get-CodexProjectTrust -Path $workspace
+    if (-not $trust.trusted) {
+        $where = if ($trust.config_present) { "$($trust.config)" } else { "$($trust.config) (which does not exist)" }
+        return ("WARN: $workspace registers $registrations Codex hook(s) that resolve, and Codex will not read them: " +
+                "the project is not trusted in $where, resolved from $($trust.home_source). Codex ignores an untrusted " +
+                "project's .codex/ in SILENCE, so the bindings are correct and inert. Open a Codex session in that " +
+                'folder once and answer its trust prompt; the grant is per Codex home, and Orca substitutes ' +
+                'CODEX_HOME, so a seat launched from Orca needs it in the home that seat uses.')
+    }
+
+    # The reader itself, exactly as the Claude half asks it. A guarded Codex seat with no server can
+    # be refused a closed Book and still has nothing to read an open one with.
+    $configPath = Join-Path $workspace (Join-Path '.codex' 'config.toml')
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return ("WARN: $workspace registers $registrations trusted Codex hook(s) that resolve, but has no " +
+                '.codex/config.toml, so a Codex seat there has no validated reader.')
+    }
+    $config = [IO.File]::ReadAllText($configPath)
+    if ($config -notmatch '(?m)^\[mcp_servers\.validated-book-reader\]\s*$') {
+        return ("WARN: $workspace registers $registrations trusted Codex hook(s) that resolve, but its " +
+                '.codex/config.toml does not declare the validated reader.')
+    }
+
+    "$registrations Codex hook registration(s) resolve, the project is trusted in $($trust.home), and the validated reader is declared"
+}
+
+Invoke-Check 'codex.project-access-config' {
+    $configTemplatePath = Join-Path $program (Join-Path '.codex' 'config.template.toml')
+    $hooksTemplatePath = Join-Path $program (Join-Path '.codex' 'hooks.template.json')
+    $configPath = Join-Path $program (Join-Path '.codex' 'config.toml')
+    $hooksPath = Join-Path $program (Join-Path '.codex' 'hooks.json')
     if (-not (Test-Path -LiteralPath $configTemplatePath -PathType Leaf)) { throw '.codex/config.template.toml is missing.' }
     if (-not (Test-Path -LiteralPath $hooksTemplatePath -PathType Leaf)) { throw '.codex/hooks.template.json is missing.' }
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw '.codex/config.toml is missing.' }
@@ -118,61 +595,74 @@ Invoke-Check 'codex.project-access-config' {
     try { $hooks = [IO.File]::ReadAllText($hooksPath) | ConvertFrom-Json }
     catch { throw ".codex/hooks.json is not valid JSON: $($_.Exception.Message)" }
 
-    # THE SHAPE, WHICH VALID JSON DOES NOT IMPLY. Until 2026-09-06 this check read
-    # $hooks.PreToolUse -- the events at the ROOT of the file -- and passed for months on a file
-    # Codex rejected outright:
+    # THE SHAPE, WHICH VALID JSON DOES NOT IMPLY, AND IT IS NOW ONE JUDGE RATHER THAN THIS CHECK'S
+    # OWN COPY. Until 2026-09-06 this read $hooks.PreToolUse -- the events at the ROOT of the file --
+    # and passed for months on a file Codex rejected outright:
     #   warning: failed to parse hooks config ...: unknown field `PreToolUse`,
     #                                             expected `description` or `hooks`
-    # Every Library hook was therefore absent from every Codex session, and nothing said so: the
-    # file existed, parsed as JSON, and named the right scripts. Verified against codex 0.147.0 by
-    # driving both shapes through a real `codex exec` run. So the root keys are now the first thing
-    # asserted, and the events are read from where Codex actually looks for them.
-    $rootNames = @($hooks.PSObject.Properties | ForEach-Object { $_.Name })
-    $stray = @($rootNames | Where-Object { $_ -cnotin @('description', 'hooks') })
-    if ($stray.Count) { throw "Codex rejects a hooks file with $($stray -join ', ') at the root; every event must nest under 'hooks'." }
-    if ($rootNames -cnotcontains 'hooks') { throw ".codex/hooks.json has no top-level 'hooks' key, so Codex registers nothing." }
-
-    # One structural reader now serves both clients, because the corrected Codex shape and
-    # .claude/settings.json agree: events under a 'hooks' key, each a list of matcher blocks.
+    # Every Library hook was therefore absent from every Codex session, and nothing said so: the file
+    # existed, parsed as JSON, and named the right scripts. `Test-CodexHookShape` in
+    # tools/HookRegistry.ps1 asks that question now, for this check, for the renderer that writes the
+    # file and for `workspace.codex-guards-registered` -- and it adds the nested array shape, which
+    # this check had never asked at all.
     . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
-    $registered = Get-RegisteredHookEvents $hooks
-    $codexRequired = @(
-        @{ file = 'Guard-BasicMemoryRead.ps1'; event = 'PreToolUse'; detail = 'Codex Basic Memory calls are not registered with the Desk guard' },
-        @{ file = 'Guard-ShellShelfRead.ps1';  event = 'PreToolUse'; detail = 'Codex shell commands can read a closed Shelf Book' },
-        @{ file = 'Guard-ShelfBookRead.ps1';   event = 'PreToolUse'; detail = 'Codex apply_patch can write into a closed Shelf Book' },
-        @{ file = 'Get-VirtualDeskContext.ps1'; event = 'UserPromptSubmit'; detail = 'Codex does not load Virtual Desk context at prompt submission' }
-    )
-    foreach ($entry in $codexRequired) {
-        if (-not $registered.ContainsKey($entry.file)) { throw "$($entry.detail): $($entry.file) is absent." }
-        if (@($registered[$entry.file]) -cnotcontains $entry.event) {
-            throw "$($entry.detail): $($entry.file) is registered under $(@($registered[$entry.file]) -join ', ') rather than $($entry.event)."
+    . (Join-Path $PSScriptRoot 'CodexBindings.ps1')
+    $shapeFaults = @(Test-CodexHookShape -Document $hooks -Label '.codex/hooks.json')
+    if ($shapeFaults.Count) { throw (@($shapeFaults) -join '; ') }
+
+    # WHICH HOOKS, UNDER WHICH EVENT, BOUND TO WHICH MATCHER -- all three from the one table in
+    # HookRegistry.ps1, including the two matchers that were each guessed wrong once: Codex normalises
+    # its shell tool to `Bash` for hooks and does NOT normalise `apply_patch`, so a matcher naming
+    # `exec`, `Write` or `Edit` is registered and unable to fire.
+    $registrationProblems = @(Get-CodexRegistrationProblems -Document $hooks)
+    if ($registrationProblems.Count) { throw (@($registrationProblems) -join ' ') }
+
+    # AND THAT EVERY PATH IT NAMES IS STILL THERE, which nothing asked until 2026-09-22 and which was
+    # FALSE on this machine the whole of the day before. The migration of 2026-09-21 retired
+    # `D:\Library`, and these generated bindings -- gitignored, so no commit touched them -- went on
+    # naming hooks and an adapter under the old root. Every assertion above stayed green: the sections
+    # were present, the events nested correctly, the matchers named the right tools, and not one of
+    # the five files existed. A registration naming a script that is not there is a hook that cannot
+    # start, which in this harness is a boundary that is simply absent.
+    $missing = [Collections.Generic.List[string]]::new()
+    foreach ($eventProperty in @($hooks.hooks.PSObject.Properties)) {
+        foreach ($matcherBlock in @($eventProperty.Value)) {
+            if ($null -eq $matcherBlock) { continue }
+            $blockNames = @($matcherBlock.PSObject.Properties | ForEach-Object { $_.Name })
+            if ($blockNames -cnotcontains 'hooks') { continue }
+            foreach ($entry in @($matcherBlock.hooks)) {
+                if ($null -eq $entry) { continue }
+                foreach ($token in @((Get-HookEntryText $entry) -split '\s+')) {
+                    $candidate = ([string]$token).Trim('"')
+                    if ($candidate -cnotlike '*.ps1') { continue }
+                    if (-not [IO.Path]::IsPathRooted($candidate)) { continue }
+                    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                        [void]$missing.Add("$($eventProperty.Name) -> $candidate")
+                    }
+                }
+            }
         }
     }
-
-    # The shell guard is useless if its matcher names no tool Codex actually calls, and the obvious
-    # guess was wrong. A PreToolUse payload captured from a real `codex exec` run on 2026-09-06
-    # carries tool_name 'Bash' -- Codex normalises its shell tool to the Claude Code name for hooks,
-    # and 'exec' survives only inside tool_use_id. A matcher of '^exec$' matches nothing, silently,
-    # which is the same failure as no guard at all.
-    $shellBlocks = @($hooks.hooks.PreToolUse | Where-Object {
-        @($_.hooks | Where-Object { (Get-HookEntryText $_) -match 'Guard-ShellShelfRead\.ps1' }).Count
-    })
-    if (@($shellBlocks | Where-Object { [string]$_.matcher -cmatch '(^|\||\()Bash($|\||\))' }).Count -lt 1) {
-        throw "the Codex shell guard's matcher does not name the Bash tool, so it can never fire."
+    # The reader adapter is named in config.toml rather than in the hooks file, and it fails the same
+    # way: Codex reports a server that will not start, and the session has no way to read a Book.
+    $readerArguments = [regex]::Match($config, '(?m)^args\s*=\s*\[([^\r\n]+)\]\s*$')
+    if ($readerArguments.Success) {
+        foreach ($token in @($readerArguments.Groups[1].Value -split ',')) {
+            $candidate = ([string]$token).Trim().Trim('"')
+            if ($candidate -cnotlike '*.ps1') { continue }
+            if (-not [IO.Path]::IsPathRooted($candidate)) { continue }
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                [void]$missing.Add("mcp_servers.validated-book-reader -> $candidate")
+            }
+        }
+    }
+    if ($missing.Count) {
+        throw ('a generated Codex binding names a file that is not there, so it cannot start: ' +
+               (@($missing) -join '; ') + '. These files are generated and gitignored, so a program that ' +
+               'moved leaves them behind: re-run tools/Initialize-CodexLibrary.ps1.')
     }
 
-    # The same assertion for the write half, for the same reason and against the same class of
-    # mistake. apply_patch is NOT normalised to a Claude Code name the way the shell tool is -- the
-    # payload captured 2026-09-07 carries tool_name 'apply_patch' verbatim -- so a matcher naming
-    # 'Write' or 'Edit' here would be the `^exec$` failure repeated: registered, and unable to fire.
-    $patchBlocks = @($hooks.hooks.PreToolUse | Where-Object {
-        @($_.hooks | Where-Object { (Get-HookEntryText $_) -match 'Guard-ShelfBookRead\.ps1' }).Count
-    })
-    if (@($patchBlocks | Where-Object { [string]$_.matcher -cmatch 'apply_patch' }).Count -lt 1) {
-        throw "the Codex patch guard's matcher does not name apply_patch, so it can never fire."
-    }
-
-    'both MCP servers required; events nested under hooks; Desk guard, shell guard, patch guard and context hook registered'
+    'both MCP servers required; events nested under hooks; Desk guard, shell guard, patch guard and context hook registered, and every path they name resolves'
 }
 
 Invoke-Check 'codex.delegation-runs-hooks' {
@@ -200,7 +690,7 @@ Invoke-Check 'codex.delegation-runs-hooks' {
     $silent = [Collections.Generic.List[string]]::new()
 
     foreach ($relative in $surfaces) {
-        $path = Join-Path $workspace $relative
+        $path = Join-Path $program $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$relative is missing." }
         $text = [IO.File]::ReadAllText($path)
 
@@ -252,11 +742,86 @@ Invoke-Check 'codex.delegation-runs-hooks' {
 # structure: which operator variant, whether the right-hand side is wrapped in @(), and which scope
 # an assignment lands in. A text search for '-notmatch' cannot tell a lowercase-only rule from a
 # message assertion.
+# --- A DOT-SOURCED FILE MUST NOT DECLARE PARAMETERS -----------------------------------------------
+#
+# DOT-SOURCING A SCRIPT BINDS ITS param() BLOCK IN THE CALLER'S SCOPE, with the defaults, silently.
+# `. (Join-Path $PSScriptRoot 'X.ps1')` where X declares `[switch]$SelfTest` sets the CALLER'S
+# $SelfTest to $false, whatever the caller was invoked with.
+#
+# MEASURED, AND IT COST A SESSION. On 2026-09-20 `tools/WorkspaceRegistry.ps1` declared
+# `param([string]$RegistryRoot, [switch]$SelfTest)`. `Initialize-LibraryWorkspace.ps1` dot-sourced it
+# on line 3 and also takes a `-SelfTest`. Run as `-File Initialize-LibraryWorkspace.ps1 -SelfTest`,
+# the flag was bound correctly, then cleared by the dot-source one line later. The self-test did not
+# run. What ran instead was the REAL initialiser against this repository -- writing a workspace
+# marker, registering it, and appending a managed section to a TRACKED CLAUDE.md -- and it printed a
+# success summary, because nothing had gone wrong from its own point of view. `-RegistryRoot` was
+# cleared by the same line, so the fixture registry argument was silently ignored too.
+#
+# `tools/BookRootSchema.ps1` has always had the answer and the reason was never written down: no
+# param block, and `$MyInvocation.InvocationName -ne '.' -and $args -contains '-SelfTest'` to tell a
+# direct run from a dot-source. That idiom is now a rule rather than a habit.
+#
+# BOTH SIDES ARE DERIVED. The dot-source targets come from the AST of every source in the tree, and
+# the param blocks from the AST of the files they name -- so a new dot-source of a parameterised
+# file fails here, and so does a param block added to a file that is already dot-sourced. There is
+# no exemption list: the one pre-existing instance (`McpDirectoryListing.ps1`) was fixed in the same
+# pass, because a check that ships with an exemption ships decayed.
+Invoke-Check 'powershell.dot-sourced-files-declare-no-parameters' {
+    $roots = @(
+        (Join-Path $program 'tools'),
+        (Join-Path $program '.claude/hooks'),
+        (Join-Path $program '.claude/adapters')
+    )
+    $files = @($roots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })
+    if (-not $files.Count) { throw 'no PowerShell sources found to scan' }
+
+    # Which files are dot-sourced, and by whom. The name is taken from the quoted literal inside the
+    # dot-source expression, which is how every one of them is written in this tree
+    # (`. (Join-Path $PSScriptRoot 'X.ps1')`, `. (Get-LibraryProgramFile -Name 'X.ps1' ...)`).
+    $consumers = @{}
+    $parsed = @{}
+    foreach ($file in $files) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+        $parsed[$file.Name] = $ast
+        foreach ($command in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+            if ($command.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Dot) { continue }
+            foreach ($match in [regex]::Matches($command.Extent.Text, "'([^']+\.ps1)'")) {
+                $name = [IO.Path]::GetFileName($match.Groups[1].Value)
+                if (-not $consumers.ContainsKey($name)) { $consumers[$name] = [Collections.Generic.List[string]]::new() }
+                if (@($consumers[$name]) -cnotcontains $file.Name) { [void]$consumers[$name].Add($file.Name) }
+            }
+        }
+    }
+
+    # A DOT-SOURCE THAT NAMES NOTHING IN THIS TREE IS ITSELF A FAULT, and checking it is what stops
+    # this whole check going vacuous after a rename: a typo'd target would otherwise simply drop out
+    # of the scan and take its file's coverage with it.
+    $unknown = @($consumers.Keys | Where-Object { -not $parsed.ContainsKey($_) } | Sort-Object)
+    $offenders = [Collections.Generic.List[string]]::new()
+    foreach ($name in @($consumers.Keys | Sort-Object)) {
+        if (-not $parsed.ContainsKey($name)) { continue }
+        $ast = $parsed[$name]
+        if ($null -eq $ast.ParamBlock) { continue }
+        $declared = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        [void]$offenders.Add("$name declares param($($declared -join ', ')) and is dot-sourced by $(@($consumers[$name]) -join ', ')")
+    }
+
+    if ($offenders.Count) {
+        throw ("a dot-sourced file's parameters are bound in its caller's scope, silently: " +
+               ($offenders -join '; ') +
+               ". Remove the param block and read the flag off `$args, as tools/BookRootSchema.ps1 does.")
+    }
+    if ($unknown.Count) { throw "a dot-source names a file this tree does not contain: $($unknown -join ', ')" }
+    "$($consumers.Count) dot-sourced file(s), none declaring parameters"
+}
+
 Invoke-Check 'powershell.defect-families' {
     $roots = @(
-        (Join-Path $workspace 'tools'),
-        (Join-Path $workspace '.claude/hooks'),
-        (Join-Path $workspace '.claude/adapters')
+        (Join-Path $program 'tools'),
+        (Join-Path $program '.claude/hooks'),
+        (Join-Path $program '.claude/adapters')
     )
     $files = @($roots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })
     if (-not $files.Count) { throw 'no PowerShell sources found to scan' }
@@ -429,7 +994,7 @@ Invoke-Check 'powershell.defect-families' {
     # holding one synthetic file -- Test-LibraryHelpers builds exactly those, and an unscoped guard
     # failed its two family 5 NEGATIVE controls, which is the guard reporting on the fixture's shape
     # rather than on the detector. Against our own sources zero means the call set matched nothing.
-    $ownTree = ((Resolve-Path -LiteralPath $workspace).Path -ceq (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path)
+    $ownTree = ((Resolve-Path -LiteralPath $program).Path -ceq (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path)
     if ($ownTree -and $emptyCapableSites -eq 0) {
         throw ('the empty-capable call set matched nothing across this repository, so the unroll family''s ' +
                'production-side detector examined no site and would pass vacuously; a method was renamed, ' +
@@ -452,8 +1017,8 @@ Invoke-Check 'powershell.defect-families' {
 # to one contract instead of pretending any single one is canonical.
 Invoke-Check 'mcp.transports-recover-sessions' {
     $roots = @(
-        (Join-Path $workspace 'tools'),
-        (Join-Path $workspace '.claude/adapters')
+        (Join-Path $program 'tools'),
+        (Join-Path $program '.claude/adapters')
     )
     $files = @($roots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })
     if (-not $files.Count) { throw 'no PowerShell sources found to scan' }
@@ -525,8 +1090,8 @@ Invoke-Check 'mcp.transports-recover-sessions' {
 # spellings are checked, because the aggregate one looks correct and fails only on the rarer frame.
 Invoke-Check 'mcp.transports-guard-idless-events' {
     $roots = @(
-        (Join-Path $workspace 'tools'),
-        (Join-Path $workspace '.claude/adapters')
+        (Join-Path $program 'tools'),
+        (Join-Path $program '.claude/adapters')
     )
     $files = @($roots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })
     if (-not $files.Count) { throw 'no PowerShell sources found to scan' }
@@ -606,7 +1171,7 @@ Invoke-Check 'mcp.transports-guard-idless-events' {
     "$($transports.Count) MCP transport(s); $guarded .id read(s) guarded against id-less frames, none bare"
 }
 Invoke-Check 'reader.launch-validation' {
-    $adapter = Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'
+    $adapter = Join-Path $program '.claude/adapters/Validated-BookReader.ps1'
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -LaunchSelfTest 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 6) -join ' | ') }
 
@@ -648,7 +1213,7 @@ Invoke-Check 'helpers.manifest-matches-allowlist' {
     if ($ghosts.Count) { throw "declared but missing from disk: $($ghosts -join ', ')" }
 
     $settingsFile = @('settings.json', 'settings.local.json') |
-        ForEach-Object { Join-Path $workspace (Join-Path '.claude' $_) } |
+        ForEach-Object { Join-Path $program (Join-Path '.claude' $_) } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         Select-Object -First 1
     $allowRaw = Get-Content -LiteralPath $settingsFile -Raw
@@ -700,7 +1265,7 @@ Invoke-Check 'helpers.manifest-matches-allowlist' {
     # can edit .claude/settings.json, so failing the gate would block a commit on an edit the
     # committer is refused.
     . (Join-Path $PSScriptRoot 'McpToolInventory.ps1')
-    $mcp = Get-McpToolAllowlistStatus -Workspace $workspace -SettingsPath $settingsFile
+    $mcp = Get-McpToolAllowlistStatus -Workspace $program -SettingsPath $settingsFile
     $mcpDeclared = @($mcp.declared)
     $mcpMissing = @($mcp.missing)
     $mcpBlind = @($mcp.not_enumerable | ForEach-Object { [string]$_.server })
@@ -738,7 +1303,7 @@ Invoke-Check 'helpers.manifest-matches-allowlist' {
 # a Book renamed or archived after a record was written leaves the record naming a Book that no
 # longer exists, and nothing else in the tree would say so. The helper owns the rules; this check
 # runs them on every commit rather than only when someone happens to add a record.
-Invoke-Check 'shelf.overlap-records' {
+Invoke-WorkspaceCheck 'shelf.overlap-records' {
     $recordPath = Join-Path $workspace 'internal/overlap-records.json'
     if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return 'no overlap records yet' }
     $result = & (Join-Path $PSScriptRoot 'Set-TopicOverlap.ps1') -Action Validate -WorkspacePath $workspace
@@ -750,7 +1315,7 @@ Invoke-Check 'shelf.overlap-records' {
 # else would notice a malformed one. Deliberately offline and deliberately blind to whether the
 # Project exists or the batch is still on disk -- both are read-time questions, and a pre-commit
 # check that needed the NAS would fail whenever the NAS was down.
-Invoke-Check 'raw.batch-owners' {
+Invoke-WorkspaceCheck 'raw.batch-owners' {
     $recordPath = Join-Path $workspace 'internal/raw-batch-owners.json'
     if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return 'no raw batch ownership records yet' }
     $result = & (Join-Path $PSScriptRoot 'Set-RawBatchOwner.ps1') -Action Validate -WorkspacePath $workspace
@@ -792,7 +1357,7 @@ Invoke-Check 'raw.batch-owners' {
 # looks like and what prose never does.
 Invoke-Check 'desk.seat-paths-resolve' {
     $schemaFile = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'BookRootSchema.ps1')).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
 
@@ -862,7 +1427,7 @@ Invoke-Check 'desk.claim-coverage' {
     if ($declared.Count -lt 1) { throw 'Get-ClaimGatedHelpers declares no helper; the claim gate would be unenforced and this check would pass vacuously.' }
 
     $declaringFile = (Resolve-Path -LiteralPath $seatFile).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
 
@@ -979,7 +1544,7 @@ Invoke-Check 'maintenance.barrier-coverage' {
 
     # 3. WHO RAISES AND LOWERS ONE, DERIVED FROM THE CODE AND COMPARED IN BOTH DIRECTIONS.
     $declaringFile = (Resolve-Path -LiteralPath $barrierFile).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
     #    THE TWO VERBS ARE COUNTED APART, and the reason is a falsification that got through when
@@ -1064,7 +1629,7 @@ Invoke-Check 'desk.registry-lock-coverage' {
 
     $problems = [Collections.Generic.List[string]]::new()
     $declaringFile = (Resolve-Path -LiteralPath $seatFile).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
 
@@ -1197,7 +1762,7 @@ Invoke-Check 'desk.topic-lock-coverage' {
 
     $problems = [Collections.Generic.List[string]]::new()
     $declaringFile = (Resolve-Path -LiteralPath $ownershipFile).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
 
@@ -1392,7 +1957,7 @@ Invoke-Check 'desk.lock-order' {
         $class
     }
 
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
     $inversions = [Collections.Generic.List[string]]::new()
@@ -1484,7 +2049,7 @@ Invoke-Check 'desk.book-root-schema' {
     $schemaFile = Join-Path $PSScriptRoot 'BookRootSchema.ps1'
     if (-not (Test-Path -LiteralPath $schemaFile -PathType Leaf)) { throw 'tools/BookRootSchema.ps1 is missing; the Book-root shape has no definition.' }
 
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
     # Every shape that DEFINES which Book roots are well-formed. Anchored alternations only: a
@@ -1528,7 +2093,7 @@ Invoke-Check 'desk.book-root-schema' {
     # nothing in its suite; the shared half was a live defect until 2026-09-08.
     $composedSources = @('.claude/adapters/Validated-BookReader.ps1', 'tools/SharedBookSource.ps1', 'tools/Update-SharedBookManifests.ps1')
     foreach ($relative in $composedSources) {
-        $composedPath = Join-Path $workspace $relative
+        $composedPath = Join-Path $program $relative
         if (-not (Test-Path -LiteralPath $composedPath -PathType Leaf)) { continue }
         $composedText = [IO.File]::ReadAllText($composedPath)
         $composedText = [regex]::Replace($composedText, '(?s)<#.*?#>', '')
@@ -1550,7 +2115,7 @@ Invoke-Check 'desk.book-root-schema' {
     "$($sources.Count) source(s) scanned; the Book-root shape is defined only in BookRootSchema.ps1, and $($composedSources.Count) page-fetching source(s) compose no page path"
 }
 
-Invoke-Check 'shelf.references-resolve' {
+Invoke-WorkspaceCheck 'shelf.references-resolve' {
     $catalogPath = Join-Path $workspace 'shelf/_catalog.md'
     if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) { throw 'shelf/_catalog.md is missing.' }
     $catalog = Get-Content -LiteralPath $catalogPath -Raw
@@ -1572,12 +2137,12 @@ Invoke-Check 'shelf.references-resolve' {
     # only literal Shelf paths in .ps1 files are self-test fixtures, which are supposed to name Books
     # that do not exist. The helper defaults, which are literal, are checked by AST below instead.
     $sources = @()
-    $skills = Join-Path $workspace '.claude/skills'
+    $skills = Join-Path $program '.claude/skills'
     if (Test-Path -LiteralPath $skills -PathType Container) {
         $sources += @(Get-ChildItem -LiteralPath $skills -File -Recurse | Where-Object { $_.Extension -eq '.md' })
     }
     $sources += @(@('CLAUDE.md', 'CONTEXT.md') |
-        ForEach-Object { Join-Path $workspace $_ } |
+        ForEach-Object { Join-Path $program $_ } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         ForEach-Object { Get-Item -LiteralPath $_ })
 
@@ -1937,7 +2502,7 @@ Invoke-Check 'seat.resolution-contract' {
 
     # --- 4. EVERY CALL SITE HANDS OVER THE STATE DIRECTORY ----------------------------------------
     $schemaFile = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'BookRootSchema.ps1')).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
     # --- 5. A HELPER WHOSE OWN `-Seat` MEANS SOMETHING ELSE DECLARES IT (2026-09-18) --------------
@@ -2026,7 +2591,7 @@ Invoke-Check 'seat.resolution-contract' {
     # the correct answer for the one-file scratch workspaces Test-LibraryHelpers builds and runs this
     # gate against, and an unscoped floor would report on the fixture's shape rather than on the scan.
     # Against our own sources, a collapse to a handful means the scan stopped reading the repository.
-    $ownTree = ((Resolve-Path -LiteralPath $workspace).Path -ceq (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path)
+    $ownTree = ((Resolve-Path -LiteralPath $program).Path -ceq (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path)
     if ($ownTree -and $callSites -lt 10) {
         throw "only $callSites Resolve-SeatName call site(s) were found across this repository; the call-site scan is no longer reading it, so part 4 would pass vacuously."
     }
@@ -2071,7 +2636,7 @@ Invoke-Check 'seat.creation-gate' {
     if ($declared.Count -lt 2) { throw "Get-SeatCreatingHelpers declares $($declared.Count) helper(s); with fewer than two there is no shared gate to keep, and this check would pass vacuously." }
 
     $declaringFile = (Resolve-Path -LiteralPath $creationFile).Path
-    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $workspace $_ }
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
     $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
 
@@ -2182,7 +2747,7 @@ Invoke-Check 'seat.creation-gate' {
 # are reads of records that are replaced atomically, and making the gate acquire an ordered lock
 # every run would make it fail for a reason that has nothing to do with health. The classifier they
 # call is the same one the reset uses; the fixture half is what pins the reset to it.
-Invoke-Check 'desk.seat-retirement-identity' {
+Invoke-WorkspaceCheck 'desk.seat-retirement-identity' {
     . (Join-Path $PSScriptRoot 'NotebookOwnership.ps1')
     $problems = [Collections.Generic.List[string]]::new()
 
@@ -2323,13 +2888,13 @@ Invoke-Check 'desk.seat-retirement-identity' {
 # all is explicit: a hook whose -Heading arguments stopped matching would otherwise produce an empty
 # set and pass.
 Invoke-Check 'seats.session-start-section-resolves' {
-    $hook = Join-Path $workspace '.claude/hooks/Get-SeatStartContext.ps1'
+    $hook = Join-Path $program '.claude/hooks/Get-SeatStartContext.ps1'
     if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) { throw 'the SessionStart seat hook is missing; a seatless session is offered nothing.' }
-    $doc = Join-Path $workspace 'docs/seats.md'
+    $doc = Join-Path $program 'docs/seats.md'
     if (-not (Test-Path -LiteralPath $doc -PathType Leaf)) { throw 'docs/seats.md is missing; the seat hook has no document to serve.' }
     # The REAL cutter, not a reimplementation of it: a check that parsed headings its own way would
     # pass on a document the hook cannot cut.
-    . (Join-Path $workspace '.claude/hooks/HookContext.ps1')
+    . (Join-Path $program '.claude/hooks/HookContext.ps1')
 
     $hookText = [IO.File]::ReadAllText($hook)
     $headings = @(@([regex]::Matches($hookText, "-Heading\s+'([^']+)'") | ForEach-Object { $_.Groups[1].Value }) | Select-Object -Unique)
@@ -2355,7 +2920,7 @@ Invoke-Check 'seats.session-start-section-resolves' {
 
 Invoke-Check 'seats.contract-table-matches-code' {
     . (Join-Path $PSScriptRoot 'SeatCreation.ps1')
-    $doc = Join-Path $workspace 'docs/seats.md'
+    $doc = Join-Path $program 'docs/seats.md'
     if (-not (Test-Path -LiteralPath $doc -PathType Leaf)) { throw 'docs/seats.md is missing; the seat contract has no reader-facing rendering.' }
     $text = [IO.File]::ReadAllText($doc)
 
@@ -2418,7 +2983,7 @@ Invoke-Check 'seats.contract-table-matches-code' {
     # to disagree.
     $registered = @([Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($PSCommandPath), [ref]$null, [ref]$null).
         FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true) |
-        Where-Object { [string]$_.GetCommandName() -ceq 'Invoke-Check' } |
+        Where-Object { $script:CheckInvokerNames -ccontains [string]$_.GetCommandName() } |
         ForEach-Object { $_.CommandElements } |
         Where-Object { $_ -is [Management.Automation.Language.StringConstantExpressionAst] } |
         ForEach-Object { [string]$_.Value })
@@ -2457,7 +3022,7 @@ Invoke-Check 'seats.contract-table-matches-code' {
 # the suite. The suite itself is a spawned one and does not run in -Fast, which is exactly why this
 # must: the row is edited far more often than the sections are.
 Invoke-Check 'seats.two-seat-row-matches-suite' {
-    $doc = Join-Path $workspace 'docs/seats.md'
+    $doc = Join-Path $program 'docs/seats.md'
     $suite = Join-Path $PSScriptRoot 'Test-TwoSeatAcceptance.ps1'
     foreach ($required in @($doc, $suite)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "$required is missing; the two-seat gate row has nothing to compare against." }
@@ -2524,7 +3089,7 @@ Invoke-Check 'context.seat-vocabulary' {
     $declared = @(Get-SeatVocabulary)
     if ($declared.Count -lt 1) { throw 'Get-SeatVocabulary declares no term; this check would pass vacuously.' }
 
-    $contextPath = Join-Path $workspace 'CONTEXT.md'
+    $contextPath = Join-Path $program 'CONTEXT.md'
     if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) { throw 'CONTEXT.md is missing; the glossary is the only authority for these terms.' }
     # ReadAllText and a multiline pattern, not a line-at-a-time read: an entry is a bold term, then
     # its definition over as many lines as it takes, then an `_Avoid_` line, then a blank line. The
@@ -2568,6 +3133,17 @@ Invoke-Check 'context.seat-vocabulary' {
 # section moves its words out of this count without moving any of its cost -- it would pass this
 # check while changing nothing. If this budget ever binds, move words to a path-scoped rule or a
 # Skill body, never to an import.
+# THE RELAUNCH AT THE TOP OF THIS FILE, HELD (S44): a child started the way every suite here is started -- `&`,
+# inheriting stdin -- must find its stdin redirected, whoever ran the gate. Red at a console with the relaunch
+# disabled, which is how a gate run by a person hung on a fresh clone.
+Invoke-Check 'gate.children-meet-ended-input' {
+    $probe = @(& powershell.exe -NoProfile -Command '[Console]::IsInputRedirected' 2>&1)
+    $answer = ([string]($probe | Select-Object -Last 1)).Trim()
+    if ($answer -cne 'True') {
+        throw "a child this gate starts found its stdin attached to a console (IsInputRedirected: '$answer'), so any child that reads it -- the seat picker, a hook reading its payload -- waits on the keyboard and the gate hangs"
+    }
+    'a child started by this gate meets redirected stdin'
+}
 Invoke-Check 'context.always-on-budget' {
     $fileBudget = 900
     $totalBudget = 1100
@@ -2582,13 +3158,13 @@ Invoke-Check 'context.always-on-budget' {
 
     $parts = [Collections.Generic.List[object]]::new()
 
-    $claudeMd = Join-Path $workspace 'CLAUDE.md'
+    $claudeMd = Join-Path $program 'CLAUDE.md'
     if (-not (Test-Path -LiteralPath $claudeMd -PathType Leaf)) { throw 'CLAUDE.md is missing.' }
     $fileWords = Measure-InstructionWords (Get-Content -LiteralPath $claudeMd -Raw)
     [void]$parts.Add([pscustomobject]@{ name = 'CLAUDE.md'; words = $fileWords })
 
     # A Skill costs its name and description in every session; only the body is on demand.
-    $skillsRoot = Join-Path $workspace '.claude/skills'
+    $skillsRoot = Join-Path $program '.claude/skills'
     if (Test-Path -LiteralPath $skillsRoot -PathType Container) {
         foreach ($skill in @(Get-ChildItem -LiteralPath $skillsRoot -Filter 'SKILL.md' -File -Recurse | Sort-Object FullName)) {
             $text = Get-Content -LiteralPath $skill.FullName -Raw
@@ -2620,7 +3196,7 @@ Invoke-Check 'context.always-on-budget' {
         }
     }
 
-    $rulesRoot = Join-Path $workspace '.claude/rules'
+    $rulesRoot = Join-Path $program '.claude/rules'
     if (Test-Path -LiteralPath $rulesRoot -PathType Container) {
         foreach ($rule in @(Get-ChildItem -LiteralPath $rulesRoot -Filter '*.md' -File -Recurse | Sort-Object FullName)) {
             $text = Get-Content -LiteralPath $rule.FullName -Raw
@@ -2642,7 +3218,7 @@ Invoke-Check 'context.always-on-budget' {
             foreach ($pattern in $patterns) {
                 $literal = @($pattern -split '[*?\[]')[0].TrimEnd('/')
                 if ([string]::IsNullOrWhiteSpace($literal)) { continue }
-                if (-not (Test-Path -LiteralPath (Join-Path $workspace $literal))) {
+                if (-not (Test-Path -LiteralPath (Join-Path $program $literal))) {
                     throw "$($rule.Name) is scoped to '$pattern', which matches nothing in this workspace"
                 }
             }
@@ -2668,9 +3244,9 @@ Invoke-Check 'context.always-on-budget' {
 # --- docs/ relative links resolve ------------------------------------------------------------------
 Invoke-Check 'docs.links-resolve' {
     $broken = [Collections.Generic.List[string]]::new()
-    $roots = @($workspace, (Join-Path $workspace 'docs'))
-    $files = @(Get-ChildItem -LiteralPath (Join-Path $workspace 'docs') -Filter '*.md' -File -Recurse)
-    $files += @(Get-ChildItem -LiteralPath $workspace -Filter '*.md' -File)
+    $roots = @($program, (Join-Path $program 'docs'))
+    $files = @(Get-ChildItem -LiteralPath (Join-Path $program 'docs') -Filter '*.md' -File -Recurse)
+    $files += @(Get-ChildItem -LiteralPath $program -Filter '*.md' -File)
     foreach ($file in $files) {
         $text = Get-Content -LiteralPath $file.FullName -Raw
         foreach ($m in [regex]::Matches($text, '\]\(([^)#:]+\.md)(?:#[^)]*)?\)')) {
@@ -2698,11 +3274,11 @@ Invoke-Check 'docs.links-resolve' {
 # for a list standing for a set. A missing entry and a stale one naming a deleted record are
 # different faults, and a count would pass while one was swapped for the other.
 Invoke-Check 'docs.adr-index-is-complete' {
-    $adrRoot = Join-Path $workspace 'docs/adr'
+    $adrRoot = Join-Path $program 'docs/adr'
     if (-not (Test-Path -LiteralPath $adrRoot -PathType Container)) { throw 'docs/adr is missing.' }
     $onDisk = @(@(Get-ChildItem -LiteralPath $adrRoot -Filter '*.md' -File) | ForEach-Object { $_.Name } | Sort-Object -CaseSensitive)
     if (-not $onDisk.Count) { throw 'docs/adr holds no ADR, so this check has no subject.' }
-    $indexText = [IO.File]::ReadAllText((Join-Path $workspace 'docs/_index.md'), [Text.UTF8Encoding]::new($false, $true))
+    $indexText = [IO.File]::ReadAllText((Join-Path $program 'docs/_index.md'), [Text.UTF8Encoding]::new($false, $true))
     $linked = @(@([regex]::Matches($indexText, '\]\(adr/([^)#]+\.md)')) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -CaseSensitive -Unique)
     $missing = @($onDisk | Where-Object { $linked -cnotcontains $_ })
     $stale = @($linked | Where-Object { $onDisk -cnotcontains $_ })
@@ -2731,7 +3307,7 @@ Invoke-Check 'docs.adr-index-is-complete' {
 # `docs/_index.md` is the declaration for (3) rather than a literal here, so adding a guide to the
 # index and forgetting the Skill fails, and so does the reverse.
 Invoke-Check 'skill.library-help-pointers-resolve' {
-    $skillRoot = Join-Path $workspace '.claude/skills/library-help'
+    $skillRoot = Join-Path $program '.claude/skills/library-help'
     $skillFile = Join-Path $skillRoot 'SKILL.md'
     if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
         throw 'the library-help Skill is missing its SKILL.md; nothing can load the reader help surface'
@@ -2777,7 +3353,7 @@ Invoke-Check 'skill.library-help-pointers-resolve' {
     # THE INDEX IS THE DECLARATION. A guide is reader-facing because `## Guides` says so, and the
     # Skill is how a session hands one over -- so a guide in one and not the other is a guide the
     # reader cannot be given, or a pointer to something no longer offered.
-    $indexFile = Join-Path $workspace 'docs/_index.md'
+    $indexFile = Join-Path $program 'docs/_index.md'
     if (-not (Test-Path -LiteralPath $indexFile -PathType Leaf)) { throw 'docs/_index.md is missing' }
     $indexText = Get-Content -LiteralPath $indexFile -Raw
     $indexGuidesSection = [regex]::Match($indexText, '(?ms)^##\s+Guides\s*$(.*?)(?=^##\s|\z)')
@@ -2834,9 +3410,9 @@ Invoke-Check 'skill.library-help-pointers-resolve' {
 # Git hooks are not cloned, so a tracked hook file proves nothing on its own: core.hooksPath has to
 # point at it. Without both, settings validation silently stops running before commits.
 Invoke-Check 'git.pre-commit-installed' {
-    $hookFile = Join-Path $workspace '.githooks/pre-commit'
+    $hookFile = Join-Path $program '.githooks/pre-commit'
     if (-not (Test-Path -LiteralPath $hookFile -PathType Leaf)) { throw '.githooks/pre-commit is missing.' }
-    $configured = (& git -C $workspace config --get core.hooksPath 2>$null)
+    $configured = (& git -C $program config --get core.hooksPath 2>$null)
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($configured)) {
         throw 'core.hooksPath is not set. Run: git config core.hooksPath .githooks'
     }
@@ -2873,7 +3449,7 @@ Invoke-Check 'retrieval.hit-is-a-location' {
     $surfaces = @('CLAUDE.md', 'docs/librarian-voice-and-wayfinding.md', '.claude/skills/library-help/SKILL.md')
     $silent = [Collections.Generic.List[string]]::new()
     foreach ($relative in $surfaces) {
-        $path = Join-Path $workspace $relative
+        $path = Join-Path $program $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$relative is missing." }
         if ([IO.File]::ReadAllText($path).IndexOf($stem, [StringComparison]::OrdinalIgnoreCase) -lt 0) { [void]$silent.Add($relative) }
     }
@@ -2953,7 +3529,7 @@ Invoke-Check 'reset.vocabulary-routes' {
     $unclaimed = [Collections.Generic.List[string]]::new()
     $silent = [Collections.Generic.List[string]]::new()
     foreach ($relative in $surfaces) {
-        $path = Join-Path $workspace $relative
+        $path = Join-Path $program $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$relative is missing." }
         $text = [IO.File]::ReadAllText($path)
         if ($text -notmatch $vocabularyRule) { [void]$unclaimed.Add($relative) }
@@ -2964,7 +3540,7 @@ Invoke-Check 'reset.vocabulary-routes' {
 
     $untriaged = [Collections.Generic.List[string]]::new()
     foreach ($relative in $triageFirstSurfaces) {
-        $text = [IO.File]::ReadAllText((Join-Path $workspace $relative))
+        $text = [IO.File]::ReadAllText((Join-Path $program $relative))
         if ($text -notmatch $triageFirstRule) { [void]$untriaged.Add($relative) }
     }
     if ($untriaged.Count) {
@@ -3046,8 +3622,8 @@ Invoke-Check 'reset.vocabulary-routes' {
 # rather than passing on an empty match -- but it cannot tell you the composed result is equivalent.
 Invoke-Check 'hub.briefing-regex-mirror' {
     $sites = @(
-        [pscustomobject]@{ path = (Join-Path $workspace 'tools/New-ProjectHub.ps1'); name = 'Select-BriefingSectionsSource' },
-        [pscustomobject]@{ path = (Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'); name = 'Select-ReturnBriefingSections' }
+        [pscustomobject]@{ path = (Join-Path $program 'tools/New-ProjectHub.ps1'); name = 'Select-BriefingSectionsSource' },
+        [pscustomobject]@{ path = (Join-Path $program '.claude/adapters/Validated-BookReader.ps1'); name = 'Select-ReturnBriefingSections' }
     )
     $found = @{}
     foreach ($site in $sites) {
@@ -3091,9 +3667,9 @@ Invoke-Check 'hub.briefing-regex-mirror' {
 # What this deliberately does NOT do is judge live Hub content. No check can tell an open item from
 # an accepted limit by reading it -- that is the author's call every time.
 Invoke-Check 'hub.sections-name-their-destinations' {
-    $hubPath = Join-Path $workspace 'tools/New-ProjectHub.ps1'
-    $designPath = Join-Path $workspace 'docs/project-hub-design.md'
-    $adrPath = Join-Path $workspace 'docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close.md'
+    $hubPath = Join-Path $program 'tools/New-ProjectHub.ps1'
+    $designPath = Join-Path $program 'docs/project-hub-design.md'
+    $adrPath = Join-Path $program 'docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close.md'
     foreach ($required in @($hubPath, $designPath, $adrPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "$required is missing; the Hub section rule has no definition." }
     }
@@ -3130,7 +3706,7 @@ Invoke-Check 'hub.sections-name-their-destinations' {
 
     # And the ledger page must stay size-exempt: capping it recreates the pressure that put accepted
     # limits in Now to begin with.
-    $editorPath = Join-Path $workspace 'tools/Edit-ProjectHub.ps1'
+    $editorPath = Join-Path $program 'tools/Edit-ProjectHub.ps1'
     $editorSrc = [IO.File]::ReadAllText($editorPath)
     $editorAst = [Management.Automation.Language.Parser]::ParseInput($editorSrc, [ref]$null, [ref]$null)
     $exempt = @($editorAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) |
@@ -3146,9 +3722,9 @@ Invoke-Check 'hub.sections-name-their-destinations' {
 }
 
 Invoke-Check 'hub.dev-template-seeds-sections' {
-    $hubPath = Join-Path $workspace 'tools/New-ProjectHub.ps1'
-    $designPath = Join-Path $workspace 'docs/project-hub-design.md'
-    $adrPath = Join-Path $workspace 'docs/adr/0003-decisions-follow-their-subject.md'
+    $hubPath = Join-Path $program 'tools/New-ProjectHub.ps1'
+    $designPath = Join-Path $program 'docs/project-hub-design.md'
+    $adrPath = Join-Path $program 'docs/adr/0003-decisions-follow-their-subject.md'
     foreach ($required in @($hubPath, $designPath, $adrPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "$required is missing; the dev template and its record cannot be compared." }
     }
@@ -3243,7 +3819,7 @@ Invoke-Check 'hub.dev-template-seeds-sections' {
 # convention nothing enforces is a convention until it is inconvenient. Same shape as
 # raw.batch-owners, and the owner is a Project Hub slug for the same reason.
 Invoke-Check 'workspace.plans-declare-their-owner' {
-    $plans = @(Get-ChildItem -LiteralPath $workspace -File -Filter 'PLAN*.md' | Sort-Object -Property Name)
+    $plans = @(Get-ChildItem -LiteralPath $program -File -Filter 'PLAN*.md' | Sort-Object -Property Name)
     if ($plans.Count -eq 0) { return 'no root plan files' }
     $unqualified = @('PLAN.md', 'PLAN-REVIEW-LOG.md')
     $owners = [ordered]@{}
@@ -3264,7 +3840,7 @@ Invoke-Check 'workspace.plans-declare-their-owner' {
         }
     }
     foreach ($required in $unqualified) {
-        if (-not $owners.Contains($required) -and (Test-Path -LiteralPath (Join-Path $workspace $required) -PathType Leaf)) {
+        if (-not $owners.Contains($required) -and (Test-Path -LiteralPath (Join-Path $program $required) -PathType Leaf)) {
             throw "$required exists but was not enumerated; the owner scan cannot vouch for it."
         }
     }
@@ -3296,13 +3872,13 @@ Invoke-Check 'workspace.no-foreign-install' {
     # zero matches and a bare string for one, and .Count then throws instead of reading 0 or 1. The
     # first version of this check had exactly that defect and powershell.defect-families caught it.
     $installed = @(@('_triage.md', 'holding.md') |
-        Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) -PathType Leaf })
+        Where-Object { Test-Path -LiteralPath (Join-Path $program $_) -PathType Leaf })
     if ($installed.Count) {
         throw "$($installed -join ', ') at the repository root: a workspace-installing product was bootstrapped here. The Library is the foundry for those products, never a target -- install tests belong in a disposable sandbox. Remove these and check CLAUDE.md, notebook/ and shelf/ for merged content."
     }
 
     # ReadAllText, never Get-Content -Raw: BOM-less UTF-8 with em-dashes, which 5.1 decodes as ANSI.
-    $claudeMd = Join-Path $workspace 'CLAUDE.md'
+    $claudeMd = Join-Path $program 'CLAUDE.md'
     if (-not (Test-Path -LiteralPath $claudeMd -PathType Leaf)) { throw 'CLAUDE.md is missing; this workspace no longer introduces itself.' }
     $text = [IO.File]::ReadAllText($claudeMd)
     foreach ($anchor in @('# The Librarian', 'You are the Librarian of **the Library**', '[CONTEXT.md](CONTEXT.md) is the glossary')) {
@@ -3328,7 +3904,7 @@ Invoke-Check 'workspace.no-foreign-install' {
 # -- as a literal, a parameter, or a default -- should reopen that ruling deliberately rather than
 # slide back in, and this check is where it is made to ask.
 Invoke-Check 'books.no-hardcoded-known-limits' {
-    $root = Join-Path $workspace 'tools'
+    $root = Join-Path $program 'tools'
     $sources = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File)
     if (-not $sources.Count) { throw 'no helpers found; this check''s discriminator has drifted' }
     $scanned = 0
@@ -3379,7 +3955,7 @@ Invoke-Check 'books.no-hardcoded-known-limits' {
 # a `title`, a `heading`, or a `$Label` a caller supplies (Compile-RawBatchToNotebook's Add-IndexLink
 # takes the article title that way).
 Invoke-Check 'books.reader-map-labels-are-titles' {
-    $root = Join-Path $workspace 'tools'
+    $root = Join-Path $program 'tools'
     $sources = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File)
     if (-not $sources.Count) { throw 'no helpers found; this check''s discriminator has drifted' }
     $linkPattern = '-\s*\[\[(?<target>[^\|\]]+)\|(?<label>[^\]]*)\]\]'
@@ -3450,6 +4026,10 @@ Invoke-Check 'books.reader-map-label-matches-manifest-title' {
     $cases = @(
         @{ name = 'plain H1';             path = 'jellyfin.md';                 text = "# Jellyfin`n`nBody." }
         @{ name = 'frontmatter then H1';  path = 'a.md';                        text = "---`ntitle: decoy`n---`n# Real Title`n`nBody." }
+        # S41: a YAML comment IS an H1-shaped line, so a strip that never fires labels the page with it.
+        # The case above could not see that -- `title: decoy` is no heading -- and the strip had never
+        # fired under Windows PowerShell, whose read of a literal U+FEFF in a BOM-less file broke it.
+        @{ name = 'frontmatter comment';  path = 'g.md';                        text = "---`n# a yaml comment`ntitle: decoy`n---`n# Real Title`n`nBody." }
         @{ name = 'fenced decoy';         path = 'b.md';                        text = "``````text`n# Not A Title`n```````n`n# Actual Title`n" }
         @{ name = 'sub-heading first';    path = 'c.md';                        text = "## Section`n`n# The H1`n" }
         @{ name = 'trailing hashes';      path = 'd.md';                        text = "#   Spaced Title   ###`n" }
@@ -3763,7 +4343,7 @@ Invoke-Check 'manifests.lock-failure-names-its-cause' {
 # The state checks DELIBERATELY DO NOT REPAIR: a check that fixed what it found would report a
 # healthy Library on every run while the writer that caused the drift stayed broken.
 
-Invoke-Check 'notebook.master-index-renders' {
+Invoke-WorkspaceCheck 'notebook.master-index-renders' {
     . (Join-Path $PSScriptRoot 'NotebookIndex.ps1')
     $problems = @(Get-NotebookMasterIndexDrift -Workspace $workspace)
     if ($problems.Count) { throw ($problems -join '; ') }
@@ -3771,7 +4351,7 @@ Invoke-Check 'notebook.master-index-renders' {
     "notebook/_master-index.md matches the $($topics.Count) topic(s) on disk and their headings"
 }
 
-Invoke-Check 'shelf.catalog-renders-from-entries' {
+Invoke-WorkspaceCheck 'shelf.catalog-renders-from-entries' {
     . (Join-Path $PSScriptRoot 'ShelfCatalog.ps1')
     $problems = @(Get-ShelfCatalogDrift -Workspace $workspace)
     if ($problems.Count) { throw ($problems -join '; ') }
@@ -3788,7 +4368,7 @@ Invoke-Check 'shelf.catalog-renders-from-entries' {
 # collision it guards is between SEATS in one workspace, not between clones, so the check is
 # unchanged and only its reason needed correcting. LibrarySeat.ps1 and SeatCreation.ps1 make the
 # same point from the other end: notebook/<slug>/ and output/<slug>/ are what a seat is namespaced by.
-Invoke-Check 'output.namespaced-by-project' {
+Invoke-WorkspaceCheck 'output.namespaced-by-project' {
     $outputRoot = Join-Path $workspace 'output'
     if (-not (Test-Path -LiteralPath $outputRoot -PathType Container)) { return 'output/ does not exist yet' }
     $loose = @(Get-ChildItem -LiteralPath $outputRoot -File -Force | ForEach-Object { $_.Name })
@@ -4000,9 +4580,9 @@ Invoke-Check 'derived-indexes.written-atomically' {
 # contract. So a parameter's taint is confined to the extent of the function that declares it.
 Invoke-Check 'desk.state-read-and-written-atomically' {
     $roots = @(
-        (Join-Path $workspace 'tools'),
-        (Join-Path $workspace '.claude/hooks'),
-        (Join-Path $workspace '.claude/adapters')
+        (Join-Path $program 'tools'),
+        (Join-Path $program '.claude/hooks'),
+        (Join-Path $program '.claude/adapters')
     )
     $files = @($roots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })
     if (-not $files.Count) { throw 'no PowerShell sources found to scan' }
@@ -4564,11 +5144,16 @@ Invoke-Check 'gate.fast-roster-matches-suites' {
     $roster = @($loops[0].Condition.FindAll({ $args[0] -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) |
         ForEach-Object { [string]$_.Value })
 
-    # The suites, from the first argument of every Invoke-Check call in the else branch.
+    # The suites, from the first argument of every check call in the else branch. BOTH INVOKERS
+    # COUNT. `Invoke-WorkspaceCheck` arrived on 2026-09-21 with the program/workspace split, and
+    # the first suite converted to it -- triage.history-readable -- vanished from this set while
+    # staying in the roster, which this check reported as "nothing runs them in EITHER mode". It
+    # was right about the shape and wrong about the cause, and a new invoker that this list did
+    # not know about would otherwise have silently emptied the comparison one name at a time.
     $suites = [Collections.Generic.List[string]]::new()
     foreach ($call in @($elseArm.FindAll({
             param($node)
-            $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-Check'
+            $node -is [Management.Automation.Language.CommandAst] -and $script:CheckInvokerNames -ccontains $node.GetCommandName()
         }, $true))) {
         $arg = $call.CommandElements[1]
         if ($arg -isnot [Management.Automation.Language.StringConstantExpressionAst]) {
@@ -4641,7 +5226,7 @@ Invoke-Check 'gate.fast-roster-matches-suites' {
 # one JSON file, and a hook that has stopped firing is exactly what a pre-commit gate should say.
 Invoke-Check 'hooks.payload-fields-are-captured' {
     . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
-    $hookDir = Join-Path $workspace '.claude/hooks'
+    $hookDir = Join-Path $program '.claude/hooks'
     $contractPath = Join-Path $hookDir 'payload-contract.json'
     if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
         throw '.claude/hooks/payload-contract.json is missing, so no hook payload read can be checked against anything.'
@@ -4745,19 +5330,33 @@ Invoke-Check 'export-lock.reaches-both-chokepoints' {
 # owns the two detectors, the scope rules and the documentation allowances, and its own fixture
 # suite is what stops the detectors going vacuous; see deployment-scan.selftest below. A count
 # cannot prove a detector still matches, so the count here is reported and never asserted on.
+#
+# TWO ROOTS, AND THIS CALL SITE WAS STILL ASKING ONE OF THEM BOTH QUESTIONS. The files to scan are
+# the PROGRAM's; the values to scan for are the READER's, and they live in the workspace's
+# `.claude/.library-*`. Before step 22 those were the same directory, so one argument answered both.
+# After it, reading the denylist from the program yields NOTHING -- measured 2026-09-21: 0 values
+# from `app\`, 4 from the workspace, in the same call -- and the exact-value half of this scan had
+# been matching against an empty list ever since, silently, while the check went on reporting a
+# pass. The structural detector carried it, which is exactly why the weakening was invisible.
 Invoke-Check 'public.no-deployment-defaults' {
     . (Join-Path $PSScriptRoot 'DeploymentScan.ps1')
-    $files = @(Get-DeploymentScanFiles -Workspace $workspace)
-    $denylist = @(Get-DeploymentScanDenylist -Workspace $workspace)
-    $hits = @(Find-DeploymentScanHits -Workspace $workspace -Files $files -Denylist $denylist)
+    $files = @(Get-DeploymentScanFiles -Workspace $program)
+    # The workspace when there is one, the program when there is not: an un-split checkout keeps the
+    # old answer, and a contributor with no Library of their own legitimately supplies no values at
+    # all and is covered by the structural detectors alone.
+    $denylistRoot = if ([string]::IsNullOrWhiteSpace($workspace)) { $program } else { $workspace }
+    $denylist = @(Get-DeploymentScanDenylist -Workspace $denylistRoot)
+    $hits = @(Find-DeploymentScanHits -Workspace $program -Files $files -Denylist $denylist)
     if ($hits.Count) {
         $named = @($hits | ForEach-Object { "$($_.file):$($_.line) [$($_.kind)] $($_.match)" } | Sort-Object -Unique)
         throw ("$($hits.Count) deployment default(s) in product files: " + ($named -join '; ') +
             '. These ship. Move the value into generated state and resolve it through tools/LibraryDeployment.ps1.')
     }
     # The configured-deployment half is empty on a workspace with none, which is a legitimate state
-    # and not a pass worth hiding -- so the denylist size is stated in every answer, clean or not.
-    "$($files.Count) product file(s) clean against $($denylist.Count) configured value(s) and the structural detectors"
+    # and not a pass worth hiding -- so the denylist size AND where it was read from are stated in
+    # every answer, clean or not. A zero here now means "this reader has no deployment configured",
+    # never "the check looked in the wrong tree".
+    "$($files.Count) product file(s) clean against $($denylist.Count) configured value(s) from $denylistRoot and the structural detectors"
 }
 
 # --- No identity of the reader's reaches a public commit -------------------------------------------
@@ -4781,15 +5380,216 @@ Invoke-Check 'public.no-deployment-defaults' {
 # is not a blob until after that hook has passed it.
 Invoke-Check 'public.identity-scan' {
     . (Join-Path $PSScriptRoot 'DeploymentScan.ps1')
-    $result = Invoke-IdentityScan -Workspace $workspace
+    $result = Invoke-IdentityScan -Workspace $program
     if ($result.status -eq 'fail') { throw $result.detail }
     if ($result.status -eq 'warn') { return "WARN: $($result.detail)" }
     $result.detail
 }
 
+# --- The collection write fence is wired where its coverage is DERIVED (2026-09-21) --------------
+#
+# PLAN-public-release.md step 21. One writable workspace per collection, fenced on every shared
+# write. Ten helpers write to the collection and each resolved its endpoint on exactly one line, so
+# the fence is NOT written ten times: `Resolve-LibraryWriteEndpoint` is that one line, and it is
+# `Resolve-LibraryMcpUrl` plus `Assert-CollectionWriteAllowed`. Same reasoning as
+# maintenance.barrier-coverage -- one door the declared set already passes through, and the wiring
+# asserted rather than trusted.
+#
+# WHY A SEPARATE FUNCTION RATHER THAN A FLAG ON THE RESOLVER. S11 paid a session for one expression
+# doing two jobs. A reader and a writer resolve the same address for different purposes, and only one
+# of them may be fenced, so the two purposes get two names -- and this check is what stops a writer
+# quietly going back to the reader's door.
+#
+# BOTH DIRECTIONS, AND THE THREE FAULTS ARE DIFFERENT. A declared writer that stops calling the
+# write door writes to the collection unfenced, which is the split-writer defect itself. An
+# undeclared file that starts calling it has been made a shared writer without that decision being
+# recorded. And a declared writer that ALSO calls Resolve-LibraryMcpUrl has a second, unfenced route
+# to the same endpoint -- the shape a refactor produces when a line is added rather than replaced.
+#
+# WHAT IT CANNOT SEE, stated rather than implied. It matches calls by name through the AST, so it
+# proves the door is INVOKED, not that it is reached on every path; the door throws rather than
+# returning a value a caller could ignore, and collection-ownership.selftest is the behavioural half.
+# Test runners are excluded: they call the primitive directly in order to falsify it.
+#
+# IT IS REGISTERED HERE, ABOVE THE if ($Fast) BLOCK, because it is a static read of source text and
+# a gate on the commit; below it, the pre-commit hook would never run it.
+Invoke-Check 'collection.write-fence-coverage' {
+    $ownershipFile = Join-Path $PSScriptRoot 'CollectionOwnership.ps1'
+    if (-not (Test-Path -LiteralPath $ownershipFile -PathType Leaf)) {
+        throw 'tools/CollectionOwnership.ps1 is missing; the shared-collection write set has no declaration.'
+    }
+    . $ownershipFile
+    $declared = @(Get-CollectionWriteHelpers)
+    if ($declared.Count -lt 1) {
+        throw 'Get-CollectionWriteHelpers declares no helper; the write fence would be unenforced and this check would pass vacuously.'
+    }
+
+    # 1. THE DERIVATION. The door's own body, not the file: a call anywhere else in it would not put
+    #    the fence in front of the ten writers.
+    $ownershipErrors = $null
+    $ownershipAst = [Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($ownershipFile), [ref]$null, [ref]$ownershipErrors)
+    if ($null -ne $ownershipErrors -and @($ownershipErrors).Count -gt 0) {
+        throw 'CollectionOwnership.ps1 does not parse; the write fence''s coverage cannot be derived from it.'
+    }
+    $door = @($ownershipAst.FindAll({
+        $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        [string]$args[0].Name -ceq 'Resolve-LibraryWriteEndpoint'
+    }, $true))
+    if (@($door).Count -ne 1) {
+        throw "CollectionOwnership.ps1 defines Resolve-LibraryWriteEndpoint $(@($door).Count) time(s); the fence's coverage cannot be derived from it."
+    }
+    $fenceCalls = @($door[0].FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true) |
+        Where-Object { [string]$_.GetCommandName() -ceq 'Assert-CollectionWriteAllowed' })
+    if (-not @($fenceCalls).Count) {
+        throw ('Resolve-LibraryWriteEndpoint does not call Assert-CollectionWriteAllowed, so every ' +
+               'shared writer in the tree would write to the collection unfenced while still passing ' +
+               'through the door this check reads.')
+    }
+
+    # 2. THE TWO-WAY COVERAGE.
+    $declaringFile = (Resolve-Path -LiteralPath $ownershipFile).Path
+    $roots = @('tools', '.claude') | ForEach-Object { Join-Path $program $_ }
+    $sources = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+        ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue })
+
+    $observed = [Collections.Generic.List[string]]::new()
+    $unfencedRoute = [Collections.Generic.List[string]]::new()
+    $scanned = 0
+    foreach ($source in $sources) {
+        if ($source.FullName -ceq $declaringFile) { continue }
+        if ($source.Name -cmatch '^Test-') { continue }
+        $scanned++
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($source.FullName), [ref]$null, [ref]$parseErrors)
+        if ($null -ne $parseErrors -and @($parseErrors).Count -gt 0) {
+            throw "$($source.Name) does not parse; the write-fence-coverage check cannot read it."
+        }
+        $commands = @($ast.FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true))
+        $names = @($commands | ForEach-Object { [string]$_.GetCommandName() })
+        $callsDoor = $names -ccontains 'Resolve-LibraryWriteEndpoint'
+        if ($callsDoor) { [void]$observed.Add($source.Name) }
+        # THE SECOND-ROUTE FAULT IS ONLY A SECOND ROUTE WHEN THERE IS A FIRST ONE. A declared writer
+        # that calls the reader's resolver and NOT the door has one unfenced route, which the
+        # coverage fault below already names correctly; reporting both would describe the same file
+        # two contradictory ways, and the wrong one of the two is the one a reader would act on.
+        if ($callsDoor -and ($declared -ccontains $source.Name) -and ($names -ccontains 'Resolve-LibraryMcpUrl')) {
+            [void]$unfencedRoute.Add($source.Name)
+        }
+    }
+
+    $declaredSet = @($declared | Sort-Object -Unique)
+    $observedSet = @($observed | Sort-Object -Unique)
+    $problems = [Collections.Generic.List[string]]::new()
+    foreach ($name in @($declaredSet | Where-Object { $observedSet -cnotcontains $_ })) {
+        [void]$problems.Add("$name is declared a shared-collection writer but never calls Resolve-LibraryWriteEndpoint; it would write to the collection unfenced")
+    }
+    foreach ($name in @($observedSet | Where-Object { $declaredSet -cnotcontains $_ })) {
+        [void]$problems.Add("$name calls Resolve-LibraryWriteEndpoint but is not declared in Get-CollectionWriteHelpers; declare it there, or drop the call if it only reads")
+    }
+    foreach ($name in @($unfencedRoute)) {
+        [void]$problems.Add("$name reaches the endpoint through BOTH Resolve-LibraryWriteEndpoint and Resolve-LibraryMcpUrl; the second route is unfenced")
+    }
+    if ($problems.Count) { throw ($problems -join '; ') }
+
+    "$scanned source(s) scanned; the $($declaredSet.Count) declared shared writer(s) are exactly those behind the ownership fence"
+}
+
+# --- The supported-operation matrix (PLAN-public-release.md step 23) -----------------------------
+#
+# THESE THREE ARE REGISTERED ABOVE THE if ($Fast) BLOCK because all three are static reads of two
+# tracked documents and the files they name. The suite that RUNS a row is below, in the else
+# branch, because it spawns processes and builds eight workspaces.
+#
+# WHY A GATE CHECK AT ALL, FOR A MATRIX NOTHING IS COMPARED AGAINST YET. Phase D ports sixty
+# thousand lines of PowerShell to TypeScript and the matrix is the only thing that will say
+# whether the new implementation does the same work. It is worth exactly as much as its
+# enumeration is complete, and an enumeration nothing checks decays silently: a helper added in
+# S15 with no row would be an operation the kernel is never asked about, and nothing would report
+# it until someone noticed the kernel could not do it.
+Invoke-Check 'acceptance.matrix-shape' {
+    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
+    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
+    $problems = @(Test-AcceptanceMatrixShape -Matrix $matrix -ProgramRoot $program)
+    if ($problems.Count) { throw ($problems -join '; ') }
+    $rows = @($matrix.rows)
+    $scripts = @(@(@($rows) | ForEach-Object { @($_.powershell.steps) } | ForEach-Object { [string]$_.script }) | Sort-Object -Unique -CaseSensitive)
+    # THE COUNT OF RESOLVED PATHS IS PART OF THE ANSWER, not decoration: S21's `codex.project-
+    # access-config` asserted the names in a document and opened none of the five files it named,
+    # and passed for four sessions with every one of them gone.
+    $steps = @(@($rows) | ForEach-Object { @($_.powershell.steps) }).Count
+    "$($rows.Count) row(s) over $(@(Get-AcceptanceFixtureIds).Count) fixture shape(s); all $($scripts.Count) PowerShell script(s) they name resolve on disk, and all $steps step(s) bind their arguments to the script's parameters"
+}
+
+Invoke-Check 'acceptance.matrix-covers-every-public-helper' {
+    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
+    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
+    $problems = @(Test-AcceptanceMatrixCoverage -Matrix $matrix -ProgramRoot $program)
+    if ($problems.Count) { throw ($problems -join '; ') }
+    $excluded = @(Get-AcceptanceObjectKeys $matrix.excluded_helpers).Count
+    $manifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '_helpers.json'), [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+    $public = @(@($manifest.helpers.PSObject.Properties) | Where-Object { [string]$_.Value.role -ceq 'public' }).Count
+    "all $public public helper(s) are accounted for: $($public - $excluded) exercised by a row, $excluded excluded with a reason"
+}
+
+# The TypeScript kernel's own suite (PLAN-public-release.md step 24). IN BOTH MODES, NOT IN THE
+# SPAWNED-SUITE ROSTER, and the reason is the clock rather than the category: it runs in under a
+# second where `acceptance.harness-selftest` takes two minutes, and it guards the newest code in the
+# tree -- the code the pre-commit hook is most likely to be protecting on any given commit.
+Invoke-Check 'kernel.selftest' {
+    $suite = Join-Path $program (Join-Path 'kernel' (Join-Path 'test' 'selftest.ts'))
+    if (-not (Test-Path -LiteralPath $suite -PathType Leaf)) { throw "the kernel self-test is missing at $suite" }
+    $node = Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $node) {
+        return 'WARN: node is not on PATH, so the kernel self-test did not run. Install Node 22+ to run it.'
+    }
+    $out = & node $suite 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ((@($out) | Select-Object -Last 4) -join ' | ') }
+    ((@($out) | Select-Object -Last 1) | Out-String).Trim()
+}
+
+# THE OTHER HALF OF acceptance.matrix-shape, AND IT COULD NOT EXIST UNTIL S13. That check resolves
+# every PowerShell script a row names and deliberately resolves nothing on the kernel side, because
+# a row's kernel command was a specification of a CLI that did not exist. It does now, so a row
+# naming `shelf rerender` where the verb is `shelf render` is a thing something can finally say.
+Invoke-Check 'acceptance.kernel-verbs-exist' {
+    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
+    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
+    $cli = Join-Path $program (Join-Path 'kernel' (Join-Path 'src' 'cli.ts'))
+    if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
+        throw "the kernel's entry point is missing at $cli, so no row's kernel command could be resolved against it"
+    }
+    $node = Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $node) {
+        # WARN RATHER THAN FAIL, AND IT NAMES WHAT WENT UNCHECKED. A contributor without Node cannot
+        # run the kernel at all, and failing their commit over a check about the kernel's verb table
+        # would refuse correct work -- the failure mode this tree pays for more often than the
+        # permissive one. Silence is the answer that is not available: this check going quiet is
+        # exactly the state it exists to end.
+        return 'WARN: node is not on PATH, so no row''s kernel command was resolved against `library verbs`. Install Node 22+ to check them.'
+    }
+    $output = & node $cli 'verbs' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ("``library verbs`` exited $LASTEXITCODE : " + ((@($output) | Select-Object -Last 3) -join ' | ')) }
+    $inventory = $null
+    try { $inventory = (@($output) -join "`n") | ConvertFrom-Json }
+    catch { throw ('``library verbs`` did not print parseable JSON: ' + $_.Exception.Message) }
+    $problems = @(Test-AcceptanceKernelCommands -Matrix $matrix -Inventory $inventory)
+    if ($problems.Count) { throw ($problems -join '; ') }
+    $steps = @(@($matrix.rows) | ForEach-Object { @($_.kernel.steps) }).Count
+    $verbs = @(Get-AcceptanceObjectKeys $inventory.verbs).Count
+    "all $steps kernel step(s) across $(@($matrix.rows).Count) row(s) name one of the CLI's $verbs verb(s) and its declared actions"
+}
+
+Invoke-Check 'acceptance.matrix-doc-matches-rows' {
+    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
+    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
+    $problem = Test-AcceptanceDoc -Matrix $matrix -ProgramRoot $program
+    if (-not [string]::IsNullOrWhiteSpace($problem)) { throw $problem }
+    'the generated region of docs/supported-operation-matrix.md is byte-identical to a render of the rows'
+}
+
 # --- Offline self-test suites ---------------------------------------------------------------------
 if ($Fast) {
-    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match')) {
+    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.migration', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'collection-ownership.selftest', 'acceptance.harness-selftest')) {
         # This roster is the -Fast summary's only record that these suites exist. A check absent from
         # it does not run in -Fast AND is not reported skipped, so the pre-commit hook's line silently
         # counts one fewer -- the same shape as a suite nothing runs, one step quieter. The three
@@ -4798,6 +5598,7 @@ if ($Fast) {
     }
 }
 else {
+$script:InSuiteBranch = $true
 
 # A DECOY FOR gate.fast-roster-matches-suites, DELIBERATE -- do not delete it. The next line spells
 # the registration form of a suite that does not exist:
@@ -4807,8 +5608,11 @@ else {
 # from the -Fast roster, and fails on correct code. That is the point: the wrong implementation
 # reports a WRONG VALUE here rather than quietly agreeing with the right one on today's file.
 
-Invoke-Check 'codex.portability-selftest' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-CodexPortability.ps1') 2>&1
+# THE DEPLOYMENT, NOT THE WORKSPACE, and for this suite the distinction is the whole point: it drives
+# packaged guards that must resolve a FIXTURE, and an ambient LIBRARY_WORKSPACE is one of the three
+# things S17 measured breaking it. What it lost at the split is the endpoint, nothing more.
+Invoke-WorkspaceCheck 'codex.portability-selftest' {
+    $out = Use-DeploymentEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-CodexPortability.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     'passed'
 }
@@ -4816,15 +5620,25 @@ Invoke-Check 'codex.portability-selftest' {
 # The JSON-RPC dispatch layer's argument guards, driven as a real process over stdio. A suite rather
 # than a static check because it spawns the adapter; offline because every case fails at the guard
 # before any Desk or network read.
-Invoke-Check 'reader.dispatch-selftest' {
-    $adapter = Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -DispatchSelfTest 2>&1
+Invoke-WorkspaceCheck 'reader.dispatch-selftest' {
+    $adapter = Join-Path $program '.claude/adapters/Validated-BookReader.ps1'
+    $out = Use-WorkspaceEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -DispatchSelfTest 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     'passed'
 }
 
+# The acceptance harness, driven as its own process because it builds eight fixture workspaces and
+# spawns a child per step. It needs no reader workspace: every fixture it touches it made itself,
+# which is the point -- a harness that judged a port against the reader's real Shelf would be
+# comparing two implementations over a moving target.
+Invoke-Check 'acceptance.harness-selftest' {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Invoke-AcceptanceMatrix.ps1') -SelfTest 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 4) -join ' | ') }
+    (($out | Select-Object -Last 1) | Out-String).Trim()
+}
+
 Invoke-Check 'reader.shelf-selftest' {
-    $adapter = Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'
+    $adapter = Join-Path $program '.claude/adapters/Validated-BookReader.ps1'
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -ShelfSelfTest 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     'passed'
@@ -4854,7 +5668,7 @@ Invoke-Check 'reader.shelf-selftest' {
 # Its other half asserts the seat gate still refuses a Deskless session, because the workspace pin
 # always exists -- fixing the directory without keeping that gate would have opened a hole.
 Invoke-Check 'reader.project-pin-selftest' {
-    $adapter = Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'
+    $adapter = Join-Path $program '.claude/adapters/Validated-BookReader.ps1'
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -ProjectSelfTest 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     'passed'
@@ -4881,15 +5695,15 @@ Invoke-Check 'maintenance.folder-move' {
     (($out | Select-Object -Last 1) | Out-String).Trim()
 }
 
-Invoke-Check 'library-helpers.boundary-suite' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-LibraryHelpers.ps1') 2>&1
+Invoke-WorkspaceCheck 'library-helpers.boundary-suite' {
+    $out = Use-WorkspaceEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-LibraryHelpers.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 6) -join ' | ') }
     'passed'
 }
 
 # Loopback only -- the stub endpoint stands in for the NAS, so this runs with the network down.
-Invoke-Check 'mcp-helpers.boundary-suite' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-McpHelpers.ps1') 2>&1
+Invoke-WorkspaceCheck 'mcp-helpers.boundary-suite' {
+    $out = Use-WorkspaceEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-McpHelpers.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     'passed'
 }
@@ -5060,8 +5874,8 @@ Invoke-Check 'desk.two-seat-acceptance' {
 # seat was in exactly that state and could not be entered), Get-DeskBytes and Read-AtomicBytes each
 # returned $null for an empty file, and Retire-Seat -Preflight -Json never returned because
 # Get-Content's decorated lines dragged the PowerShell provider graph into ConvertTo-Json.
-Invoke-Check 'seat.lifecycle' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-SeatLifecycle.ps1') 2>&1
+Invoke-WorkspaceCheck 'seat.lifecycle' {
+    $out = Use-WorkspaceEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-SeatLifecycle.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     [string]($out | Select-Object -Last 1)
 }
@@ -5079,6 +5893,16 @@ Invoke-Check 'seat.lifecycle' {
 # Remove-NotebookQuarantine.ps1 both cite this one.
 Invoke-Check 'recovery.routes' {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-RecoveryRoutes.ps1') 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
+    [string]($out | Select-Object -Last 1)
+}
+
+# ADR-0029'S MIGRATION, THE ONE KERNEL VERB WITH NO POWERSHELL ORACLE (S18). The matrix row about it is
+# independent, so this is where it is judged: every legacy state, built by the legacy writers, and the
+# migration killed at every step on both sides of each journal write -- resumed to the reference tree
+# and rolled back to the legacy one. Five minutes, which is why it is a suite and not a -Fast check.
+Invoke-Check 'notebook.migration' {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-NotebookMigration.ps1') 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     [string]($out | Select-Object -Last 1)
 }
@@ -5127,7 +5951,7 @@ Invoke-Check 'triage-inventory.selftest' {
 # A record is evidence of a write that actually happened, so this check is deliberately harsher than
 # "it parses": it also asserts that running the gate does not TOUCH them. internal/ is gitignored, so
 # `git status` says nothing here and a rewritten journal would leave no trace anywhere else.
-Invoke-Check 'triage.history-readable' {
+Invoke-WorkspaceCheck 'triage.history-readable' {
     $roots = @('internal/handoff-plans', 'internal/handoff-journals') |
         ForEach-Object { Join-Path $workspace $_ } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Container }
@@ -5153,7 +5977,11 @@ Invoke-Check 'triage.history-readable' {
         [IO.File]::Copy($planFiles[0].FullName, $probe, $false)
         try {
             $message = ''
-            try { & (Join-Path $PSScriptRoot 'Invoke-LibraryTriage.ps1') -PlanPath $probe -WorkspacePath $workspace -Preflight | Out-Null }
+            # THE DEPLOYMENT IS SUPPLIED SO THE REFUSAL IS THE ONE UNDER TEST. The runner resolves its
+            # endpoint before it reads the plan, so after the split it refused for want of an endpoint
+            # and this check reported that sentence as "a legacy plan was not refused as schema 2" --
+            # true, and about the wrong thing entirely.
+            try { Use-DeploymentEnvironment { & (Join-Path $PSScriptRoot 'Invoke-LibraryTriage.ps1') -PlanPath $probe -WorkspacePath $workspace -Preflight | Out-Null } }
             catch { $message = $_.Exception.Message }
             if ($message -notmatch 'schema 2') {
                 throw "a legacy handoff plan was not refused as a schema 2 record; it said: $message"
@@ -5332,6 +6160,50 @@ Invoke-Check 'public-tree-export.selftest' {
     (@($out) | Select-Object -Last 1)
 }
 
+# --- Which workspace a path belongs to (PLAN-public-release.md step 20) -------------------------
+#
+# REGISTERED THE SAME DAY IT WAS WRITTEN. A -SelfTest that nothing invokes is this repository's
+# oldest quiet failure: Get-MeterStatus.ps1 carried one for two days before anyone noticed nothing
+# ran it. The behavioural half of step 20 lives in library-hooks.boundary-suite; this is the unit
+# half -- containment, the prefix decoy, an unreadable registry, and the four resolution kinds.
+Invoke-Check 'workspace-registry.selftest' {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1') -SelfTest 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
+    (@($out) | Select-Object -Last 1)
+}
+
+# --- `library init` (PLAN-public-release.md step 20) ---------------------------------------------
+#
+# REGISTERED IN THE SAME PASS AS THE FILE, and in BOTH places: the roster string above and this
+# call. A name in one and not the other neither runs in -Fast nor is reported skipped, and
+# `gate.fast-roster-matches-suites` derives both sets from the AST and compares them, so the
+# omission fails the gate rather than going quiet.
+#
+# THE SUITE IS WHERE THE INVARIANTS LIVE, not the tool. Idempotence, an existing id that a re-run
+# must not reissue, a reader's own CLAUDE.md surviving byte for byte above and below the managed
+# block, a second run that must not append a second block, three shapes of malformed marker that
+# refuse WITHOUT writing the workspace marker first, a settings merge that keeps unrelated entries
+# and refuses a conflicting one, and an un-split checkout whose instruction files are the program's.
+Invoke-Check 'workspace-init.selftest' {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Initialize-LibraryWorkspace.ps1') -SelfTest 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
+    (@($out) | Select-Object -Last 1)
+}
+
+# --- One writable workspace per collection (PLAN-public-release.md step 21) -----------------------
+#
+# REGISTERED IN THE SAME PASS AS THE FILE, and in BOTH places, for the reason the comment above
+# workspace-init.selftest gives. It is a spawned suite rather than a static check because its
+# acquire race is six real powershell.exe children contending for one collection: a fixture that
+# called the acquire twice in sequence would exercise the already-held branch and never the create
+# race, which is the branch the whole design turns on. Measured 2026-09-21: all five losers took the
+# lost-the-create path.
+Invoke-Check 'collection-ownership.selftest' {
+    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'CollectionOwnership.ps1') -SelfTest 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
+    (@($out) | Select-Object -Last 1)
+}
+
 Invoke-Check 'deployment-scan.selftest' {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'DeploymentScan.ps1') -SelfTest 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
@@ -5353,7 +6225,7 @@ Invoke-Check 'deployment-scan.selftest' {
 # reason, and the contrast is the point.
 # --- The Claude plugin files are generated, and a drift is a gate failure ------------------------
 #
-# PLAN-public-release.md step 19. The Codex layout under `plugin/` is canonical; Claude's
+# PLAN-public-release.md step 19. The Codex layout at the program root is canonical; Claude's
 # `.claude-plugin/plugin.json`, its `.mcp.json` and its hooks file are generated from it, and the one
 # mechanical difference between the harnesses -- `${PLUGIN_ROOT}` against `${CLAUDE_PLUGIN_ROOT}` --
 # lives in the generator rather than in two hand-maintained files that drift apart quietly.
@@ -5496,8 +6368,8 @@ Invoke-Check 'book-currency.shelf-path' {
     'passed'
 }
 
-Invoke-Check 'shelf.writers-route-manifests' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ShelfWriterRouting.ps1') 2>&1
+Invoke-WorkspaceCheck 'shelf.writers-route-manifests' {
+    $out = Use-DeploymentEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ShelfWriterRouting.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 6) -join ' | ') }
     'passed'
 }
@@ -5529,14 +6401,14 @@ Invoke-Check 'archive.search-coverage' {
 # network stops proving anything the moment the network is down, and a faithful-only stub can prove
 # nothing about a substituted read or a truncated listing, which are the failures the helper's
 # fail-closed rules exist for.
-Invoke-Check 'shared.manifest-backfill' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-SharedManifestBackfill.ps1') 2>&1
+Invoke-WorkspaceCheck 'shared.manifest-backfill' {
+    $out = Use-DeploymentEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-SharedManifestBackfill.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 6) -join ' | ') }
     'passed'
 }
 
-Invoke-Check 'shelf-note.boundary-suite' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ShelfNoteBoundary.ps1') 2>&1
+Invoke-WorkspaceCheck 'shelf-note.boundary-suite' {
+    $out = Use-DeploymentEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-ShelfNoteBoundary.ps1') 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     'passed'
 }
@@ -5810,7 +6682,7 @@ if ($IncludeShared) {
         'the create preflight offered the live active Projects, a stale approval and two aborts were refused leaving nothing half-built, and the confirmed transaction registered a bound seat with its own Hub on its Desk'
     }
     Invoke-Check 'reader.shared-selftest' {
-        $adapter = Join-Path $workspace '.claude/adapters/Validated-BookReader.ps1'
+        $adapter = Join-Path $program '.claude/adapters/Validated-BookReader.ps1'
         $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -SelfTest 2>&1
         if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
         'passed'
@@ -5824,9 +6696,21 @@ else {
 }
 
 # --- Report ---------------------------------------------------------------------------------------
+# The -Fast roster and the -IncludeShared stand-ins report through Add-Result directly, so a
+# workspace-only report is filtered here as well as at Invoke-Check: what it keeps is exactly the
+# set Invoke-WorkspaceCheck saw.
+if ($WorkspaceOnly) {
+    $kept = @($results | Where-Object { $script:WorkspaceCheckNames.Contains([string]$_.check) })
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($row in $kept) { [void]$results.Add($row) }
+}
 $failed = @($results | Where-Object { $_.status -eq 'fail' })
 $summary = [pscustomobject]@{
     operation            = 'Library Checks'
+    # BOTH ROOTS, because since step 22 they are two answers and a report naming one of them
+    # cannot be read back. `workspace` is empty when no reader workspace is attached, which is the
+    # state in which the workspace-reading checks report `skipped`.
+    program              = $program
     workspace            = $workspace
     total                = $results.Count
     passed               = @($results | Where-Object { $_.status -eq 'pass' }).Count

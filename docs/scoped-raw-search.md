@@ -33,7 +33,7 @@ to be about.
 the reader*. Nothing is guessed and nothing is inferred from a folder name.
 
 This was the item's first design question and it is a dependency rather than a preference. 2.4
-specifies "one named source batch per query", but [PLAN.md](../PLAN.md) **3.1** records that the
+specifies "one named source batch per query", but `PLAN.md` **3.1** records that the
 folders do *not* follow the documented `raw/<project-slug>/<source-batch>/` shape and that ownership
 cannot be inferred without contradicting `CLAUDE.md`. So 2.4's central noun had no authority defining
 it. The choice was to pull 3.1's manifest forward the way 2.3 pulled 2.5's caps forward, or to

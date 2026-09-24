@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$StateDirectory,
+    [string]$WorkspacePath,
     [string]$Seat,
+    # The reader's callable prefix, which the REGISTRATION supplies (S38): HookContext.ps1 says why.
+    [string]$ReaderToolPrefix,
     [Parameter(ValueFromPipeline = $true)]
     [string]$InputJson,
     [string]$InputJsonBase64
@@ -39,8 +42,22 @@ $ErrorActionPreference = 'Stop'
     reaching a closed Book is never something that happens by accident or by habit.
 #>
 
-. (Join-Path $PSScriptRoot 'ShelfBoundary.ps1')
+# HOOKCONTEXT FIRST, AND OUTSIDE THE TRY -- see the note in Guard-ShelfBookRead.ps1. It reaches for
+# nothing, so it loads in any layout, and it is what lets a failure below refuse out loud instead of
+# exiting 1 with an empty stdout, which Claude Code treats as non-blocking and proceeds past.
 . (Join-Path $PSScriptRoot 'HookContext.ps1')
+try {
+    . (Join-Path $PSScriptRoot 'ProgramRoot.ps1')
+    . (Join-Path $PSScriptRoot 'ShelfBoundary.ps1')
+    # Step 20. The rules below resolve every path against THIS workspace, so an absolute path into
+    # another registered one answers `outside` and this guard says nothing. The registry answers
+    # which workspace a path belongs to; the Desk rules then apply to the right one.
+    . (Get-LibraryProgramFile -Name 'WorkspaceRegistry.ps1' -From $PSScriptRoot)
+}
+catch {
+    Write-HookDeny 'PreToolUse' "Virtual Desk failed closed: the guard could not load its own rules. $($_.Exception.Message)"
+    exit 0
+}
 
 # Every `shelf/<something>` the command names, whatever quoting or absolute prefix it wears.
 #
@@ -185,11 +202,64 @@ function Format-MatchedText([string]$Text) {
 }
 
 try {
-    if (-not $StateDirectory) { $StateDirectory = Split-Path -Parent $PSScriptRoot }
+    # A PREFIX THAT NAMES NO TOOL IS A BROKEN REGISTRATION (S38), refused before anything is judged:
+    # a denial naming a tool that does not exist sends the session nowhere, which is the defect the
+    # parameter exists to remove. Failing closed on every call is loud, and loud is what gets it fixed.
+    if (-not $ReaderToolPrefix) { $ReaderToolPrefix = $script:DefaultReaderToolPrefix }
+    if (-not (Test-ReaderToolPrefix $ReaderToolPrefix)) {
+        Write-HookDeny 'PreToolUse' "Virtual Desk failed closed: $(Get-ReaderToolPrefixFault $ReaderToolPrefix)"
+        exit 0
+    }
+    # STEP 20 (2026-09-20). `Split-Path -Parent (Split-Path -Parent $PSScriptRoot)` used to answer
+    # "which workspace am I guarding" with this file's own location. Installed as a plugin the hooks
+    # sit ONE level below the package root, so that named the directory the package was dropped into
+    # and every rule below went quiet. The workspace is asked for now; the old anchor survives only
+    # where it really is a workspace, which keeps every un-split checkout working unchanged.
+    # AN EXPLICIT -StateDirectory NAMES THE WORKSPACE, and this is a contract that predates the
+    # resolver: `.claude` belongs to a workspace, so a caller that hands a hook a state directory has
+    # already said which workspace it is talking about. Every fixture in this tree drives a hook that
+    # way. Letting the working directory win instead would point a suite at THIS repository while its
+    # Desk state came from a temp fixture -- every assertion about the wrong workspace, and a
+    # conversation record written into live material by a test.
+    $selected = $WorkspacePath
+    if (-not $selected -and $StateDirectory) { $selected = Split-Path -Parent $StateDirectory }
+    $resolved = Resolve-LibraryWorkspace -Explicit $selected -Anchor (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+    if ($resolved.kind -ceq 'conflict') {
+        Write-HookDeny 'PreToolUse' "Virtual Desk failed closed: $($resolved.reason)"
+        exit 0
+    }
+    $WorkspacePath = [string]$resolved.workspace
+    # The Desk belongs to the workspace being guarded, not to the installation the hook was run from.
+    if (-not $StateDirectory) {
+        $StateDirectory = if ($WorkspacePath) { Join-Path $WorkspacePath '.claude' } else { Split-Path -Parent $PSScriptRoot }
+    }
     $call = Read-HookPayload -BoundParameters $PSBoundParameters -InputJson $InputJson -InputJsonBase64 $InputJsonBase64
     $toolInput = Get-HookField $call 'tool_input'
     $command = Get-HookCommandText $toolInput
     if ([string]::IsNullOrWhiteSpace($command)) { exit 0 }
+
+    # STEP 20: A PATH IN ANOTHER REGISTERED WORKSPACE, judged BEFORE the Shelf tokeniser, because
+    # the tokeniser cannot answer this question and looks as though it can. It matches `shelf/...`
+    # wherever the text puts it -- including inside `D:/Other/shelf/...` -- and then asks THIS
+    # workspace's Desk about the Book it names. So a foreign Book whose slug happens to be open here
+    # would be ALLOWED, which is worse than silence: it is the wrong Desk answering confidently. A
+    # foreign Notebook write names no Shelf token at all and was never reached.
+    #
+    # Costs one regex and, on a machine with no registry, one Test-Path.
+    foreach ($rooted in [regex]::Matches((ConvertTo-PathSeparators $command).text, '(?i)[A-Za-z]:/[^\s"''|;&<>]*')) {
+        $crossDenial = Get-CrossWorkspaceDenial -Target $rooted.Value -HookWorkspace $WorkspacePath
+        if ($crossDenial) {
+            Write-HookDeny 'PreToolUse' "This command names '$($rooted.Value)'. $crossDenial"
+            exit 0
+        }
+    }
+
+    # THE TOKEN HALF NEEDS A WORKSPACE AND THE ROOTED-PATH HALF ABOVE DOES NOT, which is the whole
+    # shape of step 20's silence rule. `Get-ShelfTokens` finds workspace-RELATIVE text -- `shelf/x`
+    # -- and then asks THIS workspace's Desk about the Book it names; with no workspace there is no
+    # Desk to ask and no ground for the path to stand on. The absolute-path scan above has already
+    # run, so a command naming another registered workspace's Shelf is still refused from here.
+    if (-not $WorkspacePath) { exit 0 }
 
     $hits = @(Get-ShelfTokens $command)
     if (-not $hits.Count) { exit 0 }
@@ -215,7 +285,7 @@ try {
         }
         $parts = Split-BookRoot $target
         $kind = if ($parts.shelf -ceq 'archive') { 'Archived Shelf Book' } else { 'Shelf Book' }
-        Write-HookDeny 'PreToolUse' "$kind '$($parts.slug)' is closed, and a shell command cannot read around that. This command names it as $quoted. Open it with $(Get-ShelfOpenCommand $target), then read its pages with mcp__validated-book-reader__read_open_book_page. $script:PatternRemedy"
+        Write-HookDeny 'PreToolUse' "$kind '$($parts.slug)' is closed, and a shell command cannot read around that. This command names it as $quoted. Open it with $(Get-ShelfOpenCommand $target), then read its pages with $($ReaderToolPrefix)read_open_book_page. $script:PatternRemedy"
         exit 0
     }
 }

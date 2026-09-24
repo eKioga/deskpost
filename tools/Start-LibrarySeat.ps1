@@ -125,9 +125,41 @@ $ErrorActionPreference = 'Stop'
 # creation gate with it, so this file's own dot-source above is what the picker's absence would leave.
 . (Join-Path $PSScriptRoot 'SeatPicker.ps1')
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $stateDirectory = Join-Path $workspace '.claude'
+
+# AND THE DEPLOYMENT THAT WORKSPACE IS ATTACHED TO, RESOLVED HERE AND PASSED DOWN. Without this the
+# seat was resolved from -WorkspacePath and the ENDPOINT was resolved from the cwd -- one root
+# answering two questions, which is the defect step 22 split open and S18 found in five other
+# places. It lands here because this is the route Orca's Quick Command takes: the tab opens in the
+# PROGRAM worktree and passes `-WorkspacePath` at the reader's workspace, and the program holds no
+# `.claude/.library-mcp-url` at all after the split. Measured 2026-09-21 with the pair either way
+# round: with LIBRARY_WORKSPACE set the Active Project Catalog read and named ten Projects; with
+# only -WorkspacePath it refused with "No Basic Memory endpoint is configured".
+#
+# -Optional, NOT a throw. Entering an EXISTING seat needs no network at all, and a launcher that
+# demanded an endpoint here would refuse the offline route this file goes out of its way to keep.
+# An empty value travels down and the refusal is made where it means something -- by the catalog
+# read, which can say what it could not confirm and that nothing was created.
+#
+# Assigning to the parameters is the default-if-unset idiom, which is why the shadowing lint exempts
+# [string] parameters; $WorkspacePath two lines above is the same move. Everything downstream --
+# the picker, the creation gate, New-ProjectHub.ps1 -- takes these two as arguments, so one
+# resolution at this boundary is what makes the whole route agree about which Library it is in.
+if ([string]::IsNullOrWhiteSpace($McpUrl)) {
+    $McpUrl = Resolve-LibraryMcpUrl -WorkspacePath $workspace -Optional
+}
+if ([string]::IsNullOrWhiteSpace($ProjectId)) {
+    $ProjectId = Resolve-LibraryCollectionId -WorkspacePath $workspace -Optional
+}
 
 # --- A CUTOVER STOPS THIS ROUTE BEFORE ANYTHING ELSE (2026-09-19) ---------------------------------
 #
@@ -499,6 +531,34 @@ Write-SeatActivity -StateDirectory $stateDirectory -Seat $seatName -Note 'seat e
 
 $env:LIBRARY_SEAT = $seatName
 $env:LIBRARY_SEAT_CLAIM = $claim.token
+# AND THE WORKSPACE THE SEAT IS IN, which until 2026-09-21 the agent was never told. The launcher
+# resolves it at line 135 and then handed the agent a seat and a claim for a Library it had to find
+# again for itself -- by walking up from whatever directory the launcher happened to be started in.
+# That worked for as long as the program and the workspace were one directory. After step 22 they are
+# not, and Orca's Quick Command starts this launcher with `-WorkspacePath` from a cwd that is NOT the
+# workspace: the seat resolved correctly, the agent inherited that cwd, and every helper it ran
+# resolved a different Library from its parent. Exported here, at the same boundary as the seat, so
+# the three facts that define a session travel together.
+$env:LIBRARY_WORKSPACE = $WorkspacePath
+
+# AND `library` ITSELF, ON THE PATH, which is the fourth fact a seated session needs and the one
+# it had no way to get. The workspace instructions `library init` writes name `library desk`, and
+# on 2026-09-21 the first seat rooted in a split workspace went looking for that command, found no
+# `library` on the machine at all, and fell back to the program helper by absolute path. It was
+# right to; it should not have had to. The program root holds `library.cmd` and `library.ps1`, and
+# after the split it is nowhere on a reader's PATH by accident.
+#
+# PREPENDED, AND ONLY TO THIS PROCESS. Nothing is written to the machine's environment: this is
+# the same scope and the same boundary as the three variables above, so it ends when the session
+# does. An installer putting `library` on PATH for real is the packaging row's job; until then a
+# seat is the one place a reader meets the command, and this is where a seat begins.
+#
+# THE GUARD IS AGAINST DUPLICATION, NOT ABSENCE. A relaunch inside an already-launched seat would
+# otherwise stack the same directory onto PATH once per generation.
+$programRoot = Split-Path -Parent $PSScriptRoot
+$pathParts = @(($env:PATH -split [IO.Path]::PathSeparator) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$alreadyOnPath = @($pathParts | Where-Object { $_.TrimEnd('\', '/') -ieq $programRoot.TrimEnd('\', '/') }).Count -gt 0
+if (-not $alreadyOnPath) { $env:PATH = $programRoot + [IO.Path]::PathSeparator + $env:PATH }
 
 $result = [pscustomobject]@{
     operation            = 'Start a Library seat'
@@ -508,7 +568,8 @@ $result = [pscustomobject]@{
     desk_migrated        = $migration.migrated
     legacy_desk_retired  = $migration.legacy_retired
     claim_held           = $true
-    environment          = @('LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM')
+    environment          = @('LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'LIBRARY_WORKSPACE', 'PATH')
+    workspace            = $WorkspacePath
     # WHAT THE PICKER DECIDED, reported rather than only acted on: which conversation this session is,
     # how it was chosen, and the arguments the agent is actually started with. `picked` is false for
     # a named -Seat, which is how a caller tells a chosen seat from a typed one.
@@ -542,6 +603,25 @@ try {
         }
     }
     Write-LibraryResult -Result $result -Json:$Json
+    # THE AGENT STARTS IN THE WORKSPACE, NOT WHEREVER THE LAUNCHER WAS RUN FROM. Ruled by Eric on
+    # 2026-09-21 after the first seat opened from Orca's Quick Command was measured.
+    #
+    # WHAT THE MEASUREMENT SHOWED. The Quick Command opens its tab in the PROGRAM worktree, so the
+    # agent inherited that as its working directory. It was guarded -- the program's own settings
+    # register all nine hooks and a closed-Book Read was denied through real dispatch -- but it read
+    # the PROGRAM's CLAUDE.md, whose Desk rule is `Get-DeskOverview.ps1 -WorkspacePath .`, and `.`
+    # was the program. "What's on my desk?" answered "Seat 's19-probe' has no Desk in this
+    # workspace": a true sentence about the wrong Library, with the seat's real Desk sitting in the
+    # reader's workspace all along.
+    #
+    # ADR-0027 and ADR-0036 both say the workspace is where a reader sits, and ADR-0036's whole
+    # subject is guarding the place they sit IN. A seat rooted in the program is a seat that never
+    # reads the registrations that ADR built. So the working directory follows the workspace the
+    # seat is in, which is the same fact the environment above already carries.
+    #
+    # A no-op in an un-split checkout, where the program and the workspace are one directory -- which
+    # is what keeps every clone before step 22 behaving exactly as it did.
+    Set-Location -LiteralPath $workspace
     & $Command @agentArguments
 }
 finally {

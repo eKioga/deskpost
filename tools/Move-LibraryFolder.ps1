@@ -150,6 +150,20 @@ function Test-PathWithin([string]$Child, [string]$Container) {
     $c.StartsWith(($p + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-SameVolume([string]$Path, [string]$Other) {
+    <#
+        Can one be RENAMED to the other? A rename is a directory-table edit on one volume; across
+        volumes there is no rename at all, only a copy and a delete wearing its name.
+
+        Compared by path root rather than by asking the filesystem, so the answer is the same for a
+        path that does not exist yet -- which the aside, at preflight time, never does.
+    #>
+    $a = [IO.Path]::GetPathRoot((ConvertTo-ComparablePath $Path))
+    $b = [IO.Path]::GetPathRoot((ConvertTo-ComparablePath $Other))
+    if ([string]::IsNullOrWhiteSpace($a) -or [string]::IsNullOrWhiteSpace($b)) { return $false }
+    $a.Equals($b, [StringComparison]::OrdinalIgnoreCase)
+}
+
 # --- The source inventory -------------------------------------------------------------------------
 
 function Get-FolderInventory {
@@ -622,7 +636,14 @@ function Compare-TreeAgainstInventory {
 # Entry
 # ====================================================================================================
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $stateDirectory = Join-Path $workspace '.claude'
 # RESOLVED ONCE, HERE, and passed down. Four call sites scan for blockers and every one of them must
@@ -768,7 +789,13 @@ if ($Action -ceq 'Rollback') {
         #    everything points at.
         if (-not $sourceExists) {
             if (-not $asideExists) { throw "Neither $([string]$journal.source) nor the aside copy at $([string]$journal.aside) exists; this rollback has nothing to put back." }
-            Move-Item -LiteralPath ([string]$journal.aside) -Destination ([string]$journal.source)
+            # A RENAME, FOR THE SAME REASON AS STAGE (e) AND MORE URGENTLY: this is the recovery
+            # route. `Move-Item` given a directory it cannot rename copies the tree and then deletes
+            # the source, and a fallback that stopped part way HERE would tear the aside -- the one
+            # copy a rollback exists to put back. The inventory comparison below would catch the
+            # damage, which is not the same as preventing it. `[IO.Directory]::Move` renames or
+            # throws, and a throw leaves the aside whole and the destination still standing.
+            [IO.Directory]::Move(([string]$journal.aside), ([string]$journal.source))
             [void]$restored.Add('source')
             $sourceFaults = @((Compare-TreeAgainstInventory -Root ([string]$journal.source) -Inventory $journal.inventory).faults)
             if ($sourceFaults.Count) { throw ("The restored source does not match the inventory taken before the move: $(@($sourceFaults) -join '; ')") }
@@ -842,6 +869,50 @@ else { ConvertTo-ComparablePath $AsidePath }
 if (Test-Path -LiteralPath $aside) { throw "$aside already exists, so the source cannot be renamed aside to it. It is probably an earlier run's aside copy, waiting for the archive purge; move it into the archive, or name another -AsidePath." }
 if (Test-PathWithin -Child $aside -Container $source) { throw "$aside is inside $source; the aside copy cannot live inside the tree being renamed." }
 if (Test-PathWithin -Child $aside -Container $destination) { throw "$aside is inside $destination; the aside copy must not live inside the new tree." }
+# THE TWO WAYS A RENAME-ASIDE CANNOT HAPPEN, BOTH ANSWERED BEFORE THE COPY RATHER THAN AFTER IT.
+# Stage (e) is a rename and nothing else (see its comment), so an aside on another volume or under a
+# parent that does not exist is a run certain to stop after the whole tree has been copied -- the
+# state that has to be finished by hand, and the one this preflight exists to make impossible.
+if (-not (Test-SameVolume -Path $source -Other $aside)) {
+    throw ("$aside is not on the same volume as $source, and the source is renamed aside rather than " +
+           'copied a second time. Name an -AsidePath on the source volume; the archive folder it ' +
+           'eventually moves to may be anywhere.')
+}
+$asideParent = Split-Path -Parent $aside
+if (-not [string]::IsNullOrWhiteSpace($asideParent) -and -not (Test-Path -LiteralPath $asideParent -PathType Container)) {
+    throw "$asideParent does not exist, so $source cannot be renamed aside into it. Create the folder, or name another -AsidePath."
+}
+
+# THE RUN'S OWN RECORDS MUST NOT LIVE IN THE TREE IT IS MOVING. The barrier marker and the journal
+# are both written under the workspace's `internal`, and both are written AFTER the reader has
+# approved a plan_id, which is why neither of these can be left to be discovered.
+#
+#   Inside the SOURCE, the run destroys its own records: the barrier goes up before the plan_id is
+#   re-derived, so the marker lands in the tree being inventoried and turns the id -- and even if it
+#   did not, `Save-MoveJournal` writes to a path that stops existing at stage (e), when the source is
+#   renamed aside.
+#
+#   Inside the DESTINATION the failure is later and far more expensive. The destination-exists check
+#   above passes, because `<workspace>/internal` need not exist yet; the barrier then creates it, and
+#   `Compare-TreeAgainstInventory` -- which faults on a file the inventory does not name, in both
+#   directions and on purpose -- throws AFTER the whole tree has been copied.
+#
+# Both are certain from the paths alone, so both are refused here, before a plan_id is issued.
+$runRecordRoot = Join-Path $workspace 'internal'
+if (Test-PathWithin -Child $runRecordRoot -Container $source) {
+    throw ("$runRecordRoot is where this run writes its barrier and its journal, and it is inside $source. " +
+           'A cutover cannot move the tree it is recording itself in. To move a workspace, or that ' +
+           "workspace's own internal folder, run with -WorkspacePath naming a DIFFERENT workspace -- for " +
+           'the internal folder, the workspace it is moving to, copying to a staging name beside the ' +
+           'destination and renaming it into place once the run has verified it.')
+}
+if (Test-PathWithin -Child $runRecordRoot -Container $destination) {
+    throw ("$runRecordRoot is where this run writes its barrier and its journal, and it is inside $destination. " +
+           'The destination would then hold files the inventory does not name, and the copy would fail its own ' +
+           'verification after the whole tree had been copied. Name a destination outside that folder -- a ' +
+           'staging name beside it, renamed into place after the run -- or run with -WorkspacePath naming a ' +
+           'different workspace.')
+}
 
 $pointerPaths = @(@($PointerPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 foreach ($candidate in $pointerPaths) {
@@ -1010,8 +1081,26 @@ try {
     if ($copyFaults.Count) { throw ("The destination does not hold exactly the inventory: " + (@($copyFaults) -join '; ')) }
     Save-MoveJournal -Workspace $workspace -Journal $journal -Stage 'copy-verified' -Detail 'every file hashed back at the destination' | Out-Null
 
-    # (e) RENAME ASIDE, NEVER DELETE.
-    Move-Item -LiteralPath $source -Destination $aside
+    # (e) RENAME ASIDE, NEVER DELETE -- AND NEVER COPY EITHER, WHICH IS THE PART THAT COST A SESSION.
+    #
+    # This line was `Move-Item`, and `Move-Item` is not a rename: given a directory it cannot rename,
+    # it falls back to a recursive COPY followed by a recursive DELETE, silently and with no change
+    # in its output. On 2026-09-21 that fallback ran on `D:\Library` and stopped part way, leaving
+    # the source torn in half -- 764 files already under the aside and 202 still at the source, both
+    # halves disjoint -- and the run had to be finished by hand. Nothing was lost only because the
+    # destination had already been hash-verified against the inventory before the source was touched.
+    #
+    # THE ATTRIBUTE THE RECORD BLAMED WAS NOT THE CAUSE, and that matters for anyone tempted to
+    # special-case it: the directory it stopped on carried 524306, which is Directory|Hidden plus
+    # 0x80000, the cloud-filter PINNED bit -- not plain Hidden. Measured here on 2026-09-21, a tree
+    # whose `.git` carries Directory|Hidden renames cleanly under BOTH `Move-Item` and
+    # `[IO.Directory]::Move`, so a fix aimed at Hidden would have fixed nothing and looked like it had.
+    #
+    # So the fix is not a smarter fallback, it is the removal of the fallback. `[IO.Directory]::Move`
+    # is the rename primitive: it renames, or it throws with the reason. A stage (e) that throws
+    # leaves the source whole, the destination verified, and the journal at `copy-verified` -- a run
+    # the rollback route can still describe. A stage (e) that copies half a tree leaves neither.
+    [IO.Directory]::Move($source, $aside)
     $movedAside = $true
     Save-MoveJournal -Workspace $workspace -Journal $journal -Stage 'source-aside' -Detail $aside | Out-Null
 

@@ -81,6 +81,50 @@ try {
         }
     }
 
+    # AND THE SHAPE, BEFORE THE REGISTRATION, because a file the harness will not load registers
+    # nothing at all and the walk below cannot tell. Every question Get-HookRegistrationProblems
+    # asks WALKS the block, and the walk coerces with @(), so a bare object reads exactly as a
+    # one-element array does. Measured 2026-09-21 in the reader's workspace: five of six events and
+    # two of three PreToolUse entries were objects where arrays are required, Claude Code answered
+    #
+    #   Hook event "SessionStart" must be an array of matchers; received object. This entry was
+    #   ignored. ... Files with errors are skipped entirely, not just the invalid settings.
+    #
+    # and every consumer that only walked reported the guards registered for three days.
+    #
+    # THIS IS THE WINDOW NOTHING ELSE COVERS, and it is the window this hook exists for.
+    # `workspace.guards-registered` judges the reader's workspace and `settings.hooks-registered`
+    # judges the program's; both run at a commit. The file this hook watches is edited DURING a
+    # session, and .githooks/pre-commit already says why that matters: "a commit-time check cannot
+    # see a settings file that stopped working three hours earlier."
+    #
+    # IT DENIES RATHER THAN WARNS, and that is not a widening of what this hook refuses. A block
+    # the harness skips has "stopped registering a load-bearing guard" in the most complete way
+    # available -- it has stopped registering all of them, and the whole file with them.
+    #
+    # A TREE WITH NO `hooks` KEY IS SKIPPED RATHER THAN FAULTED: settings.local.json may legitimately
+    # hold none, and Test-ClaudeHookShape's "no top-level hooks key" fault is written for a hooks FILE.
+    $shapeFaults = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $tree = $trees[$i]
+        if ($null -eq $tree) { continue }
+        $treeNames = @($tree.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($treeNames -cnotcontains 'hooks' -or $null -eq $tree.hooks) { continue }
+        foreach ($fault in @(Test-ClaudeHookShape -Document $tree -Label (Split-Path -Leaf $files[$i]))) {
+            [void]$shapeFaults.Add($fault)
+        }
+    }
+    if ($shapeFaults.Count) {
+        Write-HookOutput 'ConfigChange' @{
+            permissionDecision = 'deny'
+            permissionDecisionReason = ('That change would leave a hooks block Claude Code will not load: ' +
+                (@($shapeFaults) -join '; ') + '. A settings file whose hooks block is malformed is skipped ' +
+                'ENTIRELY by the harness, so every Virtual Desk guard defined in it would go silent. The ' +
+                'previous settings stay in force.')
+        }
+        exit 0
+    }
+
     $problems = @(Get-HookRegistrationProblems -Settings $trees.ToArray())
     $blocking = @($problems | Where-Object { -not $_.optional })
     if ($blocking.Count) {

@@ -91,7 +91,9 @@ A delegate's own report is advisory at every step. The gate is the evidence.
 ## Scoping a delegated run
 
 There are two Codex roles. The trusted interactive Codex Librarian loads the project's
-`.codex/config.toml` and `.codex/hooks.json`; its Basic Memory calls pass through the same Desk
+`.codex/config.toml` and `.codex/hooks.json` -- **both only once that folder is trusted in
+`$CODEX_HOME/config.toml`, and both ignored in silence until it is** (measured 2026-09-22; record in
+[Hook-Enforced Boundaries](hook-enforced-boundaries.md)). Its Basic Memory calls pass through the same Desk
 guard as Claude, so it can read open Books and Projects through the validated reader and maintain
 an open active Project Hub. A non-interactive build delegate does not need shared content and has
 no user present to approve consequential work, so launch it with the shared servers switched off:

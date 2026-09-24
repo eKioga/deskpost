@@ -1,0 +1,12 @@
+{
+  "name": "@deskpost/library-kernel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The TypeScript kernel of the Library: the implementation PLAN-public-release.md step 24 ports the PowerShell tools into, judged row by row by tools/Invoke-AcceptanceMatrix.ps1.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "bin": { "library": "./src/cli.ts" },
+  "scripts": {
+    "selftest": "node test/selftest.ts"
+  }
+}

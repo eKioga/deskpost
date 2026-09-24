@@ -542,10 +542,24 @@ function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDat
 # Per-action preflight is not enough on its own. Two actions creating the same Shelf page, Project
 # record, or Book page each pass alone, then the first creates the destination and the second
 # necessarily fails -- a guaranteed partial batch from a conflict that was knowable here.
+#
+# A NOTEBOOK ACTION'S TWO INDEXES ARE NOT CREATES, so they are not compared here (S44). Every Notebook action
+# re-renders the master index under the render lock, and a topic's index is created by the first action into a
+# new topic and updated by every later one -- so two Notebook actions sharing either is two updates, in order,
+# not a guaranteed failure. Compared, they refused every batch carrying a second Notebook action; S43 found the
+# same two paths wrongly held to "must not exist" at run time (Test-TriageDerivedWritePath) and fixed that half.
+function Test-TriageSharedDerivedPath($Action, [string]$Path) {
+    if ([string]$Action.kind -cne 'notebook') { return $false }
+    if ($Path -cmatch '(^|/)_master-index\.md$') { return $true }
+    $topicSlug = [string](Get-TriageValue $Action.metadata 'topic')
+    $Path -cmatch ('(^|/)' + [regex]::Escape($topicSlug) + '/_index\.md$')
+}
+
 function Assert-TriageWriteSetsDisjoint($Actions) {
     $seen = @{}
     foreach ($action in @($Actions)) {
         foreach ($path in @($action.write_set)) {
+            if (Test-TriageSharedDerivedPath $action $path) { continue }
             $key = $path.ToLowerInvariant()
             if ($seen.ContainsKey($key)) {
                 throw "Two actions both create '$path' ($($seen[$key]) and $($action.action_id)). One would necessarily fail, so the batch is refused before any write. Model an ordered dependency or change one destination."

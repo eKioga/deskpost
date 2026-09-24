@@ -1,0 +1,4 @@
+{
+  "about": "Verdicts recorded by real sessions for the acceptance matrix's recorded_verdict rows (S41, the reader's ruling). Each binds one row to the SHA-256 of the exact release binary it was judged against, so a new release is judged again. result is pass or fail; evidence says what the session did and saw. Read by tools/Invoke-AcceptanceMatrix.ps1.",
+  "verdicts": []
+}

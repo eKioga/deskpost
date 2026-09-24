@@ -946,7 +946,14 @@ function Invoke-SeatPickerHubCreation {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectSlug,
         [string]$McpUrl,
-        [string]$ProjectId
+        [string]$ProjectId,
+        # THE WORKSPACE THE SEAT IS BEING CREATED IN, forwarded so the Hub write can be fenced.
+        # Without it this branch was a dead end in a split install: New-ProjectHub.ps1 took no
+        # workspace at all, so the ownership fence had nothing to resolve from and refused with
+        # `no Library workspace was selected and none could be derived`. Invisible while the
+        # program and the workspace were one directory, and reachable only here -- a new seat
+        # naming a Project that does not exist yet.
+        [string]$Workspace
     )
     Write-Host "There is no active Project Hub '$ProjectSlug' yet."
     $offer = (Read-SeatPickerLine -Prompt 'Create it now? (yes to create, anything else to name a different Project)').Trim()
@@ -969,6 +976,7 @@ function Invoke-SeatPickerHubCreation {
     if ($devAnswer -ceq 'yes') { $hubArgs['Dev'] = $true }
     if (-not [string]::IsNullOrWhiteSpace($McpUrl)) { $hubArgs['McpUrl'] = $McpUrl }
     if (-not [string]::IsNullOrWhiteSpace($ProjectId)) { $hubArgs['ProjectId'] = $ProjectId }
+    if (-not [string]::IsNullOrWhiteSpace($Workspace)) { $hubArgs['WorkspacePath'] = $Workspace }
 
     $helper = Join-Path $PSScriptRoot 'New-ProjectHub.ps1'
     $plan = $null
@@ -1101,7 +1109,7 @@ function Invoke-SeatPickerCreation {
         # the branch, and it decides only what to ASK -- the gate below still decides what may be
         # created, against a catalog re-read from the collection rather than from this answer.
         if (@($activeProjects) -cnotcontains $typedProject) {
-            $madeSlug = Invoke-SeatPickerHubCreation -ProjectSlug $typedProject -McpUrl $McpUrl -ProjectId $ProjectId
+            $madeSlug = Invoke-SeatPickerHubCreation -ProjectSlug $typedProject -McpUrl $McpUrl -ProjectId $ProjectId -Workspace $Workspace
             if (-not $madeSlug) {
                 Write-Host 'Name one of the active Projects above, or empty to cancel.'
                 continue

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$WorkspacePath, [switch]$SelfTest)
+param([string]$WorkspacePath, [switch]$Json, [switch]$SelfTest)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -7,6 +7,14 @@ $ErrorActionPreference = 'Stop'
 # same primitives Add-ShelfNote and the Desk overview use. This helper stays READ-ONLY: it calls
 # Get-CaptureBooks and Get-ShelfNotes and nothing that writes.
 . (Join-Path $PSScriptRoot 'ShelfNoteCommon.ps1')
+# `-Json` ADDED 2026-09-22 (S14), FOR THE REASON `ShelfCatalog.ps1 -Render` WAS GIVEN ONE IN S13.
+# This helper had no JSON mode at all, so `triage.inventory-lists-what-is-waiting` compared the
+# PowerShell arm's FORMATTED object text on stdout against the kernel arm's parsed `result.<field>`
+# map -- two field namespaces that cannot intersect, on a row whose subject is neither. It could not
+# have gone green, and the difference it reported would have been about output mode rather than
+# about behaviour. Opt-in and additive, exactly as `docs/helper-write-and-output-contracts.md`
+# requires: an in-process caller that does not pass it still receives the live object.
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 function Get-Utf8Hash([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -546,7 +554,14 @@ if ($SelfTest) {
     Write-Output "triage-inventory selftest: $($script:checks) checks passed"
     exit 0
 }
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $notebookRoot = Join-Path $workspace 'notebook'
 $journalRoot = Join-Path $workspace 'internal/publication-journals'
@@ -706,7 +721,7 @@ $holdingPending = @($holdingNotes | Where-Object { [string]$_.review -cne 'done'
 # sort as though it were the oldest date in the Book.
 $holdingDates = @($holdingPending | ForEach-Object { [string]$_.captured } | Where-Object { $_ -cne 'unknown' } | Sort-Object)
 
-[pscustomobject]@{
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{
     operation = 'Library Triage Inventory'
     workspace = $workspace
     scope = 'Local Notebook, local capture Books, and internal publication journals only. No Basic Memory or NAS call was made.'
@@ -733,4 +748,4 @@ $holdingDates = @($holdingPending | ForEach-Object { [string]$_.captured } | Whe
     pages = $pages
     holding_notes = $holdingNotes
     shared_library_write = $false
-}
+})

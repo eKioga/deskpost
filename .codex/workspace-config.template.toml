@@ -1,0 +1,23 @@
+# Portable source template, with no machine anywhere in it. `library init` renders this into a
+# reader's workspace as .codex/config.toml; tools/Initialize-CodexLibrary.ps1 renders
+# config.template.toml beside it for the program's own Codex sessions.
+#
+# The two differ in exactly one way and it is deliberate: this one registers the validated reader
+# and nothing else. tools/CodexBindings.ps1 carries the reasoning, and it is the same reasoning that
+# keeps basic-memory out of a workspace's .mcp.json on the Claude side.
+#
+# Codex reads this file only when the project is TRUSTED in $CODEX_HOME/config.toml. Untrusted, it
+# is ignored in silence -- measured 2026-09-22, codex-cli 0.153.4 -- which is why
+# workspace.codex-guards-registered reports the trust state beside the file rather than assuming it.
+
+[features]
+hooks = true
+
+[mcp_servers.validated-book-reader]
+command = "powershell.exe"
+args = "__VALIDATED_READER_ARGS__"
+enabled = true
+required = true
+default_tools_approval_mode = "auto"
+startup_timeout_sec = 20
+tool_timeout_sec = 60

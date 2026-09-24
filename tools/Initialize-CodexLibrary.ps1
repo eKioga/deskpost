@@ -72,6 +72,8 @@ foreach ($path in @($configTemplatePath, $hooksTemplatePath)) {
 # run is idempotent. Generated state is where the deployment is SUPPOSED to live; the refusal below
 # is for a workspace that has none anywhere, not for one that was configured yesterday.
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+. (Join-Path $PSScriptRoot 'HookRegistry.ps1')
+. (Join-Path $PSScriptRoot 'CodexBindings.ps1')
 if ([string]::IsNullOrWhiteSpace($McpUrl)) { $McpUrl = $env:AI_LIBRARY_MCP_URL }
 if ([string]::IsNullOrWhiteSpace($McpUrl)) { $McpUrl = Resolve-LibraryMcpUrl -WorkspacePath $libraryRoot -Optional }
 if ([string]::IsNullOrWhiteSpace($CollectionId)) { $CollectionId = Resolve-LibraryCollectionId -WorkspacePath $libraryRoot -Optional }
@@ -132,26 +134,28 @@ $config = Replace-ExactToken $config '"__BASIC_MEMORY_ENABLED__"' $basicMemoryOn
 $config = Replace-ExactToken $config '"__BASIC_MEMORY_REQUIRED__"' $basicMemoryOn
 if ($config -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex config still contains a template token.' }
 
-$guardCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $guardPath + '"'
-$contextCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $contextPath + '"'
-$hooksTemplate = [IO.File]::ReadAllText($hooksTemplatePath)
-$hooks = Replace-ExactToken $hooksTemplate '"__BASIC_MEMORY_GUARD_COMMAND__"' ($guardCommand | ConvertTo-Json -Compress) 2
-$hooks = Replace-ExactToken $hooks '"__DESK_CONTEXT_COMMAND__"' ($contextCommand | ConvertTo-Json -Compress) 2
-$shellGuardCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $shellGuardPath + '"'
-$hooks = Replace-ExactToken $hooks '"__SHELL_GUARD_COMMAND__"' ($shellGuardCommand | ConvertTo-Json -Compress) 2
-$patchGuardCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $patchGuardPath + '"'
-$hooks = Replace-ExactToken $hooks '"__PATCH_GUARD_COMMAND__"' ($patchGuardCommand | ConvertTo-Json -Compress) 2
-if ($hooks -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex hooks still contain a template token.' }
+# ONE RENDERER FOR ONE DOCUMENT, from 2026-09-22. `library init` writes this same hooks file into a
+# reader's workspace now (ADR-0036, extended to Codex), and the only thing that differs between the
+# two copies is nothing at all: both point at THIS program's hook directory. Two renderers for one
+# document is the shape `plugin.generated-files-match` was green over for a fortnight, so there is
+# one, in tools/CodexBindings.ps1, and the four guard commands and their token counts live with it.
+$hooks = New-CodexHooksDocument -TemplatePath $hooksTemplatePath -HookDirectory (Join-Path $libraryRoot '.claude/hooks')
 try { $rendered = $hooks | ConvertFrom-Json } catch { throw "Rendered Codex hooks are invalid JSON: $($_.Exception.Message)" }
 # VALID JSON WAS NEVER THE BAR, and believing it was cost the Codex boundary entirely. Codex accepts
 # only 'description' and 'hooks' at the root of this file. Until 2026-09-06 the Library wrote the
 # events at the root instead, so every Codex session started with
 #   warning: failed to parse hooks config ...: unknown field `PreToolUse`
 # and no Library hook registered at all. The file parsed as JSON the whole time.
-$rootNames = @($rendered.PSObject.Properties | ForEach-Object { $_.Name })
-$stray = @($rootNames | Where-Object { $_ -cnotin @('description', 'hooks') })
-if ($stray.Count) { throw "Codex rejects a hooks file with $($stray -join ', ') at the root; every event must nest under 'hooks'." }
-if ($rootNames -cnotcontains 'hooks') { throw "The rendered Codex hooks have no top-level 'hooks' key, so no event can be registered." }
+#
+# THE RULE MOVED TO A JUDGE AND THE JUDGE IS SHARED. `Test-CodexHookShape` asks it, plus the nested
+# array shape Claude Code requires and Codex accepts, so this renderer, the workspace initialiser and
+# both gate checks ask ONE question -- the same consolidation `Test-ClaudeHookShape` already made on
+# the Claude side, and for the same reason: a second copy is a second chance to disagree.
+# The judge moved INTO the renderer on 2026-09-22, so a caller cannot skip it. Re-asserted here
+# on the parsed document anyway, because this file's own result reports what it wrote and a
+# second look at two lines is cheaper than a boundary that is silently absent.
+$shapeFaults = @(Test-CodexHookShape -Document $rendered -Label 'the rendered Codex hooks')
+if ($shapeFaults.Count) { throw ($shapeFaults -join '; ') }
 
 $configPath = Join-Path $codexDirectory 'config.toml'
 $hooksPath = Join-Path $codexDirectory 'hooks.json'

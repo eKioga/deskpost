@@ -1,0 +1,12 @@
+{
+    "name":  "deskpost",
+    "plugins":  [
+                    {
+                        "name":  "deskpost",
+                        "source":  {
+                                       "path":  "./",
+                                       "source":  "local"
+                                   }
+                    }
+                ]
+}

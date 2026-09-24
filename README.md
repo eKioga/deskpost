@@ -34,6 +34,10 @@ of `docs/` is design records, written for whoever is changing the code.
 
 ## Install
 
+A fresh Windows install refuses to run PowerShell scripts, and every helper here is one. Allow scripts you
+run yourself, once, with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run a single helper as
+`powershell -ExecutionPolicy Bypass -File <helper>`.
+
 ```powershell
 git clone https://github.com/eKioga/deskpost.git
 cd deskpost

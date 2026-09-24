@@ -8,6 +8,14 @@ and the Discovery index. A reset is "reset this Seat's Notebook" and touches not
 accepted — 2026-09-19, Eric's ruling Q4 in `PLAN-public-release.md`. Effective from that plan's
 Phase D, in the TypeScript kernel only; the PowerShell implementation never carries it.
 
+**Implemented in the kernel 2026-09-22 (S18)**: `notebook/<seat>/`, activated by
+`internal/notebook-layout.json`, and `library migrate` over every legacy state this ADR names -- plus
+one it did not: an ownership row whose topic is no longer on disk, which the PowerShell reset leaves
+behind every time it quarantines a topic. The reader's four rulings of that session (the root's
+location, what no seat owns, what an interrupted migration blocks, what an unmigrated workspace does)
+are recorded in `kernel/README.md`. `CONTEXT.md` says the model and that an unmigrated workspace still
+shares one Notebook, because the PowerShell tools the reader uses today never carry this.
+
 **Supersedes** the "one Notebook" clause of [ADR-0015](0015-the-desk-is-per-seat-one-library-many-seats.md)
 and the mechanism of [ADR-0019](0019-a-topics-ownership-changes-only-under-its-topic-lock.md).
 **Keeps** [ADR-0016](0016-reset-is-seat-scoped-recoverable-and-refuses-claimed-seats.md)'s promise

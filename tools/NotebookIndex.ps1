@@ -525,13 +525,29 @@ if ($MyInvocation.InvocationName -ne '.' -and (@($args) -contains '-Render' -or 
         exit 0
     }
 
+    # THE DRIFT IS READ BEFORE THE RENDER REPAIRS IT, because this is the named repair for exactly
+    # that drift and a repair that cannot say what it repaired is indistinguishable from a no-op.
+    # Added 2026-09-22 (S17) with -Json: `compile.master-index-is-derived-not-written` states that a
+    # hand edit is drift rather than content, and an answer that carried only a topic count said the
+    # same thing whether it had overwritten a hand edit or rewritten identical bytes.
+    $driftBefore = @(Get-NotebookMasterIndexDrift -Workspace $resolvedWorkspace)
     $render = Invoke-NotebookRender -Workspace $resolvedWorkspace
-    [pscustomobject]@{
+    $renderResult = [pscustomobject]@{
         operation            = 'Render the Notebook master index'
         workspace            = $resolvedWorkspace
         master_index_path    = $render.master_index_path
         topic_count          = $render.topic_count
+        drift_repaired       = $driftBefore
         shared_library_write = $false
-    } | Format-List
+    }
+    # -Json IS OPT-IN, AND THE DEFAULT IS UNCHANGED. Without it this printed Format-List prose, which
+    # is what the acceptance matrix compared a kernel's fields against until S17 -- two namespaces
+    # that cannot intersect. LibraryOutput is dot-sourced HERE rather than at the top because this
+    # module is dot-sourced by every Notebook writer, and none of them needs it.
+    if (@($argumentList) -contains '-Json') {
+        . (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
+        Write-LibraryResult -Result $renderResult -Json
+    }
+    else { $renderResult | Format-List }
     exit 0
 }

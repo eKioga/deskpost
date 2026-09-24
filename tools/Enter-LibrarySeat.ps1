@@ -77,9 +77,28 @@ $ErrorActionPreference = 'Stop'
 # that does not exist. It brings NotebookOwnership.ps1 and RawBatchOwnership.ps1 with it.
 . (Join-Path $PSScriptRoot 'SeatCreation.ps1')
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $stateDirectory = Join-Path $workspace '.claude'
+
+# AND THE DEPLOYMENT THAT WORKSPACE IS ATTACHED TO, for the same reason and in the same shape as
+# tools/Start-LibrarySeat.ps1: the seat came from -WorkspacePath and the endpoint came from the cwd,
+# which are two answers to one question wherever the program and the workspace are different
+# directories. -Optional, because entering an existing seat needs no network and the refusal belongs
+# at the catalog read, which can say what it could not confirm.
+if ([string]::IsNullOrWhiteSpace($McpUrl)) {
+    $McpUrl = Resolve-LibraryMcpUrl -WorkspacePath $workspace -Optional
+}
+if ([string]::IsNullOrWhiteSpace($ProjectId)) {
+    $ProjectId = Resolve-LibraryCollectionId -WorkspacePath $workspace -Optional
+}
 
 # --- A CUTOVER STOPS THIS ROUTE BEFORE ANYTHING ELSE (2026-09-19) ---------------------------------
 #

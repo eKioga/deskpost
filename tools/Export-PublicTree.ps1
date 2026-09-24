@@ -66,6 +66,7 @@ param(
     [string]$ApprovedPlanId,
     [string]$TermRoot,
     [string]$Mode = $env:LIBRARY_IDENTITY_SCAN,
+    [switch]$DriftReport,
     [switch]$SelfTest
 )
 
@@ -224,6 +225,167 @@ function New-PublicTreeExportPlan {
     }
 }
 
+# ==================================================================================================
+# THE SEED RECORD
+# ==================================================================================================
+#
+# PLAN-public-release.md step 14, ruled 2026-09-20: THIS TOOL SEEDS A PUBLIC REPOSITORY ONCE AND
+# NEVER UPDATES ONE. Every run is a `git init`, so every export is an UNRELATED history, and pushing
+# a second one over a published repository is a forced replacement that breaks every clone and fork.
+# ADR-0031 already routes change through ordinary commits -- reviewed on GitHub, merged at Forgejo --
+# and this tool is not on that route.
+#
+# THE GUARD IS WHAT THE TOOL CAN ACTUALLY SEE. The obvious phrasing, "refuse a destination whose
+# repository it did not create", cannot be implemented here: this tool never touches a remote at all.
+# It stops at a staging tree with one commit and no remote, and the destructive act happens later, in
+# somebody's hand-typed push. What it CAN know is whether it has already seeded from this workspace,
+# so that is what it records and that is what it refuses.
+#
+# AND THE REFUSAL IS THE DRIFT REPORT. Somebody re-running the export is asking "how do I get my
+# changes out". The useful answer is the list of allowlisted files that have changed since the seed,
+# delivered at the moment they are about to do the destructive thing rather than in a document.
+#
+# THE RECORD LIVES UNDER internal/, WHICH IS GITIGNORED AND NOT ALLOWLISTED. It is machine-local
+# state about what this machine did, so it is neither committed nor exported -- and a contributor who
+# clones the repository has no record and can seed their own public repository, which is correct.
+
+function Get-PublicTreeSeedPath {
+    param([Parameter(Mandatory)][string]$Workspace)
+    Join-Path $Workspace 'internal\public-tree-seed.json'
+}
+
+function Read-PublicTreeSeed {
+    <#
+        The record, or $null if this workspace has never seeded. A record that exists but cannot be
+        read is NOT treated as absence: a guard that fails open is not a guard.
+    #>
+    param([Parameter(Mandatory)][string]$Workspace)
+
+    $path = Get-PublicTreeSeedPath -Workspace $Workspace
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+
+    $text = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false))
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "The seed record at $path is empty, so this workspace cannot say whether it has already seeded a public repository. Nothing was written."
+    }
+    $record = $null
+    try { $record = $text | ConvertFrom-Json }
+    catch {
+        throw "The seed record at $path is not readable JSON ($([string]$_.Exception.Message)), so this workspace cannot say whether it has already seeded a public repository. Nothing was written."
+    }
+    foreach ($required in @('destination', 'commit', 'seeded_utc', 'files')) {
+        if ($record.PSObject.Properties.Name -notcontains $required) {
+            throw "The seed record at $path has no '$required' field, so it cannot describe what was seeded. Nothing was written."
+        }
+    }
+    $record
+}
+
+function Get-PublicTreeSeedDrift {
+    <#
+        What the allowlisted tree has done since the seed. Both sides are path + sha256, so this
+        compares CONTENT: a touched file with the same bytes is not drift, and a file whose bytes
+        changed is, whatever its timestamp says.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Seed,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Files
+    )
+
+    $seeded = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($Seed -and ($Seed.PSObject.Properties.Name -contains 'files')) {
+        foreach ($entry in @($Seed.files)) {
+            if (-not $entry) { continue }
+            $names = $entry.PSObject.Properties.Name
+            if (($names -contains 'path') -and ($names -contains 'sha256')) { $seeded[[string]$entry.path] = [string]$entry.sha256 }
+        }
+    }
+
+    $changed = [Collections.Generic.List[string]]::new()
+    $added = [Collections.Generic.List[string]]::new()
+    $removed = [Collections.Generic.List[string]]::new()
+    $unchanged = 0
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($entry in @($Files)) {
+        $relative = [string]$entry.path
+        [void]$seen.Add($relative)
+        $was = ''
+        if ($seeded.TryGetValue($relative, [ref]$was)) {
+            if ($was -cne [string]$entry.sha256) { [void]$changed.Add($relative) } else { $unchanged++ }
+        }
+        else { [void]$added.Add($relative) }
+    }
+    foreach ($relative in $seeded.Keys) { if (-not $seen.Contains($relative)) { [void]$removed.Add($relative) } }
+
+    [pscustomobject]@{
+        changed         = @($changed | Sort-Object)
+        added           = @($added | Sort-Object)
+        removed         = @($removed | Sort-Object)
+        unchanged_count = $unchanged
+        total_count     = $changed.Count + $added.Count + $removed.Count
+    }
+}
+
+function Format-PublicTreeSeedDrift {
+    param([Parameter(Mandatory)]$Drift)
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($relative in @($Drift.changed)) { [void]$lines.Add('changed ' + $relative) }
+    foreach ($relative in @($Drift.added))   { [void]$lines.Add('added ' + $relative) }
+    foreach ($relative in @($Drift.removed)) { [void]$lines.Add('removed ' + $relative) }
+    if (-not $lines.Count) { return 'nothing -- the allowlisted tree is byte-identical to the seed' }
+    $lines -join '; '
+}
+
+function Write-PublicTreeSeed {
+    <#
+        Written only after the commit exists, and read back before the caller is told the export
+        succeeded. A record that cannot be read back is a guard that will not fire next time, which
+        is the one failure here that must not be quiet.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Workspace,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][string]$PlanId,
+        [Parameter(Mandatory)][string]$Commit,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Files,
+        # A seed that happened before this guard existed knows its own date better than the clock
+        # does, and where its file list came from. Both default to the ordinary case: now, and no
+        # provenance, which is what every export written by this tool records.
+        [string]$SeededUtc,
+        [string]$Provenance
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SeededUtc)) { $SeededUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+
+    $path = Get-PublicTreeSeedPath -Workspace $Workspace
+    $parent = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+
+    $record = [pscustomobject]@{
+        note        = ('Written by tools/Export-PublicTree.ps1. Its presence REFUSES a second export from this workspace: ' +
+                       'the tool seeds a public repository once (PLAN-public-release.md step 14, ADR-0031) and change after ' +
+                       'the seed travels as ordinary commits in a clone of the seeded repository. Delete this file only to ' +
+                       'seed a DIFFERENT public repository.')
+        seeded_utc  = $SeededUtc
+        provenance  = $Provenance
+        workspace   = $Workspace
+        destination = $Destination
+        plan_id     = $PlanId
+        commit      = $Commit
+        file_count  = @($Files).Count
+        files       = @($Files | ForEach-Object { [pscustomobject]@{ path = [string]$_.path; sha256 = [string]$_.sha256 } })
+    }
+    [IO.File]::WriteAllText($path, ($record | ConvertTo-Json -Depth 5) + "`n", [Text.UTF8Encoding]::new($false))
+
+    $back = Read-PublicTreeSeed -Workspace $Workspace
+    if ((-not $back) -or ($back.commit -cne $Commit) -or (@($back.files).Count -ne @($Files).Count)) {
+        throw ("The export SUCCEEDED and its staging tree is at $Destination, but the seed record at $path did not read back as " +
+               'written -- so a second export from this workspace would not be refused. Fix the record before pushing anything.')
+    }
+    $path
+}
+
 function Invoke-PublicTreeGitleaksDirectory {
     <#
         The first pass's gitleaks, over a directory that is not a repository yet. `protect --staged`
@@ -348,8 +510,19 @@ function Invoke-PublicTreeExport {
     }
 
     $plan = New-PublicTreeExportPlan -Workspace $workspaceFull -Destination $destinationFull
+    $seed = Read-PublicTreeSeed -Workspace $workspaceFull
 
     if ($Preflight) {
+        # A preflight against a seeded workspace is still worth running -- it copies nothing, and
+        # "what would this rule export today" is a legitimate question after the seed. It says so
+        # plainly rather than printing a next step that will be refused.
+        $nextStep = "Rerun with -UserConfirmed -ApprovedPlanId $($plan.plan_id)."
+        if ($seed) {
+            $driftNow = Get-PublicTreeSeedDrift -Seed $seed -Files @($plan.files)
+            $nextStep = ("This workspace already seeded $($seed.destination) on $($seed.seeded_utc), so there is no next step here: " +
+                         "an execution would be refused. $($driftNow.total_count) allowlisted file(s) have changed since the seed -- " +
+                         'run -DriftReport to list them, and carry them over as ordinary commits in a clone of the seeded repository.')
+        }
         return [pscustomobject]@{
             operation       = 'Export the public tree'
             status          = 'preflight'
@@ -361,11 +534,26 @@ function Invoke-PublicTreeExport {
             untracked       = @($plan.untracked)
             missing_rules   = @($plan.missing)
             plan_id         = $plan.plan_id
+            already_seeded  = [bool]$seed
             scope           = ('Copies ' + $plan.file_count + ' allowlisted file(s) to the destination, scans the staged tree with this ' +
                                'workspace''s deployment denylist, the identity denylist and gitleaks, discards the whole staging folder ' +
                                'on any hit, and only then runs git init, git add and one commit -- scanning the index before the commit.')
-            next            = "Rerun with -UserConfirmed -ApprovedPlanId $($plan.plan_id)."
+            next            = $nextStep
         }
+    }
+
+    # --- THE SEED GUARD ---------------------------------------------------------------------------
+    #
+    # Ahead of every other execution refusal, including the plan_id check, because a second export is
+    # not a stale approval to be corrected -- it is the wrong operation, and the reader should be told
+    # what the right one is rather than nudged toward a fresh plan_id.
+    if ($seed) {
+        $drift = Get-PublicTreeSeedDrift -Seed $seed -Files @($plan.files)
+        throw ("This workspace already seeded a public repository: $($seed.destination), commit $($seed.commit), on $($seed.seeded_utc). " +
+               'Every export is a fresh `git init`, so pushing another one over that repository is a FORCED REPLACEMENT that breaks ' +
+               'every clone and fork. Change after the seed travels as ordinary commits in a clone of the seeded repository, reviewed ' +
+               "on GitHub and merged at Forgejo (ADR-0031). Changed since the seed ($($drift.total_count)): $(Format-PublicTreeSeedDrift -Drift $drift). " +
+               "Nothing was written. -Preflight and -DriftReport still work; to seed a DIFFERENT repository, delete $(Get-PublicTreeSeedPath -Workspace $workspaceFull).")
     }
 
     if (-not $UserConfirmed) { throw "Nothing was written: rerun with -Preflight, read what it reports, then rerun with -UserConfirmed -ApprovedPlanId $($plan.plan_id)." }
@@ -509,6 +697,11 @@ function Invoke-PublicTreeExport {
     }
     if ($gitError) { Remove-PublicTreeStaging -Path $destinationFull; throw $gitError }
 
+    # The seed is recorded only now, against the commit that actually exists. Assigned rather than
+    # left on the pipeline: this function returns one object and a stray path would join it.
+    $seedPath = Write-PublicTreeSeed -Workspace $workspaceFull -Destination $destinationFull `
+                                     -PlanId $plan.plan_id -Commit $head -Files @($plan.files)
+
     [pscustomobject]@{
         operation          = 'Export the public tree'
         status             = 'exported'
@@ -524,8 +717,58 @@ function Invoke-PublicTreeExport {
         identity_scan      = $secondPass.status
         identity_detail    = $secondPass.detail
         gitleaks_tree      = $gitleaksOne.detail
+        seed_record        = $seedPath
         next               = ("The staging tree is a repository with one commit and has passed both scans. " +
-                              "Add the private Forgejo remote and push; nothing here has a remote yet.")
+                              "Add the private Forgejo remote and push; nothing here has a remote yet. " +
+                              "THIS WAS THE SEED: the record at $seedPath refuses a second export from this workspace, " +
+                              "because a second export is an unrelated history and pushing it over the seeded repository " +
+                              "would replace it. Later change travels as ordinary commits in a clone (ADR-0031).")
+    }
+}
+
+function Get-PublicTreeDriftReport {
+    <#
+        Read-only, and the one thing a seeded workspace can usefully ask this tool: which allowlisted
+        files have changed since the seed, so they can be carried over as ordinary commits. Needs no
+        destination, because it writes nothing anywhere.
+    #>
+    param([Parameter(Mandatory)][string]$Workspace)
+
+    $workspaceFull = [IO.Path]::GetFullPath($Workspace).TrimEnd('\', '/')
+    $seed = Read-PublicTreeSeed -Workspace $workspaceFull
+    $files = @(Get-PublicTreeFiles -Workspace $workspaceFull)
+    $entries = @($files | ForEach-Object {
+        [pscustomobject]@{ path = $_; sha256 = (Get-PublicTreeFileHash -Path (Join-Path $workspaceFull $_)) }
+    })
+
+    if (-not $seed) {
+        return [pscustomobject]@{
+            operation      = 'Public tree drift against the seed'
+            status         = 'never-seeded'
+            workspace      = $workspaceFull
+            allowlist_size = $entries.Count
+            detail         = ('This workspace has no seed record at ' + (Get-PublicTreeSeedPath -Workspace $workspaceFull) +
+                              ', so it has never seeded a public repository from here and there is nothing to compare against.')
+        }
+    }
+
+    $drift = Get-PublicTreeSeedDrift -Seed $seed -Files $entries
+    [pscustomobject]@{
+        operation       = 'Public tree drift against the seed'
+        status          = $(if ($drift.total_count) { 'drifted' } else { 'identical' })
+        workspace       = $workspaceFull
+        destination     = $seed.destination
+        seeded_utc      = $seed.seeded_utc
+        seed_commit     = $seed.commit
+        allowlist_size  = $entries.Count
+        unchanged_count = $drift.unchanged_count
+        changed         = @($drift.changed)
+        added           = @($drift.added)
+        removed         = @($drift.removed)
+        total_count     = $drift.total_count
+        detail          = (Format-PublicTreeSeedDrift -Drift $drift)
+        next            = ('Carry these over as ordinary commits in a clone of ' + [string]$seed.destination +
+                           ', reviewed on GitHub and merged at Forgejo (ADR-0031). Re-exporting would replace that history.')
     }
 }
 
@@ -629,6 +872,19 @@ function Set-PublicTreeFixtureFile {
     [void](Invoke-PublicTreeGit -Arguments @('commit', '--quiet', '-m', $Message) -WorkingDirectory $Root)
 }
 
+function Clear-PublicTreeFixtureSeed {
+    <#
+        Between cases. The guard is deliberately STICKY in a real workspace -- one seed, one refusal,
+        for as long as the record exists -- so a suite that exercises the scans has to put the fixture
+        back to never-seeded. Without this, every case after the first successful export would be
+        refused by the seed guard before it reached the thing it was written to test, and its
+        assertion would fail against a refusal about seeding rather than pass for the wrong reason.
+    #>
+    param([Parameter(Mandatory)][string]$Root)
+    $path = Join-Path $Root 'internal\public-tree-seed.json'
+    if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
+}
+
 function Invoke-PublicTreeExportSelfTest {
     $failures = [Collections.Generic.List[string]]::new()
     # Counted, never typed.
@@ -691,7 +947,70 @@ function Invoke-PublicTreeExportSelfTest {
         Assert ($loggedAuthorEmail -ceq 'fixture@example.invalid') "the commit was authored by '$loggedAuthorEmail' rather than the workspace identity that was scanned"
         Assert ($result.commit_author -match 'fixture@example\.invalid') "the result reported an identity ('$($result.commit_author)') that is not the one the commit carries"
 
+        # --- THE SEED RECORD ----------------------------------------------------------------------
+        # The record is read off the disk rather than off the result object, because the result
+        # object is this function's claim and the record is what the next run will actually see.
+        $seedPath = Join-Path $fixture 'internal\public-tree-seed.json'
+        Assert (Test-Path -LiteralPath $seedPath -PathType Leaf) 'the clean export recorded no seed, so a second export would not be refused'
+        Assert ($result.seed_record -eq $seedPath) "the result named seed record '$($result.seed_record)' rather than $seedPath"
+        $seedRecord = (Get-Content -LiteralPath $seedPath -Raw) | ConvertFrom-Json
+        Assert ($seedRecord.commit -ceq $result.commit) "the seed record names commit '$($seedRecord.commit)' rather than the commit the export made"
+        Assert ($seedRecord.destination -eq $staging) "the seed record names destination '$($seedRecord.destination)' rather than $staging"
+        Assert ($seedRecord.file_count -eq $result.file_count) "the seed recorded $($seedRecord.file_count) file(s) against an export of $($result.file_count)"
+        # And it is not exportable: internal/ is neither allowlisted nor tracked, so the record of
+        # what this machine published never travels with what it published.
+        Assert (-not (Test-Path -LiteralPath (Join-Path $staging 'internal'))) 'the seed record reached the staging tree'
+
+        # An UNTOUCHED tree is not drift. Asserted before anything is planted, so "identical" means it.
+        $driftClean = Get-PublicTreeDriftReport -Workspace $fixture
+        Assert ($driftClean.status -eq 'identical') "an untouched tree reported drift status '$($driftClean.status)'"
+        Assert ($driftClean.total_count -eq 0) "an untouched tree reported $($driftClean.total_count) drifted file(s)"
+        Assert ($driftClean.unchanged_count -eq $result.file_count) "the drift report accounted for $($driftClean.unchanged_count) of $($result.file_count) file(s)"
+
         Remove-PublicTreeStaging -Path $staging
+
+        # --- A SECOND EXPORT IS REFUSED, AND THE REFUSAL IS THE DRIFT REPORT -----------------------
+        # A second destination on purpose: the interesting assertion is that the refused run created
+        # NOTHING, and reusing the first staging path could not tell "never created" from "cleaned up".
+        Set-PublicTreeFixtureFile -Root $fixture -Writer $write -Relative 'docs/guide.md' -Message 'drift' `
+            -Body "A guide with no deployment in it, edited after the seed.`n"
+        $secondStaging = Join-Path ([IO.Path]::GetTempPath()) ('public-tree-second-' + [guid]::NewGuid().ToString('N'))
+
+        $preSecond = Invoke-PublicTreeExport -Workspace $fixture -Destination $secondStaging -Preflight -TermRoot $termRoot -Mode ''
+        Assert ($preSecond.already_seeded) 'a preflight against a seeded workspace did not report the seed'
+        Assert ($preSecond.next -match 'already seeded') "the seeded preflight offered a next step that would be refused; got '$($preSecond.next)'"
+
+        $seedRefusal = ''
+        try { Invoke-PublicTreeExport -Workspace $fixture -Destination $secondStaging -UserConfirmed -ApprovedPlanId $preSecond.plan_id -TermRoot $termRoot -Mode '' | Out-Null }
+        catch { $seedRefusal = [string]$_.Exception.Message }
+        Assert ($seedRefusal -match 'already seeded a public repository') "a second export was not refused; got '$seedRefusal'"
+        Assert ($seedRefusal -match 'docs/guide\.md') "the refusal did not name the file that changed since the seed; got '$seedRefusal'"
+        Assert ($seedRefusal -match 'FORCED REPLACEMENT') "the refusal did not say what pushing a second export would do; got '$seedRefusal'"
+        Assert (-not (Test-Path -LiteralPath $secondStaging)) 'the refused second export created a staging folder anyway'
+
+        $driftAfter = Get-PublicTreeDriftReport -Workspace $fixture
+        Assert ($driftAfter.status -eq 'drifted') "the drift report after one edit reported '$($driftAfter.status)'"
+        Assert (@($driftAfter.changed) -contains 'docs/guide.md') "the drift report did not list the edited file; got '$(@($driftAfter.changed) -join ',')'"
+        Assert ($driftAfter.total_count -eq 1) "the drift report counted $($driftAfter.total_count) change(s) after one edit"
+
+        # --- A SEED RECORD THAT CANNOT BE READ FAILS CLOSED ----------------------------------------
+        # Unreadable and absent must not look alike: the first is a guard that cannot answer, the
+        # second is a workspace that has never seeded, and only one of them may proceed.
+        [IO.File]::WriteAllText($seedPath, '{ not json', [Text.UTF8Encoding]::new($false))
+        $corruptRefusal = ''
+        try { Invoke-PublicTreeExport -Workspace $fixture -Destination $secondStaging -Preflight -TermRoot $termRoot -Mode '' | Out-Null }
+        catch { $corruptRefusal = [string]$_.Exception.Message }
+        Assert ($corruptRefusal -match 'not readable JSON') "an unreadable seed record was treated as no seed at all; got '$corruptRefusal'"
+
+        # Shape before values: a record missing the field the drift report reads is the same failure.
+        [IO.File]::WriteAllText($seedPath, '{ "destination": "d", "commit": "c", "seeded_utc": "u" }', [Text.UTF8Encoding]::new($false))
+        $shapeRefusal = ''
+        try { Invoke-PublicTreeExport -Workspace $fixture -Destination $secondStaging -Preflight -TermRoot $termRoot -Mode '' | Out-Null }
+        catch { $shapeRefusal = [string]$_.Exception.Message }
+        Assert ($shapeRefusal -match "no 'files' field") "a seed record with no file list was accepted; got '$shapeRefusal'"
+
+        # Every case below exercises the SCANS, which a standing seed would refuse before they ran.
+        Clear-PublicTreeFixtureSeed -Root $fixture
 
         # --- A PLANTED DEPLOYMENT DISCARDS THE WHOLE FOLDER ---------------------------------------
         # The assertion that matters is not that it refused: it is that NOTHING IS LEFT. A
@@ -714,6 +1033,7 @@ function Invoke-PublicTreeExportSelfTest {
         $recovered = Invoke-PublicTreeExport -Workspace $fixture -Destination $staging -UserConfirmed -ApprovedPlanId $pre3.plan_id -TermRoot $termRoot -Mode ''
         Assert ($recovered.status -eq 'exported') 'the tree that exported cleanly before the plant did not export once it was removed'
         Remove-PublicTreeStaging -Path $staging
+        Clear-PublicTreeFixtureSeed -Root $fixture
 
         # --- A PLANTED IDENTITY, which no deployment pattern has a shape for -----------------------
         Set-PublicTreeFixtureFile -Root $fixture -Writer $write -Relative 'docs/guide.md' -Message 'identity' `
@@ -789,6 +1109,7 @@ function Invoke-PublicTreeExportSelfTest {
             $contributorResult = Invoke-PublicTreeExport -Workspace $fixture -Destination $staging -UserConfirmed -ApprovedPlanId $pre7.plan_id -TermRoot $emptyTerms -Mode 'contributor'
             Assert ($contributorResult.status -eq 'exported') "contributor mode with no denylist reported '$($contributorResult.status)'"
             Remove-PublicTreeStaging -Path $staging
+            Clear-PublicTreeFixtureSeed -Root $fixture
 
             # And the same absence on a MAINTAINER machine refuses, because a scan whose denylist
             # nobody created has never matched anything and would read green forever.
@@ -823,7 +1144,16 @@ function Invoke-PublicTreeExportSelfTest {
 if ($SelfTest) { Invoke-PublicTreeExportSelfTest }
 
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = Split-Path -Parent $PSScriptRoot }
-if ([string]::IsNullOrWhiteSpace($Destination)) {
-    throw 'Pass -Destination <staging folder>, outside the workspace. Nothing was written.'
+
+# -DriftReport is answered before the destination is demanded, because it HAS no destination: it
+# reads the allowlist and the seed record and writes nothing. Written as if/else rather than an early
+# `return` so that the export below is visibly unreachable from this branch.
+if ($DriftReport) {
+    Get-PublicTreeDriftReport -Workspace $Workspace
 }
-Invoke-PublicTreeExport -Workspace $Workspace -Destination $Destination -Preflight:$Preflight -UserConfirmed:$UserConfirmed -ApprovedPlanId $ApprovedPlanId -TermRoot $TermRoot -Mode $Mode
+else {
+    if ([string]::IsNullOrWhiteSpace($Destination)) {
+        throw 'Pass -Destination <staging folder>, outside the workspace. Nothing was written.'
+    }
+    Invoke-PublicTreeExport -Workspace $Workspace -Destination $Destination -Preflight:$Preflight -UserConfirmed:$UserConfirmed -ApprovedPlanId $ApprovedPlanId -TermRoot $TermRoot -Mode $Mode
+}

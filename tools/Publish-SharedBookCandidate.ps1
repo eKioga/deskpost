@@ -19,6 +19,10 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'ShelfNoteCommon.ps1')
 . (Join-Path $PSScriptRoot 'BookWriteGuard.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
 Add-Type -AssemblyName System.Net.Http
 function Read-Utf8([string]$Path) { [IO.File]::ReadAllText($Path,[Text.UTF8Encoding]::new($false,$true)) }
 function Write-Utf8([string]$Path,[string]$Text) { [IO.File]::WriteAllText($Path,$Text,[Text.UTF8Encoding]::new($false)) }
@@ -95,7 +99,7 @@ function Assert-SelectedLinks($Files,[hashtable]$Selected,[string]$SourceRoot,[s
  }
 }
 if ([string]::IsNullOrWhiteSpace($WorkspacePath)) {$WorkspacePath=Split-Path -Parent $PSScriptRoot}
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'publishing to the shared collection'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 # -cnotmatch: -notmatch is case-insensitive, so 'My-Book' satisfies this lowercase-only rule and
 # travels on as a shared Book root. See docs/capture-book-model.md.
@@ -296,6 +300,7 @@ function Assert-Matches($Record,$Expected,[switch]$WriteReadback){
 function Create-Record($Expected,$ExtraMetadata,[switch]$Overwrite){
  $args=@{project_id=$ProjectId;directory=(Split-Path -Parent $Expected.path).Replace('\','/');title=[IO.Path]::GetFileNameWithoutExtension($Expected.path);content=$Expected.content;note_type='note';overwrite=$Overwrite.IsPresent;output_format='json'};if($null -ne $ExtraMetadata){$args.metadata=$ExtraMetadata}
  $r=Invoke-Mcp 'tools/call' @{name='write_note';arguments=$args};if($null -ne (RpcError $r) -or $r.result.isError){throw "Write '$($Expected.path)' was rejected."}
+ Assert-McpWriteNotConflicted -Response $r -Path ($Expected.path.Substring(0, $Expected.path.Length - 3))
  $record=Read-ExactOrNull $Expected.path;if($null -eq $record){throw "Write '$($Expected.path)' did not become readable."};Assert-Matches $record $Expected -WriteReadback
 }
 function Get-PublicationState($Record){

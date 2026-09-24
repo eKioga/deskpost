@@ -17,7 +17,8 @@ param(
     [string]$JournalPath,
     [string]$ApprovedPlanId,
     [switch]$UserConfirmed,
-    [switch]$Preflight
+    [switch]$Preflight,
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
@@ -27,13 +28,25 @@ $ErrorActionPreference = 'Stop'
 # The Shelf catalog is rendered from per-Book entry files under one lock; this helper used to append
 # to it with Add-Content, which two publishes could interleave. PLAN-multi-desk.md step 3.
 . (Join-Path $PSScriptRoot 'ShelfCatalog.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 if ($Destination -eq 'Shared') {
-    & (Join-Path $PSScriptRoot 'Publish-SharedBookCandidate.ps1') @PSBoundParameters
+    # -Json IS THIS HELPER'S, NOT THE CANDIDATE'S (S31): the candidate emits one object on each path
+    # and declares no -Json, so the switch is taken off what is forwarded and applied to what returns.
+    $forward = @{} + $PSBoundParameters
+    [void]$forward.Remove('Json')
+    Write-LibraryResult -Result (& (Join-Path $PSScriptRoot 'Publish-SharedBookCandidate.ps1') @forward) -Json:$Json
     return
 }
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Book' satisfies this
 # lowercase-only rule and travels on as a Book root. See docs/capture-book-model.md.
 if ($BookSlug -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { throw 'BookSlug must use lowercase letters, digits, and single hyphens.' }
@@ -86,7 +99,7 @@ $plan = [pscustomobject]@{
     book_slug = $BookSlug; book_title = $BookTitle; planned_book_pages = $plannedPages
     local_shelf_path = "shelf/$BookSlug/wiki"; confirmation_required = $false; shared_library_write = $false
 }
-if ($Preflight) { $plan; return }
+if ($Preflight) { Write-LibraryResult -Result $plan -Json:$Json; return }
 
 $bookRoot = Join-Path (Join-Path $workspace 'shelf') $BookSlug
 $bookWiki = Join-Path $bookRoot 'wiki'
@@ -133,4 +146,4 @@ try {
     throw "Local Shelf Book could not be completed. The $($sourceRootInfo.label_root) source was preserved. $($_.Exception.Message)"
 }
 
-[pscustomobject]@{ operation = 'Publish a Copy'; destination = 'shelf'; book_path = "shelf/$BookSlug/wiki"; reader_map = "shelf/$BookSlug/wiki/_index.md"; copied_pages = $plannedPages; local_original_preserved = $true; shared_library_write = $false }
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Publish a Copy'; destination = 'shelf'; book_path = "shelf/$BookSlug/wiki"; reader_map = "shelf/$BookSlug/wiki/_index.md"; copied_pages = $plannedPages; local_original_preserved = $true; shared_library_write = $false })

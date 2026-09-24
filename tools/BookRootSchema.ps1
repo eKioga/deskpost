@@ -1519,6 +1519,28 @@ if ($MyInvocation.InvocationName -ne '.' -and $args -contains '-SelfTest') {
         $bookWrite.directory = 'books/demo/wiki'
         Assert (-not (Invoke-WriteGuard 'mcp__basic-memory__write_note' $bookWrite)) 'the guard allowed a direct shared Book write'
 
+        # A `..` SEGMENT IS NOT A PAGE NAME (S32, measured). The write patterns admitted `.` and `..`
+        # as segments, so `projects/library-dev/../other/x` passed as a page of the OPEN Hub while
+        # naming a closed one -- and a directory could climb out of `projects/` entirely. The
+        # list_directory half always had a canonical-path rule; the write half had none.
+        $climbingEdit = @{} + $guardedEdit
+        $climbingEdit.identifier = 'projects/library-dev/../other/_project'
+        Assert (-not (Invoke-WriteGuard 'mcp__basic-memory__edit_note' $climbingEdit)) 'an identifier climbing out of the open Hub with .. was admitted'
+        $climbingWrite = @{} + $notesWrite
+        $climbingWrite.directory = 'projects/library-dev/../../books/demo'
+        Assert (-not (Invoke-WriteGuard 'mcp__basic-memory__write_note' $climbingWrite)) 'a directory climbing out of projects/ with .. was admitted'
+        $dotWrite = @{} + $notesWrite
+        $dotWrite.directory = 'projects/library-dev/./notes'
+        Assert (-not (Invoke-WriteGuard 'mcp__basic-memory__write_note' $dotWrite)) 'a directory with a . segment was admitted as canonical'
+
+        # THE TOOL NAME IS MATCHED EXACTLY (S32, measured). It was tested with -in, which is
+        # case-insensitive, while the edit rule below it asked -ceq 'edit_note' -- so
+        # `MCP__basic-memory__EDIT_NOTE` reached the write path and skipped the operation allowlist,
+        # and a duplicating append was admitted.
+        $shoutedEdit = @{} + $idempotentEdit
+        $shoutedEdit.operation = 'append'
+        Assert (-not (Invoke-WriteGuard 'MCP__basic-memory__EDIT_NOTE' $shoutedEdit)) 'a differently cased edit_note name walked past the operation allowlist'
+
         # A LOCAL SHELF BOOK IS NOT REACHABLE THROUGH BASIC MEMORY, open or not, and the guard's
         # shared filter is the only thing saying so. The mutation that removed that filter fired
         # nothing, because no Shelf Book was ever open in this fixture.

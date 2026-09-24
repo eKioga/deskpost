@@ -19,6 +19,7 @@ param(
     [string]$ApprovedPlanId,
     [switch]$UserConfirmed,
     [switch]$Preflight,
+    [switch]$Json,
     [switch]$SelfTest
 )
 
@@ -30,6 +31,11 @@ Add-Type -AssemblyName System.Net.Http
 . (Join-Path $PSScriptRoot 'BookWriteGuard.ps1')
 . (Join-Path $PSScriptRoot 'LibrarySeat.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 $script:HubPageSizeWarningThresholdBytes = 40000
 # Calibrated against real data on 2026-08-26, not guessed: this Hub's root was 28,657 bytes -- under
 # the whole-page threshold, and therefore silent -- while its Now section alone was 15,474 and Next
@@ -880,9 +886,16 @@ if ([string]::IsNullOrWhiteSpace($Mode)) { throw 'Mode is required: AddSection, 
 # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Project' satisfies
 # this lowercase-only rule and travels on as a Project directory. See docs/capture-book-model.md.
 if ($ProjectSlug -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { throw 'ProjectSlug must use lowercase letters, digits, and single hyphens.' }
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'editing a Project Hub'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 
 $pageName = $Page.Trim().Replace('\', '/').Trim('/')
@@ -1218,11 +1231,11 @@ if ($Preflight) {
     $plan | Add-Member -NotePropertyName section_size_warning -NotePropertyValue $script:SizeWarnings[1]
     $plan | Add-Member -NotePropertyName entry_size_warning -NotePropertyValue $script:SizeWarnings[2]
     Write-SizeWarning
-    $plan
+    Write-LibraryResult -Result $plan -Json:$Json
     return
 }
 if ($plan.unchanged) {
-    [pscustomobject]@{ operation = 'Edit Project Hub'; project_slug = $ProjectSlug; page_path = $pagePath; mode = $Mode; unchanged = $true; written = $false; shared_library_write = $false }
+    Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Edit Project Hub'; project_slug = $ProjectSlug; page_path = $pagePath; mode = $Mode; unchanged = $true; written = $false; shared_library_write = $false })
     return
 }
 if ($isReplacing) {
@@ -1321,7 +1334,7 @@ catch {
 }
 finally { Exit-BookLock -Lock $lock }
 
-[pscustomobject]@{
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{
     operation = 'Edit Project Hub'
     project_slug = $ProjectSlug
     page_path = $pagePath
@@ -1341,4 +1354,4 @@ finally { Exit-BookLock -Lock $lock }
     written = $true
     advice = $sectionAdvice
     shared_library_write = $true
-}
+})

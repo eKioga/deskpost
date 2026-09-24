@@ -66,7 +66,10 @@
             "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Move-LibraryFolder.ps1\"*)",
             "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-CollectionToVault.ps1\"*)",
             "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-PublicTree.ps1\"*)",
-            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-MirrorOpsRepo.ps1\"*)"
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Export-MirrorOpsRepo.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Build-KernelRelease.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Initialize-LibraryWorkspace.ps1\"*)",
+            "PowerShell(powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"tools/Set-CollectionOwner.ps1\"*)"
         ],
         "deny": []
     },

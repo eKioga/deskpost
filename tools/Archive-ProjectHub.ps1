@@ -4,7 +4,8 @@ param(
     [string]$ProjectId,
     [string]$McpUrl = $env:AI_LIBRARY_MCP_URL,
     [switch]$UserConfirmed,
-    [switch]$Preflight
+    [switch]$Preflight,
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
@@ -15,8 +16,13 @@ Add-Type -AssemblyName System.Net.Http
 . (Join-Path $PSScriptRoot 'SharedCollectionFiles.ps1')
 . (Join-Path $PSScriptRoot 'McpDirectoryListing.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -Operation 'archiving a Project Hub'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Project' satisfies
 # this lowercase-only rule and travels on as a Project directory. See docs/capture-book-model.md.
@@ -144,6 +150,7 @@ function Get-ProjectPages([string]$Directory) {
 function Write-Note([string]$Directory, [string]$Title, [string]$Body, [bool]$Overwrite) {
     $response = Invoke-Mcp 'tools/call' @{ name = 'write_note'; arguments = @{ project_id = $ProjectId; directory = $Directory; title = $Title; content = $Body; note_type = 'note'; overwrite = $Overwrite; output_format = 'json' } }
     if ($null -ne (Get-RpcError $response) -or $response.result.isError) { throw "Write '$Directory/$Title' was rejected." }
+    Assert-McpWriteNotConflicted -Response $response -Path "$Directory/$Title"
     Read-ExactOrNull "$Directory/$Title.md"
 }
 function Get-NoteBody($Record) {
@@ -199,7 +206,7 @@ $title = if ([string]$activeRoot.content -match '(?m)^#\s+(.+?)\s*$') { $Matches
 # up front rather than leaving the reader to discover the leftover directory afterwards.
 $sourceTreeRemoval = if ($null -eq (Get-SharedCollectionRoot)) { 'unavailable: the emptied directory will be left behind' } else { "the emptied $activeDirectory/ is removed if it holds no files" }
 $plan = [pscustomobject]@{ operation = 'Archive Project Hub'; project_id = $ProjectId; project_slug = $ProjectSlug; active_path = $activeDirectory; archive_path = $archiveDirectory; page_count = $pages.Count; source_tree_removal = $sourceTreeRemoval; confirmation_required = $true; shared_library_write = $false }
-if ($Preflight) { $plan; return }
+if ($Preflight) { Write-LibraryResult -Result $plan -Json:$Json; return }
 if (-not $UserConfirmed) { throw 'Archiving is not yet performed: review the move plan and rerun with -UserConfirmed.' }
 
 $moved = $false
@@ -219,7 +226,7 @@ try {
     # Last, after the archive is complete and verified. Never removes a directory holding a file;
     # an unreachable share reports `unavailable` and the gate catches the leftover later.
     $huskCleanup = Invoke-SharedHuskCleanup -RelativePath $activeDirectory
-    [pscustomobject]@{ operation = 'Archive Project Hub'; project_slug = $ProjectSlug; archive_path = $archiveDirectory; page_count = $pages.Count; archive_complete = $true; shared_library_write = $true; source_tree = $huskCleanup.source_tree; source_tree_removed = $huskCleanup.status }
+    Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Archive Project Hub'; project_slug = $ProjectSlug; archive_path = $archiveDirectory; page_count = $pages.Count; archive_complete = $true; shared_library_write = $true; source_tree = $huskCleanup.source_tree; source_tree_removed = $huskCleanup.status })
 }
 catch {
     $location = if ($moved) { "The native move may have completed at '$archiveDirectory'; inspect the archive before retrying." } else { 'The active Project Hub was left in place.' }

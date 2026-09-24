@@ -65,7 +65,8 @@ first, then `git diff --stat` for scope, then a targeted read of anything under 
 explain. The delegate's report is advisory at every step; the check suite is the evidence.
 
 This restriction is for repository-only delegates, not for the trusted interactive Codex
-Librarian. The interactive session loads `.codex/config.toml` and `.codex/hooks.json`, may read
+Librarian. The interactive session loads `.codex/config.toml` and `.codex/hooks.json` -- once that
+folder is trusted in `$CODEX_HOME/config.toml`, and not at all, silently, until it is -- may read
 open Books and Projects through the validated reader, and may maintain an open active Project Hub
 through the guarded direct write surface.
 
@@ -914,6 +915,28 @@ effect to mention afterwards; it is the reader's whole Library stopping, and the
    nobody asked about. Anything genuinely stale there is the reader's to fix by hand.
 4. After one clear yes, rerun with `-UserConfirmed -ApprovedPlanId <that exact id>`. The `plan_id` is
    re-derived **under the barrier**, so anything that changed since the preflight refuses the run.
+
+**A cutover cannot move the tree it records itself in, and it says so before a `plan_id` is
+issued.** The barrier marker and the run's journal are both written under `<workspace>/internal`.
+Inside the **source** that folder stops existing at the rename-aside, and the barrier lands in the
+tree being inventoried, so the re-derived `plan_id` no longer matches the approval. Inside the
+**destination** the collision is invisible to the destination-exists check — the barrier creates
+that folder *after* the reader approves — and the run instead fails its own copy verification once
+the whole tree has been copied. Both are now refused at the preflight, naming the way through:
+
+- **A workspace's own `internal`** moves with `-WorkspacePath` naming the workspace it is moving
+  **to**, and a destination *beside* the real one: `-SourcePath <old>\internal -DestinationPath
+  <new>\internal-cutover -WorkspacePath <new>`. The barrier is then real and stands at the
+  workspace that will be live, outside both trees. Once the run has verified the copy and lowered
+  the barrier, the staging folder is renamed into place and the run's own journal moved in beside
+  the others — a same-volume rename of an already-hash-verified tree, not a second copy.
+- **A whole workspace** moves with `-WorkspacePath` naming a *different* one, which in a migration
+  is the workspace its material has already moved to.
+
+**A directory that is any process's current directory cannot be renamed on Windows**, and the
+rename-aside is stage (e) — after the copy. So the session driving a cutover must not be rooted in
+the tree being moved, and neither must its shells: `claude` itself holds its working directory open.
+Retiring the workspace a session is running in is the next session's work, from the new one.
 
 **Read the result, and say the true thing about the source.** It reports `aside`, which is where the
 source now is. **It is not deleted**, and the reader should not be told the old folder is gone: the

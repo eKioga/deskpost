@@ -8,6 +8,7 @@ param(
     [string]$SourcePaths = '',
     [string]$SourceProject = '',
     [string]$RequireNoteFile = '',
+    [string]$CaptureDate = '',
     [string]$WorkspacePath,
     [int]$LockTimeoutSeconds = 20,
     [switch]$Preflight,
@@ -31,8 +32,25 @@ $hasPath = -not [string]::IsNullOrWhiteSpace($ContentPath)
 $hasInline = -not [string]::IsNullOrWhiteSpace($Content)
 if ($hasPath -and $hasInline) { throw 'Give either -ContentPath or -Content, not both.' }
 if (-not $hasPath -and -not $hasInline) { throw 'A note needs a body: pass -ContentPath (preferred for prose) or -Content.' }
+# THE DATE THAT NAMES THE NOTE, when a caller planned it (S44). A triage batch binds the note's file name --
+# its capture date and slug -- into the approval, and this helper's own preflight is asserted against that
+# name; naming it by today instead made every holding action in a batch planned for another date refuse.
+# It names the file and nothing else: `captured:` is always the moment of writing.
+if (-not [string]::IsNullOrWhiteSpace($CaptureDate)) {
+    $parsedDate = [DateTime]::MinValue
+    if ($CaptureDate -cnotmatch '^\d{4}-\d{2}-\d{2}$' -or -not [DateTime]::TryParseExact($CaptureDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsedDate)) {
+        throw "CaptureDate must be a calendar date written yyyy-MM-dd; '$CaptureDate' is not one."
+    }
+}
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 $book = Get-CaptureBook -Workspace $workspace -Slug $BookSlug
 
@@ -104,7 +122,7 @@ function Select-NoteFile([string]$Directory, [string]$Slug) {
         if (Test-Path -LiteralPath $pinned) { throw "The approved note path is no longer writable: notes/$RequireNoteFile already exists. Nothing was written." }
         return [pscustomobject]@{ name = $RequireNoteFile; path = $pinned; page = "notes/$([IO.Path]::GetFileNameWithoutExtension($RequireNoteFile))" }
     }
-    $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+    $stamp = if ([string]::IsNullOrWhiteSpace($CaptureDate)) { [DateTime]::UtcNow.ToString('yyyy-MM-dd') } else { $CaptureDate }
     $name = "$stamp-$Slug.md"
     $path = Join-Path $Directory $name
     $suffix = 2

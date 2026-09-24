@@ -39,8 +39,12 @@ Add-Type -AssemblyName System.Net.Http
 
 . (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
 
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl -Optional:$SelfTest
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -Optional:$SelfTest -Operation 'removing a Basic Memory project'
 
 # Protected by identity AND by name: a project renamed to something else still carries this id, and a
 # new project named 'ai-library' must not inherit the protection by accident. Both are refused.

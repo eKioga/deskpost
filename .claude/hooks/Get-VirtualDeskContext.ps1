@@ -7,6 +7,8 @@ param(
     # Step 0d: the registry lock refuses at ~2.1 s against a held lock, and this hook runs on every
     # prompt. Two seconds is the recorder below giving up rather than a reader's turn waiting.
     [double]$DeadlineSeconds = 2,
+    # The reader's callable prefix, which the REGISTRATION supplies (S38): HookContext.ps1 says why.
+    [string]$ReaderToolPrefix,
     [string]$InputJson,
     [string]$InputJsonBase64
 )
@@ -22,9 +24,29 @@ $ErrorActionPreference = 'Stop'
 # status line now distinguishes a bound seat from an orphaned one, and the backstop recorder needs
 # the registry lock. It dot-sources the schema, so nothing above changed. Measured cost of the
 # difference: 37 ms on top of a 159 ms process start.
-$script:LibraryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-. (Join-Path $script:LibraryRoot (Join-Path 'tools' 'LibrarySeat.ps1'))
+# HOOKCONTEXT FIRST, AND OUTSIDE THE TRY. This file's catch already says "Virtual Desk unavailable"
+# rather than staying quiet, which is right -- a Librarian that cannot read the Desk must not go on
+# as though it had. But the loads below used to sit ABOVE that try, so in a packaged layout they
+# threw before the catch existed and the session got no line at all: the reader would have been told
+# nothing, and silence reads as "no Books open" rather than as "the Desk could not be read".
 . (Join-Path $PSScriptRoot 'HookContext.ps1')
+try {
+    . (Join-Path $PSScriptRoot 'ProgramRoot.ps1')
+    . (Get-LibraryProgramFile -Name 'LibrarySeat.ps1' -From $PSScriptRoot)
+    . (Get-LibraryProgramFile -Name 'WorkspaceRegistry.ps1' -From $PSScriptRoot)
+}
+catch {
+    Write-HookOutput 'UserPromptSubmit' @{ additionalContext = "Virtual Desk unavailable: the hook could not load its own code. $($_.Exception.Message)" }
+    exit 0
+}
+
+# A PREFIX THAT NAMES NO TOOL names nothing a session can call, and advertising it would be the very
+# defect the parameter removes: said in one sentence, before the Desk is read at all.
+if (-not $ReaderToolPrefix) { $ReaderToolPrefix = $script:DefaultReaderToolPrefix }
+if (-not (Test-ReaderToolPrefix $ReaderToolPrefix)) {
+    Write-HookOutput 'UserPromptSubmit' @{ additionalContext = "Virtual Desk unavailable: $(Get-ReaderToolPrefixFault $ReaderToolPrefix)" }
+    exit 0
+}
 
 function Read-StateLines([string]$Path, [string]$Pattern, [string]$Label, [switch]$Optional) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -38,9 +60,46 @@ function Read-StateLines([string]$Path, [string]$Pattern, [string]$Label, [switc
     $items
 }
 
+# STEP 20: WHICH WORKSPACE'S DESK IS THIS. Before 2026-09-20 the answer was `Split-Path -Parent
+# $PSScriptRoot` and then one level further out -- this file's own location, twice removed. Installed
+# as a plugin that names the directory the package was dropped into, and this hook would have opened
+# every session by reporting on a Desk that does not exist there. It reports rather than refuses, so
+# the failure it owes the reader is a SENTENCE: "in no workspace" and "two answers disagree" are
+# different states and neither is "state is invalid".
+function Resolve-ContextWorkspace([string]$Explicit, [string]$Anchor) {
+    $resolved = Resolve-LibraryWorkspace -Explicit $Explicit -Anchor $Anchor
+    if ($resolved.kind -ceq 'conflict') {
+        return [pscustomobject]@{ workspace = $null; message = "Virtual Desk unavailable: $($resolved.reason)" }
+    }
+    if ($resolved.kind -cne 'resolved') {
+        return [pscustomobject]@{
+            workspace = $null
+            message   = ('Virtual Desk unavailable: this session is in no Library workspace, so no Book or Project ' +
+                         'can be open. Run from inside a workspace, set LIBRARY_WORKSPACE, or create one with ' +
+                         '`library init <folder>`.')
+        }
+    }
+    [pscustomobject]@{ workspace = [string]$resolved.workspace; message = $null }
+}
+
 try {
-    if (-not $StateDirectory) { $StateDirectory = Split-Path -Parent $PSScriptRoot }
-    if (-not $WorkspacePath) { $WorkspacePath = Split-Path -Parent $StateDirectory }
+    if (-not $WorkspacePath -or -not $StateDirectory) {
+    # AN EXPLICIT -StateDirectory NAMES THE WORKSPACE, and this is a contract that predates the
+    # resolver: `.claude` belongs to a workspace, so a caller that hands a hook a state directory has
+    # already said which workspace it is talking about. Every fixture in this tree drives a hook that
+    # way. Letting the working directory win instead would point a suite at THIS repository while its
+    # Desk state came from a temp fixture -- every assertion about the wrong workspace, and a
+    # conversation record written into live material by a test.
+        $selected = $WorkspacePath
+        if (-not $selected -and $StateDirectory) { $selected = Split-Path -Parent $StateDirectory }
+        $placement = Resolve-ContextWorkspace -Explicit $selected -Anchor (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+        if ($placement.message) {
+            Write-HookOutput 'UserPromptSubmit' @{ additionalContext = $placement.message }
+            exit 0
+        }
+        if (-not $WorkspacePath) { $WorkspacePath = $placement.workspace }
+        if (-not $StateDirectory) { $StateDirectory = Join-Path $placement.workspace '.claude' }
+    }
     $call = Read-HookPayload -BoundParameters $PSBoundParameters -InputJson $InputJson -InputJsonBase64 $InputJsonBase64
     $sessionId = [string](Get-HookField $call 'session_id')
     $agentPid = if ($AgentProcessId -ge 0) { $AgentProcessId } else { Get-CurrentAgentProcessId }
@@ -129,8 +188,10 @@ try {
     # session can only obey if it knows the reader is actually connected, and a lazily discoverable
     # MCP tool looks exactly like a missing connection -- a Codex session rooted here mistook one
     # for the other and went looking for another way in. So the capability is advertised by its
-    # exact callable name. The prefix is mcp__validated-book-reader__, with hyphens: that is the
-    # server name in BOTH .mcp.json and .codex/config.toml, and this one hook serves both clients.
+    # exact callable name -- and the name is the REGISTRATION's to give (S38). This read "the prefix is
+    # mcp__validated-book-reader__, with hyphens: the server name in both .mcp.json and
+    # .codex/config.toml", which was true of the server and false of the tool: Codex spells a server's
+    # hyphens as underscores (measured S37), so every Codex session was sent to a tool it did not have.
     #
     # Advertised for the kind of material actually OPEN, because a tool named for nothing open is
     # noise the reader pays for on every prompt. This widens no boundary: every tool named here
@@ -138,12 +199,12 @@ try {
     # advertises nothing at all, because a session that cannot trust the Desk state must not be
     # handed a reader to use against it.
     $readerCalls = [Collections.Generic.List[string]]::new()
-    if ($openBooks.Count) { [void]$readerCalls.Add('mcp__validated-book-reader__read_open_book_page for an open Book') }
-    if ($openProjects.Count) { [void]$readerCalls.Add('mcp__validated-book-reader__read_open_project_page for an open Project Hub') }
+    if ($openBooks.Count) { [void]$readerCalls.Add("$($ReaderToolPrefix)read_open_book_page for an open Book") }
+    if ($openProjects.Count) { [void]$readerCalls.Add("$($ReaderToolPrefix)read_open_project_page for an open Project Hub") }
     $capability = if ($readerCalls.Count) {
         ' The validated reader is connected: call ' + ($readerCalls -join ', ') + '.'
     } else {
-        ' The validated reader is connected: call mcp__validated-book-reader__read_book_catalog or mcp__validated-book-reader__read_project_catalog to see what could be opened.'
+        " The validated reader is connected: call $($ReaderToolPrefix)read_book_catalog or $($ReaderToolPrefix)read_project_catalog to see what could be opened."
     }
     $context = "Virtual Desk (seat $($seatState.seat)$seatNote) - Books: $books. Projects: $projects. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.$capability$seatWarning"
 }

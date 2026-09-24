@@ -21,7 +21,11 @@
 
 Set-StrictMode -Version Latest
 
-. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) (Join-Path 'tools' 'BookRootSchema.ps1'))
+# The program root is FOUND, not counted to. Two levels up is correct only while the program and
+# the workspace are one folder; a packaged plugin puts these hooks one level below its root, and
+# the old expression then resolved above the package entirely -- see ProgramRoot.ps1.
+. (Join-Path $PSScriptRoot 'ProgramRoot.ps1')
+. (Get-LibraryProgramFile -Name 'BookRootSchema.ps1' -From $PSScriptRoot)
 
 # $Directory is a SEAT's Desk directory now (.claude/seats/<seat>), not .claude. The parameter did
 # not change meaning -- it has always been "the directory holding the Desk files" -- but where that

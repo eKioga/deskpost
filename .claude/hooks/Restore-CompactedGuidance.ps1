@@ -86,6 +86,33 @@ try {
     $sessionId = [string](Get-HookField $call 'session_id')
     Clear-HookServed $StateDirectory $sessionId
 
+    # AND ON PostCompact THE LEDGER IS THE WHOLE JOB, MEASURED 2026-09-22 rather than assumed.
+    # The header above recorded the output shape for this event as an unproven limit. It is proven
+    # now, from a real /compact in a seated session, and the answer is that there is no shape:
+    # Claude Code accepts no `hookSpecificOutput` for PostCompact at all. Its own words, from the
+    # transcript rather than from a model reporting on itself --
+    #
+    #   PostCompact [... Restore-CompactedGuidance.ps1] failed: Hook JSON output validation failed
+    #   - hookSpecificOutput.hookEventName: expected one of "PreToolUse" | "UserPromptSubmit" |
+    #   "UserPromptExpansion" | "SessionStart" | "Setup" | "PreModelSwitch" | ...
+    #
+    # -- and a validation failure discards the WHOLE object, so every PostCompact run since this
+    # file was written has emitted something no session ever received, and said so in a line nobody
+    # was reading.
+    #
+    # NOTHING IS LOST BY GOING QUIET HERE, and that is measured too. One /compact fires BOTH events:
+    # `SessionStart:compact` ran this same hook 0.4s earlier, its output validated, and the
+    # transcript carries the delivered text as a `hook_additional_context` attachment. So the
+    # guidance already arrives by the route this hook is registered under for the resumed case, and
+    # emitting here as well would duplicate it if a shape existed. Exiting quietly is what this
+    # event can actually do: clear the ledger, which happened above, and get out of the way.
+    #
+    # THE RISK, NAMED. This now depends on Claude Code firing SessionStart alongside PostCompact,
+    # measured once on v2.1.278. A client that fires PostCompact alone would deliver no guidance --
+    # but it delivered none before this change either, and additionally logged a failure. The
+    # regression case in tools/Test-LibraryHooks.ps1 pins the shape; nothing can pin the coupling.
+    if ($event -ceq 'PostCompact') { exit 0 }
+
     # A 'startup', 'clear' or 'fork' session has its instruction surface in full: CLAUDE.md loaded,
     # and the path-scoped rule waiting for the next matching read exactly as on any fresh session.
     # Only the resumed and post-compaction ones are carrying a context that was summarised away.

@@ -242,9 +242,15 @@ field names, same `hookSpecificOutput` envelope. A `PreToolUse` payload captured
 **`tool_name` is `Bash`.** Codex normalises its shell tool to the Claude Code name for hooks;
 `exec` — which `codex debug prompt-input` shows as `functions.exec`, and which this repository
 shipped as the matcher for one commit — survives only inside `tool_use_id`. A matcher of `^exec$`
-matches nothing, silently, which is the same outcome as no guard. MCP tools keep
-`mcp__server__tool`, so the Basic Memory matcher was already right. `command` is a **string**, not
-the argv array the transcript's rendering suggested.
+matches nothing, silently, which is the same outcome as no guard. MCP tools are
+`mcp__<server>__<tool>` -- and **the server's hyphens are spelled as underscores**, which this
+section missed: it said "so the Basic Memory matcher was already right", and it was not. Measured in
+S37 with a probe server named `probe-proj`, listed by Codex and received in a PreToolUse `tool_name`
+as `mcp__probe_proj__probe_tool`. So Basic Memory arrives as `mcp__basic_memory__<tool>`, the
+`^mcp__basic-memory__.*$` every Codex binding carried until S38 never fired, and the reader is
+`mcp__validated_book_reader__<tool>` -- which is why `library init` now hands the Codex Desk hook and
+both Shelf guards that prefix. `command` is a **string**, not the argv array the transcript's rendering
+suggested.
 
 Honoured on `PreToolUse`: `permissionDecision` `deny` (and `allow`), `permissionDecisionReason`,
 `additionalContext`, and `updatedInput` with `allow`. Parsed but failing open: `"ask"`,
@@ -425,6 +431,52 @@ cancelled UAC elevation, which blocks non-interactive delegation independently o
 session, and only a fact rather than an explanation of it: `codex features list` on 0.153.4 reports
 `elevated_windows_sandbox` as **removed**, so that config key names a mode this build no longer
 lists. Whether the removal is what produces the 1223 is untested.
+
+### Project trust is a gate on the FILES, not only on the hooks (2026-09-22)
+
+The 2026-09-08 entry above records hook trust: a per-hook `trusted_hash` under `[hooks.state]`, and
+an untrusted hook skipped in silence. There is a wider gate in front of it, and it was found while
+extending ADR-0036 to Codex — because the plan's step 20 said `library init` should merge
+`.codex/config.toml` into a reader's workspace, and nobody had measured whether Codex reads a
+project-level one at all.
+
+**It does, and it reads `.codex/hooks.json` the same way, and both are gated on PROJECT trust.**
+Measured on codex-cli 0.153.4 in a scratch fixture with its own `CODEX_HOME`, one variable moved at a
+time:
+
+| `[projects.'<path>']` in `$CODEX_HOME/config.toml` | what the project held | what Codex did |
+| --- | --- | --- |
+| absent | `.codex/config.toml` declaring one MCP server | `codex mcp list --json` → `[]` |
+| `trust_level = "trusted"` | the same file, unchanged | that server, in `mcp list` **and** `codex doctor` |
+| absent | a deliberately malformed `.codex/hooks.json` | **not one word** |
+| `trust_level = "trusted"` | the same file, unchanged | `failed to parse hooks config <path>: unknown field \`PreToolUse\`, expected \`description\` or \`hooks\`` |
+
+The positive control is what makes the first row a measurement rather than a broken fixture: with the
+same server moved into the home's own `config.toml` and the project still untrusted, `mcp list`
+returned it. And discovery walks **up** — with trust granted on the repository root and the session
+started in a subdirectory, the root's `.codex/hooks.json` was still read, and named.
+
+**Read the untrusted rows again, because they are the dangerous ones.** A malformed hooks file drew a
+precise diagnostic when trusted and nothing whatever when not. So the evidence a reader would
+diagnose from is exactly the evidence an untrusted session cannot produce, and "my Codex bindings are
+wrong" is indistinguishable at the point of use from "there are no Codex bindings" and from "this
+folder is not trusted". Three states, one symptom: the session simply behaves as though the Library
+had no boundary.
+
+**What follows from it.** `library init` writes both files into a split workspace (ADR-0036, amended),
+and `workspace.codex-guards-registered` asks the four questions that can be asked from here — present,
+shaped so Codex will load it, registered under events and matchers it can fire on, and every absolute
+path still resolving — then **warns** when all four hold and the project is untrusted, naming the home
+it read. It does not grant trust: that is a decision about a machine, taken in the reader's own client,
+and this machine has two Codex homes because Orca substitutes `CODEX_HOME`.
+
+**A live instance found on the way.** The program's own generated `.codex/config.toml` and
+`.codex/hooks.json` had named `D:\Library` since the migration retired that path the day before, so
+all five files they pointed at were gone; `codex.project-access-config` was green throughout, because
+it asserted the sections, the events, the script names and the matchers and never asked whether any of
+them existed. It resolves every path it names now, and so does the workspace check beside it. This is
+the "a structural walk proves a path resolves, never that the shape loads" rule met from the other
+side: the walk proved a *name* was present, never that the *file* was.
 
 ## The direct shared-write path, narrowed (2026-09-07)
 

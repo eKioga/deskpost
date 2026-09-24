@@ -161,14 +161,41 @@ foreach ($line in $workflow) {
     }
 }
 
-Assert-Extract -Block $scanner -What 'scanner' -MustContain @{
-    'its shebang'             = '#!/bin/sh'
-    'the allowlist removal'   = 'cp "$WORK/surface" "$WORK/residue"'
-    'the deny-grep'           = 'grep -qiF --'
-    'the empty-denylist guard' = 'FATAL: the denylist is empty'
-    'the snapshot clone'      = 'git clone --mirror'
-    'the per-ref push'        = 'git push --force'
+# THE SCANNER IS INVOKED THROUGH `sh`, AND A BARE `./` CALL IS REFUSED.
+#
+# This generator runs on Windows, which has no executable bit to set, so every push of the scanner
+# records git mode 100644 -- confirmed by reading the deployed tree, not inferred. A bare
+# `./scan-and-publish.sh` then dies with "Permission denied" and exit code 126, which is exactly how
+# all three scheduled runs failed on 2026-09-20, AFTER checkout and the tool assertion had both
+# passed. Chmod-ing the deployed blob would fix one push and regress silently on the next
+# regeneration, so the dependency on the bit is removed rather than patched. The scanner's own
+# shebang is `#!/bin/sh`, and it is POSIX-clean, so `sh` is what it asks for.
+$scannerCall = @($workflow | Where-Object { $_ -match 'scan-and-publish\.sh' -and $_ -match '^\s*run\s*:' })
+if ($scannerCall.Count -ne 1) {
+    throw ('the workflow invokes the scanner on ' + $scannerCall.Count + ' run: line(s), expected exactly 1.')
 }
+if ($scannerCall[0] -notmatch '^\s*run\s*:\s*sh\s+\./scan-and-publish\.sh\s*$') {
+    throw ("the workflow invokes the scanner as '" + $scannerCall[0].Trim() + "' rather than 'run: sh ./scan-and-publish.sh'. " +
+           'This generator cannot set an executable bit on Windows, so the pushed blob is mode 100644 and a bare ./ call ' +
+           'fails with exit code 126 before the scanner runs at all.')
+}
+
+$scannerMustContain = @{
+    'its shebang'              = '#!/bin/sh'
+    'the allowlist removal'    = 'cp "$WORK/surface" "$WORK/residue"'
+    'the deny-grep'            = 'grep -qiF --'
+    'the empty-denylist guard' = 'FATAL: the denylist is empty'
+    'the snapshot clone'       = 'git clone --mirror'
+    'the per-ref push'         = 'git push --force'
+    # Added 2026-09-20 after run #4. The job creates git objects of its own -- a published-state note
+    # and an attestation commit -- and the container has no git identity, so without these two the
+    # notes ref is never created and the run dies pushing a refspec that does not exist.
+    'the mirror identity'      = 'GIT_COMMITTER_EMAIL'
+    # The attestation was computed on both paths and uploaded on neither, so "publishes a sanitised
+    # attestation" was contract text with no implementation behind it.
+    'the attestation publish'  = 'publish_attestation'
+}
+Assert-Extract -Block $scanner -What 'scanner' -MustContain $scannerMustContain
 
 $targets = @(
     @{ path = '.forgejo/workflows/publish.yml'; block = $workflow; what = 'workflow' }
@@ -193,7 +220,10 @@ $triggerNote = if ($scheduled) {
 if ($SelfTest) {
     Write-Output "self-test: docs/mirror-publishing-job.md"
     Write-Output ("  workflow block : {0} line(s), runs-on measured, no 'self-hosted'" -f $workflow.Count)
-    Write-Output ("  scanner block  : {0} line(s), all six assertions hold" -f $scanner.Count)
+    # DERIVED, NEVER TYPED. This line read "all six assertions hold" as a literal, which went wrong
+    # the first time an assertion was added -- a count that describes a list has to come from the
+    # list, or it becomes a confident statement about something else.
+    Write-Output ("  scanner block  : {0} line(s), all {1} assertion(s) hold" -f $scanner.Count, $scannerMustContain.Count)
     Write-Output ("  trigger        : {0}" -f $triggerNote)
     Write-Output "PASS -- both blocks extract unambiguously and contain what they claim."
     return

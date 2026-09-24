@@ -312,10 +312,18 @@ Write-FixtureFile (Join-Path $source 'root.md') "the root page`n" | Out-Null
 Write-FixtureFile (Join-Path $source 'notes/one.md') "note one`n" | Out-Null
 Write-FixtureFile (Join-Path $source 'notes/deep/two.md') "note two, with a non-ASCII byte: e-acute is here`n" | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $source 'empty-on-purpose') -Force | Out-Null
+# A HIDDEN DIRECTORY, BECAUSE THE TREE THAT TORE HAD ONE. `D:\Library\.git` is what stage (e) stopped
+# on in the retirement of 2026-09-21, and every fixture until now held only ordinary directories -- so
+# the inventory, the copy, the rename-aside and the rollback had all been proven against trees shaped
+# unlike the one the protocol was actually used on. It renames cleanly, which is the point: the
+# attribute was never the cause, and a fixture that carries it is what keeps that answer honest.
+Write-FixtureFile (Join-Path $source '.git/HEAD') "ref: refs/heads/master`n" | Out-Null
+(Get-Item -LiteralPath (Join-Path $source '.git') -Force).Attributes =
+    [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::Hidden
 
 $baseArgs = @{ SourcePath = $source; DestinationPath = $destination; WorkspacePath = $work }
 $plan = & $mover @baseArgs -Preflight
-Assert-Equal '3' ([string](Get-Field $plan 'file_count' 'the plan')) 'the inventory did not find every file'
+Assert-Equal '4' ([string](Get-Field $plan 'file_count' 'the plan')) 'the inventory did not find every file, or walked past the hidden directory'
 Assert-True ([int](Get-Field $plan 'directory_count' 'the plan') -ge 3) 'the inventory lost a directory; an empty one would not be recreated'
 Assert-True (([string](Get-Field $plan 'plan_id' 'the plan')).StartsWith('move-library-folder-')) 'the plan_id is not spelled the way the confirmed run compares it'
 # THE NORMALISED SPELLINGS THE HELPER ITSELF REPORTS, so every assertion below compares the strings
@@ -338,6 +346,61 @@ Assert-Refused { & $mover @baseArgs -Preflight } 'already exists' 'a colliding d
 Remove-Item -LiteralPath $destination -Recurse -Force
 Assert-Refused { & $mover -SourcePath $source -DestinationPath (Join-Path $source 'inside') -WorkspacePath $work -Preflight } 'inside' 'a destination inside the source was accepted' | Out-Null
 Assert-Refused { & $mover -SourcePath (Join-Path $source 'notes') -DestinationPath $destination -WorkspacePath $work -AsidePath (Join-Path $source 'notes/aside') -Preflight } 'inside' 'an aside path inside the source was accepted' | Out-Null
+
+# THE TWO REFUSALS THAT KEEP STAGE (e) A RENAME. It renames the source aside and does not copy it, so
+# an aside it cannot rename to is a run that stops AFTER the whole tree has been copied -- which is
+# the state that had to be finished by hand on 2026-09-21. Both are answerable from the paths alone,
+# so both are answered before a plan_id is issued rather than discovered at the end.
+#
+# The volume case needs no second volume to test: a drive letter that does not exist has a different
+# path root, which is the only thing the rule reads.
+Assert-Refused { & $mover @baseArgs -AsidePath 'Q:\no-such-volume\aside' -Preflight } 'same volume' 'AN ASIDE ON ANOTHER VOLUME WAS GIVEN A PLAN_ID; a rename cannot cross a volume, so the run would stop at stage (e) with the copy already made' | Out-Null
+Assert-Refused { & $mover @baseArgs -AsidePath (Join-Path $tree 'no-such-parent/aside') -Preflight } 'does not exist' 'AN ASIDE UNDER A MISSING PARENT WAS GIVEN A PLAN_ID; the rename has nowhere to land and the run would stop after the copy' | Out-Null
+# AND THE SAFE FORMS MUST STILL PASS, because a guard proven only against its positives is one that
+# can refuse every correct call and look right doing it.
+Assert-True (([string](& $mover @baseArgs -AsidePath (Join-Path $tree 'beside-the-source') -Preflight).plan_id).StartsWith('move-library-folder-')) 'THE ASIDE GUARD OVER-REFUSED: an ordinary aside beside the source, on the same volume under a parent that exists, was rejected'
+
+# THE PRIMITIVE ITSELF, READ OUT OF THE SOURCE. The behavioural cases above pass under `Move-Item`
+# too -- it renames correctly whenever it CAN, and the defect is what it silently does when it
+# cannot. No fixture on one volume can make a directory unrenamable, so the property is pinned where
+# it lives: stage (e) calls the rename primitive, which throws, rather than the cmdlet that falls
+# back to a recursive copy and delete.
+$moverText = [IO.File]::ReadAllText($mover, $utf8)
+$stageE = [regex]::Match($moverText, '(?s)# \(e\) RENAME ASIDE.*?# \(f\)')
+Assert-True $stageE.Success 'stage (e) could not be found in the mover, so what it calls cannot be judged'
+# COMMENTS STRIPPED FIRST, and finding that out cost this assertion its first run: the stage's own
+# comment explains at length what `Move-Item` does wrong, so a scan of the raw text reports the
+# explanation as the defect. What is being judged is what the stage CALLS.
+$stageECode = @(@($stageE.Value -split "`n") | Where-Object { $_ -cnotmatch '^\s*#' }) -join "`n"
+Assert-True ($stageECode -cmatch '\[IO\.Directory\]::Move\(') 'STAGE (e) DOES NOT USE THE RENAME PRIMITIVE; whatever it calls must rename or throw, never fall back to a recursive copy and delete'
+# AND NOWHERE ELSE IN THE FILE EITHER, which is the assertion that actually covers the ROLLBACK. The
+# mover renames in exactly two places -- the source aside at stage (e), and the aside back to the
+# source on the way out -- and the second is the recovery route, where a fallback that stopped part
+# way would tear the one copy a rollback exists to put back. Scoping this to stage (e) would have
+# left that half unwatched, which is what a whole-file scan is for.
+$moverCode = @(@($moverText -split "`n") | Where-Object { $_ -cnotmatch '^\s*#' }) -join "`n"
+Assert-True ($moverCode -cnotmatch 'Move-Item') 'THE MOVER CALLS Move-Item SOMEWHERE, and it is not a rename: given a directory it cannot rename it copies the tree and then deletes the source, so a fallback that stops part way tears the tree in half -- at stage (e) the source, and on the rollback the aside'
+Assert-Equal '2' ([string]@([regex]::Matches($moverCode, '\[IO\.Directory\]::Move\(')).Count) 'the mover does not rename in exactly the two places it should -- stage (e) and the rollback'
+
+# THE RUN'S OWN RECORDS, WHICH ARE WRITTEN AFTER THE APPROVAL. A cutover puts its barrier and its
+# journal under the workspace's `internal`, and both ways that can land in the moved tree fail late:
+# inside the source the journal stops existing at stage (e), and inside the destination the copy
+# fails its own verification only once the whole tree has been copied. Refusable from the paths.
+Assert-Refused { & $mover -SourcePath $work -DestinationPath (Join-Path $tree 'moved-workspace') -WorkspacePath $work -Preflight } 'writes its barrier and its journal' 'A WORKSPACE WAS PLANNED AS ITS OWN CUTOVER SOURCE; the run would have renamed its journal out from under itself at the rename-aside' | Out-Null
+
+# A workspace whose `internal` does not exist yet is the only way to reach the destination case, and
+# it is not a contrivance: `New-MaintenanceBarrier` creates that folder, so the destination-exists
+# check above cannot see the collision the barrier is about to cause.
+$noInternal = New-FixtureWorkspace 'work-no-internal'
+Remove-Item -LiteralPath (Join-Path $noInternal 'internal') -Recurse -Force
+Assert-Refused { & $mover -SourcePath $source -DestinationPath (Join-Path $noInternal 'internal') -WorkspacePath $noInternal -Preflight } 'writes its barrier and its journal' 'A DESTINATION THE BARRIER WOULD WRITE INTO WAS GIVEN A PLAN_ID; the run copies the whole tree before finding out' | Out-Null
+
+# AND THE ROUTE ITS OWN REFUSAL RECOMMENDS MUST STILL WORK. A staging name BESIDE the workspace's
+# internal folder is not inside it; over-refusing here would leave an internal folder with no route
+# at all, which is the failure a guard written only against the positive cases produces.
+$stagingPlan = & $mover -SourcePath $source -DestinationPath (Join-Path $noInternal 'internal-cutover') -WorkspacePath $noInternal -Preflight
+$stagingPlanId = [string](Get-Field $stagingPlan 'plan_id' 'the staging plan')
+Assert-True ($stagingPlanId.StartsWith('move-library-folder-')) 'THE GUARD OVER-REFUSED: the staging destination its own refusal names was rejected too, leaving a workspace internal folder unmovable'
 
 # === 7. Pointer rewriting: one fixture per spelling, plus the negatives ============================
 $pointers = Join-Path $tree 'pointers'
@@ -500,4 +563,4 @@ if ($null -ne $failure) {
     exit 1
 }
 
-"folder move: $($script:cases) assertion(s) over the barrier's three states, the claim-gated and launcher refusals, the live-seat and orphaned-seat and Book-lock engage refusals, the operator seat excused by token and by binding with a bystander still blocking and a named-but-unproven seat refused, the hashed preflight and its four earlier refusals, three pointer spellings with the sibling-path and trailing-space negatives, a confirmed cutover with its journal and checkpoint, a refused plan_id asserted at the material, the rollback, and a rollback refused against an edited destination"
+"folder move: $($script:cases) assertion(s) over the barrier's three states, the claim-gated and launcher refusals, the live-seat and orphaned-seat and Book-lock engage refusals, the operator seat excused by token and by binding with a bystander still blocking and a named-but-unproven seat refused, the hashed preflight and the refusals that precede a plan_id, including a workspace planned as its own source and a destination the barrier would write into, with the staging route they name still accepted, an aside refused across a volume and under a missing parent with an ordinary one still accepted, stage (e) read for the rename primitive rather than the cmdlet that falls back to a copy, three pointer spellings with the sibling-path and trailing-space negatives, a confirmed cutover of a tree holding a hidden directory, with its journal and checkpoint, a refused plan_id asserted at the material, the rollback, and a rollback refused against an edited destination"

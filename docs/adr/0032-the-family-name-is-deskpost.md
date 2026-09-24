@@ -44,8 +44,22 @@ turns up something against Deskpost.
 
 ## Consequences
 
-- Repository `Kioga/deskpost`, CLI `deskpost`, root `D:\deskpost\`. Register `deskpost.dev` and
-  `deskpost.io` before the public repository exists; the parked `.com` is accepted as a limit.
+- Repository `Kioga/deskpost`, CLI `deskpost`, root `D:\deskpost\`. ~~Register `deskpost.dev` and
+  `deskpost.io` before the public repository exists~~; the parked `.com` is accepted as a limit.
 - Do a trademark gut-check before the first public push; the search was for collisions, not marks.
+
+**Amended 2026-09-20 (S10), Eric's ruling: no domain is registered for now.** Deskpost gets a page on
+the maintainer's existing personal site instead, which is what a domain would have bought at this
+stage — somewhere to point at the name — at no cost and no renewal. `deskpost.dev` and `deskpost.io`
+were both re-confirmed unregistered that day by RDAP and DNS agreeing, so the option stays open; it
+is deferred, not closed, and nothing about the name changes. Source for the page:
+`output/library-dev/deskpost-pika-page.md`, written to the conventions in the `pika-page` Book. The
+site itself is not named here: this record ships in the public tree, and the domain is on the
+identity denylist. The private records name it.
+
+**One thing that ruling inherits.** A page on that platform is absent from the sitemap entirely,
+measured on the live site on 2026-09-16 (`pika-page/measured-behaviour`), so an unannounced page is
+reachable only by direct link. A page meant to be the public home for the name therefore needs to be
+added to the site navigation, announced in a post, or both — which a domain would not have needed.
 - Librarian 2.0's own repository records its rename in its own ADRs, per ADR-0009; this record
   binds only the family name.

@@ -38,6 +38,10 @@
 Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'BookWriteGuard.ps1')
+# For Write-LibraryResult, which the -Render entry point below answers -Json with. LibraryOutput.ps1
+# declares no param() block, so dot-sourcing it cannot rebind this file's own arguments -- the hazard
+# tools/Initialize-LibraryWorkspace.ps1 records against PluginPackage.ps1.
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 # Its own lock class, last in the order PLAN-multi-desk.md step 9a fixes: a holder acquires nothing
 # else. Callers take the Book's lock first.
@@ -57,8 +61,28 @@ function Get-ShelfCatalogEntryPath([string]$Workspace, [string]$Slug) {
     Join-Path (Join-Path (Join-Path $Workspace 'shelf') $Slug) $script:ShelfCatalogEntryName
 }
 
-function Get-ShelfCatalogHeaderPath([string]$Workspace) {
-    Join-Path $Workspace ($script:ShelfCatalogHeaderRelative -replace '/', [IO.Path]::DirectorySeparatorChar)
+function Get-ShelfCatalogHeaderPath([string]$Workspace, [string]$ProgramRoot) {
+    <#
+        THE WORKSPACE FIRST, THEN THE PROGRAM, and both named when neither has it. The header is a
+        tracked file that ships with the program, and since step 22 split the program from the
+        workspace (2026-09-21) the reader's workspace does not have a `docs/` at all -- it has a
+        Shelf. Rendering that Shelf through a template the workspace does not contain is the one
+        operation in this tree that genuinely needs both roots at once.
+
+        The workspace is still consulted first, and that order is not politeness: every fixture in
+        this file builds a root holding both the Shelf and the template, and an un-split checkout
+        is the same shape. Looking at the program first would quietly render a fixture's Shelf
+        through the real tree's header.
+    #>
+    $relative = $script:ShelfCatalogHeaderRelative -replace '/', [IO.Path]::DirectorySeparatorChar
+    $inWorkspace = Join-Path $Workspace $relative
+    if (Test-Path -LiteralPath $inWorkspace -PathType Leaf) { return $inWorkspace }
+    # BLANK MEANS "THE PROGRAM THIS FILE BELONGS TO", and a fixture passes its own root so that the
+    # header can be genuinely ABSENT. Without that, the fallback below reaches the real tree and a
+    # fixture testing a missing template renders successfully through the template it deleted --
+    # which is how this parameter came to exist: the self-test caught exactly that.
+    if ([string]::IsNullOrWhiteSpace($ProgramRoot)) { $ProgramRoot = Split-Path -Parent $PSScriptRoot }
+    Join-Path $ProgramRoot $relative
 }
 
 function ConvertTo-SingleTrailingNewline([string]$Text) {
@@ -78,11 +102,14 @@ function Get-ShelfCatalogHeader {
         heading is indistinguishable from an entry with a missing Path. Refused rather than rendered.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$Workspace)
+    param([Parameter(Mandatory = $true)][string]$Workspace, [string]$ProgramRoot)
 
-    $path = Get-ShelfCatalogHeaderPath -Workspace $Workspace
+    $path = Get-ShelfCatalogHeaderPath -Workspace $Workspace -ProgramRoot $ProgramRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "The Shelf catalog header template is missing: $script:ShelfCatalogHeaderRelative. It is tracked, so restore it from the repository rather than writing a new one."
+        throw ("The Shelf catalog header template is missing. It was looked for at " +
+               "$(Join-Path $Workspace ($script:ShelfCatalogHeaderRelative -replace '/', [IO.Path]::DirectorySeparatorChar)) " +
+               "and then at $path, which is where the program keeps it. It is tracked, so restore it from the " +
+               'repository rather than writing a new one.')
     }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString((Read-AtomicBytes -Path $path))
     if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
@@ -219,9 +246,9 @@ function Get-ShelfCatalogText {
         The catalog the header and the entry files imply. Pure: it reads, and writes nothing.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$Workspace)
+    param([Parameter(Mandatory = $true)][string]$Workspace, [string]$ProgramRoot)
 
-    $header = Get-ShelfCatalogHeader -Workspace $Workspace
+    $header = Get-ShelfCatalogHeader -Workspace $Workspace -ProgramRoot $ProgramRoot
     $inventory = Get-ShelfCatalogEntryInventory -Workspace $Workspace
     if (@($inventory.unlisted).Count) {
         throw ("$(@($inventory.unlisted).Count) Book directory(ies) under shelf/ carry no $script:ShelfCatalogEntryName and so cannot be listed: " +
@@ -265,6 +292,9 @@ function Invoke-ShelfCatalogRender {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Workspace,
+        # Where the tracked header template lives when the workspace does not carry one, which is
+        # every split install: the reader's workspace has a Shelf and no docs/ at all.
+        [string]$ProgramRoot,
         # Each entry is @{ path = <entry file path>; text = <entry text> }. Typed as hashtables
         # rather than objects because a hashtable's keys are NOT PSObject properties -- checking for
         # them with PSObject.Properties finds Count, Keys and Values and refuses every valid entry.
@@ -295,7 +325,7 @@ function Invoke-ShelfCatalogRender {
 
         # The scan throws before anything is written, so a malformed entry leaves the previous
         # catalog exactly as it was rather than replacing it with a partial list.
-        try { $text = Get-ShelfCatalogText -Workspace $Workspace }
+        try { $text = Get-ShelfCatalogText -Workspace $Workspace -ProgramRoot $ProgramRoot }
         catch {
             throw ("shelf/_catalog.md was NOT changed, because the Shelf cannot be rendered: $($_.Exception.Message)")
         }
@@ -357,7 +387,7 @@ function Get-ShelfCatalogDrift {
         What is wrong with shelf/_catalog.md, or an empty list. Read-only; takes no lock.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$Workspace)
+    param([Parameter(Mandatory = $true)][string]$Workspace, [string]$ProgramRoot)
 
     $problems = [Collections.Generic.List[string]]::new()
     $catalogPath = Get-ShelfCatalogPath -Workspace $Workspace
@@ -370,7 +400,7 @@ function Get-ShelfCatalogDrift {
         return @($problems)
     }
     $expected = $null
-    try { $expected = Get-ShelfCatalogText -Workspace $Workspace }
+    try { $expected = Get-ShelfCatalogText -Workspace $Workspace -ProgramRoot $ProgramRoot }
     catch {
         [void]$problems.Add("the Shelf cannot be rendered: $($_.Exception.Message)")
         return @($problems)
@@ -567,14 +597,14 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             #    whatever order the filesystem hands back.
             New-Book 'zeta' 'Zeta Book' @('- **Summary:** Last by slug.')
             New-Book 'alpha' 'Alpha Book' @('- **Summary:** First by slug.', '- **Kind:** capture')
-            $render = Invoke-ShelfCatalogRender -Workspace $fixture
+            $render = Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture
             Assert ($render.entry_count -eq 2) "the render counted $($render.entry_count) entries rather than 2"
             $rendered = [IO.File]::ReadAllText($catalogPath)
             Assert ($rendered.StartsWith("# Local Shelf`n`nAuthored prose about the Shelf.`n`n## Alpha Book`n", [StringComparison]::Ordinal)) 'the catalog did not render the tracked header followed by the first entry'
             Assert ($rendered.IndexOf('## Alpha Book', [StringComparison]::Ordinal) -lt $rendered.IndexOf('## Zeta Book', [StringComparison]::Ordinal)) 'the entries did not render in slug order'
             Assert ($rendered.EndsWith("- **Path:** shelf/zeta`n", [StringComparison]::Ordinal)) 'the catalog did not end with the last entry'
             Assert ([IO.File]::ReadAllBytes($catalogPath)[0] -ne 0xEF) 'the renderer wrote a UTF-8 BOM'
-            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture).Count) 'a freshly rendered catalog reported drift'
+            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture -ProgramRoot $fixture).Count) 'a freshly rendered catalog reported drift'
 
             # 2. The existing readers still find their Books. This is the compatibility that let the
             #    entry files become the authority without touching a single reader: the rendered file
@@ -595,11 +625,11 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             $alphaEntry = Join-Path $fixture 'shelf/alpha/_catalog-entry.md'
             $entryBefore = [IO.File]::ReadAllText($alphaEntry)
             $rollbackJournal = Write-BookJournal -Workspace $fixture -BookRoot 'shelf/alpha' -Operation 'selftest-rollback' -Paths @($alphaEntry)
-            Invoke-ShelfCatalogRender -Workspace $fixture -WriteEntry @(
+            Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture -WriteEntry @(
                 @{ path = $alphaEntry; text = (New-ShelfCatalogEntryText -Slug 'alpha' -Title 'Alpha Mid-Write' -Line @('- **Summary:** Half renamed.')) }
             ) | Out-Null
             New-Book 'gamma' 'Gamma Book' @('- **Summary:** Published by the other seat.')
-            Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null
+            Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null
             Assert (([IO.File]::ReadAllText($catalogPath)).Contains('## Gamma Book')) 'the second seat did not get its Book into the catalog'
             Restore-BookJournal -JournalPath $rollbackJournal.journal_path | Out-Null
             Invoke-ShelfCatalogRenderAfterRollback -Workspace $fixture | Out-Null
@@ -619,7 +649,7 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             # Handed back as case 2 left it, so no later case inherits these two Books.
             Remove-Item -LiteralPath (Join-Path $fixture 'shelf/entryless') -Recurse -Force
             Remove-Item -LiteralPath (Join-Path $fixture 'shelf/gamma') -Recurse -Force
-            Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null
+            Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null
             $rendered = [IO.File]::ReadAllText($catalogPath)
 
             # 3. AN ENTRY MUST NAME THE BOOK IT LIVES UNDER. A copied Book directory carrying the
@@ -629,7 +659,7 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             [IO.File]::Copy((Join-Path $fixture 'shelf/alpha/_catalog-entry.md'), (Join-Path $fixture 'shelf/copied/_catalog-entry.md'))
             $before = [IO.File]::ReadAllText($catalogPath)
             $refused = $false
-            try { Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null } catch { $refused = $true }
+            try { Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null } catch { $refused = $true }
             Assert $refused 'an entry declaring another Book''s Path was rendered'
             Assert ([IO.File]::ReadAllText($catalogPath) -ceq $before) 'a refused render changed the previous catalog'
             Remove-Item -LiteralPath (Join-Path $fixture 'shelf/copied') -Recurse -Force
@@ -639,10 +669,10 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             New-Book 'unlisted' 'Unlisted Book' $null
             $refused = $false
             $message = ''
-            try { Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null } catch { $refused = $true; $message = $_.Exception.Message }
+            try { Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null } catch { $refused = $true; $message = $_.Exception.Message }
             Assert $refused 'a Book with no entry file was rendered as an absent Book'
             Assert ($message -cmatch 'unlisted') 'the refusal did not name the Book it could not list'
-            Assert (@(Get-ShelfCatalogDrift -Workspace $fixture).Count -eq 1) 'the drift detector missed an unlistable Book'
+            Assert (@(Get-ShelfCatalogDrift -Workspace $fixture -ProgramRoot $fixture).Count -eq 1) 'the drift detector missed an unlistable Book'
 
             # 5. The day-one split reads the live catalog and writes the entry files it implies.
             $catalogBefore = [IO.File]::ReadAllText($catalogPath)
@@ -653,7 +683,7 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             $migrated = Convert-ShelfCatalogToEntries -Workspace $fixture
             Assert ($migrated.status -ceq 'complete') 'the migration did not complete'
             Assert (Test-Path -LiteralPath (Join-Path $fixture 'shelf/unlisted/_catalog-entry.md') -PathType Leaf) 'the migration wrote no entry file'
-            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture).Count) 'the migration left the catalog drifted'
+            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture -ProgramRoot $fixture).Count) 'the migration left the catalog drifted'
             Assert (([IO.File]::ReadAllText($catalogPath)).Contains('- **Summary:** Listed only in the old catalog.')) 'the migrated entry lost the prose the reader had written'
 
             # 6. Migration is idempotent, and it refuses rather than overwrites when an entry file
@@ -661,19 +691,19 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             $again = Convert-ShelfCatalogToEntries -Workspace $fixture
             Assert (-not @($again.planned_entries).Count) 'a second migration planned work again'
             [IO.File]::WriteAllText((Join-Path $fixture 'shelf/unlisted/_catalog-entry.md'), (New-ShelfCatalogEntryText -Slug 'unlisted' -Title 'Unlisted Book' -Line @('- **Summary:** Edited on disk.')), $utf8)
-            Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null
+            Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null
             [IO.File]::WriteAllText($catalogPath, ($catalogBefore.TrimEnd("`n") + "`n`n## Unlisted Book`n- **Summary:** Listed only in the old catalog.`n- **Path:** shelf/unlisted`n"), $utf8)
             $conflicted = $false
             try { Convert-ShelfCatalogToEntries -Workspace $fixture | Out-Null } catch { $conflicted = $true }
             Assert $conflicted 'the migration overwrote an entry file that disagreed with the catalog'
             Assert (([IO.File]::ReadAllText((Join-Path $fixture 'shelf/unlisted/_catalog-entry.md'))).Contains('Edited on disk.')) 'the refused migration changed the entry file anyway'
-            Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null
+            Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null
 
             # 7. shelf/_archive is the Shelf's own namespace, not a Book. An archived Book is out of
             #    the active catalog by design; ADR-0012 keeps it in Discovery instead.
             New-Item -ItemType Directory -Path (Join-Path $fixture 'shelf/_archive/retired/wiki') -Force | Out-Null
             [IO.File]::WriteAllText((Join-Path $fixture 'shelf/_archive/retired/_catalog-entry.md'), "## Retired Book`n- **Path:** shelf/retired`n", $utf8)
-            $render = Invoke-ShelfCatalogRender -Workspace $fixture
+            $render = Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture
             Assert ($render.entry_count -eq 3) "an archived Book changed the entry count to $($render.entry_count)"
             Assert (-not ([IO.File]::ReadAllText($catalogPath)).Contains('Retired Book')) 'an archived Book was listed in the active catalog'
 
@@ -682,16 +712,16 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             #     `.migration-<slug>-<digest>`, so a render during any import would have refused it
             #     as "not a Book slug" -- a guaranteed failure, not a race.
             New-Item -ItemType Directory -Path (Join-Path $fixture 'shelf/.migration-incoming-abc123/wiki') -Force | Out-Null
-            $render = Invoke-ShelfCatalogRender -Workspace $fixture
+            $render = Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture
             Assert ($render.entry_count -eq 3) "a writer's staging directory changed the entry count to $($render.entry_count)"
-            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture).Count) 'a staging directory under shelf/ was reported as drift'
+            Assert (-not @(Get-ShelfCatalogDrift -Workspace $fixture -ProgramRoot $fixture).Count) 'a staging directory under shelf/ was reported as drift'
             Remove-Item -LiteralPath (Join-Path $fixture 'shelf/.migration-incoming-abc123') -Recurse -Force
 
             # 7c. A name that is NEITHER prefixed nor a slug is still refused: the catalog cannot say
             #     what it is, and guessing is how a directory of unknown provenance gets listed.
             New-Item -ItemType Directory -Path (Join-Path $fixture 'shelf/Not A Slug') -Force | Out-Null
             $refused = $false
-            try { Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null } catch { $refused = $true }
+            try { Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null } catch { $refused = $true }
             Assert $refused 'a directory under shelf/ whose name is not a Book slug was rendered around'
             Remove-Item -LiteralPath (Join-Path $fixture 'shelf/Not A Slug') -Recurse -Force
 
@@ -699,12 +729,12 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
             #    refused rather than published.
             [IO.File]::WriteAllText($headerPath, "# Local Shelf`n`n## Not A Book`n`nProse under a second heading.`n", $utf8)
             $refused = $false
-            try { Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null } catch { $refused = $true }
+            try { Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null } catch { $refused = $true }
             Assert $refused 'a header carrying a column-zero subheading was rendered as a phantom Book'
             [IO.File]::Delete($headerPath)
             $refused = $false
             $message = ''
-            try { Invoke-ShelfCatalogRender -Workspace $fixture | Out-Null } catch { $refused = $true; $message = $_.Exception.Message }
+            try { Invoke-ShelfCatalogRender -Workspace $fixture -ProgramRoot $fixture | Out-Null } catch { $refused = $true; $message = $_.Exception.Message }
             Assert $refused 'a missing header template was rendered around'
             Assert ($message -cmatch 'shelf-catalog-header') 'the refusal did not name the tracked header it needs'
 
@@ -735,12 +765,23 @@ if ($MyInvocation.InvocationName -ne '.' -and @(@($args) | Where-Object { $_ -ci
     }
 
     $render = Invoke-ShelfCatalogRender -Workspace $resolvedWorkspace
-    [pscustomobject]@{
+    $result = [pscustomobject]@{
         operation            = 'Render the Shelf catalog'
         workspace            = $resolvedWorkspace
         catalog_path         = $render.catalog_path
         entry_count          = $render.entry_count
         shared_library_write = $false
-    } | Format-List
+    }
+    # -Json, ADDED 2026-09-22 (S13), AND IT IS WHAT MAKES THIS OPERATION COMPARABLE AT ALL. This was
+    # one of the four public helpers with no -Json, so `shelf.catalog-renders-from-entry-files`
+    # compared `Format-List` output -- and the formatter WRAPS at the host width, which broke the
+    # workspace path across two lines in the middle of the literal the acceptance harness normalises
+    # away. The two arms run in `<row>/powershell` and `<row>/kernel`, so that field differed by
+    # directory name AND by where the wrap fell, and the row could never have gone green for any
+    # implementation. Object mode is untouched, because a nested caller must keep receiving an
+    # object: `docs/helper-write-and-output-contracts.md` records why that default is the part that
+    # matters.
+    if ($argumentList -contains '-Json') { Write-LibraryResult -Result $result -Json }
+    else { $result | Format-List }
     exit 0
 }

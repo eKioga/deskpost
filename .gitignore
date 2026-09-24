@@ -65,3 +65,9 @@ codex-verdict.txt
 # would commit the very material the run just archived. Ignored rather than deleted:
 # the aside copy is what a rollback restores.
 *.aside/
+
+# The TypeScript kernel's dependency and build trees (PLAN-public-release.md step 28). Both are
+# re-derivable from kernel/package.json and neither is product; tools/PublicTreeAllowlist.ps1 denies
+# the same two paths so an export cannot carry them either.
+kernel/node_modules/
+kernel/dist/

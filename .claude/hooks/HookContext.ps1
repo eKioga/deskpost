@@ -136,6 +136,25 @@ function Write-HookDeny([string]$EventName, [string]$Reason) {
     Write-HookOutput $EventName @{ permissionDecision = 'deny'; permissionDecisionReason = $Reason }
 }
 
+# --- The reader's callable name ------------------------------------------------------------------
+# WHO REGISTERED THE READER DECIDES WHAT IT IS CALLED (S37, measured in real sessions): a workspace's
+# .mcp.json offers `mcp__validated-book-reader__<tool>`, Claude's plugin
+# `mcp__plugin_deskpost_validated-book-reader__<tool>`, and Codex -- which spells a server's hyphens as
+# underscores -- `mcp__validated_book_reader__<tool>`. A hook cannot tell which from its payload, so the
+# registration hands it the prefix (S38), and every sentence that sends a session to the reader names
+# the tool that session is offered. The default is the project form, which is what a Claude registration
+# written by `library init` needs, so it passes nothing.
+$script:DefaultReaderToolPrefix = 'mcp__validated-book-reader__'
+
+function Test-ReaderToolPrefix([string]$Prefix) {
+    # \z, not $: .NET's `$` matches before a final newline, and a prefix ending in one names no tool.
+    $Prefix -cmatch '^mcp__[A-Za-z0-9_-]+__\z'
+}
+
+function Get-ReaderToolPrefixFault([string]$Prefix) {
+    "the reader tool prefix '$Prefix' is not an MCP tool prefix (mcp__<server>__), so no reader tool can be named. Repair the hook registration."
+}
+
 # --- The serve ledger ----------------------------------------------------------------------------
 # `.claude/.hook-served.json` maps a session id to the keys already served into it. Untracked, like
 # every other piece of Desk runtime state: it belongs to this checkout, not to the code.

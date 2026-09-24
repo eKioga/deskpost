@@ -49,3 +49,14 @@ reader opt-in after hook trust is verified and a live denial test passes.
   different locks on one page — the split-lock defect ADR-0015 rejected.
 - Tiers, for the README: 0 local only; 1 local Basic Memory through `uv tool install`, no
   container; 2 the reader's own networked endpoint; 3 Basic Memory Cloud.
+
+## Amended 2026-09-22 (S30), the reader's three rulings
+
+- **The persistent id** is `<collection>/.library/collection.json`, `{schema, id, created}` -- the
+  workspace marker's shape and folder name. `library init` mints it and records it as the marker's
+  `collection_id`; an id file naming another collection than init names is refused, never retargeted.
+- **A local collection takes no ownership claim.** The one-writable-workspace fence answers two
+  workspaces holding different Book locks on one page; a folder inside one workspace has one set of
+  locks, and its writes take them. The fence and its `.owner/` record stay the shared collection's.
+- **`library init` lays the local collection out** whenever no endpoint is configured, creating only
+  what is missing, so a Tier 0 workspace is complete from its first command.

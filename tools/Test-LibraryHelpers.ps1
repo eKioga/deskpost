@@ -1817,7 +1817,14 @@ try {
     #     rendered line. A scratch workspace cannot satisfy settings.parse or context.always-on-budget,
     #     so the run as a whole always fails and only this one check's status is meaningful.
     function Get-DefectFamiliesCheck([string]$ScratchDir) {
-        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $toolsDir 'Invoke-LibraryChecks.ps1') -WorkspacePath $ScratchDir -Fast -Json 2>&1
+        # BOTH ROOTS POINT AT THE SCRATCH TREE, and -ProgramPath is the load-bearing one. What this
+        # fixture tests is the DETECTORS, which are program-shaped: it plants faults under
+        # $ScratchDir/tools and expects them flagged. Before the program root and the workspace
+        # became two answers (2026-09-21) -WorkspacePath set both, so this line worked by accident
+        # of their being the same variable. Passing only the workspace makes every detector scan
+        # the REAL tree, find it clean, and report `pass` where this fixture expects `fail` -- five
+        # detectors silently unfalsifiable, which is how this was found.
+        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $toolsDir 'Invoke-LibraryChecks.ps1') -ProgramPath $ScratchDir -WorkspacePath $ScratchDir -Fast -Json 2>&1
         $global:LASTEXITCODE = 0   # the scratch workspace fails unrelated checks by construction
         $doc = (@($out) -join "`n") | ConvertFrom-Json
         @(@($doc.checks) | Where-Object { $_.check -ceq 'powershell.defect-families' })[0]

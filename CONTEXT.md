@@ -14,7 +14,11 @@ _Avoid_: the Pilot, the workspace, the vault
 **Notebook**:
 The reader's disposable scratch space, carried through every part of the workflow. Session findings
 and source material land here first; what proves worth keeping graduates to a Book or the Holding
-Shelf, and a reset removes the rest.
+Shelf, and a reset removes the rest. **Each seat has its own** (ADR-0029): `notebook/<seat>/`, whose
+topics are that seat's by where they live, so nothing records who owns them and a reset at one seat
+reaches no other. Material two seats both want has no shared home; it graduates to a Shelf Book. A
+workspace reaches that layout once, through the **Notebook migration**; until then -- and in the
+PowerShell tools, which never carry it -- every seat shares one Notebook at `notebook/<topic>/`.
 _Avoid_: notes, scratch, working set, drafts
 
 **Shelf**:
@@ -26,6 +30,14 @@ _Avoid_: local library, cache
 **Shared collection**:
 The NAS-backed collection of Books and Project Hubs. Never stored on this disk.
 _Avoid_: the NAS, Basic Memory, remote library, the cloud
+
+**Local collection**:
+A workspace's own collection at `collection/`, in the shared collection's exact layout, that a workspace
+with no Basic Memory endpoint writes Project Hubs to (ADR-0030). `library init` lays it out and records
+its persistent id in `collection/.library/collection.json`; it takes no ownership claim, because it sits
+inside one workspace. So far the kernel alone reads and writes it (`library hub new`, seat creation, the
+Project Catalog read); the PowerShell tools still reach only the shared collection.
+_Avoid_: local library, offline mode
 
 **Library Mirror**:
 A one-way, derived copy of the shared collection's published Books and active Project Hubs, written
@@ -130,9 +142,10 @@ belongs to the Library as a whole.
 _Avoid_: session, workspace state, context
 
 **Seat**:
-A named place to work, carrying its own Desk and bound to exactly one Project. Everything else is
-shared — one collection, one Shelf, one Notebook, one lock namespace, one Discovery index — so a seat
-adds a place to sit in the reading room rather than a copy of the library. Entered through
+A named place to work, carrying its own Desk and its own Notebook, and bound to exactly one Project.
+Everything else is shared — one collection, one Shelf, one lock namespace, one Discovery index — so a
+seat adds a place to sit in the reading room rather than a copy of the library. (A workspace not yet
+through the Notebook migration still shares one Notebook among its seats; see **Notebook**.) Entered through
 `tools/Start-LibrarySeat.ps1`, or **bound to a running conversation** with
 `tools/Enter-LibrarySeat.ps1` (ADR-0018), which the SessionStart hook offers to a session that has
 none and does unasked for a conversation being resumed. `LIBRARY_SEAT` names one and authenticates
@@ -169,8 +182,10 @@ _Avoid_: generation, version, instance, session
 **Retirement record**:
 The archived proof that one seat incarnation is finished: `internal/seat-archive/<seat>-<stamp>/`,
 written only by the gated retirement helper, naming the seat, the incarnation and what was on its
-Desk. It is what "retired" *means* — a missing seat directory is not one — and it is what makes that
-incarnation's Notebook topics reachable by a whole-tree reset and its name free for a new seat.
+Desk. It is what "retired" *means* — a missing seat directory is not one — and what frees the name for
+a new seat. The seat's own Notebook is archived beside its Desk (ADR-0029); in a workspace not yet
+through the Notebook migration, the record is instead what makes that incarnation's Notebook topics
+reachable by a whole-tree reset.
 _Avoid_: backup, tombstone, deletion, snapshot
 
 **Discovery**:
@@ -228,6 +243,15 @@ separate, separately approved operation. It is a copy, never a full-workspace ba
 of the reset itself.
 _Avoid_: process, sort, groom, handoff, backup, export, migration, sync
 
+**Notebook migration**:
+The one-time move of a workspace from one shared Notebook to a Notebook per seat (ADR-0029). Every
+legacy item is named with a recorded disposition — a live seat's topics go to that seat, a retired
+seat's are set aside, and whatever no seat owns waits for the reader to give it a seat or set it aside
+— and nothing becomes active until every item is accounted for. It is gated like any consequential
+operation, journals every move before it makes it, and can be resumed or rolled back from any point.
+Setting aside is a quarantine a restore can bring back into any seat; nothing is deleted.
+_Avoid_: upgrade, conversion, import, sync
+
 **Publish**:
 Creating a reader copy of local material in the shared collection.
 _Avoid_: sync, push, upload, back up
@@ -237,9 +261,11 @@ Replacing an existing Book's reader pages from current evidence.
 _Avoid_: update, re-sync, rebuild
 
 **Reset**:
-Moving the acting seat's Notebook topics out of `notebook/` into a recoverable quarantine, and
-nothing else. It **deletes nothing** — the quarantine is purged only by a separate approved
-operation — and it selects by ownership, so another seat's topics stay where they are (ADR-0016).
+Moving the acting seat's Notebook — `notebook/<seat>/` — into a recoverable quarantine, and nothing
+else. It **deletes nothing** — the quarantine is purged only by a separate approved operation — and
+another seat's Notebook is never touched (ADR-0016, ADR-0029). A workspace not yet through the
+Notebook migration still has one shared Notebook, and there a reset selects the acting seat's topics
+by the ownership record instead.
 The Desk survives by default; `-ClearDesk` clears it too, and that pairing is the full **Library
 Reset** a reader asking to "start fresh" means (ADR-0010). Offer to **triage the Notebook first**
 — that is what makes it safe. It touches no repository file, Shelf Book, shared page, or `raw/`

@@ -112,8 +112,17 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'LibrarySeat.ps1')
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
 
-if ([string]::IsNullOrWhiteSpace($WorkspacePath)) { $WorkspacePath = Split-Path -Parent $PSScriptRoot }
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+# STEP 20: THE WORKSPACE IS SELECTED, NOT ASSUMED. `Split-Path -Parent $PSScriptRoot` answered
+# "which workspace" with "one level above my own code", which is right only while the program and
+# the workspace are the same directory. Order: -WorkspacePath, then LIBRARY_WORKSPACE, then the
+# nearest `.library/workspace.json` above the working directory, then this program's own root --
+# and that last one only while the program really is a workspace, which is what keeps an un-split
+# checkout working and stops an installed package inventing one. tools/WorkspaceRegistry.ps1.
+. (Join-Path $PSScriptRoot 'WorkspaceRegistry.ps1')
+# STEP 21: the shared-collection write fence. tools/CollectionOwnership.ps1.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+$WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'triaging a Shelf note'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 
@@ -274,8 +283,27 @@ function Get-LocalWritePaths($Action) {
     @(@($Action.write_set) | Where-Object { $_ -cnotmatch '^(books|projects)/' })
 }
 
+# A NOTEBOOK ACTION'S WRITE SET NAMES TWO FILES IT DOES NOT CREATE, and until 2026-09-23 this gate refused
+# both whenever they existed. The master index is RE-RENDERED under the render lock from the topics on disk,
+# and an existing topic's `_index.md` is left exactly as it is -- the existing-topic branch of
+# Invoke-NoteAction copies the note and nothing else. They are in the write set so that validation sees two
+# actions contending for one Notebook, not because this action brings them into existence. Refusing them made
+# triage to the Notebook refuse in every workspace that had a master index -- which, since `library init` lays
+# one out (ADR-0041), is every workspace -- and made the existing-topic branch unreachable. Found by porting
+# this runner (S43); the fixtures here were built by hand with no master index, which is why no case saw it.
+function Test-TriageDerivedWritePath($Action, [string]$Relative) {
+    if ([string]$Action.kind -cne 'notebook') { return $false }
+    if ($Relative -cmatch '(^|/)_master-index\.md$') { return $true }
+    $topicSlug = [string](Get-TriageValue $Action.metadata 'topic')
+    if ($Relative -ceq "notebook/$topicSlug/_index.md") {
+        return (Test-Path -LiteralPath (Join-Path $workspace (Join-Path 'notebook' $topicSlug)) -PathType Container)
+    }
+    $false
+}
+
 function Assert-WriteSetWritable($Action) {
     foreach ($relative in @(Get-LocalWritePaths $Action)) {
+        if (Test-TriageDerivedWritePath $Action $relative) { continue }
         $full = Join-Path $workspace ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
         if (Test-Path -LiteralPath $full) {
             throw "The approved write set is no longer writable: '$relative' already exists. Nothing was written for this action."
@@ -369,7 +397,8 @@ function Get-ChildPreflight($Action) {
     }
     switch ($Action.kind) {
         'holding' {
-            $child = & $shelfNote -Title $Action.title -ContentPath $Action.source_path -BookSlug $Action.slug -SourcePaths $Action.source_path -WorkspacePath $workspace -Preflight
+            # The plan's capture date names the note, so the child plans the name the approval binds (S44).
+            $child = & $shelfNote -Title $Action.title -ContentPath $Action.source_path -BookSlug $Action.slug -SourcePaths $Action.source_path -CaptureDate ([string](Get-TriageValue $Action.metadata 'capture_date')) -WorkspacePath $workspace -Preflight
             # note_page is the page identity, without the extension; write_set names the file.
             Assert-ChildWriteSetMatches $Action @("$($child.note_page).md")
             return [pscustomobject]@{ plan_id = $null; child = $child }

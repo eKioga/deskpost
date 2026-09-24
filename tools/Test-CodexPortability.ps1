@@ -47,7 +47,9 @@ function Invoke-Handshake([string]$AdapterPath, [string]$WorkingDirectory) {
 }
 
 function Get-FileCommandPath([string]$Command) {
-    $match = [regex]::Match($Command, '-File\s+"([^"]+)"\s*$')
+    # The one argument a Codex binding may carry after its path is the reader's Codex prefix (S38), which
+    # the Desk hook and both Shelf guards are handed; anything else after the path is still refused.
+    $match = [regex]::Match($Command, '-File\s+"([^"]+)"(?:\s+-ReaderToolPrefix\s+mcp__[A-Za-z0-9_-]+__)?\s*$')
     if (-not $match.Success) { throw "Generated hook command has no exact quoted -File path: $Command" }
     $match.Groups[1].Value
 }
@@ -57,6 +59,18 @@ function New-Fixture([string]$SourceRoot, [string]$FixtureRoot) {
     Copy-Item -LiteralPath (Join-Path $SourceRoot '.claude') -Destination (Join-Path $FixtureRoot '.claude') -Recurse
     New-Item -ItemType Directory -Path (Get-DeskStateDirectory -StateDirectory (Join-Path $FixtureRoot '.claude') -Seat 'fixture') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $SourceRoot 'tools') -Destination (Join-Path $FixtureRoot 'tools') -Recurse
+    # STEP 20/S13: THE FIXTURE IS A WORKSPACE, AND IT NOW HAS TO SAY SO. A workspace anchor -- a
+    # hook's own location standing in for the workspace it guards -- requires
+    # `.library/workspace.json`, because an installed package is a copy of a checkout and carries
+    # `tools/BookRootSchema.ps1` just as this fixture does. Without a marker the generated Desk
+    # context hook correctly reports "in no Library workspace" and the Desk assertion below fails.
+    # That is exactly what it did from S13 until 2026-09-21, unseen because `-Fast` skips this suite
+    # and both intervening sessions closed on `-Fast`.
+    New-Item -ItemType Directory -Path (Join-Path $FixtureRoot '.library') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $FixtureRoot '.library/workspace.json'),
+        (@{ id = [guid]::NewGuid().ToString(); program_version = 'fixture'; collection_id = '';
+            backend = 'local'; writable = $false; created = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json),
+        [Text.UTF8Encoding]::new($false))
     New-Item -ItemType Directory -Path (Join-Path $FixtureRoot '.codex') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $SourceRoot '.codex/config.template.toml') -Destination (Join-Path $FixtureRoot '.codex/config.template.toml')
     Copy-Item -LiteralPath (Join-Path $SourceRoot '.codex/hooks.template.json') -Destination (Join-Path $FixtureRoot '.codex/hooks.template.json')

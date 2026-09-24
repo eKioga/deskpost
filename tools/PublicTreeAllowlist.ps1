@@ -56,11 +56,37 @@ $script:PublicTreeIncludeDirectories = @(
     '.claude/skills',
     '.githooks',
     'docs',
-    # The canonical Codex-layout plugin package and the Claude files generated from it
+    # The Claude files generated from the canonical manifests, plus the repo-scoped marketplace
     # (PLAN-public-release.md step 19). It is the thing being published, so an export that omitted
     # it would ship a repository whose own plugin is missing.
-    'plugin',
-    'tools'
+    #
+    # `plugin/` USED TO BE THIS LINE, until 2026-09-20 measured what a plugin install actually
+    # copies: only the directory the marketplace entry names as its source, so a package rooted in a
+    # subdirectory would have had to carry the whole program. The plugin root is now the repository
+    # root -- which is why `hooks` appears below and `plugin.json` and `mcp.json` appear among the
+    # files. Removing an include root is as much an edit as adding one, and this list is the only
+    # place that says so.
+    '.claude-plugin',
+    # The canonical Codex manifest, at the address Codex actually reads -- measured from the two
+    # Codex plugins installed on this machine, both of which carry `.codex-plugin/plugin.json` and
+    # neither of which has one at the plugin root.
+    '.codex-plugin',
+    # Codex's repo-scoped marketplace, which is a DIFFERENT file in a different place from Claude's
+    # `.claude-plugin/marketplace.json` and carries a different entry shape.
+    '.agents',
+    # The workspace instruction templates `library init` writes into a new workspace's CLAUDE.md and
+    # AGENTS.md (PLAN-public-release.md step 20). Product by the same argument as `plugin/`: a
+    # published tree whose initialiser cannot find its own template refuses on the reader's first
+    # command, and it would refuse having already been installed.
+    'templates',
+    'tools',
+    # The TypeScript kernel (PLAN-public-release.md steps 23-28, added 2026-09-22 by S13). It is the
+    # implementation the PowerShell tools are being ported into and the thing step 28 compiles into
+    # the single binary a reader installs, so a public tree without it ships a program whose own
+    # future is missing. `node_modules/` and `dist/` are denied below rather than here: an include
+    # root is a statement about a role, and a build output is not product even when it lives inside
+    # one.
+    'kernel'
 )
 
 # Individual product files. Named one by one because each sits beside something that is not
@@ -70,13 +96,32 @@ $script:PublicTreeIncludeFiles = @(
     '.claude/settings.json',
     '.codex/config.template.toml',
     '.codex/hooks.template.json',
+    # The third Codex template, added 2026-09-22: library init renders it into a reader's workspace,
+    # so a public tree without it ships an initialiser whose Codex half degrades in silence.
+    '.codex/workspace-config.template.toml',
     '.gitignore',
     '.mcp.json',
     'AGENTS.md',
     'CLAUDE.md',
     'CONTEXT.md',
     'CONTRIBUTING.md',
+    # The installers of step 28 (S19). A release ships them BESIDE its archives, since the one-line
+    # install fetches them from the release URL; they are in the tree because tools/Build-KernelRelease.ps1
+    # copies them from here, and a reader who cloned instead of downloading should find them too.
+    'install.ps1',
+    'install.sh',
     'LICENSE',
+    # THE ENTRY POINT, and it is product before anything else here is. library desk is what the
+    # workspace instructions this tree ships tell a reader to type, so a published program without
+    # it is one whose own first instruction refuses. The .cmd shim travels with the .ps1 it names:
+    # %~dp0 is what keeps the pair together, and one without the other is a command that resolves
+    # and then cannot run.
+    # Three names for one command, and each is the only one its shell will resolve: library.cmd"
+  
+    # for the dispatcher both of them exec.
+    'library',
+    'library.cmd',
+    'library.ps1',
     'README.md'
 )
 
@@ -93,7 +138,12 @@ $script:PublicTreeDenyPatterns = @(
     # Private design records. They cannot reach an include root today, and they are named anyway:
     # a future rule that admits the repository root must not quietly start exporting them.
     '^PLAN[^/]*\.md$',
-    '^codex-verdict\.txt$'
+    '^codex-verdict\.txt$',
+    # Dependency and build trees under `kernel/`. Never product, always re-fetchable or re-derivable,
+    # and a directory rule over the kernel would otherwise sweep tens of thousands of files into
+    # staging -- where the scan would then read every one of them.
+    '(^|/)node_modules(/|$)',
+    '^kernel/dist(/|$)'
 )
 
 function Get-PublicTreeAllowlistRules {

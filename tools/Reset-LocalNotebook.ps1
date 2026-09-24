@@ -49,11 +49,20 @@ param(
     # topic added or remapped after the preview was included in silence.
     [string]$ApprovedPlanId,
 
-    [switch]$Preflight
+    [switch]$Preflight,
+
+    # THE RESULT AS ONE JSON DOCUMENT, and until 2026-09-22 (S17) there was no way to ask for it. A
+    # caller across a process boundary got PowerShell's list formatting -- wrapped at the host width,
+    # so a 78-character plan_id arrived as two lines -- and the acceptance matrix compared that prose
+    # against a kernel that answers in fields: two namespaces that cannot intersect, so every
+    # difference the reset rows reported was about output mode rather than behaviour. Opt-in, like
+    # every helper's, because an in-process caller wants the object (tools/LibraryOutput.ps1).
+    [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 # The reset removes topics, so it is a visibility change like any other and takes the same render
 # lock. PLAN-multi-desk.md step 28a allows it to hold that lock longer than a compile does: a reset
@@ -433,8 +442,13 @@ $result = [ordered]@{
     recoverable = ('Topics are MOVED into internal/notebook-reset-quarantine/, never deleted. Bring them back with ' +
                    'tools/Restore-NotebookQuarantine.ps1, or destroy them for good with tools/Remove-NotebookQuarantine.ps1 -- ' +
                    'each is its own preflighted, approved operation.')
-    open_books_advisory = Get-DeskEntries -Workspace $resolvedWorkspace -Name 'books'
-    open_projects_advisory = Get-DeskEntries -Workspace $resolvedWorkspace -Name 'projects'
+    # BEHIND @() SINCE S17, and the four Desk fields were one field with two shapes until then:
+    # Get-DeskEntries returns its list through the pipeline, which UNROLLS one entry, so a seat with
+    # one open Book reported a bare string and a seat with two an array. Invisible to every in-process
+    # caller, which wraps in @() on read; visible to anything reading the -Json document, which this
+    # helper did not have. The ConvertTo-RawSkipList shape S15 repaired, in a second helper.
+    open_books_advisory = @(Get-DeskEntries -Workspace $resolvedWorkspace -Name 'books')
+    open_projects_advisory = @(Get-DeskEntries -Workspace $resolvedWorkspace -Name 'projects')
     library_copy_advisory = $libraryCopyAdvisory
     shared_library_write = $false
     # Named in the plan, because which of the two operations this is must be visible BEFORE the
@@ -467,7 +481,7 @@ $result = [ordered]@{
 # for an operation certain to fail, which is the same defect Phase 0 fixed in
 # Import-ExternalWikiToShelf and which Retire-Seat.ps1 already states as the rule.
 Assert-SeatClaimHeld -StateDirectory (Join-Path $resolvedWorkspace '.claude') -Seat $Seat | Out-Null
-if ($Preflight) { [pscustomobject]$result; return }
+if ($Preflight) { Write-LibraryResult -Result ([pscustomobject]$result) -Json:$Json; return }
 if (-not $UserConfirmed) { throw 'Reset aborted: ask the user once for confirmation, then rerun with -UserConfirmed.' }
 # THE PLAN IS CHECKED IN ONE PLACE, AND IT IS UNDER THE LOCK -- see the apply block below. A second
 # comparison here against the selection read before the lock would look like defence in depth and is
@@ -705,7 +719,7 @@ $result.remaining_in_notebook = [pscustomobject]@{
 $result.virtual_desk_cleared = [bool]$ClearDesk
 # Read back rather than predicted: the point of preserving the Desk is that it is still there, and
 # saying so from the state file is what makes the claim checkable.
-$result.open_books_after = Get-DeskEntries -Workspace $resolvedWorkspace -Name 'books'
-$result.open_projects_after = Get-DeskEntries -Workspace $resolvedWorkspace -Name 'projects'
+$result.open_books_after = @(Get-DeskEntries -Workspace $resolvedWorkspace -Name 'books')
+$result.open_projects_after = @(Get-DeskEntries -Workspace $resolvedWorkspace -Name 'projects')
 $result.basic_memory_write = $false
-[pscustomobject]$result
+Write-LibraryResult -Result ([pscustomobject]$result) -Json:$Json

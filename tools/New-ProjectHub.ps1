@@ -5,9 +5,23 @@ param(
     [string]$Purpose = '',
     [string[]]$NextAction = @(),
     [string]$ProjectId,
+    # THE WORKSPACE, AND IT REACHES THE OWNERSHIP FENCE ONLY. Until 2026-09-22 this helper took no
+    # workspace at all, which was invisible while the program and the workspace were one directory
+    # and became a dead end the moment they were not: the seat picker's "create a Hub" branch
+    # refused a split install with `no Library workspace was selected and none could be derived`,
+    # and S19 avoided it by binding its probe seat to a Project that already existed.
+    #
+    # IT IS NOT THE ENDPOINT'S. `Resolve-LibraryWriteEndpoint` resolves the ENDPOINT from the
+    # deployment chain on purpose and its own comment records why -- handing it a workspace instead
+    # was a measured regression that made every offline suite driving a helper against a scratch
+    # workspace refuse for want of an endpoint. Which workspace holds the writable role and which
+    # directory holds the deployment files are two questions, and this parameter answers only the
+    # first. Same shape as Edit-ProjectHub.ps1 and Copy-LocalPagesToProject.ps1, which already had it.
+    [string]$WorkspacePath,
     [string]$McpUrl = $env:AI_LIBRARY_MCP_URL,
     [switch]$Dev,
     [switch]$Preflight,
+    [switch]$Json,
     [switch]$SelfTest
 )
 
@@ -15,6 +29,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
 . (Join-Path $PSScriptRoot 'LibraryDeployment.ps1')
+# STEP 21: ONE WRITABLE WORKSPACE PER COLLECTION. Resolve-LibraryWriteEndpoint is
+# Resolve-LibraryMcpUrl plus the ownership fence, and every shared writer reaches the collection
+# through it. tools/CollectionOwnership.ps1, checked by collection.write-fence-coverage.
+. (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
+. (Join-Path $PSScriptRoot 'LibraryOutput.ps1')
 
 function Assert-ProjectSlug([string]$Slug) {
     # -cnotmatch, not -notmatch: PowerShell's -notmatch is case-insensitive, so 'My-Project' satisfies
@@ -173,7 +192,7 @@ if ($SelfTest) {
 if ([string]::IsNullOrWhiteSpace($ProjectSlug)) { throw 'ProjectSlug is required.' }
 Assert-ProjectSlug $ProjectSlug
 if ([string]::IsNullOrWhiteSpace($Title)) { throw 'Title is required.' }
-$McpUrl = Resolve-LibraryMcpUrl -McpUrl $McpUrl
+$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'creating a Project Hub'
 $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 
 $projectDirectory = "projects/$ProjectSlug"
@@ -292,6 +311,11 @@ function Read-ExactOrNull([string]$Path) {
 function Write-Exact([string]$Directory, [string]$NoteTitle, [string]$Body, [bool]$Overwrite) {
     $response = Invoke-Mcp 'tools/call' @{ name = 'write_note'; arguments = @{ project_id = $ProjectId; directory = $Directory; title = $NoteTitle; content = $Body; note_type = 'note'; overwrite = $Overwrite; output_format = 'json' } }
     if ($null -ne (Get-RpcError $response) -or $response.result.isError) { throw "Write '$Directory/$NoteTitle' was rejected." }
+    # A NO-OVERWRITE WRITE THAT FINDS A NOTE IS NOT AN ERROR TO BASIC MEMORY (measured 2026-09-22,
+    # S33): isError is false and the refusal is `action: conflict`. Until S33 the readback below then
+    # read the OTHER writer's page and this helper reported `created` over it. The check is shared
+    # with the other four no-overwrite writers since S34 (CollectionOwnership.ps1).
+    Assert-McpWriteNotConflicted -Response $response -Path "$Directory/$NoteTitle"
     Confirm-WriteReadback (Read-ExactOrNull "$Directory/$NoteTitle.md") "$Directory/$NoteTitle.md"
 }
 function Get-NoteBody($Record) {
@@ -322,7 +346,7 @@ $plan = [pscustomobject]@{
     planned_root_bytes = [Text.UTF8Encoding]::new($false).GetByteCount($body)
     shared_library_write = $false
 }
-if ($Preflight) { $plan; return }
+if ($Preflight) { Write-LibraryResult -Result $plan -Json:$Json; return }
 if ($null -ne $existingRoot) { throw "Project Hub '$ProjectSlug' already exists; no write was performed." }
 $catalogBody = if ($null -eq $catalog) { '' } else { Get-NoteBody $catalog }
 $entry = "- [[$projectDirectory/_project|$Title]]"
@@ -357,4 +381,4 @@ try {
 catch {
     throw "The companion connections page '$connectionsPath' and Hub root '$projectRootPath' were created, but the Active Project Catalog 'projects/README.md' was not updated with the new Hub entry. $($_.Exception.Message)"
 }
-[pscustomobject]@{ operation = 'Create Project Hub'; project_slug = $ProjectSlug; project_path = $projectDirectory; catalog_path = 'projects/README.md'; connections_path = $connectionsPath; created = $true; shared_library_write = $true }
+Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Create Project Hub'; project_slug = $ProjectSlug; project_path = $projectDirectory; catalog_path = 'projects/README.md'; connections_path = $connectionsPath; created = $true; shared_library_write = $true })

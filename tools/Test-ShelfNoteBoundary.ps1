@@ -314,6 +314,12 @@ Test-Case 'a non-lowercase topic is refused' {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $fixture 'notebook/Graphics'))) 'a non-lowercase topic folder was created anyway'
 }
 Test-Case 'notebook copies, keeps the Shelf note, and marks it reviewed' {
+    # IN THE STATE EVERY WORKSPACE IS IN: with a rendered master index. Until 2026-09-23 this fixture had
+    # none, and the write-set gate refused a notebook action whenever notebook/_master-index.md existed --
+    # which `library init` has laid out since ADR-0041 -- so this case passed while triage to the Notebook
+    # refused in every real workspace (S43, found by porting the runner).
+    & (Join-Path $tools 'NotebookIndex.ps1') -Render -WorkspacePath $fixture | Out-Null
+    Assert-True (Test-Path -LiteralPath (Join-Path $fixture 'notebook/_master-index.md') -PathType Leaf) 'the fixture has no master index, so this case would not test the state a real workspace is in'
     $report = & $triage -Source Holding -MatchText 'Plain note' -To Notebook -Topic 'graphics' -WorkspacePath $fixture
     $r = Get-Only $report
     Assert-Equal 'copied' $r.status 'status'
@@ -327,6 +333,17 @@ Test-Case 'notebook copies, keeps the Shelf note, and marks it reviewed' {
 }
 Test-Case 'a second notebook copy into the same destination is refused' {
     Assert-Refused { & $triage -Source Holding -MatchText 'Plain note' -To Notebook -Topic 'graphics' -WorkspacePath $fixture } 'already exists'
+}
+# The existing-topic branch, unreachable until 2026-09-23: the gate refused the topic's own _index.md,
+# which this branch never writes. A different note into the same topic copies, and leaves the index alone.
+Test-Case 'another note copies into an existing topic, leaving its index as it was' {
+    $indexPath = Join-Path $fixture 'notebook/graphics/_index.md'
+    $indexBefore = [IO.File]::ReadAllText($indexPath)
+    $r = Get-Only (& $triage -Source Holding -MatchText 'Map check heading' -To Notebook -Topic 'graphics' -WorkspacePath $fixture)
+    Assert-Equal 'copied' $r.status 'status'
+    Assert-Equal 'False' ([string]$r.topic_is_new) 'an existing topic was reported as new'
+    Assert-True (Test-Path -LiteralPath (Join-Path $fixture $r.destination)) 'the Notebook copy into the existing topic is missing'
+    Assert-Equal $indexBefore ([IO.File]::ReadAllText($indexPath)) 'copying into an existing topic rewrote its index'
 }
 Test-Case 'a repeated review reports unchanged' {
     Assert-Equal 'unchanged' (Get-Only (& $triage -Source Holding -MatchText 'Plain note' -To Review -WorkspacePath $fixture)).status 'status'
@@ -388,6 +405,36 @@ Test-Case 'a single note leaves no plan record and no journal' {
         if (-not (Test-Path -LiteralPath $full)) { continue }
         Assert-Equal '0' ([string]@(Get-ChildItem -LiteralPath $full -File -Recurse).Count) "$relative after single-note runs"
     }
+}
+# Regression, S44 (a Report Inbox claim of S43's): every Notebook action names the master index in its write
+# set, and the batch refused any two actions naming one path, so a batch could carry one Notebook action.
+# The index is re-rendered, never created; two actions sharing it are two updates in order.
+Test-Case 'a batch carries two notebook actions, into an existing topic and a new one' {
+    & $addNote -Title 'Batch note one' -Content 'The first batch body.' -WorkspacePath $fixture | Out-Null
+    & $addNote -Title 'Batch note two' -Content 'The second batch body.' -WorkspacePath $fixture | Out-Null
+    $actions = '[{"kind":"notebook","source":"holding","source_match":"Batch note one","topic":"graphics"},{"kind":"notebook","source":"holding","source_match":"Batch note two","topic":"batch-topic"}]'
+    $plan = & $triage -ActionJson $actions -WorkspacePath $fixture -Preflight -Json | ConvertFrom-Json
+    Assert-True ([string]$plan.plan_id -cmatch '^triage-[0-9a-f]{64}$') "a batch of two notebook actions issued no plan: $([string]$plan.plan_id)"
+    $done = & $triage -ActionJson $actions -WorkspacePath $fixture -UserConfirmed -ApprovedPlanId ([string]$plan.plan_id) -Json | ConvertFrom-Json
+    Assert-Equal 'complete' ([string]$done.status) 'the batch status'
+    Assert-True (Test-Path -LiteralPath (Join-Path $fixture 'notebook/batch-topic/_index.md') -PathType Leaf) 'the new topic has no index'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $fixture 'notebook/_master-index.md')).Contains('batch-topic')) 'the master index does not list the new topic'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $fixture 'notebook/_master-index.md')).Contains('graphics')) 'the master index lost the existing topic'
+}
+# Regression, S44 (a Report Inbox claim of S43's): the plan names a holding action's note by its capture date,
+# and Add-ShelfNote named it by today, so the child's own plan disagreed and every such action refused.
+Test-Case 'a batch planned for another capture date names the note by that date' {
+    $dated = Join-Path $fixture 'notebook/dated-source.md'
+    [IO.File]::WriteAllText($dated, "# Dated source`n`nA Notebook article sent to the Holding Shelf under a planned date.`n", [Text.UTF8Encoding]::new($false))
+    $actions = '[{"kind":"holding","source":"notebook","source_path":"notebook/dated-source.md","title":"Dated source"}]'
+    $plan = & $triage -ActionJson $actions -CaptureDate '2026-01-01' -WorkspacePath $fixture -Preflight -Json | ConvertFrom-Json
+    Assert-True ([string]$plan.plan_id -cmatch '^triage-[0-9a-f]{64}$') "a holding action planned for another date issued no plan: $([string]$plan.plan_id)"
+    $done = & $triage -ActionJson $actions -CaptureDate '2026-01-01' -WorkspacePath $fixture -UserConfirmed -ApprovedPlanId ([string]$plan.plan_id) -Json | ConvertFrom-Json
+    Assert-Equal 'complete' ([string]$done.status) 'the batch status'
+    Assert-True (Test-Path -LiteralPath (Join-Path $fixture 'shelf/holding/wiki/notes/2026-01-01-dated-source.md') -PathType Leaf) 'the note was not named by its planned capture date'
+}
+Test-Case 'a capture date that is not a calendar date is refused' {
+    Assert-Refused { & $addNote -Title 'Bad date' -Content 'Body.' -CaptureDate '2026-02-30' -WorkspacePath $fixture } 'is not one'
 }
 
 Write-Host ''
