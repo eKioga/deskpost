@@ -43,7 +43,7 @@ import { NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './work
 import { parseArguments } from './argv.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { notPortedRefusal, usageText, verbInventory, VERBS } from './verbs.ts';
-import { hostRemedies, hostRemedyFields } from './remedy.ts';
+import { hostRemedies, hostRemedyFields, REMEDY_HOST } from './remedy.ts';
 
 
 function writeStdout(text: string): void {
@@ -61,14 +61,14 @@ export function asciiJson(document: string): string {
 }
 
 export function emit(value: PsJsonValue, asJson: boolean, humanText?: string): void {
-  // ON POSIX A REMEDY NAMES A COMMAND THE MACHINE CAN RUN (S42, remedy.ts); the identity on Windows.
+  // ON POSIX, AND FROM A COMPILED KERNEL ON WINDOWS, A REMEDY NAMES A COMMAND THE MACHINE CAN RUN (S42, S47, remedy.ts).
   if (asJson || humanText === undefined) writeStdout(asciiJson(psConvertToJson(hostRemedyFields(value))));
   else writeStdout(hostRemedies(humanText));
 }
 
 /** A hook's one JSON document, its remedy fields said as this host should say them (S42). */
 function hostHookOutput(stdout: string): string {
-  if (process.platform === 'win32') return stdout;
+  if (REMEDY_HOST === 'win32') return stdout;
   try {
     return JSON.stringify(hostRemedyFields(JSON.parse(stdout) as unknown));
   } catch {

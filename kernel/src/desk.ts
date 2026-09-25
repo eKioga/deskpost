@@ -43,7 +43,8 @@ import {
 } from './seatclaim.ts';
 import { writeAtomicText } from './fsx.ts';
 import { notebookQuarantineInventory } from './notebook.ts';
-import { homeDirectory } from './workspace.ts';
+import { homeDirectory, readMarker } from './workspace.ts';
+import { openCollection } from './collection.ts';
 import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
@@ -906,11 +907,17 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
   const deskDirectory = deskStateDirectory(stateDirectory, seat);
   const openBooksPath = deskFilePath(stateDirectory, seat, 'books');
   const openProjectsPath = deskFilePath(stateDirectory, seat, 'projects');
+  // THE COLLECTION THE DESK IS PINNED TO, ON EITHER BACKEND (S46, ADR-0044). A workspace attached to its
+  // local collection has no Basic Memory pin, and asking for one refused every Desk write on the default
+  // route, a Shelf Book's included. Its collection is the one the marker names, confirmed by opening it.
+  const marker = readMarker(workspace);
+  const local = marker !== null && String(marker['backend'] ?? '') === 'local';
+  const localCollection = local ? openCollection(workspace) : null;
   const projectPin = path.join(stateDirectory, '.library-project');
-  if (!fs.existsSync(projectPin) || !fs.existsSync(openBooksPath)) {
+  if ((!local && !fs.existsSync(projectPin)) || !fs.existsSync(openBooksPath)) {
     refuse('Virtual Desk is not configured in this workspace.');
   }
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(readUtf8(projectPin).trim())) {
+  if (!local && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(readUtf8(projectPin).trim())) {
     refuse('Virtual Desk project pin is malformed.');
   }
 
@@ -949,6 +956,13 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
           if (!fs.existsSync(path.join(workspace, ...wikiRelative.split('/')))) {
             refuse(`No Shelf Book '${options.slug}' exists at ${wikiRelative}.`);
           }
+        } else if (localCollection) {
+          // A LOCAL COLLECTION IS AS CHECKABLE AS THE SHELF, so a Book it does not hold is refused here
+          // rather than opened and refused at every read.
+          const wikiRelative = splitBookRoot(bookRoot).wikiRoot;
+          if (!fs.existsSync(path.join(localCollection.root, ...wikiRelative.split('/')))) {
+            refuse(`No Book '${options.slug}' exists in this workspace's local collection at collection/${wikiRelative}.`);
+          }
         }
         if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
       } else {
@@ -957,6 +971,9 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
     } else {
       const projectRoot = options.shelf === 'archive' ? `archive/projects/${options.slug}` : `projects/${options.slug}`;
       if (options.action === 'open') {
+        if (localCollection && !fs.existsSync(path.join(localCollection.root, ...projectRoot.split('/'), '_project.md'))) {
+          refuse(`No Project Hub '${options.slug}' exists in this workspace's local collection at collection/${projectRoot}/_project.md.`);
+        }
         if (!openProjects.includes(projectRoot)) openProjects.push(projectRoot);
       } else {
         openProjects = openProjects.filter((entry) => entry !== projectRoot);

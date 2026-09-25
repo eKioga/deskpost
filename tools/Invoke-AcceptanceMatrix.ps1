@@ -352,6 +352,23 @@ function Resolve-AcceptanceKernelCommand {
 # The kernel's own program root, which is not always this one's. Set once at the entry point from the
 # kernel's `--version`; until then, and for any kernel that does not answer it, it is this program.
 $script:KernelProgramRoot = $script:ProgramRoot
+$script:KernelCompiled = $false
+
+function Test-AcceptanceKernelCompiled {
+    <# Whether the kernel under test reports itself compiled, which decides how its remedies are said (S47). #>
+    param([AllowEmptyString()][string]$KernelCommand)
+    if ([string]::IsNullOrWhiteSpace($KernelCommand)) { return $false }
+    $parts = @(@($KernelCommand -split '\s+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $arguments = @(@($parts | Select-Object -Skip 1) + '--version')
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $answer = (& $parts[0] @arguments 2>$null | Out-String)
+        ($LASTEXITCODE -eq 0) -and (($answer | ConvertFrom-Json).compiled -eq $true)
+    }
+    catch { $false }
+    finally { $ErrorActionPreference = $previous }
+}
 
 function Get-AcceptanceKernelProgramRoot {
     <#
@@ -601,6 +618,16 @@ function Invoke-AcceptanceArm {
     }
     if ($null -eq $parsed) { $outcome['stdout'] = (ConvertTo-AcceptanceNormalisedText -Text ([string]$last.stdout) -Tokens $tokens) }
     else { $outcome['result'] = (ConvertTo-AcceptanceNormalisedData -Value $parsed -Tokens $tokens) }
+    # THE ORACLE'S SENTENCES AS AN INSTALLED KERNEL SAYS THEM (S47, ADR-0045): see
+    # ConvertTo-AcceptanceInstalledRemedy. After normalisation, so the program root is `<program>` in both arms.
+    if ($Arm -ceq 'powershell' -and $script:KernelCompiled) {
+        $before = ($outcome | ConvertTo-Json -Depth 30 -Compress)
+        $outcome['stderr'] = ConvertTo-AcceptanceInstalledRemedy -Text ([string]$outcome['stderr'])
+        if ($outcome.Contains('stdout')) { $outcome['stdout'] = ConvertTo-AcceptanceInstalledRemedy -Text ([string]$outcome['stdout']) }
+        else { $outcome['result'] = ConvertTo-AcceptanceInstalledRemedyFields -Value $outcome['result'] }
+        # WHICH ROWS THE RULE MOVES, named by id on the host stream (ADR-0045: the reader sees them by id).
+        if (($outcome | ConvertTo-Json -Depth 30 -Compress) -cne $before) { [Console]::Error.WriteLine("remedy rule applied: $([string]$Row.id)") }
+    }
     [pscustomobject]$outcome
 }
 
@@ -1110,6 +1137,45 @@ function Invoke-AcceptanceMatrixSelfTest {
         [void]$script:selfTestFailures.Add("$Label -- the row reported '$([string]$Verdict.status)': $([string]$Verdict.detail)")
         $false
     }
+
+    # THE INSTALLED KERNEL'S REMEDIES, SAID BY THE ORACLE SIDE (S47, ADR-0045): the same cases kernel self-test
+    # section 23 holds the kernel's rewrite to, so the two implementations cannot drift apart unseen.
+    $remedyCases = @(
+        @('Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta, then read', 'Open it with library desk open book beta --location shelf, then read'),
+        @('tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug old', 'library desk open book old --location shelf --shelf archive'),
+        @('tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.', 'library desk open book <slug> --location shelf.'),
+        @('tools/Set-VirtualDesk.ps1 -Action Close -Kind Project -Slug hub', 'library desk close project hub'),
+        @('Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or', 'Sit down at a seat with library seat enter <name>, or'),
+        @('tools/Retire-Seat.ps1 -Seat old', 'library seat retire old'),
+        @('re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .', 're-render it with library shelf render'),
+        @('tools/NotebookIndex.ps1 -Render -WorkspacePath .', 'library notebook render'),
+        @('Capture into it with tools/Add-ShelfNote.ps1 -BookSlug holding. It is', 'Capture into it with library capture holding --title <title> --body <text>. It is'),
+        @('Use tools/Get-DeskOverview.ps1 until then.', 'Use library desk until then.'),
+        @('Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with library seat start <name> --project <project-slug>.'),
+        @('pass -WorkspacePath, set LIBRARY_WORKSPACE, or pass -Seat explicitly.', 'pass --workspace, set LIBRARY_WORKSPACE, or pass --seat explicitly.'),
+        @('take it over with tools/Set-NotebookTopicOwner.ps1 -Topic x, or', 'take it over with powershell -ExecutionPolicy Bypass -File "<program>\tools\Set-NotebookTopicOwner.ps1" -Topic x, or'),
+        @('no helper named here', 'no helper named here')
+    )
+    foreach ($case in $remedyCases) {
+        $said = ConvertTo-AcceptanceInstalledRemedy -Text $case[0]
+        Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
+    }
+    $walked = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ next = 'Use tools/Get-DeskOverview.ps1 until then.'; body = 'tools/Get-DeskOverview.ps1'; items = @([pscustomobject]@{ reason = 'tools/Retire-Seat.ps1 -Seat old' }) })
+    Check ($walked.next -ceq 'Use library desk until then.' -and $walked.body -ceq 'tools/Get-DeskOverview.ps1' -and $walked.items[0].reason -ceq 'library seat retire old') "the oracle side's field walk rewrote the wrong fields: $($walked | ConvertTo-Json -Compress -Depth 5)"
+    # A READER TOOL'S ERROR TEXT IS A REMEDY, AND A PAGE IS NOT (kernel/src/reader.ts): S47's full run met the
+    # seatless refusal inside `result.content[0].text`, which no remedy key names.
+    $failed = ConvertTo-AcceptanceInstalledRemedyFields -Value ('{"result":{"isError":true,"content":[{"type":"text","text":"Use tools/Get-DeskOverview.ps1 until then."}]}}' | ConvertFrom-Json)
+    $served = ConvertTo-AcceptanceInstalledRemedyFields -Value ('{"result":{"isError":false,"content":[{"type":"text","text":"Use tools/Get-DeskOverview.ps1 until then."}]}}' | ConvertFrom-Json)
+    Check ($failed.result.content[0].text -ceq 'Use library desk until then.') "the oracle side left a reader error's text as the oracle said it: $($failed.result.content[0].text)"
+    Check ($served.result.content[0].text -ceq 'Use tools/Get-DeskOverview.ps1 until then.') "the oracle side rewrote a page the reader served: $($served.result.content[0].text)"
+    # A WALKED RESULT SERIALISES AS IT CAME IN: S47's first full run read a list of Book slugs back as
+    # `{"Length":7}` objects, because a string from a pipeline is wrapped, on 6 fields of one row.
+    $plain = ConvertTo-AcceptanceNormalisedData -Value ('{"books_scanned":["curated","holding"],"count":2,"ok":true,"nested":{"n":1}}' | ConvertFrom-Json) -Tokens @()
+    $asIs = ConvertTo-AcceptanceFieldMap -Outcome ([pscustomobject]@{ exit = 0; result = $plain })
+    $walkedMap = ConvertTo-AcceptanceFieldMap -Outcome ([pscustomobject]@{ exit = 0; result = (ConvertTo-AcceptanceInstalledRemedyFields -Value $plain) })
+    $asIsText = (@($asIs.Keys | Sort-Object | ForEach-Object { "$_=$($asIs[$_])" }) -join '; ')
+    $walkedText = (@($walkedMap.Keys | Sort-Object | ForEach-Object { "$_=$($walkedMap[$_])" }) -join '; ')
+    Check ($walkedText -ceq $asIsText) "the oracle side's field walk changed the fields of a result it had nothing to rewrite in: $walkedText, not $asIsText"
 
     $matrix = Get-AcceptanceMatrix -SkipShapeCheck
     $shape = @(Test-AcceptanceMatrixShape -Matrix $matrix -ProgramRoot $script:ProgramRoot)
@@ -1623,6 +1689,7 @@ if ($SelfTest) { Invoke-AcceptanceMatrixSelfTest; return }
 
 # THE KERNEL'S OWN PROGRAM ROOT, asked of it once (S29). See Get-AcceptanceKernelProgramRoot.
 $script:KernelProgramRoot = Get-AcceptanceKernelProgramRoot -KernelCommand $Kernel
+$script:KernelCompiled = Test-AcceptanceKernelCompiled -KernelCommand $Kernel
 
 $matrix = Get-AcceptanceMatrix -ProgramRoot $script:ProgramRoot
 

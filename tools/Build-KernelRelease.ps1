@@ -94,6 +94,30 @@ function Write-LfFile([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
 }
 
+function Test-BinaryBuildPath {
+    <#
+        The labels of the build-machine paths a binary carries: each of -Paths, with either separator,
+        in single-byte or UTF-16LE text, ignoring case. Empty means none. The needle is the path itself,
+        not a denylist term, because a path names a machine and an account whether or not the reader
+        thought to deny that name (S47).
+    #>
+    param([Parameter(Mandatory)][string]$Binary, [string[]]$Paths)
+
+    $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($Binary))
+    $found = [Collections.Generic.List[string]]::new()
+    foreach ($path in @($Paths | Where-Object { $_ })) {
+        $full = [IO.Path]::GetFullPath($path).TrimEnd('\', '/')
+        foreach ($form in @($full, $full.Replace('\', '/'))) {
+            $utf16 = [Text.Encoding]::GetEncoding(28591).GetString([Text.Encoding]::Unicode.GetBytes($form))
+            if ($text.IndexOf($form, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $text.IndexOf($utf16, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                if (-not $found.Contains($full)) { [void]$found.Add($full) }
+            }
+        }
+    }
+    $found
+}
+
 function New-ReleaseArchive {
     <#
         A zip written entry by entry, because Windows PowerShell 5.1's Compress-Archive writes
@@ -199,16 +223,27 @@ try {
         # A SINGLE-QUOTED JS STRING, because Windows PowerShell 5.1 drops the double quotes embedded in a
         # native argument and bun then reads `0.1.0` as an expression (measured). And bun's progress on
         # stderr must not become a terminating error under -ErrorAction Stop, so the exit code judges.
+        # RUN FROM THE SOURCE ROOT, WITH THE ENTRY RELATIVE (S47). Bun writes every bundled module's path
+        # into the binary as a comment, relative to ITS working directory -- so a build started from
+        # D: over a tree on C: embedded `../../../C:/Users/<name>/AppData/...` 65 times, naming the
+        # builder's account in a public binary, and the identity scan passed it. Test-BinaryBuildPath
+        # below refuses such a binary whatever the working directory was.
         $previousPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        Push-Location -LiteralPath $SourceRoot
         try {
             $output = & $Bun build --compile "--target=$($spec.bun)" --define "LIBRARY_KERNEL_VERSION='$binaryVersion'" `
-                (Join-Path $SourceRoot 'kernel/src/cli.ts') --outfile $binary 2>&1
+                'kernel/src/cli.ts' --outfile $binary 2>&1
         } finally {
+            Pop-Location
             $ErrorActionPreference = $previousPreference
         }
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw "bun build --compile for $platform failed (exit $LASTEXITCODE): $(($output | Out-String).Trim())"
+        }
+        $leaked = @(Test-BinaryBuildPath -Binary $binary -Paths @($SourceRoot, $env:USERPROFILE))
+        if ($leaked.Count) {
+            throw "the built $platform binary carries $($leaked.Count) path(s) of the machine that built it ($($leaked -join ', ')), which a release must not publish. Nothing was archived."
         }
 
         $tuple = [ordered]@{

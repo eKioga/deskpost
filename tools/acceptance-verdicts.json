@@ -1,4 +1,82 @@
 {
   "about": "Verdicts recorded by real sessions for the acceptance matrix's recorded_verdict rows (S41, the reader's ruling). Each binds one row to the SHA-256 of the exact release binary it was judged against, so a new release is judged again. result is pass or fail; evidence says what the session did and saw. Read by tools/Invoke-AcceptanceMatrix.ps1.",
-  "verdicts": []
+  "verdicts": [
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "229cf499306e8e3dc859a56f25baea26c7e5cd14ea70cec83eb1801adfee7c13",
+      "result": "pass",
+      "judged_utc": "2026-09-24T19:15:55Z",
+      "evidence": "S45, rel45a (4a87967) installed to a scratch root: claude 2.1.282 -p with --plugin-dir on the release and --setting-sources project, in a workspace-open-book fixture initialised by the release with every init-written registration set aside. cat of the closed holding Book's page was denied -- the debug log records the plugin hook's permissionDecision deny in the guard's words -- and echo control-ok completed in the same session. The plugin's reader answered (read_book_catalog refused for want of an endpoint, the fixture being offline)."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "229cf499306e8e3dc859a56f25baea26c7e5cd14ea70cec83eb1801adfee7c13",
+      "result": "pass",
+      "judged_utc": "2026-09-24T19:17:40Z",
+      "evidence": "S45, the same Claude session resumed and compacted by /compact (30,019 to 2,237 tokens, compact_boundary in the stream), then resumed again: the plugin's Desk hook re-served seat fixture, open Book curated and the exact reader tool name mcp__plugin_deskpost_validated-book-reader__read_open_book_page, and read_open_book_page returned curated/alpha through the plugin."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "bd90e0094e9e8a512ffb0e565ca8fdd30a9751a90ea652bc5dd255e816dacf10",
+      "result": "pass",
+      "judged_utc": "2026-09-24T22:42:00Z",
+      "evidence": "S46, rel46a (05e18d5) installed to a scratch root through the release's own install.ps1: claude 2.1.282 -p started by `library seat start fixture` with --plugin-dir on the release and --setting-sources project, in a Tier 0 workspace initialised by the release with every init-written registration set aside. `cat` of a page of the closed holding Book was refused by the plugin's PreToolUse hook in the guard's words and its canary never reached the stream; `library desk open book reports --location shelf` and `echo control-ok` completed in the same session."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "bd90e0094e9e8a512ffb0e565ca8fdd30a9751a90ea652bc5dd255e816dacf10",
+      "result": "pass",
+      "judged_utc": "2026-09-24T22:46:00Z",
+      "evidence": "S46, the same session resumed and compacted by /compact (27,044 to 2,232 tokens, compact_boundary in the stream), then resumed again: it named seat fixture, the open Book reports and Project projects/verdict, and the exact reader tool mcp__plugin_deskpost_validated-book-reader__read_open_book_page, and read the open Report Inbox page through the plugin."
+    },
+    {
+      "row": "seat.launcher-starts-a-harness-in-the-seat-it-named",
+      "kernel_sha256": "bd90e0094e9e8a512ffb0e565ca8fdd30a9751a90ea652bc5dd255e816dacf10",
+      "result": "pass",
+      "judged_utc": "2026-09-25T03:22:00Z",
+      "evidence": "S46, S7's fresh Windows Sandbox (no git, Node, Bun or clone), rel46a installed by the release's install.ps1 and the README's steps run as written: `library seat start me -- -p ...` started claude 2.1.282 in seat me of a Tier 0 workspace. The Desk hook named seat me, `library desk` inside the session read the claim held by this session, and after it the seat read free. With a new terminal's PATH the launcher refused by name ('Executable not found in $PATH: \"claude\"'), because Claude's installer leaves ~\\.local\\bin off PATH -- the launcher's refusal is correct and the README gap is recorded separately."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "bd90e0094e9e8a512ffb0e565ca8fdd30a9751a90ea652bc5dd255e816dacf10",
+      "result": "fail",
+      "judged_utc": "2026-09-25T03:22:06Z",
+      "evidence": "S46, S7's fresh Windows Sandbox, which has no Git Bash: rel46a installed by its install.ps1, the plugin installed by it, and a Tier 0 workspace with every registration init wrote set aside, so only the plugin guards it. claude 2.1.282 started by `library seat start` read a closed holding page's canary with Read and with Get-Content. Its debug log: with no Git Bash, Claude runs a hook command through PowerShell, and the plugin's quoted command \"${env:CLAUDE_PLUGIN_ROOT}/bin/library\" hook shelf-read ... is 'Unexpected token hook' there, so every plugin hook errors and a hook error does not block. The earlier pass for this binary was judged on a host with Git Bash, where the same command runs."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "c3b803b456786c8975a9f05fa15f143880b2185a67e07dfd3160c1e6ab70c90e",
+      "result": "pass",
+      "judged_utc": "2026-09-25T03:42:00Z",
+      "evidence": "S46, S7's fresh Windows Sandbox with no Git Bash, rel46b (e9c296c) installed by its install.ps1 over a removed rel46a, in a Tier 0 workspace with every registration init wrote set aside, so only the plugin guards it: claude 2.1.282 started by `library seat start` was refused a Read and a PowerShell Get-Content of a closed holding page by the plugin's hooks, now rendered in exec form, each in the guard's words naming the plugin's reader; the canary never reached the stream, and echo control-ok ran in the same session. rel46a failed this in the same Sandbox."
+    },
+    {
+      "row": "seat.launcher-starts-a-harness-in-the-seat-it-named",
+      "kernel_sha256": "c3b803b456786c8975a9f05fa15f143880b2185a67e07dfd3160c1e6ab70c90e",
+      "result": "pass",
+      "judged_utc": "2026-09-25T03:40:00Z",
+      "evidence": "S46, the same Sandbox on rel46b: `library seat start me --project my-project -- -p ...` and `library seat start solo --project solo -- -p ...` each created their seat and started claude 2.1.282 in it, and each session read its own Project page through the plugin's reader."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "6e1d5a82e7823c1a660cb04799c267c172b9bdf5b82c42f368e86bc3f5c9d10a",
+      "result": "pass",
+      "judged_utc": "2026-09-25T04:08:16Z",
+      "evidence": "S46, S7's fresh Windows Sandbox with no Git Bash, rel46c (c817d43) installed by its install.ps1 over a removed rel46b, claude 2.1.282: in a Tier 0 workspace with every registration init wrote set aside, so only the plugin guards it, a Read (job 9) and a PowerShell Get-Content (job 11) of a closed holding page were each refused by the plugin's exec-form hooks in the guard's words, the canary never reached either stream, and echo control-ok ran in the same session."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "6e1d5a82e7823c1a660cb04799c267c172b9bdf5b82c42f368e86bc3f5c9d10a",
+      "result": "pass",
+      "judged_utc": "2026-09-25T04:07:56Z",
+      "evidence": "S46, S7's fresh Windows Sandbox with no Git Bash, rel46c (c817d43) installed by its install.ps1 over a removed rel46b, claude 2.1.282: a session at seat solo opened the Report Inbox, was compacted by /compact (compact_boundary, 21,167 to 1,493 tokens), and the resumed turn named the plugin's reader tool exactly -- mcp__plugin_deskpost_validated-book-reader__read_open_book_page -- and read the open Report Inbox page through it."
+    },
+    {
+      "row": "seat.launcher-starts-a-harness-in-the-seat-it-named",
+      "kernel_sha256": "6e1d5a82e7823c1a660cb04799c267c172b9bdf5b82c42f368e86bc3f5c9d10a",
+      "result": "pass",
+      "judged_utc": "2026-09-25T04:07:00Z",
+      "evidence": "S46, S7's fresh Windows Sandbox with no Git Bash, rel46c (c817d43) installed by its install.ps1 over a removed rel46b, claude 2.1.282: `library seat start me` in the rel46a-made Library after a re-run init, and `library seat start solo` four times, each started claude in the named seat; the first read its Project through the workspace's own reader, now the kernel, and the others worked at seat solo's Desk."
+    }
+  ]
 }

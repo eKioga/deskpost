@@ -89,9 +89,31 @@ function canStart(program: string): boolean {
   return (process.env['PATH'] ?? '').split(':').some((directory) => directory && executable(path.join(directory, program)));
 }
 
-function unresolvedHookPaths(trees: unknown[]): { registrations: number; unresolved: string[]; unstartable: string[] } {
+/**
+ * Whether Claude Code on this Windows machine would run a shell-form hook through Git Bash (S47). Where it would, a
+ * quoted shell-form command works -- rel46a's plugin guards passed on a host with Git Bash and failed open in a
+ * Sandbox without it. Looked for as Claude Code documents it: CLAUDE_CODE_GIT_BASH_PATH, then the Git beside a
+ * `git.exe` on PATH, then Git's default folder.
+ */
+function gitBashPresent(): boolean {
+  // A SET CLAUDE_CODE_GIT_BASH_PATH IS THE ANSWER, present or not: Claude Code uses the bash it names and nothing else.
+  const named = process.env['CLAUDE_CODE_GIT_BASH_PATH'];
+  if (named) return fs.existsSync(named);
+  const pathVariable = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  for (const directory of (process.env[pathVariable] ?? '').split(';').filter((entry) => entry.trim())) {
+    const git = path.join(directory.replace(/^"|"$/g, ''), 'git.exe');
+    if (!fs.existsSync(git)) continue;
+    const gitRoot = path.dirname(path.dirname(git));
+    if (fs.existsSync(path.join(gitRoot, 'bin', 'bash.exe'))) return true;
+  }
+  const programFiles = process.env['ProgramFiles'] ?? process.env['PROGRAMFILES'];
+  return programFiles !== undefined && fs.existsSync(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
+}
+
+function unresolvedHookPaths(trees: unknown[]): { registrations: number; unresolved: string[]; unstartable: string[]; shellForm: string[] } {
   let registrations = 0;
   const unresolved: string[] = [];
+  const shellForm: string[] = [];
   // A REGISTRATION THIS MACHINE CANNOT START IS NO GUARD (S42). Measured in a clean Linux distro: every hook
   // `library init` wrote there was `powershell.exe`, which does not exist, and this check passed them all,
   // because it asked only whether the named SCRIPT exists. A Claude hook that cannot start does not block.
@@ -113,7 +135,15 @@ function unresolvedHookPaths(trees: unknown[]): { registrations: number; unresol
             const candidate = token.replace(/^"+|"+$/g, '');
             // THE KERNEL BINARY A REGISTRATION NAMES (S42) must be there, as a script must.
             if (/[\\/]bin[\\/]library(\.exe)?$/i.test(candidate) && path.isAbsolute(candidate)) {
-              if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) unresolved.push(`${eventName} -> ${candidate}`);
+              // ON WINDOWS THE BINARY IS `library.exe` (S47, the Report Inbox): a registration naming `bin/library` is
+              // resolved as the shell resolves it before it is called missing. What fails there is the FORM -- measured
+              // in S7's Windows Sandbox, a quoted command in shell form runs through PowerShell where Git Bash is absent,
+              // and PowerShell refuses it as 'Unexpected token' -- and doctor says that rather than "not there".
+              const file = process.platform === 'win32' && !/\.exe$/i.test(candidate) && !fs.existsSync(candidate) ? `${candidate}.exe` : candidate;
+              if (!fs.existsSync(file) || !fs.statSync(file).isFile()) unresolved.push(`${eventName} -> ${candidate}`);
+              else if (process.platform === 'win32' && isObject(entry) && !Array.isArray(entry['args']) && typeof entry['command'] === 'string' && /^\s*["']/.test(entry['command']) && !gitBashPresent()) {
+                shellForm.push(`${eventName} -> ${candidate}`);
+              }
               continue;
             }
             if (!candidate.endsWith('.ps1')) continue;
@@ -125,7 +155,7 @@ function unresolvedHookPaths(trees: unknown[]): { registrations: number; unresol
       }
     }
   }
-  return { registrations, unresolved, unstartable };
+  return { registrations, unresolved, unstartable, shellForm };
 }
 
 function parseJsonFile(file: string): unknown {
@@ -194,7 +224,7 @@ function guardsRegistered(workspace: string, program: string): string {
   if (blocking.length) {
     throw new Error(blocking.map((problem) => problem.detail).join('; ') + ` -- a session rooted in ${workspace} would run without them. Re-run \`library init ${workspace}\`.`);
   }
-  const { registrations, unresolved, unstartable } = unresolvedHookPaths(trees);
+  const { registrations, unresolved, unstartable, shellForm } = unresolvedHookPaths(trees);
   if (unresolved.length) {
     throw new Error(
       'a registered hook names a script that is not there, so it fails open silently: ' + unresolved.join('; ') + `. Re-run \`library init ${workspace}\` to re-point them.`,
@@ -203,6 +233,13 @@ function guardsRegistered(workspace: string, program: string): string {
   if (unstartable.length) {
     throw new Error(
       'a registered hook starts a program this machine does not have, so it cannot run and fails open silently: ' + unstartable.join('; ') + `. Re-run \`library init ${workspace}\` to re-point them.`,
+    );
+  }
+  if (shellForm.length) {
+    throw new Error(
+      'a registered hook runs the kernel as a quoted command in shell form, which Claude Code runs through PowerShell ' +
+        "where Git Bash is absent, and PowerShell refuses it as 'Unexpected token', so it fails open silently: " +
+        shellForm.join('; ') + '. A release since 0.2.0 registers the binary in exec form; update the plugin, or re-run ' + `\`library init ${workspace}\`.`,
     );
   }
   const shapeFaults: string[] = [];

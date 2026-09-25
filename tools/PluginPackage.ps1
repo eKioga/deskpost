@@ -369,6 +369,36 @@ function ConvertTo-WindowsCodexHooks {
     $copy
 }
 
+function ConvertTo-WindowsClaudeHooks {
+    <#
+        Claude's generated hooks document as a WINDOWS release carries it: EXEC FORM, `bin/library.exe` as the
+        command and the verb and its options as `args`, one per element. Measured 2026-09-24 (S46) in Windows
+        Sandbox, claude 2.1.282: with no Git Bash, Claude Code runs a shell-form hook through PowerShell, where
+        "${env:CLAUDE_PLUGIN_ROOT}/bin/library" hook ... is 'Unexpected token hook' -- every plugin hook errored,
+        a hook error does not block, and a closed Book's page was read with Read and with Get-Content. Claude's
+        hooks guide: a hook with `args` "spawns the script directly without a shell", so one spelling runs under
+        Git Bash and under PowerShell alike. The executable is named with its extension because nothing resolves
+        one without a shell. Idempotent: a hook already in exec form is left alone.
+    #>
+    param([Parameter(Mandatory)]$Document)
+    $copy = ($Document | ConvertTo-Json -Depth 30) | ConvertFrom-Json
+    foreach ($eventProperty in @($copy.hooks.PSObject.Properties)) {
+        foreach ($block in @($eventProperty.Value)) {
+            foreach ($hook in @($block.hooks)) {
+                if ($hook.PSObject.Properties['args']) { continue }
+                if ([string]$hook.command -cnotmatch '^"\$\{CLAUDE_PLUGIN_ROOT\}/bin/library" (\S.*)$') {
+                    throw "Claude's hook command '$([string]$hook.command)' is not the quoted bin/library form the Windows render knows."
+                }
+                $tail = $Matches[1]
+                if ($tail -match '["''`]') { throw "Claude's hook arguments '$tail' carry a quote, which exec form would pass through literally." }
+                $hook.command = '${CLAUDE_PLUGIN_ROOT}/bin/library.exe'
+                $hook | Add-Member -NotePropertyName args -NotePropertyValue @($tail -split '\s+')
+            }
+        }
+    }
+    $copy
+}
+
 function Write-ReleasePluginFiles {
     <#
         What Build-KernelRelease calls on each staged platform tree: the one place a release's plugin
@@ -381,7 +411,12 @@ function Write-ReleasePluginFiles {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "the staged release has no $relative to render for $Platform." }
     $document = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
     [IO.File]::WriteAllText($path, (ConvertTo-PluginJsonText (ConvertTo-WindowsCodexHooks -Document $document)), [Text.UTF8Encoding]::new($false))
-    @($relative)
+    $claudeRelative = '.claude-plugin/hooks/hooks.json'
+    $claudePath = Join-Path $StageRoot $claudeRelative
+    if (-not (Test-Path -LiteralPath $claudePath -PathType Leaf)) { throw "the staged release has no $claudeRelative to render for $Platform." }
+    $claudeDocument = [IO.File]::ReadAllText($claudePath, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
+    [IO.File]::WriteAllText($claudePath, (ConvertTo-PluginJsonText (ConvertTo-WindowsClaudeHooks -Document $claudeDocument)), [Text.UTF8Encoding]::new($false))
+    @($relative, $claudeRelative)
 }
 
 function Get-KernelHookActions {
@@ -771,8 +806,18 @@ function Invoke-PluginPackageSelfTest {
     # EVERY CANONICAL HOOK IS `"${PLUGIN_ROOT}/bin/library" hook <verb>`, and every verb is one the
     # kernel declares. A hook that names a verb the binary refuses exits non-zero, which Claude Code
     # treats as a non-blocking error: the tool runs, and the guard was never there.
-    $declared = @(Get-KernelHookActions -Workspace $Workspace)
-    Check ($declared.Count -ge 4) "the kernel declares its hook verbs ($($declared -join ', '))"
+    # WITHOUT NODE THE KERNEL CANNOT BE ASKED, so only that membership is skipped -- every shape and
+    # registration assertion below still runs -- and the run ends in a WARN the gate reports as one (S45:
+    # a fresh clone following the README, which asks for no Node, failed here).
+    $askKernel = [bool](Get-Command node -ErrorAction SilentlyContinue)
+    $declared = @()
+    if ($askKernel) {
+        $declared = @(Get-KernelHookActions -Workspace $Workspace)
+        Check ($declared.Count -ge 4) "the kernel declares its hook verbs ($($declared -join ', '))"
+    }
+    else {
+        Write-Output '  skip node is not on PATH, so the kernel was not asked which hook verbs it declares'
+    }
     $canonicalByVerb = @{}
     foreach ($eventProperty in @($canonical.hooks.hooks.PSObject.Properties)) {
         foreach ($block in @($eventProperty.Value)) {
@@ -782,7 +827,7 @@ function Invoke-PluginPackageSelfTest {
                 Check $isBinary "a canonical hook names the binary as bin/library hook <verb>: $command"
                 if (-not $isBinary) { continue }
                 $verb = $Matches['verb']
-                Check ($declared -ccontains $verb) "the kernel declares 'hook $verb', which the manifest names"
+                if ($askKernel) { Check ($declared -ccontains $verb) "the kernel declares 'hook $verb', which the manifest names" }
                 $matcher = if ($block.PSObject.Properties['matcher']) { [string]$block.matcher } else { '' }
                 $canonicalByVerb[$verb] = [pscustomobject]@{ event = $eventProperty.Name; matcher = $matcher; command = $command }
             }
@@ -834,18 +879,38 @@ function Invoke-PluginPackageSelfTest {
     $twice = ConvertTo-WindowsCodexHooks -Document $windows
     Check ((ConvertTo-PluginCanonicalJson $twice) -ceq (ConvertTo-PluginCanonicalJson $windows)) 'the Windows render is idempotent'
     Check ((ConvertTo-PluginCanonicalJson $canonical.hooks) -cne (ConvertTo-PluginCanonicalJson $windows)) 'the render did not rewrite the canonical document it was handed'
+    # THE WINDOWS CLAUDE RENDER (S46): exec form, because with no Git Bash Claude Code runs a shell-form hook
+    # through PowerShell, where a quoted path followed by words is 'Unexpected token' -- every plugin guard
+    # errored, and a hook error does not block (measured in Windows Sandbox, claude 2.1.282).
+    $claudeWindows = ConvertTo-WindowsClaudeHooks -Document $freshHooks
+    $claudeWindowsHooks = @(foreach ($p in @($claudeWindows.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { $h } } })
+    $notExec = @($claudeWindowsHooks | Where-Object { [string]$_.command -cne '${CLAUDE_PLUGIN_ROOT}/bin/library.exe' -or -not $_.PSObject.Properties['args'] -or [string]@($_.args)[0] -cne 'hook' })
+    Check ($claudeWindowsHooks.Count -eq 4 -and $notExec.Count -eq 0) "the Windows Claude render runs bin/library.exe in exec form for every hook ($(@($claudeWindowsHooks | ForEach-Object { [string]$_.command + ' ' + (@($_.args) -join ' ') }) -join ' | '))"
+    $claudeDeskArgs = @(@(@($claudeWindows.hooks.UserPromptSubmit)[0].hooks)[0].args) -join ' '
+    Check ($claudeDeskArgs -ceq "hook desk-context --reader-tool-prefix $pluginPrefix") "the Windows Claude render keeps each hook's arguments, one per element ($claudeDeskArgs)"
+    Check ((ConvertTo-PluginCanonicalJson (ConvertTo-WindowsClaudeHooks -Document $claudeWindows)) -ceq (ConvertTo-PluginCanonicalJson $claudeWindows)) 'the Windows Claude render is idempotent'
+    Check ((ConvertTo-PluginCanonicalJson $freshHooks) -cne (ConvertTo-PluginCanonicalJson $claudeWindows)) 'the Claude render did not rewrite the document it was handed'
     $stage = Join-Path ([IO.Path]::GetTempPath()) ("plugin-render-" + [guid]::NewGuid().ToString('N'))
     try {
         foreach ($platform in @('win-x64', 'linux-x64')) {
             $root = Join-Path $stage $platform
             [void](New-Item -ItemType Directory -Path (Join-Path $root '.codex-plugin') -Force)
+            [void](New-Item -ItemType Directory -Path (Join-Path $root '.claude-plugin/hooks') -Force)
             Copy-Item -LiteralPath (Join-Path $Workspace '.codex-plugin/hooks.json') -Destination (Join-Path $root '.codex-plugin/hooks.json')
+            Copy-Item -LiteralPath (Join-Path $Workspace '.claude-plugin/hooks/hooks.json') -Destination (Join-Path $root '.claude-plugin/hooks/hooks.json')
             $rewritten = @(Write-ReleasePluginFiles -StageRoot $root -Platform $platform)
+            $stagedClaude = [IO.File]::ReadAllText((Join-Path $root '.claude-plugin/hooks/hooks.json')) | ConvertFrom-Json
+            $stagedClaudeDesk = @(@($stagedClaude.hooks.UserPromptSubmit)[0].hooks)[0]
+            if ($platform -like 'win-*') {
+                Check ($rewritten -contains '.claude-plugin/hooks/hooks.json' -and $stagedClaudeDesk.PSObject.Properties['args'] -and [string]$stagedClaudeDesk.command -ceq '${CLAUDE_PLUGIN_ROOT}/bin/library.exe') "a $platform release renders Claude's hooks in exec form ($([string]$stagedClaudeDesk.command))"
+            } else {
+                Check (-not $stagedClaudeDesk.PSObject.Properties['args'] -and [string]$stagedClaudeDesk.command -cmatch '^"\$\{CLAUDE_PLUGIN_ROOT\}/bin/library" hook ') "a $platform release keeps Claude's committed spelling ($([string]$stagedClaudeDesk.command))"
+            }
             # PARSED, NOT SEARCHED: Windows PowerShell's ConvertTo-Json writes `&` as &, which is the
             # same JSON string and a different byte sequence.
             $staged = [IO.File]::ReadAllText((Join-Path $root '.codex-plugin/hooks.json')) | ConvertFrom-Json
             $stagedDesk = [string]@(@($staged.hooks.UserPromptSubmit)[0].hooks)[0].command
-            if ($platform -like 'win-*') { Check ($rewritten.Count -eq 1 -and $stagedDesk.StartsWith('& "${PLUGIN_ROOT}/bin/library"')) "a $platform release renders the Codex hooks with & ($stagedDesk)" }
+            if ($platform -like 'win-*') { Check ($rewritten.Count -eq 2 -and $stagedDesk.StartsWith('& "${PLUGIN_ROOT}/bin/library"')) "a $platform release renders the Codex hooks with & ($stagedDesk)" }
             else { Check ($rewritten.Count -eq 0 -and $stagedDesk.StartsWith('"${PLUGIN_ROOT}/bin/library"')) "a $platform release keeps the committed spelling ($stagedDesk)" }
         }
     } finally { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
@@ -854,6 +919,10 @@ function Invoke-PluginPackageSelfTest {
     Check ($state.faults.Count -eq 0) "the committed generated files match the canonical package ($($state.compared) of $($state.total) compared, $($state.shaped) shape-checked)$(if ($state.faults.Count) { ': ' + ($state.faults -join '; ') })"
 
     if ($script:SelfTestFailures) { throw "$($script:SelfTestFailures) plugin package self-test failure(s)" }
+    if (-not $askKernel) {
+        Write-Output "WARN: plugin package, $($state.compared) generated file(s) match the canonical Codex layout, but node is not on PATH, so no hook verb was checked against the kernel. Install Node 22+ to check them."
+        return
+    }
     Write-Output "passed: plugin package, $($state.compared) generated file(s) match the canonical Codex layout"
 }
 

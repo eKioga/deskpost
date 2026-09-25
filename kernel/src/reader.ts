@@ -32,7 +32,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { writeAtomicText } from './fsx.ts';
 import { readMarker, requireWorkspace } from './workspace.ts';
-import { readLocalProjectCatalog } from './collection.ts';
+import { openCollection, readLocalProjectCatalog } from './collection.ts';
 import { deskFileEntries, deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { resolveAgentClientProcess } from './procstart.ts';
 import { findOpenBookLines, formatFullTextResult } from './fulltext.ts';
@@ -157,7 +157,7 @@ function deskState(context: ReaderContext): DeskState {
   const booksFile = path.join(context.deskDirectory, deskFileName('books'));
   const projectsFile = path.join(context.deskDirectory, deskFileName('projects'));
   if (!fs.existsSync(booksFile) || !fs.statSync(booksFile).isFile()) refuse('Virtual Desk configuration is missing .open-books.');
-  const projectId = deskPin(context.stateDirectory);
+  const projectId = collectionPin(context);
   const openBooks = deskFileEntries(booksFile).map((line) => toBookRoot(line));
   if (new Set(openBooks).size !== openBooks.length) refuse('Virtual Desk open-book state contains duplicates.');
   if (!fs.existsSync(projectsFile) || !fs.statSync(projectsFile).isFile()) writeAtomicText(projectsFile, '');
@@ -170,7 +170,43 @@ function deskState(context: ReaderContext): DeskState {
 /** `Get-DeskProjectId`: the seat gate, then the pin, for a read that needs no Desk FILE. */
 function deskProjectId(context: ReaderContext): string {
   if (!context.deskDirectory) refuse(context.seatMessage);
-  return deskPin(context.stateDirectory);
+  return collectionPin(context);
+}
+
+/**
+ * THE COLLECTION A READ ADDRESSES, ON EITHER BACKEND (S46, ADR-0044). A workspace attached to its local
+ * collection has no Basic Memory pin -- a Tier 0 init writes none -- and asking for one refused every read
+ * of the default route. The marker says which backend the workspace is attached to, and it is the only
+ * authority: a stray `.library-project` in a local workspace is not a reason to reach for Basic Memory.
+ */
+function isLocalCollection(context: ReaderContext): boolean {
+  const marker = readMarker(context.workspace);
+  return marker !== null && String(marker['backend'] ?? '') === 'local';
+}
+
+function collectionPin(context: ReaderContext): string {
+  return isLocalCollection(context) ? openCollection(context.workspace).id : deskPin(context.stateDirectory);
+}
+
+/**
+ * One exact record of the collection, `readValidatedRecord`'s contract on either backend: 'absent' for a
+ * record that is not there, the refusal the caller named for an empty one. A local record is resolved
+ * segment by segment in its on-disk spelling and must stay inside the collection, as a Shelf page must.
+ */
+async function readCollectionRecord(
+  context: ReaderContext,
+  projectId: string,
+  requested: string,
+  words: { rejected: string; unreadable: string; different: string; empty: string },
+): Promise<{ content: string } | 'absent'> {
+  if (!isLocalCollection(context)) return readValidatedRecord(await remoteSession(context.workspace), projectId, requested, words);
+  const collectionRoot = path.resolve(openCollection(context.workspace).root);
+  const exact = exactRelativePath(collectionRoot, `${requested}.md`);
+  if (!exact || !fs.statSync(exact).isFile()) return 'absent';
+  if (!path.resolve(exact).startsWith(collectionRoot + path.sep)) refuse(words.different);
+  const content = fs.readFileSync(exact, 'utf8').replace(/^\uFEFF/, '');
+  if (!content.trim()) refuse(words.empty);
+  return { content };
 }
 
 // --- Books -----------------------------------------------------------------------------------------------
@@ -218,7 +254,7 @@ async function readValidatedBookPage(context: ReaderContext, slug: string, page:
   if (roots.length !== 1) refuse(`Book '${slug}' is ambiguous; close one location before reading.`);
   const bookRoot = splitBookRoot(roots[0]!);
   if (bookRoot.collection === 'shelf') return readShelfBookPage(context.workspace, bookRoot.wikiRoot, page);
-  const record = await readValidatedRecord(await remoteSession(context.workspace), state.projectId, `${bookRoot.wikiRoot}/${page}`, {
+  const record = await readCollectionRecord(context, state.projectId, `${bookRoot.wikiRoot}/${page}`, {
     rejected: 'The shared Library rejected this exact page request.',
     unreadable: 'The shared Library returned an unreadable page response.',
     different: 'The shared Library returned a different record; its content was withheld.',
@@ -240,7 +276,7 @@ function readShelfCatalog(workspace: string): string {
 async function readSharedBookCatalog(context: ReaderContext, requested: string): Promise<string> {
   const state = deskState(context);
   const what = requested === 'books/README' ? 'Book Catalog' : `record ${requested}.md`;
-  const record = await readValidatedRecord(await remoteSession(context.workspace), state.projectId, requested, {
+  const record = await readCollectionRecord(context, state.projectId, requested, {
     rejected: `The shared Library rejected the exact ${what} request.`,
     unreadable: `The shared Library returned an unreadable ${what} response.`,
     different: 'The shared Library returned a different record; its content was withheld.',
@@ -282,7 +318,7 @@ async function readValidatedBookCatalog(context: ReaderContext, location: string
 async function readSharedProjectCatalog(context: ReaderContext, shelf: 'active' | 'archive'): Promise<string> {
   const projectId = deskProjectId(context);
   const requested = shelf === 'archive' ? 'archive/projects/README' : 'projects/README';
-  const record = await readValidatedRecord(await remoteSession(context.workspace), projectId, requested, {
+  const record = await readCollectionRecord(context, projectId, requested, {
     rejected: 'The shared Library rejected this exact Project Catalog request.',
     unreadable: 'The shared Library returned an unreadable Project Catalog response.',
     different: 'The shared Library returned a different Project Catalog record; its content was withheld.',
@@ -309,7 +345,7 @@ async function readSharedProjectPage(context: ReaderContext, slug: string, page:
   if (roots.length === 0) refuse(`Project '${slug}' is closed.`);
   if (roots.length !== 1) refuse(`Project '${slug}' is ambiguous; close one location before reading.`);
   const requested = `${roots[0]}/${page}`;
-  const record = await readValidatedRecord(await remoteSession(context.workspace), state.projectId, requested, {
+  const record = await readCollectionRecord(context, state.projectId, requested, {
     rejected: 'The shared Library rejected this exact Project page request.',
     unreadable: 'The shared Library returned an unreadable Project page response.',
     different: 'The shared Library returned a different Project record; its content was withheld.',
@@ -434,7 +470,7 @@ async function suggestActiveProjects(context: ReaderContext, query: string): Pro
   const projectId = deskProjectId(context);
   const suggestions: { slug: string; title: string; score: number; matched: string[]; purpose: string }[] = [];
   for (const entry of entries) {
-    const record = await readValidatedRecord(await remoteSession(context.workspace), projectId, `projects/${entry.slug}/_project`, {
+    const record = await readCollectionRecord(context, projectId, `projects/${entry.slug}/_project`, {
       rejected: 'The shared Library rejected this exact active Project root request.',
       unreadable: 'The shared Library returned an unreadable active Project root response.',
       different: 'The shared Library returned a different active Project record; its content was withheld.',
@@ -500,20 +536,17 @@ export async function answerReaderTool(context: ReaderContext, tool: string, arg
     case 'read_project_catalog': {
       // A Project Hub lives in the collection the workspace is attached to: the local collection in Tier 0
       // (ADR-0030, S30), which the adapter has no counterpart for, and Basic Memory otherwise (S33).
-      const marker = readMarker(context.workspace);
-      if (marker !== null && String(marker['backend'] ?? '') === 'local') return readLocalProjectCatalog(context.workspace);
       const shelf = args.optional('shelf');
-      return readSharedProjectCatalog(context, shelf !== null && shelf !== undefined && String(shelf).toLowerCase() === 'archive' ? 'archive' : 'active');
+      const archived = shelf !== null && shelf !== undefined && String(shelf).toLowerCase() === 'archive';
+      if (!archived && isLocalCollection(context)) return readLocalProjectCatalog(context.workspace);
+      return readSharedProjectCatalog(context, archived ? 'archive' : 'active');
     }
     case 'suggest_active_projects': {
-      const query = args.required('query');
-      // THE LOCAL COLLECTION HAS NO ORACLE HERE: the adapter reads Hubs from Basic Memory only, so a Tier 0
-      // workspace is refused by name rather than answered by a rule no row compares.
-      const marker = readMarker(context.workspace);
-      if (marker !== null && String(marker['backend'] ?? '') === 'local') {
-        refuse('suggest_active_projects reads the active Project Hubs from Basic Memory, and this workspace is attached to the local collection. Use read_project_catalog to see its Hubs.');
-      }
-      return suggestActiveProjects(context, query);
+      // THE LOCAL COLLECTION IS RANKED BY THE SAME RULE (S46): until ADR-0044 a Tier 0 workspace was refused
+      // here by name, because no oracle reads a local collection; on the default route that refusal was the
+      // first answer a stranger got. The rule is the adapter's, compared on Basic Memory by two shared rows,
+      // and the records it reads come from whichever collection the workspace is attached to.
+      return suggestActiveProjects(context, args.required('query'));
     }
     case 'read_open_project_page':
       return (await readSharedProjectPage(context, args.required('slug'), args.required('page'))).content;

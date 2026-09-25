@@ -294,11 +294,11 @@ function readJsonFileOrRefusal(
   }
 }
 
-function jsonMergePlan(filePath: string, desired: Record<string, unknown>): PlanResult {
+function jsonMergePlan(filePath: string, desired: Record<string, unknown>, releaseOwned?: (existing: unknown) => unknown): PlanResult {
   const read = readJsonFileOrRefusal(filePath);
   if (!read.ok) return { action: 'refuse', content: null, reason: read.reason };
 
-  const result = mergeLibraryJsonValue(read.value, desired, path.basename(filePath));
+  const result = mergeLibraryJsonValue(releaseOwned ? releaseOwned(read.value) : read.value, desired, path.basename(filePath));
   if (result.conflicts.length) {
     return {
       action: 'refuse',
@@ -356,6 +356,39 @@ function kernelBinary(programRoot: string): string {
   return path.join(programRoot, 'bin', 'library').replace(/\\/g, '/').replace(/\/+/g, '/');
 }
 
+/**
+ * `.mcp.json` with the Library's OWN adapter entry taken out, so a compiled kernel's reader replaces it rather than
+ * meeting it as a conflict (S46). An entry is the Library's when it is `powershell.exe` running the program's
+ * `.claude/adapters/Validated-BookReader.ps1` -- what an earlier release's init wrote. Anything else under the same
+ * name is someone's own, and the merge still refuses it.
+ */
+function withoutLibraryAdapterEntry(existing: unknown): unknown {
+  if (!isPlainObject(existing) || !isPlainObject(existing['mcpServers'])) return existing;
+  const servers = existing['mcpServers'] as Record<string, unknown>;
+  const entry = servers['validated-book-reader'];
+  if (!isPlainObject(entry) || String(entry['command'] ?? '').toLowerCase() !== 'powershell.exe' || !Array.isArray(entry['args'])) return existing;
+  const ours = (entry['args'] as unknown[]).some((arg) => /(^|\/)\.claude\/adapters\/validated-bookreader\.ps1$/i.test(String(arg).replace(/\\/g, '/')));
+  if (!ours) return existing;
+  const rest: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(servers)) if (name !== 'validated-book-reader') rest[name] = value;
+  return { ...existing, mcpServers: rest };
+}
+
+/**
+ * WHICH READER A WORKSPACE IS GIVEN (S46, ADR-0044). The PowerShell adapter reads Books and Hubs from Basic
+ * Memory only, so a workspace attached to its LOCAL collection that is handed the adapter can open a seat and
+ * never read its own Project: S7 in Windows Sandbox, a Claude session's first Project read refused "Virtual Desk
+ * configuration is missing .library-project". So the kernel serves the reader wherever it can -- on a POSIX host,
+ * which has no PowerShell, and on Windows for a local collection when this program is a compiled release, whose
+ * binary is there to name. A Basic Memory workspace on Windows keeps the adapter, and so does a kernel run from
+ * source, which has no binary to register.
+ */
+function kernelServesReader(programRoot: string | undefined, mcpUrl: string): boolean {
+  if (POSIX_BINDINGS) return true;
+  if (!programRoot || mcpUrl.trim()) return false;
+  return fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
+}
+
 function binaryHookCommand(programRoot: string, verb: string, readerToolPrefix: string): string {
   const command = `"${kernelBinary(programRoot)}" hook ${verb}`;
   return readerToolPrefix ? `${command} --reader-tool-prefix ${readerToolPrefix}` : command;
@@ -394,8 +427,8 @@ function posixHookRegistration(hooks: unknown, programRoot: string): Record<stri
   return Object.keys(out).length ? out : null;
 }
 
-function desiredMcpServers(adapterPath: string, stateDirectory?: string, programRoot?: string): Record<string, unknown> {
-  if (POSIX_BINDINGS && programRoot) {
+function desiredMcpServers(adapterPath: string, stateDirectory?: string, programRoot?: string, kernelReader: boolean = POSIX_BINDINGS): Record<string, unknown> {
+  if (kernelReader && programRoot) {
     const serve = ['mcp', 'serve'];
     if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory);
     return { mcpServers: { 'validated-book-reader': { command: kernelBinary(programRoot), args: serve } } };
@@ -620,9 +653,10 @@ export function newCodexWorkspaceConfigDocument(
   adapterPath: string,
   stateDirectory?: string,
   programRoot?: string,
+  kernelReader: boolean = POSIX_BINDINGS,
 ): string {
   if (!fs.existsSync(templatePath)) throw new Error(`Required Codex template is missing: ${templatePath}`);
-  if (POSIX_BINDINGS && programRoot) {
+  if (kernelReader && programRoot) {
     const serve = ['mcp', 'serve'];
     if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory.replace(/\\/g, '/'));
     let posix = fs.readFileSync(templatePath, 'utf8').replace(/^﻿/, '');
@@ -890,18 +924,20 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
   const adapter = path.join(workspace, '.claude', 'adapters', 'Validated-BookReader.ps1');
   const programAdapter = path.join(programRoot, '.claude', 'adapters', 'Validated-BookReader.ps1');
   let desiredServers: Record<string, unknown> | null = null;
+  const kernelReader = kernelServesReader(programRoot, resolvedMcpUrl);
   if (fs.existsSync(adapter)) {
     desiredServers = desiredMcpServers('.claude/adapters/Validated-BookReader.ps1');
-  } else if (!isProgramRoot && (POSIX_BINDINGS || fs.existsSync(programAdapter))) {
+  } else if (!isProgramRoot && (kernelReader || fs.existsSync(programAdapter))) {
     desiredServers = desiredMcpServers(
       programAdapter.replace(/\\/g, '/'),
       path.join(workspace, '.claude').replace(/\\/g, '/'),
       programRoot,
+      kernelReader,
     );
   }
   if (desiredServers !== null) {
     const mcpPath = path.join(workspace, '.mcp.json');
-    const mcpPlan = jsonMergePlan(mcpPath, desiredServers);
+    const mcpPlan = jsonMergePlan(mcpPath, desiredServers, kernelReader ? withoutLibraryAdapterEntry : undefined);
     if (mcpPlan.action === 'refuse') refusals.push(mcpPlan.reason!);
     else plans.push({ path: mcpPath, name: '.mcp.json', action: mcpPlan.action, content: mcpPlan.content });
   }
@@ -959,7 +995,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
       let codexAdapter: string | null = null;
       let codexStateDirectory: string | undefined;
       if (fs.existsSync(adapter)) codexAdapter = adapter;
-      else if (POSIX_BINDINGS || fs.existsSync(programAdapter)) {
+      else if (kernelReader || fs.existsSync(programAdapter)) {
         codexAdapter = programAdapter;
         codexStateDirectory = path.join(workspace, '.claude');
       }
@@ -967,7 +1003,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
         const codexConfigPath = path.join(workspace, '.codex', 'config.toml');
         const plan = codexConfigPlan(
           codexConfigPath,
-          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, programRoot),
+          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, programRoot, kernelReader),
         );
         if (plan.action === 'refuse') refusals.push(plan.reason!);
         else {

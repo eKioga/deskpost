@@ -6,16 +6,27 @@
  * Measured in a clean Linux distro: `library desk` with no seat told a reader with no PowerShell to use a
  * `.ps1`. So where a sentence LEAVES the kernel on POSIX -- a refusal, a denial, the Desk hook's text, a
  * result's remedy fields -- each helper invocation with a ported verb is rewritten to that verb, and one with
- * no port is named as PowerShell-only rather than offered as a thing to do. On Windows nothing changes: the
- * sentences are the oracle's, and the acceptance matrix compares them there. Kernel self-test section 23.
+ * no port is named as PowerShell-only rather than offered as a thing to do. Kernel self-test section 23.
+ *
+ * A COMPILED KERNEL ON WINDOWS REWRITES TOO (S47, the reader's ruling). Measured in S7's Windows Sandbox: the
+ * plugin's Read guard told a reader who installed the kernel to run `tools/Set-VirtualDesk.ps1`, a path relative
+ * to a workspace that has no `tools/`. So a compiled kernel says the ported verb there as well, and a helper with
+ * no port is named by its full path in the installed program, in the form a default execution policy runs. A
+ * kernel run from source on Windows keeps the oracle's sentences; the acceptance matrix, judging a compiled
+ * kernel, passes the oracle's sentence through this same rewrite before it compares (ADR-0045).
  *
  * NEVER APPLIED TO CONTENT: a page read through the reader is the reader's to return byte for byte, and a
  * note that quotes a helper is a note.
  */
 
-import type { PathFlavor } from './workspace.ts';
+import * as path from 'node:path';
+import { isCompiled, programRoot } from './programroot.ts';
 
-const HOST: PathFlavor = process.platform === 'win32' ? 'win32' : 'posix';
+/** How remedies are said: `win32` is the oracle's own words; `win32-compiled` is an installed kernel on Windows. */
+export type RemedyHost = 'posix' | 'win32' | 'win32-compiled';
+
+export const REMEDY_HOST: RemedyHost = process.platform !== 'win32' ? 'posix' : isCompiled() ? 'win32-compiled' : 'win32';
+const HOST = REMEDY_HOST;
 
 /** A parameter value as the sentences spell one: a slug, a name, or a `<placeholder>`; never trailing punctuation. */
 const VALUE = String.raw`(?:<[^>\s]+>|[A-Za-z0-9_][A-Za-z0-9_.-]*[A-Za-z0-9_]|[A-Za-z0-9_]|\.(?=[\s)]|$))`;
@@ -67,15 +78,21 @@ const REWRITES: { helper: string; to: (parameterText: string) => string | null }
 
 const POWERSHELL_ONLY = ' (a PowerShell helper; this machine has no PowerShell to run it)';
 
-/** One sentence as this host should say it. Pure, and the identity on Windows. */
-export function hostRemedies(text: string, flavor: PathFlavor = HOST): string {
+/** An unported helper on an installed Windows kernel: its full path in the program, runnable as it stands. */
+function installedHelper(helper: string, rest: string, root: string): string {
+  return `powershell -ExecutionPolicy Bypass -File "${path.win32.join(root, 'tools', `${helper}.ps1`)}"${rest}`;
+}
+
+/** One sentence as this host should say it. Pure, and the identity for the oracle's own host. */
+export function hostRemedies(text: string, flavor: RemedyHost = HOST, root: string | null = null): string {
   if (flavor === 'win32') return text;
   let out = text;
   if (out.includes('.ps1')) {
     out = out.replace(new RegExp(String.raw`tools/([A-Za-z-]+)\.ps1(${PARAMETERS})`, 'g'), (whole: string, helper: string, rest: string) => {
       const rewrite = REWRITES.find((entry) => entry.helper === helper);
       const replaced = rewrite ? rewrite.to(rest) : null;
-      return replaced ?? whole + POWERSHELL_ONLY;
+      if (replaced !== null) return replaced;
+      return flavor === 'win32-compiled' ? installedHelper(helper, rest, root ?? programRoot()) : whole + POWERSHELL_ONLY;
     });
   }
   // The resolvers' own refusals name the PowerShell parameters; the kernel's are `--workspace` and `--seat`.
@@ -85,8 +102,8 @@ export function hostRemedies(text: string, flavor: PathFlavor = HOST): string {
 /** The fields of a result that carry a remedy, and only those: a result's content is never rewritten. */
 const REMEDY_KEYS = new Set(['next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext']);
 
-/** A result with its remedy fields said as this host should say them. Identity on Windows. */
-export function hostRemedyFields<T>(value: T, flavor: PathFlavor = HOST): T {
+/** A result with its remedy fields said as this host should say them. Identity for the oracle's own host. */
+export function hostRemedyFields<T>(value: T, flavor: RemedyHost = HOST): T {
   if (flavor === 'win32') return value;
   const walk = (node: unknown, key: string | null): unknown => {
     if (typeof node === 'string') return key !== null && REMEDY_KEYS.has(key) ? hostRemedies(node, flavor) : node;

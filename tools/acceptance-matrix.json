@@ -78,6 +78,36 @@
       "approved_on": "2026-09-19",
       "applies_to": ["*"],
       "match": { "field_pattern": "^result\\.program_version$" }
+    },
+    "kernel-serves-a-local-workspaces-reader": {
+      "reason": "S46, ADR-0044: a compiled kernel attached to its local collection registers itself -- bin/library mcp serve -- as the workspace's reader for Claude and Codex, where the PowerShell initializer registers its adapter, which reads Basic Memory only and so refused a Tier 0 seat's first Project read in Windows Sandbox. Only the two reader registrations differ; every other file init writes is compared. Judged by kernel self-test section 36, which launches the registered reader and reads a Project page through it.",
+      "approved_by": "the reader, S46, choosing to fix the Windows workspace reader with the init rows' delta",
+      "approved_on": "2026-09-24",
+      "applies_to": [
+        "workspace.init-creates-marker",
+        "workspace.init-is-idempotent",
+        "workspace.init-force-refreshes-managed-sections",
+        "workspace.init-leaves-a-workspace-its-checks-pass"
+      ],
+      "match": {
+        "field_pattern": "^effect\\.\\.(mcp\\.json|codex/config\\.toml)$",
+        "value_pattern": "validated-book-reader"
+      }
+    },
+    "kernel-replaces-the-library-adapter-entry": {
+      "reason": "S46: re-run over a workspace whose reader is the Library's own adapter entry, the kernel replaces it with itself and reports that file merged where the PowerShell initializer reports it unchanged. files[2] is .mcp.json and files[6] .codex/config.toml in init's fixed order; only those two actions, and only between unchanged and merge.",
+      "approved_by": "the reader, S46, choosing to fix the Windows workspace reader with the init rows' delta",
+      "approved_on": "2026-09-24",
+      "applies_to": [
+        "workspace.init-creates-marker",
+        "workspace.init-is-idempotent",
+        "workspace.init-force-refreshes-managed-sections",
+        "workspace.init-leaves-a-workspace-its-checks-pass"
+      ],
+      "match": {
+        "field_pattern": "^result\\.files\\[(2|6)\\]\\.action$",
+        "value_pattern": "^(unchanged|merge)$"
+      }
     }
   },
   "excluded_helpers": {
@@ -1281,6 +1311,30 @@
       "fixture": "workspace-fresh",
       "powershell": { "steps": [ { "script": "tools/Enter-LibrarySeat.ps1", "args": ["-Seat", "{seat}", "-Create", "-Project", "tier-zero", "-Preflight", "-Json"] } ] },
       "kernel": { "steps": [ { "command": ["seat", "enter", "{seat}", "--create", "--project", "tier-zero", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
+    },
+    {
+      "id": "seat.tier0-reads-and-opens-its-local-collection",
+      "area": "seat",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "In a workspace attached to its local collection -- no Basic Memory endpoint and no pin -- a seat reads its own Project's pages and return briefing, opens and closes a second Project and a Shelf Book and reads them, reads the Book Catalog and a Book in the local collection, and is given Project suggestions; a Project or Book the local collection does not hold is refused at the Desk, a closed one at the read, and nothing writes a Basic Memory pin or endpoint on the way (S46, ADR-0044: S45 measured the release refusing the first Project read and the first Desk write for want of the pin a Tier 0 init never writes).",
+      "reason": "No oracle has a local collection: the PowerShell reader and Desk writer read Books and Hubs from Basic Memory only. Judged by section 35 of kernel/test/selftest.ts (S46), through the front door with no endpoint in the environment, so a read that reached for Basic Memory would refuse rather than answer. Red against rel45a, 17 of 25, and five planted defects each red on exactly the checks they reach.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "35" } },
+      "fixture": "workspace-fresh",
+      "powershell": { "steps": [ { "script": ".claude/adapters/Validated-BookReader.ps1", "args": ["-WorkspacePath", "{workspace}", "-Seat", "{seat}"], "stdin": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"read_open_project_page\",\"arguments\":{\"slug\":\"tier-zero\",\"page\":\"_project\"}}}" } ] },
+      "kernel": { "steps": [ { "command": ["mcp", "call", "read_open_project_page", "--slug", "tier-zero", "--page", "_project", "--workspace", "{workspace}", "--seat", "{seat}"] } ] }
+    },
+    {
+      "id": "workspace.tier0-init-registers-the-kernel-reader",
+      "area": "workspace",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A workspace `library init` attaches to its local collection is given the kernel as its reader -- `bin/library mcp serve`, for Claude and for Codex -- whenever the program is a compiled release, as a POSIX host always was; a Basic Memory workspace on Windows keeps the PowerShell adapter, and a kernel run from source, with no binary to name, keeps it too. The registered command, launched as a harness launches it, reads the seat's own Project over stdio (S46: S7 in Windows Sandbox found a Claude session's first Project read refused by the adapter, which has no local collection).",
+      "reason": "No oracle: the PowerShell initializer registers only the adapter, which is the defect. Judged by section 36 of kernel/test/selftest.ts (S46) against the kernel under test: the registration read back from the files init wrote, and the registered reader launched and asked for a Project page. Red against rel46a, 3 of 8.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "36" } },
+      "fixture": "workspace-fresh",
+      "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--json"] } ] }
     },
     {
       "id": "discovery.finds-pages-in-closed-books",

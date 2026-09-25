@@ -688,6 +688,104 @@ function Test-AcceptanceMatrixCoverage {
     @($problems)
 }
 
+# --- The installed kernel's remedies (S47, ADR-0045) ----------------------------------------------
+
+# A COMPILED KERNEL ON WINDOWS SAYS A REMEDY AS A COMMAND THE READER CAN RUN (kernel/src/remedy.ts): a
+# ported helper becomes its `library` verb, and one with no port is named by its full path in the
+# installed program. The oracle keeps its own sentences, so when the kernel under test is compiled the
+# PowerShell arm's sentences pass through THIS rewrite before the two are compared -- one rule, the
+# reader's ruling, rather than a delta per row. It is a second implementation, written from the kernel's
+# and never calling it, so the matrix judges the kernel's rewrite rather than repeating it. `$` in the
+# kernel's pattern is JavaScript's end of input, spelled `\z` here.
+$script:RemedyValue = '(?:<[^>\s]+>|[A-Za-z0-9_][A-Za-z0-9_.-]*[A-Za-z0-9_]|[A-Za-z0-9_]|\.(?=[\s)]|\z))'
+$script:RemedyKeys = @('next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext')
+
+function Get-AcceptanceRemedyParameters([string]$Text) {
+    $found = @{}
+    foreach ($match in [regex]::Matches($Text, "-([A-Za-z]+)(?:\s+($($script:RemedyValue)))?")) {
+        $found[$match.Groups[1].Value.ToLowerInvariant()] = if ($match.Groups[2].Success) { $match.Groups[2].Value } else { '' }
+    }
+    $found
+}
+
+function ConvertTo-AcceptanceInstalledRemedy {
+    <#
+    .SYNOPSIS
+        One sentence as a compiled kernel on Windows says it. -ProgramRoot is spelled as the kernel arm's
+        text is normalised, `<program>`.
+    #>
+    param([AllowEmptyString()][string]$Text, [string]$ProgramRoot = '<program>')
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $out = $Text
+    if ($out.Contains('.ps1')) {
+        $pattern = "tools/([A-Za-z-]+)\.ps1((?:\s+-[A-Za-z]+(?:\s+$($script:RemedyValue))?)*)"
+        $out = [regex]::Replace($out, $pattern, {
+                param($m)
+                $helper = $m.Groups[1].Value
+                $rest = $m.Groups[2].Value
+                $given = Get-AcceptanceRemedyParameters $rest
+                $named = { param($key, $default) if ($given.ContainsKey($key)) { $given[$key] } else { $default } }
+                $replaced = switch -CaseSensitive ($helper) {
+                    'Set-VirtualDesk' {
+                        $action = (& $named 'action' 'open').ToLowerInvariant()
+                        if (@('open', 'close', 'clear') -notcontains $action) { $null }
+                        elseif ($action -eq 'clear') { 'library desk clear' }
+                        else {
+                            $parts = @('library desk', $action, $(if ((& $named 'kind' 'book').ToLowerInvariant() -eq 'project') { 'project' } else { 'book' }), (& $named 'slug' '<slug>'))
+                            if ((& $named 'location' '').ToLowerInvariant() -eq 'shelf') { $parts += '--location shelf' }
+                            if ((& $named 'shelf' '').ToLowerInvariant() -eq 'archive') { $parts += '--shelf archive' }
+                            $parts -join ' '
+                        }
+                    }
+                    'Enter-LibrarySeat' { "library seat enter $(& $named 'seat' '<name>')" + $(if ($given['project']) { " --create --project $($given['project'])" } else { '' }) }
+                    'Start-LibrarySeat' { "library seat start $(& $named 'seat' '<name>')" + $(if ($given['project']) { " --project $($given['project'])" } else { '' }) }
+                    'Retire-Seat' { "library seat retire $(& $named 'seat' '<name>')" }
+                    'Get-DeskOverview' { 'library desk' }
+                    'ShelfCatalog' { if ($given.ContainsKey('render')) { 'library shelf render' } else { $null } }
+                    'NotebookIndex' { if ($given.ContainsKey('render')) { 'library notebook render' } else { $null } }
+                    'Add-ShelfNote' { "library capture $(& $named 'bookslug' '<book>') --title <title> --body <text>" }
+                    default { $null }
+                }
+                if ($null -ne $replaced) { return [string]$replaced }
+                "powershell -ExecutionPolicy Bypass -File `"$ProgramRoot\tools\$helper.ps1`"$rest"
+            })
+    }
+    $out = [regex]::Replace($out, '\bpass -WorkspacePath\b', 'pass --workspace')
+    [regex]::Replace($out, '\bpass -Seat\b', 'pass --seat')
+}
+
+function ConvertTo-AcceptanceInstalledRemedyFields {
+    <# A result with its remedy fields rewritten, as the kernel's hostRemedyFields walks one; content is never touched. #>
+    param($Value, [string]$Key = $null, [string]$ProgramRoot = '<program>', [switch]$InError)
+    # EVERY VALUE IS RETURNED UNWRAPPED (S47, measured). A string that comes back from a pipeline is wrapped in a
+    # PSObject, and Windows PowerShell 5.1 serialises a wrapped string as `{"Length":7}`; and `-is [pscustomobject]`
+    # is true of ANY wrapped value, a string or a number included. So the base object is taken first, and a custom
+    # object is recognised by its real type.
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [psobject] -and $Value.psobject.BaseObject -isnot [Management.Automation.PSCustomObject]) { $Value = $Value.psobject.BaseObject }
+    if ($Value -is [string]) {
+        # A reader tool's ERROR text is a remedy too (kernel/src/reader.ts: `if (isError) text = hostRemedies(text)`).
+        if (($null -ne $Key -and $script:RemedyKeys -ccontains $Key) -or ($InError -and $Key -ceq 'text')) { return [string](ConvertTo-AcceptanceInstalledRemedy -Text $Value -ProgramRoot $ProgramRoot) }
+        return [string]$Value
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        $copy = [ordered]@{}
+        $inError = $InError -or ($Value.Contains('isError') -and $Value['isError'] -eq $true)
+        foreach ($name in @($Value.Keys)) { $copy[$name] = ConvertTo-AcceptanceInstalledRemedyFields -Value $Value[$name] -Key ([string]$name) -ProgramRoot $ProgramRoot -InError:$inError }
+        return $copy
+    }
+    if ($Value -is [Management.Automation.PSCustomObject]) {
+        $copy = [ordered]@{}
+        $inError = $InError -or ($null -ne $Value.PSObject.Properties['isError'] -and $Value.isError -eq $true)
+        foreach ($property in $Value.PSObject.Properties) { $copy[$property.Name] = ConvertTo-AcceptanceInstalledRemedyFields -Value $property.Value -Key $property.Name -ProgramRoot $ProgramRoot -InError:$inError }
+        return [pscustomobject]$copy
+    }
+    if ($Value -is [Collections.IEnumerable]) {
+        return , @(@($Value) | ForEach-Object { ConvertTo-AcceptanceInstalledRemedyFields -Value $_ -Key $Key -ProgramRoot $ProgramRoot -InError:$InError })
+    }
+    $Value
+}
+
 # --- Normalisation --------------------------------------------------------------------------------
 
 function Get-AcceptanceNormalisationTokens {

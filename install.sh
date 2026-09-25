@@ -11,7 +11,8 @@
 #   DESKPOST_INSTALL_ROOT  defaults to ${XDG_DATA_HOME:-$HOME/.local/share}/deskpost
 #   DESKPOST_BIN_DIR       where the `library` symlink goes; defaults to $HOME/.local/bin
 #   DESKPOST_WORKSPACE     the workspace `library doctor` reports on
-#   DESKPOST_SKIP_PLUGIN   set to 1 to skip the marketplace and plugin install
+#   DESKPOST_PLUGIN        set to 1 to also register the marketplace and install the Claude Code plugin;
+#                          opt-in since S47, because `library init` registers a workspace's own guards
 #   DESKPOST_ROLLBACK      set to 1 to switch back to the previously installed version
 #
 # FIRST RUN ON LINUX 2026-09-23 (S42), in a clean WSL2 Ubuntu 24.04 distro logged in as root, with git,
@@ -153,7 +154,7 @@ switch_link "$version" "$previous" "$actual"
 say "library now runs $version ($BIN_DIR/library)"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "$BIN_DIR is not on PATH; add it to your shell profile." ;; esac
 
-if [ "${DESKPOST_SKIP_PLUGIN:-0}" != 1 ]; then
+if [ "${DESKPOST_PLUGIN:-0}" = 1 ]; then
   if command -v claude >/dev/null 2>&1; then
     if claude plugin marketplace add "$INSTALL_ROOT/current" && claude plugin install deskpost@deskpost; then
       say "Claude Code plugin installed from $INSTALL_ROOT/current"

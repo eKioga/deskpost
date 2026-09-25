@@ -685,6 +685,19 @@ Invoke-Check 'codex.delegation-runs-hooks' {
     $surfaces = @('docs/librarian-operation-playbooks.md', 'docs/model-division-of-labor.md')
     $trustFlag = '--dangerously-bypass-hook-trust'
 
+    # THE `\r?` BEFORE `$` IS THE S45 FIX (defect family 3 in .claude/rules/library-development.md). In
+    # .NET a multiline `$` matches before `\n` and never before `\r`, so on a CRLF checkout -- a fresh
+    # clone under Git for Windows' default core.autocrlf=true, which Windows Sandbox measured -- this
+    # pattern matched nothing and the check failed as "the recipe moved". The planted lines are its
+    # control: both line endings must match, or the pattern has gone blind and says so here.
+    $recipePattern = '(?m)^[ \t]*codex\s+exec\s+[^\r\n]*--sandbox\s+workspace-write[^\r\n]*\r?$'
+    $planted = "prose`n   codex exec --sandbox workspace-write $trustFlag -c x=1`nmore`n"
+    foreach ($ending in @("`n", "`r`n")) {
+        if ([regex]::Matches($planted.Replace("`n", $ending), $recipePattern).Count -ne 1) {
+            throw "the delegation-command pattern no longer matches a planted recipe line ending $(if ($ending.Length -eq 2) { 'CRLF' } else { 'LF' }), so this check cannot read a checkout with those line endings"
+        }
+    }
+
     $commandCount = 0
     $unguarded = [Collections.Generic.List[string]]::new()
     $silent = [Collections.Generic.List[string]]::new()
@@ -697,7 +710,7 @@ Invoke-Check 'codex.delegation-runs-hooks' {
         # The delegation COMMAND, not prose that merely mentions codex exec. Anchored on the sandbox
         # flag every documented launch carries, so a rewrite that drops the sandbox is reported as a
         # missing command rather than passing as a command with nothing left to assert.
-        $found = @([regex]::Matches($text, '(?m)^[ \t]*codex\s+exec\s+[^\r\n]*--sandbox\s+workspace-write[^\r\n]*$'))
+        $found = @([regex]::Matches($text, $recipePattern))
         if (-not $found.Count) {
             throw "$relative carries no delegation command for this check to read; the recipe moved and the assertion is now blind."
         }
@@ -5902,7 +5915,13 @@ Invoke-Check 'recovery.routes' {
 # migration killed at every step on both sides of each journal write -- resumed to the reference tree
 # and rolled back to the legacy one. Five minutes, which is why it is a suite and not a -Fast check.
 Invoke-Check 'notebook.migration' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-NotebookMigration.ps1') 2>&1
+    # WARN WITHOUT NODE, as kernel.selftest and acceptance.kernel-verbs-exist do and for their reason: the
+    # suite drives the kernel, and a contributor without Node cannot run it. It failed here until S45,
+    # when a fresh clone in Windows Sandbox -- following the README, which asks for no Node -- met it.
+    if (-not (Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue)) {
+        return 'WARN: node is not on PATH, so the notebook migration suite did not run. Install Node 22+ to run it.'
+    }
+    $out =& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-NotebookMigration.ps1') 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     [string]($out | Select-Object -Last 1)
 }

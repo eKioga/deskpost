@@ -1,7 +1,7 @@
 # Deskpost
 
-**Status: Windows preview (`v0.1.0`).** Usable, and narrow on purpose — see
-[Prerequisites](#prerequisites) before you clone.
+**Status: Windows preview.** Usable, and narrow on purpose — see [Prerequisites](#prerequisites)
+before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -23,45 +23,58 @@ of `docs/` is design records, written for whoever is changing the code.
 
 ## Prerequisites
 
-- **Windows 10 or 11.** This preview is Windows-only. Cross-platform arrives with the TypeScript
-  kernel; see [Roadmap](#roadmap).
-- **Windows PowerShell 5.1**, which ships with Windows. Nothing to install.
-- **Claude Code or Codex.** Both are supported and both route through the same validated reader.
-- **A Basic Memory endpoint. Required in v0.** Deskpost keeps its shared collection there. A
-  workspace with no endpoint configured can open a Desk but reaches no shared Book or Project Hub.
-  A local collection that needs no server is Tier 0, and it arrives with the TypeScript kernel, not
-  before.
+- **Windows 10 or 11.**
+- **Claude Code or Codex**, installed and signed in. Both are supported and both read through the
+  same validated reader.
+
+That is all. Your Library keeps its Books and Project Hubs in a folder inside the workspace, on
+your own disk, with no server and no account beyond your assistant's.
 
 ## Install
 
-A fresh Windows install refuses to run PowerShell scripts, and every helper here is one. Allow scripts you
-run yourself, once, with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run a single helper as
-`powershell -ExecutionPolicy Bypass -File <helper>`.
+In PowerShell:
 
 ```powershell
-git clone https://github.com/eKioga/deskpost.git
-cd deskpost
-git config core.hooksPath .githooks
-tools/Initialize-CodexLibrary.ps1 -McpUrl <your-basic-memory-url> -CollectionId <your-collection-id>
+& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1)))
 ```
 
-Then open the folder as your harness project and trust its configuration.
+The installer checks the download against its published checksum, puts the program in
+`%LOCALAPPDATA%\deskpost` and adds its `bin` folder to your PATH. It finishes by running
+`library doctor`, and its result is the install's result. Open a new terminal afterwards so the
+PATH change takes effect.
 
-`git config core.hooksPath .githooks` installs the pre-commit and commit-msg hooks. The initializer
-also sets it when run inside a checkout, so the explicit line is belt and braces for anyone who runs
-the hooks before the initializer.
+Then create your Library — a workspace folder, wherever you like — and your first Project and Seat:
 
-**The code carries no deployment.** There is no endpoint, no collection id and no share path
-anywhere in the tree — a clone knows nothing about anyone's network, and a static check
-(`public.no-deployment-defaults`) fails the build if one ever reappears. The initializer writes
-gitignored files under `.claude/` and renders the gitignored `.codex/config.toml` and
-`.codex/hooks.json` from tracked, path-free templates. Every helper resolves those values through
-one chain — an explicit argument, then `AI_LIBRARY_MCP_URL` / `AI_LIBRARY_PROJECT_ID` /
-`LIBRARY_SHARED_COLLECTION_ROOT`, then the generated state — and refuses naming all three routes if
-you configure none of them, rather than trying an address that is not yours.
+```powershell
+library init $HOME\Library
+cd $HOME\Library
+library hub new my-project --title "My project"
+library seat start me --project my-project
+```
 
-Re-run the initializer after moving the folder. A Codex plugin is not required; any future plugin is
-an optional adapter over the same core.
+`library init` lays out the workspace: the Notebook, the Shelf with its Holding Shelf and Report
+Inbox, and the local collection your Projects live in. `seat start` creates the seat `me`, opens
+`my-project` on its Desk, and starts Claude Code there (`--command codex` for Codex). Next time,
+`library seat start me` is enough.
+
+The checkout of this repository is the program, not a Library: cloning it gives you the source, and
+`library init` is what makes a workspace.
+
+## Sharing a collection across machines (optional)
+
+A Library can keep its collection on a [Basic Memory](https://github.com/basicmachines-co/basic-memory)
+server instead of on local disk, so seats on several machines work from one set of Books and
+Projects. You need:
+
+- a Basic Memory server reachable from every machine over MCP (an `http` or `https` URL), and a
+  project on it for the collection;
+- **a filesystem path to that project's storage folder** — a network share, for instance — from
+  each machine that writes to it. Creating a Project or publishing a Book takes a lock beside the
+  collection's files, which is what keeps two machines from writing the same page at once; a
+  server reached only by its URL is readable but not writable;
+- the PowerShell setup, for now: `tools/Initialize-CodexLibrary.ps1 -McpUrl <url> -CollectionId <id>`
+  run from a clone of this repository. `library init --mcp-url` records the endpoint but does not
+  yet configure the helpers that read it.
 
 ## Using it
 
@@ -70,13 +83,14 @@ Before anything consequential — publishing, triage, archive, or a reset — it
 [`docs/librarian-operation-playbooks.md`](docs/librarian-operation-playbooks.md) and shows you a
 preflight with a `plan_id` you approve. Nothing consequential happens without that.
 
-Run the checks yourself any time:
+Run the checks yourself any time with `library doctor` in your Library. In a clone of this
+repository, the gate the pre-commit hook fires is:
 
 ```powershell
 tools/Invoke-LibraryChecks.ps1 -Fast
 ```
 
-That is the same gate the pre-commit hook fires, and it takes about twenty seconds. The bare full
+It takes about twenty seconds. The bare full
 run spawns every helper's self-test and takes twenty minutes or more — a phase gate, not something
 to sit and wait for.
 
@@ -98,13 +112,12 @@ what is in them.
 
 ## Roadmap
 
-- **v0.1 — this preview.** Windows, PowerShell, Basic Memory required, Claude Code and Codex.
+- **v0.1 — this preview.** Windows, Claude Code and Codex, a local collection by default and Basic
+  Memory as the optional shared route.
 - **Next.** The program separates from the workspace and ships as plugins, so one install serves
   many Libraries ([ADR-0027](docs/adr/0027-the-program-is-separate-from-the-workspace.md)).
-- **v1.** A TypeScript kernel shipped as a single binary, one-line install, macOS and Linux, and a
-  **local collection** so Deskpost runs with no server at all
-  ([ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md),
-  [ADR-0030](docs/adr/0030-a-collection-has-one-layout-and-two-backends.md)). A Seat carries its own
+- **v1.** macOS and Linux from the same single binary
+  ([ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md)). A Seat carries its own
   Notebook ([ADR-0029](docs/adr/0029-the-notebook-belongs-to-the-seat.md)).
 
 ## Contributing

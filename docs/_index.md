@@ -54,6 +54,8 @@ that decides where any given decision belongs.
 * [ADR-0041](adr/0041-library-init-lays-out-the-holding-shelf-and-report-inbox.md) - `library init` lays out the Holding Shelf and the Report Inbox as empty capture Books, renders the catalog and an empty master index, so a fresh workspace passes its own checks (effective Phase D)
 * [ADR-0042](adr/0042-a-plugin-guarded-workspace-a-posix-remedy-and-a-held-seat.md) - the enabled Claude Code plugin's hooks count as a workspace's guards and a hook is named by its script or the binary's verb; on POSIX a remedy names the ported `library` verb; `library seat start` and `status` are ported; and off Windows the seat claim is `flock(2)`, which until then excluded nothing (effective Phase D)
 * [ADR-0043](adr/0043-a-judge-drives-the-kernels-real-verbs.md) - an independent row is judged through the kernel's real verbs, never by a kernel judging itself; the kernel's atomic write retries a refused rename, jittered; `library triage batch` runs and resumes a plan for the local kinds; and a publication resume is measured over a genuinely interrupted publication (effective Phase D)
+* [ADR-0044](adr/0044-basic-memory-is-optional-and-the-public-install-is-local.md) - Basic Memory is optional and advertised, never a prerequisite; the public install defaults to a local collection (Tier 0), the reader's own workspaces keep their Basic Memory collection, and friction on the default route is a release defect (effective the next public release)
+* [ADR-0045](adr/0045-an-installed-kernel-says-its-own-remedies-and-the-plugin-is-opt-in.md) - A compiled kernel on Windows says a remedy as a command the reader can run, the matrix normalises the oracle side by one rule, and the Claude Code plugin is opt-in (S47)
 
 ## Guides
 

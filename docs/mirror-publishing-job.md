@@ -5,6 +5,11 @@
 > `refs/heads/attestations` and `refs/notes/published`, and `latest.json` reads
 > `{"result":"pass","snapshot":"00d55700f397243c","objects":250,"policy":1,"refs":[...]}`.
 >
+> **Since S47 the job publishes GitHub releases**, from a private `refs/releases/<tag>` it scans inside and
+> never forwards (see the scanner's release section). Measured on a fixture, `tools/mirror-fixture/`, and
+> not yet on the deployed job: 15 checks pass, and the scanner from before the step, given a planted
+> identity inside a compressed binary, passes it and forwards the release ref to the public side.
+>
 > **Getting there cost four failed runs and three defects that only running could find.** Runs #1-#3
 > fired on the cron before it was removed and died on a missing executable bit; run #4 published
 > `main` and `v0.1.0` and then died pushing a notes ref that had never been created. The sections
@@ -221,13 +226,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Assert the tools the scanner needs
-        # The scanner calls all five. A missing python3 would otherwise surface
+        # The scanner calls all six (tar since S47, to open a release). A missing python3 would otherwise surface
         # as a malformed issue body on the one run that had something to report.
         run: |
-          for t in git curl sha256sum grep python3; do
+          for t in git curl sha256sum grep python3 tar; do
             command -v "$t" >/dev/null || { echo "FATAL: $t is not on PATH in this container"; exit 1; }
           done
-          echo "all five tools present"
+          echo "all six tools present"
 
       - name: Scan the new objects and publish a clean snapshot
         env:
@@ -371,6 +376,61 @@ printf '%s\n' "$IDENTITY_ALLOWLIST" | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' 
   cut -d' ' -f2 "$WORK/snapshot"                          # ref names
 } > "$WORK/surface"
 
+# --- releases: scanned INSIDE, published as GitHub releases, never forwarded as refs (S47) ----------
+# A release travels on the private side as `refs/releases/<tag>`: one commit whose tree holds exactly
+# what tools/Build-KernelRelease.ps1 wrote from a clone of the tagged commit -- SHA256SUMS, the two
+# installers and the archives. A zip is compressed, so the blob scan above read nothing of what is
+# inside it; each new release is extracted here and every file in it, a compiled binary included,
+# joins the surface before anything is pushed. Measured in S47: a build started from the wrong
+# directory embedded the builder's profile path 65 times in the binary, which no tree scan could see.
+grep ' refs/releases/' "$WORK/snapshot" > "$WORK/release-refs" || :
+: > "$WORK/releases"
+while read -r sha ref; do
+  grep -qxF "$sha" "$LAST" && continue                 # published by an earlier run
+  tag="${ref#refs/releases/}"
+  case "$tag" in v[0-9]*) ;; *) echo "FATAL: $ref does not name a v<version> tag"; exit 1 ;; esac
+  grep -q " refs/tags/$tag\$" "$WORK/snapshot" || { echo "FATAL: release $tag has no tag $tag in this snapshot"; exit 1; }
+  tagged="$(git rev-parse "refs/tags/$tag^{commit}")"
+  dir="$WORK/rel/$tag"
+  mkdir -p "$dir/files" "$dir/x"
+  git archive "$sha" | tar -x -C "$dir/files"
+  # The tree holds only what a release publishes, and SHA256SUMS names every archive in it.
+  for f in "$dir/files"/* "$dir/files"/.[!.]*; do
+    [ -e "$f" ] || continue
+    n="$(basename "$f")"
+    case "$n" in SHA256SUMS|install.ps1|install.sh) ;; deskpost-*.zip) grep -q "  $n\$" "$dir/files/SHA256SUMS" || { echo "FATAL: release $tag carries $n, which SHA256SUMS does not name"; exit 1; } ;;
+      *) echo "FATAL: release $tag carries $n, which a release does not publish"; exit 1 ;; esac
+  done
+  ( cd "$dir/files" && sha256sum -c --strict --quiet SHA256SUMS ) || { echo "FATAL: release $tag does not match its SHA256SUMS"; exit 1; }
+  # Every archive is extracted, refused on an entry that climbs out, and must say it was built from
+  # the very commit its tag names -- so a release cannot be attached to a tag it was not built from.
+  python3 - "$dir/files" "$dir/x" "$tagged" <<'PY'
+import glob, json, os, sys, zipfile
+files, out, tagged = sys.argv[1], sys.argv[2], sys.argv[3]
+archives = sorted(glob.glob(os.path.join(files, 'deskpost-*.zip')))
+if not archives:
+    sys.exit('FATAL: the release carries no archive')
+for archive in archives:
+    z = zipfile.ZipFile(archive)
+    for name in z.namelist():
+        if name.startswith('/') or '\\' in name or '..' in name.split('/'):
+            sys.exit('FATAL: %s has an entry that leaves its folder: %s' % (os.path.basename(archive), name))
+    root = os.path.join(out, os.path.basename(archive)[:-4])
+    z.extractall(root)
+    records = glob.glob(os.path.join(root, '*', 'release.json'))
+    if len(records) != 1:
+        sys.exit('FATAL: %s holds %d release.json files, not one' % (os.path.basename(archive), len(records)))
+    built = json.load(open(records[0], encoding='utf-8-sig')).get('source_commit')
+    if built != tagged:
+        sys.exit('FATAL: %s was built from %s, and its tag names %s' % (os.path.basename(archive), built, tagged))
+PY
+  {
+    find "$dir" -type f | sed "s#^$dir/##"               # paths inside the release and its archives
+    find "$dir" -type f | while read -r f; do tr -d '\000' < "$f"; echo; done
+  } >> "$WORK/surface"
+  echo "$tag" >> "$WORK/releases"
+done < "$WORK/release-refs"
+
 # A denied term is excused only when an allowlisted string covers the WHOLE match. Approximated here
 # by removing every allowlisted string first, so a bare name inside a home directory still matches
 # while the same name in a byline does not.
@@ -418,6 +478,8 @@ fi
 # Ref by ref at the recorded SHA, rather than `push --mirror`, which would push whatever the refs
 # say at push time -- which is not what was scanned.
 while read -r sha ref; do
+  # A release ref carries binaries and is published as a GitHub release below, never as a ref.
+  case "$ref" in refs/releases/*) continue ;; esac
   git push --force "$(echo "$TARGET_REPO" | sed "s#https://#https://$MIRROR_GITHUB_PAT@#")" \
       "$sha:$ref"
 done < "$WORK/snapshot"
@@ -427,6 +489,45 @@ printf '{"result":"pass","snapshot":"%s","objects":%s,"policy":%s,"refs":[%s]}\n
   "$(cut -d' ' -f2 "$WORK/snapshot" | sed 's/.*/"&"/' | paste -sd, -)" > "$WORK/attestation.json"
 
 publish_attestation
+
+# --- the GitHub releases this snapshot carries (S47) ------------------------------------------------
+# After the scan passed and after the tag was pushed, so a release is only ever attached to a tag the
+# public side already holds. The mirror's PAT has Contents: write on the one repository, which is the
+# permission GitHub asks for to create a release and upload its assets. IDEMPOTENT, because a run
+# that fails here records no published-state note and the next run comes back: a release that exists
+# is reused and an asset it already carries is skipped. The two API bases are overridable only so
+# the fixture can stand in for GitHub; the job sets neither.
+GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
+GITHUB_UPLOADS="${GITHUB_UPLOADS_URL:-https://uploads.github.com}"
+SLUG="$(printf '%s' "$TARGET_REPO" | sed -e 's#\.git$##' -e 's#^[a-z]*://[^/]*/##')"
+gh_api() {
+  curl -sS -H "Authorization: Bearer $MIRROR_GITHUB_PAT" -H 'Accept: application/vnd.github+json' \
+       -H 'X-GitHub-Api-Version: 2022-11-28' "$@"
+}
+publish_release() {
+  tag="$1"; files="$WORK/rel/$tag/files"
+  code="$(gh_api -o "$WORK/release.json" -w '%{http_code}' "$GITHUB_API/repos/$SLUG/releases/tags/$tag")" || code=000
+  if [ "$code" = 404 ]; then
+    body="$(python3 -c 'import json,sys; t=sys.argv[1]; print(json.dumps({"tag_name": t, "name": "Deskpost " + t, "body": "Built from the tag " + t + " and published by the mirror job after the scan that published the tag. Check an archive against SHA256SUMS; install.ps1 does.", "draft": False, "prerelease": False}))' "$tag")"
+    code="$(gh_api -o "$WORK/release.json" -w '%{http_code}' -X POST -d "$body" "$GITHUB_API/repos/$SLUG/releases")" || code=000
+    [ "$code" = 201 ] || { echo "FATAL: creating release $tag answered $code: $(head -c 300 "$WORK/release.json" 2>/dev/null)"; return 1; }
+  elif [ "$code" != 200 ]; then
+    echo "FATAL: reading release $tag answered $code"; return 1
+  fi
+  id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$WORK/release.json")"
+  python3 -c 'import json,sys; [print(a["name"]) for a in json.load(open(sys.argv[1])).get("assets", [])]' "$WORK/release.json" > "$WORK/assets-held"
+  for f in "$files"/*; do
+    n="$(basename "$f")"
+    if grep -qxF "$n" "$WORK/assets-held"; then echo "release $tag already carries $n"; continue; fi
+    code="$(gh_api -o "$WORK/asset.json" -w '%{http_code}' -X POST -H 'Content-Type: application/octet-stream' \
+            --data-binary "@$f" "$GITHUB_UPLOADS/repos/$SLUG/releases/$id/assets?name=$n")" || code=000
+    [ "$code" = 201 ] || { echo "FATAL: uploading $n to release $tag answered $code: $(head -c 300 "$WORK/asset.json" 2>/dev/null)"; return 1; }
+    echo "release $tag: uploaded $n"
+  done
+}
+while read -r tag; do
+  publish_release "$tag" || exit 1
+done < "$WORK/releases"
 
 # Record the published state so the next run's `--not` baseline is right. BEST EFFORT, AND NEVER
 # SILENT -- the two halves that run #4 had backwards.

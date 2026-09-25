@@ -1141,11 +1141,11 @@ if (selected(18)) {
     for (const blocks of Object.values(codexHooks.hooks) as { hooks: { command: string }[] }[][]) for (const block of blocks) for (const hook of block.hooks) codexCommands.push(hook.command);
     const prefixed = codexCommands.filter((command) => command.endsWith(' -ReaderToolPrefix mcp__validated_book_reader__'));
     check(prefixed.length === 3 && prefixed.every((command) => !command.includes('Guard-BasicMemoryRead.ps1')), `init's Codex hooks do not hand the three reader-naming hooks Codex's prefix: ${codexCommands.join(' | ')}`);
-    // S38: suggest_active_projects has no oracle over the LOCAL collection, which this workspace (initialised
-    // with no endpoint) is attached to, so it refuses by name rather than answer by an uncompared rule.
+    // S38 refused suggest_active_projects over the LOCAL collection, which has no oracle; S46 (ADR-0044) answers
+    // it there, because that refusal was the default route's. With no Hubs it says so, and asks Basic Memory nothing.
     const marker = JSON.parse(fs.readFileSync(path.join(workspace, '.library', 'workspace.json'), 'utf8').replace(/^﻿/, ''));
     const suggest = runCli(['mcp', 'call', 'suggest_active_projects', '--query', 'kernel', '--workspace', workspace, '--seat', 'reader'], { env });
-    check(marker.backend === 'local' && `${suggest.stdout}${suggest.stderr}`.includes('attached to the local collection'), `suggest_active_projects answered over the local collection: ${suggest.stdout}${suggest.stderr}`);
+    check(marker.backend === 'local' && suggest.stdout.includes('There are no active Projects to search.'), `suggest_active_projects did not answer over the local collection: ${suggest.stdout}${suggest.stderr}`);
     const bmMatcher = String(codexHooks.hooks.PreToolUse.find((block: { hooks: { command: string }[] }) => block.hooks.some((hook) => hook.command.includes('Guard-BasicMemoryRead.ps1'))).matcher);
     check(new RegExp(bmMatcher).test('mcp__basic_memory__list_directory'), `init's Codex Basic Memory matcher cannot fire on Codex's spelling: ${bmMatcher}`);
   } finally {
@@ -1432,6 +1432,9 @@ if (selected(22)) {
     fs.mkdirSync(path.join(install, 'bin'), { recursive: true });
     // Executable, as an installed binary is: on POSIX doctor fails a registered command it cannot start.
     fs.writeFileSync(path.join(install, 'bin', 'library'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    // A Windows release's hooks name `bin/library.exe` in exec form (S46), so the stand-in is there too (S47: until
+    // then this section failed against every compiled Windows kernel since rel46b, for want of the file they name).
+    if (process.platform === 'win32') fs.writeFileSync(path.join(install, 'bin', 'library.exe'), 'MZ');
     // The KERNEL UNDER TEST's own program root, which a compiled self-test cannot find from its own path.
     const kernelProgram = String((JSON.parse(runCli(['--version'], { cwd: root, env }).stdout) as Record<string, unknown>)['program_root']);
     fs.copyFileSync(path.join(kernelProgram, '.claude-plugin', 'hooks', 'hooks.json'), path.join(install, '.claude-plugin', 'hooks', 'hooks.json'));
@@ -1466,6 +1469,7 @@ if (selected(22)) {
     check(off.status === 'fail' && off.detail.includes('is not registered'), `a plugin the workspace switched off still guarded it: ${off.status} ${off.detail}`);
     fs.writeFileSync(local, '{}\n');
     fs.rmSync(path.join(install, 'bin', 'library'));
+    fs.rmSync(path.join(install, 'bin', 'library.exe'), { force: true });
     const missing = guards();
     check(missing.status === 'fail' && missing.detail.includes('bin/library'), `a plugin whose binary is gone was read as guarded: ${missing.status} ${missing.detail}`);
     check(hookRegistrationProblems([{}]).some((problem) => !problem.optional), 'an empty settings tree read as registering the guards');
@@ -1501,23 +1505,41 @@ if (selected(23)) {
   ];
   for (const [given, wanted] of cases) equal(posix(given), wanted, `the POSIX remedy for '${given}'`);
   const windowsText = 'Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta.';
-  equal(hostRemedies(windowsText, 'win32'), windowsText, "the Windows remedy changed; it is the oracle's sentence");
+  equal(hostRemedies(windowsText, 'win32'), windowsText, "the Windows remedy from source changed; it is the oracle's sentence");
   equal(posix('no helper named here'), 'no helper named here', 'a sentence naming no helper was changed');
 
-  if (process.platform !== 'win32') {
+  // AN INSTALLED KERNEL ON WINDOWS (S47, the reader's ruling): a ported helper is its verb, as on POSIX, and one
+  // with no port is named by its full path in the installed program, runnable under a default execution policy.
+  const installedRoot = String.raw`C:\Users\r\AppData\Local\deskpost\current`;
+  const installed = (text: string) => hostRemedies(text, 'win32-compiled', installedRoot);
+  for (const [given, wanted] of cases.slice(0, -1)) equal(installed(given), wanted, `the installed Windows remedy for '${given}'`);
+  equal(
+    installed('take it over with tools/Set-NotebookTopicOwner.ps1 -Topic x, or'),
+    `take it over with powershell -ExecutionPolicy Bypass -File "${installedRoot}${String.raw`\tools\Set-NotebookTopicOwner.ps1`}" -Topic x, or`,
+    'an installed kernel on Windows did not name an unported helper by its full path',
+  );
+
+  const compiledKernel = (() => {
+    try {
+      return (JSON.parse(runCli(['--version']).stdout) as { compiled: boolean }).compiled === true;
+    } catch {
+      return false;
+    }
+  })();
+  if (process.platform !== 'win32' || compiledKernel) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-remedy-')));
     try {
       const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
       const workspace = path.join(root, 'ws');
       equal(runCli(['init', workspace, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, 'init for the remedy workspace failed');
       const desk = runCli(['desk'], { cwd: workspace, env });
-      check(desk.exit !== 0 && desk.stderr.includes('library seat enter') && !desk.stderr.includes('.ps1'), `a seatless desk still offers a PowerShell helper on POSIX: ${desk.stderr.trim()}`);
+      check(desk.exit !== 0 && desk.stderr.includes('library seat enter') && !desk.stderr.includes('.ps1'), `a seatless desk still offers a PowerShell helper on POSIX or from a compiled kernel: ${desk.stderr.trim()}`);
       const seatDesk = path.join(workspace, '.claude', 'seats', 'reader');
       fs.mkdirSync(seatDesk, { recursive: true });
       fs.writeFileSync(path.join(seatDesk, '.open-books'), '');
       fs.writeFileSync(path.join(seatDesk, '.open-projects'), '');
       const denial = runCli(['hook', 'shelf-read', '--workspace', workspace, '--seat', 'reader'], { cwd: root, env, input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: path.join(workspace, 'shelf', 'holding', 'wiki', '_index.md') } }) }).stdout;
-      check(denial.includes('library desk open book holding --location shelf') && !denial.includes('Set-VirtualDesk.ps1'), `a closed-Book denial still offers a PowerShell helper on POSIX: ${denial}`);
+      check(denial.includes('library desk open book holding --location shelf') && !denial.includes('Set-VirtualDesk.ps1'), `a closed-Book denial still offers a PowerShell helper on POSIX or from a compiled kernel: ${denial}`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -2758,6 +2780,313 @@ if (selected(34)) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {
     w.dispose();
+  }
+}
+
+// --- 35. A TIER 0 SEAT READS AND OPENS WHAT ITS LOCAL COLLECTION HOLDS (S46, ADR-0044) ------------------------
+
+// seat.tier0-reads-and-opens-its-local-collection -- ADR-0044 makes a workspace with no endpoint the default
+// route, and S45 measured the release refusing its first Project read ("Virtual Desk configuration is missing
+// .library-project") and its first Desk write ("Virtual Desk is not configured in this workspace"): both asked
+// for the Basic Memory pin a Tier 0 init never writes. The same pin gated every reader tool that reads the Desk,
+// so a Tier 0 seat could not read its own Holding Shelf either. No oracle has a local collection, so this is
+// judged, and every call goes through the front door with no endpoint anywhere in its environment -- a read
+// that reached for Basic Memory would refuse for want of one, never answer.
+if (selected(35)) {
+  const w = await seatClaimWorkspace('tier0-reads', { pin: false });
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the Tier 0 seat could not be created');
+    const read = (tool: string, args: string[]) => {
+      const result = w.as(agent, ['mcp', 'call', tool, ...args, '--seat', 'first', '--workspace', w.workspace]);
+      try {
+        const envelope = JSON.parse(result.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${result.stdout.slice(0, 200)} ${result.stderr.trim()}` };
+      }
+    };
+    const desk = (args: string[]) => w.as(agent, ['desk', ...args, '--seat', 'first', '--workspace', w.workspace]);
+
+    // The seat's own Project: its root, the briefing (which reads the connections page too), a missing page.
+    const root = read('read_open_project_page', ['--slug', 'alpha', '--page', '_project']);
+    check(!root.error && root.text.startsWith('# alpha'), `a Tier 0 seat could not read its own Project's root: ${root.text.slice(0, 200)}`);
+    const briefing = read('read_open_project_briefing', ['--slug', 'alpha']);
+    check(!briefing.error && briefing.text.startsWith('Project return briefing - alpha'), `the Tier 0 return briefing did not answer: ${briefing.text.slice(0, 200)}`);
+    const missing = read('read_open_project_page', ['--slug', 'alpha', '--page', 'no-such-page']);
+    check(missing.error && missing.text.includes('That page is not in this Project.'), `a missing local Project page was not refused as missing: ${missing.text.slice(0, 200)}`);
+    const escape = read('read_open_project_page', ['--slug', 'alpha', '--page', '../beta/_project']);
+    check(escape.error && !escape.text.includes('# beta'), `a page path walked out of the open Project: ${escape.text.slice(0, 200)}`);
+
+    // A second Project is closed until the Desk opens it, and closed again after.
+    const closed = read('read_open_project_page', ['--slug', 'beta', '--page', '_project']);
+    check(closed.error && closed.text.includes("Project 'beta' is closed."), `a Project not on the Desk was not refused as closed: ${closed.text.slice(0, 200)}`);
+    const opened = desk(['open', 'project', 'beta']);
+    equal(opened.exit, 0, `a Tier 0 Desk could not open a Project: ${opened.stderr.trim()}`);
+    const betaRoot = read('read_open_project_page', ['--slug', 'beta', '--page', '_project']);
+    check(!betaRoot.error && betaRoot.text.startsWith('# beta'), `an opened local Project could not be read: ${betaRoot.text.slice(0, 200)}`);
+    equal(desk(['close', 'project', 'beta']).exit, 0, 'a Tier 0 Desk could not close a Project');
+    check(read('read_open_project_page', ['--slug', 'beta', '--page', '_project']).error, 'a closed local Project stayed readable');
+    const invented = desk(['open', 'project', 'no-such-hub']);
+    check(invented.exit !== 0 && invented.stderr.includes('no-such-hub'), `a Tier 0 Desk opened a Project the local collection does not hold: ${invented.stdout.slice(0, 200)}`);
+
+    // The Holding Shelf and the Report Inbox, which init lays out in every workspace.
+    const shelfOpen = desk(['open', 'book', 'reports', '--location', 'shelf']);
+    equal(shelfOpen.exit, 0, `a Tier 0 Desk could not open the Report Inbox: ${shelfOpen.stderr.trim()}`);
+    const inbox = read('read_open_book_page', ['--slug', 'reports', '--page', '_index']);
+    check(!inbox.error && inbox.text.trim().length > 0, `a Tier 0 seat could not read an open Shelf Book: ${inbox.text.slice(0, 200)}`);
+
+    // A Book in the local collection, where the shared layout puts it: its catalog, and its page once open.
+    const bookWiki = path.join(w.workspace, 'collection', 'books', 'field-guide', 'wiki');
+    fs.mkdirSync(bookWiki, { recursive: true });
+    fs.writeFileSync(path.join(bookWiki, 'birds.md'), '# Birds\n\nA local collection page.\n');
+    const catalog = read('read_book_catalog', []);
+    check(!catalog.error && catalog.text.includes("The Books in this workspace's local collection."), `the Tier 0 Book Catalog did not answer from the local collection: ${catalog.text.slice(0, 200)}`);
+    const sharedCatalog = read('read_book_catalog', ['--location', 'shared']);
+    check(!sharedCatalog.error && sharedCatalog.text.startsWith('# Books'), `the Tier 0 collection catalog did not answer: ${sharedCatalog.text.slice(0, 200)}`);
+    const closedBook = read('read_open_book_page', ['--slug', 'field-guide', '--page', 'birds']);
+    check(closedBook.error && closedBook.text.includes("Book 'field-guide' is closed."), `a closed local-collection Book was not refused as closed: ${closedBook.text.slice(0, 200)}`);
+    equal(desk(['open', 'book', 'field-guide']).exit, 0, 'a Tier 0 Desk could not open a Book in its local collection');
+    const birds = read('read_open_book_page', ['--slug', 'field-guide', '--page', 'birds']);
+    check(!birds.error && birds.text.startsWith('# Birds'), `an open local-collection Book could not be read: ${birds.text.slice(0, 200)}`);
+    const noBook = desk(['open', 'book', 'no-such-book']);
+    check(noBook.exit !== 0 && noBook.stderr.includes('no-such-book'), `a Tier 0 Desk opened a Book the local collection does not hold: ${noBook.stdout.slice(0, 200)}`);
+
+    // suggest_active_projects ranks the local Hubs rather than refusing the default route.
+    const suggested = read('suggest_active_projects', ['--query', 'beta']);
+    check(!suggested.error && suggested.text.includes('[beta]'), `suggest_active_projects did not answer from the local collection: ${suggested.text.slice(0, 200)}`);
+
+    // Nothing above wrote a Basic Memory pin or endpoint to get there.
+    for (const name of ['.library-project', '.library-mcp-url']) {
+      check(!fs.existsSync(path.join(w.workspace, '.claude', name)), `a Tier 0 read or Desk write left ${name} behind`);
+    }
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 36. A TIER 0 WORKSPACE'S OWN READER READS ITS LOCAL COLLECTION (S46, ADR-0044) ------------------------------
+
+// workspace.tier0-init-registers-the-kernel-reader -- S7 in Windows Sandbox, rel46a: a Claude session's first Project
+// read went to the reader `library init` registered, which on Windows was the PowerShell adapter, and the adapter has
+// no local collection ("Virtual Desk configuration is missing .library-project"). A compiled kernel attached to its
+// local collection now registers itself -- `bin/library mcp serve` -- for Claude and for Codex, as a POSIX host always
+// has; a Basic Memory workspace keeps the adapter, and so does a kernel run from source, which has no binary to name.
+// Judged through the front door: the registration read back from the files init wrote, and the registered command
+// LAUNCHED as a harness launches it, asked for the seat's Project page over stdio.
+if (selected(36)) {
+  const w = await seatClaimWorkspace('tier0-reader', { pin: false });
+  try {
+    const version = runCli(['--version']);
+    const compiled = (() => {
+      try {
+        return (JSON.parse(version.stdout) as { compiled: boolean }).compiled === true;
+      } catch {
+        return false;
+      }
+    })();
+    const mcp = JSON.parse(fs.readFileSync(path.join(w.workspace, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    const server = mcp.mcpServers['validated-book-reader'];
+    const codex = fs.readFileSync(path.join(w.workspace, '.codex', 'config.toml'), 'utf8');
+    const kernelReader = compiled || process.platform !== 'win32';
+    if (kernelReader) {
+      check(
+        server !== undefined && /\/bin\/library$/.test(server.command) && server.args[0] === 'mcp' && server.args[1] === 'serve',
+        `a Tier 0 init by a compiled kernel registered ${server ? `${server.command} ${server.args.join(' ')}` : 'no reader'} for Claude, not bin/library mcp serve`,
+      );
+      check(/command = "[^"]*\/bin\/library"/.test(codex) && codex.includes('"mcp", "serve"'), `a Tier 0 init by a compiled kernel registered another reader for Codex: ${codex.slice(0, 400)}`);
+    } else {
+      check(server !== undefined && server.command === 'powershell.exe', `a Tier 0 init from source registered ${server ? server.command : 'no reader'}, where only the adapter is there to name`);
+    }
+
+    // A Basic Memory workspace keeps the adapter: its collection is the adapter's to read.
+    const shared = path.join(w.root, 'shared');
+    runCli(['init', shared, '--registry-root', path.join(w.root, 'reg'), '--mcp-url', 'http://127.0.0.1:1/mcp', '--collection-id', '44444444-4444-4444-4444-444444444444'], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    const sharedMcp = JSON.parse(fs.readFileSync(path.join(shared, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as { mcpServers: Record<string, { command: string }> };
+    if (process.platform === 'win32') {
+      check(sharedMcp.mcpServers['validated-book-reader']?.command === 'powershell.exe', `a Basic Memory init on Windows stopped registering the adapter: ${sharedMcp.mcpServers['validated-book-reader']?.command}`);
+    }
+
+    // RE-RUN OVER THE LIBRARY'S OWN OLD ADAPTER: a workspace an earlier release initialised carries the adapter entry,
+    // and init replaces what is the Library's rather than refusing it as a conflict (the matrix's idempotent rows found
+    // a second init refused, S46). An entry someone else wrote under the same name is still refused.
+    if (kernelReader && process.platform === 'win32') {
+      const mcpPath = path.join(w.workspace, '.mcp.json');
+      const adapterEntry = { command: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:/old/program/.claude/adapters/Validated-BookReader.ps1', '-StateDirectory', `${w.workspace.replace(/\\/g, '/')}/.claude`] };
+      fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': adapterEntry, other: { command: 'x' } } }, null, 2));
+      const again = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+      const redone = JSON.parse(fs.readFileSync(mcpPath, 'utf8').replace(/^\uFEFF/, '')) as { mcpServers: Record<string, { command: string }> };
+      check(again.exit === 0 && /\/bin\/library$/.test(redone.mcpServers['validated-book-reader']?.command ?? ''), `init over the Library's own adapter entry did not replace it: exit ${again.exit} ${again.stderr.trim().slice(0, 200)}`);
+      check(redone.mcpServers['other']?.command === 'x', "init over the Library's own adapter entry dropped another server");
+      fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': { command: 'node', args: ['mine.js'] } } }, null, 2));
+      const foreign = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+      check(foreign.exit !== 0 && foreign.stderr.includes('cannot be merged'), `init replaced a reader entry the Library did not write: exit ${foreign.exit}`);
+      fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': { command: server?.command ?? '', args: server?.args ?? [] } } }, null, 2));
+    }
+
+    // The registered reader, launched as a harness launches it, reads the seat's own Project.
+    if (kernelReader && server !== undefined) {
+      const agent = w.startAgent();
+      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+      const requests =
+        [
+          { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'selftest', version: '1' } } },
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'read_open_project_page', arguments: { slug: 'alpha', page: '_project' } } },
+        ]
+          .map((request) => JSON.stringify(request))
+          .join('\n') + '\n';
+      const command = process.platform === 'win32' && !server.command.endsWith('.exe') ? `${server.command}.exe` : server.command;
+      const served = spawnSync(command, server.args, {
+        cwd: w.workspace,
+        input: requests,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' },
+      });
+      const answer = (served.stdout ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .map((line) => {
+          try {
+            return JSON.parse(line) as { id?: number; result?: { content?: { text: string }[]; isError?: boolean } };
+          } catch {
+            return {};
+          }
+        })
+        .find((message) => message.id === 2);
+      check(
+        answer?.result?.isError === false && (answer.result.content?.[0]?.text ?? '').startsWith('# alpha'),
+        `the reader init registered did not read the seat's Project: ${JSON.stringify(answer ?? served.stdout).slice(0, 300)} ${String(served.stderr ?? '').slice(0, 200)}`,
+      );
+    }
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 37. `seat start` FINDS AN AGENT CLAUDE CODE'S INSTALLER LEFT OFF PATH (S47, the Report Inbox) ----------------
+
+// S7 in Windows Sandbox: Claude Code's installer puts `~\.local\bin\claude.exe` there and not on PATH, so the README's
+// `library seat start me --project my-project` refused in a new terminal. On Windows a bare agent name PATH does not
+// resolve is started from `~\.local\bin`; a name found in neither place is still refused, naming both. The agent here
+// is the kernel itself, copied into a scratch profile's `.local\bin` under a name nothing else carries.
+if (selected(37) && process.platform === 'win32') {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-agentbin-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const home = path.join(root, 'home');
+    const userBin = path.join(home, '.local', 'bin');
+    fs.mkdirSync(userBin, { recursive: true });
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', USERPROFILE: home };
+    const workspace = path.join(root, 'ws');
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'init for the agent-bin workspace failed');
+    equal(runCli(['hub', 'new', 'demo', '--title', 'Demo', '--purpose', 'A Project for the agent-bin self-test.', '--workspace', workspace], { cwd: workspace, env }).exit, 0, 'the Project Hub could not be made');
+    const kernel = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+    const name = `deskagent${process.pid}`;
+
+    const missing = runCli(['seat', 'start', 'reader', '--project', 'demo', '--workspace', workspace, '--command', name], { cwd: workspace, env });
+    check(missing.exit === 127 && missing.stderr.includes(path.join(userBin, `${name}.exe`)), `an agent found nowhere was not refused naming ~\\.local\\bin: ${missing.exit} ${missing.stderr.trim().slice(0, 300)}`);
+
+    fs.copyFileSync(kernel[0]!, path.join(userBin, `${name}.exe`));
+    const started = runCli(['seat', 'start', 'reader', '--workspace', workspace, '--command', name, '--', ...kernel.slice(1), '--version'], { cwd: workspace, env });
+    check(started.exit === 0 && started.stdout.includes('"binary_version"'), `an agent in ~\\.local\\bin and off PATH was not started: ${started.exit} ${started.stderr.trim().slice(0, 300)}`);
+    check(started.stderr.includes('which is not on PATH'), `starting an agent from ~\\.local\\bin did not say so: ${started.stderr.trim().slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 38. DOCTOR SAYS WHY A KERNEL HOOK FAILS OPEN ON WINDOWS (S47, the Report Inbox) ------------------------------
+
+// S7 in Windows Sandbox, rel46a: doctor failed the plugin's guards as "a registered hook names a script that is not
+// there" -- the conclusion right and the cause wrong. The release ships `bin/library.exe`; the hook was a quoted
+// command in shell form, which Claude Code runs through PowerShell where Git Bash is absent, and PowerShell refuses.
+// Now `bin/library` resolves to `library.exe` as the shell resolves it, exec form passes, and shell form fails with
+// its real cause only where Git Bash is absent. CLAUDE_CODE_GIT_BASH_PATH decides it, as it decides it for Claude Code:
+// naming a missing file hides Git Bash and naming a file shows it. (Windows resets ProgramFiles in every process it
+// creates, so Git's default folder cannot be hidden from a child; that branch is measured in the Sandbox instead.)
+if (selected(38) && process.platform === 'win32') {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-shellform-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const config = path.join(root, 'claude-config');
+    const system = process.env['SystemRoot'] ?? 'C:\\Windows';
+    const bare = [path.join(system, 'System32'), system].join(';');
+    const env: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', CLAUDE_CONFIG_DIR: config, AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', PATH: bare, Path: bare, CLAUDE_CODE_GIT_BASH_PATH: path.join(root, 'no-git', 'bash.exe') };
+    const workspace = path.join(root, 'ws');
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'init for the shell-form workspace failed');
+    fs.writeFileSync(path.join(workspace, '.claude', 'settings.local.json'), '{}\n');
+    const install = path.join(root, 'plugin-install');
+    fs.mkdirSync(path.join(install, '.claude-plugin', 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(install, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(install, 'bin', 'library.exe'), 'MZ');
+    const kernelProgram = String((JSON.parse(runCli(['--version'], { cwd: root, env }).stdout) as Record<string, unknown>)['program_root']);
+    fs.copyFileSync(path.join(kernelProgram, '.claude-plugin', '.mcp.json'), path.join(install, '.claude-plugin', '.mcp.json'));
+    fs.writeFileSync(path.join(install, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'deskpost', hooks: './.claude-plugin/hooks/hooks.json', mcpServers: './.claude-plugin/.mcp.json' }));
+    fs.mkdirSync(path.join(config, 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ enabledPlugins: { 'deskpost@deskpost': true } }));
+    fs.writeFileSync(path.join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'deskpost@deskpost': [{ scope: 'user', installPath: install }] } }));
+
+    // Both forms written from the program's own hooks, whichever form it ships: exec form names `library.exe` with
+    // args, shell form names `"<root>/bin/library" hook <verb>` as rel46a's plugin did.
+    type HookEntry = { type?: string; command: string; args?: string[] };
+    const shipped = JSON.parse(fs.readFileSync(path.join(kernelProgram, '.claude-plugin', 'hooks', 'hooks.json'), 'utf8').replace(/^\uFEFF/, '')) as { hooks: Record<string, { matcher?: string; hooks: HookEntry[] }[]> };
+    const verbsOf = (entry: HookEntry): string[] => (entry.args ?? entry.command.replace(/^\s*"[^"]*"\s*/, '').split(/\s+/)).filter((part) => part);
+    const rendered = (form: 'exec' | 'shell') => ({
+      hooks: Object.fromEntries(
+        Object.entries(shipped.hooks).map(([event, blocks]) => [
+          event,
+          blocks.map((block) => ({
+            ...block,
+            hooks: block.hooks.map((entry) =>
+              form === 'exec'
+                ? { type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/bin/library.exe', args: verbsOf(entry) }
+                : { type: 'command', command: `"\${CLAUDE_PLUGIN_ROOT}/bin/library" ${verbsOf(entry).join(' ')}` },
+            ),
+          })),
+        ]),
+      ),
+    });
+    const guards = (extra: Record<string, string> = {}) => {
+      const doctor = runCli(["doctor", "--workspace", workspace], { cwd: root, env: { ...env, ...extra } });
+      try {
+        return ((JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks.find((row) => row.check === 'workspace.guards-registered')) ?? { status: '(absent)', detail: '' };
+      } catch {
+        return { status: '(unreadable)', detail: doctor.stdout + doctor.stderr };
+      }
+    };
+    const hooksFile = path.join(install, '.claude-plugin', 'hooks', 'hooks.json');
+
+    fs.writeFileSync(hooksFile, JSON.stringify(rendered('exec')));
+    const exec = guards();
+    check(exec.status === 'pass', `an exec-form plugin naming library.exe was not read as guarded: ${exec.status} ${exec.detail}`);
+
+    fs.writeFileSync(hooksFile, JSON.stringify(rendered('shell')));
+    const shell = guards();
+    check(shell.status === 'fail' && shell.detail.includes('shell form') && shell.detail.includes('Git Bash'), `a shell-form plugin with no Git Bash was not failed for its form: ${shell.status} ${shell.detail}`);
+    check(!shell.detail.includes('is not there'), `a shell-form plugin whose library.exe exists was called missing: ${shell.detail}`);
+
+    const bash = path.join(root, 'bash.exe');
+    fs.writeFileSync(bash, 'MZ');
+    const withBash = guards({ CLAUDE_CODE_GIT_BASH_PATH: bash });
+    check(withBash.status === 'pass', `a shell-form plugin with Git Bash present was failed: ${withBash.status} ${withBash.detail}`);
+
+    fs.rmSync(path.join(install, 'bin', 'library.exe'));
+    const gone = guards();
+    check(gone.status === 'fail' && gone.detail.includes('bin/library'), `a plugin whose library.exe is gone was read as guarded: ${gone.status} ${gone.detail}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 

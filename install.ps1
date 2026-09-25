@@ -22,8 +22,10 @@
          move it and a workspace's hooks survive the old version's removal. The switch is a new junction
          renamed onto the old one's name, with an instant between in which neither exists. current.json
          records the version and the one before it, which is what -Rollback switches back to.
-      4. Unless -SkipPlugin, the release is added as a Claude Code marketplace and the plugin
-         installed from it. Codex has no non-interactive install yet; its step is printed.
+      4. Only with -Plugin, the release is added as a Claude Code marketplace and the plugin
+         installed from it. THE PLUGIN IS OPT-IN (S47, the reader's ruling): `library init` registers a
+         workspace's own guards and reader, and a plugin as well made every guard run twice on the
+         README's route -- measured in S7's Windows Sandbox, and warned by doctor.
       5. `library doctor` runs. ITS RESULT IS THE INSTALL'S RESULT: an installer that exited 0 over a
          red doctor would report success for an install that does not work.
 
@@ -50,8 +52,12 @@
 .PARAMETER NoPathChange
     Leave the user PATH alone. By default <InstallRoot>\bin is appended to it once.
 
+.PARAMETER Plugin
+    Also register the release as a Claude Code marketplace and install the plugin from it, for a reader
+    who wants the guards in every Claude session rather than per workspace.
+
 .PARAMETER SkipPlugin
-    Do not register the marketplace or install the plugin.
+    Accepted and ignored: skipping the plugin is the default since S47.
 
 .PARAMETER Rollback
     Switch the shim back to the version installed before the current one. Nothing is downloaded.
@@ -64,6 +70,7 @@ param(
     [string]$Platform,
     [string]$Workspace,
     [switch]$NoPathChange,
+    [switch]$Plugin,
     [switch]$SkipPlugin,
     [switch]$Rollback,
     [switch]$Json
@@ -312,8 +319,8 @@ if (-not $NoPathChange) {
 
 # --- 4. the plugin -----------------------------------------------------------------------------
 
-$plugin = [ordered]@{ claude = 'skipped (-SkipPlugin)'; codex = 'skipped (-SkipPlugin)' }
-if (-not $SkipPlugin) {
+$plugin = [ordered]@{ claude = 'not installed (opt-in with -Plugin; library init registers a workspace''s guards)'; codex = 'not installed (opt-in with -Plugin)' }
+if ($Plugin -and -not $SkipPlugin) {
     $claude = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -eq $claude) {
         $plugin.claude = "claude is not on PATH. Run: claude plugin marketplace add `"$stable`" ; claude plugin install deskpost@deskpost"

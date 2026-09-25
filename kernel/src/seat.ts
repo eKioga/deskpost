@@ -1170,11 +1170,14 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
     process.stdout.write(psConvertToJson(result) + '\n');
     // THE AGENT, IN THE WORKSPACE, ON THIS TERMINAL -- and this process waits for it, because the claim is
     // this process's handle and must outlive nothing and be outlived by nothing.
+    const executable = agentExecutable(command, environment[pathVariable] ?? '');
+    if (executable.fallback) process.stderr.write(`Starting '${command}' from ${path.dirname(executable.file)}, which is not on PATH.\n`);
     const exitCode = await new Promise<number>((resolve) => {
-      const agent = spawn(command, agentArguments, { cwd: workspace, env: environment, stdio: 'inherit' });
+      const agent = spawn(executable.file, agentArguments, { cwd: workspace, env: environment, stdio: 'inherit' });
       agent.on('exit', (code) => resolve(code ?? 1));
       agent.on('error', (error) => {
-        process.stderr.write(`The agent '${command}' could not be started: ${error.message}\n`);
+        const looked = process.platform === 'win32' && executable.userBin !== null ? ` It is not on PATH, nor at ${executable.userBin}.` : '';
+        process.stderr.write(`The agent '${command}' could not be started: ${error.message}${looked}\n`);
         resolve(127);
       });
     });
@@ -1182,6 +1185,26 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
   } finally {
     exitSeatClaim(claim);
   }
+}
+
+/**
+ * THE AGENT A BARE NAME STARTS, AND WHERE CLAUDE CODE'S INSTALLER PUTS IT (S47). Measured in S7's Windows Sandbox:
+ * Claude Code from https://claude.ai/install.ps1 installs `~\.local\bin\claude.exe` and does not put that folder on
+ * PATH, so `library seat start` refused in a new terminal. On Windows a bare name found nowhere on PATH is looked for
+ * there before the launch is attempted; anything else -- a path, a name PATH resolves, another platform -- is started
+ * as given, and a name found in neither place is still refused, naming both.
+ */
+function agentExecutable(command: string, searchPath: string): { file: string; fallback: boolean; userBin: string | null } {
+  if (process.platform !== 'win32' || /[\\/]/.test(command)) return { file: command, fallback: false, userBin: null };
+  const home = process.env['USERPROFILE'] ?? '';
+  const userBin = home ? path.join(home, '.local', 'bin', path.extname(command) ? command : `${command}.exe`) : null;
+  const extensions = path.extname(command) ? [''] : (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((ext) => ext);
+  const onPath = searchPath
+    .split(path.delimiter)
+    .filter((directory) => directory.trim())
+    .some((directory) => extensions.some((ext) => fs.existsSync(path.join(directory.replace(/^"|"$/g, ''), command + ext))));
+  if (!onPath && userBin !== null && fs.existsSync(userBin)) return { file: userBin, fallback: true, userBin };
+  return { file: command, fallback: false, userBin };
 }
 
 // --- seat status (S42) --------------------------------------------------------------------------------
