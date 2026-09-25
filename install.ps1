@@ -319,18 +319,20 @@ if (-not $NoPathChange) {
 
 # --- 4. the plugin -----------------------------------------------------------------------------
 
-$plugin = [ordered]@{ claude = 'not installed (opt-in with -Plugin; library init registers a workspace''s guards)'; codex = 'not installed (opt-in with -Plugin)' }
+# NOT `$plugin`: PowerShell names are case-insensitive, so that IS the [switch]$Plugin parameter, and a table
+# assigned to it throws -- which broke every install of the published 0.2.0 (S47, measured in S7's Sandbox).
+$pluginResult = [ordered]@{ claude = 'not installed (opt-in with -Plugin; library init registers a workspace''s guards)'; codex = 'not installed (opt-in with -Plugin)' }
 if ($Plugin -and -not $SkipPlugin) {
     $claude = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -eq $claude) {
-        $plugin.claude = "claude is not on PATH. Run: claude plugin marketplace add `"$stable`" ; claude plugin install deskpost@deskpost"
+        $pluginResult.claude = "claude is not on PATH. Run: claude plugin marketplace add `"$stable`" ; claude plugin install deskpost@deskpost"
     } else {
         $added = Invoke-Library $claude.Source @('plugin', 'marketplace', 'add', $stable)
         $installed = Invoke-Library $claude.Source @('plugin', 'install', 'deskpost@deskpost')
-        $plugin.claude = if ($added.exit -eq 0 -and $installed.exit -eq 0) { "installed from $stable" }
+        $pluginResult.claude = if ($added.exit -eq 0 -and $installed.exit -eq 0) { "installed from $stable" }
                          else { "FAILED: marketplace add exited $($added.exit), plugin install exited $($installed.exit)" }
     }
-    $plugin.codex = "Codex has no non-interactive plugin install yet. In Codex, run /plugins and add the marketplace at $stable."
+    $pluginResult.codex = "Codex has no non-interactive plugin install yet. In Codex, run /plugins and add the marketplace at $stable."
 }
 
 # --- 5. doctor ---------------------------------------------------------------------------------
@@ -352,7 +354,7 @@ $result = [pscustomobject]@{
     previous       = $previous
     tuple          = $tuple
     path           = $pathAction
-    plugin         = [pscustomobject]$plugin
+    plugin         = [pscustomobject]$pluginResult
     doctor_exit    = $doctor.exit
     doctor         = $report
 }

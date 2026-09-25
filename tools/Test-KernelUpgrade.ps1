@@ -100,7 +100,10 @@ function Test-ProgramPaths([string]$When) {
     $viaCurrent = $installRoot.Replace('\', '/') + '/current/'
     $moving = @($paths | Where-Object { -not $_.StartsWith($viaCurrent, [StringComparison]::OrdinalIgnoreCase) })
     Check ($moving.Count -eq 0) "$When`: $($moving.Count) program path(s) name something other than current, e.g. $(@($moving) | Select-Object -First 1)"
-    $missing = @($paths | Where-Object { -not (Test-Path -LiteralPath $_) })
+    # `bin/library` resolves to `library.exe` on Windows, as a harness launching the kernel reader resolves it (S46
+    # registers the reader extensionless, and self-test section 36 launches it that way); S47 found this check reading
+    # that registration as missing, against every release since rel46c.
+    $missing = @($paths | Where-Object { -not (Test-Path -LiteralPath $_) -and -not ($_ -match '/bin/library$' -and (Test-Path -LiteralPath "$_.exe")) })
     Check ($missing.Count -eq 0) "$When`: $($missing.Count) program path(s) do not exist, e.g. $(@($missing) | Select-Object -First 1)"
     $paths
 }

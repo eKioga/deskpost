@@ -496,9 +496,12 @@ publish_attestation
 # permission GitHub asks for to create a release and upload its assets. IDEMPOTENT, because a run
 # that fails here records no published-state note and the next run comes back: a release that exists
 # is reused and an asset it already carries is skipped. The two API bases are overridable only so
-# the fixture can stand in for GitHub; the job sets neither.
-GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
-GITHUB_UPLOADS="${GITHUB_UPLOADS_URL:-https://uploads.github.com}"
+# the fixture can stand in for GitHub, and the override names are the job's OWN: the first live run
+# (2026-09-25) read `GITHUB_API_URL`, which a Forgejo runner sets to the Forgejo instance's API, as
+# every Actions-compatible runner sets it -- so the release calls never reached GitHub, and the run
+# failed after the tag was already public. Nothing sets a `MIRROR_` name but the fixture.
+GITHUB_API="${MIRROR_GITHUB_API_URL:-https://api.github.com}"
+GITHUB_UPLOADS="${MIRROR_GITHUB_UPLOADS_URL:-https://uploads.github.com}"
 SLUG="$(printf '%s' "$TARGET_REPO" | sed -e 's#\.git$##' -e 's#^[a-z]*://[^/]*/##')"
 gh_api() {
   curl -sS -H "Authorization: Bearer $MIRROR_GITHUB_PAT" -H 'Accept: application/vnd.github+json' \

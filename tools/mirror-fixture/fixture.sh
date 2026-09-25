@@ -68,7 +68,8 @@ tag_commit() {     # $1 tag -- a new commit on main, tagged
 run_job() {        # $1 new|old -- the job's environment as the workflow sets it, the API pointed at the stub
   ( cd "$D" && SOURCE_REPO="$D/src.git" TARGET_REPO="file://$D/gh/eKioga/deskpost.git" FORGEJO_TOKEN=x \
     MIRROR_GITHUB_PAT=fixture-pat IDENTITY_DENYLIST='planted-identity-7731' IDENTITY_ALLOWLIST='' \
-    GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_UPLOADS_URL="http://127.0.0.1:$PORT" \
+    MIRROR_GITHUB_API_URL="http://127.0.0.1:$PORT" MIRROR_GITHUB_UPLOADS_URL="http://127.0.0.1:$PORT" \
+    GITHUB_API_URL="http://127.0.0.1:9/a-runner-sets-this" GITHUB_UPLOADS_URL="http://127.0.0.1:9/a-runner-sets-this" \
     sh "$K/$1/scan-and-publish.sh" > "$D/run.log" 2>&1 )
 }
 dst_refs() { git --git-dir="$D/gh/eKioga/deskpost.git" for-each-ref --format='%(refname)'; }
