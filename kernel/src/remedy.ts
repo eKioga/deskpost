@@ -74,6 +74,21 @@ const REWRITES: { helper: string; to: (parameterText: string) => string | null }
   { helper: 'ShelfCatalog', to: (text) => (parameters(text).has('render') ? 'library shelf render' : null) },
   { helper: 'NotebookIndex', to: (text) => (parameters(text).has('render') ? 'library notebook render' : null) },
   { helper: 'Add-ShelfNote', to: (text) => `library capture ${parameters(text).get('bookslug') ?? '<book>'} --title <title> --body <text>` },
+  {
+    helper: 'Restore-NotebookQuarantine',
+    to: (text) => {
+      const given = parameters(text);
+      if (given.has('list')) return 'library reset restore --list';
+      if (!given.has('quarantine')) return 'library reset restore';
+      const parts = ['library reset restore --quarantine', given.get('quarantine')!];
+      if (given.has('show')) parts.push('--show');
+      if (given.get('topic')) parts.push(`--topic ${given.get('topic')}`);
+      if (given.has('adopt')) parts.push('--adopt');
+      if (given.has('preflight')) parts.push('--preflight');
+      if (given.get('planid')) parts.push(`--plan-id ${given.get('planid')}`);
+      return parts.join(' ');
+    },
+  },
 ];
 
 const POWERSHELL_ONLY = ' (a PowerShell helper; this machine has no PowerShell to run it)';
@@ -102,11 +117,20 @@ export function hostRemedies(text: string, flavor: RemedyHost = HOST, root: stri
 /** The fields of a result that carry a remedy, and only those: a result's content is never rewritten. */
 const REMEDY_KEYS = new Set(['next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext']);
 
+/**
+ * A FIELD NAMED `*_route` IS A COMMAND TO RUN, SO IT IS A REMEDY (S49, the reader's ruling). `library desk`'s
+ * `quarantine.list_route` and the restore's `show_route` and `restore_route` named a PowerShell helper on POSIX and
+ * from a compiled Windows kernel. Every such key rather than a list, so a route added later is covered.
+ */
+function isRemedyKey(key: string): boolean {
+  return REMEDY_KEYS.has(key) || key.endsWith('_route');
+}
+
 /** A result with its remedy fields said as this host should say them. Identity for the oracle's own host. */
 export function hostRemedyFields<T>(value: T, flavor: RemedyHost = HOST): T {
   if (flavor === 'win32') return value;
   const walk = (node: unknown, key: string | null): unknown => {
-    if (typeof node === 'string') return key !== null && REMEDY_KEYS.has(key) ? hostRemedies(node, flavor) : node;
+    if (typeof node === 'string') return key !== null && isRemedyKey(key) ? hostRemedies(node, flavor) : node;
     if (Array.isArray(node)) return node.map((item) => walk(item, key));
     if (node !== null && typeof node === 'object') {
       const copy: Record<string, unknown> = {};

@@ -700,6 +700,13 @@ function Test-AcceptanceMatrixCoverage {
 $script:RemedyValue = '(?:<[^>\s]+>|[A-Za-z0-9_][A-Za-z0-9_.-]*[A-Za-z0-9_]|[A-Za-z0-9_]|\.(?=[\s)]|\z))'
 $script:RemedyKeys = @('next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext')
 
+# A FIELD NAMED `*_route` IS A COMMAND TO RUN, SO IT IS A REMEDY (S49, the reader's ruling): `library desk`'s
+# `quarantine.list_route` and the restore's `show_route` and `restore_route` named a PowerShell helper on POSIX
+# and from a compiled Windows kernel. Every such key, not a list of three, so a route added later is covered.
+function Test-AcceptanceRemedyKey([string]$Key) {
+    $null -ne $Key -and ($script:RemedyKeys -ccontains $Key -or $Key.EndsWith('_route', [StringComparison]::Ordinal))
+}
+
 function Get-AcceptanceRemedyParameters([string]$Text) {
     $found = @{}
     foreach ($match in [regex]::Matches($Text, "-([A-Za-z]+)(?:\s+($($script:RemedyValue)))?")) {
@@ -744,6 +751,19 @@ function ConvertTo-AcceptanceInstalledRemedy {
                     'ShelfCatalog' { if ($given.ContainsKey('render')) { 'library shelf render' } else { $null } }
                     'NotebookIndex' { if ($given.ContainsKey('render')) { 'library notebook render' } else { $null } }
                     'Add-ShelfNote' { "library capture $(& $named 'bookslug' '<book>') --title <title> --body <text>" }
+                    'Restore-NotebookQuarantine' {
+                        if ($given.ContainsKey('list')) { 'library reset restore --list' }
+                        elseif ($given.ContainsKey('quarantine')) {
+                            $parts = @('library reset restore --quarantine', $given['quarantine'])
+                            if ($given.ContainsKey('show')) { $parts += '--show' }
+                            if ($given['topic']) { $parts += "--topic $($given['topic'])" }
+                            if ($given.ContainsKey('adopt')) { $parts += '--adopt' }
+                            if ($given.ContainsKey('preflight')) { $parts += '--preflight' }
+                            if ($given['planid']) { $parts += "--plan-id $($given['planid'])" }
+                            $parts -join ' '
+                        }
+                        else { 'library reset restore' }
+                    }
                     default { $null }
                 }
                 if ($null -ne $replaced) { return [string]$replaced }
@@ -765,7 +785,7 @@ function ConvertTo-AcceptanceInstalledRemedyFields {
     if ($Value -is [psobject] -and $Value.psobject.BaseObject -isnot [Management.Automation.PSCustomObject]) { $Value = $Value.psobject.BaseObject }
     if ($Value -is [string]) {
         # A reader tool's ERROR text is a remedy too (kernel/src/reader.ts: `if (isError) text = hostRemedies(text)`).
-        if (($null -ne $Key -and $script:RemedyKeys -ccontains $Key) -or ($InError -and $Key -ceq 'text')) { return [string](ConvertTo-AcceptanceInstalledRemedy -Text $Value -ProgramRoot $ProgramRoot) }
+        if ((Test-AcceptanceRemedyKey $Key) -or ($InError -and $Key -ceq 'text')) { return [string](ConvertTo-AcceptanceInstalledRemedy -Text $Value -ProgramRoot $ProgramRoot) }
         return [string]$Value
     }
     if ($Value -is [Collections.IDictionary]) {

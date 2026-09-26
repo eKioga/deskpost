@@ -292,6 +292,57 @@ function guardsRegistered(workspace: string, program: string): string {
   return `${registrations} hook registration(s) resolve${through}, and the validated reader is declared`;
 }
 
+/** A `[... .<key>]` header's key as the path it names: a TOML literal in single quotes, or a basic string in double. */
+function codexTableKey(raw: string): string {
+  const key = raw.trim();
+  if (key.length >= 2 && key.startsWith("'") && key.endsWith("'")) return key.substring(1, key.length - 1);
+  if (key.length >= 2 && key.startsWith('"') && key.endsWith('"')) return key.substring(1, key.length - 1).replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+  return key;
+}
+
+/**
+ * Which of a hooks file's registrations the Codex home has never reviewed, as `<Event> <i>:<j>`.
+ *
+ * HOOK TRUST IS THE THIRD GATE, AND AN UNREVIEWED HOOK IS SKIPPED IN SILENCE (S49, measured in S7's Windows
+ * Sandbox on codex-cli 0.153.4). With the project trusted and no hook reviewed, `codex exec` ran a shell read of a
+ * closed Book's page and printed it, no hook firing, while this check passed. The reader's first interactive
+ * session wrote one `[hooks.state.'<hooks.json>:<event>:<i>:<j>']` table per hook, each with a `trusted_hash`, and
+ * the same read was then blocked. The oracle's `Get-CodexUnreviewedHooks` asks the same question.
+ *
+ * PRESENCE ONLY. What the hash is taken over is Codex's and is not reproduced here, so a review that went stale
+ * when a hook changed reads as reviewed; Codex asks again in that case. Read, never written.
+ */
+function codexUnreviewedHooks(hooksPath: string, document: unknown, config: string): string[] {
+  const normalise = (text: string) => text.replace(/\\/g, '/').toLowerCase();
+  const reviewed = new Set<string>();
+  if (fs.existsSync(config) && fs.statSync(config).isFile()) {
+    let current: string | null = null;
+    for (const raw of fs.readFileSync(config, 'utf8').replace(/^﻿/, '').split(/\r?\n/)) {
+      const text = raw.trim();
+      if (text.startsWith('[')) {
+        const header = /^\[hooks\.state\.(.+)\]$/.exec(text);
+        current = header ? codexTableKey(header[1]!) : null;
+        continue;
+      }
+      if (current !== null && /^trusted_hash\s*=\s*["'][^"']+["']\s*$/.test(text)) reviewed.add(normalise(current));
+    }
+  }
+  const file = path.resolve(hooksPath);
+  const unreviewed: string[] = [];
+  const events = ((document as { hooks?: Record<string, unknown> }).hooks ?? {}) as Record<string, unknown>;
+  for (const [event, value] of Object.entries(events)) {
+    const snake = event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+    const groups = Array.isArray(value) ? value : [value];
+    groups.forEach((group, i) => {
+      const hooks = (group as { hooks?: unknown } | null)?.hooks;
+      (Array.isArray(hooks) ? hooks : hooks === undefined || hooks === null ? [] : [hooks]).forEach((_hook, j) => {
+        if (!reviewed.has(normalise(`${file}:${snake}:${i}:${j}`))) unreviewed.push(`${event} ${i}:${j}`);
+      });
+    });
+  }
+  return unreviewed;
+}
+
 function codexGuardsRegistered(workspace: string, program: string): string {
   if (workspace === program) return 'the program and the workspace are one directory; codex.project-access-config is the window on it';
   if (!fs.existsSync(path.join(program, '.codex', 'hooks.template.json'))) {
@@ -343,6 +394,16 @@ function codexGuardsRegistered(workspace: string, program: string): string {
       'CODEX_HOME, so a seat launched from Orca needs it in the home that seat uses.'
     );
   }
+  // THE THIRD GATE (S49): a trusted project's hooks still run only once that Codex home has reviewed them.
+  const unreviewed = codexUnreviewedHooks(hooksPath, document, trust.config);
+  if (unreviewed.length) {
+    return (
+      `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but ${unreviewed.length} ` +
+      `have not been reviewed in ${trust.config}: ${unreviewed.join(', ')}. Codex skips an unreviewed hook ` +
+      'in SILENCE, so those bindings are inert. Open a Codex session in that folder once and accept its hook ' +
+      'review; the review is per Codex home, like the trust grant.'
+    );
+  }
   const configPath = path.join(workspace, '.codex', 'config.toml');
   if (!fs.existsSync(configPath)) {
     return `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but has no .codex/config.toml, so a Codex seat there has no validated reader.`;
@@ -350,7 +411,7 @@ function codexGuardsRegistered(workspace: string, program: string): string {
   if (!/^\[mcp_servers\.validated-book-reader\]\s*$/im.test(fs.readFileSync(configPath, 'utf8'))) {
     return `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but its .codex/config.toml does not declare the validated reader.`;
   }
-  return `${registrations} Codex hook registration(s) resolve, the project is trusted in ${trust.home}, and the validated reader is declared`;
+  return `${registrations} Codex hook registration(s) resolve, the project is trusted in ${trust.home} with every hook reviewed, and the validated reader is declared`;
 }
 
 function catalogBookSlugs(workspace: string): string[] {

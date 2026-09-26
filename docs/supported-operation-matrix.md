@@ -808,7 +808,7 @@ the two disagree. Edit the rows, not the table.
 
 <!-- BEGIN GENERATED MATRIX -- rendered by tools/Invoke-AcceptanceMatrix.ps1 -RenderDoc; do not edit by hand -->
 
-**174 rows** across 18 areas: 154 compared against PowerShell, 20 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
+**176 rows** across 18 areas: 156 compared against PowerShell, 20 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
 
 Approved for **every** row, so not repeated on each one: `kernel-reports-its-own-version`.
 
@@ -992,6 +992,8 @@ The checks runner itself.
 | --- | --- | --- | --- | --- |
 | `checks.reports-every-registered-check` | success | differential | `workspace-two-seat` | The doctor reports one result per registered WORKSPACE check -- every check that reads the reader's material rather than this program's source -- and a check that did not run is reported skipped rather than omitted. What is compared is the REPORT: over a fixture workspace the run legitimately fails the checks that read material the fixture does not have, and a non-zero exit is part of that outcome rather than a defect. |
 | `checks.a-codex-basic-memory-guard-that-cannot-fire-is-reported` | failure | differential | `workspace-two-seat` | Codex offers Basic Memory's tools as `mcp__basic_memory__<tool>`, so a Codex hooks file whose Basic Memory guard matches `^mcp__basic-memory__.*$` -- every Codex binding `library init` wrote until S38 -- registers a guard that can never fire, and `workspace.codex-guards-registered` reports it failed, naming the matcher, rather than green. |
+| `checks.a-trusted-codex-project-with-unreviewed-hooks-is-warned` | success | differential | `workspace-seated` | A Codex home that trusts the project but has reviewed none of its hooks runs none of them -- Codex skips an unreviewed hook in silence, measured S49 in S7's Sandbox, where a closed-Book read went through while this check passed -- so `workspace.codex-guards-registered` warns, naming the unreviewed hooks and the home, rather than passing on trust alone. |
+| `checks.a-trusted-codex-project-with-every-hook-reviewed-passes` | success | differential | `workspace-seated` | A Codex home that trusts the project and holds a `trusted_hash` review for every hook its `.codex/hooks.json` registers reads as guarded (S49): the third gate is open. |
 | `checks.a-plugin-only-workspace-reads-as-guarded` | success | differential | `workspace-seated` | A workspace whose guards and reader come only from the enabled, installed Deskpost Claude Code plugin -- its own settings register no hook -- reads as guarded, through the plugin's registrations (S42). |
 | `checks.skips-workspace-checks-when-none-is-attached` | failure | differential | `bare-folder` | With no workspace attached, the workspace-reading checks report skipped with the reason, never failed: skip and fail are different answers. |
 

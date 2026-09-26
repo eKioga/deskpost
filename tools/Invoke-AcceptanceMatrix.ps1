@@ -451,6 +451,11 @@ function Get-AcceptanceChildEnvironment {
         # A synthetic fixture with no root (the self-test's) gets a directory that does not exist. NOT an empty
         # value: both arms read an empty CLAUDE_CONFIG_DIR as unset, and fall back to the user's own.
         CLAUDE_CONFIG_DIR = if (@($Fixture.PSObject.Properties.Name) -ccontains 'root' -and [string]$Fixture.root) { Join-Path ([string]$Fixture.root) 'claude-config' } else { Join-Path ([IO.Path]::GetTempPath()) 'acceptance-no-claude-config' }
+        # AND THIS MACHINE'S CODEX HOME IS NOT THE FIXTURE'S EITHER (S49). `doctor` reads project trust and, since
+        # S49, which hooks that home has reviewed; until now every step read the harness runner's own
+        # `~/.codex/config.toml`. A directory of the fixture's that does not exist, so no project is trusted; a
+        # row about trust points its step at a home it prepared.
+        CODEX_HOME        = if (@($Fixture.PSObject.Properties.Name) -ccontains 'root' -and [string]$Fixture.root) { Join-Path ([string]$Fixture.root) 'codex-home' } else { Join-Path ([IO.Path]::GetTempPath()) 'acceptance-no-codex-home' }
     }
     # A SHARED FIXTURE'S COLLECTION RIDES IN THE ENVIRONMENT TOO (S32), because the environment
     # outranks every file LibraryDeployment.ps1 falls back to -- the program root's own pin among
@@ -1154,6 +1159,10 @@ function Invoke-AcceptanceMatrixSelfTest {
         @('Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with library seat start <name> --project <project-slug>.'),
         @('pass -WorkspacePath, set LIBRARY_WORKSPACE, or pass -Seat explicitly.', 'pass --workspace, set LIBRARY_WORKSPACE, or pass --seat explicitly.'),
         @('take it over with tools/Set-NotebookTopicOwner.ps1 -Topic x, or', 'take it over with powershell -ExecutionPolicy Bypass -File "<program>\tools\Set-NotebookTopicOwner.ps1" -Topic x, or'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'library reset restore --list'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'library reset restore --quarantine <name> --show'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'library reset restore --quarantine reset-20260926-0102 --preflight'),
+        @('restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with library reset restore, or'),
         @('no helper named here', 'no helper named here')
     )
     foreach ($case in $remedyCases) {
@@ -1162,6 +1171,9 @@ function Invoke-AcceptanceMatrixSelfTest {
     }
     $walked = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ next = 'Use tools/Get-DeskOverview.ps1 until then.'; body = 'tools/Get-DeskOverview.ps1'; items = @([pscustomobject]@{ reason = 'tools/Retire-Seat.ps1 -Seat old' }) })
     Check ($walked.next -ceq 'Use library desk until then.' -and $walked.body -ceq 'tools/Get-DeskOverview.ps1' -and $walked.items[0].reason -ceq 'library seat retire old') "the oracle side's field walk rewrote the wrong fields: $($walked | ConvertTo-Json -Compress -Depth 5)"
+    # A `*_route` FIELD IS A REMEDY (S49, the reader's ruling), any such key; a field merely containing `route` is not.
+    $routed = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ quarantine = [pscustomobject]@{ list_route = 'tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List'; note = 'tools/Restore-NotebookQuarantine.ps1' }; later_route = 'tools/Get-DeskOverview.ps1'; routes = 'tools/Get-DeskOverview.ps1' })
+    Check ($routed.quarantine.list_route -ceq 'library reset restore --list' -and $routed.later_route -ceq 'library desk' -and $routed.quarantine.note -ceq 'tools/Restore-NotebookQuarantine.ps1' -and $routed.routes -ceq 'tools/Get-DeskOverview.ps1') "the oracle side's field walk did not treat exactly the *_route keys as remedies: $($routed | ConvertTo-Json -Compress -Depth 5)"
     # A READER TOOL'S ERROR TEXT IS A REMEDY, AND A PAGE IS NOT (kernel/src/reader.ts): S47's full run met the
     # seatless refusal inside `result.content[0].text`, which no remedy key names.
     $failed = ConvertTo-AcceptanceInstalledRemedyFields -Value ('{"result":{"isError":true,"content":[{"type":"text","text":"Use tools/Get-DeskOverview.ps1 until then."}]}}' | ConvertFrom-Json)

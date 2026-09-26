@@ -2163,6 +2163,30 @@
       "kernel": { "steps": [ { "command": ["doctor", "--workspace", "{workspace}", "--json"] } ] }
     },
     {
+      "id": "checks.a-trusted-codex-project-with-unreviewed-hooks-is-warned",
+      "area": "checks",
+      "class": "success",
+      "oracle": "differential",
+      "operation": "A Codex home that trusts the project but has reviewed none of its hooks runs none of them -- Codex skips an unreviewed hook in silence, measured S49 in S7's Sandbox, where a closed-Book read went through while this check passed -- so `workspace.codex-guards-registered` warns, naming the unreviewed hooks and the home, rather than passing on trust alone.",
+      "fixture": "workspace-seated",
+      "readonly": true,
+      "prepare": [ {"path": ".test-codex/config.toml", "text": "[projects.'{workspace}']\ntrust_level = \"trusted\"\n"} ],
+      "powershell": { "steps": [ { "script": "tools/Invoke-LibraryChecks.ps1", "args": ["-WorkspacePath", "{workspace}", "-WorkspaceOnly", "-Json"], "environment": { "CODEX_HOME": "{workspace}\\.test-codex" } } ] },
+      "kernel": { "steps": [ { "command": ["doctor", "--workspace", "{workspace}", "--json"], "environment": { "CODEX_HOME": "{workspace}\\.test-codex" } } ] }
+    },
+    {
+      "id": "checks.a-trusted-codex-project-with-every-hook-reviewed-passes",
+      "area": "checks",
+      "class": "success",
+      "oracle": "differential",
+      "operation": "A Codex home that trusts the project and holds a `trusted_hash` review for every hook its `.codex/hooks.json` registers reads as guarded (S49): the third gate is open.",
+      "fixture": "workspace-seated",
+      "readonly": true,
+      "prepare": [ {"path": ".test-codex/config.toml", "text": "[projects.'{workspace}']\ntrust_level = \"trusted\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:0:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:0:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:1:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:1:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:2:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:2:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:3:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:pre_tool_use:3:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:user_prompt_submit:0:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:user_prompt_submit:0:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:user_prompt_submit:1:0']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\n[hooks.state.'{workspace}\\.codex\\hooks.json:user_prompt_submit:1:1']\ntrusted_hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"} ],
+      "powershell": { "steps": [ { "script": "tools/Invoke-LibraryChecks.ps1", "args": ["-WorkspacePath", "{workspace}", "-WorkspaceOnly", "-Json"], "environment": { "CODEX_HOME": "{workspace}\\.test-codex" } } ] },
+      "kernel": { "steps": [ { "command": ["doctor", "--workspace", "{workspace}", "--json"], "environment": { "CODEX_HOME": "{workspace}\\.test-codex" } } ] }
+    },
+    {
       "id": "checks.a-plugin-only-workspace-reads-as-guarded",
       "area": "checks",
       "class": "success",

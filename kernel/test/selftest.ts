@@ -1504,12 +1504,27 @@ if (selected(23)) {
     ['Use tools/Get-DeskOverview.ps1 until then.', 'Use library desk until then.'],
     ['Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with library seat start <name> --project <project-slug>.'],
     ['pass -WorkspacePath, set LIBRARY_WORKSPACE, or pass -Seat explicitly.', 'pass --workspace, set LIBRARY_WORKSPACE, or pass --seat explicitly.'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'library reset restore --list'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'library reset restore --quarantine <name> --show'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'library reset restore --quarantine reset-20260926-0102 --preflight'],
+    ['restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with library reset restore, or'],
     ['take it over with tools/Set-NotebookTopicOwner.ps1, or', 'take it over with tools/Set-NotebookTopicOwner.ps1 (a PowerShell helper; this machine has no PowerShell to run it), or'],
   ];
   for (const [given, wanted] of cases) equal(posix(given), wanted, `the POSIX remedy for '${given}'`);
   const windowsText = 'Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta.';
   equal(hostRemedies(windowsText, 'win32'), windowsText, "the Windows remedy from source changed; it is the oracle's sentence");
   equal(posix('no helper named here'), 'no helper named here', 'a sentence naming no helper was changed');
+
+  // A `*_route` FIELD IS A REMEDY (S49, the reader's ruling): every such key, and no other field for containing `route`.
+  const { hostRemedyFields } = await import('../src/remedy.ts');
+  const routed = hostRemedyFields(
+    { quarantine: { list_route: 'tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', note: 'tools/Restore-NotebookQuarantine.ps1' }, later_route: 'tools/Get-DeskOverview.ps1', routes: 'tools/Get-DeskOverview.ps1' },
+    'posix',
+  );
+  check(
+    routed.quarantine.list_route === 'library reset restore --list' && routed.later_route === 'library desk' && routed.quarantine.note === 'tools/Restore-NotebookQuarantine.ps1' && routed.routes === 'tools/Get-DeskOverview.ps1',
+    `the field walk did not treat exactly the *_route keys as remedies: ${JSON.stringify(routed)}`,
+  );
 
   // AN INSTALLED KERNEL ON WINDOWS (S47, the reader's ruling): a ported helper is its verb, as on POSIX, and one
   // with no port is named by its full path in the installed program, runnable under a default execution policy.
@@ -1543,8 +1558,56 @@ if (selected(23)) {
       fs.writeFileSync(path.join(seatDesk, '.open-projects'), '');
       const denial = runCli(['hook', 'shelf-read', '--workspace', workspace, '--seat', 'reader'], { cwd: root, env, input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: path.join(workspace, 'shelf', 'holding', 'wiki', '_index.md') } }) }).stdout;
       check(denial.includes('library desk open book holding --location shelf') && !denial.includes('Set-VirtualDesk.ps1'), `a closed-Book denial still offers a PowerShell helper on POSIX or from a compiled kernel: ${denial}`);
+      // THE ROUTE FIELDS (S49): the Desk's quarantine block and the restore's list, each a command this host runs.
+      // The Desk answers only a real seat, made as section 35 makes one: a Hub, then a confirmed `seat enter`.
+      const { spawn } = await import('node:child_process');
+      const agent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' });
+      agent.unref();
+      try {
+        equal(runCli(['hub', 'new', 'routes', '--title', 'Routes', '--workspace', workspace], { cwd: root, env }).exit, 0, 'hub new for the route seat failed');
+        const enter = (extra: string[]) => runCli(['seat', 'enter', 'router', '--create', '--project', 'routes', '--agent-pid', String(agent.pid), '--workspace', workspace, ...extra], { cwd: root, env });
+        const planId = (() => {
+          try {
+            return String((JSON.parse(enter(['--preflight']).stdout) as { plan_id: unknown }).plan_id);
+          } catch {
+            return '';
+          }
+        })();
+        equal(enter(['--plan-id', planId]).exit, 0, 'the route seat could not be created');
+      } finally {
+        try {
+          process.kill(agent.pid!);
+        } catch {}
+      }
+      const overview = runCli(['desk', '--seat', 'router', '--json'], { cwd: workspace, env });
+      const listRoute = (() => {
+        try {
+          return String((JSON.parse(overview.stdout) as { notebook?: { quarantine?: { list_route?: unknown } } }).notebook?.quarantine?.list_route);
+        } catch {
+          return `unreadable: ${overview.stdout.trim()} ${overview.stderr.trim()}`;
+        }
+      })();
+      equal(listRoute, 'library reset restore --list', "the Desk's notebook.quarantine.list_route on POSIX or from a compiled kernel");
+      const listing = runCli(['reset', 'restore', '--list', '--json'], { cwd: workspace, env });
+      const showRoute = (() => {
+        try {
+          return String((JSON.parse(listing.stdout) as { show_route?: unknown }).show_route);
+        } catch {
+          return `unreadable: ${listing.stdout.trim()} ${listing.stderr.trim()}`;
+        }
+      })();
+      equal(showRoute, 'library reset restore --quarantine <name> --show', "the restore listing's show_route on POSIX or from a compiled kernel");
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      // The seat's claim holder lets go when its agent dies; give it a moment, as section 35 does.
+      const until = Date.now() + 5000;
+      while (Date.now() < until) {
+        try {
+          fs.rmSync(root, { recursive: true, force: true });
+          break;
+        } catch {
+          spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 200)']);
+        }
+      }
     }
   }
 }

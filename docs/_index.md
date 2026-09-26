@@ -57,6 +57,7 @@ that decides where any given decision belongs.
 * [ADR-0044](adr/0044-basic-memory-is-optional-and-the-public-install-is-local.md) - Basic Memory is optional and advertised, never a prerequisite; the public install defaults to a local collection (Tier 0), the reader's own workspaces keep their Basic Memory collection, and friction on the default route is a release defect (effective the next public release)
 * [ADR-0045](adr/0045-an-installed-kernel-says-its-own-remedies-and-the-plugin-is-opt-in.md) - A compiled kernel on Windows says a remedy as a command the reader can run, the matrix normalises the oracle side by one rule, and the Claude Code plugin is opt-in (S47)
 * [ADR-0046](adr/0046-a-compiled-windows-init-registers-the-kernels-own-hooks.md) - On Windows a compiled release's `library init` registers the kernel's own five hooks, exec form for Claude and `& ` for Codex, and keeps the four unported ones as PowerShell (S48)
+* [ADR-0047](adr/0047-a-route-field-is-a-remedy-and-doctor-reads-codex-hook-review.md) - A `*_route` result field is a remedy and names `library reset restore`; doctor warns when a trusted Codex project's hooks are unreviewed; the harness pins `CODEX_HOME`; `v0.2.3` adds `linux-x64`; the job keeps building here and scanning there (S49)
 
 ## Guides
 

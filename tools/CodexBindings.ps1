@@ -338,3 +338,51 @@ function Get-CodexProjectTrust {
     }
     [pscustomobject]$result
 }
+
+function Get-CodexUnreviewedHooks {
+    <#
+        Which of a hooks file's registrations the Codex home has never reviewed, as `<Event> <i>:<j>`.
+
+        HOOK TRUST IS THE THIRD GATE, AND AN UNREVIEWED HOOK IS SKIPPED IN SILENCE (S49, measured in S7's
+        Windows Sandbox on codex-cli 0.153.4). With the project trusted and no hook reviewed, `codex exec` ran
+        a shell read of a closed Book's page and printed it, no hook firing, while this check passed. The
+        reader's first interactive session wrote one `[hooks.state.'<hooks.json>:<event>:<i>:<j>']` table per
+        hook, each with a `trusted_hash`, and the same read was then blocked.
+
+        PRESENCE ONLY. What the hash is taken over is Codex's and is not reproduced here, so a review that went
+        stale when a hook changed reads as reviewed; Codex asks again in that case. Read, never written.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$HooksPath,
+        [Parameter(Mandatory)]$Document,
+        [Parameter(Mandatory)][string]$ConfigPath
+    )
+    $normalise = { param([string]$text) $text.Replace('\', '/').ToLowerInvariant() }
+    $reviewed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+        $current = $null
+        foreach ($line in @([IO.File]::ReadAllText($ConfigPath) -split "`r?`n")) {
+            $text = $line.Trim()
+            if ($text.StartsWith('[')) {
+                $header = [regex]::Match($text, '^\[hooks\.state\.(.+)\]$')
+                $current = if ($header.Success) { ConvertFrom-CodexProjectKey $header.Groups[1].Value } else { $null }
+                continue
+            }
+            if ($null -ne $current -and $text -match '^trusted_hash\s*=\s*["''][^"'']+["'']\s*$') { [void]$reviewed.Add((& $normalise $current)) }
+        }
+    }
+    $file = $HooksPath
+    try { $file = [IO.Path]::GetFullPath($HooksPath) } catch { }
+    $unreviewed = [Collections.Generic.List[string]]::new()
+    foreach ($event in @($Document.hooks.PSObject.Properties)) {
+        $snake = ([regex]::Replace($event.Name, '([a-z0-9])([A-Z])', '$1_$2')).ToLowerInvariant()
+        $groups = @($event.Value)
+        for ($i = 0; $i -lt $groups.Count; $i++) {
+            $hooks = @($groups[$i].hooks)
+            for ($j = 0; $j -lt $hooks.Count; $j++) {
+                if (-not $reviewed.Contains((& $normalise "${file}:${snake}:${i}:${j}"))) { [void]$unreviewed.Add("$($event.Name) ${i}:${j}") }
+            }
+        }
+    }
+    @($unreviewed)
+}

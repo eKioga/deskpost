@@ -549,6 +549,15 @@ Invoke-WorkspaceCheck 'workspace.codex-guards-registered' {
                 'CODEX_HOME, so a seat launched from Orca needs it in the home that seat uses.')
     }
 
+    # THE THIRD GATE (S49): a trusted project's hooks still run only once that Codex home has reviewed them.
+    $unreviewed = @(Get-CodexUnreviewedHooks -HooksPath $hooksPath -Document $doc -ConfigPath $trust.config)
+    if ($unreviewed.Count) {
+        return ("WARN: $workspace registers $registrations trusted Codex hook(s) that resolve, but $($unreviewed.Count) " +
+                "have not been reviewed in $($trust.config): $($unreviewed -join ', '). Codex skips an unreviewed hook " +
+                'in SILENCE, so those bindings are inert. Open a Codex session in that folder once and accept its hook ' +
+                'review; the review is per Codex home, like the trust grant.')
+    }
+
     # The reader itself, exactly as the Claude half asks it. A guarded Codex seat with no server can
     # be refused a closed Book and still has nothing to read an open one with.
     $configPath = Join-Path $workspace (Join-Path '.codex' 'config.toml')
@@ -562,7 +571,7 @@ Invoke-WorkspaceCheck 'workspace.codex-guards-registered' {
                 '.codex/config.toml does not declare the validated reader.')
     }
 
-    "$registrations Codex hook registration(s) resolve, the project is trusted in $($trust.home), and the validated reader is declared"
+    "$registrations Codex hook registration(s) resolve, the project is trusted in $($trust.home) with every hook reviewed, and the validated reader is declared"
 }
 
 Invoke-Check 'codex.project-access-config' {

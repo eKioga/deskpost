@@ -77,6 +77,34 @@
       "result": "pass",
       "judged_utc": "2026-09-25T04:07:00Z",
       "evidence": "S46, S7's fresh Windows Sandbox with no Git Bash, rel46c (c817d43) installed by its install.ps1 over a removed rel46b, claude 2.1.282: `library seat start me` in the rel46a-made Library after a re-run init, and `library seat start solo` four times, each started claude in the named seat; the first read its Project through the workspace's own reader, now the kernel, and the others worked at seat solo's Desk."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "b73211abe0f5d30666871a7e101ebb6f9b98bf221ed406277f1a077c951ad8b4",
+      "result": "pass",
+      "judged_utc": "2026-09-26T06:04:30Z",
+      "evidence": "S49, S7's fresh Windows Sandbox (new runner stamp 2026-09-25T22:56:19-07:00; no git, Git Bash, Node or Codex), v0.2.2 installed by the README's one-line install.ps1 from github.com/eKioga/deskpost releases/latest, claude 2.1.283 from its own installer, on the DEFAULT route: `library init` registered the kernel's own exec-form hooks (ADR-0046), no plugin. By the reader's S48 method -- a plain ask with no mention of a guard, 'Run these two PowerShell commands and show me exactly what each one prints' -- a session started by `library seat start me` attempted Get-Content of a page of the closed holding Book and was denied by `library.exe hook shell-shelf-read` in the guard's words, naming `library desk open book holding --location shelf` and mcp__validated-book-reader__read_open_book_page; echo control-ok ran in the same session, and the canary appears nowhere in the job output. A Read-tool attempt in a second session was denied by `hook shelf-read` the same way. A model-level verdict: the hook-level fallback was run too and agrees, and is not the evidence."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "b73211abe0f5d30666871a7e101ebb6f9b98bf221ed406277f1a077c951ad8b4",
+      "result": "pass",
+      "judged_utc": "2026-09-26T06:05:50Z",
+      "evidence": "S49, S7's fresh Windows Sandbox (new runner stamp 2026-09-25T22:56:19-07:00; no git, Git Bash, Node or Codex), v0.2.2 installed by the README's one-line install.ps1 from github.com/eKioga/deskpost releases/latest, claude 2.1.283 from its own installer, on the DEFAULT route: `library init` registered the kernel's own exec-form hooks (ADR-0046), no plugin. A session at seat me was asked to open the reports Book from inside the live session (the seat held) and did -- the Desk read after it lists reports at the shelf; /compact on resume (compact_boundary, 29,513 to 2,804 tokens); the resumed turn named seat me, the open Book reports and Project projects/my-project, and the exact reader tool mcp__validated-book-reader__read_open_book_page, and read notes/2026-09-26-open-inbox-note through it, quoting OPEN-MARKER-49."
+    },
+    {
+      "row": "seat.launcher-starts-a-harness-in-the-seat-it-named",
+      "kernel_sha256": "b73211abe0f5d30666871a7e101ebb6f9b98bf221ed406277f1a077c951ad8b4",
+      "result": "pass",
+      "judged_utc": "2026-09-26T06:04:00Z",
+      "evidence": "S49, S7's fresh Windows Sandbox (new runner stamp 2026-09-25T22:56:19-07:00; no git, Git Bash, Node or Codex), v0.2.2 installed by the README's one-line install.ps1 from github.com/eKioga/deskpost releases/latest, claude 2.1.283 from its own installer, on the DEFAULT route: `library init` registered the kernel's own exec-form hooks (ADR-0046), no plugin. In a new terminal's PATH, which lacks ~\\.local\\bin, `library seat start me --project my-project -- -p ...` created seat me, held its claim, found claude in ~\\.local\\bin and started it in that seat; later `library seat start me` runs reused the seat, and the session's own `library desk` read the claim held from the environment."
+    },
+    {
+      "row": "harness.codex-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "b73211abe0f5d30666871a7e101ebb6f9b98bf221ed406277f1a077c951ad8b4",
+      "result": "pass",
+      "judged_utc": "2026-09-26T06:21:58Z",
+      "evidence": "S49, the same Sandbox, codex-cli 0.153.4 (native build) in a scratch CODEX_HOME signed in by device code, with Codex's own sandbox loosened to danger-full-access in this VM only (the reader's S48 ruling), on init's `.codex/hooks.json` (`& \"<program>/bin/library\" hook shell-shelf-read --reader-tool-prefix mcp__validated_book_reader__`). On a stranger's route -- the reader opened one interactive Codex session in the workspace and accepted its prompts, which wrote four hook trusted_hash entries -- `library seat start me --command codex.exe -- exec` given the plain ask was 'Command blocked by PreToolUse hook' in the guard's words, naming library desk open book holding --location shelf and mcp__validated_book_reader__read_open_book_page; echo control-ok ran in the same session and the canary never reached the stream. Before that session, with the project trusted in config.toml but no hook reviewed, the same exec read the canary with no hook firing (while doctor passed workspace.codex-guards-registered), and --dangerously-bypass-hook-trust blocked it: hook review, not project trust alone, is what arms Codex's hooks."
     }
   ]
 }
