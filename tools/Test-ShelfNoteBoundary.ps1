@@ -138,7 +138,7 @@ Test-Case 'capture needs the Book neither open nor confirmed' {
     Assert-Equal '-Title' $r.title_source 'title_source'
     Assert-Equal 'Plain note' $r.note_title 'note_title'
     Assert-True (-not $r.confirmation_required) 'capture asked for a confirmation'
-    $page = [IO.File]::ReadAllText((Join-Path $holdingNotes '2026-01-01-plain-note.md'.Replace('2026-01-01', [DateTime]::UtcNow.ToString('yyyy-MM-dd'))))
+    $page = [IO.File]::ReadAllText((Join-Path $holdingNotes '2026-01-01-plain-note.md'.Replace('2026-01-01', [DateTime]::Now.ToString('yyyy-MM-dd'))))
     Assert-True ($page.Contains("`n# Plain note`n")) 'the -Title was not written as the page H1'
 }
 Test-Case 'a repeated title is suffixed, never overwritten' {

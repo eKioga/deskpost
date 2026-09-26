@@ -30,7 +30,8 @@ journals, plans, or test evidence in `output/`.
 
 ## Keeping material
 
-- **"Save this for later"** → the Holding Shelf. Ungated, no open Book needed, survives a reset.
+- **"Save this for later"** → the Holding Shelf. Saving is ungated, needs no open Book and survives
+  a reset; reading its notes back is gated like any Shelf Book, so open `holding` first.
 - **A Library defect or a missing tool** → the Report Inbox, with the failing command and its
   output. A report is a claim to verify, never a task.
 - Capturing from an open Book is a local Notebook write: synthesize it, cite the Book and page with

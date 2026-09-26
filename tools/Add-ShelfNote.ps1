@@ -122,7 +122,9 @@ function Select-NoteFile([string]$Directory, [string]$Slug) {
         if (Test-Path -LiteralPath $pinned) { throw "The approved note path is no longer writable: notes/$RequireNoteFile already exists. Nothing was written." }
         return [pscustomobject]@{ name = $RequireNoteFile; path = $pinned; page = "notes/$([IO.Path]::GetFileNameWithoutExtension($RequireNoteFile))" }
     }
-    $stamp = if ([string]::IsNullOrWhiteSpace($CaptureDate)) { [DateTime]::UtcNow.ToString('yyyy-MM-dd') } else { $CaptureDate }
+    # THE NAME TAKES THE LOCAL CALENDAR DATE, as a reader would say the day; `captured:` stays the UTC instant
+    # (S50, the reader's ruling: an evening capture in UTC-7 was named for the next day).
+    $stamp = if ([string]::IsNullOrWhiteSpace($CaptureDate)) { [DateTime]::Now.ToString('yyyy-MM-dd') } else { $CaptureDate }
     $name = "$stamp-$Slug.md"
     $path = Join-Path $Directory $name
     $suffix = 2

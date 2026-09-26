@@ -73,8 +73,10 @@ function utcSeconds(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function utcDate(): string {
-  return new Date().toISOString().substring(0, 10);
+/** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
+function localDate(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 interface Resolved {
@@ -136,7 +138,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     refuse('ActionJson must be valid JSON.');
   }
   if (!requested.length) refuse('A Library Triage plan needs at least one action.');
-  const captureDate = (parsed.options.get('capture-date') ?? '').trim() || utcDate();
+  const captureDate = (parsed.options.get('capture-date') ?? '').trim() || localDate();
   const lockTimeout = Number(parsed.options.get('lock-timeout') ?? '20');
   const stateDirectory = path.join(workspace, '.claude');
   const preflight = parsed.flags.has('preflight');

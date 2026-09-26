@@ -808,7 +808,7 @@ the two disagree. Edit the rows, not the table.
 
 <!-- BEGIN GENERATED MATRIX -- rendered by tools/Invoke-AcceptanceMatrix.ps1 -RenderDoc; do not edit by hand -->
 
-**176 rows** across 18 areas: 156 compared against PowerShell, 20 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
+**177 rows** across 18 areas: 156 compared against PowerShell, 21 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
 
 Approved for **every** row, so not repeated on each one: `kernel-reports-its-own-version`.
 
@@ -923,6 +923,7 @@ Capture into a capture-enabled Book and the Report Inbox.
 | Row | Class | Oracle | Fixture | Operation |
 | --- | --- | --- | --- | --- |
 | `capture.note-lands-in-a-capture-enabled-book` | success | differential | `workspace-shelf` | A captured note is written into the Holding Shelf with its capture date and review state, with no Book open. |
+| `capture.a-note-is-named-by-the-local-date` | success | independent | `workspace-shelf` | A captured note's file name carries the local calendar date, as a reader would say the day, and its `captured:` frontmatter stays the UTC instant; triage's default capture date follows the name. And the workspace instructions `init` renders tell saving to the Holding Shelf, which is ungated, from reading its notes, which needs the Book open (S50, ADR-0048: S49's Sandbox found an evening capture in UTC-7 named for the next day, and two sessions reading "no open Book needed" as covering a refused read). |
 | `capture.refuses-a-book-that-is-not-capture-enabled` | failure | differential | `workspace-shelf` | Capturing into a curated Book refuses and names the capture Books that would accept it. |
 | `capture.page-added-to-an-open-curated-book` | success | differential | `workspace-open-book` | A page added to an OPEN curated Book is additive, taken under the Book's lock, and appears in the reader map. |
 | `capture.page-refused-when-the-book-is-closed` | failure | differential | `workspace-shelf` | The same page write against a closed Book refuses: a closed Book is unavailable for writing as well as reading. |

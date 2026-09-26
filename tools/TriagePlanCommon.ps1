@@ -634,7 +634,7 @@ function Get-TriageExecutionOrder($Actions) {
 }
 
 function Resolve-TriagePlanActions($Actions, [string]$Workspace, [string]$CaptureDate) {
-    if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::UtcNow.ToString('yyyy-MM-dd') }
+    if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::Now.ToString('yyyy-MM-dd') }
     $resolved = @(@($Actions) | ForEach-Object { ConvertTo-TriageAction -Action $_ -Workspace $Workspace -CaptureDate $CaptureDate })
     if ($resolved.Count -eq 0) { throw 'A Library Triage plan needs at least one action.' }
     Assert-TriageWriteSetsDisjoint $resolved

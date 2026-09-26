@@ -53,8 +53,8 @@ under `notebook/<project-slug>/`, separate in the Notebook master index.
   topic indexes, and `## Key Takeaways` current while the work is active.
 - Capturing from an open Book is a local Notebook write: synthesize it, cite the Book and page with
   its limits, update the fitting index, and make no shared write.
-- **"Save this for later"** → the Holding Shelf: `tools/Add-ShelfNote.ps1`. Ungated, no open Book
-  needed, survives a reset.
+- **"Save this for later"** → the Holding Shelf: `tools/Add-ShelfNote.ps1`. Saving is ungated, needs
+  no open Book and survives a reset; reading its notes back is gated like any Shelf Book.
 - **A Library defect or a missing tool** → the Report Inbox: `tools/Add-ShelfNote.ps1 -BookSlug
   reports`, ungated, with the failing command and its output. A report is a claim to verify, never a
   task.

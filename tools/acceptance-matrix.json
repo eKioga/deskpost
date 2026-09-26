@@ -1440,6 +1440,18 @@
       "kernel": { "steps": [ { "command": ["capture", "holding", "--title", "Oracle capture", "--body", "Captured by the acceptance matrix.", "--workspace", "{workspace}", "--json"] } ] }
     },
     {
+      "id": "capture.a-note-is-named-by-the-local-date",
+      "area": "capture",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A captured note's file name carries the local calendar date, as a reader would say the day, and its `captured:` frontmatter stays the UTC instant; triage's default capture date follows the name. And the workspace instructions `init` renders tell saving to the Holding Shelf, which is ungated, from reading its notes, which needs the Book open (S50, ADR-0048: S49's Sandbox found an evening capture in UTC-7 named for the next day, and two sessions reading \"no open Book needed\" as covering a refused read).",
+      "reason": "No oracle for the zone: .NET on Windows ignores TZ, so the PowerShell arm can only be judged at the host's own offset, by tools/Test-ShelfNoteBoundary.ps1. Judged by section 40 of kernel/test/selftest.ts (S50) against the kernel under test: a capture and a triage validate each run under TZ=Etc/GMT+12 and TZ=Etc/GMT-14, at least one of which is on a different calendar date from UTC at any instant, and the rendered Holding Shelf bullet read back. A compiled Bun binary on Windows ignores TZ and reads the OS zone (measured S50), so against one the section expects the host's own local date, which discriminates only while the host's date differs from UTC's.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "40" } },
+      "fixture": "workspace-shelf",
+      "powershell": { "steps": [ { "script": "tools/Add-ShelfNote.ps1", "args": ["-BookSlug", "holding", "-Title", "Local date capture", "-Content", "Named by the local date.", "-WorkspacePath", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["capture", "holding", "--title", "Local date capture", "--body", "Named by the local date.", "--workspace", "{workspace}", "--json"] } ] }
+    },
+    {
       "id": "capture.refuses-a-book-that-is-not-capture-enabled",
       "area": "capture",
       "class": "failure",

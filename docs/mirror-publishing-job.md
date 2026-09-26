@@ -511,7 +511,7 @@ publish_release() {
   tag="$1"; files="$WORK/rel/$tag/files"
   code="$(gh_api -o "$WORK/release.json" -w '%{http_code}' "$GITHUB_API/repos/$SLUG/releases/tags/$tag")" || code=000
   if [ "$code" = 404 ]; then
-    body="$(python3 -c 'import json,sys; t=sys.argv[1]; print(json.dumps({"tag_name": t, "name": "Deskpost " + t, "body": "Built from the tag " + t + " and published by the mirror job after the scan that published the tag. Check an archive against SHA256SUMS; install.ps1 does.", "draft": False, "prerelease": False}))' "$tag")"
+    body="$(python3 -c 'import json,sys; t=sys.argv[1]; print(json.dumps({"tag_name": t, "name": "Deskpost " + t, "body": "Built from the tag " + t + " and published by the mirror job after the scan that published the tag. Check an archive against SHA256SUMS; install.ps1 does.", "draft": False, "prerelease": "-" in t}))' "$tag")"
     code="$(gh_api -o "$WORK/release.json" -w '%{http_code}' -X POST -d "$body" "$GITHUB_API/repos/$SLUG/releases")" || code=000
     [ "$code" = 201 ] || { echo "FATAL: creating release $tag answered $code: $(head -c 300 "$WORK/release.json" 2>/dev/null)"; return 1; }
   elif [ "$code" != 200 ]; then

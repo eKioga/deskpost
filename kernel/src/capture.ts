@@ -82,9 +82,13 @@ function utcStamp(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-/** `yyyy-MM-dd` in UTC: the note file name's stamp, taken from `[DateTime]::UtcNow`. */
-function utcDate(): string {
-  return new Date().toISOString().substring(0, 10);
+/**
+ * `yyyy-MM-dd` on this machine's own calendar: the note file name's stamp, as a reader would say the day
+ * (S50, the reader's ruling). `captured:` stays the UTC instant; only the name is local.
+ */
+function localDate(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 // --- shared page grammar ---------------------------------------------------------------------------
@@ -434,7 +438,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
         }
         return { name: requireNoteFile, full: pinned, page: `notes/${requireNoteFile.replace(/\.md$/i, '')}` };
       }
-      const stamp = captureDate || utcDate();
+      const stamp = captureDate || localDate();
       let name = `${stamp}-${noteSlug}.md`;
       let full = path.join(book.notesPath, name);
       let suffix = 2;

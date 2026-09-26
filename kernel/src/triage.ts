@@ -741,8 +741,10 @@ export interface TriageResult {
   value: PsJsonValue | null;
 }
 
-function utcDate(): string {
-  return new Date().toISOString().substring(0, 10);
+/** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
+function localDate(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 export function runTriageVerb(argv: string[], workspace: string): TriageResult {
@@ -762,7 +764,7 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
         refuse('ActionJson must be valid JSON.');
       }
       if (!requested.length) refuse('A Library Triage plan needs at least one action.');
-      const captureDate = (parsed.options.get('capture-date') ?? '').trim() || utcDate();
+      const captureDate = (parsed.options.get('capture-date') ?? '').trim() || localDate();
       // THE NOTEBOOK A PLAN READS FROM OR WRITES TO IS THE SEAT'S (ADR-0029), resolved only when an
       // action touches it: a plan over the Holding Shelf alone needs no seat's Notebook at all.
       const touchesNotebook = requested.some((item) => {

@@ -1,7 +1,7 @@
 # Deskpost
 
-**Status: Windows preview.** Usable, and narrow on purpose — see [Prerequisites](#prerequisites)
-before you install.
+**Status: 1.0 release candidate, for Windows and Linux.** See [Prerequisites](#prerequisites) before
+you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -17,14 +17,16 @@ knowledge, and a **Seat** is the station you work from — one Desk, one set of 
 
 ## New here?
 
-**[`docs/guides/`](docs/guides/README.md)** is written for the person *using* Deskpost — a quick
-start, a learning path, how to begin a project, and the workflow as diagrams. Start there. The rest
+**[`docs/guides/`](docs/guides/README.md)** is written for the person *using* Deskpost: a quick
+start from a fresh install, a learning path, how to begin a project, and the workflow as diagrams.
+Install first, then start with the [Quick Start](docs/guides/quick-start.md). The rest
 of `docs/` is design records, written for whoever is changing the code.
 
 ## Prerequisites
 
-- **Windows 10 or 11.**
-- **Claude Code or Codex**, installed and signed in. Both are supported and both read through the
+- **Windows 10 or 11**, or **Linux on x64** with `curl` and either `unzip` or `python3`. macOS is
+  not supported in 1.0.
+- **Claude Code or Codex**, installed and signed in. Both are supported, and both read through the
   same validated reader.
 
 That is all. Your Library keeps its Books and Project Hubs in a folder inside the workspace, on
@@ -38,12 +40,21 @@ In PowerShell:
 & ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1)))
 ```
 
-The installer checks the download against its published checksum, puts the program in
-`%LOCALAPPDATA%\deskpost` and adds its `bin` folder to your PATH. It finishes by running
-`library doctor`, and its result is the install's result. Open a new terminal afterwards so the
-PATH change takes effect.
+On Linux:
 
-Then create your Library — a workspace folder, wherever you like — and your first Project and Seat:
+```sh
+curl -fsSL https://github.com/eKioga/deskpost/releases/latest/download/install.sh | sh
+```
+
+Each installer checks the download against its published checksum and installs into a versioned
+folder. On Windows that is `%LOCALAPPDATA%\deskpost`, and its `bin` folder is added to your PATH. On
+Linux it is `~/.local/share/deskpost`, with `library` linked into `~/.local/bin`. Each installer
+finishes by running `library doctor`, and that result is the install's result. Open a new terminal
+afterwards so the PATH change takes effect. The Claude Code plugin is opt-in (`-Plugin` on Windows,
+`DESKPOST_PLUGIN=1` on Linux), because `library init` registers each workspace's own guards.
+
+Then create your Library (a workspace folder, wherever you like) and your first Project and Seat.
+On Linux, write the folder as `~/Library`:
 
 ```powershell
 library init $HOME\Library
@@ -72,8 +83,9 @@ Projects. You need:
   each machine that writes to it. Creating a Project or publishing a Book takes a lock beside the
   collection's files, which is what keeps two machines from writing the same page at once; a
   server reached only by its URL is readable but not writable;
-- the PowerShell setup, for now: `tools/Initialize-CodexLibrary.ps1 -McpUrl <url> -CollectionId <id>`
-  run from a clone of this repository. `library init --mcp-url` records the endpoint but does not
+- the PowerShell setup, for now, which makes this route Windows-only:
+  `tools/Initialize-CodexLibrary.ps1 -McpUrl <url> -CollectionId <id>` run from a clone of this
+  repository. `library init --mcp-url` records the endpoint but does not
   yet configure the helpers that read it.
 
 ## Using it
@@ -112,13 +124,15 @@ what is in them.
 
 ## Roadmap
 
-- **v0.1 — this preview.** Windows, Claude Code and Codex, a local collection by default and Basic
-  Memory as the optional shared route.
-- **Next.** The program separates from the workspace and ships as plugins, so one install serves
-  many Libraries ([ADR-0027](docs/adr/0027-the-program-is-separate-from-the-workspace.md)).
-- **v1.** macOS and Linux from the same single binary
-  ([ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md)). A Seat carries its own
-  Notebook ([ADR-0029](docs/adr/0029-the-notebook-belongs-to-the-seat.md)).
+- **1.0: this release.** One binary for Windows and Linux
+  ([ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md)), installed apart from
+  the Libraries it serves ([ADR-0027](docs/adr/0027-the-program-is-separate-from-the-workspace.md)).
+  Claude Code and Codex are both supported. A local collection is the default, with Basic Memory as
+  the optional shared route. Each Seat carries its own Notebook
+  ([ADR-0029](docs/adr/0029-the-notebook-belongs-to-the-seat.md)).
+- **After 1.0.** A seat picker and an Orca Quick Command per seat, setting up a shared collection
+  from `library init` itself, and macOS
+  ([ADR-0048](docs/adr/0048-a-note-is-named-by-the-local-date-and-saving-is-not-reading.md)).
 
 ## Contributing
 

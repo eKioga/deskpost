@@ -50,7 +50,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S15',
   },
   capture: {
-    summary: 'Capture a note into a capture-enabled Book. Ungated, and needs no open Book.',
+    summary: 'Capture a note into a capture-enabled Book. Saving is ungated and needs no open Book; reading the note back needs its Book open.',
     usage: 'library capture <book> --title <t> --body <b>',
     actions: [],
     positional: true,

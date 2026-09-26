@@ -58,6 +58,7 @@ that decides where any given decision belongs.
 * [ADR-0045](adr/0045-an-installed-kernel-says-its-own-remedies-and-the-plugin-is-opt-in.md) - A compiled kernel on Windows says a remedy as a command the reader can run, the matrix normalises the oracle side by one rule, and the Claude Code plugin is opt-in (S47)
 * [ADR-0046](adr/0046-a-compiled-windows-init-registers-the-kernels-own-hooks.md) - On Windows a compiled release's `library init` registers the kernel's own five hooks, exec form for Claude and `& ` for Codex, and keeps the four unported ones as PowerShell (S48)
 * [ADR-0047](adr/0047-a-route-field-is-a-remedy-and-doctor-reads-codex-hook-review.md) - A `*_route` result field is a remedy and names `library reset restore`; doctor warns when a trusted Codex project's hooks are unreviewed; the harness pins `CODEX_HOME`; `v0.2.3` adds `linux-x64`; the job keeps building here and scanning there (S49)
+* [ADR-0048](adr/0048-a-note-is-named-by-the-local-date-and-saving-is-not-reading.md) - A note's file name takes the local calendar date and `captured:` stays UTC; the Holding Shelf's instruction tells saving from reading; the next release is the RC; the Orca export is deferred past `v1.0.0` and macOS leaves S20's row (S50)
 
 ## Guides
 
@@ -66,9 +67,9 @@ Written for the reader rather than for the Librarian, and kept together in
 guide has to stay current, where the design records below are dated snapshots that are meant to
 freeze. The `library-help` Skill offers the same four.
 
-* [Returning Reader Quick Start](guides/quick-start-returning-reader.md) - for someone who knew the Library before seats: what changed, what old habits now do, and the first five minutes of a real session
-* [Library Learning Path](guides/learning-path.md) - nine safe things to try in order, each proving one piece of the design, with what to look at afterwards
-* [Starting a New Project](guides/starting-a-new-project.md) - a new long-running subject: the Hub, then the seat, then the first compile, every step of it by asking
+* [Quick Start](guides/quick-start.md) - the first session after a fresh install: a Library, a Project and a seat, then the six things worth trying first
+* [Library Learning Path](guides/learning-path.md) - eight safe things to try in order, each proving one piece of the design, with what to look at afterwards
+* [Starting a New Project](guides/starting-a-new-project.md) - a new long-running subject: the Hub, then the seat, then the first compile, and keeping what matters somewhere a reset cannot reach
 * [Library Workflow Guide](guides/workflow-guide.md) - the same behaviour drawn as flow, one vertical diagram per question
 
 ## Narrative records
@@ -86,6 +87,7 @@ freeze. The `library-help` Skill offers the same four.
 * [One Writable Workspace Per Collection](collection-ownership.md) - the writable role acquired by exclusive create and fenced by an incarnation, why the record is a directory of per-incarnation claims rather than the single file the plan sketched, why an unowned collection is permitted and why that is a one-way door, the release that refuses while a Book lock is held, and the four backend states with the fix each one names
 * [Graduating a Page into a Shelf Book](shelf-book-graduation.md) - the additive open-Book write, the reader-map rule that keeps it additive, and the two capture races it closed
 * [Capture Books and the Library Help Skill](capture-book-model.md) - the Holding Shelf, ungated capture into a closed Book, pending-count resurfacing, gated triage, and help as a Skill
+* [Real-Session Verdicts in Windows Sandbox](real-session-verdicts-in-windows-sandbox.md) - how the four `recorded_verdict` rows are judged against a release in a fresh Sandbox: the job-runner kit, sign-ins opened for the reader, the plain-ask method with its labelled hook-level fallback, Codex's hook review, and the traps measured there (S49)
 * [Cross-Seat Agent Reports](cross-seat-reports.md) - the Report Inbox as the channel from any seat to `library-dev`, the two provenance fields that make a report better than a paste, why a report is a claim and never a task, why the transcript it names is deliberately not read, and the Shelf/Book naming collision folded in
 * [Book Archive Model](book-archive-model.md) - how working files and NAS Books fit together
 * [Library Organization Model](library-organization.md) - Books, Projects, active/archive shelves, and collection-aware catalog grouping

@@ -1,6 +1,6 @@
 {
   "name": "deskpost",
-  "version": "0.2.3",
+  "version": "1.0.0-rc.1",
   "description": "The Library: a Virtual Desk over a shared knowledge collection, with a validated reader that refuses a closed Book and bounded write tools that cannot improvise.",
   "author": {
     "name": "Kioga"

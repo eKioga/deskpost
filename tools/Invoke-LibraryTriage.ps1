@@ -220,7 +220,8 @@ else {
     $stored = @()
 }
 
-if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::UtcNow.ToString('yyyy-MM-dd') }
+# The local calendar date, as a capture names its note (S50).
+if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::Now.ToString('yyyy-MM-dd') }
 $actions = @(Resolve-TriagePlanActions -Actions $requested -Workspace $workspace -CaptureDate $CaptureDate)
 
 # A stored plan is evidence about what was approved. Checking the re-resolved digests against it is

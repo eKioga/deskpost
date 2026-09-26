@@ -131,6 +131,16 @@ make_release v0.2.2 "$T4" 0 ''
 run_job new; e=$?
 check '[ $e -eq 0 ] && dst_refs | grep -qx refs/tags/v0.2.2 && [ -f "$D/stub/uploads/v0.2.2__SHA256SUMS" ]' "published (exit $e)"
 
+# S50, the reader's ruling: a tag with a pre-release suffix is created as a GitHub pre-release, so
+# `releases/latest` -- the README's install route -- keeps serving the last full release.
+created() { grep "^CREATED .*\"tag_name\": \"$1\"" "$D/stub/requests.log"; }
+echo "7. a release candidate is created as a pre-release, and a full release is not"
+T7="$(tag_commit v1.0.0-rc.1)"; make_release v1.0.0-rc.1 "$T7" 0 ''
+run_job new; e=$?
+check '[ $e -eq 0 ] && dst_refs | grep -qx refs/tags/v1.0.0-rc.1' "published (exit $e)"
+check 'created v1.0.0-rc.1 | grep -q "\"prerelease\": true"' "v1.0.0-rc.1 was created as a pre-release: $(created v1.0.0-rc.1 | grep -o '"prerelease": [a-z]*')"
+check 'created v0.2.2 | grep -q "\"prerelease\": false"' "v0.2.2 was not: $(created v0.2.2 | grep -o '"prerelease": [a-z]*')"
+
 echo "---"
 echo "fixture: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ] || { echo "--- last run.log"; tail -25 "$D/run.log"; }

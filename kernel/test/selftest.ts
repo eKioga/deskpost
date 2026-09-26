@@ -3250,6 +3250,71 @@ if (selected(39) && process.platform === 'win32') {
   }
 }
 
+// --- 40. A CAPTURE IS NAMED BY THE LOCAL DATE, AND THE HOLDING SHELF'S WORDING SAYS SAVING, NOT READING (S50) -----
+// Two Report Inbox claims from S49's Sandbox, ruled by the reader in S50. A note captured at 23:03 in UTC-7 was
+// named for the next day, because the file name took the UTC date; it now takes the local calendar date, as a
+// reader would say it, while `captured:` stays the UTC instant. Triage's default `--capture-date` follows the
+// same rule. Two zones twelve and fourteen hours from UTC: at any instant at least one of them is on a different
+// calendar date from UTC, so this section is red against a UTC-dated kernel whenever it runs. And the workspace
+// instructions `init` renders said the Holding Shelf needs "no open Book", which two sessions read as covering a
+// read that the guard then refused: saving is ungated, reading its notes is not.
+if (selected(40)) {
+  const w = await seatClaimWorkspace('localdate');
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the local-date judge could not be created');
+    const base = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const workspace = w.workspace;
+    const notesDirectory = path.join(workspace, 'shelf', 'holding', 'wiki', 'notes');
+    // Triage reads its source notes, and reading the Holding Shelf needs it open -- the very distinction below.
+    const opened = runCli(['desk', 'open', 'book', 'holding', '--location', 'shelf', '--seat', 'first', '--workspace', workspace, '--json'], { cwd: w.root, env: base });
+    equal(opened.exit, 0, `the Holding Shelf could not be opened: ${opened.stderr.trim().slice(0, 300)}`);
+
+    // The calendar date in a zone, the way the zone's own clock reads it.
+    const dateIn = (zone: string, at: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+    // A COMPILED BUN BINARY ON WINDOWS IGNORES TZ and reads the OS zone (measured S50: a `bun build --compile`
+    // probe reported PDT under TZ=Etc/GMT+12, where `bun run` of the same file reported GMT-12). So there the
+    // zone cannot be injected, and the judge expects THIS HOST's own local date -- the date a reader's machine
+    // gives. That is discriminating only while the host's date differs from UTC's; the zone-injected run, from
+    // source and on POSIX, is what is red against a UTC-dated kernel at any hour.
+    const version = (() => { try { return JSON.parse(runCli(['--version'], { cwd: w.root, env: base }).stdout) as { compiled?: boolean }; } catch { return {}; } })();
+    const hostZoneOnly = process.platform === 'win32' && version.compiled === true;
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    for (const zone of hostZoneOnly ? [hostZone] : ['Etc/GMT+12', 'Etc/GMT-14']) {
+      const env = hostZoneOnly ? base : { ...base, TZ: zone };
+      const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: w.root, env });
+      const title = `Local date probe ${zone.replace(/\W/g, '')}`;
+      const before = new Date();
+      const captured = cli(['capture', 'holding', '--title', title, '--body', 'Dated by the local clock.', '--json']);
+      const after = new Date();
+      equal(captured.exit, 0, `a capture in ${zone} failed: ${captured.stderr.trim()}`);
+      const expected = new Set([dateIn(zone, before), dateIn(zone, after)]);
+      const utcExpected = new Set([before.toISOString().substring(0, 10), after.toISOString().substring(0, 10)]);
+      const notes = fs.existsSync(notesDirectory) ? fs.readdirSync(notesDirectory).filter((name) => name.includes(title.toLowerCase().replace(/[^a-z0-9]+/g, '-'))) : [];
+      equal(notes.length, 1, `a capture in ${zone} did not write exactly one note: ${notes.join(', ')}`);
+      const stamp = (notes[0] ?? '').substring(0, 10);
+      check(expected.has(stamp), `a capture in ${zone} was named for ${stamp}, not the local date ${[...expected].join(' or ')}`);
+      const page = notes[0] ? fs.readFileSync(path.join(notesDirectory, notes[0]), 'utf8') : '';
+      const instant = /^captured: (\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}Z$/m.exec(page);
+      check(instant !== null && utcExpected.has(instant[1]!), `a capture in ${zone} did not keep captured: as the UTC instant: ${/^captured:.*$/m.exec(page)?.[0] ?? '(absent)'}`);
+
+      const validated = cli(['triage', 'validate', '--actions', JSON.stringify([{ kind: 'discard', source: 'holding', source_match: title }]), '--json']);
+      const captureDate = (() => { try { return String((JSON.parse(validated.stdout) as { capture_date?: string }).capture_date ?? ''); } catch { return ''; } })();
+      check(expected.has(captureDate), `triage's default capture date in ${zone} was '${captureDate}', not the local date ${[...expected].join(' or ')}: ${validated.exit} ${validated.stderr.trim().slice(0, 300)}`);
+    }
+
+    const instructions = fs.readFileSync(path.join(workspace, 'CLAUDE.md'), 'utf8');
+    // The bullet, with its wrapped continuation lines.
+    const holding = /^- .*the Holding Shelf.*(?:\r?\n  .*)*/m.exec(instructions)?.[0] ?? '';
+    check(/sav/i.test(holding) && /read/i.test(holding) && /open/i.test(holding), `the rendered Holding Shelf instruction does not tell saving from reading: ${holding}`);
+    check(!/no open Book needed/.test(instructions), `the rendered instructions still say the Holding Shelf needs "no open Book" without saying for what: ${holding}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
 // --- the verdict ----------------------------------------------------------------------------------------
 
 // A selection that ran nothing -- a section number that does not exist -- is not a pass.
