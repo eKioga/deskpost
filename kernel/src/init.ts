@@ -389,17 +389,40 @@ function kernelServesReader(programRoot: string | undefined, mcpUrl: string): bo
   return fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
 }
 
+/**
+ * WHICH HOOKS A WORKSPACE IS GIVEN (S48, the reader's ruling, ADR-0046). The kernel's own verbs wherever it can
+ * name itself: on a POSIX host always, and on Windows when this program is a compiled release, whose
+ * `bin/library.exe` is there to name. Until S48 Windows registered the guard scripts even from a release, so ADR-0045's
+ * rewrite -- which lives in the kernel's hook verbs -- never ran on the default route, and S7's closed-Book denial in
+ * Windows Sandbox named tools/Set-VirtualDesk.ps1. A kernel run from source has no binary and keeps the scripts.
+ */
+function kernelRegistersHooks(programRoot: string): boolean {
+  return POSIX_BINDINGS || fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
+}
+
 function binaryHookCommand(programRoot: string, verb: string, readerToolPrefix: string): string {
   const command = `"${kernelBinary(programRoot)}" hook ${verb}`;
   return readerToolPrefix ? `${command} --reader-tool-prefix ${readerToolPrefix}` : command;
 }
 
 /**
- * The program's own registrations, each hook the kernel has ported re-spelled as its verb, and each it has
- * not -- the playbook, the search-hit reminder, the compaction and seat-start hooks, all optional -- left
- * out rather than registered as a command that cannot start. Matchers, timeouts and messages are kept.
+ * A Claude registration of a ported hook. On POSIX the quoted shell form, which `sh` runs. On Windows EXEC FORM,
+ * `bin/library.exe` with the verb as `args`, spawned without a shell: with no Git Bash Claude Code runs a shell-form
+ * hook through PowerShell, where a quoted path is a string and runs nothing (S46, measured in Windows Sandbox with
+ * claude 2.1.282; the plugin's Windows render, tools/PluginPackage.ps1, for the same reason).
  */
-function posixHookRegistration(hooks: unknown, programRoot: string): Record<string, unknown> | null {
+function claudeKernelHook(programRoot: string, verb: string): Record<string, unknown> {
+  if (POSIX_BINDINGS) return { type: 'command', command: binaryHookCommand(programRoot, verb, '') };
+  return { type: 'command', command: `${kernelBinary(programRoot)}.exe`, args: ['hook', verb] };
+}
+
+/**
+ * The program's own registrations, each hook the kernel has ported re-spelled as its verb. Each it has not -- the
+ * playbook, the search-hit reminder, the compaction and seat-start hooks, all optional -- is left out on POSIX rather
+ * than registered as a command that cannot start, and kept on Windows, which has the PowerShell to run it (S48).
+ * Matchers, timeouts and messages are kept.
+ */
+function kernelHookRegistration(hooks: unknown, programRoot: string): Record<string, unknown> | null {
   if (!isPlainObject(hooks)) return null;
   const out: Record<string, unknown> = {};
   for (const eventName of Object.keys(hooks)) {
@@ -411,8 +434,12 @@ function posixHookRegistration(hooks: unknown, programRoot: string): Record<stri
       for (const entry of block['hooks']) {
         const text = hookEntryText(entry).toLowerCase();
         const script = Object.keys(HOOK_VERB_FOR_SCRIPT).find((name) => text.includes(name.toLowerCase()));
-        if (!script || !isPlainObject(entry)) continue;
-        const rewritten: Record<string, unknown> = { type: 'command', command: binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[script]!, '') };
+        if (!isPlainObject(entry)) continue;
+        if (!script) {
+          if (!POSIX_BINDINGS) entries.push(toProgramRootedValue(entry, programRoot) as Record<string, unknown>);
+          continue;
+        }
+        const rewritten: Record<string, unknown> = claudeKernelHook(programRoot, HOOK_VERB_FOR_SCRIPT[script]!);
         for (const key of ['timeout', 'statusMessage']) if (key in entry) rewritten[key] = entry[key];
         entries.push(rewritten);
       }
@@ -473,7 +500,7 @@ export function desiredHookRegistration(programRoot: string): unknown {
     return null;
   }
   if (!isPlainObject(document) || !('hooks' in document) || document['hooks'] === null) return null;
-  if (POSIX_BINDINGS) return posixHookRegistration(document['hooks'], programRoot);
+  if (kernelRegistersHooks(programRoot)) return kernelHookRegistration(document['hooks'], programRoot);
   return toProgramRootedValue(document['hooks'], programRoot);
 }
 
@@ -621,9 +648,12 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
   let text = fs.readFileSync(templatePath, 'utf8').replace(/^\uFEFF/, '');
   for (const entry of CODEX_HOOK_TOKENS) {
     const prefix = entry.readerPrefix ? CODEX_READER_TOOL_PREFIX : '';
+    // On Windows Codex runs a hook through `powershell.exe -Command`, where a line opening with a quoted path is a
+    // string expression and runs nothing, so a release's command carries `& ` (measured on codex-cli 0.153.4, S46;
+    // ConvertTo-WindowsCodexHooks in tools/PluginPackage.ps1 renders the plugin's the same way).
     const command =
-      POSIX_BINDINGS && programRoot
-        ? binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
+      programRoot && kernelRegistersHooks(programRoot)
+        ? (POSIX_BINDINGS ? '' : '& ') + binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
         : codexGuardCommand(codexHookScriptPath(hookDirectory, entry.file), prefix);
     // Twice: `command` and `commandWindows` carry the same invocation, and a template that lost one
     // of them would leave Codex reading the other on one platform only.
@@ -943,9 +973,10 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
   }
 
   if (!isProgramRoot) {
-    // WHAT MAKES A HOOK THE LIBRARY'S: a path into this program. On POSIX that is the program root, so a
-    // block an earlier POSIX init wrote with `.ps1` paths is still recognised as ours and replaced (S42).
-    const hookDirectory = POSIX_BINDINGS ? programRoot : path.join(programRoot, '.claude', 'hooks');
+    // WHAT MAKES A HOOK THE LIBRARY'S: a path into this program. Where the kernel registers itself that is the
+    // program root, so a block an earlier init wrote with `.ps1` paths is still recognised as ours and replaced
+    // (S42 on POSIX; S48 for a compiled Windows release, over what v0.2.1 wrote).
+    const hookDirectory = kernelRegistersHooks(programRoot) ? programRoot : path.join(programRoot, '.claude', 'hooks');
     const settingsPath = path.join(workspace, '.claude', 'settings.json');
     const settingsPlan = workspaceSettingsPlan({
       filePath: settingsPath,

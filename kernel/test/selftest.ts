@@ -1139,14 +1139,17 @@ if (selected(18)) {
     const codexHooks = JSON.parse(fs.readFileSync(path.join(workspace, '.codex', 'hooks.json'), 'utf8'));
     const codexCommands: string[] = [];
     for (const blocks of Object.values(codexHooks.hooks) as { hooks: { command: string }[] }[][]) for (const block of blocks) for (const hook of block.hooks) codexCommands.push(hook.command);
-    const prefixed = codexCommands.filter((command) => command.endsWith(' -ReaderToolPrefix mcp__validated_book_reader__'));
-    check(prefixed.length === 3 && prefixed.every((command) => !command.includes('Guard-BasicMemoryRead.ps1')), `init's Codex hooks do not hand the three reader-naming hooks Codex's prefix: ${codexCommands.join(' | ')}`);
+    // Either spelling: a guard script's `-ReaderToolPrefix`, or a compiled kernel's own verb and `--reader-tool-prefix`
+    // (S48, ADR-0046: a compiled Windows init registers the kernel's hooks, as POSIX always has).
+    const isBasicMemoryGuard = (command: string) => command.includes('Guard-BasicMemoryRead.ps1') || / hook basic-memory-read( |$)/.test(command);
+    const prefixed = codexCommands.filter((command) => / (-ReaderToolPrefix|--reader-tool-prefix) mcp__validated_book_reader__$/.test(command));
+    check(prefixed.length === 3 && prefixed.every((command) => !isBasicMemoryGuard(command)), `init's Codex hooks do not hand the three reader-naming hooks Codex's prefix: ${codexCommands.join(' | ')}`);
     // S38 refused suggest_active_projects over the LOCAL collection, which has no oracle; S46 (ADR-0044) answers
     // it there, because that refusal was the default route's. With no Hubs it says so, and asks Basic Memory nothing.
     const marker = JSON.parse(fs.readFileSync(path.join(workspace, '.library', 'workspace.json'), 'utf8').replace(/^﻿/, ''));
     const suggest = runCli(['mcp', 'call', 'suggest_active_projects', '--query', 'kernel', '--workspace', workspace, '--seat', 'reader'], { env });
     check(marker.backend === 'local' && suggest.stdout.includes('There are no active Projects to search.'), `suggest_active_projects did not answer over the local collection: ${suggest.stdout}${suggest.stderr}`);
-    const bmMatcher = String(codexHooks.hooks.PreToolUse.find((block: { hooks: { command: string }[] }) => block.hooks.some((hook) => hook.command.includes('Guard-BasicMemoryRead.ps1'))).matcher);
+    const bmMatcher = String(codexHooks.hooks.PreToolUse.find((block: { hooks: { command: string }[] }) => block.hooks.some((hook) => isBasicMemoryGuard(hook.command)))?.matcher);
     check(new RegExp(bmMatcher).test('mcp__basic_memory__list_directory'), `init's Codex Basic Memory matcher cannot fire on Codex's spelling: ${bmMatcher}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -3083,6 +3086,100 @@ if (selected(38) && process.platform === 'win32') {
     fs.rmSync(path.join(install, 'bin', 'library.exe'));
     const gone = guards();
     check(gone.status === 'fail' && gone.detail.includes('bin/library'), `a plugin whose library.exe is gone was read as guarded: ${gone.status} ${gone.detail}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 39. A COMPILED WINDOWS INIT REGISTERS THE KERNEL'S OWN HOOKS (S48, the reader's ruling, ADR-0046) -----------
+
+// workspace.compiled-init-registers-the-kernel-hooks -- S7 in Windows Sandbox on v0.2.1: a closed Holding Shelf page
+// read by Read was refused, but the denial named tools/Set-VirtualDesk.ps1, because `library init` on Windows
+// registered the program's guard scripts and ADR-0045's rewrite lives in the kernel's hook verbs. A compiled kernel now
+// registers its five ported hooks -- exec form for Claude, `& "<program>/bin/library" hook <verb>` for Codex, which runs
+// a hook through powershell.exe -Command -- and keeps the four with no port as PowerShell, which Windows has. A kernel run
+// from source has no binary to name and keeps every script. Judged through the front door: the registration read back,
+// the hooks LAUNCHED as each harness launches them against a closed Book, and a re-run over the block v0.2.1 wrote.
+if (selected(39) && process.platform === 'win32') {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-winhooks-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const cli = (args: string[]) => runCli(args, { cwd: root, env });
+    const version = JSON.parse(cli(['--version']).stdout) as { compiled?: boolean; program_root?: string };
+    const program = String(version.program_root).replace(/\\/g, '/').replace(/\/+$/, '');
+    const compiled = version.compiled === true && fs.existsSync(path.join(program, 'bin', 'library.exe'));
+    const workspace = path.join(root, 'ws');
+    const init = cli(['init', workspace, '--registry-root', registry]);
+    equal(init.exit, 0, `init for the Windows hook workspace failed: ${init.stderr.trim()}`);
+
+    type Entry = { type?: string; command: string; args?: string[]; commandWindows?: string };
+    const entriesOf = (relative: string): { event: string; matcher: string; entry: Entry }[] => {
+      const out: { event: string; matcher: string; entry: Entry }[] = [];
+      try {
+        const document = JSON.parse(fs.readFileSync(path.join(workspace, relative), 'utf8').replace(/^﻿/, '')) as { hooks?: Record<string, { matcher?: string; hooks: Entry[] }[]> };
+        for (const [event, blocks] of Object.entries(document.hooks ?? {})) for (const block of blocks) for (const entry of block.hooks) out.push({ event, matcher: block.matcher ?? '', entry });
+      } catch {
+        // an unreadable file registers nothing, and the checks below say so
+      }
+      return out;
+    };
+    const spelled = (entry: Entry) => `${entry.command}${entry.args ? ' ' + JSON.stringify(entry.args) : ''}`;
+    const claude = entriesOf('.claude/settings.local.json');
+    const codex = entriesOf('.codex/hooks.json');
+    const binary = `${program}/bin/library.exe`;
+    const ported: [string, string][] = [['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange']];
+    const unported = ['Get-PlaybookContext.ps1', 'Add-SearchHitReminder.ps1', 'Restore-CompactedGuidance.ps1', 'Get-SeatStartContext.ps1'];
+
+    if (!compiled) {
+      check(claude.length > 0 && claude.every((row) => row.entry.command === 'powershell.exe'), `an init from source registered something other than the guard scripts for Claude: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+    } else {
+      const exec = claude.filter((row) => row.entry.command === binary);
+      check(exec.length === 5 && exec.every((row) => Array.isArray(row.entry.args) && row.entry.args[0] === 'hook' && row.entry.args.length === 2), `a compiled init's Claude hooks are not the kernel's five in exec form: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+      for (const [verb, event] of ported) check(exec.some((row) => row.event === event && row.entry.args?.[1] === verb), `a compiled init registered no ${event} '${verb}' for Claude`);
+      const scripts = claude.filter((row) => row.entry.command !== binary);
+      check(scripts.every((row) => row.entry.command === 'powershell.exe' && unported.some((name) => spelled(row.entry).includes(name))), `a compiled init registered a guard script the kernel has ported: ${scripts.map((row) => spelled(row.entry)).join(' | ')}`);
+      for (const name of unported) check(scripts.some((row) => spelled(row.entry).includes(name)), `a compiled init dropped the unported ${name}, which Windows can still run`);
+
+      const codexPrefix = `& "${program}/bin/library" hook `;
+      check(codex.length === 4 && codex.every((row) => row.entry.command.startsWith(codexPrefix) && row.entry.commandWindows === row.entry.command), `a compiled init's Codex hooks are not the kernel's four behind '& ': ${codex.map((row) => row.entry.command).join(' | ')}`);
+      check(codex.filter((row) => row.entry.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 3, "a compiled init's Codex hooks do not hand three of them Codex's reader prefix");
+
+      // THE REGISTRATIONS START, AND SAY WHAT THE READER CAN RUN. A closed Holding Shelf page, the seat's Desk empty.
+      const desk = path.join(workspace, '.claude', 'seats', 'reader');
+      fs.mkdirSync(desk, { recursive: true });
+      fs.writeFileSync(path.join(desk, '.open-books'), '');
+      fs.writeFileSync(path.join(desk, '.open-projects'), '');
+      const page = path.join(workspace, 'shelf', 'holding', 'wiki', '_index.md');
+      const hookEnv = { ...process.env, ...env, LIBRARY_SEAT: 'reader' };
+      const shelfGuard = exec.find((row) => row.entry.args?.[1] === 'shelf-read')?.entry;
+      // Claude's exec form: the command spawned directly, no shell (claude 2.1.282, S46).
+      const ran = spawnSync(shelfGuard?.command ?? 'false', shelfGuard?.args ?? [], { cwd: workspace, env: hookEnv, input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: page } }), encoding: 'utf8', timeout: 30000 });
+      const denial = ran.stdout ?? '';
+      check(denial.includes('"permissionDecision":"deny"') && denial.includes("Shelf Book 'holding' is closed"), `the registered Claude shelf guard did not deny a closed Book: ${ran.status} ${denial} ${ran.stderr}`);
+      check(denial.includes('library desk open book holding --location shelf') && !denial.includes('.ps1'), `the registered Claude shelf guard's denial still names a PowerShell helper: ${denial}`);
+      // Codex's form: through powershell.exe -Command, as codex-cli 0.153.4 runs a hook on Windows (S46).
+      const shellGuard = codex.find((row) => / hook shell-shelf-read /.test(row.entry.command))?.entry.command ?? 'exit 1';
+      const viaCodex = spawnSync('powershell.exe', ['-NoProfile', '-Command', shellGuard], { cwd: workspace, env: hookEnv, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `Get-Content "${page}"` } }), encoding: 'utf8', timeout: 60000 });
+      const codexDenial = viaCodex.stdout ?? '';
+      check(codexDenial.includes('"permissionDecision":"deny"') && !codexDenial.includes('.ps1'), `the registered Codex shell guard, run through powershell.exe, did not deny a closed Book in the kernel's words: ${viaCodex.status} ${codexDenial.slice(0, 400)} ${String(viaCodex.stderr ?? '').slice(0, 300)}`);
+
+      const doctor = cli(['doctor', '--workspace', workspace]);
+      const rows = (() => { try { return (JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks; } catch { return []; } })();
+      const row = (name: string) => rows.find((item) => item.check === name) ?? { status: '(absent)', detail: '' };
+      equal(row('workspace.guards-registered').status, 'pass', `doctor did not pass a compiled init's Claude hooks: ${row('workspace.guards-registered').detail}`);
+      check(row('workspace.codex-guards-registered').status !== 'fail', `doctor failed a compiled init's Codex hooks: ${row('workspace.codex-guards-registered').detail}`);
+
+      // A RE-RUN REPLACES WHAT v0.2.1 WROTE: guard-script paths into this program are the Library's, not foreign.
+      const local = path.join(workspace, '.claude', 'settings.local.json');
+      const old = { hooks: { PreToolUse: [{ matcher: 'Read|Grep|Glob|Write|Edit', hooks: [{ type: 'command', command: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `${program}/.claude/hooks/Guard-ShelfBookRead.ps1`] }] }] } };
+      fs.writeFileSync(local, JSON.stringify(old));
+      const rerun = cli(['init', workspace, '--registry-root', registry]);
+      const redone = fs.readFileSync(local, 'utf8');
+      check(rerun.exit === 0 && !redone.includes('Guard-ShelfBookRead.ps1') && redone.includes('library.exe'), `init over v0.2.1's guard-script block did not replace it: ${rerun.exit} ${rerun.stderr.trim().slice(0, 300)}`);
+    }
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {

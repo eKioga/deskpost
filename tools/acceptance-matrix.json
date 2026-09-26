@@ -108,6 +108,21 @@
         "field_pattern": "^result\\.files\\[(2|6)\\]\\.action$",
         "value_pattern": "^(unchanged|merge)$"
       }
+    },
+    "kernel-registers-its-own-hooks": {
+      "reason": "S48, ADR-0046: on Windows a compiled kernel's init registers its own five ported hooks -- bin/library.exe hook <verb> in exec form for Claude, & \"<program>/bin/library\" hook <verb> for Codex, which runs a hook through powershell.exe -- where the PowerShell initializer registers the guard scripts, so a closed-Book denial on the default route named tools/Set-VirtualDesk.ps1 and ADR-0045's rewrite never ran (S47, S7 in Windows Sandbox). The four hooks with no kernel port stay PowerShell. Only the two hook files differ, and their two actions (files[4] is .claude/settings.local.json and files[5] .codex/hooks.json in init's fixed order, only between unchanged and merge); .codex/hooks.json must still register all four required guards on each side, by script or by verb. .claude/settings.local.json is over the inline limit and compared by hash, so this delta cannot see inside it: section 39 is what judges its content. Every other file init writes is compared. Judged by kernel self-test section 39, which launches the registered hooks against a closed Book.",
+      "approved_by": "the reader, S48, ruling that a compiled Windows init registers the kernel's own hooks and approving this delta by id",
+      "approved_on": "2026-09-25",
+      "applies_to": [
+        "workspace.init-creates-marker",
+        "workspace.init-is-idempotent",
+        "workspace.init-force-refreshes-managed-sections",
+        "workspace.init-leaves-a-workspace-its-checks-pass"
+      ],
+      "match": {
+        "field_pattern": "^(effect\\.\\.(claude/settings\\.local\\.json|codex/hooks\\.json)|result\\.files\\[(4|5)\\]\\.action)$",
+        "value_pattern": "^(unchanged|merge|sha256:[0-9a-f]{64})$|(?s)^text:(?=.*(Guard-BasicMemoryRead\\.ps1|hook\"?,?\\s*\"?basic-memory-read))(?=.*(Guard-ShelfBookRead\\.ps1|hook\"?,?\\s*\"?shelf-read))(?=.*(Guard-ShellShelfRead\\.ps1|hook\"?,?\\s*\"?shell-shelf-read))(?=.*(Get-VirtualDeskContext\\.ps1|hook\"?,?\\s*\"?desk-context))"
+      }
     }
   },
   "excluded_helpers": {
@@ -1332,6 +1347,18 @@
       "operation": "A workspace `library init` attaches to its local collection is given the kernel as its reader -- `bin/library mcp serve`, for Claude and for Codex -- whenever the program is a compiled release, as a POSIX host always was; a Basic Memory workspace on Windows keeps the PowerShell adapter, and a kernel run from source, with no binary to name, keeps it too. The registered command, launched as a harness launches it, reads the seat's own Project over stdio (S46: S7 in Windows Sandbox found a Claude session's first Project read refused by the adapter, which has no local collection).",
       "reason": "No oracle: the PowerShell initializer registers only the adapter, which is the defect. Judged by section 36 of kernel/test/selftest.ts (S46) against the kernel under test: the registration read back from the files init wrote, and the registered reader launched and asked for a Project page. Red against rel46a, 3 of 8.",
       "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "36" } },
+      "fixture": "workspace-fresh",
+      "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--json"] } ] }
+    },
+    {
+      "id": "workspace.compiled-init-registers-the-kernel-hooks",
+      "area": "workspace",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "On Windows, `library init` by a compiled kernel registers the kernel's own five ported hooks -- `bin/library.exe hook <verb>` in exec form for Claude, `& \"<program>/bin/library\" hook <verb>` for Codex -- and keeps the four unported optional hooks as PowerShell; a kernel run from source, with no binary to name, keeps every guard script. The registered hooks, launched as each harness launches them, deny a closed Book in a sentence that names a command the reader can run and no PowerShell helper (S47: S7 in Windows Sandbox found the default route's denial naming tools/Set-VirtualDesk.ps1).",
+      "reason": "No oracle: the PowerShell initializer registers only its guard scripts, which is the defect. Judged by section 39 of kernel/test/selftest.ts (S48) against the kernel under test: the registration read back from the files init wrote, the Claude hook spawned without a shell and the Codex hook through powershell.exe -Command, and a re-run over the guard-script block an earlier release wrote. Windows only.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "39" } },
       "fixture": "workspace-fresh",
       "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-Json"] } ] },
       "kernel": { "steps": [ { "command": ["init", "{workspace}", "--json"] } ] }
