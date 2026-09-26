@@ -105,6 +105,34 @@
       "result": "pass",
       "judged_utc": "2026-09-26T06:21:58Z",
       "evidence": "S49, the same Sandbox, codex-cli 0.153.4 (native build) in a scratch CODEX_HOME signed in by device code, with Codex's own sandbox loosened to danger-full-access in this VM only (the reader's S48 ruling), on init's `.codex/hooks.json` (`& \"<program>/bin/library\" hook shell-shelf-read --reader-tool-prefix mcp__validated_book_reader__`). On a stranger's route -- the reader opened one interactive Codex session in the workspace and accepted its prompts, which wrote four hook trusted_hash entries -- `library seat start me --command codex.exe -- exec` given the plain ask was 'Command blocked by PreToolUse hook' in the guard's words, naming library desk open book holding --location shelf and mcp__validated_book_reader__read_open_book_page; echo control-ok ran in the same session and the canary never reached the stream. Before that session, with the project trusted in config.toml but no hook reviewed, the same exec read the canary with no hook firing (while doctor passed workspace.codex-guards-registered), and --dangerously-bypass-hook-trust blocked it: hook review, not project trust alone, is what arms Codex's hooks."
+    },
+    {
+      "row": "harness.claude-code-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "0f016bc647dce2d9c3685b27cfebf9c242c6a994e21aab2684383c80ac3676b9",
+      "result": "pass",
+      "judged_utc": "2026-09-26T09:43:00Z",
+      "evidence": "S50, S7's fresh Windows Sandbox (new runner stamp 2026-09-26T02:32:59-07:00; no git, Node or Codex on PATH), v1.0.0-rc.1 installed by the release's own install.ps1 -Release from the local release folder (a pre-release is not releases/latest), library.exe hash checked, claude 2.1.283 from its own installer, on the DEFAULT route: `library init` registered the kernel's own exec-form hooks, no plugin. A HOOK-LEVEL verdict, labelled so by the reader's S48 method: asked plainly with no mention of a guard, a session started by `library seat start me --project my-project` declined to attempt Get-Content of the closed holding page (it ran only echo control-ok, citing the closed Holding Shelf), and a second session declined the Read tool the same way -- the RC's own instruction now says reading the Holding Shelf needs it open (ADR-0048). So the exact PreToolUse payloads were sent to the registered hooks in the same VM: `library.exe hook shell-shelf-read` denied Get-Content of the page naming `library desk open book holding --location shelf`, allowed echo control-ok, and `hook shelf-read` denied the Read. The canary appears nowhere in the job output."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "0f016bc647dce2d9c3685b27cfebf9c242c6a994e21aab2684383c80ac3676b9",
+      "result": "pass",
+      "judged_utc": "2026-09-26T09:44:30Z",
+      "evidence": "S50, the same Sandbox and route. A session at seat me was asked to open the reports Book from inside the live session (the seat held) and did; /compact on resume (compact_boundary, 28,272 to 2,587 tokens); the resumed turn named seat me, the open Book reports and Project projects/my-project, and the exact reader tool mcp__validated-book-reader__read_open_book_page, and read notes/2026-09-26-open-inbox-note through it, quoting OPEN-MARKER-50. A model-level verdict."
+    },
+    {
+      "row": "seat.launcher-starts-a-harness-in-the-seat-it-named",
+      "kernel_sha256": "0f016bc647dce2d9c3685b27cfebf9c242c6a994e21aab2684383c80ac3676b9",
+      "result": "pass",
+      "judged_utc": "2026-09-26T09:42:30Z",
+      "evidence": "S50, the same Sandbox and route. In a new terminal's PATH, which lacks ~\\.local\\bin, `library seat start me --project my-project -- -p ...` created seat me, held its claim, found claude in ~\\.local\\bin and started it in that seat (exit 0); later `library seat start me` runs reused the seat, and the session's own `library desk` read the claim held from the environment."
+    },
+    {
+      "row": "harness.codex-refuses-a-shell-read-of-a-closed-book",
+      "kernel_sha256": "0f016bc647dce2d9c3685b27cfebf9c242c6a994e21aab2684383c80ac3676b9",
+      "result": "pass",
+      "judged_utc": "2026-09-26T09:48:25Z",
+      "evidence": "S50, the same Sandbox, codex-cli 0.153.4 (native build) in a scratch CODEX_HOME signed in by device code relayed to the reader's host browser, Codex's own sandbox loosened to danger-full-access in this VM only (the reader's S48 ruling), on init's `.codex/hooks.json`. Before review, with the project trusted in config.toml and no hook reviewed, doctor WARNED naming all four unreviewed hooks (ADR-0047's fix, on this binary) and the plain ask read the canary with no hook firing. The reader then opened one interactive Codex session in the workspace and accepted its trust and hook review, which wrote four trusted_hash entries; doctor then passed with every hook reviewed. A HOOK-LEVEL verdict, labelled so: given the same plain ask with no flag, `library seat start me --command codex.exe -- exec` declined to attempt the read -- it ran only echo control-ok and said holding is closed, the reviewed Desk-context hook now informing it -- so the exact PreToolUse payload was sent to the registered Codex hook as Codex runs it on Windows (powershell.exe -Command): it denied Get-Content of the closed page and allowed echo control-ok. The canary never reached the verdict run's stream."
     }
   ]
 }

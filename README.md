@@ -1,7 +1,6 @@
 # Deskpost
 
-**Status: 1.0 release candidate, for Windows and Linux.** See [Prerequisites](#prerequisites) before
-you install.
+**Status: 1.0, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The

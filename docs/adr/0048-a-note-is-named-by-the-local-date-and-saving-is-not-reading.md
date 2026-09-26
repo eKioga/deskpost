@@ -48,6 +48,13 @@ its own.
   leaves S20's row. `docs/seats.md`'s one-button Quick Command recipe remains the route.
 - **macOS leaves S20's row.** Phase D's criterion reads "a clean macOS or Linux VM". S49 met it on Linux from
   `releases/latest`, and no machine here can run macOS, so `v1.0.0` ships no darwin archive and claims none.
+- **`v1.0.0` carries the RC's four real-session verdicts** (ruled after `v1.0.0-rc.1` was published). A verdict
+  binds to a binary's SHA-256, and `v1.0.0`'s binary differs from the RC's `0f016bc6...` only because the version
+  string is compiled in. So the carry is recorded as four new entries in `tools/acceptance-verdicts.json` for the
+  `v1.0.0` binary's hash, each citing the RC verdict it carries. **It is licensed by a check, not assumed:** the
+  kernel source at the `v1.0.0` commit must be byte-identical to the RC's (`dea7f1f`), apart from the `version`
+  field of `kernel/package.json`. If anything else under `kernel/` differs, nothing carries, and the four rows are
+  judged again in a fresh Sandbox.
 
 ## Consequences
 

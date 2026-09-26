@@ -1,7 +1,7 @@
 # Real-Session Verdicts in Windows Sandbox
 
 How a session judges the matrix's `recorded_verdict` rows against a release, in a disposable Windows Sandbox that has
-what a stranger has and nothing else. Measured and refined across S7, S46, S47 and S49; S49 judged all four rows on
+what a stranger has and nothing else. Measured and refined across S7, S46, S47, S49 and S50; S49 judged all four rows on
 `v0.2.2` this way in one fresh VM. The general Sandbox technique -- the runner, sign-ins, networking traps -- is kept
 in the shared reference Book *Windows Sandbox Automation*; this page is what is specific to Deskpost.
 
@@ -50,6 +50,14 @@ test (S47), the model declined to attempt the read; asked plainly (S49), it atte
 a **hook-level** verdict, labelled so. Always run the hook-level section as well; it is evidence only when the model
 declined.
 
+**Since `v1.0.0-rc.1` (S50) the plain ask is declined, by both harnesses.** Claude now declines the closed-page read
+before any tool call, citing the workspace's own instruction that reading the Holding Shelf needs it open
+(ADR-0048). Codex does the same once its hooks are reviewed, because the Desk-context hook then tells it the Book is
+closed; before the review it attempted the read. That is the Library working, but it leaves the PreToolUse guard
+unexercised by the model, so both closed-Book verdicts for the RC are hook-level. A future session that wants a
+model-level verdict needs an ask the model will attempt without being told to defeat a guard; say so rather than
+treat a hook-level verdict as the same evidence.
+
 - **Closed-Book read**: a capture into the Holding Shelf (closed by default, capture ungated) is the canary. The
   control command runs in the same session. Grep the job output for the canary: it must appear nowhere.
 - **Compaction**: open `reports` **from inside the live session** -- a Desk write needs the seat held, and a job
@@ -69,7 +77,11 @@ declined.
   PowerShell reached the same host over IPv4; pinning `auth.openai.com`, `api.openai.com` and `chatgpt.com` to their
   IPv4 addresses in the VM's own hosts file fixed it.
 - A release's `install.ps1` fetches from GitHub unless given `-Release <local folder>`; a local build measured
-  without it measures the published release instead.
+  without it measures the published release instead. **A release candidate is a GitHub pre-release**, so
+  `releases/latest` never serves it: judge one from the local release folder copied into the kit, which binds the
+  verdict to the same binary before anything is published (S50).
+- **A compiled Bun kernel on Windows ignores `TZ`** and reads the OS zone (S50). A judge that injects a zone through
+  `TZ` measures only a source run there.
 - Evidence strings written through the Bash tool lose doubled backslashes; write `acceptance-verdicts.json`
   evidence with the Write or Edit tool and check it parses with no control characters.
 - **A probe on the host inherits this session's `LIBRARY_WORKSPACE`.** S49's hand-run probe created a Project Hub in
