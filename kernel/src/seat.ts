@@ -25,8 +25,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { writeAtomicText } from './fsx.ts';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { clearStaleStaging, writeAtomicText } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { parseArguments } from './argv.ts';
@@ -62,7 +62,9 @@ import {
   writeSeatActivity,
   type HeldClaim,
 } from './seatclaim.ts';
-import { currentAgentProcessId } from './procstart.ts';
+import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
+import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
+import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -342,11 +344,13 @@ function writeSeatBinding(options: {
     }
   }
   const startUtc = options.agentStartUtc.trim() ? options.agentStartUtc : String(agentProcessIdentity(options.agentPid) ?? '');
+  // WHICH ASSISTANT IS BINDING (ADR-0059): Claude Code names itself in CLAUDE_PID, and Codex is its process name.
+  const assistant = currentAgentAssistant();
   // THE SEED RUNS AGAINST THE BINDING STILL ON DISK, pending writes included: the pending write is
   // the one that would otherwise destroy a pre-history seat's committed record.
   syncSeatConversationSeed(options.workspace, options.stateDirectory, options.seat);
   if (options.state === 'committed' && options.sessionId.trim()) {
-    const plan = seatConversationDocument(options.stateDirectory, options.seat, options.sessionId, options.seatId, 'binding');
+    const plan = seatConversationDocument(options.stateDirectory, options.seat, options.sessionId, options.seatId, 'binding', assistant ?? undefined);
     saveSeatConversationDocument(options.workspace, options.stateDirectory, options.seat, plan.document);
   }
   const record: Record<string, PsJsonValue> = {
@@ -357,6 +361,7 @@ function writeSeatBinding(options: {
     session_id: options.sessionId,
     bound_utc: utcRoundTrip(),
     state: options.state,
+    ...(assistant ? { assistant } : {}),
   };
   writeAtomicText(seatBindingPath(options.stateDirectory, options.seat), psConvertToJson(record) + '\n');
 }
@@ -431,6 +436,7 @@ function seatConversationDocument(
   sessionId: string,
   seatId: string,
   source: 'binding' | 'launcher',
+  assistant?: Assistant,
 ): { outcome: string; document: Record<string, PsJsonValue> } {
   const records = readSeatConversations(stateDirectory, seat) ?? [];
   const now = utcRoundTrip();
@@ -444,9 +450,11 @@ function seatConversationDocument(
     outcome = 'updated';
     // `first_seen_utc` NEVER MOVES AND `last_seen_utc` ALWAYS DOES.
     const first = 'first_seen_utc' in entry && String(entry['first_seen_utc']).trim() ? String(entry['first_seen_utc']) : now;
-    merged.push({ session_id: sessionId, seat_id: seatId, source, first_seen_utc: first, last_seen_utc: now });
+    // THE ASSISTANT THAT OWNS A CONVERSATION NEVER CHANGES (ADR-0059): an update that does not know it keeps it.
+    const owner = assistant ?? (entry['assistant'] === 'codex' || entry['assistant'] === 'claude' ? recordAssistant(entry['assistant']) : undefined);
+    merged.push({ session_id: sessionId, seat_id: seatId, source, first_seen_utc: first, last_seen_utc: now, ...(owner ? { assistant: owner } : {}) });
   }
-  if (outcome === 'recorded') merged.push({ session_id: sessionId, seat_id: seatId, source, first_seen_utc: now, last_seen_utc: now });
+  if (outcome === 'recorded') merged.push({ session_id: sessionId, seat_id: seatId, source, first_seen_utc: now, last_seen_utc: now, ...(assistant ? { assistant } : {}) });
   // OLDEST FIRST ON DISK, so two runs that recorded the same conversations produce the same bytes.
   const ordered = [...merged].sort((left, right) => psSortCompare(String(left['last_seen_utc'] ?? ''), String(right['last_seen_utc'] ?? '')));
   return { outcome, document: { schema: SEAT_CONVERSATIONS_SCHEMA, seat, conversations: ordered } };
@@ -763,6 +771,8 @@ async function seatCreate(options: {
 async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, ['workspace', 'agent-pid', 'session-id', 'deadline-seconds', 'project', 'plan-id']);
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+  // A SEAT START CLEARS THE LIBRARY'S STALE STAGING FILES (PLAN-basic-memory.md step 4a): a crashed write's debris.
+  clearStaleStaging(workspace);
   const stateDirectory = path.join(workspace, '.claude');
   const deadlineSeconds = Number(parsed.options.get('deadline-seconds') ?? '2');
   const sessionId = parsed.options.get('session-id') ?? '';
@@ -1008,26 +1018,105 @@ async function waitForAgentExit(agentPid: number, agentStartUtc: string, pollMs:
   while (testSeatAgentAlive(agentPid, agentStartUtc, { fresh: true })) await sleep(pollMs);
 }
 
-// --- seat start (S42) ---------------------------------------------------------------------------------
+// --- seat start (S42; the one launcher, ADR-0059) -----------------------------------------------------------
+
+/** The refusal a creation bound to a plan_id gives when what it previewed changed: the menu re-previews on it. */
+export class SeatPlanChanged extends SeatRefusal {}
 
 /**
- * `library seat start <name> [--project <slug>] [--command <agent>] [--no-launch] [--preflight] [-- <agent args>]`:
- * tools/Start-LibrarySeat.ps1 with a seat named. Create the seat if it is new -- bound to an ACTIVE Project,
- * as the launcher creates one, with no approval step, because the reader named both -- hold its claim in THIS
- * process, start the agent in the workspace with LIBRARY_SEAT, LIBRARY_SEAT_CLAIM and LIBRARY_WORKSPACE set,
- * and release the claim when the agent exits: the claim lasts exactly as long as the session.
- *
- * WHAT IS NOT PORTED, AND REFUSES BY NAME: the picker (no seat named), `-RestoreDeskFromArchive`,
- * `-RetireLegacyDesk`, and entering a workspace that still has a pre-seat Desk, which the launcher copies in.
- * No PowerShell oracle is compared: the row is judged in a real session (ADR-0037), and kernel self-test
- * section 24 holds the claim's life. `--no-launch` releases the claim as it exits, as the launcher's does.
+ * Which assistant a `--command` names, by its file name, or null for any other program: an arbitrary command is
+ * started with exactly the arguments it was given, and nothing is minted or recorded for it.
  */
-async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJsonValue> | null; exitCode: number }> {
+export function commandAssistant(command: string, explicit?: string): Assistant | null {
+  if (explicit === 'codex' || explicit === 'claude') return explicit;
+  const name = path.basename(command).replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+  return name === 'codex' ? 'codex' : name === 'claude' ? 'claude' : null;
+}
+
+/**
+ * THE ARGUMENTS PER ASSISTANT, AND ALL THE "FRAMEWORK" THERE IS (confirmation round, #1). Claude Code resumes with
+ * `--resume <id>` and starts a conversation under a minted id with `--session-id <id>` (`claude --help`, 2.1.267).
+ * Codex resumes with `codex resume <id>` and takes no id at launch (`codex resume --help`, 0.153.4), so a new Codex
+ * conversation's id is recorded when its session reports it, never minted here. An id is never handed to the other one.
+ */
+export function assistantArguments(assistant: Assistant, conversation: { resume?: string; sessionId?: string }): string[] {
+  if (conversation.resume) return assistant === 'codex' ? ['resume', conversation.resume] : ['--resume', conversation.resume];
+  if (conversation.sessionId) {
+    if (assistant === 'codex') refuse('Codex takes no conversation id at launch, so --session-id is for Claude Code; a new Codex conversation is recorded when it starts.');
+    return ['--session-id', conversation.sessionId];
+  }
+  return [];
+}
+
+/** Whether the reader's own agent arguments already choose a conversation, so the launcher must not mint one. */
+function choosesConversation(args: string[]): boolean {
+  return args.some((arg) => ['--resume', '-r', '--session-id', '--continue', '-c', 'resume'].includes(arg) || arg.startsWith('--resume=') || arg.startsWith('--session-id='));
+}
+
+/**
+ * THE AGENT, STARTED AS ITS INSTALLER LEFT IT. Node cannot start a `.cmd` or `.bat` file directly on Windows (EINVAL,
+ * probed S55 against npm's `codex.cmd`), and npm installs Codex exactly that way. Such a file runs through `cmd.exe /c`
+ * with every argument quoted; an argument cmd would still reinterpret inside quotes (`"` or `%`) is refused, naming it,
+ * rather than passed on changed.
+ */
+function agentSpawn(file: string, args: string[], searchPath?: string): { file: string; args: string[]; verbatim: boolean } {
+  if (process.platform !== 'win32') return { file, args, verbatim: false };
+  const resolved = /[\\/]/.test(file) ? file : resolveOnPath(file, searchPath) ?? file;
+  if (!/\.(cmd|bat)$/i.test(resolved)) return { file: resolved, args, verbatim: false };
+  for (const arg of [resolved, ...args]) {
+    if (/["%\r\n]/.test(arg)) refuse(`The agent at ${resolved} is a command script, and the argument ${JSON.stringify(arg)} holds a character cmd.exe would change (" or %). Nothing was started.`);
+  }
+  // A TRAILING BACKSLASH RUN IS DOUBLED (post-build inspection #3): the script's own `%*` hands the line to a program
+  // that reads it by the CRT's rules, where `\"` is a literal quote, so `"D:\foo\"` would swallow the next argument.
+  // No `"` can be inside (refused above), so only the run before the closing quote needs it. `/v:off` keeps a
+  // registry-enabled delayed expansion from reading `!name!`.
+  const line = [resolved, ...args].map((arg) => `"${arg.replace(/(\\+)$/, '$1$1')}"`).join(' ');
+  return { file: process.env['ComSpec'] || 'cmd.exe', args: ['/d', '/v:off', '/s', '/c', `"${line}"`], verbatim: true };
+}
+
+/**
+ * THE TAB IS NAMED FOR THE SEAT ONCE THE CLAIM IS HELD (ADR-0021: a cosmetic, reversible action is performed, not
+ * offered). SILENT ON SUCCESS, and a failure keeps its line, because that is the case where the tab does not say
+ * where the reader is sitting. `orca terminal rename [--terminal <handle>] [--title <text>]`, from its --help (1.4.198).
+ */
+function renameTab(handle: string, seat: string): void {
+  if (!handle.trim()) return;
+  const orca = resolveOnPath('orca');
+  if (orca === null) return;
+  const launch = agentSpawn(orca, ['terminal', 'rename', '--terminal', handle, '--title', `seat: ${seat}`]);
+  const ran = spawnSync(launch.file, launch.args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: launch.verbatim, timeout: 10000 });
+  if (ran.status !== 0) {
+    const why = `${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
+    process.stderr.write(`The tab was not retitled (failed): ${why || `orca exited ${String(ran.status)}`}\n`);
+  }
+}
+
+/**
+ * `library seat start <name> [--project <slug>] [--command <agent>] [--session-id <id> | --resume <id>] [--plan-id <id>]
+ * [--no-launch] [--preflight] [-- <agent args>]`: tools/Start-LibrarySeat.ps1 with a seat named, and since 1.1 THE ONE
+ * LAUNCHER (ADR-0059): the main menu, its first-seat wizard and the tutorial all start a seat through this function.
+ *
+ * Create the seat if it is new -- bound to an ACTIVE Project, with no approval step when the reader named both, and
+ * bound to the preview's `--plan-id` when the menu showed one -- hold its claim in THIS process, start the agent in
+ * the workspace with LIBRARY_SEAT, LIBRARY_SEAT_CLAIM, LIBRARY_WORKSPACE and DESKPOST_ASSISTANT set, and release the
+ * claim when the agent exits: the claim lasts exactly as long as the session.
+ *
+ * THE CONVERSATION IS RECORDED, as Start-LibrarySeat.ps1:508 records it: the id resumed, or the one minted for Claude
+ * Code (`--session-id`, or minted here when the reader's own arguments choose none), with the assistant that owns it,
+ * in `activity.json` and the seat's `conversations.json`. Only when an agent is actually started: `--no-launch`
+ * records nothing, because it starts no conversation.
+ *
+ * WHAT IS NOT PORTED, AND REFUSES BY NAME: `-RestoreDeskFromArchive`, `-RetireLegacyDesk`, and entering a workspace
+ * that still has a pre-seat Desk, which the PowerShell launcher copies in.
+ */
+async function seatStart(argv: string[], options: { human?: boolean } = {}): Promise<{ result: Record<string, PsJsonValue> | null; exitCode: number }> {
   const split = argv.indexOf('--');
   const own = split >= 0 ? argv.slice(0, split) : argv;
-  const agentArguments = split >= 0 ? argv.slice(split + 1) : [];
-  const parsed = parseArguments(own, ['workspace', 'project', 'command', 'deadline-seconds', 'restore-desk-from-archive']);
+  const passthrough = split >= 0 ? argv.slice(split + 1) : [];
+  const parsed = parseArguments(own, ['workspace', 'project', 'command', 'deadline-seconds', 'restore-desk-from-archive', 'session-id', 'resume', 'plan-id', 'assistant']);
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+  // A SEAT START CLEARS THE LIBRARY'S STALE STAGING FILES (PLAN-basic-memory.md step 4a): a crashed write's debris.
+  clearStaleStaging(workspace);
   const stateDirectory = path.join(workspace, '.claude');
   const deadlineSeconds = Number(parsed.options.get('deadline-seconds') ?? '20');
   assertNoMaintenanceBarrier(workspace, 'starting a session at a seat');
@@ -1035,7 +1124,7 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
   const name = parsed.positional[0] ?? '';
   if (!name.trim()) {
     refuse(
-      'library seat start has no picker yet. Name the seat: library seat start <name>, or ' +
+      'library seat start starts a named seat; bare `deskpost` is the menu that picks one. Name the seat: library seat start <name>, or ' +
         'library seat start <name> --project <slug> to create one. library seat status lists the seats there are.',
     );
   }
@@ -1051,6 +1140,24 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
   const project = parsed.options.get('project') ?? '';
   const command = parsed.options.get('command') ?? 'claude';
   const noLaunch = parsed.flags.has('no-launch');
+  const planId = parsed.options.get('plan-id') ?? '';
+  const assistant = commandAssistant(command, parsed.options.get('assistant'));
+  const resumeId = parsed.options.get('resume') ?? '';
+  let sessionId = parsed.options.get('session-id') ?? '';
+  if (resumeId && sessionId) refuse('--resume and --session-id are two different conversations; pass one.');
+  for (const [flag, value] of [['--resume', resumeId], ['--session-id', sessionId]] as const) {
+    if (value && !isConversationId(value)) refuse(`${flag} takes a conversation id (a uuid); got '${value}'.`);
+  }
+  if ((resumeId || sessionId) && assistant === null) {
+    refuse(`--resume and --session-id are for Claude Code or Codex, and '${command}' is neither; pass --assistant claude|codex if it is one of them.`);
+  }
+  // A CLAUDE CODE CONVERSATION IS MINTED HERE when nothing else chose one, so every launch is resumable from the menu.
+  if (!resumeId && !sessionId && assistant === 'claude' && !choosesConversation(passthrough)) sessionId = newConversationId();
+  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...passthrough];
+  const conversationId = resumeId || sessionId;
+  // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
+  const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
+  const conversationAction = resumeId ? 'resume' : parsed.options.has('session-id') ? 'new' : sessionId ? 'minted' : 'named';
   const deskDirectory = deskStateDirectory(stateDirectory, seat);
   if (fs.existsSync(path.join(stateDirectory, '.open-books')) && !fs.existsSync(deskDirectory)) {
     refuse(
@@ -1071,8 +1178,22 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
     otherSeats = rows.map((row) => String(row['seat'])).filter((other) => other !== seat);
     if (existing === null) {
       assertNewSeatIsCreatable({ workspace, stateDirectory, rows, seat, project, activeProjects: activeProjectSlugs(workspace) });
+      // THE PREVIEW'S APPROVAL, REVALIDATED UNDER THE LOCK THIS CREATION COMMITS UNDER (Start-LibrarySeat.ps1:283).
+      if (planId && planId !== seatCreationPlanId(rows, seat, project)) {
+        throw new SeatPlanChanged(
+          `Seat '${seat}' was not created: the seats changed between the plan you were shown and this write, so that ` +
+            'approval no longer describes it. Nothing was written; look at the new plan and confirm it.',
+        );
+      }
       bound = project;
     } else {
+      // A PLAN FOR A CREATION IS NOT AN ENTRY: a seat that appeared while its preview was open is shown again, not entered.
+      if (planId) {
+        throw new SeatPlanChanged(
+          `Seat '${seat}' was not created: it was created by another session while the plan was open. Nothing was written; ` +
+            'look at the seats again.',
+        );
+      }
       bound = String(existing['project']);
       if (project.trim() && project !== bound) {
         refuse(
@@ -1129,6 +1250,15 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
       setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'projects', entry: `projects/${bound}`, action: 'Add' });
       writeSeatRegistry(stateDirectory, [...rows, { seat, project: bound, created_utc: utcRoundTrip(), seat_id: newId() }]);
     }
+    // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
+    // lock this block already holds, and only when a conversation is actually started. `source` is `launcher`: a
+    // locator, never identity.
+    if (!noLaunch && conversationId) {
+      const entry = readRegistryRows(registryFile).find((row) => String(row['seat']) === seat);
+      syncSeatConversationSeed(workspace, stateDirectory, seat);
+      const plan = seatConversationDocument(stateDirectory, seat, conversationId, String(entry?.['seat_id'] ?? ''), 'launcher', assistant ?? undefined);
+      saveSeatConversationDocument(workspace, stateDirectory, seat, plan.document);
+    }
   } catch (error) {
     exitSeatClaim(claim);
     throw error;
@@ -1137,8 +1267,16 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
   }
 
   try {
-    writeSeatActivity({ stateDirectory, seat, note: 'seat entered', keepConversation: noLaunch });
-    const binDirectory = isCompiled() ? path.dirname(process.execPath) : programRoot();
+    // A -NoLaunch RUN KEEPS WHATEVER WAS THERE, because it starts no conversation to replace it with.
+    // A launch that names no conversation (a new Codex one, whose id its session reports later) keeps the record too:
+    // replacing it with nothing would drop the conversation the menu just said stays resumable (inspection #4).
+    writeSeatActivity({ stateDirectory, seat, note: 'seat entered', keepConversation: noLaunch || !conversationId, conversation: noLaunch ? '' : conversationId, assistant: assistant ?? undefined });
+    // THE FOLDER THAT HOLDS THE COMMAND THE LIBRARIAN IS TOLD TO TYPE (PLAN-assistant-onboarding.md step 0, #4): an
+    // installed binary runs from `<root>\versions\<v>\bin`, which holds only library.exe; the `deskpost` and `library`
+    // shims are in `<root>\bin`. A Librarian started from a terminal with a stale PATH then finds `deskpost` too.
+    const installedRoot = isCompiled() ? installRootOf(programRoot()) : null;
+    const installedBin = installedRoot !== null ? path.join(installedRoot, 'bin') : null;
+    const binDirectory = installedBin !== null && fs.existsSync(installedBin) ? installedBin : isCompiled() ? path.dirname(process.execPath) : programRoot();
     const pathVariable = process.platform === 'win32' ? Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH' : 'PATH';
     const onPath = (process.env[pathVariable] ?? '').split(path.delimiter).some((entry) => entry.replace(/[\\/]+$/, '').toLowerCase() === binDirectory.replace(/[\\/]+$/, '').toLowerCase());
     const environment: NodeJS.ProcessEnv = {
@@ -1146,6 +1284,10 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
       LIBRARY_SEAT: seat,
       LIBRARY_SEAT_CLAIM: claim!.token,
       LIBRARY_WORKSPACE: workspace,
+      // WHICH ASSISTANT THIS SESSION IS, for the Desk context hook that records a Codex conversation's id (ADR-0059).
+      ...(assistant ? { DESKPOST_ASSISTANT: assistant } : {}),
+      // AND WHICH PROCESS IS THE LAUNCHER, so the hook can prove it runs under THIS launcher's own agent (inspection #1).
+      DESKPOST_LAUNCHER_PID: String(process.pid),
       [pathVariable]: onPath ? process.env[pathVariable] : binDirectory + path.delimiter + (process.env[pathVariable] ?? ''),
     };
     const result: Record<string, PsJsonValue> = {
@@ -1157,23 +1299,30 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
       desk_migrated: false,
       legacy_desk_retired: false,
       claim_held: true,
-      environment: ['LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'LIBRARY_WORKSPACE', 'PATH'],
+      environment: ['LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'LIBRARY_WORKSPACE', 'DESKPOST_ASSISTANT', 'DESKPOST_LAUNCHER_PID', 'PATH'],
       workspace,
       picked: false,
-      conversation: '',
-      conversation_action: 'named',
-      conversation_recorded: false,
+      assistant,
+      conversation: conversationId,
+      conversation_action: conversationAction,
+      conversation_recorded: !noLaunch && conversationId !== '',
+      command: command,
       command_args: agentArguments,
       shared_library_write: false,
     };
     if (noLaunch) return { result, exitCode: 0 };
-    process.stdout.write(psConvertToJson(result) + '\n');
+    if (options.human) {
+      const what = conversationAction === 'resume' ? `resuming conversation ${conversationId}` : conversationId ? `conversation ${conversationId}` : 'a new conversation';
+      process.stdout.write(`Starting ${assistant ? ASSISTANT_LABEL[assistant] : command} at seat '${seat}' (Project ${bound}), ${what}.\n`);
+    } else process.stdout.write(psConvertToJson(result) + '\n');
+    renameTab(tabHandle, seat);
     // THE AGENT, IN THE WORKSPACE, ON THIS TERMINAL -- and this process waits for it, because the claim is
     // this process's handle and must outlive nothing and be outlived by nothing.
     const executable = agentExecutable(command, environment[pathVariable] ?? '');
     if (executable.fallback) process.stderr.write(`Starting '${command}' from ${path.dirname(executable.file)}, which is not on PATH.\n`);
+    const launch = agentSpawn(executable.file, agentArguments, environment[pathVariable] ?? '');
     const exitCode = await new Promise<number>((resolve) => {
-      const agent = spawn(executable.file, agentArguments, { cwd: workspace, env: environment, stdio: 'inherit' });
+      const agent = spawn(launch.file, launch.args, { cwd: workspace, env: environment, stdio: 'inherit', windowsVerbatimArguments: launch.verbatim });
       agent.on('exit', (code) => resolve(code ?? 1));
       agent.on('error', (error) => {
         const looked = process.platform === 'win32' && executable.userBin !== null ? ` It is not on PATH, nor at ${executable.userBin}.` : '';
@@ -1185,26 +1334,6 @@ async function seatStart(argv: string[]): Promise<{ result: Record<string, PsJso
   } finally {
     exitSeatClaim(claim);
   }
-}
-
-/**
- * THE AGENT A BARE NAME STARTS, AND WHERE CLAUDE CODE'S INSTALLER PUTS IT (S47). Measured in S7's Windows Sandbox:
- * Claude Code from https://claude.ai/install.ps1 installs `~\.local\bin\claude.exe` and does not put that folder on
- * PATH, so `library seat start` refused in a new terminal. On Windows a bare name found nowhere on PATH is looked for
- * there before the launch is attempted; anything else -- a path, a name PATH resolves, another platform -- is started
- * as given, and a name found in neither place is still refused, naming both.
- */
-function agentExecutable(command: string, searchPath: string): { file: string; fallback: boolean; userBin: string | null } {
-  if (process.platform !== 'win32' || /[\\/]/.test(command)) return { file: command, fallback: false, userBin: null };
-  const home = process.env['USERPROFILE'] ?? '';
-  const userBin = home ? path.join(home, '.local', 'bin', path.extname(command) ? command : `${command}.exe`) : null;
-  const extensions = path.extname(command) ? [''] : (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((ext) => ext);
-  const onPath = searchPath
-    .split(path.delimiter)
-    .filter((directory) => directory.trim())
-    .some((directory) => extensions.some((ext) => fs.existsSync(path.join(directory.replace(/^"|"$/g, ''), command + ext))));
-  if (!onPath && userBin !== null && fs.existsSync(userBin)) return { file: userBin, fallback: true, userBin };
-  return { file: command, fallback: false, userBin };
 }
 
 // --- seat status (S42) --------------------------------------------------------------------------------
@@ -1419,6 +1548,73 @@ function readRegistryRows(file: string): Record<string, PsJsonValue>[] {
 function writeSeatRegistry(stateDirectory: string, rows: Record<string, PsJsonValue>[]): void {
   const ordered = [...rows].sort((left, right) => psSortCompare(String(left['seat']), String(right['seat'])));
   writeAtomicText(path.join(seatsDirectory(stateDirectory), '_registry.json'), psConvertToJson({ schema: 1, seats: ordered }) + '\n');
+}
+
+// --- what the main menu composes (ADR-0059) -----------------------------------------------------------
+//
+// THE MENU DECIDES WHERE TO SIT AND NOTHING ELSE, as SeatPicker.ps1 does: creation's gate, the plan_id, retirement's
+// preflight and the claim are this file's, called in process. It re-implements none of them.
+
+export { seatStart as startSeat, seatRetire as retireSeat, readRegistryRows, seatCreationPlanId };
+
+/** The seat registry's rows for a workspace, every field kept. */
+export function seatRegistryRows(workspace: string): Record<string, PsJsonValue>[] {
+  return readRegistryRows(path.join(seatsDirectory(path.join(workspace, '.claude')), '_registry.json'));
+}
+
+/** The Active Project Catalog's slugs, or the refusal saying why it could not be read. */
+export function activeProjects(workspace: string): string[] {
+  return activeProjectSlugs(workspace);
+}
+
+/**
+ * Test-NewSeatIsCreatable: the gate as a value, so a wizard can re-ask rather than end. The rules stay in
+ * assertNewSeatIsCreatable; this catches its refusal. `plan_id` is issued only for a creatable seat and Project.
+ */
+export function newSeatVerdict(workspace: string, seat: string, project: string, projects: string[], seatOnly = false): { creatable: boolean; reason: string; plan_id: string } {
+  const stateDirectory = path.join(workspace, '.claude');
+  const lock = enterSeatRegistryLock(workspace, 5);
+  try {
+    const rows = seatRegistryRows(workspace);
+    try {
+      assertNewSeatIsCreatable({ workspace, stateDirectory, rows, seat, project, activeProjects: projects, seatOnly });
+    } catch (error) {
+      if (error instanceof SeatRefusal) return { creatable: false, reason: error.message, plan_id: '' };
+      throw error;
+    }
+    return { creatable: true, reason: '', plan_id: seatOnly ? '' : seatCreationPlanId(rows, seat, project) };
+  } finally {
+    exitBookLock(lock);
+  }
+}
+
+/**
+ * THE CONVERSATION A LAUNCHER-HELD SESSION REPORTS (ADR-0059). Codex takes no id at launch, so `seat start` cannot
+ * record one; the session's own Desk context hook reports it. A launcher-held seat can never hold a binding, so this is
+ * the launcher's advisory record, written for the session whose LIBRARY_SEAT_CLAIM token is the live claim's -- the
+ * proof that it runs inside that launcher. `recorded`, `already-recorded`, or `not-this-launcher`. Lock-free unless
+ * there is something to write, and the history write is skipped rather than waited on.
+ */
+export function recordLauncherConversation(options: { workspace: string; seat: string; sessionId: string; claimToken: string; assistant: Assistant }): string {
+  const stateDirectory = path.join(options.workspace, '.claude');
+  if (!isConversationId(options.sessionId) || !options.claimToken.trim()) return 'not-this-launcher';
+  if (!testSeatClaim(stateDirectory, options.seat) || seatClaimField(stateDirectory, options.seat, 'token') !== options.claimToken) return 'not-this-launcher';
+  const activity = readSeatActivity(stateDirectory, options.seat);
+  if (activity !== null && activity['session_id'] === options.sessionId) return 'already-recorded';
+  writeSeatActivity({ stateDirectory, seat: options.seat, note: 'conversation reported', conversation: options.sessionId, assistant: options.assistant });
+  let lock: ReturnType<typeof enterSeatRegistryLock> | null = null;
+  try {
+    lock = enterSeatRegistryLock(options.workspace, 2);
+    const entry = seatRegistryRows(options.workspace).find((row) => String(row['seat']) === options.seat);
+    syncSeatConversationSeed(options.workspace, stateDirectory, options.seat);
+    const plan = seatConversationDocument(stateDirectory, options.seat, options.sessionId, String(entry?.['seat_id'] ?? ''), 'launcher', options.assistant);
+    saveSeatConversationDocument(options.workspace, stateDirectory, options.seat, plan.document);
+  } catch {
+    // THE ADVISORY RECORD ABOVE IS WHAT THE MENU READS; the history is a locator, and a prompt must not wait on it.
+  } finally {
+    exitBookLock(lock);
+  }
+  return 'recorded';
 }
 
 // --- dispatch ---------------------------------------------------------------------------------------

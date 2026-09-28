@@ -322,6 +322,17 @@ is [ADR-0021](adr/0021-a-cosmetic-reversible-action-is-performed-not-offered.md)
 while a session is running sees their own seat as occupied and picks another or types `q`; the claim
 is only ever refused atomically at acquisition, never from the roster's probe.
 
+#### With Deskpost installed, the command is one word
+
+*(`PLAN-install-onboarding.md` step 5a, [ADR-0059](adr/0059-bare-deskpost-is-the-main-menu-and-seat-start-is-its-one-launcher.md).)*
+An installed Deskpost ports this picker into the program, so the Quick Command needs no path, no
+script and no Scope: set **Command** to `deskpost`, keep **Action** at Terminal and **Append Enter** on,
+and give it any **Label** (`Deskpost`). Bare `deskpost` opens the menu of the Library holding the tab's
+folder, else your **default Library** from anywhere, so one button works in every workspace. It is the
+same roster, numbers and keys, plus `b` (Basic Memory) and `a` (which assistant starts a new
+conversation); the tab is still titled `seat: <name>` once the claim is held. A per-seat button, one
+Quick Command that opens one seat directly, remains out of scope.
+
 **Expect the last-conversation column to be empty at a seat entered with a typed `-Seat`.** The
 launcher can only record a conversation it *minted*, which is the picker's own `n<number>` route — a
 reader who typed `-Seat` started a conversation whose id the launcher never saw. That is the honest

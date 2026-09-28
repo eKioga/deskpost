@@ -34,6 +34,7 @@ import {
   setBookManifestDirty,
 } from './manifeststore.ts';
 import { newBookManifestForShelfBook } from './manifest.ts';
+import { parseBookRoot } from './places.ts';
 import { getShelfBook } from './shelfbook.ts';
 
 export interface BookMutation {
@@ -52,11 +53,19 @@ export interface MutationResult {
   summary: string;
 }
 
+/**
+ * THE LOCAL COLLECTION'S PAIR SHARES ITS PREFIXES WITH THE SHARED ONE (PLAN-basic-memory.md step 1): `books/<slug>`
+ * is the Local collection on a local Library and the shared collection on a workspace attached to Basic Memory.
+ * Their stores are still apart -- the store is keyed on the collection name -- so a prefix may answer for two
+ * collections, and the check below asks whether the root is ONE OF this collection's, never which one it is.
+ */
 const COLLECTION_ROOT_PREFIX: Record<string, string> = {
   shelf: 'shelf',
   'shelf-archive': 'shelf/_archive',
   shared: 'books',
   'shared-archive': 'archive',
+  collection: 'books',
+  'collection-archive': 'archive',
 };
 
 export function bookRootForCollection(collection: string, slug: string): string {
@@ -77,31 +86,25 @@ export function assertBookCollectionMatchesRoot(collection: string, bookRoot: st
   if (!MANIFEST_COLLECTIONS.includes(collection)) {
     throw new Error(`Book collection '${collection}' must be one of: ${MANIFEST_COLLECTIONS.join(', ')}.`);
   }
-  const actual = collectionForBookRoot(bookRoot);
-  if (actual === null) {
+  const candidates = collectionsForBookRoot(bookRoot);
+  if (candidates === null) {
     throw new Error(`Book root '${bookRoot}' is not a well-formed Book root, so no collection can answer for it.`);
   }
-  if (actual !== collection) {
+  if (!candidates.includes(collection)) {
     throw new Error(
-      `Book root '${bookRoot}' does not belong to the '${collection}' collection; it belongs to '${actual}'. ` +
+      `Book root '${bookRoot}' does not belong to the '${collection}' collection; it belongs to '${candidates.join("' or '")}'. ` +
         `A '${collection}' Book's root starts with '${COLLECTION_ROOT_PREFIX[collection]}/'.`,
     );
   }
 }
 
-function collectionForBookRoot(bookRoot: string): string | null {
-  const match = /^(shelf\/_archive|books|archive|shelf)\/([a-z0-9][a-z0-9-]*)$/.exec(bookRoot);
-  if (!match) return null;
-  switch (match[1]) {
-    case 'shelf':
-      return 'shelf';
-    case 'shelf/_archive':
-      return 'shelf-archive';
-    case 'books':
-      return 'shared';
-    default:
-      return 'shared-archive';
-  }
+/** The collections a root may belong to. The Shelf's two halves are one each; a collection prefix is two. */
+function collectionsForBookRoot(bookRoot: string): string[] | null {
+  const parts = parseBookRoot(bookRoot);
+  if (parts === null || parts.root !== bookRoot) return null;
+  if (parts.form === 'shelf') return [parts.shelf === 'archive' ? 'shelf-archive' : 'shelf'];
+  if (parts.form === 'shared') return [parts.shelf === 'archive' ? 'shared-archive' : 'shared'];
+  return parts.shelf === 'archive' ? ['shared-archive', 'collection-archive'] : ['shared', 'collection'];
 }
 
 /**

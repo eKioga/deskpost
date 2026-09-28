@@ -33,6 +33,9 @@ import {
   type SearchBudget,
 } from './rawsearch.ts';
 import { getArchivedShelfBook, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
+import { parseBookRoot, placeOfRoot, type BookPlace, type BookRootParts } from './places.ts';
+import { isLocalBackend } from './basicmemory.ts';
+import { collectionBookIdentity, collectionBookWiki } from './collectionbooks.ts';
 
 const FULL_TEXT_SCHEMA = 1;
 
@@ -55,28 +58,15 @@ const CLOSING_RULE =
   'A hit is a location, not a reading: a matched line says the term occurs on that page. Open the page with ' +
   'read_open_book_page before answering from it.';
 
-interface ParsedRoot {
-  root: string;
-  collection: 'shelf' | 'shared';
-  shelf: 'active' | 'archive';
-  slug: string;
-  wikiRoot: string;
-}
+type ParsedRoot = BookRootParts;
 
 /**
  * A Desk entry parsed into what a reader of it needs. An ARCHIVED shared Book is `archive/<slug>`,
  * where a fixed offset into `shelf/` is simply wrong -- which is why this is one parser rather than
- * a substring per caller.
+ * a substring per caller. Since PLAN-basic-memory.md it is `places.ts`'s, shared with every other.
  */
 export function splitBookRoot(entry: string): ParsedRoot | null {
-  const normalised = /^[a-z0-9][a-z0-9-]*$/.test(entry) ? `books/${entry}` : entry;
-  const match = /^(shelf\/_archive|books|archive|shelf)\/([a-z0-9][a-z0-9-]*)$/.exec(normalised);
-  if (!match) return null;
-  const prefix = match[1]!;
-  const slug = match[2]!;
-  const collection = prefix === 'shelf' || prefix === 'shelf/_archive' ? 'shelf' : 'shared';
-  const shelf = prefix === 'archive' || prefix === 'shelf/_archive' ? 'archive' : 'active';
-  return { root: normalised, collection, shelf, slug, wikiRoot: `${normalised}/wiki` };
+  return parseBookRoot(entry);
 }
 
 /**
@@ -148,6 +138,7 @@ export interface FullTextResult {
   scope: string;
   books_open_total: number;
   shelf_books_open: number;
+  collection_books_open: number;
   shared_books_open: number;
   books_searched: number;
   books_unavailable: Record<string, unknown>[];
@@ -170,6 +161,8 @@ export function findOpenBookLines(options: {
   query: string;
   maxResults?: number;
   deskStateDirectory: string;
+  /** Only the open Books in this place (PLAN-basic-memory.md step 1, Fable #5). Absent, every open Book. */
+  place?: BookPlace | null;
 }): FullTextResult {
   const root = path.resolve(options.workspace);
   const needle = assertSearchQuery(options.query);
@@ -181,14 +174,21 @@ export function findOpenBookLines(options: {
     maxCollectedMatches: MAX_COLLECTED_MATCHES,
   });
 
+  // A LOCAL LIBRARY'S OWN COLLECTION IS ON THIS DISK (step 1), so its open Books are searched like the Shelf's;
+  // only a Book reached over the network -- a `shared/` connection Book, or any collection Book of a workspace
+  // attached to Basic Memory -- is named rather than searched.
+  const localBackend = isLocalBackend(root);
+  const byRoot = (left: ParsedRoot, right: ParsedRoot) => (left.root < right.root ? -1 : left.root > right.root ? 1 : 0);
+  // On a workspace attached to Basic Memory its collection IS the shared one, so `collection` names that place.
+  const place = !localBackend && options.place === 'collection' ? 'shared' : options.place;
   const parsedRoots = openBookRoots(options.deskStateDirectory)
     .map((entry) => splitBookRoot(entry))
-    .filter((entry): entry is ParsedRoot => entry !== null);
-  const shelfBooksOpen = parsedRoots
-    .filter((entry) => entry.collection === 'shelf')
-    .sort((left, right) => (left.root < right.root ? -1 : left.root > right.root ? 1 : 0));
+    .filter((entry): entry is ParsedRoot => entry !== null)
+    .filter((entry) => !place || placeOfRoot(entry, localBackend) === place);
+  const shelfBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'shelf').sort(byRoot);
+  const collectionBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'collection').sort(byRoot);
   const sharedSlugs = parsedRoots
-    .filter((entry) => entry.collection === 'shared')
+    .filter((entry) => placeOfRoot(entry, localBackend) === 'shared')
     .map((entry) => entry.slug)
     .sort();
 
@@ -200,7 +200,7 @@ export function findOpenBookLines(options: {
   let pagesScanned = 0;
   let order = 0;
 
-  for (const openBook of shelfBooksOpen) {
+  for (const openBook of [...shelfBooksOpen, ...collectionBooksOpen]) {
     const slug = openBook.slug;
     const isArchived = openBook.shelf === 'archive';
     order += 1;
@@ -208,7 +208,22 @@ export function findOpenBookLines(options: {
     // would make the answer look like it covered every open Book.
     let book: ShelfBook;
     try {
-      book = isArchived ? getArchivedShelfBook(root, slug) : getShelfBook(root, slug);
+      if (openBook.form === 'books') {
+        // A Local collection Book, described as a curated Book whose pages are its folder's.
+        const wikiPath = collectionBookWiki(root, openBook.shelf, slug);
+        book = {
+          slug,
+          title: collectionBookIdentity(root, openBook.shelf, slug).title,
+          bookRoot: openBook.root,
+          wikiPath,
+          notesPath: path.join(wikiPath, 'notes'),
+          isCapture: false,
+          summary: '',
+          topics: [],
+        };
+      } else {
+        book = isArchived ? getArchivedShelfBook(root, slug) : getShelfBook(root, slug);
+      }
     } catch (error) {
       unavailable.push({
         book: slug,
@@ -230,9 +245,9 @@ export function findOpenBookLines(options: {
         book: slug,
         book_root: openBook.root,
         book_title: book.title,
-        collection: 'shelf',
+        collection: openBook.form === 'books' ? 'collection' : 'shelf',
         book_shelf: openBook.shelf,
-        reason: `This Book has no pages directory at ${openBook.wikiRoot}.`,
+        reason: `This Book has no pages directory at ${openBook.form === 'books' ? `collection/${openBook.storeWiki}` : openBook.wikiRoot}.`,
         repair: 'restore the Book directory, or close it with tools/Set-VirtualDesk.ps1',
       });
       continue;
@@ -346,9 +361,10 @@ export function findOpenBookLines(options: {
   return {
     schema: FULL_TEXT_SCHEMA,
     query: convertToSearchDisplay(options.query),
-    scope: 'Shelf Books open on the Desk',
-    books_open_total: shelfBooksOpen.length + sharedSlugs.length,
+    scope: collectionBooksOpen.length ? 'Shelf and Local collection Books open on the Desk' : 'Shelf Books open on the Desk',
+    books_open_total: shelfBooksOpen.length + collectionBooksOpen.length + sharedSlugs.length,
     shelf_books_open: shelfBooksOpen.length,
+    collection_books_open: collectionBooksOpen.length,
     shared_books_open: sharedSlugs.length,
     books_searched: searched.length,
     books_unavailable: unavailable,
@@ -369,7 +385,12 @@ export function findOpenBookLines(options: {
 
 export function formatFullTextResult(result: FullTextResult): string {
   const lines: string[] = [];
-  lines.push(`Full text over ${result.books_searched} of ${result.shelf_books_open} open Shelf Book(s) for: ${result.query}`);
+  lines.push(
+    result.collection_books_open
+      ? `Full text over ${result.books_searched} of ${result.shelf_books_open + result.collection_books_open} open local Book(s) -- ` +
+          `${result.shelf_books_open} on the Shelf, ${result.collection_books_open} in the Local collection -- for: ${result.query}`
+      : `Full text over ${result.books_searched} of ${result.shelf_books_open} open Shelf Book(s) for: ${result.query}`,
+  );
   // "at least" belongs on the COUNT, not only on the truncation line: a search stopped by a scan
   // budget can return every line it collected, and the count would then read as exact while the
   // budget note said the opposite.
@@ -382,7 +403,7 @@ export function formatFullTextResult(result: FullTextResult): string {
   if (result.budget_note.trim()) lines.push(result.budget_note);
   if (result.books_out_of_scope.length) {
     lines.push('');
-    lines.push(SHARED_NOTE);
+    lines.push(result.collection_books_open ? SHARED_NOTE.replace('the local Shelf only', 'the Shelf and the Local collection only') : SHARED_NOTE);
     for (const entry of result.books_out_of_scope) {
       lines.push(`- ${entry['book']} [${entry['collection']}], open but NOT searched: ${entry['reason']} -- ${entry['alternative']}`);
     }

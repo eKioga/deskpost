@@ -398,7 +398,7 @@ while read -r sha ref; do
   for f in "$dir/files"/* "$dir/files"/.[!.]*; do
     [ -e "$f" ] || continue
     n="$(basename "$f")"
-    case "$n" in SHA256SUMS|install.ps1|install.sh) ;; deskpost-*.zip) grep -q "  $n\$" "$dir/files/SHA256SUMS" || { echo "FATAL: release $tag carries $n, which SHA256SUMS does not name"; exit 1; } ;;
+    case "$n" in SHA256SUMS|install.ps1|install.sh|llms-install.md) ;; deskpost-*.zip) grep -q "  $n\$" "$dir/files/SHA256SUMS" || { echo "FATAL: release $tag carries $n, which SHA256SUMS does not name"; exit 1; } ;;
       *) echo "FATAL: release $tag carries $n, which a release does not publish"; exit 1 ;; esac
   done
   ( cd "$dir/files" && sha256sum -c --strict --quiet SHA256SUMS ) || { echo "FATAL: release $tag does not match its SHA256SUMS"; exit 1; }

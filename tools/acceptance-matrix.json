@@ -123,6 +123,20 @@
         "field_pattern": "^(effect\\.\\.(claude/settings\\.local\\.json|codex/hooks\\.json)|result\\.files\\[(4|5)\\]\\.action)$",
         "value_pattern": "^(unchanged|merge|sha256:[0-9a-f]{64})$|(?s)^text:(?=.*(Guard-BasicMemoryRead\\.ps1|hook\"?,?\\s*\"?basic-memory-read))(?=.*(Guard-ShelfBookRead\\.ps1|hook\"?,?\\s*\"?shelf-read))(?=.*(Guard-ShellShelfRead\\.ps1|hook\"?,?\\s*\"?shell-shelf-read))(?=.*(Get-VirtualDeskContext\\.ps1|hook\"?,?\\s*\"?desk-context))"
       }
+    },
+    "kernel-doctor-checks-the-program": {
+      "reason": "PLAN-install-onboarding.md step 1 (F4, F16, ADR-0055): the kernel's doctor also checks the installed program -- that `deskpost` resolves to this install, and which assistant is here -- in a program_checks list beside the workspace checks, where the PowerShell runner's -WorkspaceOnly has none. The workspace checks, their counts and their details are still compared; only program_checks is the kernel's own, and kernel self-test section 47 judges it.",
+      "approved_by": "PLAN-install-onboarding.md step 9, signed off by the reader in S51; built in S54",
+      "approved_on": "2026-09-27",
+      "applies_to": ["area:checks", "workspace.init-leaves-a-workspace-its-checks-pass"],
+      "match": { "field_pattern": "^result\\.program_checks(\\[|\\.|$)" }
+    },
+    "kernel-init-writes-library-help": {
+      "reason": "PLAN-assistant-onboarding.md step 7 (S57): every Library's instructions name the library-help Skill, and only the opt-in plugin carried it, so the kernel's init copies it into .claude/skills/library-help/ with an ownership manifest. The PowerShell initializer, the oracle, writes no Skill. Only the Skill's own files and init's result.skill report are the kernel's; every other file init writes, and result.files in its fixed order, are still compared. Kernel self-test section 55 judges the copy itself: its contents, a second run's idempotence, an edited file left and named, and a hand-made Skill left whole.",
+      "approved_by": "PLAN-assistant-onboarding.md step 7 and its step 6 matrix note, signed off by the reader in S57",
+      "approved_on": "2026-09-27",
+      "applies_to": ["area:workspace"],
+      "match": { "field_pattern": "^(effect\\.\\.claude/skills/library-help/|result\\.skill(\\.|\\[|$))" }
     }
   },
   "excluded_helpers": {
@@ -190,7 +204,7 @@
       "operation": "`library init -Force` refreshes the managed instruction sections and the marker's program version against an existing workspace, leaving the reader's own prose alone.",
       "fixture": "workspace-fresh",
       "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-RegistryRoot", "{registry}", "-Force", "-Json"] } ] },
-      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--registry-root", "{registry}", "--force", "--json"] } ] }
+      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--registry-root", "{registry}", "--json"] } ] }
     },
     {
       "id": "workspace.init-leaves-a-workspace-its-checks-pass",

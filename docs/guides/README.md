@@ -19,6 +19,7 @@ supposed to **freeze**.
 | want to **learn by doing**, safely, in a sensible order | [Learning Path](learning-path.md) |
 | are **beginning a new subject** you expect to work on for months | [Starting a New Project](starting-a-new-project.md) |
 | want the whole shape **as a picture** | [Workflow Guide](workflow-guide.md) |
+| have a **Basic Memory server**, or are **moving from a Basic Memory workspace** | [Basic Memory](basic-memory.md) |
 
 **None of the above, and something just refused you?** Ask the Librarian: "why can't I read that?",
 "what happens if I reset?", "where should this go?". Every refusal names what stopped you and what
@@ -32,11 +33,12 @@ choose to share it. A **seat** is a named place to work, bound to one Project, a
 own **Desk** and its own **Notebook**. There is no default seat, so work starts by sitting down:
 
 ```
-library seat start <seat> --project <project-slug>
+deskpost seat start <seat> --project <project-slug>
 ```
 
-That line makes the seat the first time. After that, `library seat start <seat>` is enough. Add
-`--command codex` to work in Codex instead of Claude Code.
+That line makes the seat the first time. After that, `deskpost seat start <seat>` is enough. Add
+`--command codex` to work in Codex instead of Claude Code. Or type just `deskpost`: the main menu lists your
+seats, a number resumes one, and `+` makes a new one after one confirmation.
 
 > Then ask **"What's on my desk?"** to see your seat, what is open on it, and what is waiting for
 > you.

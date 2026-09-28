@@ -815,7 +815,7 @@ function Get-LocalCollectionCatalogs {
         `- [[projects/<slug>/_project|Title]]` under `## Projects`, exactly as in the shared one.
     #>
     @(
-        [pscustomobject]@{ relative = (Join-Path 'books' 'README.md'); text = "# Books`n`nThe Books in this workspace's local collection.`n" }
+        [pscustomobject]@{ relative = (Join-Path 'books' 'README.md'); text = "# Books`n`nThe Books in this workspace's local collection.`n`n## Open a Book`n" }
         [pscustomobject]@{ relative = (Join-Path 'projects' 'README.md'); text = "# Active Projects`n`nProjects are living context in this workspace's local collection. Open one when you need its current notes.`n`n## Projects`n" }
         [pscustomobject]@{ relative = (Join-Path 'archive' (Join-Path 'projects' 'README.md')); text = "# Archived Projects`n`nProjects retired from the active catalog. An archived Hub stays searchable.`n`n## Projects`n" }
     )

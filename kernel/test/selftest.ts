@@ -86,6 +86,35 @@ function runCli(args: string[], options: { cwd?: string; env?: Record<string, st
   };
 }
 
+/**
+ * A WORKSPACE ATTACHED TO BASIC MEMORY, AS 1.0 LEFT ONE (PLAN-basic-memory.md step 2, ADR-0050). `init --mcp-url`
+ * made one until 1.1; it now makes a local Library with a connection, and a Basic Memory backend remains only for
+ * the workspaces that already have one. So a section judging that backend builds its workspace the way one exists
+ * in the world: initialised, its marker naming `basic-memory` and the collection, and the deployment files the
+ * backend reads. No Local collection, which a 1.0 init with an endpoint never laid out.
+ */
+function basicMemoryWorkspace(
+  workspace: string,
+  registry: string,
+  url: string,
+  collectionId: string,
+  options: { cwd?: string; env?: Record<string, string>; sharedRoot?: string } = {},
+): { exit: number; stdout: string; stderr: string } {
+  const init = runCli(['init', workspace, '--registry-root', registry], { cwd: options.cwd, env: options.env });
+  if (init.exit !== 0) return init;
+  const markerFile = path.join(workspace, '.library', 'workspace.json');
+  const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+  marker['backend'] = 'basic-memory';
+  marker['collection_id'] = collectionId;
+  fs.writeFileSync(markerFile, JSON.stringify(marker, null, 2) + '\n');
+  fs.rmSync(path.join(workspace, 'collection'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.claude', '.library-mcp-url'), url);
+  fs.writeFileSync(path.join(workspace, '.claude', '.library-project'), collectionId);
+  if (options.sharedRoot) fs.writeFileSync(path.join(workspace, '.claude', '.library-shared-root'), options.sharedRoot);
+  return init;
+}
+
 // --- 1. The PowerShell-shaped serializer ------------------------------------------------------------
 
 // Measured from `[ordered]@{...} | ConvertTo-Json` on Windows PowerShell 5.1, with CRLF collapsed --
@@ -259,7 +288,7 @@ if (selected(5)) {
 if (selected(6)) {
   const help = runCli(['help']);
   equal(help.exit, 0, `library help exited ${help.exit}`);
-  check(help.stdout.includes('library -- the Library'), 'library help printed no usage');
+  check(help.stdout.includes('deskpost -- the Library'), 'library help printed no usage');
 
   const unknown = runCli(['nope']);
   check(unknown.exit !== 0, 'an unknown command exited 0');
@@ -306,7 +335,7 @@ if (selected(6)) {
     // between the argument list and the initialiser binds at all.
     const workspace = path.join(sandbox, 'ws');
     const registry = path.join(sandbox, 'registry');
-    const created = runCli(['init', workspace, '--registry-root', registry, '--collection-id', '00000000-0000-0000-0000-000000000000']);
+    const created = runCli(['init', workspace, '--registry-root', registry, '--collection-id', '00000000-0000-0000-0000-000000000000', '--json']);
     equal(created.exit, 0, `library init exited ${created.exit}: ${created.stderr}`);
     let initResult: { status: string; files: { file: string; action: string }[] } | null = null;
     try {
@@ -322,7 +351,7 @@ if (selected(6)) {
     }
 
     // IDEMPOTENT, AND THE SECOND RUN MUST SAY SO RATHER THAN REISSUING THE ID.
-    const again = runCli(['init', workspace, '--registry-root', registry]);
+    const again = runCli(['init', workspace, '--registry-root', registry, '--json']);
     equal(again.exit, 0, `a second library init exited ${again.exit}: ${again.stderr}`);
     const secondResult = JSON.parse(again.stdout) as { status: string; id: string };
     equal(secondResult.status, 'already_initialized', 'a second init did not report the workspace already initialised');
@@ -341,20 +370,21 @@ if (selected(6)) {
     const pinned = '00000000-0000-0000-0000-000000000000';
     equal(readJson(idFile)['id'], pinned, "the local collection did not take the id init was given");
     equal(readJson(path.join(workspace, '.library', 'workspace.json'))['collection_id'], pinned, 'a Tier 0 re-run with no collection id lost the collection');
-    const retarget = runCli(['init', workspace, '--registry-root', registry, '--force', '--collection-id', '11111111-1111-1111-1111-111111111111']);
+    const retarget = runCli(['init', workspace, '--registry-root', registry, '--collection-id', '11111111-1111-1111-1111-111111111111']);
     check(retarget.exit !== 0 && retarget.stderr.includes('will not retarget the workspace'), 'an init naming another collection than collection.json did not refuse');
     equal(readJson(path.join(workspace, '.library', 'workspace.json'))['collection_id'], pinned, 'a refused retarget still changed the marker');
     const withEndpoint = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-endpoint-'));
     try {
-      // WITH AN ENDPOINT THERE IS NO LOCAL COLLECTION, so the marker is the only record of the id and
-      // this is where the Report Inbox's defect shows: measured, the Tier 0 case above passes with the
-      // marker fallback removed, because collection.json answers for it.
-      const attached = runCli(['init', withEndpoint, '--registry-root', registry, '--mcp-url', 'http://127.0.0.1:1/mcp', '--collection-id', pinned]);
-      equal(attached.exit, 0, `an init with an endpoint exited ${attached.exit}: ${attached.stderr}`);
-      check(!fs.existsSync(path.join(withEndpoint, 'collection')), 'a workspace with an endpoint was given a local collection');
-      const rerun = runCli(['init', withEndpoint, '--registry-root', registry, '--mcp-url', 'http://127.0.0.1:1/mcp', '--force']);
-      equal(rerun.exit, 0, `a re-run with an endpoint exited ${rerun.exit}: ${rerun.stderr}`);
+      // A BASIC MEMORY BACKEND HAS NO LOCAL COLLECTION, so the marker is the only record of the id and this is
+      // where the Report Inbox's defect shows: measured, the Tier 0 case above passes with the marker fallback
+      // removed, because collection.json answers for it. Since 1.1 such a workspace is one that already exists.
+      const attached = basicMemoryWorkspace(withEndpoint, registry, 'http://127.0.0.1:1/mcp', pinned);
+      equal(attached.exit, 0, `an init for the endpoint workspace exited ${attached.exit}: ${attached.stderr}`);
+      const rerun = runCli(['init', withEndpoint, '--registry-root', registry]);
+      equal(rerun.exit, 0, `a re-run over a Basic Memory backend exited ${rerun.exit}: ${rerun.stderr}`);
       equal(readJson(path.join(withEndpoint, '.library', 'workspace.json'))['collection_id'], pinned, 'a re-run with no collection id emptied the one the marker recorded');
+      equal(readJson(path.join(withEndpoint, '.library', 'workspace.json'))['backend'], 'basic-memory', 'a re-run did not keep the Basic Memory backend');
+      check(!fs.existsSync(path.join(withEndpoint, 'collection')), 'a re-run over a Basic Memory backend laid out a local collection');
     } finally {
       fs.rmSync(withEndpoint, { recursive: true, force: true });
     }
@@ -430,6 +460,16 @@ if (selected(8)) {
       hook: ['hook', 'no-such-guard'],
       // S43. With no workspace the branch refuses in the resolver's words, which is still its own branch.
       collection: ['collection', 'no-such-action'],
+      // S52. The same: with no workspace the branch refuses in the resolver's words.
+      'basic-memory': ['basic-memory', 'no-such-action'],
+      // S54. --ask with no answers file stops in the verb's own branch, which refuses naming what it needs.
+      setup: ['setup', '--ask'],
+      // From a checkout, or off Windows, both refuse in their own branch: there is no install to change.
+      uninstall: ['uninstall', '--dry-run'],
+      rollback: ['rollback'],
+      // S55. With no terminal and no answers the menu refuses in its own branch; an unknown action stops `library`'s.
+      menu: ['menu'],
+      library: ['library', 'no-such-action'],
     };
     for (const [verb, declaration] of Object.entries(VERBS)) {
       if (!declaration.ported) continue;
@@ -640,9 +680,7 @@ if (selected(10)) {
     // is a closed port). No filesystem view is `misconfigured`; a role another workspace holds is refused
     // in the oracle's words.
     const shared = path.join(root, 'shared');
-    run(['init', shared, '--registry-root', registry, '--mcp-url', 'http://127.0.0.1:1/mcp', '--collection-id', '22222222-2222-2222-2222-222222222222']);
-    fs.writeFileSync(path.join(shared, '.claude', '.library-mcp-url'), 'http://127.0.0.1:1/mcp');
-    fs.writeFileSync(path.join(shared, '.claude', '.library-project'), '22222222-2222-2222-2222-222222222222');
+    basicMemoryWorkspace(shared, registry, 'http://127.0.0.1:1/mcp', '22222222-2222-2222-2222-222222222222', { env: tier0Env });
     const noView = run(['hub', 'new', 'x', '--title', 'X', '--workspace', shared]);
     check(
       noView.exit !== 0 && noView.stderr.includes('creating a Project Hub is refused') && noView.stderr.includes('with no filesystem view of it'),
@@ -1207,7 +1245,7 @@ if (selected(19)) {
       const cli = (args: string[], input?: string) => runCli(args, { cwd: root, env, ...(input !== undefined ? { input } : {}) });
       const workspace = path.join(root, 'ws');
       const other = path.join(root, 'other');
-      const init = cli(['init', workspace]);
+      const init = cli(['init', workspace, '--json']);
       equal(init.exit, 0, `library init refused an absolute POSIX root: ${init.stderr.trim()}`);
       const registry = path.join(home, '.library', 'workspaces.json');
       if (init.exit === 0) {
@@ -1225,7 +1263,7 @@ if (selected(19)) {
         check(refused.exit !== 0 && refused.stderr.includes('is not an absolute local path') && refused.stdout.trim() === '', `init did not refuse '${bad}' by the rule: ${refused.exit} ${refused.stderr.trim()}`);
       }
       check(!fs.existsSync(path.join(root, 'a\\b')), 'a refused init created its directory');
-      const doctor = cli(['doctor', '--workspace', workspace]);
+      const doctor = cli(['doctor', '--workspace', workspace, '--json']);
       const report = (() => { try { return JSON.parse(doctor.stdout) as Record<string, unknown>; } catch { return {}; } })();
       check(report['workspace'] === workspace && Number(report['skipped']) < Number(report['total']), `doctor did not read the POSIX workspace: ${doctor.stdout.slice(0, 300)} ${doctor.stderr.trim()}`);
 
@@ -1269,7 +1307,7 @@ if (selected(20)) {
     const registry = path.join(root, 'reg');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
     const cli = (args: string[]) => runCli(args, { cwd: root, env });
-    const init = (folder: string) => cli(['init', folder, '--registry-root', registry]);
+    const init = (folder: string) => cli(['init', folder, '--registry-root', registry, '--json']);
     const actionOf = (result: { stdout: string }, file: string): string => {
       try {
         const files = (JSON.parse(result.stdout) as { files: { file: string; action: string }[] }).files;
@@ -1290,7 +1328,7 @@ if (selected(20)) {
     check(/^- \*\*Path:\*\* shelf\/reports$/m.test(catalog), 'the rendered catalog does not list the Report Inbox');
     const master = path.join(fresh, 'notebook', '_master-index.md');
     check(fs.existsSync(master) && fs.readFileSync(master, 'utf8').startsWith('# '), 'a fresh init wrote no master index');
-    const doctor = cli(['doctor', '--workspace', fresh]);
+    const doctor = cli(['doctor', '--workspace', fresh, '--json']);
     const report = (() => { try { return JSON.parse(doctor.stdout) as { failed: number; passed: number; checks: { check: string; status: string; detail: string }[] }; } catch { return null; } })();
     check(
       report !== null && report.failed === 0 && report.passed > 0 && doctor.exit === 0,
@@ -1338,7 +1376,7 @@ if (selected(21) && process.platform !== 'win32') {
     const program = String((JSON.parse(cli(['--version']).stdout) as Record<string, unknown>)['program_root']);
     const binary = path.join(program, 'bin', 'library');
     const workspace = path.join(root, 'ws');
-    const init = cli(['init', workspace]);
+    const init = cli(['init', workspace, '--json']);
     equal(init.exit, 0, `init failed on POSIX: ${init.stderr.trim()}`);
 
     const readJson = (relative: string): Record<string, unknown> => {
@@ -1386,7 +1424,7 @@ if (selected(21) && process.platform !== 'win32') {
     });
     check((served.stdout ?? '').includes('read_book_catalog') && !(served.stderr ?? '').includes('LIBRARY GUARD WARNING'), `the registered reader did not serve, or warned: ${served.status} ${(served.stdout ?? '').slice(0, 200)} ${served.stderr}`);
 
-    const doctor = cli(['doctor', '--workspace', workspace]);
+    const doctor = cli(['doctor', '--workspace', workspace, '--json']);
     const rows = (() => { try { return (JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks; } catch { return []; } })();
     const status = (name: string) => rows.find((row) => row.check === name)?.status ?? '(absent)';
     equal(status('workspace.guards-registered'), 'pass', `doctor did not pass the binary's Claude registrations: ${rows.find((row) => row.check === 'workspace.guards-registered')?.detail}`);
@@ -1400,7 +1438,7 @@ if (selected(21) && process.platform !== 'win32') {
     const bound = JSON.parse(fs.readFileSync(local, 'utf8')) as Record<string, unknown>;
     (bound['hooks'] as Record<string, unknown>)['PreToolUse'] = [...((bound['hooks'] as Record<string, unknown[]>)['PreToolUse'] ?? []), ...oldBlock.PreToolUse];
     fs.writeFileSync(local, JSON.stringify(bound));
-    const staleDoctor = cli(['doctor', '--workspace', stale]);
+    const staleDoctor = cli(['doctor', '--workspace', stale, '--json']);
     check(staleDoctor.stdout.includes('starts a program this machine does not have') && staleDoctor.stdout.includes('powershell.exe'), `doctor passed a powershell.exe hook on POSIX: ${staleDoctor.stdout.slice(0, 600)}`);
     // AND A RE-RUN REPLACES IT: the old block points into this program, so it is the Library's.
     fs.writeFileSync(local, JSON.stringify({ hooks: oldBlock }));
@@ -1447,7 +1485,7 @@ if (selected(22)) {
     fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ enabledPlugins: { 'deskpost@deskpost': true } }));
     fs.writeFileSync(path.join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'deskpost@deskpost': [{ scope: 'user', installPath: install }] } }));
     const guards = () => {
-      const doctor = runCli(['doctor', '--workspace', workspace], { cwd: root, env });
+      const doctor = runCli(['doctor', '--workspace', workspace, '--json'], { cwd: root, env });
       try {
         return ((JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks.find((row) => row.check === 'workspace.guards-registered')) ?? { status: '(absent)', detail: '' };
       } catch {
@@ -1492,28 +1530,34 @@ if (selected(23)) {
   const { hostRemedies } = await import('../src/remedy.ts');
   const posix = (text: string) => hostRemedies(text, 'posix');
   const cases: [string, string][] = [
-    ['Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta, then read', 'Open it with library desk open book beta --location shelf, then read'],
-    ['tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug old', 'library desk open book old --location shelf --shelf archive'],
-    ['tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.', 'library desk open book <slug> --location shelf.'],
-    ['tools/Set-VirtualDesk.ps1 -Action Close -Kind Project -Slug hub', 'library desk close project hub'],
-    ['Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or', 'Sit down at a seat with library seat enter <name>, or'],
-    ['tools/Retire-Seat.ps1 -Seat old', 'library seat retire old'],
-    ['re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .', 're-render it with library shelf render'],
-    ['tools/NotebookIndex.ps1 -Render -WorkspacePath .', 'library notebook render'],
-    ['Capture into it with tools/Add-ShelfNote.ps1 -BookSlug holding. It is', 'Capture into it with library capture holding --title <title> --body <text>. It is'],
-    ['Use tools/Get-DeskOverview.ps1 until then.', 'Use library desk until then.'],
-    ['Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with library seat start <name> --project <project-slug>.'],
+    ['Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta, then read', 'Open it with deskpost desk open book beta --location shelf, then read'],
+    ['tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug old', 'deskpost desk open book old --location shelf --shelf archive'],
+    ['tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.', 'deskpost desk open book <slug> --location shelf.'],
+    ['tools/Set-VirtualDesk.ps1 -Action Close -Kind Project -Slug hub', 'deskpost desk close project hub'],
+    ['Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or', 'Sit down at a seat with deskpost seat enter <name>, or'],
+    ['tools/Retire-Seat.ps1 -Seat old', 'deskpost seat retire old'],
+    ['re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .', 're-render it with deskpost shelf render'],
+    ['tools/NotebookIndex.ps1 -Render -WorkspacePath .', 'deskpost notebook render'],
+    ['Capture into it with tools/Add-ShelfNote.ps1 -BookSlug holding. It is', 'Capture into it with deskpost capture holding --title <title> --body <text>. It is'],
+    ['Use tools/Get-DeskOverview.ps1 until then.', 'Use deskpost desk until then.'],
+    ['Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with deskpost seat start <name> --project <project-slug>.'],
     ['pass -WorkspacePath, set LIBRARY_WORKSPACE, or pass -Seat explicitly.', 'pass --workspace, set LIBRARY_WORKSPACE, or pass --seat explicitly.'],
-    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'library reset restore --list'],
-    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'library reset restore --quarantine <name> --show'],
-    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'library reset restore --quarantine reset-20260926-0102 --preflight'],
-    ['restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with library reset restore, or'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'deskpost reset restore --list'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'deskpost reset restore --quarantine <name> --show'],
+    ['tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'deskpost reset restore --quarantine reset-20260926-0102 --preflight'],
+    ['restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with deskpost reset restore, or'],
     ['take it over with tools/Set-NotebookTopicOwner.ps1, or', 'take it over with tools/Set-NotebookTopicOwner.ps1 (a PowerShell helper; this machine has no PowerShell to run it), or'],
   ];
   for (const [given, wanted] of cases) equal(posix(given), wanted, `the POSIX remedy for '${given}'`);
   const windowsText = 'Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta.';
   equal(hostRemedies(windowsText, 'win32'), windowsText, "the Windows remedy from source changed; it is the oracle's sentence");
   equal(posix('no helper named here'), 'no helper named here', 'a sentence naming no helper was changed');
+  // THE COMMAND IS `deskpost` WHERE A REMEDY LEAVES AN INSTALLED KERNEL (ADR-0055): a verb is renamed, a path or a word is not.
+  equal(posix('Re-run `library init /w` to re-point them, or `library help`.'), 'Re-run `deskpost init /w` to re-point them, or `deskpost help`.', 'a `library <verb>` remedy was not renamed');
+  for (const kept of ['"/opt/p/bin/library" hook shelf-read', 'the Library holds it', 'the library-dev seat', 'library has no command', 'C:\\p\\bin\\library.exe mcp serve']) {
+    equal(posix(kept), kept, `the rename touched something that is not a command: '${kept}'`);
+  }
+  equal(hostRemedies('Re-run `library init C:\\w`.', 'win32'), 'Re-run `library init C:\\w`.', "the rename reached the oracle's own host");
 
   // A `*_route` FIELD IS A REMEDY (S49, the reader's ruling): every such key, and no other field for containing `route`.
   const { hostRemedyFields } = await import('../src/remedy.ts');
@@ -1522,7 +1566,7 @@ if (selected(23)) {
     'posix',
   );
   check(
-    routed.quarantine.list_route === 'library reset restore --list' && routed.later_route === 'library desk' && routed.quarantine.note === 'tools/Restore-NotebookQuarantine.ps1' && routed.routes === 'tools/Get-DeskOverview.ps1',
+    routed.quarantine.list_route === 'deskpost reset restore --list' && routed.later_route === 'deskpost desk' && routed.quarantine.note === 'tools/Restore-NotebookQuarantine.ps1' && routed.routes === 'tools/Get-DeskOverview.ps1',
     `the field walk did not treat exactly the *_route keys as remedies: ${JSON.stringify(routed)}`,
   );
 
@@ -1551,7 +1595,7 @@ if (selected(23)) {
       const workspace = path.join(root, 'ws');
       equal(runCli(['init', workspace, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, 'init for the remedy workspace failed');
       const desk = runCli(['desk'], { cwd: workspace, env });
-      check(desk.exit !== 0 && desk.stderr.includes('library seat enter') && !desk.stderr.includes('.ps1'), `a seatless desk still offers a PowerShell helper on POSIX or from a compiled kernel: ${desk.stderr.trim()}`);
+      check(desk.exit !== 0 && desk.stderr.includes('deskpost seat enter') && !desk.stderr.includes('.ps1'), `a seatless desk still offers a PowerShell helper on POSIX or from a compiled kernel: ${desk.stderr.trim()}`);
       const seatDesk = path.join(workspace, '.claude', 'seats', 'reader');
       fs.mkdirSync(seatDesk, { recursive: true });
       fs.writeFileSync(path.join(seatDesk, '.open-books'), '');
@@ -2010,12 +2054,8 @@ if (selected(28)) {
     const CONTENDERS = 10;
     for (let n = 0; n < CONTENDERS; n += 1) {
       const workspace = path.join(root, `ws${n}`);
-      const init = runCli(['init', workspace, '--registry-root', registry, '--mcp-url', 'http://127.0.0.1:1/mcp', '--collection-id', collectionId], { cwd: root, env });
+      const init = basicMemoryWorkspace(workspace, registry, 'http://127.0.0.1:1/mcp', collectionId, { cwd: root, env, sharedRoot: view });
       equal(init.exit, 0, `init for workspace ${n} failed: ${init.stderr.trim()}`);
-      fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true });
-      fs.writeFileSync(path.join(workspace, '.claude', '.library-mcp-url'), 'http://127.0.0.1:1/mcp');
-      fs.writeFileSync(path.join(workspace, '.claude', '.library-project'), collectionId);
-      fs.writeFileSync(path.join(workspace, '.claude', '.library-shared-root'), view);
       let id = '';
       try {
         id = String((JSON.parse(fs.readFileSync(path.join(workspace, '.library', 'workspace.json'), 'utf8').replace(/^\uFEFF/, '')) as { id: string }).id);
@@ -2971,7 +3011,10 @@ if (selected(36)) {
 
     // A Basic Memory workspace keeps the adapter: its collection is the adapter's to read.
     const shared = path.join(w.root, 'shared');
-    runCli(['init', shared, '--registry-root', path.join(w.root, 'reg'), '--mcp-url', 'http://127.0.0.1:1/mcp', '--collection-id', '44444444-4444-4444-4444-444444444444'], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    // A workspace that is ALREADY attached to Basic Memory, re-initialised: the adapter is kept.
+    basicMemoryWorkspace(shared, path.join(w.root, 'reg'), 'http://127.0.0.1:1/mcp', '44444444-4444-4444-4444-444444444444', { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    fs.rmSync(path.join(shared, '.mcp.json'), { force: true });
+    runCli(['init', shared, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
     const sharedMcp = JSON.parse(fs.readFileSync(path.join(shared, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as { mcpServers: Record<string, { command: string }> };
     if (process.platform === 'win32') {
       check(sharedMcp.mcpServers['validated-book-reader']?.command === 'powershell.exe', `a Basic Memory init on Windows stopped registering the adapter: ${sharedMcp.mcpServers['validated-book-reader']?.command}`);
@@ -3123,7 +3166,7 @@ if (selected(38) && process.platform === 'win32') {
       ),
     });
     const guards = (extra: Record<string, string> = {}) => {
-      const doctor = runCli(["doctor", "--workspace", workspace], { cwd: root, env: { ...env, ...extra } });
+      const doctor = runCli(["doctor", "--workspace", workspace, '--json'], { cwd: root, env: { ...env, ...extra } });
       try {
         return ((JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks.find((row) => row.check === 'workspace.guards-registered')) ?? { status: '(absent)', detail: '' };
       } catch {
@@ -3206,7 +3249,7 @@ if (selected(39) && process.platform === 'win32') {
       check(scripts.every((row) => row.entry.command === 'powershell.exe' && unported.some((name) => spelled(row.entry).includes(name))), `a compiled init registered a guard script the kernel has ported: ${scripts.map((row) => spelled(row.entry)).join(' | ')}`);
       for (const name of unported) check(scripts.some((row) => spelled(row.entry).includes(name)), `a compiled init dropped the unported ${name}, which Windows can still run`);
 
-      const codexPrefix = `& "${program}/bin/library" hook `;
+      const codexPrefix = `& '${program.replace(/'/g, "''")}/bin/library' hook `;
       check(codex.length === 4 && codex.every((row) => row.entry.command.startsWith(codexPrefix) && row.entry.commandWindows === row.entry.command), `a compiled init's Codex hooks are not the kernel's four behind '& ': ${codex.map((row) => row.entry.command).join(' | ')}`);
       check(codex.filter((row) => row.entry.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 3, "a compiled init's Codex hooks do not hand three of them Codex's reader prefix");
 
@@ -3222,14 +3265,14 @@ if (selected(39) && process.platform === 'win32') {
       const ran = spawnSync(shelfGuard?.command ?? 'false', shelfGuard?.args ?? [], { cwd: workspace, env: hookEnv, input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: page } }), encoding: 'utf8', timeout: 30000 });
       const denial = ran.stdout ?? '';
       check(denial.includes('"permissionDecision":"deny"') && denial.includes("Shelf Book 'holding' is closed"), `the registered Claude shelf guard did not deny a closed Book: ${ran.status} ${denial} ${ran.stderr}`);
-      check(denial.includes('library desk open book holding --location shelf') && !denial.includes('.ps1'), `the registered Claude shelf guard's denial still names a PowerShell helper: ${denial}`);
+      check(denial.includes('deskpost desk open book holding --location shelf') && !denial.includes('.ps1'), `the registered Claude shelf guard's denial still names a PowerShell helper: ${denial}`);
       // Codex's form: through powershell.exe -Command, as codex-cli 0.153.4 runs a hook on Windows (S46).
       const shellGuard = codex.find((row) => / hook shell-shelf-read /.test(row.entry.command))?.entry.command ?? 'exit 1';
       const viaCodex = spawnSync('powershell.exe', ['-NoProfile', '-Command', shellGuard], { cwd: workspace, env: hookEnv, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `Get-Content "${page}"` } }), encoding: 'utf8', timeout: 60000 });
       const codexDenial = viaCodex.stdout ?? '';
       check(codexDenial.includes('"permissionDecision":"deny"') && !codexDenial.includes('.ps1'), `the registered Codex shell guard, run through powershell.exe, did not deny a closed Book in the kernel's words: ${viaCodex.status} ${codexDenial.slice(0, 400)} ${String(viaCodex.stderr ?? '').slice(0, 300)}`);
 
-      const doctor = cli(['doctor', '--workspace', workspace]);
+      const doctor = cli(['doctor', '--workspace', workspace, '--json']);
       const rows = (() => { try { return (JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks; } catch { return []; } })();
       const row = (name: string) => rows.find((item) => item.check === name) ?? { status: '(absent)', detail: '' };
       equal(row('workspace.guards-registered').status, 'pass', `doctor did not pass a compiled init's Claude hooks: ${row('workspace.guards-registered').detail}`);
@@ -3310,6 +3353,1731 @@ if (selected(40)) {
     check(!/no open Book needed/.test(instructions), `the rendered instructions still say the Holding Shelf needs "no open Book" without saying for what: ${holding}`);
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 41. A LOCAL COLLECTION BOOK IS FIRST-CLASS (PLAN-basic-memory.md step 1, B0; F19, F20) --------------------------
+// The S51 new-user run found a local Library could hold a Book in collection/ and neither publish into it (F19: every
+// publish reached for Basic Memory) nor find it (F20: Discovery had no store for it). Judged through the front door on
+// a Library with no endpoint -- and then with a Basic Memory CONNECTION and a fenced environment, which must change
+// nothing: publish, refresh and archive stay plain file writers into collection/, and never reach for the network.
+if (selected(41)) {
+  const w = await seatClaimWorkspace('localbooks', { pin: false });
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the local-Books judge could not be created');
+    const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    let env: Record<string, string> = base;
+    const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
+    const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        failures.push(`${label}: no JSON (exit ${result.exit}) ${result.stderr.trim().slice(0, 300)}`);
+        return {};
+      }
+    };
+    const read = (tool: string, args: string[]) => {
+      const result = cli(['mcp', 'call', tool, ...args, '--seat', 'first']);
+      try {
+        const envelope = JSON.parse(result.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${result.stdout.slice(0, 200)} ${result.stderr.trim()}` };
+      }
+    };
+    const collection = path.join(w.workspace, 'collection');
+    const catalogFile = path.join(collection, 'books', 'README.md');
+    const text = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '<absent>');
+
+    // A fresh local catalog carries the one heading a publish with no --collection files under.
+    check(text(catalogFile).includes('\n## Open a Book\n'), `a fresh Local collection catalog lacks '## Open a Book': ${text(catalogFile)}`);
+
+    // A curated Shelf Book with two pages, open at the seat.
+    const makeShelfBook = (slug: string, title: string, pages: Record<string, string>) => {
+      equal(cli(['shelf', 'new', slug, '--title', title, '--summary', `The ${title} Book.`, '--json']).exit, 0, `the Shelf Book ${slug} could not be made`);
+      equal(w.as(agent, ['desk', 'open', 'book', slug, '--location', 'shelf', '--seat', 'first', '--workspace', w.workspace]).exit, 0, `the Shelf Book ${slug} could not be opened`);
+      for (const [page, body] of Object.entries(pages)) {
+        const added = cli(['book', 'add-page', slug, page, '--body', body, '--seat', 'first', '--json']);
+        equal(added.exit, 0, `the page ${slug}/${page} could not be added: ${added.stderr.trim().slice(0, 300)}`);
+      }
+    };
+    const publish = (slug: string, extra: string[] = []) => {
+      const args = ['publish', slug, '--title', `${slug} title`, '--summary', `What ${slug} holds.`, ...extra];
+      const plan = json(cli([...args, '--preflight', '--json']), `the ${slug} publish preflight`);
+      return { plan, result: cli([...args, '--user-confirmed', '--plan-id', String(plan['plan_id'] ?? ''), '--json']) };
+    };
+    makeShelfBook('field-notes', 'Field Notes', { birds: '# Birds\n\nHerons wade at dawn.\n', 'trees/oaks': '# Oaks\n\nAcorns in autumn.\n' });
+    const shelfPage = fs.readFileSync(path.join(w.workspace, 'shelf', 'field-notes', 'wiki', 'birds.md'), 'utf8');
+
+    // F19: into a FRESH catalog, local, with no endpoint anywhere.
+    const first = publish('field-notes');
+    equal(String((first.plan['publication_plan'] as Record<string, unknown> | undefined)?.['destination']), 'collection', 'a local publish preflight did not name the Local collection as its destination');
+    equal(first.result.exit, 0, `a local publish did not complete: ${first.result.stderr.trim().slice(0, 400)}`);
+    const wiki = path.join(collection, 'books', 'field-notes', 'wiki');
+    equal(text(path.join(wiki, 'birds.md')), shelfPage, 'a published page is not byte-exact to its Shelf source');
+    const root = text(path.join(wiki, '_book.md'));
+    const keys = [...(/^---\n([\s\S]*?)\n---\n/.exec(root)?.[1] ?? '').matchAll(/^([a-z0-9_]+):/gm)].map((m) => m[1]);
+    equal(
+      keys.join(','),
+      'source_workspace,page_manifest_sha256,publication_state,reader_map_path,book_slug,planned_page_count,book_version,approved_plan_id,source_digest_sha256,source_boundary',
+      'the local root carries its frontmatter keys out of their fixed order',
+    );
+    check(/^publication_state: complete$/m.test(root), 'the local root did not end complete');
+    check(/^## Open a Book\n\n- \[\[books\/field-notes\/wiki\/_book\|field-notes title\]\] — What field-notes holds\.$/m.test(text(catalogFile)), `the catalog line is not filed under '## Open a Book': ${text(catalogFile)}`);
+    check(!fs.existsSync(path.join(w.workspace, 'shelf', 'field-notes')), 'the published Shelf Book was not removed, as a publish removes it');
+    check(fs.readdirSync(path.join(w.workspace, 'internal', 'publication-journals')).some((name) => name.startsWith('field-notes-')), 'the local publish left no journal in internal/publication-journals/');
+    for (const name of ['.library-project', '.library-mcp-url', '.library-shared-root']) check(!fs.existsSync(path.join(w.workspace, '.claude', name)), `a local publish wrote ${name}`);
+
+    // F20: Discovery finds it, labelled with its place, and says the Local collection was searched.
+    const found = read('discover_book_pages', ['--query', 'Birds']);
+    check(!found.error && found.text.includes('[books/field-notes, curated, closed]') && found.text.includes('Local collection: 1 of 1 Book(s) searched'), `Discovery did not find the published Book in the Local collection: ${found.text.slice(0, 600)}`);
+    const { findBookPages } = await import('../src/discovery.ts');
+    const hit = findBookPages({ workspace: w.workspace, query: 'Oaks', deskStateDirectory: path.join(w.workspace, '.claude', 'seats', 'first') }).results[0];
+    equal(hit?.collection, 'collection', "a Local collection hit was not labelled with its place");
+
+    // A heading a --collection names is inserted on demand, ahead of '## Open a Book'.
+    makeShelfBook('guide', 'Guide', { start: '# Start\n\nWhere to begin.\n' });
+    const guide = publish('guide', ['--collection', 'Reference']);
+    equal(guide.result.exit, 0, `a local publish under --collection Reference failed: ${guide.result.stderr.trim().slice(0, 300)}`);
+    check(/## Reference\n\n- \[\[books\/guide\/wiki\/_book\|guide title\]\][\s\S]*## Open a Book/.test(text(catalogFile)), `the '## Reference' heading was not inserted ahead of '## Open a Book': ${text(catalogFile)}`);
+
+    // WITH A CONNECTION AND A FENCED ENVIRONMENT: still local, the fence never met. Nothing listens at the endpoint,
+    // and the environment names a share whose writable role another workspace holds -- a publish that reached for
+    // either would refuse here instead of completing.
+    const share = path.join(w.root, 'share');
+    for (const catalog of ['books', 'projects']) {
+      fs.mkdirSync(path.join(share, catalog), { recursive: true });
+      fs.writeFileSync(path.join(share, catalog, 'README.md'), '# Catalog\n');
+    }
+    fs.mkdirSync(path.join(share, '.owner'));
+    fs.writeFileSync(path.join(share, '.owner', '0001.claim.json'), JSON.stringify({ schema: '1', incarnation: 1, workspace_id: '11111111-1111-4111-8111-111111111111', machine: 'elsewhere' }));
+    const markerFile = path.join(w.workspace, '.library', 'workspace.json');
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    marker['connections'] = { basic_memory: { url: 'http://127.0.0.1:9/mcp', collection_id: '22222222-2222-4222-8222-222222222222', collection_name: 'elsewhere', storage: share } };
+    fs.writeFileSync(markerFile, JSON.stringify(marker, null, 2));
+    env = { ...base, AI_LIBRARY_MCP_URL: 'http://127.0.0.1:9/mcp', AI_LIBRARY_PROJECT_ID: '22222222-2222-4222-8222-222222222222', LIBRARY_SHARED_COLLECTION_ROOT: share };
+    makeShelfBook('fenced', 'Fenced', { page: '# Page\n\nPublished past a fence it never met.\n' });
+    const fenced = publish('fenced');
+    equal(fenced.result.exit, 0, `a publish on a connected, fenced local Library did not stay local: ${fenced.result.stderr.trim().slice(0, 400)}`);
+    check(fs.existsSync(path.join(collection, 'books', 'fenced', 'wiki', 'page.md')), 'the connected local publish did not write into collection/');
+
+    // REFRESH: the same Book, its page changed on a new Shelf copy, replaced in place.
+    makeShelfBook('field-notes', 'Field Notes', { birds: '# Birds\n\nHerons and egrets wade at dawn.\n', 'trees/oaks': '# Oaks\n\nAcorns in autumn.\n' });
+    const refreshArgs = ['publish', 'refresh', 'field-notes', '--title', 'field-notes title', '--summary', 'What field-notes holds.'];
+    const refreshPlan = json(cli([...refreshArgs, '--preflight', '--json']), 'the refresh preflight');
+    const refreshed = cli([...refreshArgs, '--user-confirmed', '--plan-id', String(refreshPlan['plan_id'] ?? ''), '--json']);
+    equal(refreshed.exit, 0, `a local refresh failed: ${refreshed.stderr.trim().slice(0, 400)}`);
+    check(text(path.join(wiki, 'birds.md')).includes('egrets'), 'a local refresh did not replace the changed page');
+    check(read('discover_book_pages', ['--query', 'Oaks']).text.includes('[books/field-notes'), 'Discovery lost the refreshed Book');
+
+    // A PUBLISH AND ANOTHER CATALOG WRITER CANNOT INTERLEAVE: while `collection/books` is held, a publish waits and refuses.
+    makeShelfBook('queued', 'Queued', { page: '# Page\n\nWaiting on the catalog lock.\n' });
+    const lockFile = path.join(w.workspace, 'internal', 'book-locks', 'collection-books.lock');
+    fs.writeFileSync(lockFile, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/books\n`);
+    const blocked = publish('queued', ['--lock-timeout', '1']);
+    fs.rmSync(lockFile, { force: true });
+    check(blocked.result.exit !== 0 && blocked.result.stderr.includes('holds the lock for collection/books'), `a publish ran while collection/books was held: ${blocked.result.exit} ${blocked.result.stderr.trim().slice(0, 300)}`);
+    check(!fs.existsSync(path.join(collection, 'books', 'queued')), 'a publish refused at the catalog lock still wrote pages');
+
+    // THE DESK: a Local collection Book opens with no location; its page reads; full text searches it. The refresh's
+    // Shelf copy is open too, so the read names its place.
+    equal(w.as(agent, ['desk', 'open', 'book', 'field-notes', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'a Local collection Book could not be opened');
+    const page = read('read_open_book_page', ['--slug', 'field-notes', '--page', 'trees/oaks', '--place', 'collection']);
+    check(!page.error && page.text.startsWith('# Oaks'), `an open Local collection Book's page did not read: ${page.text.slice(0, 200)}`);
+    const search = read('search_open_books', ['--query', 'egrets']);
+    check(!search.error && search.text.includes('birds:3') && search.text.includes('in the Local collection'), `full text did not search the open Local collection Book: ${search.text.slice(0, 500)}`);
+    const overview = json(w.as(agent, ['desk', '--seat', 'first', '--workspace', w.workspace, '--json']), 'the Desk overview');
+    const listed = (overview['open_books'] as { root: string; location: string }[] | undefined) ?? [];
+    equal(listed.find((book) => book.root === 'books/field-notes')?.location, 'collection', 'the Desk overview did not name a Local collection Book by its place');
+
+    // THE SAME SLUG IN TWO PLACES refuses naming `place`, and reads with it. The refresh's Shelf copy is still
+    // open; its page is made to differ from the collection's so the two reads can be told apart.
+    fs.writeFileSync(path.join(w.workspace, 'shelf', 'field-notes', 'wiki', 'birds.md'), '# Shelf birds\n\nThe Shelf copy.\n');
+    const ambiguous = read('read_open_book_page', ['--slug', 'field-notes', '--page', 'birds']);
+    check(ambiguous.error && ambiguous.text.includes('open in two places') && ambiguous.text.includes('pass place'), `the same slug in two places was not refused naming place: ${ambiguous.text.slice(0, 300)}`);
+    check(read('read_open_book_page', ['--slug', 'field-notes', '--page', 'birds', '--place', 'shelf']).text.startsWith('# Shelf birds'), 'place shelf did not read the Shelf copy');
+    check(read('read_open_book_page', ['--slug', 'field-notes', '--page', 'birds', '--place', 'collection']).text.startsWith('# Birds'), 'place collection did not read the collection copy');
+    const onlyShelf = read('search_open_books', ['--query', 'copy', '--place', 'shelf']);
+    check(!onlyShelf.error && onlyShelf.text.includes('Shelf copy') && !onlyShelf.text.includes('[books/field-notes'), `search with place shelf reached beyond the Shelf: ${onlyShelf.text.slice(0, 400)}`);
+    equal(w.as(agent, ['desk', 'close', 'book', 'field-notes', '--location', 'shelf', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'the Shelf twin could not be closed');
+
+    // THE ADDED FORM: a `shared/` entry on the Desk reads as a Desk everywhere, and its read names what is missing.
+    equal(w.as(agent, ['desk', 'open', 'book', 'remote', '--location', 'shared', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'a shared/ Book could not be opened on a connected local Library');
+    const desk = text(path.join(w.workspace, '.claude', 'seats', 'first', '.open-books'));
+    check(/^shared\/remote\r?$/m.test(desk), `opening with --location shared on a connected local Library did not write shared/remote: ${desk}`);
+    const context = w.as(agent, ['hook', 'desk-context', '--workspace', w.workspace, '--seat', 'first'], { LIBRARY_SEAT: 'first' });
+    check(context.stdout.includes('remote (shared)') && context.stdout.includes('field-notes (collection)'), `the Desk context did not name each Book by its place: ${context.stdout.slice(0, 400)}`);
+    const unreachable = read('read_open_book_page', ['--slug', 'remote', '--page', '_book']);
+    check(unreachable.error && unreachable.text.includes('MCP initialize failed'), `a shared/ read against a dead endpoint did not refuse by name: ${unreachable.text.slice(0, 300)}`);
+    equal(w.as(agent, ['desk', 'close', 'book', 'remote', '--location', 'shared', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'the shared/ Book could not be closed');
+
+    // ARCHIVE: moved within collection/, relinked, catalogued, and Discovery follows it into the archive.
+    const archivePlan = json(cli(['shared', 'archive', 'guide', '--preflight', '--json']), 'the local archive preflight');
+    equal(archivePlan['destination'], 'collection', 'the local archive preflight did not name the Local collection');
+    const archived = cli(['shared', 'archive', 'guide', '--user-confirmed', '--json']);
+    equal(archived.exit, 0, `a local archive failed: ${archived.stderr.trim().slice(0, 400)}`);
+    const archivedRoot = path.join(collection, 'archive', 'guide', 'wiki');
+    check(fs.existsSync(path.join(archivedRoot, 'start.md')) && !fs.existsSync(path.join(collection, 'books', 'guide')), 'the archived Book did not move whole into collection/archive/');
+    check(text(path.join(archivedRoot, '_index.md')).includes('[[archive/guide/wiki/start|') && !text(path.join(archivedRoot, '_index.md')).includes('[[books/guide/'), 'the archived reader map still links the active path');
+    check(/## Archived Books\n\n- \[\[archive\/guide\/wiki\/_book\|guide title\]\] — Archived \d{4}-\d{2}-\d{2}/.test(text(path.join(collection, 'archive', 'README.md'))), `the archive catalog was not created with the Book's entry: ${text(path.join(collection, 'archive', 'README.md'))}`);
+    check(!text(catalogFile).includes('[[books/guide/'), 'the archived Book is still listed in the Books catalog');
+    const startHit = read('discover_book_pages', ['--query', 'Start']);
+    check(startHit.text.includes('[archive/guide, curated, closed, ARCHIVED]') && startHit.text.includes('1 of 1 archived'), `Discovery did not follow the Book into the collection archive: ${startHit.text.slice(0, 500)}`);
+    equal(w.as(agent, ['desk', 'open', 'book', 'guide', '--shelf', 'archive', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'an archived Local collection Book could not be opened');
+    check(read('read_open_book_page', ['--slug', 'guide', '--page', 'start']).text.startsWith('# Start'), 'an archived Local collection Book did not read');
+
+    // A Book copied in by hand is found after a rebuild, which is the repair Discovery names.
+    const handWiki = path.join(collection, 'books', 'by-hand', 'wiki');
+    fs.mkdirSync(handWiki, { recursive: true });
+    fs.writeFileSync(path.join(handWiki, '_book.md'), '# By Hand\n\nPlaced without a publish.\n');
+    fs.writeFileSync(path.join(handWiki, 'notes.md'), '# Marginalia\n');
+    const beforeRebuild = read('discover_book_pages', ['--query', 'Marginalia']);
+    check(beforeRebuild.text.includes('by-hand') && beforeRebuild.text.includes('library collection rebuild'), `a Book with no manifest was not named with its repair: ${beforeRebuild.text.slice(0, 500)}`);
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, 'library collection rebuild failed');
+    check(read('discover_book_pages', ['--query', 'Marginalia']).text.includes('[books/by-hand, curated, closed]'), 'a rebuilt Book was not found');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+/**
+ * The stand-in Basic Memory server (`fake-basic-memory.ts`), started as a CHILD PROCESS -- the suite's own event
+ * loop is blocked by every `spawnSync` that judges a call -- serving `folder` as one collection. Resolved once it
+ * has written the port it listens on.
+ */
+async function startFakeBasicMemory(folder: string, extra: string[] = []): Promise<{ url: string; stop(): void }> {
+  const portFile = path.join(os.tmpdir(), `kernel-fake-bm-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.port`);
+  const child = spawn(process.execPath, [path.join(HERE, 'fake-basic-memory.ts'), folder, portFile, ...extra], { stdio: 'ignore' });
+  const until = Date.now() + 15000;
+  while (!(fs.existsSync(portFile) && fs.readFileSync(portFile, 'utf8').trim())) {
+    if (Date.now() > until) {
+      child.kill();
+      throw new Error('the stand-in Basic Memory server did not start');
+    }
+    await sleep(50);
+  }
+  const port = fs.readFileSync(portFile, 'utf8').trim();
+  fs.rmSync(portFile, { force: true });
+  return {
+    url: `http://127.0.0.1:${port}/mcp`,
+    stop: () => {
+      try {
+        child.kill();
+      } catch {
+        // already gone
+      }
+    },
+  };
+}
+
+/** A folder laid out as a Basic Memory collection's storage: both catalogs, and whatever `books` gives it. */
+function fakeStorage(folder: string, books: Record<string, Record<string, string>> = {}): string {
+  for (const catalog of ['books', 'projects']) fs.mkdirSync(path.join(folder, catalog), { recursive: true });
+  fs.writeFileSync(path.join(folder, 'books', 'README.md'), '# Book Catalog\n\n## Current entries\n');
+  fs.writeFileSync(path.join(folder, 'projects', 'README.md'), '# Active Projects\n\n## Projects\n');
+  for (const [slug, pages] of Object.entries(books)) {
+    for (const [page, body] of Object.entries(pages)) {
+      const file = path.join(folder, 'books', slug, 'wiki', ...`${page}.md`.split('/'));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    }
+  }
+  return folder;
+}
+
+// --- 42. A LOCAL LIBRARY'S BASIC MEMORY IS A CONNECTION, IN ITS MARKER (PLAN-basic-memory.md step 2, B1; F21) -----
+// Set-up checks each value live against a stand-in server before it saves anything, stores the collection as its
+// UUID chosen from the server's own list, and writes the marker and NOTHING ELSE: the three `.claude/.library-*`
+// files are what makes a workspace a Basic Memory BACKEND, and writing them converted a local Library on its next
+// init. Then every way that conversion could come back is driven: init again, an environment naming another
+// server, `init --mcp-url` on a new folder (F21) -- and a server that accepts the connection and never answers.
+if (selected(42) && !isCompiled()) {
+  const w = await seatClaimWorkspace('bmsetup', { pin: false });
+  const storage = fakeStorage(path.join(w.root, 'storage'), { 'remote-guide': { 'wiki-home': '# unused\n' } });
+  let server: { url: string; stop(): void } | null = null;
+  let hung: { url: string; stop(): void } | null = null;
+  try {
+    server = await startFakeBasicMemory(storage);
+    hung = await startFakeBasicMemory(storage, ['--hang']);
+    const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const cli = (args: string[], env: Record<string, string> = base) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
+    const markerFile = path.join(w.workspace, '.library', 'workspace.json');
+    const marker = () => JSON.parse(fs.readFileSync(markerFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    const connection = () => ((marker()['connections'] as Record<string, unknown> | undefined)?.['basic_memory'] ?? null) as Record<string, string> | null;
+    const noFiles = (label: string) => {
+      for (const name of ['.library-mcp-url', '.library-project', '.library-shared-root']) check(!fs.existsSync(path.join(w.workspace, '.claude', name)), `${label} left .claude/${name} behind`);
+    };
+
+    // EVERY VALUE CHECKED BEFORE ANYTHING IS SAVED.
+    const noCollection = cli(['basic-memory', 'setup', '--url', server.url]);
+    check(noCollection.exit !== 0 && noCollection.stderr.includes('stand-in-collection') && noCollection.stderr.includes('main'), `set-up with no collection did not name the server's own list: ${noCollection.stderr.trim()}`);
+    const unknown = cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'no-such']);
+    check(unknown.exit !== 0 && unknown.stderr.includes("no collection 'no-such'"), `set-up accepted a collection the server does not have: ${unknown.stderr.trim()}`);
+    const badStorage = cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--storage', w.root]);
+    check(badStorage.exit !== 0 && badStorage.stderr.includes('failed its check'), `set-up accepted a storage folder that is not the collection's: ${badStorage.stderr.trim()}`);
+    const started = Date.now();
+    const blackHoled = cli(['basic-memory', 'setup', '--url', hung.url, '--collection', 'stand-in-collection'], { ...base, LIBRARY_MCP_TIMEOUT_MS: '1500' });
+    check(blackHoled.exit !== 0 && blackHoled.stderr.includes('did not answer within 1.5 s'), `a server that never answers was not refused by name: ${blackHoled.stderr.trim()}`);
+    check(Date.now() - started < 15000, `a server that never answers held set-up for ${Date.now() - started} ms`);
+    equal(connection(), null, 'a set-up that failed its checks saved a connection');
+
+    // SAVED: the marker's connection, the collection as its UUID, still local, and nothing else written.
+    const saved = cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--storage', storage, '--json']);
+    equal(saved.exit, 0, `set-up against the stand-in failed: ${saved.stderr.trim()}`);
+    equal(connection()?.['collection_id'], 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', 'set-up did not store the collection as its UUID');
+    equal(connection()?.['storage'], storage, 'set-up did not store the storage folder');
+    equal(marker()['backend'], 'local', 'set-up changed the backend');
+    noFiles('set-up');
+
+    // INIT AGAIN -- a repair, an upgrade -- keeps the backend, the connection and a field it does not know.
+    const withFuture = marker();
+    withFuture['future_field'] = { kept: true };
+    fs.writeFileSync(markerFile, JSON.stringify(withFuture, null, 2) + '\n');
+    const again = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { ...base, LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    equal(again.exit, 0, `init over a connected Library failed: ${again.stderr.trim()}`);
+    equal(marker()['backend'], 'local', 'init over a connected Library converted it');
+    equal(connection()?.['url'], server.url, 'init dropped the connection');
+    equal(JSON.stringify(marker()['future_field']), '{"kept":true}', 'init dropped a marker field it does not set');
+    noFiles('init over a connected Library');
+
+    // AN ENVIRONMENT NAMING ANOTHER SERVER changes nothing about a local Library.
+    const elsewhere = { ...base, AI_LIBRARY_MCP_URL: 'http://127.0.0.1:9/mcp', AI_LIBRARY_PROJECT_ID: '22222222-2222-4222-8222-222222222222', LIBRARY_SHARED_COLLECTION_ROOT: w.root };
+    const status = JSON.parse(cli(['collection', 'owner', '--status', '--json'], elsewhere).stdout || '{}') as Record<string, unknown>;
+    equal(status['backend'], 'local', 'the fence read the environment ahead of a local marker');
+    equal(cli(['hub', 'new', 'env-probe', '--title', 'Env probe', '--json'], elsewhere).exit, 0, 'a Hub could not be made on a local Library with the environment set');
+    check(fs.existsSync(path.join(w.workspace, 'collection', 'projects', 'env-probe', '_project.md')), 'a Hub made with the environment set did not land in the Local collection');
+
+    // F21: `init --mcp-url` on a NEW folder records a connection, not a backend.
+    const fresh = path.join(w.root, 'fresh');
+    const f21 = runCli(['init', fresh, '--registry-root', path.join(w.root, 'reg'), '--mcp-url', server.url, '--collection-id', 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', '--json'], { cwd: w.root, env: { ...base, LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    equal(f21.exit, 0, `init --mcp-url on a new folder failed: ${f21.stderr.trim()}`);
+    const freshMarker = JSON.parse(fs.readFileSync(path.join(fresh, '.library', 'workspace.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    equal(freshMarker['backend'], 'local', 'init --mcp-url on a new folder made a Basic Memory backend (F21)');
+    equal(((freshMarker['connections'] as Record<string, Record<string, string>> | undefined)?.['basic_memory'])?.['url'], server.url, 'init --mcp-url did not record the connection');
+    check(fs.existsSync(path.join(fresh, 'collection', 'books', 'README.md')), 'init --mcp-url on a new folder laid out no Local collection');
+    check(!fs.existsSync(path.join(fresh, '.claude', '.library-mcp-url')), 'init --mcp-url wrote .claude/.library-mcp-url');
+
+    // DISCONNECT: the marker's record goes, and neither collection is touched.
+    const before = w.snapshot(path.join(w.workspace, 'collection'));
+    const storageBefore = w.snapshot(storage);
+    const gone = cli(['basic-memory', 'disconnect', '--json']);
+    equal(gone.exit, 0, `disconnect failed: ${gone.stderr.trim()}`);
+    equal(connection(), null, 'disconnect left the connection in the marker');
+    equal(w.snapshot(path.join(w.workspace, 'collection')), before, 'disconnect touched the Local collection');
+    equal(w.snapshot(storage), storageBefore, "disconnect touched the server's storage");
+    check((JSON.parse(cli(['basic-memory', 'disconnect', '--json']).stdout || '{}') as Record<string, unknown>)['disconnected'] === false, 'a second disconnect claimed to disconnect');
+
+    // A WORKSPACE WHOSE BACKEND IS BASIC MEMORY is not "connected": set-up refuses it.
+    const attached = path.join(w.root, 'attached');
+    basicMemoryWorkspace(attached, path.join(w.root, 'reg'), server.url, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', { cwd: w.root, env: { ...base, LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
+    const refusedBackend = runCli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--workspace', attached], { cwd: w.root, env: base });
+    check(refusedBackend.exit !== 0 && refusedBackend.stderr.includes('already is Basic'), `set-up connected a workspace whose backend is Basic Memory: ${refusedBackend.stderr.trim()}`);
+
+    // THE TABLE AND THE DISPATCH NAME THE SAME ACTIONS.
+    const listed = /It has: ([a-z, -]+)\./.exec(cli(['basic-memory', 'no-such-action']).stderr)?.[1]?.split(', ') ?? [];
+    equal(listed.join(','), [...VERBS['basic-memory']!.actions].sort().join(','), 'library basic-memory dispatches another set of actions than verbs.ts declares');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    server?.stop();
+    hung?.stop();
+    w.dispose();
+  }
+}
+
+/** Every file under a directory with its SHA-256: "the source was never written" is a claim about bytes. */
+function hashTree(directory: string): string {
+  return listFiles(directory)
+    .filter((file) => !fs.lstatSync(path.join(directory, ...file.split('/'))).isSymbolicLink())
+    .sort()
+    .map((file) => `${file} ${sha256Hex(fs.readFileSync(path.join(directory, ...file.split('/'))))}`)
+    .join('\n');
+}
+
+// --- 43. STATUS AND IMPORT (PLAN-basic-memory.md steps 3 and 4, B2; Fable #8 to #11) ----------------------------
+// A storage folder laid out as Eric's is -- catalogs with their own headings and frontmatter, an uncatalogued archived
+// Book, a Book with no publication state, another program's folders beside the Library's with links into them, a
+// dot-folder, and a junction -- read by status and imported, then re-imported through every row of step 4's table.
+// The Library already holds a Book of one of its slugs (a root-level conflict), an identical copy of another (adopted),
+// and a seat bound to a third's slug. Crashed mid-run, blocked by a held Hub, and raced by a source file changing after
+// the plan was taken. The source's bytes are hashed before and after: it is never written.
+if (selected(43) && !isCompiled()) {
+  const w = await seatClaimWorkspace('bmimport', { pin: false });
+  const source = path.join(w.root, 'storage');
+  let server: { url: string; stop(): void } | null = null;
+  const put = (root: string, relative: string, body: string) => {
+    const file = path.join(root, ...relative.split('/'));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+  try {
+    put(source, 'books/README.md', '---\ntitle: README\npermalink: x/books/readme\n---\n\n# Book Catalog\n\n## Current entries\n\n- [[books/alpha/wiki/_book|Alpha]] — The first Book.\n- [[books/clash/wiki/_book|Clash]] — Theirs.\n- [[books/twin/wiki/_book|Twin]] — Identical here.\n\n## Reference\n\n- [[books/beta/wiki/_book|Beta]] — The second Book.\n');
+    put(source, 'books/alpha/wiki/_book.md', '---\npublication_state: complete\n---\n# Alpha\n\n[[books/alpha/wiki/page|Page]]\n');
+    put(source, 'books/alpha/wiki/_index.md', '# Alpha index\n\n- [[books/alpha/wiki/page|Page]]\n');
+    put(source, 'books/alpha/wiki/page.md', '# Heron page\n\nHerons wade. See [[work/intake/alpha]] and [[_guild/README]].\n');
+    put(source, 'books/beta/wiki/_book.md', '# Beta\n');
+    put(source, 'books/beta/wiki/page.md', '# Beta page\n\nOriginal.\n');
+    put(source, 'books/beta/wiki/extra.md', '# Extra\n');
+    put(source, 'books/clash/wiki/_book.md', '# Clash (theirs)\n');
+    put(source, 'books/twin/wiki/_book.md', '# Twin\n');
+    put(source, 'projects/README.md', '# Active Projects\n\n## Projects\n\n- [[projects/hub-one/_project|Hub One]]\n- [[projects/hub-bound/_project|Hub Bound]]\n');
+    put(source, 'projects/hub-one/_project.md', '# Hub One\n\nIts orientation.\n');
+    put(source, 'projects/hub-bound/_project.md', '# Hub Bound (theirs)\n');
+    put(source, 'archive/README.md', '# Archive\n\n## Archived Books\n\n- [[archive/elsewhere/wiki/_book|Not on disk]] — Archived 2026-01-01\n');
+    put(source, 'archive/blog/wiki/_book.md', '---\npublication_state: copying\n---\n# Blog\n');
+    put(source, 'archive/projects/README.md', '# Archived Projects\n\n## Archived Projects\n\n- [[archive/projects/old-hub/_project|Old Hub]]\n');
+    put(source, 'archive/projects/old-hub/_project.md', '# Old Hub\n');
+    put(source, 'work/intake/alpha.md', '# Another program\n');
+    put(source, '_guild/README.md', '# Guild\n');
+    put(source, '.owner/0001.claim.json', '{}');
+    const outside = path.join(w.root, 'outside');
+    put(outside, 'wiki/_book.md', '# Outside the collection\n');
+    fs.symlinkSync(outside, path.join(source, 'books', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const agent = w.startAgent();
+    const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env: { ...base, ...extra } });
+    const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        failures.push(`${label}: no JSON (exit ${result.exit}) ${result.stderr.trim().slice(0, 400)}`);
+        return {};
+      }
+    };
+    const collection = path.join(w.workspace, 'collection');
+    const text = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '<absent>');
+    const local = (relative: string) => text(path.join(collection, ...relative.split('/')));
+
+    // THE LIBRARY BEFORE ANY IMPORT: a local Book under one of the source's slugs, an identical copy of another, and a
+    // seat bound to a Project of a third's slug whose Hub is no longer here.
+    put(collection, 'books/clash/wiki/_book.md', '# Clash (mine)\n');
+    put(collection, 'books/twin/wiki/_book.md', '# Twin\n');
+    equal(cli(['hub', 'new', 'hub-bound', '--title', 'Hub Bound', '--json']).exit, 0, 'the Hub a seat binds to could not be made');
+    equal(w.createSeat('first', 'hub-bound', agent).exit, 0, 'the seat for the import judge could not be created');
+    fs.rmSync(path.join(collection, 'projects', 'hub-bound'), { recursive: true, force: true });
+
+    server = await startFakeBasicMemory(source);
+    const sourceHashes = hashTree(source);
+
+    // STATUS WITHOUT A STORAGE FOLDER: reachable, counted from the server's catalogs, and the comparison says what it needs.
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--json']).exit, 0, 'set-up without a storage folder failed');
+    const bare = json(cli(['basic-memory', 'status', '--json']), 'status without a storage folder');
+    equal(bare['reachable'], true, 'status did not find the stand-in reachable');
+    equal(bare['counts_from'], "the server's catalogs over MCP", 'status without a folder did not count over MCP');
+    equal(JSON.stringify(bare['counts']), '{"book":4,"project":2,"archived_book":1,"archived_project":1}', 'status over MCP counted the catalogs wrong');
+    equal(bare['compared']?.['status'], 'needs the storage folder', 'status without a folder did not say the comparison needs it');
+    const bareImport = cli(['basic-memory', 'import', '--preflight', '--json']);
+    check(bareImport.exit !== 0 && bareImport.stderr.includes('names none'), `import without a storage folder did not refuse by name: ${bareImport.stderr.trim()}`);
+
+    // STATUS WITH IT: counted from disk, compared root by root, and nothing written anywhere.
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--storage', source, '--json']).exit, 0, 'set-up with the storage folder failed');
+    const workspaceBefore = w.snapshot(w.workspace);
+    const status = json(cli(['basic-memory', 'status', '--json']), 'status');
+    equal(status['counts_from'], 'the storage folder', 'status with a folder did not count from it');
+    equal(JSON.stringify(status['counts']), '{"book":4,"project":2,"archived_book":1,"archived_project":1}', 'status counted the storage folder wrong');
+    equal((status['compared']?.['only_there'] ?? []).join(','), 'archive/blog,archive/projects/old-hub,books/alpha,books/beta,projects/hub-one', 'status named the wrong roots only there, or one an import would refuse');
+    equal(JSON.stringify((status['compared']?.['differ'] ?? []).map((row: any) => [row.root, row.changed])), '[["books/clash","unrecorded"],["projects/hub-bound","unrecorded"]]', 'status did not name the roots an import would refuse');
+    check(String(status['summary']?.[3] ?? '').includes('never imported'), `status did not say there has been no import: ${JSON.stringify(status['summary'])}`);
+    equal(w.snapshot(w.workspace), workspaceBefore, 'status wrote into the Library');
+
+    // THE PREVIEW: everything named, nothing written.
+    const plan = json(cli(['basic-memory', 'import', '--preflight', '--json']), 'the import preview');
+    equal((plan['added_roots'] ?? []).join(','), 'archive/blog,archive/projects/old-hub,books/alpha,books/beta,projects/hub-one', 'the preview added the wrong roots');
+    equal(JSON.stringify((plan['root_conflicts'] ?? []).map((row: any) => row.root)), '["books/clash","projects/hub-bound"]', 'the preview named the wrong root-level conflicts');
+    check(String((plan['root_conflicts'] ?? [])[1]?.reason ?? '').includes("seat 'first' is bound"), `the bound-seat conflict does not name its seat: ${JSON.stringify(plan['root_conflicts'])}`);
+    equal((plan['adopted'] ?? []).join(','), 'books/twin', 'an identical root was not adopted');
+    equal(JSON.stringify((plan['refused'] ?? []).map((row: any) => row.path)), '["books/linked"]', 'the junction in the source was not refused and named');
+    equal(JSON.stringify((plan['skipped'] ?? []).map((row: any) => row.path)), '[".owner/","_guild/","work/"]', 'the preview skipped the wrong things');
+    equal(plan['dangling_links']?.['count'], 2, 'the preview did not count the links into skipped folders');
+    equal((plan['no_publication_state'] ?? []).join(','), 'books/beta', 'the preview did not name the Book with no publication state');
+    equal((plan['copying'] ?? []).join(','), 'archive/blog', "the preview did not flag the 'copying' Book");
+    equal((plan['uncatalogued'] ?? []).join(','), 'archive/blog', 'the preview did not find the uncatalogued archived Book');
+    equal(w.snapshot(w.workspace), workspaceBefore, 'the import preview wrote into the Library');
+
+    // A PLAN THE SOURCE HAS MOVED ON FROM is refused whole.
+    put(source, 'books/alpha/wiki/late.md', '# Late\n');
+    const stale = cli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(plan['plan_id']), '--json']);
+    fs.rmSync(path.join(source, 'books', 'alpha', 'wiki', 'late.md'));
+    check(stale.exit !== 0 && stale.stderr.includes('changed since its preview'), `an import from a stale plan was not refused: ${stale.stderr.trim().slice(0, 300)}`);
+    check(!fs.existsSync(path.join(collection, 'books', 'alpha')), 'an import refused as stale still wrote');
+
+    // A HUB HELD AT A SEAT blocks its own import, and nothing is written.
+    const release = holdBookLock(w.workspace, 'projects-hub-one');
+    const blocked = cli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(plan['plan_id']), '--lock-timeout', '1', '--json']);
+    release();
+    check(blocked.exit !== 0 && blocked.stderr.includes('holds the lock for projects/hub-one'), `an import ran past a held Hub: ${blocked.stderr.trim().slice(0, 300)}`);
+    check(!fs.existsSync(path.join(collection, 'books', 'alpha')), 'an import blocked by a held Hub still wrote');
+
+    // A CRASH MID-IMPORT, and the run that finishes it.
+    const crashed = cli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(plan['plan_id']), '--json'], { LIBRARY_IMPORT_FAULT_AFTER: '3' });
+    check(crashed.exit !== 0 && crashed.stderr.includes('FAULT INJECTED after 3'), `the fault did not stop the import: ${crashed.stderr.trim().slice(0, 300)}`);
+    const journals = path.join(w.workspace, 'internal', 'import-journals');
+    check(fs.existsSync(path.join(journals, `${String(plan['plan_id'])}.json`)) && text(path.join(journals, `${String(plan['plan_id'])}.json`)).includes('"pending"'), 'a crashed import left no pending journal');
+    check(!fs.existsSync(path.join(collection, 'imports.md')), 'a crashed import wrote its record, which is written last');
+    equal(json(cli(['basic-memory', 'status', '--json']), 'status after a crash')['compared']?.['pending_import'], true, 'status did not say an import is unfinished');
+    const resumed = json(cli(['basic-memory', 'import', '--preflight', '--json']), 'the preview after a crash');
+    equal(JSON.stringify((resumed['root_conflicts'] ?? []).map((row: any) => row.root)), '["books/clash","projects/hub-bound"]', 'a half-imported root read as a root-level conflict after the crash');
+    equal((resumed['added_roots'] ?? []).join(','), 'archive/blog,archive/projects/old-hub,books/alpha,books/beta,projects/hub-one', 'the roots a crashed run was adding are no longer added');
+    const finished = cli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(resumed['plan_id']), '--json']);
+    equal(finished.exit, 0, `the import that finishes a crashed one failed: ${finished.stderr.trim().slice(0, 400)}`);
+    const done = json(finished, 'the finishing import');
+    check(text(path.join(journals, `${String(plan['plan_id'])}.json`)).includes('"superseded"') && text(path.join(journals, `${String(resumed['plan_id'])}.json`)).includes('"complete"'), 'the journals were not closed');
+    equal(done['doctor']?.['failed'], 0, `doctor failed after the import: ${JSON.stringify(done['doctor']?.['checks'] ?? done['doctor']).slice(0, 600)}`);
+
+    // BYTE-EXACT, EVERY TAKEN FILE; THE CATALOGS MERGED; THE SOURCE NEVER WRITTEN.
+    for (const relative of ['books/alpha/wiki/_book.md', 'books/alpha/wiki/page.md', 'books/beta/wiki/extra.md', 'projects/hub-one/_project.md', 'archive/blog/wiki/_book.md', 'archive/projects/old-hub/_project.md']) {
+      equal(local(relative), text(path.join(source, ...relative.split('/'))), `${relative} is not byte-exact to its source`);
+    }
+    equal(local('books/clash/wiki/_book.md'), '# Clash (mine)\n', 'a root-level conflict was written over');
+    check(!fs.existsSync(path.join(collection, 'projects', 'hub-bound')) && !fs.existsSync(path.join(collection, 'books', 'linked')) && !fs.existsSync(path.join(collection, 'work')), 'a skipped, refused or conflicting root was imported');
+    const books = local('books/README.md');
+    check(/## Current entries\n\n- \[\[books\/alpha\/wiki\/_book\|Alpha\]\] — The first Book\.\n/.test(books) && /## Reference\n\n- \[\[books\/beta\/wiki\/_book\|Beta\]\] — The second Book\./.test(books), `the Books catalog did not take the source's lines under its headings: ${books}`);
+    check(!books.includes('books/clash/') && !books.includes('books/twin/') && !books.includes('permalink'), `the Books catalog took a line for a root the import did not add, or the source's frontmatter: ${books}`);
+    check(/## Archived Books\n\n- \[\[archive\/blog\/wiki\/_book\|Blog\]\]\n/.test(local('archive/README.md')) && !local('archive/README.md').includes('elsewhere'), `the uncatalogued archived Book was not filed with its root page's title: ${local('archive/README.md')}`);
+    check(local('projects/README.md').includes('[[projects/hub-one/_project|Hub One]]') && local('projects/README.md').split('[[projects/hub-bound/').length === 2, `the Projects catalog was not merged: ${local('projects/README.md')}`);
+    check(local('archive/projects/README.md').includes('## Archived Projects\n\n- [[archive/projects/old-hub/_project|Old Hub]]'), `the archived Projects catalog was not merged: ${local('archive/projects/README.md')}`);
+    check(local('imports.md').includes('"books/twin/wiki/_book.md"') && local('imports.md').includes('"books/alpha/wiki/page.md"') && !local('imports.md').includes('books/clash'), 'the record does not hold the imported and adopted files, or holds a conflict');
+    equal(hashTree(source), sourceHashes, 'the import wrote into the source');
+
+    // THE BOOKS OPEN AND ARE DISCOVERED.
+    const read = (tool: string, args: string[]) => {
+      const result = cli(['mcp', 'call', tool, ...args, '--seat', 'first']);
+      try {
+        const envelope = JSON.parse(result.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${result.stdout.slice(0, 200)} ${result.stderr.trim()}` };
+      }
+    };
+    check(read('discover_book_pages', ['--query', 'Heron']).text.includes('[books/alpha, curated, closed]'), 'Discovery did not find an imported Book');
+    check(read('discover_book_pages', ['--query', 'Twin']).text.includes('[books/twin, curated, closed]'), 'an adopted Book got no Discovery manifest');
+    equal(w.as(agent, ['desk', 'open', 'book', 'alpha', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'an imported Book could not be opened');
+    check(read('read_open_book_page', ['--slug', 'alpha', '--page', 'page']).text.startsWith('# Heron page'), 'an imported Book did not read');
+
+    // RE-IMPORT: every row of step 4's table.
+    put(source, 'books/alpha/wiki/page.md', '# Heron page\n\nHerons and egrets wade.\n'); // changed there only: updated here
+    put(collection, 'books/alpha/wiki/_index.md', '# Alpha index, annotated here\n'); // changed here only: kept as yours
+    put(source, 'books/beta/wiki/page.md', '# Beta page\n\nTheirs, revised.\n'); // changed on both sides: a conflict
+    put(collection, 'books/beta/wiki/page.md', '# Beta page\n\nMine, revised.\n');
+    put(source, 'books/alpha/wiki/fresh.md', '# Fresh\n'); // new, absent here: added
+    put(source, 'books/alpha/wiki/both.md', '# Both, theirs\n'); // new, present here: a conflict
+    put(collection, 'books/alpha/wiki/both.md', '# Both, mine\n');
+    fs.rmSync(path.join(source, 'books', 'beta', 'wiki', 'extra.md')); // removed there: kept here
+    const again = json(cli(['basic-memory', 'import', '--preflight', '--json']), 'the re-import preview');
+    equal((again['added_roots'] ?? []).length, 0, 'a re-import added roots it had already brought');
+    equal((again['updates'] ?? []).join(','), 'books/alpha/wiki/page.md', 'a re-import did not update what only the source changed');
+    equal((again['kept_as_yours'] ?? []).join(','), 'books/alpha/wiki/_index.md', 'a re-import did not keep what only this Library changed');
+    equal((again['conflicts'] ?? []).join(','), 'books/alpha/wiki/both.md,books/beta/wiki/page.md', 'a re-import did not name the files changed on both sides');
+    equal((again['removed_there'] ?? []).join(','), 'books/beta/wiki/extra.md', 'a re-import did not name the file removed there');
+    equal(again['counts']?.['files_to_add'], 1, 'a re-import did not add the new source file');
+    const catalogsBefore = ['books/README.md', 'projects/README.md', 'archive/README.md', 'archive/projects/README.md'].map(local).join('\n');
+    const reimported = cli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(again['plan_id']), '--json']);
+    equal(reimported.exit, 0, `the re-import failed: ${reimported.stderr.trim().slice(0, 400)}`);
+    equal(local('books/alpha/wiki/page.md'), '# Heron page\n\nHerons and egrets wade.\n', 'a re-import did not update the page only the source changed');
+    equal(local('books/alpha/wiki/_index.md'), '# Alpha index, annotated here\n', "a re-import overwrote this Library's change");
+    equal(local('books/beta/wiki/page.md'), '# Beta page\n\nMine, revised.\n', 'a re-import overwrote a conflict');
+    equal(local('books/alpha/wiki/both.md'), '# Both, mine\n', 'a re-import overwrote a new file present here');
+    equal(local('books/alpha/wiki/fresh.md'), '# Fresh\n', 'a re-import did not add the new file');
+    equal(local('books/beta/wiki/extra.md'), '# Extra\n', 'a re-import deleted a file the source removed');
+    equal(['books/README.md', 'projects/README.md', 'archive/README.md', 'archive/projects/README.md'].map(local).join('\n'), catalogsBefore, 'a re-import rewrote a catalog');
+    const after = json(cli(['basic-memory', 'status', '--json']), 'status after the re-import');
+    equal(JSON.stringify((after['compared']?.['differ'] ?? []).map((row: any) => [row.root, row.changed])), '[["books/alpha","both"],["books/beta","both"],["books/clash","unrecorded"],["projects/hub-bound","unrecorded"]]', 'status after the re-import did not name which side changed');
+    check(String(after['summary']?.[3] ?? '').includes('last import 20'), `status did not name the last import: ${JSON.stringify(after['summary'])}`);
+
+    // A SOURCE FILE CHANGED AFTER THE PLAN WAS TAKEN, in the window only the re-hash guards: skipped and named.
+    put(source, 'books/alpha/wiki/fresh.md', '# Fresh, second edition\n');
+    put(source, 'books/alpha/wiki/_book.md', '---\npublication_state: complete\n---\n# Alpha, revised there\n'); // planned as an update
+    const racing = json(cli(['basic-memory', 'import', '--preflight', '--json']), 'the preview the race starts from');
+    const running = startCli(['basic-memory', 'import', '--user-confirmed', '--plan-id', String(racing['plan_id']), '--json', '--workspace', w.workspace], { cwd: w.root, env: { ...base, LIBRARY_IMPORT_PAUSE_BEFORE_WRITES_MS: '4000' } });
+    const journalFile = path.join(journals, `${String(racing['plan_id'])}.json`);
+    const until = Date.now() + 20000;
+    while (!fs.existsSync(journalFile) && Date.now() < until && !running.hasExited()) await sleep(50);
+    put(source, 'books/alpha/wiki/fresh.md', '# Fresh, third edition\n');
+    put(collection, 'books/alpha/wiki/_book.md', '# Alpha, edited here by a sync client mid-run\n');
+    const raced = await running.done;
+    equal(raced.exit, 0, `the raced import failed: ${raced.stderr.trim().slice(0, 300)}`);
+    equal(JSON.stringify(json(raced, 'the raced import')['changed_since_preview'] ?? null), '["books/alpha/wiki/fresh.md"]', 'a file changed after the plan was not skipped and named');
+    equal(local('books/alpha/wiki/fresh.md'), '# Fresh\n', 'a file changed after the plan was written anyway');
+    equal(JSON.stringify(json(raced, 'the raced import')['changed_here_since_preview'] ?? null), '["books/alpha/wiki/_book.md"]', 'a local file changed after the plan was not skipped and named');
+    equal(local('books/alpha/wiki/_book.md'), '# Alpha, edited here by a sync client mid-run\n', 'an edit landed here mid-run was overwritten');
+    equal((json(cli(['basic-memory', 'import', '--preflight', '--json']), 'the preview after the race')['updates'] ?? []).join(','), 'books/alpha/wiki/fresh.md', 'the skipped file was recorded as imported');
+
+    // THE RECORD IS ONE SOURCE'S: a connection pointed at another storage folder is refused, not merged.
+    const other = fakeStorage(path.join(w.root, 'other-storage'));
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--storage', other, '--json']).exit, 0, 'set-up to another storage folder failed');
+    const foreign = cli(['basic-memory', 'import', '--preflight', '--json']);
+    check(foreign.exit !== 0 && foreign.stderr.includes('names another storage folder'), `an import from another storage folder was not refused: ${foreign.stderr.trim().slice(0, 300)}`);
+
+    // A CATALOG EDIT KEEPS THE FILE'S OWN LINE ENDINGS.
+    const { ensureHeading, insertUnderHeading } = await import('../src/localcatalog.ts');
+    const crlf = insertUnderHeading(ensureHeading('# Books\r\n\r\n## Open a Book\r\n', '## Reference', null).text, '## Reference', '- [[books/x/wiki/_book|X]]');
+    check(!/[^\r]\n/.test(crlf), `a catalog edit rewrote CRLF line endings: ${JSON.stringify(crlf)}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    server?.stop();
+    w.dispose();
+  }
+}
+
+// --- 44. A LIBRARY'S WRITES STAGE IN ONE FOLDER (PLAN-basic-memory.md step 4a, Eric's ruling (a)) ---------------
+// A sync client watching a Library -- Obsidian Sync in Eric's vault -- saw a `.<name>.<random>.tmp` come and go
+// beside every file the program wrote. The two fsx writers now stage in `<Library>/.deskpost-staging/`; outside a
+// Library, and when a rename is refused with EXDEV (a subfolder junctioned to another drive), beside the file as
+// before. Where each write staged is observed by wrapping `fs.renameSync` -- the one call that publishes a staged
+// file -- through Node's own `syncBuiltinESMExports`, and EXDEV is injected the same way, so no second drive is
+// needed. Stale staging is cleared by a real `seat enter`.
+if (selected(44) && !isCompiled()) {
+  const w = await seatClaimWorkspace('staging', { pin: false });
+  const nodeModule = await import('node:module');
+  const fsDefault = (await import('node:fs')).default;
+  const realRename = fsDefault.renameSync;
+  try {
+    const fsx = await import('../src/fsx.ts');
+    const renames: string[] = [];
+    let exdev = false;
+    fsDefault.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+      renames.push(path.resolve(String(from)));
+      if (exdev && String(from).includes(fsx.STAGING_FOLDER)) {
+        throw Object.assign(new Error(`EXDEV: cross-device link not permitted, rename '${String(from)}' -> '${String(to)}'`), { code: 'EXDEV' });
+      }
+      return realRename(from, to);
+    }) as typeof fsDefault.renameSync;
+    nodeModule.syncBuiltinESMExports();
+    const staging = path.join(w.workspace, fsx.STAGING_FOLDER);
+    const deep = path.join(w.workspace, 'collection', 'books', 'staged', 'wiki', 'page.md');
+
+    // INSIDE A LIBRARY: staged in its one folder, never beside the file, and no debris either place.
+    fsx.writeAtomicText(deep, '# Staged\n');
+    equal(renames.length, 1, 'a write inside a Library published more than once');
+    equal(path.dirname(renames[0] ?? ''), staging, 'a write inside a Library did not stage in .deskpost-staging');
+    equal(fs.readFileSync(deep, 'utf8'), '# Staged\n', 'the staged write did not land');
+    equal(fs.readdirSync(staging).length, 0, 'a finished write left debris in the staging folder');
+    equal(fs.readdirSync(path.dirname(deep)).join(','), 'page.md', 'a finished write left debris beside the file');
+    fsx.writeAtomicBytes(deep, Buffer.from('# Bytes\n'));
+    equal(path.dirname(renames[1] ?? ''), staging, 'a byte write inside a Library did not stage in .deskpost-staging');
+
+    // OUTSIDE ANY LIBRARY: beside the file, as before, and no staging folder made anywhere.
+    const outside = path.join(w.root, 'not-a-library', 'registry.json');
+    fsx.writeAtomicText(outside, '{}\n');
+    equal(path.dirname(renames[2] ?? ''), path.dirname(outside), 'a write outside a Library did not stage beside the file');
+    check(!fs.existsSync(path.join(w.root, fsx.STAGING_FOLDER)) && !fs.existsSync(path.join(path.dirname(outside), fsx.STAGING_FOLDER)), 'a write outside a Library made a staging folder');
+
+    // EXDEV (a subfolder junctioned to another drive): re-staged beside the file, and written.
+    exdev = true;
+    renames.length = 0;
+    fsx.writeAtomicText(deep, '# Across drives\n');
+    exdev = false;
+    equal(renames.length, 2, 'an EXDEV rename was not retried once');
+    equal(path.dirname(renames[0] ?? ''), staging, 'the first attempt did not stage in .deskpost-staging');
+    equal(path.dirname(renames[1] ?? ''), path.dirname(deep), 'the EXDEV retry did not stage beside the file');
+    equal(fs.readFileSync(deep, 'utf8'), '# Across drives\n', 'a write re-staged after EXDEV did not land');
+    equal(fs.readdirSync(staging).length + fs.readdirSync(path.dirname(deep)).length, 1, 'an EXDEV retry left debris');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fsDefault.renameSync = realRename;
+    nodeModule.syncBuiltinESMExports();
+  }
+  try {
+    // THROUGH THE FRONT DOOR: a real write leaves the staging folder empty, and a seat start clears only stale debris.
+    const staging = path.join(w.workspace, '.deskpost-staging');
+    const agent = w.startAgent();
+    equal(runCli(['hub', 'new', 'staged-hub', '--title', 'Staged', '--workspace', w.workspace], { cwd: w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' } }).exit, 0, 'a Hub could not be made');
+    check(fs.existsSync(staging) && fs.readdirSync(staging).length === 0, 'a kernel write did not stage through an empty .deskpost-staging');
+    fs.mkdirSync(staging, { recursive: true });
+    fs.writeFileSync(path.join(staging, '.old.tmp'), 'debris');
+    fs.writeFileSync(path.join(staging, '.fresh.tmp'), 'in flight');
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(staging, '.old.tmp'), twoDaysAgo, twoDaysAgo);
+    equal(w.createSeat('first', 'staged-hub', agent).exit, 0, 'the seat for the staging judge could not be entered');
+    equal(fs.readdirSync(staging).sort().join(','), '.fresh.tmp', 'a seat start did not clear exactly the stale staging file');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 45. A CAPTURE BOOK'S NOTES CARRY BETWEEN WORKSPACES (PLAN-basic-memory.md step 4b) --------------------------
+// Eric's Holding Shelf is mostly Deskpost feature ideas whose home is the new Library, not Basic Memory, so the import
+// never carries them. `library shelf carry` copies them byte for byte from an old workspace's capture Book, keeping
+// names and review state, inside capture's own mutation window -- so the manifest ends clean, not `dirty` -- and
+// reads the old workspace only. `--book reports` carries pending notes only.
+if (selected(45)) {
+  const w = await seatClaimWorkspace('carry', { pin: false });
+  try {
+    const old = path.join(w.root, 'old');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg') };
+    equal(runCli(['init', old, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env }).exit, 0, 'the old workspace could not be made');
+    const capture = (workspace: string, book: string, title: string) => {
+      const result = runCli(['capture', book, '--title', title, '--body', `The note called ${title}.`, '--workspace', workspace, '--json'], { cwd: w.root, env });
+      equal(result.exit, 0, `a note could not be captured into ${book}: ${result.stderr.trim()}`);
+      return String((JSON.parse(result.stdout || '{}') as Record<string, unknown>)['note_page'] ?? '').replace(/^.*\/notes\//, '') + '.md';
+    };
+    const notes = (workspace: string, book: string) => path.join(workspace, 'shelf', book, 'wiki', 'notes');
+    const markDone = (workspace: string, book: string, name: string) => {
+      const file = path.join(notes(workspace, book), name);
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^review: pending$/m, 'review: done'));
+    };
+    const first = capture(old, 'holding', 'An idea worth keeping');
+    const second = capture(old, 'holding', 'A second idea');
+    const settled = capture(old, 'holding', 'An idea already settled');
+    markDone(old, 'holding', settled);
+    const twin = capture(old, 'holding', 'A note already carried');
+    const clash = capture(old, 'holding', 'A note with a namesake');
+    const openReport = capture(old, 'reports', 'A defect still true');
+    const doneReport = capture(old, 'reports', 'A defect fixed');
+    markDone(old, 'reports', doneReport);
+    // In the new Library: the same note byte for byte, and another under the clash's name.
+    fs.mkdirSync(notes(w.workspace, 'holding'), { recursive: true });
+    fs.copyFileSync(path.join(notes(old, 'holding'), twin), path.join(notes(w.workspace, 'holding'), twin));
+    fs.writeFileSync(path.join(notes(w.workspace, 'holding'), clash), '---\ncaptured: 2026-01-01T00:00:00Z\nreview: pending\n---\n\n# Mine\n');
+    const oldBefore = hashTree(old);
+    const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
+    const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        failures.push(`${label}: no JSON (exit ${result.exit}) ${result.stderr.trim().slice(0, 400)}`);
+        return {};
+      }
+    };
+
+    const plan = json(cli(['shelf', 'carry', old, '--book', 'holding', '--preflight', '--json']), 'the carry preview');
+    equal(JSON.stringify(plan['counts']), '{"carry":3,"carry_pending":2,"carry_done":1,"already_here":1,"conflicts":1,"not_pending":0}', 'the carry preview counted wrong');
+    equal((plan['conflicts'] ?? []).join(','), clash, 'the same-name, different note was not named a conflict');
+    check(String(plan['provenance'] ?? '').includes('from_seat'), 'the preview did not say carried notes keep their provenance');
+    const stale = cli(['shelf', 'carry', old, '--book', 'holding', '--user-confirmed', '--plan-id', 'not-the-plan', '--json']);
+    check(stale.exit !== 0 && stale.stderr.includes('changed since its preview'), `a carry with another plan id was not refused: ${stale.stderr.trim()}`);
+    const carried = json(cli(['shelf', 'carry', old, '--book', 'holding', '--user-confirmed', '--plan-id', String(plan['plan_id']), '--json']), 'the carry');
+    equal(carried['status'], 'carried', 'the carry did not report carrying');
+    for (const name of [first, second, settled]) {
+      equal(fs.readFileSync(path.join(notes(w.workspace, 'holding'), name), 'utf8'), fs.readFileSync(path.join(notes(old, 'holding'), name), 'utf8'), `${name} was not carried byte for byte`);
+    }
+    check(/^review: done$/m.test(fs.readFileSync(path.join(notes(w.workspace, 'holding'), settled), 'utf8')), 'a done note lost its review state');
+    check(fs.readFileSync(path.join(notes(w.workspace, 'holding'), clash), 'utf8').includes('# Mine'), 'a conflicting note was overwritten');
+    const map = fs.readFileSync(path.join(w.workspace, 'shelf', 'holding', 'wiki', '_index.md'), 'utf8');
+    check(map.includes(first.replace(/\.md$/, '')) && /## Reviewed\n\n- \[\[notes\/[^\]]*already-settled/.test(map), `the reader map was not regenerated with the carried notes: ${map}`);
+    const { getStoredBookManifest } = await import('../src/manifeststore.ts');
+    equal(getStoredBookManifest(w.workspace, 'holding').status, 'ok', "the Holding Shelf's manifest did not end clean");
+    equal(hashTree(old), oldBefore, 'the carry wrote into the old workspace');
+    const again = json(cli(['shelf', 'carry', old, '--book', 'holding', '--preflight', '--json']), 'the re-run preview');
+    equal(again['counts']?.['carry'], 0, 'a re-run would carry again');
+    equal(again['counts']?.['already_here'], 4, 'a re-run did not skip every carried note');
+
+    // REPORTS: pending only.
+    const reports = json(cli(['shelf', 'carry', old, '--book', 'reports', '--preflight', '--json']), 'the reports preview');
+    equal((reports['carry'] ?? []).join(','), openReport, '--book reports did not carry exactly the pending note');
+    equal(reports['counts']?.['not_pending'], 1, '--book reports did not leave the done note');
+    equal(json(cli(['shelf', 'carry', old, '--book', 'reports', '--user-confirmed', '--plan-id', String(reports['plan_id']), '--json']), 'the reports carry')['status'], 'carried', 'the reports carry failed');
+    check(!fs.existsSync(path.join(notes(w.workspace, 'reports'), doneReport)), 'a done Report was carried');
+
+    // A NON-CAPTURE BOOK is refused.
+    for (const workspace of [old, w.workspace]) {
+      runCli(['shelf', 'new', 'curated-only', '--title', 'Curated', '--summary', 'Not a capture Book.', '--workspace', workspace], { cwd: w.root, env });
+    }
+    const curated = cli(['shelf', 'carry', old, '--book', 'curated-only', '--preflight', '--json']);
+    check(curated.exit !== 0 && curated.stderr.includes('not a capture Book'), `a non-capture Book was not refused: ${curated.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 46. A SHARED BOOK OPENS ON A LOCAL LIBRARY, AND A ROLLBACK SEES IT (PLAN-basic-memory.md step 5) ------------
+// `library basic-memory open` lists the connection's Books from the server's catalogs, marking those also in the
+// Local collection, and opens one as `shared/<slug>`, whose pages the validated reader then reads over MCP from the
+// stand-in server. A server that never answers is a named refusal within the timeout. `rollback-check` names every
+// seat holding a `shared/` entry with the command that closes it -- 1.0's reader would refuse that whole Desk.
+if (selected(46) && !isCompiled()) {
+  const w = await seatClaimWorkspace('bmopen', { pin: false });
+  const storage = fakeStorage(path.join(w.root, 'storage'), {
+    'remote-guide': { _book: '# Remote Guide\n\nA Book that lives on the server.\n', _index: '# Remote Guide - Reader Map\n\n- [[books/remote-guide/wiki/intro|Intro]]\n', intro: '# Intro\n\nRead over MCP, never copied.\n' },
+    'local-twin': { _book: '# Twin (theirs)\n', page: '# Their page\n' },
+  });
+  fs.appendFileSync(path.join(storage, 'books', 'README.md'), '\n- [[books/remote-guide/wiki/_book|Remote Guide]] — On the server.\n- [[books/local-twin/wiki/_book|Local Twin]] — Also imported.\n');
+  let server: { url: string; stop(): void } | null = null;
+  let hung: { url: string; stop(): void } | null = null;
+  try {
+    server = await startFakeBasicMemory(storage);
+    hung = await startFakeBasicMemory(storage, ['--hang']);
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the shared-Book judge could not be created');
+    const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env: { ...base, ...extra } });
+    const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        failures.push(`${label}: no JSON (exit ${result.exit}) ${result.stderr.trim().slice(0, 400)}`);
+        return {};
+      }
+    };
+    const read = (args: string[], extra: Record<string, string> = {}) => {
+      const result = cli(['mcp', 'call', 'read_open_book_page', ...args, '--seat', 'first'], extra);
+      try {
+        const envelope = JSON.parse(result.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${result.stdout.slice(0, 200)} ${result.stderr.trim()}` };
+      }
+    };
+    const twinWiki = path.join(w.workspace, 'collection', 'books', 'local-twin', 'wiki');
+    fs.mkdirSync(twinWiki, { recursive: true });
+    fs.writeFileSync(path.join(twinWiki, '_book.md'), '# Twin (mine)\n');
+    fs.writeFileSync(path.join(twinWiki, 'page.md'), '# My page\n');
+
+    const noConnection = cli(['basic-memory', 'open']);
+    check(noConnection.exit !== 0 && noConnection.stderr.includes('no Basic Memory connection'), `open with no connection did not refuse by name: ${noConnection.stderr.trim()}`);
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--json']).exit, 0, 'set-up against the stand-in failed');
+
+    // THE LIST, from the server's catalog, each marked when the Local collection has it too.
+    const listed = json(cli(['basic-memory', 'open', '--json']), 'the shared-Book list');
+    equal(JSON.stringify((listed['books'] ?? []).map((book: any) => [book.slug, book.also_in_your_library])), '[["remote-guide",false],["local-twin",true]]', 'the shared list did not mark what is also in the Library');
+
+    // OPEN, and read its pages over MCP.
+    const opened = json(cli(['basic-memory', 'open', 'remote-guide', '--seat', 'first', '--json']), 'opening a shared Book');
+    equal(opened['book'], 'shared/remote-guide', 'open did not name the shared/ form');
+    check(/^shared\/remote-guide\r?$/m.test(fs.readFileSync(path.join(w.workspace, '.claude', 'seats', 'first', '.open-books'), 'utf8')), 'open did not put shared/remote-guide on the Desk');
+    const page = read(['--slug', 'remote-guide', '--page', 'intro']);
+    check(!page.error && page.text.startsWith('# Intro') && page.text.includes('never copied'), `a shared/ page did not read over MCP: ${page.text.slice(0, 300)}`);
+    check(!fs.existsSync(path.join(w.workspace, 'collection', 'books', 'remote-guide')), 'reading a shared Book copied it into the Local collection');
+    const missing = cli(['basic-memory', 'open', 'no-such-book', '--seat', 'first']);
+    check(missing.exit !== 0 && missing.stderr.includes('has no Book at books/no-such-book'), `opening a Book the server lacks was not refused: ${missing.stderr.trim()}`);
+
+    // THE SAME SLUG IN BOTH PLACES: open both, and `place` says which.
+    equal(w.as(agent, ['desk', 'open', 'book', 'local-twin', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'the local twin could not be opened');
+    check(json(cli(['basic-memory', 'open', 'local-twin', '--seat', 'first', '--json']), 'opening the shared twin')['also_in_your_library'] === true, 'open did not say the slug is also in the Library');
+    check(read(['--slug', 'local-twin', '--page', 'page']).text.includes('pass place'), 'one slug open in two places did not ask for place');
+    check(read(['--slug', 'local-twin', '--page', 'page', '--place', 'shared']).text.startsWith('# Their page'), 'place shared did not read the server copy');
+    check(read(['--slug', 'local-twin', '--page', 'page', '--place', 'collection']).text.startsWith('# My page'), 'place collection did not read the local copy');
+
+    // A SERVER THAT NEVER ANSWERS is refused by name, within the timeout.
+    const markerFile = path.join(w.workspace, '.library', 'workspace.json');
+    const markerText = fs.readFileSync(markerFile, 'utf8');
+    fs.writeFileSync(markerFile, markerText.replace(server.url, hung.url));
+    const started = Date.now();
+    const stalled = read(['--slug', 'remote-guide', '--page', 'intro'], { LIBRARY_MCP_TIMEOUT_MS: '1500' });
+    check(stalled.error && stalled.text.includes('did not answer within 1.5 s'), `a shared read against a hung server did not refuse by name: ${stalled.text.slice(0, 300)}`);
+    check(Date.now() - started < 15000, `a shared read against a hung server took ${Date.now() - started} ms`);
+    fs.writeFileSync(markerFile, markerText);
+
+    // THE ROLLBACK CHECK: this Library, through its registry, names the seat and the command that closes each entry.
+    const registry = path.join(w.root, 'reg');
+    const blocked = json(runCli(['basic-memory', 'rollback-check', '--registry-root', registry, '--json'], { cwd: os.tmpdir(), env: base }), 'the rollback check');
+    equal(blocked['ready'], false, 'the rollback check passed a Desk holding shared/ entries');
+    equal(JSON.stringify((blocked['blocking'] ?? []).map((row: any) => [row.seat, row.entries])), '[["first",["shared/remote-guide","shared/local-twin"]]]', 'the rollback check named the wrong seats or entries');
+    for (const command of (blocked['blocking']?.[0]?.['close'] ?? []) as string[]) {
+      const args = command.replace(/^(library|deskpost) /, '').match(/"[^"]*"|\S+/g)!.map((part) => part.replace(/^"|"$/g, ''));
+      equal(runCli(args, { cwd: w.root, env: base }).exit, 0, `the rollback check's own close command failed: ${command}`);
+    }
+    equal(json(runCli(['basic-memory', 'rollback-check', '--registry-root', registry, '--json'], { cwd: os.tmpdir(), env: base }), 'the rollback check after closing')['ready'], true, 'the rollback check still blocks after its own close commands ran');
+
+    // AFTER A DISCONNECT a shared/ entry still closes: otherwise the rollback check's remedy would be a no-op.
+    equal(cli(['basic-memory', 'open', 'remote-guide', '--seat', 'first', '--json']).exit, 0, 'the shared Book could not be opened again');
+    equal(cli(['basic-memory', 'disconnect', '--json']).exit, 0, 'disconnect failed');
+    equal(cli(['desk', 'close', 'book', 'remote-guide', '--location', 'shared', '--seat', 'first']).exit, 0, 'a shared/ entry could not be closed after a disconnect');
+    check(!/^shared\//m.test(fs.readFileSync(path.join(w.workspace, '.claude', 'seats', 'first', '.open-books'), 'utf8')), 'a shared/ entry stayed on the Desk after it was closed with no connection');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    server?.stop();
+    hung?.stop();
+    w.dispose();
+  }
+}
+
+// --- 47. DOCTOR JUDGES DESKPOST'S OWN REGISTRATIONS, READ AS INVOCATIONS, AGAINST THIS INSTALL (PLAN-install-onboarding.md step 1) --
+
+// F16 and #15. Until 1.1 doctor split a registration on whitespace, so a program path with a space went unseen; it
+// judged every absolute `.ps1` it met, a reader's own included; and it asked only whether a kernel binary existed, never
+// whether it was THIS install's. Now a registration is tokenized quote-aware, only Deskpost's are judged, a kernel
+// binary of another program (or this install's own versions/<v>) fails, and `deskpost` must resolve to this install.
+if (selected(47)) {
+  const { tokenizeCommand, ownedRegistration, programRelation } = await import('../src/machine.ts');
+  const { runDoctor } = await import('../src/doctor.ts');
+  equal(JSON.stringify(tokenizeCommand('& "C:/a b/bin/library" hook shelf-read')), '["&","C:/a b/bin/library","hook","shelf-read"]', 'a double-quoted Codex render was mis-tokenized');
+  equal(JSON.stringify(tokenizeCommand("& 'C:\\Users\\O''Neil\\D $work\\bin\\library.exe' hook desk-context")), '["&","C:\\\\Users\\\\O\'Neil\\\\D $work\\\\bin\\\\library.exe","hook","desk-context"]', "a single-quoted render with '' and $ was mis-tokenized");
+  const own = new Set(['guard-shelfbookread.ps1']);
+  equal(ownedRegistration({ command: 'node', args: ['C:/mine/hook.js'] }, own), null, "a reader's own node hook was taken for Deskpost's");
+  equal(ownedRegistration({ command: 'powershell.exe -NoProfile -File "C:/mine/My Hook.ps1"' }, own), null, "a reader's own .ps1 hook was taken for Deskpost's");
+  equal(ownedRegistration({ command: 'powershell.exe', args: ['-NoProfile', '-File', 'C:/p/.claude/hooks/Guard-ShelfBookRead.ps1'] }, own)?.kind, 'script', "Deskpost's guard script was not recognised");
+  equal(ownedRegistration({ command: '& "C:/p q/bin/library" hook shelf-read' }, own)?.file, 'C:/p q/bin/library', 'a Codex kernel render was not recognised with its spaced path');
+  equal(ownedRegistration({ command: 'C:/p/current-backup/bin/libraryx.exe', args: ['hook', 'shelf-read'] }, own), null, 'a near-miss binary name was taken for the kernel');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-owned-')));
+  const savedPath = process.env['PATH'];
+  const savedPathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  try {
+    // A FAKE INSTALL: <R>/versions/1.1.0 with the program proof, <R>/current a link onto it, current.json beside it.
+    const install = path.join(root, 'R');
+    const version = path.join(install, 'versions', '1.1.0');
+    fs.mkdirSync(path.join(version, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(version, '.codex-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(version, '.codex-plugin', 'plugin.json'), '{"version":"1.1.0"}');
+    fs.writeFileSync(path.join(version, 'bin', 'library.exe'), 'MZ');
+    fs.symlinkSync(version, path.join(install, 'current'), 'junction');
+    fs.writeFileSync(path.join(install, 'current.json'), '{"schema":1,"version":"1.1.0"}');
+    const current = path.join(install, 'current');
+    equal(programRelation(current, current), 'same', 'an install was not the same program as itself');
+    equal(programRelation(version, current), 'version-folder', "this install's own versions/<v> was not recognised as a version folder");
+    equal(programRelation(path.join(root, 'other', 'current'), current), 'other', 'another program read as this one');
+
+    // A WORKSPACE whose own hook block holds this install's kernel, a reader's missing .ps1, and (below) another program.
+    const workspace = path.join(root, 'ws');
+    const registry = path.join(root, 'reg');
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env: { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '' } }).exit, 0, 'init for the owned-entry workspace failed');
+    const settings = path.join(workspace, '.claude', 'settings.local.json');
+    const document = JSON.parse(fs.readFileSync(settings, 'utf8').replace(/^\uFEFF/, '')) as { hooks: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> };
+    const firstBlock = document.hooks['PreToolUse']![0]!;
+    const withEntry = (entry: Record<string, unknown>) => {
+      const copy = JSON.parse(JSON.stringify(document)) as typeof document;
+      copy.hooks['PreToolUse']![0]!.hooks.push(entry);
+      fs.writeFileSync(settings, JSON.stringify(copy, null, 2));
+    };
+    const guards = (program: string) => {
+      const saved = process.env['LIBRARY_WORKSPACES'];
+      process.env['LIBRARY_WORKSPACES'] = registry;
+      try {
+        const report = runDoctor(['--workspace', workspace], program).value as { checks: { check: string; status: string; detail: string }[] };
+        return report.checks.find((row) => row.check === 'workspace.guards-registered')!;
+      } finally {
+        if (saved === undefined) delete process.env['LIBRARY_WORKSPACES'];
+        else process.env['LIBRARY_WORKSPACES'] = saved;
+      }
+    };
+    check(firstBlock.hooks.length > 0, 'init wrote no PreToolUse hook to extend');
+    withEntry({ type: 'command', command: 'powershell.exe', args: ['-NoProfile', '-File', path.join(root, 'mine', 'My Own Hook.ps1')] });
+    const mine = guards(PROGRAM_ROOT);
+    check(mine.status === 'pass', `a reader's own missing .ps1 hook failed doctor: ${mine.status} ${mine.detail}`);
+
+    const other = path.join(root, 'other program', 'bin');
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(path.join(other, 'library.exe'), 'MZ');
+    withEntry({ type: 'command', command: path.join(other, 'library.exe').replace(/\\/g, '/'), args: ['hook', 'shelf-read'] });
+    const foreign = guards(PROGRAM_ROOT);
+    check(foreign.status === 'fail' && foreign.detail.includes('different Deskpost program') && foreign.detail.includes('other program'), `a hook naming another program's kernel was not failed, naming it: ${foreign.status} ${foreign.detail}`);
+
+    withEntry({ type: 'command', command: `& "${path.join(root, 'gone dir', 'bin', 'library').replace(/\\/g, '/')}" hook shelf-read` });
+    const gone = guards(PROGRAM_ROOT);
+    check(gone.status === 'fail' && gone.detail.includes('gone dir/bin/library'), `a spaced kernel path that is not there went unseen: ${gone.status} ${gone.detail}`);
+
+    withEntry({ type: 'command', command: path.join(version, 'bin', 'library.exe').replace(/\\/g, '/'), args: ['hook', 'shelf-read'] });
+    const pinned = guards(current);
+    check(pinned.status === 'fail' && pinned.detail.includes('version folder'), `a hook naming versions/<v> directly was not failed under that install: ${pinned.status} ${pinned.detail}`);
+
+    // `deskpost` RESOLVES TO THIS INSTALL, OR DOCTOR SAYS WHAT IT RUNS INSTEAD (Windows: the shim is a .cmd).
+    if (process.platform === 'win32') {
+      fs.mkdirSync(path.join(install, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(install, 'bin', 'deskpost.cmd'), '@"%~dp0..\\current\\bin\\library.exe" %*\r\n');
+      const system = process.env['SystemRoot'] ?? 'C:\\Windows';
+      const program = (searchPath: string) => {
+        process.env[savedPathKey] = searchPath;
+        const report = runDoctor([], current).value as { program_checks: { check: string; status: string; detail: string }[] };
+        return report.program_checks.find((row) => row.check === 'program.command-resolves')!;
+      };
+      const onPath = program(`${path.join(install, 'bin')};${system}`);
+      equal(onPath.status, 'pass', `deskpost on PATH through this install's bin did not pass: ${onPath.detail}`);
+      const missing = program(system);
+      check(missing.status === 'fail' && missing.detail.includes("not on this terminal's PATH"), `deskpost missing from PATH was not failed: ${missing.status} ${missing.detail}`);
+      fs.writeFileSync(path.join(install, 'install-receipt.json'), '{"path_change":false}');
+      equal(program(system).status, 'warn', 'deskpost off PATH after -NoPathChange was not a warning');
+      const shadow = path.join(root, 'shadow');
+      fs.mkdirSync(shadow);
+      fs.writeFileSync(path.join(shadow, 'deskpost.cmd'), '@echo shadow\r\n');
+      const shadowed = program(`${shadow};${path.join(install, 'bin')};${system}`);
+      check(shadowed.status === 'fail' && shadowed.detail.includes('shadow'), `a shadowing deskpost earlier on PATH was not failed, naming it: ${shadowed.status} ${shadowed.detail}`);
+    }
+    const fromSource = runCli(['doctor', '--json'], { cwd: root });
+    const fromSourceChecks = (JSON.parse(fromSource.stdout) as { program_checks: { check: string; status: string }[] }).program_checks;
+    equal(fromSourceChecks.find((row) => row.check === 'program.command-resolves')?.status, KERNEL_COMMAND.length ? fromSourceChecks.find((row) => row.check === 'program.command-resolves')?.status : 'skipped', 'a kernel run from source expected a deskpost command');
+    check(['pass', 'warn'].includes(fromSourceChecks.find((row) => row.check === 'program.assistant-present')?.status ?? ''), 'the assistant check did not answer pass or warn');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    process.env[savedPathKey] = savedPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 48. DOCTOR AND INIT SPEAK TO A PERSON; THE REGISTRY AND THE MARKER KEEP WHAT INIT DOES NOT SET (step 2) --------
+
+// F7: `--json` was a no-op and a person got the document. F9: `init --force` parsed and did nothing. F4: doctor with no
+// Library listed nine skips as if they were answers. Step 0's measurement 1: 1.0's init dropped a registry `default`.
+// #11: the Codex render `& "<path>"` expanded `$` in the path. ADR-0050's "init preserves marker fields" is VERIFIED
+// here, not rebuilt.
+if (selected(48)) {
+  const { powerShellLiteral } = await import('../src/init.ts');
+  const { doctorText, marks } = await import('../src/human.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-human-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const a = path.join(root, 'a');
+    const human = runCli(['init', a], { cwd: root, env });
+    check(human.exit === 0 && human.stdout.includes('is now a Library') && /^Next: /m.test(human.stdout) && !human.stdout.trim().startsWith('{'), `init without --json did not speak to a person: ${human.stdout.slice(0, 300)}`);
+    const forced = runCli(['init', a, '--force'], { cwd: root, env });
+    check(forced.exit !== 0 && forced.stderr.includes('no --force'), `init --force was not refused by name: ${forced.exit} ${forced.stderr.trim()}`);
+    const again = runCli(['init', a, '--json'], { cwd: root, env });
+    equal((JSON.parse(again.stdout) as { status: string }).status, 'already_initialized', 'init --json did not print the document');
+
+    // THE REGISTRY: a default and unknown fields survive another Library's init.
+    const file = path.join(registry, 'workspaces.json');
+    const document = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as { workspaces: Record<string, unknown>[] } & Record<string, unknown>;
+    document.workspaces[0]!['default'] = true;
+    document.workspaces[0]!['note'] = 'kept';
+    document['extra'] = 'kept';
+    fs.writeFileSync(file, JSON.stringify(document));
+    equal(runCli(['init', path.join(root, 'b')], { cwd: root, env }).exit, 0, 'init of a second Library failed');
+    const after = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as { workspaces: Record<string, unknown>[] } & Record<string, unknown>;
+    const first = after.workspaces.find((row) => String(row['path']).toLowerCase() === a.toLowerCase());
+    check(first?.['default'] === true && first?.['note'] === 'kept' && after['extra'] === 'kept' && after.workspaces.length === 2, `a second init dropped a registry field: ${JSON.stringify(after)}`);
+    equal(runCli(['init', a], { cwd: root, env }).exit, 0, 'a re-init of the default Library failed');
+    const reregistered = (JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as { workspaces: Record<string, unknown>[] }).workspaces.find((row) => String(row['path']).toLowerCase() === a.toLowerCase());
+    check(reregistered?.['default'] === true, `re-initialising the default Library dropped its default: ${JSON.stringify(reregistered)}`);
+
+    // THE MARKER (ADR-0050, verified): writable and an unknown field survive an init that sets neither.
+    const markerFile = path.join(a, '.library', 'workspace.json');
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+    marker['writable'] = true;
+    marker['later_field'] = 'kept';
+    fs.writeFileSync(markerFile, JSON.stringify(marker));
+    equal(runCli(['init', a], { cwd: root, env }).exit, 0, 'a re-init over the edited marker failed');
+    const kept = JSON.parse(fs.readFileSync(markerFile, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+    check(kept['writable'] === true && kept['later_field'] === 'kept', `init dropped a marker field it does not set: ${JSON.stringify(kept)}`);
+
+    // DOCTOR: no Library is said plainly, and piped output is ASCII.
+    const bare = path.join(root, 'bare');
+    fs.mkdirSync(bare);
+    const doctor = runCli(['doctor'], { cwd: bare, env });
+    check(doctor.stdout.includes('none here; checked the program only') && !doctor.stdout.includes('no reader workspace is attached') && !/[^\x00-\x7f]/.test(doctor.stdout), `doctor with no Library did not say so plainly in ASCII: ${doctor.stdout.slice(0, 400)}`);
+    const inside = runCli(['doctor'], { cwd: a, env });
+    check(inside.stdout.includes('Claude Code guards') && inside.stdout.includes('[ok]'), `doctor inside a Library did not list its checks: ${inside.stdout.slice(0, 400)}`);
+    const drawn = doctorText({ program: 'p', workspace: '', checks: [], program_checks: [{ check: 'program.command-resolves', status: 'fail', detail: 'pass -WorkspacePath x' }] }, marks({ isTTY: false }));
+    check(drawn.includes('[x]') && drawn.includes('--workspace x') && drawn.includes('1 check failed'), `doctor's lines did not mark a failure, or kept -WorkspacePath: ${drawn}`);
+
+    // THE CODEX RENDER (#11): a single-quoted literal runs a path holding ' and $ through powershell -Command, as Codex does.
+    equal(powerShellLiteral("C:\\Users\\O'Neil\\D $work"), "'C:\\Users\\O''Neil\\D $work'", 'the PowerShell literal is not single-quoted with a doubled quote');
+    if (process.platform === 'win32') {
+      const odd = path.join(root, "O'Neil $work", 'bin');
+      fs.mkdirSync(odd, { recursive: true });
+      fs.writeFileSync(path.join(odd, 'library.cmd'), '@echo ran %*\r\n');
+      const ran = spawnSync('powershell.exe', ['-NoProfile', '-Command', `& ${powerShellLiteral(path.join(odd, 'library.cmd'))} hook desk-context`], { encoding: 'utf8', timeout: 60000 });
+      check((ran.stdout ?? '').includes('ran hook desk-context'), `the single-quoted render did not run a path holding ' and $: ${ran.status} ${ran.stdout} ${ran.stderr}`);
+    }
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 49. SETUP: ONE QUESTION, A PLAN THAT WRITES NOTHING, AND AN APPLY THAT FINISHES (PLAN-install-onboarding.md step 3) --
+
+// The installer's three calls into the release it is installing, through the front door. The planner must create
+// nothing (round 2, #1); the apply must write exactly the plan under the three-state rule and finish when re-run (round
+// 3, #1); an existing Library is used as it is, nothing inside it written (#8); the program folder must be new, empty
+// or an install (#1), hold no ';' or '%' (#11), and not overlap the Library unless that is chosen (#2, #16).
+if (selected(49)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-setup-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    const answersFile = path.join(root, 'answers.json');
+    const askWith = (args: string[], cwd = root) => runCli(['setup', '--ask', '--answers', answersFile, '--yes', ...args], { cwd, env });
+    const answers = () => JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+
+    // THE DEFAULT IS THE FOLDER RUN FROM: itself when empty, <cwd>\Library when it holds anything else.
+    const empty = path.join(root, 'here-empty');
+    fs.mkdirSync(empty);
+    equal(askWith(['--install-root', path.join(root, 'prog')], empty).exit, 0, 'setup --ask refused an ordinary first install');
+    equal(answers()['library'], empty, 'an empty folder run from was not the default Library');
+    const busy = path.join(root, 'here-busy');
+    fs.mkdirSync(busy);
+    fs.writeFileSync(path.join(busy, 'notes.txt'), 'mine');
+    equal(askWith(['--install-root', path.join(root, 'prog')], busy).exit, 0, 'setup --ask refused from a folder with files');
+    equal(answers()['library'], path.join(busy, 'Library'), 'a folder with other files was offered itself rather than <cwd>\\Library');
+
+    // THE PROGRAM FOLDER: not someone else's, no ';' or '%', and not around the Library without a choice.
+    const occupied = path.join(root, 'occupied');
+    fs.mkdirSync(occupied);
+    fs.writeFileSync(path.join(occupied, 'theirs.txt'), 'x');
+    const refusedBusy = askWith(['--install-root', occupied, '--library', path.join(root, 'lib')]);
+    check(refusedBusy.exit !== 0 && refusedBusy.stderr.includes('Choose an empty folder'), `a non-empty program folder was not refused: ${refusedBusy.stderr.trim()}`);
+    for (const bad of ['semi;colon', 'per%cent%']) {
+      const refused = askWith(['--install-root', path.join(root, bad), '--library', path.join(root, 'lib')]);
+      check(refused.exit !== 0 && refused.stderr.includes(bad.includes(';') ? "';'" : "'%'"), `a program folder holding ${bad} was not refused with its reason: ${refused.stderr.trim()}`);
+    }
+    const inside = askWith(['--install-root', path.join(root, 'prog'), '--library', path.join(root, 'prog', 'lib')]);
+    check(inside.exit !== 0 && inside.stderr.includes('-AllowOverlap'), `a Library inside the program folder was not refused without -AllowOverlap: ${inside.stderr.trim()}`);
+    if (process.platform === 'win32') {
+      fs.mkdirSync(path.join(root, 'progdir'));
+      fs.symlinkSync(path.join(root, 'progdir'), path.join(root, 'progjunction'), 'junction');
+      const viaJunction = askWith(['--install-root', path.join(root, 'progdir'), '--library', path.join(root, 'progjunction', 'lib')]);
+      check(viaJunction.exit !== 0 && viaJunction.stderr.includes('Deleting one would delete the other'), `a Library reached through a junction into the program folder was not seen: ${viaJunction.stderr.trim()}`);
+    }
+    equal(askWith(['--install-root', path.join(root, 'prog'), '--library', path.join(root, 'prog', 'lib'), '--allow-overlap']).exit, 0, '-AllowOverlap did not allow the overlap');
+    equal(answers()['overlap_accepted'], true, 'an allowed overlap was not recorded');
+
+    // THE SAME VERSION NON-INTERACTIVELY IS A REPAIR, ONLY WITH -Repair.
+    const installed = path.join(root, 'installed');
+    fs.mkdirSync(installed);
+    const version = String((JSON.parse(runCli(['--version']).stdout) as Record<string, unknown>)['plugin_version']);
+    fs.writeFileSync(path.join(installed, 'current.json'), JSON.stringify({ schema: 1, version }));
+    const same = askWith(['--install-root', installed, '--library', 'none']);
+    check(same.exit !== 0 && same.stderr.includes('-Repair'), `a same-version reinstall without -Repair was not refused: ${same.stderr.trim()}`);
+    equal(askWith(['--install-root', installed, '--library', 'none', '--repair']).exit, 0, 'a same-version reinstall with -Repair was refused');
+    equal(answers()['install_state'], 'repair', 'a same-version reinstall was not a repair');
+
+    // THE PLAN CREATES NOTHING; THE APPLY WRITES IT, NAMING register-as; A RE-RUN FINISHES; A CHANGE REFUSES.
+    const library = path.join(root, 'lib');
+    equal(askWith(['--install-root', path.join(root, 'prog'), '--library', library]).exit, 0, 'setup --ask for the planned Library failed');
+    const planFile = path.join(root, 'plan.json');
+    const registerAs = path.join(root, 'prog', 'current');
+    const planned = runCli(['setup', '--plan', '--answers', answersFile, '--resources', PROGRAM_ROOT, '--register-as', registerAs, '--out', planFile, '--json'], { cwd: root, env });
+    equal(planned.exit, 0, `setup --plan failed: ${planned.stderr.trim()}`);
+    check(!fs.existsSync(library) && !fs.existsSync(registry), 'setup --plan created the Library folder or the registry');
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8').replace(/^﻿/, '')) as { library: { writes: { relative: string; content: string }[] } };
+    check(plan.library.writes.some((write) => write.relative === 'shelf/holding/wiki/_book.md'), 'the plan did not carry the Holding Shelf the writer makes');
+    const settingsWrite = plan.library.writes.find((write) => write.relative === '.claude/settings.local.json');
+    check(settingsWrite !== undefined && settingsWrite.content.includes(registerAs.replace(/\\/g, '/')) && !settingsWrite.content.includes(PROGRAM_ROOT.replace(/\\/g, '/') + '/'), 'the planned hooks did not name --register-as rather than the program read');
+    equal(runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env }).exit, 0, 'setup --apply failed');
+    check(fs.existsSync(path.join(library, '.library', 'workspace.json')) && fs.existsSync(path.join(library, 'shelf', 'holding', 'wiki', 'notes')), 'the apply did not lay out the Library, empty folders included');
+    const registered = JSON.parse(fs.readFileSync(path.join(registry, 'workspaces.json'), 'utf8').replace(/^﻿/, '')) as { workspaces: Record<string, unknown>[] };
+    check(registered.workspaces.some((row) => row['default'] === true), 'the first Library was not made the default');
+    fs.rmSync(path.join(library, 'AGENTS.md'));
+    const resumed = runCli(['setup', '--apply', '--plan-file', planFile, '--json'], { cwd: root, env });
+    check(resumed.exit === 0 && fs.existsSync(path.join(library, 'AGENTS.md')) && Number((JSON.parse(resumed.stdout) as { library: { resumed?: number } }).library.resumed) > 0, `a re-run apply did not finish a half-written Library: ${resumed.stderr.trim()}`);
+    fs.writeFileSync(path.join(library, 'CLAUDE.md'), 'the reader wrote this');
+    const conflicted = runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env });
+    check(conflicted.exit !== 0 && conflicted.stderr.includes('CLAUDE.md') && fs.readFileSync(path.join(library, 'CLAUDE.md'), 'utf8') === 'the reader wrote this', `an apply over a file changed since the plan did not refuse, or wrote it: ${conflicted.stderr.trim()}`);
+
+    // AN EXISTING LIBRARY IS USED AS IT IS: nothing inside it is written.
+    const snapshot = (dir: string): string => {
+      const out: string[] = [];
+      const walk = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else out.push(`${path.relative(dir, f)}:${createHash('sha256').update(fs.readFileSync(f)).digest('hex')}`); } };
+      walk(dir);
+      return out.sort().join('\n');
+    };
+    const before = snapshot(library);
+    equal(askWith(['--install-root', path.join(root, 'prog'), '--library', library]).exit, 0, 'setup --ask over an existing Library failed');
+    equal(answers()['library_state'], 'existing', 'an existing Library was not recognised');
+    equal(runCli(['setup', '--plan', '--answers', answersFile, '--resources', PROGRAM_ROOT, '--out', planFile], { cwd: root, env }).exit, 0, 'planning an existing Library failed');
+    equal(runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env }).exit, 0, 'applying an existing Library failed');
+    equal(snapshot(library), before, 'an existing Library used as it is was written to');
+
+    // `deskpost setup <folder>` NEEDS A YES, AND WITH ONE MAKES THE LIBRARY.
+    const later = path.join(root, 'later');
+    const noYes = runCli(['setup', later], { cwd: root, env: { ...env, DESKPOST_YES: '' } });
+    check(noYes.exit !== 0 && noYes.stderr.includes('--yes') && !fs.existsSync(later), `setup <folder> without a yes did not refuse, or wrote: ${noYes.stderr.trim()}`);
+    const withYes = runCli(['setup', later, '--yes'], { cwd: root, env });
+    check(withYes.exit === 0 && fs.existsSync(path.join(later, '.library', 'workspace.json')), `setup <folder> --yes did not make the Library: ${withYes.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 50. UNINSTALL REACHES ONLY WHAT THIS INSTALL WROTE (PLAN-install-onboarding.md step 4) ----------------------------
+
+// Step 8's rules, pure where they can be: an entry is this install's only when a Deskpost form names a binary or a
+// -File script under its root (a near-miss root is not); a Library edit removes exactly those entries and keeps the
+// reader's; the legacy inventory reads a real ZIP; the finisher's removal block and install.ps1's are one text; and an
+// argument reaches the finisher quoted as CommandLineToArgvW reads it back. The whole flow, against built releases, is
+// tools/Test-InstallLifecycle.ps1.
+if (selected(50)) {
+  const { isThisInstallsEntry, libraryEdits, zipInventory, argvQuote } = await import('../src/lifecycle.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-uninstall-')));
+  const savedRegistry = process.env['LIBRARY_WORKSPACES'];
+  try {
+    const install = path.join(root, 'R');
+    const binary = path.join(install, 'current', 'bin', 'library.exe').replace(/\\/g, '/');
+    check(isThisInstallsEntry({ command: binary, args: ['hook', 'shelf-read'] }, install), "an exec-form hook under the root was not this install's");
+    check(isThisInstallsEntry({ command: `& '${binary.replace(/'/g, "''")}' hook desk-context` }, install), "a single-quoted Codex hook under the root was not this install's");
+    check(isThisInstallsEntry({ command: 'powershell.exe', args: ['-File', path.join(install, 'current', '.claude', 'hooks', 'Get-PlaybookContext.ps1')] }, install), "a PowerShell hook whose script is under the root was not this install's");
+    check(!isThisInstallsEntry({ command: path.join(root, 'R-backup', 'current', 'bin', 'library.exe'), args: ['hook', 'shelf-read'] }, install), 'a near-miss root was taken for this install');
+    check(!isThisInstallsEntry({ command: 'node', args: [path.join(install, 'mine.js')] }, install), "a reader's own hook under the root was taken for Deskpost's");
+
+    // A LIBRARY EDIT: this install's entries go, the reader's stay, and the reader registration goes from .mcp.json.
+    const library = path.join(root, 'lib');
+    fs.mkdirSync(path.join(library, '.library'), { recursive: true });
+    fs.mkdirSync(path.join(library, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(library, '.library', 'workspace.json'), '{"id":"x"}');
+    fs.writeFileSync(path.join(library, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: binary, args: ['hook', 'shelf-read'] }, { type: 'command', command: 'node', args: ['C:/mine/hook.js'] }] }], UserPromptSubmit: [{ hooks: [{ type: 'command', command: binary, args: ['hook', 'desk-context'] }] }] } }));
+    fs.writeFileSync(path.join(library, '.mcp.json'), JSON.stringify({ mcpServers: { 'validated-book-reader': { command: binary.replace(/\.exe$/, ''), args: ['mcp', 'serve'] }, mine: { command: 'node' } } }));
+    const registry = path.join(root, 'reg');
+    fs.mkdirSync(registry);
+    fs.writeFileSync(path.join(registry, 'workspaces.json'), JSON.stringify({ version: 1, workspaces: [{ id: 'x', path: library }, { id: 'y', path: path.join(root, 'gone') }] }));
+    process.env['LIBRARY_WORKSPACES'] = registry;
+    const { edits, skipped } = libraryEdits(install);
+    const settingsEdit = edits.find((edit) => edit.file.endsWith('settings.local.json'));
+    const kept = settingsEdit ? (JSON.parse(settingsEdit.content!) as { hooks: Record<string, { hooks: { command: string }[] }[]> }).hooks : {};
+    check(settingsEdit?.removed === 2 && JSON.stringify(kept) === JSON.stringify({ PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'node', args: ['C:/mine/hook.js'] }] }] }), `the settings edit did not keep exactly the reader's hook: ${settingsEdit?.content}`);
+    const mcpEdit = edits.find((edit) => edit.file.endsWith('.mcp.json'));
+    check(mcpEdit !== undefined && !mcpEdit.content!.includes('validated-book-reader') && mcpEdit.content!.includes('"mine"'), `the .mcp.json edit did not remove only the reader: ${mcpEdit?.content}`);
+    check(skipped.some((line) => line.includes('gone')), 'a registered Library that is not there was not reported skipped');
+    check(!fs.readFileSync(path.join(library, '.claude', 'settings.local.json'), 'utf8').includes('"removed"') && fs.readFileSync(path.join(library, '.claude', 'settings.local.json'), 'utf8').includes('shelf-read'), 'computing the edits wrote to the Library');
+
+    // THE LEGACY INVENTORY: a real ZIP, read from its central directory.
+    if (process.platform === 'win32') {
+      const tree = path.join(root, 'zipme', 'deskpost-1.0.0-win-x64');
+      fs.mkdirSync(path.join(tree, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(tree, 'release.json'), '{"schema":1}\n');
+      fs.writeFileSync(path.join(tree, 'bin', 'library.exe'), 'MZ'.repeat(5000));
+      const zip = path.join(root, 'deskpost-1.0.0-win-x64.zip');
+      const made = spawnSync('powershell.exe', ['-NoProfile', '-Command', `Compress-Archive -Path '${tree}' -DestinationPath '${zip}'`], { encoding: 'utf8', timeout: 120000 });
+      equal(made.status, 0, `Compress-Archive could not make the fixture ZIP: ${made.stderr}`);
+      const listed = zipInventory(zip).map((entry) => `${entry.path.replace(/\\/g, '/')}:${entry.sha256}`).sort();
+      const expected = ['bin/library.exe', 'release.json'].map((name) => `deskpost-1.0.0-win-x64/${name}:${createHash('sha256').update(fs.readFileSync(path.join(tree, ...name.split('/')))).digest('hex')}`).sort();
+      equal(listed.join('\n'), expected.join('\n'), 'the ZIP inventory did not read the entries and their hashes');
+    }
+
+    // ONE REMOVAL BLOCK: the finisher's and install.ps1's are the same text.
+    const block = (file: string) => {
+      const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+      const start = text.indexOf('# --- BEGIN uninstall removal');
+      const end = text.indexOf('# --- END uninstall removal ---');
+      return start >= 0 && end > start ? text.substring(start, end) : null;
+    };
+    const finisher = block(path.join(PROGRAM_ROOT, 'tools', 'Finish-Uninstall.ps1'));
+    check(finisher !== null && finisher === block(path.join(PROGRAM_ROOT, 'install.ps1')), "install.ps1's uninstall removal block is not the finisher's, byte for byte");
+
+    for (const [given, wanted] of [['plain', 'plain'], ['C:\\a b\\c', '"C:\\a b\\c"'], ['C:\\a b\\', '"C:\\a b\\\\"'], ['say "hi"', '"say \\"hi\\""'], ['', '""']] as [string, string][]) {
+      equal(argvQuote(given), wanted, `an argument was not quoted as CommandLineToArgvW reads it: ${given}`);
+    }
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    if (savedRegistry === undefined) delete process.env['LIBRARY_WORKSPACES'];
+    else process.env['LIBRARY_WORKSPACES'] = savedRegistry;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 51. BARE `deskpost` IS THE MAIN MENU, AT PARITY WITH THE POWERSHELL PICKER (PLAN-install-onboarding.md step 5a) --
+
+/**
+ * A FAKE ASSISTANT that records what it was started with. On Windows it is a `.cmd`, which is also how npm installs
+ * Codex, so the launcher's cmd.exe route is what these cases drive; `extra` is run after the log lines.
+ */
+function fakeAssistant(directory: string, name: 'claude' | 'codex', log: string, extra = ''): void {
+  if (process.platform === 'win32') {
+    fs.writeFileSync(
+      path.join(directory, `${name}.cmd`),
+      `@echo off\r\necho ${name} %* >> "${log}"\r\necho ${name}-env SEAT=%LIBRARY_SEAT% ASSISTANT=%DESKPOST_ASSISTANT% >> "${log}"\r\n${extra}exit /b 0\r\n`,
+    );
+  } else {
+    const file = path.join(directory, name);
+    fs.writeFileSync(file, `#!/bin/sh\necho "${name} $*" >> "${log}"\necho "${name}-env SEAT=$LIBRARY_SEAT ASSISTANT=$DESKPOST_ASSISTANT" >> "${log}"\n${extra}exit 0\n`);
+    fs.chmodSync(file, 0o755);
+  }
+}
+
+// Through the front door, with scripted answers (`menu --script`, which bypasses no gate) and fake assistants on PATH.
+// The first run is the wizard alone; a number resumes, restarts an empty minted conversation, or resumes in the
+// assistant that owns it; `n<number>` never hands an id to the other assistant; a held seat is refused by name; the
+// layout turns to cards below 120 columns; which Library opens follows step 5a's five rules; and the rows and the
+// grammar agree with tools/SeatPicker.ps1 on the same seats.
+if (selected(51)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-menu-')));
+  try {
+    const windows = process.platform === 'win32';
+    const registry = path.join(root, 'reg');
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    const log = path.join(root, 'agents.log');
+    const payload = path.join(root, 'codex-payload.json');
+    const codexSession = '7e57c0de-0000-4000-8000-00000000c0de';
+    const node = process.execPath;
+    // THE HOOK RUNS AS A PROCESS NAMED codex.exe, a copy of node, so the tree holds a Codex agent directly under the
+    // launcher -- the proof the Desk context hook now asks for (post-build inspection #1), not the environment alone.
+    const codexImage = path.join(root, 'codex-image', windows ? 'codex.exe' : 'codex');
+    fs.mkdirSync(path.dirname(codexImage));
+    try {
+      fs.linkSync(node, codexImage);
+    } catch {
+      fs.copyFileSync(node, codexImage);
+    }
+    const hook = windows
+      ? `if exist "${payload}" "${codexImage}" "${CLI}" hook desk-context < "${payload}" > nul\r\n`
+      : `[ -f "${payload}" ] && "${codexImage}" "${CLI}" hook desk-context < "${payload}" > /dev/null\n`;
+    const nestedFlag = path.join(root, 'nested.flag');
+    const nestedScript = path.join(root, 'nested.txt');
+    const nestedLog = path.join(root, 'nested.log');
+    const library = path.join(root, 'lib');
+    const nested = windows
+      ? `if exist "${nestedFlag}" ( del "${nestedFlag}" & "${node}" "${CLI}" menu --workspace "${library}" --script "${nestedScript}" >> "${nestedLog}" 2>&1 )\r\n`
+      : `[ -f "${nestedFlag}" ] && { rm "${nestedFlag}"; "${node}" "${CLI}" menu --workspace "${library}" --script "${nestedScript}" >> "${nestedLog}" 2>&1; }\n`;
+    fakeAssistant(bin, 'claude', log, nested);
+    fakeAssistant(bin, 'codex', log, hook);
+    const env = {
+      LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', NO_COLOR: '1',
+      PATH: bin + path.delimiter + (process.env['PATH'] ?? ''),
+    };
+    const transcripts = path.join(root, 'transcripts');
+    fs.mkdirSync(path.join(transcripts, 'some-project'), { recursive: true });
+    let turn = 0;
+    const menu = (answers: string[], extra: string[] = [], cwd = root) => {
+      turn += 1;
+      const script = path.join(root, `answers-${turn}.txt`);
+      fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['menu', '--script', script, '--transcript-root', transcripts, ...extra], { cwd, env });
+    };
+    const logLines = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split(/\r?\n/).filter((line) => line.trim()) : []);
+    equal(runCli(['init', library, '--json'], { env }).exit, 0, 'init of the menu fixture Library failed');
+
+    // BARE `deskpost` WITH NO TERMINAL PRINTS USAGE; `menu` WITH NO TERMINAL AND NO ANSWERS REFUSES, NAMING THE ROUTE.
+    const bare = runCli([], { env });
+    check(bare.exit === 0 && bare.stdout.includes('Usage: deskpost'), `bare deskpost with no terminal did not print usage: ${bare.stdout.slice(0, 200)}`);
+    const unanswered = runCli(['menu', '--workspace', library], { env });
+    check(unanswered.exit !== 0 && unanswered.stderr.includes('cannot answer') && unanswered.stderr.includes('seat start'), `menu with no terminal did not refuse: ${unanswered.stderr.trim()}`);
+
+    // FIRST TIME: THE FORK (PLAN-assistant-onboarding.md step 5, amending "only the wizard"), then `+` is the wizard. One
+    // confirmation, bound to a plan_id; the Hub and the seat are made; Claude Code starts.
+    const declined = menu(['no'], ['--workspace', library]);
+    check(declined.stdout.includes('This Library has no seats yet.') && !fs.existsSync(path.join(library, 'collection', 'projects', 'deskpost-help')), `the no-seat fork was missing, or an answer that is not a key created something: ${declined.stdout.slice(0, 400)}`);
+    const first = menu(['+', 'Home Lab', ''], ['--workspace', library]);
+    check(first.exit === 0 && first.stdout.includes('[Enter] Show me around') && first.stdout.includes('Your first seat.') && !first.stdout.includes('Seats in this Library'), `the first run was not the fork, then the wizard: ${first.stdout.slice(0, 400)} ${first.stderr}`);
+    check(/plan_id\s+[0-9a-f]{16}/.test(first.stdout) && first.stdout.includes('seat start home-lab --project home-lab --plan-id'), `the wizard did not show its plan_id and the commands it ran: ${first.stdout}`);
+    check(fs.existsSync(path.join(library, 'collection', 'projects', 'home-lab', '_project.md')), 'the wizard did not create the Hub named after the project');
+    const registryRows = () => (JSON.parse(fs.readFileSync(path.join(library, '.claude', 'seats', '_registry.json'), 'utf8').replace(/^﻿/, '')) as { seats: unknown }).seats;
+    check(JSON.stringify(registryRows()).includes('"project":"home-lab"') || JSON.stringify(registryRows()).includes('"home-lab"'), 'the wizard did not register seat home-lab');
+    const minted = /claude "?--session-id"? "?([0-9a-f-]{36})"?/.exec(logLines().join('\n'))?.[1] ?? '';
+    check(minted !== '', `the wizard did not start Claude Code under a minted id: ${logLines().join(' | ')}`);
+    check(logLines().some((line) => line.includes('claude-env SEAT=home-lab ASSISTANT=claude')), `the agent was not started at its seat with DESKPOST_ASSISTANT: ${logLines().join(' | ')}`);
+    const history = fs.readFileSync(path.join(library, '.claude', 'seats', 'home-lab', 'conversations.json'), 'utf8');
+    check(history.includes(minted) && history.includes('"launcher"') && history.includes('"claude"'), `the launcher did not record the conversation with its assistant: ${history}`);
+
+    // A NUMBER ON A MINTED CONVERSATION WITH NO TRANSCRIPT RESTARTS IT UNDER ITS OWN ID, SAID BEFORE IT HAPPENS.
+    const restart = menu(['1'], ['--workspace', library]);
+    check(restart.stdout.includes('started rather than resumed') && logLines().filter((line) => line.includes(`--session-id`) && line.includes(minted)).length === 2, `an empty minted conversation was not restarted under its id: ${restart.stdout.slice(-400)}`);
+    // WITH A TRANSCRIPT, THE SAME NUMBER RESUMES IT, AND ITS TITLE IS ON THE ROW.
+    fs.writeFileSync(path.join(transcripts, 'some-project', `${minted}.jsonl`), '{"type":"user"}\n{"type":"ai-title","aiTitle":"Wiring the home lab"}\n');
+    const resumed = menu(['1'], ['--workspace', library, '--width', '200']);
+    check(resumed.stdout.includes('Seats in this Library:') && resumed.stdout.includes('"Wiring the home lab"'), `a wide terminal did not show the table with the title: ${resumed.stdout.slice(0, 900)}`);
+    check(logLines().some((line) => line.includes('--resume') && line.includes(minted)), `a number did not resume the recorded Claude Code conversation: ${logLines().join(' | ')}`);
+    // BELOW 120 COLUMNS, CARDS: SAME NUMBERS, ONE FIELD PER LINE.
+    const narrow = menu(['q'], ['--workspace', library, '--width', '80']);
+    check(!narrow.stdout.includes('Seats in this Library:') && /^\s+1 o home-lab/m.test(narrow.stdout) && /^\s+Project\s+home-lab/m.test(narrow.stdout), `a narrow terminal did not get cards: ${narrow.stdout.slice(0, 900)}`);
+    check(narrow.stdout.includes('+  new seat     h  Show me around     b  Basic Memory     q  quit') && narrow.stdout.includes('h  Show me around   a deskpost-help seat') && narrow.stdout.includes('Pick a seat to continue its last session, or n<number> for a new one.'), `the tools footer or the first hint is missing: ${narrow.stdout}`);
+
+    // THE GRAMMAR'S REFUSALS EACH SAY THEIR OWN THING, AND THE LOOP GOES ON.
+    const grammar = menu(['x', '9', '', 'q'], ['--workspace', library]);
+    check(grammar.stdout.includes("'x' is not one of the commands") && grammar.stdout.includes('there is no seat 9; the list offers 1 to 1') && grammar.stdout.includes('No seat was chosen.'), `the grammar's refusals were not distinct: ${grammar.stdout.slice(-600)}`);
+
+    // CODEX: `a` SWITCHES NEW CONVERSATIONS; CODEX TAKES NO ID, AND ITS SESSION REPORTS ONE THROUGH THE DESK CONTEXT HOOK.
+    fs.writeFileSync(payload, JSON.stringify({ session_id: codexSession, hook_event_name: 'UserPromptSubmit', prompt: 'hello', cwd: library }));
+    const codexNew = menu(['a', 'n1'], ['--workspace', library]);
+    check(codexNew.stdout.includes('New conversations now use Codex.') && codexNew.stdout.includes('This starts a new Codex conversation'), `switching to Codex was not said as a new conversation: ${codexNew.stdout.slice(-600)}`);
+    check(logLines().some((line) => /^codex\s*$/.test(line.trim()) || line.trim() === 'codex'), `a new Codex conversation was handed arguments: ${logLines().join(' | ')}`);
+    const activity = fs.readFileSync(path.join(library, '.claude', 'seats', 'home-lab', 'activity.json'), 'utf8');
+    check(activity.includes(codexSession) && activity.includes('"codex"'), `the Codex session's reported conversation was not recorded for the seat: ${activity}`);
+    fs.rmSync(payload);
+    // A NUMBER RESUMES THE CODEX CONVERSATION IN CODEX, AND ITS TITLE IS A RECORDED REASON.
+    const codexResume = menu(['1'], ['--workspace', library, '--width', '200']);
+    check(codexResume.stdout.includes('a Codex conversation; its title is not read') && logLines().some((line) => line.includes('codex') && line.includes('resume') && line.includes(codexSession)), `the Codex conversation was not resumed in Codex: ${codexResume.stdout.slice(-500)} ${logLines().join(' | ')}`);
+    // ONLY THE LAUNCHER'S DIRECT AGENT MAY REPORT (post-build inspection #1): planted trees, walked as the hook walks them.
+    {
+      const { launcherDirectAgent } = await import('../src/procstart.ts');
+      const at = (pid: number, parentPid: number, name: string) => ({ pid, parentPid, name, createdUtc: null });
+      const direct = launcherDirectAgent(10, [at(1, 2, 'library.exe'), at(2, 3, 'codex.exe'), at(3, 4, 'node.exe'), at(4, 10, 'cmd.exe'), at(10, 11, 'library.exe')]);
+      check(direct?.assistant === 'codex' && direct.pid === 2, `a Codex agent directly under the launcher was not recognised: ${JSON.stringify(direct)}`);
+      const nested = launcherDirectAgent(10, [at(1, 2, 'library.exe'), at(2, 3, 'codex.exe'), at(3, 5, 'bash.exe'), at(5, 10, 'claude.exe'), at(10, 11, 'library.exe')]);
+      check(nested === null, `a Codex run from inside the launcher's Claude session was allowed to report: ${JSON.stringify(nested)}`);
+      const elsewhere = launcherDirectAgent(10, [at(1, 2, 'library.exe'), at(2, 3, 'codex.exe'), at(3, 4, 'explorer.exe')]);
+      check(elsewhere === null, `an agent with no launcher above it was allowed to report: ${JSON.stringify(elsewhere)}`);
+    }    // n<number> WITH CLAUDE CODE CHOSEN STARTS A NEW CLAUDE CONVERSATION; THE CODEX ID IS NEVER HANDED TO IT.
+    const claudeNew = menu(['n1'], ['--workspace', library, '--assistant', 'claude']);
+    check(claudeNew.stdout.includes("the last one at 'home-lab' was Codex's") && !logLines().some((line) => line.startsWith('claude') && line.includes(codexSession)), `a Codex id was handed to Claude Code, or it was not said: ${claudeNew.stdout.slice(-400)}`);
+
+    // A LAUNCH THAT NAMES NO CONVERSATION KEEPS THE SEAT'S LAST ONE (post-build inspection #4): a new Codex conversation
+    // whose session never reports leaves the Claude one the menu just said stays resumable.
+    const claudeId = [...logLines().join('\n').matchAll(/claude "?--session-id"? "?([0-9a-f-]{36})/g)].map((match) => match[1]).pop() ?? '';
+    menu(['a', 'n1'], ['--workspace', library, '--assistant', 'claude']);
+    const kept = fs.readFileSync(path.join(library, '.claude', 'seats', 'home-lab', 'activity.json'), 'utf8');
+    check(claudeId !== '' && kept.includes(claudeId), `an id-less Codex launch dropped the seat's last conversation: ${kept}`);
+    // AN OCCUPIED SEAT IS SHOWN AS HELD, AND CHOOSING IT SAYS SO AND OFFERS ANOTHER: never a second session.
+    fs.writeFileSync(nestedScript, '1\nq\n');
+    fs.writeFileSync(nestedFlag, '');
+    menu(['1'], ['--workspace', library]);
+    const nestedText = fs.existsSync(nestedLog) ? fs.readFileSync(nestedLog, 'utf8') : '';
+    check(nestedText.includes('held') && nestedText.includes("Seat 'home-lab' is in use") && nestedText.includes('No seat was chosen.'), `a held seat was not refused by the menu: ${nestedText.slice(-600)}`);
+
+    // + ON A PROJECT THAT ALREADY HAS A SEAT SAYS SO; b IS THE RESERVED SLOT; r<number> RETIRES THROUGH ITS PREFLIGHT.
+    const taken = menu(['+', 'home-lab', 'q'], ['--workspace', library]);
+    check(taken.stdout.includes("Project 'home-lab' already has a seat, 'home-lab'"), `a second seat for a bound project was not refused: ${taken.stdout.slice(-400)}`);
+    const basic = menu(['b', 's', 'q'], ['--workspace', library]);
+    check(basic.stdout.includes('Basic Memory is optional: it shares your Books across machines.') && basic.stdout.includes('basic-memory setup --url'), `the b slot did not say what Basic Memory is for: ${basic.stdout.slice(-400)}`);
+    const second = menu(['+', 'Garden', '', ], ['--workspace', library]);
+    check(second.exit === 0 && second.stdout.includes("Create seat 'garden' for Project 'garden'."), `+ did not run the wizard: ${second.stdout.slice(-400)}`);
+    const retired = menu(['r1', 'yes', 'q'], ['--workspace', library]);
+    check(retired.stdout.includes("Retire seat 'garden'") && retired.stdout.includes("Seat 'garden' retired."), `r<number> did not retire through its preflight: ${retired.stdout.slice(-500)}`);
+
+    // seat start --plan-id IS THE WIZARD'S BINDING: a plan for another registry is refused, and nothing is written.
+    const hubOnly = runCli(['hub', 'new', 'orchard', '--title', 'Orchard', '--workspace', library], { env });
+    equal(hubOnly.exit, 0, 'the plan-id case could not make its Hub');
+    const stale = runCli(['seat', 'start', 'orchard', '--project', 'orchard', '--plan-id', '0000000000000000', '--no-launch', '--workspace', library], { env });
+    check(stale.exit !== 0 && stale.stderr.includes('the seats changed between the plan you were shown and this write') && !fs.existsSync(path.join(library, '.claude', 'seats', 'orchard')), `a stale plan_id was not refused with nothing written: ${stale.stderr.trim()}`);
+
+    // PARITY: THE ROWS AND THE GRAMMAR AGREE WITH tools/SeatPicker.ps1 ON THE SAME SEATS (Claude-owned rows).
+    if (windows) {
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        `. '${path.join(PROGRAM_ROOT, 'tools', 'SeatPicker.ps1').replace(/'/g, "''")}'`,
+        `$rows = @(Get-SeatPickerRows -StateDirectory '${path.join(library, '.claude').replace(/'/g, "''")}' -TranscriptRoot '${transcripts.replace(/'/g, "''")}')`,
+        "$grammar = @('1', 'n1', 'R1', '+', 'q', 'Quit', 'x', '0', '99', '', ' 1 ') | ForEach-Object { $c = Resolve-SeatPickerChoice -Choice $_ -RowCount 1; [pscustomobject]@{ typed = $_; action = [string]$c.action; index = [int]$c.index } }",
+        "[pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]@{ seat = [string]$_.seat; project = [string]$_.project; state = [string]$_.state; session_id = [string]$_.session_id; title_status = [string]$_.title_status; entry_action = [string]$_.entry_action } }); grammar = @($grammar) } | ConvertTo-Json -Depth 5 -Compress",
+      ].join('\n');
+      const scriptFile = path.join(root, 'parity.ps1');
+      fs.writeFileSync(scriptFile, script);
+      const ps = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], { encoding: 'utf8', env: { ...process.env, ...env } });
+      let oracle: { rows: Record<string, string>[]; grammar: { typed: string; action: string; index: number }[] } | null = null;
+      try {
+        oracle = JSON.parse(ps.stdout) as typeof oracle;
+      } catch {
+        oracle = null;
+      }
+      check(oracle !== null, `the PowerShell picker did not answer the parity script: ${ps.stderr.slice(0, 400)}`);
+      if (oracle !== null) {
+        const { menuRows, resolveChoice } = await import('../src/menu.ts');
+        const ours = menuRows(library, { transcriptRoot: transcripts });
+        const oracleRows = (Array.isArray(oracle.rows) ? oracle.rows : [oracle.rows]).filter((row) => row !== null);
+        equal(ours.length, oracleRows.length, 'the kernel roster and the PowerShell roster count different seats');
+        for (const row of ours) {
+          const theirs = oracleRows.find((candidate) => candidate['seat'] === row.seat);
+          check(theirs !== undefined, `the PowerShell roster has no row for ${row.seat}`);
+          if (!theirs) continue;
+          equal(row.project, theirs['project'], `parity: ${row.seat}'s Project`);
+          equal(row.state, theirs['state'], `parity: ${row.seat}'s state`);
+          if (row.view.assistant === 'claude') {
+            equal(row.view.session_id, theirs['session_id'], `parity: ${row.seat}'s conversation`);
+            equal(row.view.title_status, theirs['title_status'], `parity: ${row.seat}'s title status`);
+            equal(row.view.entry_action, theirs['entry_action'], `parity: ${row.seat}'s entry action`);
+          }
+        }
+        // A COMPARISON THAT COMPARED NOTHING IS NOT PARITY (post-build inspection #8).
+        check(ours.some((row) => row.view.assistant === 'claude' && oracleRows.some((candidate) => candidate['seat'] === row.seat)), 'parity compared no Claude-owned row with the PowerShell roster');
+        for (const entry of oracle.grammar) {
+          const mine = resolveChoice(entry.typed ?? '', 1);
+          equal(`${mine.action}:${mine.index}`, `${entry.action}:${entry.index}`, `parity: the choice '${entry.typed}'`);
+        }
+      }
+    }
+
+    // WHICH LIBRARY: the one holding this folder; else the default; else the only valid one; else ask once.
+    const other = path.join(root, 'other');
+    equal(runCli(['init', other, '--json'], { env }).exit, 0, 'init of the second menu Library failed');
+    const registryFile = path.join(registry, 'workspaces.json');
+    const document = JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as { workspaces: Record<string, unknown>[] };
+    for (const entry of document.workspaces) delete entry['default'];
+    fs.writeFileSync(registryFile, JSON.stringify(document, null, 2));
+    const outside = path.join(root, 'elsewhere');
+    fs.mkdirSync(outside);
+    const inLibrary = menu(['q'], [], path.join(library, 'collection'));
+    check(inLibrary.stdout.includes(`Library  ${library}`), `inside a Library, the menu did not open that Library: ${inLibrary.stdout.slice(0, 900)}`);
+    const asked = menu(['1', 'y', 'q'], [], outside);
+    check(asked.stdout.includes('Which Library?') && asked.stdout.includes('is your default Library.'), `two Libraries and no default did not ask once and offer the default: ${asked.stdout.slice(0, 600)}`);
+    const chosenDefault = (JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as { workspaces: Record<string, unknown>[] }).workspaces.filter((entry) => entry['default'] === true);
+    equal(chosenDefault.length, 1, 'choosing a default did not mark exactly one Library');
+    const fromAnywhere = menu(['q'], [], outside);
+    check(!fromAnywhere.stdout.includes('Which Library?') && fromAnywhere.stdout.includes(`Library  ${String(chosenDefault[0]?.['path'])}`), `the default Library did not open from outside any Library: ${fromAnywhere.stdout.slice(0, 600)}`);
+    // A DEFAULT THAT IS GONE IS SAID, AND RESOLUTION GOES ON AT RULE 3.
+    const goneRoot = String(chosenDefault[0]?.['path']);
+    const keptRoot = goneRoot === library ? other : library;
+    fs.renameSync(path.join(goneRoot, '.library', 'workspace.json'), path.join(goneRoot, '.library', 'workspace.moved'));
+    const gone = menu([''], [], outside);
+    check(gone.stdout.includes(`Your default Library at ${goneRoot} is gone.`) && gone.stdout.includes(`Library  ${keptRoot}`), `a gone default was not reported before the only valid Library opened: ${gone.stdout.slice(0, 600)}`);
+    fs.renameSync(path.join(goneRoot, '.library', 'workspace.moved'), path.join(goneRoot, '.library', 'workspace.json'));
+    // WITH NONE VALID, IT OFFERS `deskpost setup`.
+    const empty = runCli(['menu', '--script', path.join(root, `answers-${turn}.txt`)], { cwd: outside, env: { ...env, LIBRARY_WORKSPACES: path.join(root, 'no-registry') } });
+    check(empty.exit === 0 && empty.stdout.includes('No Library is set up on this machine yet.') && empty.stdout.includes('deskpost setup'), `no valid Library did not offer setup: ${empty.stdout} ${empty.stderr}`);
+    // deskpost library default <folder> MOVES THE DEFAULT; `library list` SAYS WHICH IS.
+    const moved = runCli(['library', 'default', keptRoot], { env });
+    check(moved.exit === 0 && moved.stdout.includes('is your default Library'), `library default did not set the default: ${moved.stdout} ${moved.stderr}`);
+    const listed = JSON.parse(runCli(['library', 'list', '--json'], { env }).stdout) as { libraries: { path: string; default: boolean }[] };
+    check(listed.libraries.filter((entry) => entry.default).map((entry) => entry.path).join() === keptRoot, `library list did not report the moved default: ${JSON.stringify(listed)}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 52. AN INSTALL ENDS ON A FORK: SHOW ME AROUND, OR THE MAIN MENU (PLAN-install-onboarding.md step 5) ---------------
+
+// `setup --welcome`, which install.ps1 runs once it has let go of everything. Show me around makes the Deskpost Help Hub
+// and a seat of the same name and starts the Librarian there with the tutorial prompt; run again, both are reused; the
+// tutorial seat is then an ordinary menu seat whose number lands in the same conversation. With no assistant only the
+// menu and later are offered. With no terminal the fork says nothing and launches nothing.
+if (selected(52)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-welcome-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    const log = path.join(root, 'agents.log');
+    fakeAssistant(bin, 'claude', log);
+    const env = {
+      LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', NO_COLOR: '1',
+      PATH: bin + path.delimiter + (process.env['PATH'] ?? ''),
+    };
+    const library = path.join(root, 'lib');
+    equal(runCli(['init', library, '--json'], { env }).exit, 0, 'init of the welcome fixture Library failed');
+    let turn = 0;
+    const welcome = (answers: string[], extraEnv: Record<string, string> = {}) => {
+      turn += 1;
+      const script = path.join(root, `answers-${turn}.txt`);
+      fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['setup', '--welcome', '--workspace', library, '--assistant', 'claude', '--script', script], { cwd: root, env: { ...env, ...extraEnv } });
+    };
+    const lines = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split(/\r?\n/).filter((line) => line.trim()) : []);
+
+    const quiet = runCli(['setup', '--welcome', '--workspace', library], { env });
+    check(quiet.exit === 0 && !quiet.stdout.trim() && !fs.existsSync(log), `the fork with no terminal said something or launched: ${quiet.stdout}`);
+
+    // ONLY ENTER OR y GOES (Codex #12): "no" at the preview creates nothing.
+    const refused = welcome(['', 'no']);
+    check(refused.stdout.includes('Nothing was created') && !fs.existsSync(path.join(library, 'collection', 'projects', 'deskpost-help')) && !fs.existsSync(log), `"no" at Show me around created or started something: ${refused.stdout.slice(-400)}`);
+    const around = welcome(['', '']);
+    check(around.exit === 0 && around.stdout.includes('[Enter] Show me around') && around.stdout.includes('[m]     Main menu'), `the fork did not offer the tutorial and the menu: ${around.stdout.slice(0, 500)} ${around.stderr}`);
+    const project = path.join(library, 'collection', 'projects', 'deskpost-help', '_project.md');
+    check(fs.existsSync(project) && fs.readFileSync(project, 'utf8').includes('Deskpost Help'), 'Show me around did not create the Deskpost Help Hub');
+    check(lines().some((line) => line.includes('--session-id') && line.includes('Welcome me to Deskpost and show me around.')), `the tutorial did not start with its prompt under a minted id: ${lines().join(' | ')}`);
+    const tutorialId = /--session-id"? "?([0-9a-f-]{36})/.exec(lines().join('\n'))?.[1] ?? '';
+
+    const again = welcome(['', '']);
+    check(again.stdout.includes('(it exists, and is reused)') && !again.stderr.includes('already exists'), `a second Show me around did not reuse the Hub and the seat: ${again.stdout.slice(-500)} ${again.stderr}`);
+
+    // THE TUTORIAL SEAT IS AN ORDINARY MENU SEAT, AND ITS NUMBER LANDS IN THE SAME CONVERSATION.
+    const transcripts = path.join(root, 'transcripts', 'p');
+    fs.mkdirSync(transcripts, { recursive: true });
+    const lastId = [...lines().join('\n').matchAll(/--session-id"? "?([0-9a-f-]{36})/g)].map((match) => match[1]).pop() ?? tutorialId;
+    fs.writeFileSync(path.join(transcripts, `${lastId}.jsonl`), '{"type":"ai-title","aiTitle":"The Deskpost tour"}\n');
+    const script = path.join(root, 'menu.txt');
+    fs.writeFileSync(script, '1\n');
+    const fromMenu = runCli(['menu', '--script', script, '--transcript-root', path.dirname(transcripts), '--width', '200'], { cwd: library, env });
+    check(fromMenu.stdout.includes('deskpost-help') && fromMenu.stdout.includes('"The Deskpost tour"') && lines().some((line) => line.includes('--resume') && line.includes(lastId)), `the tutorial seat did not resume from the menu: ${fromMenu.stdout.slice(-600)} ${lines().join(' | ')}`);
+
+    // NO ASSISTANT: ONLY THE MENU AND LATER.
+    const bare = path.join(root, 'empty-bin');
+    fs.mkdirSync(bare);
+    const none = runCli(['setup', '--welcome', '--workspace', library, '--script', script], {
+      cwd: root,
+      env: { ...env, PATH: bare, USERPROFILE: root, HOME: root },
+    });
+    check(none.stdout.includes('No assistant found. Install Claude Code or Codex to start a seat.') && !none.stdout.includes('Show me around'), `with no assistant the fork still offered the tutorial: ${none.stdout.slice(0, 500)} ${none.stderr}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 53. A LIBRARY LEFT UNGUARDED BY AN UNINSTALL IS REPAIRED, NEVER USED AS IT IS (S55, the Windows Sandbox run) ----
+
+// Measured in the Sandbox: uninstall removes a Library's registrations and keeps it registered as the default, so the
+// next install's default answer was that Library "used as it is", and the install ended on a red doctor. With nobody
+// to ask it is refused without -Repair; with -Repair, or on the screen by default, it is repaired.
+if (selected(53)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-unguarded-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    const library = path.join(root, 'lib');
+    equal(runCli(['init', library, '--json'], { env }).exit, 0, 'init of the unguarded fixture failed');
+    const answersFile = path.join(root, 'answers.json');
+    const ask = (extra: string[]) => runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', path.join(root, 'prog'), '--library', library, ...extra], { cwd: root, env });
+    const guarded = ask([]);
+    check(guarded.exit === 0 && (JSON.parse(fs.readFileSync(answersFile, 'utf8')) as Record<string, unknown>)['repair'] === false, `a guarded Library was not used as it is: ${guarded.stderr.trim()}`);
+    fs.writeFileSync(path.join(library, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'node', args: ['C:/mine/hook.js'] }] }] } }));
+    const refused = ask([]);
+    check(refused.exit !== 0 && refused.stderr.includes('no Deskpost guards registered') && refused.stderr.includes('-Repair'), `an unguarded Library was not refused without -Repair: ${refused.stderr.trim()}`);
+    const repaired = ask(['--repair']);
+    check(repaired.exit === 0 && (JSON.parse(fs.readFileSync(answersFile, 'utf8')) as Record<string, unknown>)['repair'] === true && repaired.stdout.includes('they are registered again'), `-Repair did not repair the unguarded Library: ${repaired.stdout} ${repaired.stderr}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 54. THE PLAN AN ASSISTANT SHOWS, ITS ID, AND EVERY INSTALL THE MACHINE CAN SEE (PLAN-assistant-onboarding.md) ---
+
+// Step 2: `setup --plan` given the release's and the script's hashes writes a plan_id over the canonical plan, and a
+// view whose rows are the screen's. Two plans of one new Library agree although each mints a marker id and a
+// timestamp (flaw A); a file appearing in the Library changes the id. Step 3: an install is found on the user PATH as
+// stored (expanded), and through a registered Library's kernel-form registrations; a Library guarded only by a program
+// that is gone is refused, naming it.
+if (selected(54)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-planid-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1', S57_FAKE: root };
+    const library = path.join(root, 'lib');
+    const prog = path.join(root, 'prog');
+    const answersFile = path.join(root, 'answers.json');
+    const ask = (extra: string[]) => runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--library', library, ...extra], { cwd: root, env });
+    const plan = (out: string) => {
+      const ran = runCli(['setup', '--plan', '--answers', answersFile, '--resources', PROGRAM_ROOT, '--register-as', path.join(prog, 'current'), '--out', out, '--release-sha', 'ab'.repeat(32), '--script-sha', 'cd'.repeat(32), '--json'], { cwd: root, env });
+      equal(ran.exit, 0, `setup --plan failed: ${ran.stderr.trim()}`);
+      return JSON.parse(fs.readFileSync(out, 'utf8')) as { plan_id: string; view: { rows: { label: string; value: string; note: string }[]; library_files: { write: number } } };
+    };
+    const asked = ask(['--run-as-file']);
+    equal(asked.exit, 0, `setup --ask for a new Library failed: ${asked.stderr.trim()}`);
+    const first = plan(path.join(root, 'plan1.json'));
+    const second = plan(path.join(root, 'plan2.json'));
+    check(/^[0-9a-f]{64}$/.test(first.plan_id), `plan_id is not a sha256: ${first.plan_id}`);
+    equal(second.plan_id, first.plan_id, 'two plans of one new Library have different ids (a minted id or timestamp leaked into the canonical form)');
+    check(first.view.library_files.write > 0, 'the view names no Library files');
+    const librarian = first.view.rows.find((row) => row.label === 'Librarian');
+    check(librarian !== undefined && asked.stdout.includes(librarian.value), `the view's Librarian row is not the screen's: ${JSON.stringify(librarian)}`);
+    const command = first.view.rows.find((row) => row.label === 'Command');
+    check(command !== undefined && command.note.startsWith('new terminals'), `a run as a file still says "this window": ${JSON.stringify(command)}`);
+    fs.mkdirSync(library, { recursive: true });
+    fs.writeFileSync(path.join(library, 'CLAUDE.md'), 'mine\n');
+    check(plan(path.join(root, 'plan3.json')).plan_id !== first.plan_id, 'a file appearing in the Library left the plan_id unchanged');
+    fs.rmSync(library, { recursive: true, force: true });
+
+    // THE ROOT STATE IS IN THE ID (S58 post-build inspection #1): an install appearing at the root changes it, and so
+    // does a changed `previous` (the rollback target) under the same version.
+    fs.mkdirSync(prog, { recursive: true });
+    fs.writeFileSync(path.join(prog, 'current.json'), '{"version":"1.1.0","previous":"1.0.0"}\n');
+    const withRoot = plan(path.join(root, 'plan4.json')).plan_id;
+    check(withRoot !== first.plan_id, 'an install appearing at the root left the plan_id unchanged');
+    fs.writeFileSync(path.join(prog, 'current.json'), '{"version":"1.1.0","previous":"0.9.0"}\n');
+    check(plan(path.join(root, 'plan5.json')).plan_id !== withRoot, "a changed current.json 'previous' left the plan_id unchanged");
+    fs.rmSync(prog, { recursive: true, force: true });
+    equal(plan(path.join(root, 'plan6.json')).plan_id, first.plan_id, 'the root emptied again does not give the first plan_id back, so the checks above prove nothing');
+
+    // Found on the user PATH as stored, %NAME% expanded.
+    const other = path.join(root, 'other');
+    fs.mkdirSync(path.join(other, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(other, 'current.json'), '{"version":"1.1.0"}\n');
+    fs.writeFileSync(path.join(other, 'bin', process.platform === 'win32' ? 'deskpost.cmd' : 'deskpost'), '');
+    const onUserPath = ask(['--user-path', `C:\\nowhere;%S57_FAKE%${path.sep}other${path.sep}bin`]);
+    check(onUserPath.exit !== 0 && onUserPath.stderr.includes(other) && onUserPath.stderr.includes('the user PATH'), `an install on the user PATH was not found: ${onUserPath.stderr.trim()}`);
+
+    // An install named only by a registered Library's registrations, not on any PATH (-NoPathChange), races for no
+    // command and is not "another install" (decided while building, S57): side-by-side installs stay possible.
+    const registered = path.join(root, 'registered');
+    equal(runCli(['init', registered, '--json'], { env }).exit, 0, 'init of the registered fixture failed');
+    const viaRegistration = path.join(root, 'viareg');
+    fs.mkdirSync(viaRegistration, { recursive: true });
+    fs.writeFileSync(path.join(viaRegistration, 'current.json'), '{"version":"1.1.0"}\n');
+    fs.writeFileSync(path.join(registered, '.mcp.json'), JSON.stringify({ mcpServers: { 'validated-book-reader': { command: path.join(viaRegistration, 'current', 'bin', 'library.exe'), args: ['mcp', 'serve'] } } }));
+    const byRegistration = ask([]);
+    check(byRegistration.exit === 0, `an install off PATH, named only by a registration, was refused as another install: ${byRegistration.stderr.trim()}`);
+
+    // A Library guarded only by a program that is gone: refused, naming it.
+    const gone = path.join(root, 'gone');
+    fs.writeFileSync(path.join(registered, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: path.join(gone, 'current', 'bin', 'library.exe'), args: ['hook', 'pre-tool-use'] }] }] } }));
+    fs.writeFileSync(path.join(registered, '.mcp.json'), '{}');
+    const orphan = runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--library', registered], { cwd: root, env });
+    check(orphan.exit !== 0 && orphan.stderr.includes(gone) && orphan.stderr.includes(`-InstallRoot ${gone}`), `a Library guarded by a missing program was not refused: ${orphan.stderr.trim()}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 55. THE library-help SKILL IN EVERY LIBRARY, OWNED FILE BY FILE (PLAN-assistant-onboarding.md step 7) ----------
+
+// Asserted here rather than against the oracle, which writes no Skill (the matrix delta kernel-init-writes-library-help).
+if (selected(55)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-skill-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const source = path.join(PROGRAM_ROOT, '.claude', 'skills', 'library-help');
+    const init = (library: string) => {
+      const ran = runCli(['init', library, '--json'], { env });
+      equal(ran.exit, 0, `init for the Skill fixture failed: ${ran.stderr.trim()}`);
+      return JSON.parse(ran.stdout) as { skill?: { files: { file: string; action: string }[]; left: string[] } };
+    };
+    const library = path.join(root, 'lib');
+    const first = init(library);
+    const skill = path.join(library, '.claude', 'skills', 'library-help');
+    for (const relative of ['SKILL.md', 'references/books-and-projects.md', 'references/capture-and-triage.md', 'references/retention-and-reset.md']) {
+      const copied = path.join(skill, ...relative.split('/'));
+      check(fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(source, ...relative.split('/')), 'utf8'), `init did not copy ${relative} byte for byte`);
+    }
+    check(fs.existsSync(path.join(skill, '.deskpost-managed.json')), 'init wrote no ownership manifest for the Skill');
+    check((first.skill?.files ?? []).every((entry) => entry.action === 'created'), `a first init's Skill files were not all created: ${JSON.stringify(first.skill)}`);
+    const text = fs.readFileSync(path.join(skill, 'SKILL.md'), 'utf8') + fs.readdirSync(path.join(skill, 'references')).map((name) => fs.readFileSync(path.join(skill, 'references', name), 'utf8')).join('');
+    check(!/\]\(\.\.\//.test(text), 'the installed Skill links above its own folder, which a Library does not have');
+    check(!text.includes('the **`library` program** installs (1.0)'), 'the installed Skill still describes the 1.0 program');
+    const second = init(library);
+    check((second.skill?.files ?? []).every((entry) => entry.action === 'unchanged'), `a second init changed the Skill: ${JSON.stringify(second.skill)}`);
+    fs.appendFileSync(path.join(skill, 'SKILL.md'), '\nmine\n');
+    const edited = init(library);
+    check(fs.readFileSync(path.join(skill, 'SKILL.md'), 'utf8').endsWith('mine\n') && (edited.skill?.left ?? []).some((line) => line.includes('SKILL.md')), `an edited Skill file was replaced, or not named: ${JSON.stringify(edited.skill)}`);
+    const own = path.join(root, 'own');
+    fs.mkdirSync(path.join(own, '.claude', 'skills', 'library-help'), { recursive: true });
+    fs.writeFileSync(path.join(own, '.claude', 'skills', 'library-help', 'SKILL.md'), 'my own\n');
+    const handMade = init(own);
+    check(fs.readFileSync(path.join(own, '.claude', 'skills', 'library-help', 'SKILL.md'), 'utf8') === 'my own\n' && (handMade.skill?.left ?? []).length === 1 && !fs.existsSync(path.join(own, '.claude', 'skills', 'library-help', '.deskpost-managed.json')), `a hand-made Skill was not left whole: ${JSON.stringify(handMade.skill)}`);
+    const linked = path.join(root, 'linked');
+    fs.mkdirSync(path.join(linked, '.claude', 'skills'), { recursive: true });
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, path.join(linked, '.claude', 'skills', 'library-help'), 'junction');
+    const refused = runCli(['init', linked, '--json'], { env });
+    check(refused.exit !== 0 && refused.stderr.includes('a link to another folder') && fs.readdirSync(elsewhere).length === 0, `a Skill folder that is a link was written through: ${refused.stderr.trim()}`);
+
+    // A LINK BELOW library-help (S58 post-build inspection #5): `references` replaced by a junction to an empty folder,
+    // whose files a re-run would otherwise create out there.
+    const nested = path.join(root, 'nested');
+    init(nested);
+    const references = path.join(nested, '.claude', 'skills', 'library-help', 'references');
+    fs.rmSync(references, { recursive: true, force: true });
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, references, 'junction');
+    const nestedRefused = runCli(['init', nested, '--json'], { env });
+    check(nestedRefused.exit !== 0 && nestedRefused.stderr.includes('a link to another folder') && fs.readdirSync(outside).length === 0, `a junction below library-help was written through: ${nestedRefused.exit} ${nestedRefused.stderr.trim()}`);
+
+    // A DANGLING LINK (the Fable confirmation's regression note): its target gone, it still refuses at plan time.
+    const dangling = path.join(root, 'dangling');
+    fs.mkdirSync(path.join(dangling, '.claude', 'skills'), { recursive: true });
+    const vanished = path.join(root, 'vanished');
+    fs.mkdirSync(vanished);
+    fs.symlinkSync(vanished, path.join(dangling, '.claude', 'skills', 'library-help'), 'junction');
+    fs.rmdirSync(vanished);
+    const danglingRefused = runCli(['init', dangling, '--json'], { env });
+    check(danglingRefused.exit !== 0 && danglingRefused.stderr.includes('a link to another folder'), `a dangling Skill link was not refused at plan time: ${danglingRefused.exit} ${danglingRefused.stderr.trim()}`);
+
+    // ITS CONTROL: a Library that is itself reached through a junction is not a link at every level.
+    const real = path.join(root, 'real');
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(root, 'via'), 'junction');
+    const viaLink = runCli(['init', path.join(root, 'via', 'lib'), '--json'], { env });
+    check(viaLink.exit === 0 && fs.existsSync(path.join(real, 'lib', '.claude', 'skills', 'library-help', 'SKILL.md')), `a Library below a junction was refused as a link: ${viaLink.exit} ${viaLink.stderr.trim()}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 56. A REPAIRED LIBRARY'S LIVE SEATS ARE COUNTED, WHATEVER PROGRAM ITS GUARDS NAME (S58 post-build inspection #2) --
+
+// `setup --sessions --install-root <root>` counts only Libraries whose registrations name that root. A new root that
+// repairs an existing Library rewrites the guards its seats run under, so `--library` counts that Library's seats too.
+if (selected(56)) {
+  const w = await seatClaimWorkspace('sessions-library');
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('held', 'alpha', agent).exit, 0, 'the seat for the live-session check could not be created and entered');
+    const prog = path.join(w.root, 'another-root');
+    const sessions = (extra: string[]) => {
+      const ran = w.as(process.pid, ['setup', '--sessions', '--install-root', prog, ...extra, '--json']);
+      try {
+        return JSON.parse(ran.stdout) as { clear: boolean; seats: { seat: string }[] };
+      } catch {
+        return null;
+      }
+    };
+    const unnamed = sessions([]);
+    check(unnamed !== null && unnamed.clear === true, `a Library not naming the root was counted without --library, so the case below proves nothing: ${JSON.stringify(unnamed)}`);
+    const named = sessions(['--library', w.workspace]);
+    check(named !== null && named.clear === false && named.seats.some((row) => row.seat === 'held'), `the repaired Library's live seat was not counted: ${JSON.stringify(named)}`);
   } finally {
     w.dispose();
   }

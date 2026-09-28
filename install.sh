@@ -49,6 +49,13 @@ switch_link() {
   replace_link "$VERSIONS/$1" "$INSTALL_ROOT/current"
   mkdir -p "$BIN_DIR"
   replace_link "$INSTALL_ROOT/current/bin/library" "$BIN_DIR/library"
+  # `deskpost` is the command and `library` its alias through 1.x (ADR-0055). A `deskpost` already there that is not
+  # this install's link is someone else's, and is left alone.
+  if [ ! -e "$BIN_DIR/deskpost" ] && [ ! -L "$BIN_DIR/deskpost" ] || [ "$(readlink "$BIN_DIR/deskpost" 2>/dev/null)" = "$INSTALL_ROOT/current/bin/library" ]; then
+    replace_link "$INSTALL_ROOT/current/bin/library" "$BIN_DIR/deskpost"
+  else
+    say "$BIN_DIR/deskpost exists and is not this install's; left alone. Run library instead."
+  fi
   printf '{"schema":1,"version":"%s","previous":"%s","archive_sha256":"%s"}\n' "$1" "$2" "$3" > "$INSTALL_ROOT/current.json.incoming"
   mv -f "$INSTALL_ROOT/current.json.incoming" "$INSTALL_ROOT/current.json"
 }

@@ -52,6 +52,23 @@ import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from 
 import type { NoteRecord } from './basicmemory.ts';
 import { programRoot } from './programroot.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
+import { isLocalBackend } from './basicmemory.ts';
+import { withBookLocks } from './locks.ts';
+import { writeAtomicText } from './fsx.ts';
+import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
+import { newBookManifestForCollectionBook } from './collectionbooks.ts';
+import {
+  composeFrontmatter,
+  ensureHeading,
+  insertUnderHeading,
+  LOCAL_BOOKS_CATALOG_TEXT,
+  localPublicationState,
+  ownedLines,
+  readCatalogOrTemplate,
+  splitLocalFrontmatter,
+  withoutLine,
+  writeCatalog,
+} from './localcatalog.ts';
 
 class PublishRefusal extends Error {}
 
@@ -128,6 +145,14 @@ interface CandidateInput {
   collection: string;
   /** `-BookVersion`, default `0.1.0`: in the root's metadata, not in the plan. */
   bookVersion?: string;
+  /** How long the local branch waits for its locks (`--lock-timeout`, seconds). Neither in the plan nor in its id. */
+  lockTimeoutSeconds?: number;
+}
+
+/** `--lock-timeout <seconds>`, twenty when absent or unreadable, as `library hub edit` reads it. */
+function lockTimeoutOption(value: string | undefined): number {
+  const seconds = Number(value ?? '20');
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 20;
 }
 
 /** One planned shared record: `content` is what is written, `body` what a readback is compared with. */
@@ -155,9 +180,19 @@ interface CandidatePlan {
  * notebook and capture-note routes of the same publisher are not reached by any `library publish` verb.
  */
 function candidatePreflight(workspace: string, input: CandidateInput): CandidatePlan {
-  resolveMcpUrl(workspace);
-  assertCollectionWriteAllowed(workspace, 'publishing to the shared collection');
-  const projectId = resolveCollectionId(workspace);
+  // THE LOCAL BRANCH IS TAKEN FIRST (PLAN-basic-memory.md step 1, Fable #2): a local Library publishes into its own
+  // `collection/`, the only publish target in 1.1, so it never resolves an endpoint, never meets the fence and never
+  // asks for a Basic Memory collection id -- none of which a connection changes, because nothing is written to
+  // Basic Memory in 1.1.
+  const local = isLocalBackend(workspace);
+  let projectId: string;
+  if (local) {
+    projectId = localCollectionId(workspace);
+  } else {
+    resolveMcpUrl(workspace);
+    assertCollectionWriteAllowed(workspace, 'publishing to the shared collection');
+    projectId = resolveCollectionId(workspace);
+  }
   if (!SLUG.test(input.bookSlug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
 
   const shelfRoot = path.resolve(workspace, 'shelf');
@@ -233,8 +268,8 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     records,
     plan: {
       operation: 'Publish a Copy',
-      destination: 'shared',
-      project_id: projectId,
+      destination: local ? 'collection' : 'shared',
+      ...(local ? { collection_id: projectId } : { project_id: projectId }),
       book_slug: input.bookSlug,
       collection: input.collection,
       source: sourceBoundary,
@@ -250,6 +285,20 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
       local_original_preserved: true,
     },
   };
+}
+
+/** The Local collection's persistent id, read from where `library init` records it; a Library without one is told to run init. */
+function localCollectionId(workspace: string): string {
+  const file = path.join(workspace, 'collection', '.library', 'collection.json');
+  if (!fs.existsSync(file)) refuse(`This Library has no Local collection yet: ${file} does not exist. Run library init in it, which lays out collection/.`);
+  let id = '';
+  try {
+    id = String((JSON.parse(readStrictUtf8(file)) as Record<string, unknown>)['id'] ?? '');
+  } catch {
+    id = '';
+  }
+  if (!id.trim()) refuse(`${file} carries no readable id, so the Local collection's identity cannot be confirmed.`);
+  return id;
 }
 
 // --- the candidate's confirmed half (S39) -------------------------------------------------------------------
@@ -371,6 +420,7 @@ async function candidateConfirmed(
   replaceExisting: boolean,
   journalOption: string,
 ): Promise<Record<string, PsJsonValue>> {
+  if (isLocalBackend(workspace)) return localCandidateConfirmed(workspace, input, candidate, replaceExisting, journalOption);
   const journalPath = isBlank(journalOption)
     ? path.join(workspace, 'internal', 'publication-journals', `${input.bookSlug}-${candidate.sourceDigest}.json`)
     : path.resolve(journalOption);
@@ -602,6 +652,211 @@ async function candidateConfirmed(
   }
 }
 
+// --- the local branch's confirmed half (PLAN-basic-memory.md step 1, B0) ----------------------------------------
+
+/**
+ * The candidate's confirmed half, into the Local collection, as a plain file writer. TODAY'S CONTRACT, KEPT: the
+ * root first, `copying`, then every page written and read back, a health check over all of them, the root
+ * `complete` with its frontmatter keys in their fixed order, the catalog line inserted, replaced or moved and the
+ * whole catalog read back, and the journal in `internal/publication-journals/` -- the same file the shared
+ * publisher writes. Resumable by the same rule: an existing root is reused only when its metadata names this
+ * exact source and manifest.
+ *
+ * THE LOCKS ARE THE BOOK'S AND THE CATALOG'S, TAKEN TOGETHER (Fable #8, round 2): `books/<slug>` and
+ * `collection/books`, the name `library hub new`'s catalog lock is spelled in, sorted by `withBookLocks` as an
+ * import's are, so a publish and an import can never interleave on `books/README.md` and never deadlock.
+ *
+ * AND ITS DISCOVERY MANIFEST IS COMMITTED IN THE SAME WINDOW (step 1, F20): marker down before the first write,
+ * generation up after the catalog proves, so a published Book is found by the next search.
+ */
+async function localCandidateConfirmed(
+  workspace: string,
+  input: CandidateInput,
+  candidate: CandidatePlan,
+  replaceExisting: boolean,
+  journalOption: string,
+): Promise<Record<string, PsJsonValue>> {
+  const journalPath = isBlank(journalOption)
+    ? path.join(workspace, 'internal', 'publication-journals', `${input.bookSlug}-${candidate.sourceDigest}.json`)
+    : path.resolve(journalOption);
+  const collectionRoot = path.join(workspace, 'collection');
+  const fileFor = (relative: string) => path.join(collectionRoot, ...relative.split('/'));
+  const records = candidate.records;
+  const attempted: string[] = [];
+  const created: string[] = [];
+  const reused: string[] = [];
+  const saveJournal = (state: string, errorText: string): void => {
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    const journal: Record<string, PsJsonValue> = {
+      state,
+      timestamp_utc: new Date().toISOString().replace(/\.(\d{3})Z$/, '.$10000Z'),
+      destination: 'collection',
+      collection_id: candidate.projectId,
+      book_slug: input.bookSlug,
+      collection: input.collection,
+      source_digest_sha256: candidate.sourceDigest,
+      page_manifest_sha256: candidate.manifestDigest,
+      approved_plan_id: candidate.planId,
+      planned_records: records.filter((record) => record.source).map((record) => ({ path: record.path, source: record.source, sha256: record.sha256 })),
+      attempted_records: [...attempted],
+      created_records: [...created],
+      reused_records: [...reused],
+      error: errorText,
+    };
+    fs.writeFileSync(journalPath, psConvertToJson(journal), 'utf8');
+  };
+  const readFile = (relative: string): string | null => {
+    const file = fileFor(relative);
+    return fs.existsSync(file) && fs.statSync(file).isFile() ? readStrictUtf8(file) : null;
+  };
+  const rootRecord = records[0]!;
+  const rootText = (state: string) => composeFrontmatter(rootMetadata(candidate, input, state)) + '\n' + rootRecord.content;
+  const write = (relative: string, text: string, check: (back: string) => boolean): void => {
+    writeAtomicText(fileFor(relative), text);
+    const back = readFile(relative);
+    if (back === null) refuse(`Write '${relative}' did not become readable.`);
+    if (!check(back)) refuse(`Page '${relative}' did not read back as written.`);
+  };
+  const rootMatches = (text: string): boolean => normalizeBody(splitLocalFrontmatter(text).body) === normalizeBody(rootRecord.body);
+
+  return withBookLocks(workspace, [candidate.bookRoot.replace(/\/wiki$/, ''), 'collection/books'], input.lockTimeoutSeconds ?? 20, (locks) => {
+    const bookLock = locks.find((lock) => lock.bookRoot === candidate.bookRoot.replace(/\/wiki$/, ''))!;
+    let mutation: BookMutation | null = null;
+    try {
+      mutation = enterBookMutation({
+        workspace,
+        slug: input.bookSlug,
+        bookRoot: `books/${input.bookSlug}`,
+        reason: `Publish ${candidate.planId} into the Local collection`,
+        lock: bookLock,
+        collection: 'collection',
+      });
+      saveJournal('copying', '');
+
+      // THE ROOT: created, resumed or replaced, by the shared publisher's rule.
+      const existingRoot = readFile(rootRecord.path);
+      const copying = rootMetadata(candidate, input, 'copying');
+      if (existingRoot === null) {
+        attempted.push(rootRecord.path);
+        write(rootRecord.path, rootText('copying'), rootMatches);
+        created.push(rootRecord.path);
+      } else {
+        const fields = splitLocalFrontmatter(existingRoot).fields ?? new Map<string, string>();
+        const rootKeys = ['book_slug', 'source_digest_sha256', 'page_manifest_sha256', 'approved_plan_id', ...(input.collection ? ['collection'] : [])];
+        const sameRoot = rootKeys.every((name) => (fields.get(name) ?? null) === psText(copying[name]));
+        if (!sameRoot) {
+          if (!replaceExisting) refuse('Existing Book has a different source or manifest. Review the preflight and rerun with -ReplaceExisting to refresh this exact Book.');
+          if ((fields.get('book_slug') ?? null) !== input.bookSlug) refuse('Existing root does not belong to this Book slug; it will not be replaced.');
+          attempted.push(rootRecord.path);
+          write(rootRecord.path, rootText('copying'), rootMatches);
+          created.push(rootRecord.path);
+        } else {
+          if (!['copying', 'complete'].includes((localPublicationState(fields) ?? '').toLowerCase())) refuse('Existing root is not resumable.');
+          if (!rootMatches(existingRoot)) refuse(`Existing record '${rootRecord.path}' differs from the approved manifest.`);
+          reused.push(rootRecord.path);
+        }
+      }
+
+      // EVERY OTHER PAGE, byte for byte as planned: absent is written, identical is reused, different is a refusal
+      // unless this is a refresh.
+      for (const expected of records.slice(1)) {
+        const existing = readFile(expected.path);
+        if (existing === null) {
+          attempted.push(expected.path);
+          write(expected.path, expected.content, (back) => back === expected.content);
+          created.push(expected.path);
+          continue;
+        }
+        if (existing === expected.content) {
+          reused.push(expected.path);
+          continue;
+        }
+        if (!replaceExisting) refuse(`Existing record '${expected.path}' differs from the approved manifest.`);
+        attempted.push(expected.path);
+        write(expected.path, expected.content, (back) => back === expected.content);
+        created.push(expected.path);
+      }
+      // THE HEALTH CHECK, over all of them, before the root says complete.
+      for (const expected of records) {
+        const back = readFile(expected.path);
+        if (back === null) refuse(`Health check could not read '${expected.path}'.`);
+        if (expected === rootRecord ? !rootMatches(back) : back !== expected.content) refuse(`Page '${expected.path}' did not read back as written.`);
+      }
+      const rootNow = readFile(rootRecord.path)!;
+      if ((localPublicationState(splitLocalFrontmatter(rootNow).fields) ?? '').toLowerCase() !== 'complete') {
+        write(rootRecord.path, rootText('complete'), (back) => rootMatches(back) && localPublicationState(splitLocalFrontmatter(back).fields) === 'complete');
+      }
+
+      // THE CATALOG LINE THIS BOOK OWNS, identified by its link target; a heading it needs is inserted, not refused.
+      const catalogFile = fileFor('books/README.md');
+      const entry = `- [[${candidate.bookRoot}/_book|${input.title}]] — ${input.summary}`;
+      const target = `${candidate.bookRoot}/_book`;
+      let catalog = readCatalogOrTemplate(catalogFile, LOCAL_BOOKS_CATALOG_TEXT).text;
+      const targetHeading = input.collection ? `## ${input.collection}` : '## Open a Book';
+      catalog = ensureHeading(catalog, targetHeading, input.collection ? '## Open a Book' : null).text;
+      const owned = ownedLines(catalog, [target]);
+      let catalogEntryState = 'already-current';
+      let movedFrom: string | null = null;
+      if (owned.length === 0) {
+        catalog = insertUnderHeading(catalog, targetHeading, entry);
+        catalogEntryState = 'inserted';
+      } else if (owned.length > 1) {
+        refuse(`The Book Catalog carries ${owned.length} entry lines linking '${target}'; it will not guess which one this publication owns.`);
+      } else if (input.collection && owned[0]!.heading !== targetHeading) {
+        movedFrom = owned[0]!.heading;
+        catalog = insertUnderHeading(withoutLine(catalog, owned[0]!.index), targetHeading, entry);
+        catalogEntryState = 'moved';
+      } else if (owned[0]!.line !== entry) {
+        const lines = catalog.replace(/\r\n/g, '\n').split('\n');
+        lines[owned[0]!.index] = entry;
+        catalog = lines.join('\n');
+        catalogEntryState = 'replaced';
+      }
+      const before = readCatalogOrTemplate(catalogFile, '').text;
+      const catalogUpdated = catalog !== before;
+      if (catalogUpdated) catalog = writeCatalog(catalogFile, catalog);
+      const ownedAfter = ownedLines(catalog, [target]);
+      const catalogEntryVerified = ownedAfter.length === 1 && ownedAfter[0]!.line === entry;
+      if (!catalogEntryVerified) refuse(`Book Catalog readback did not carry this Book's current entry line exactly once: '${entry}'.`);
+      const catalogEntryHeading = ownedAfter[0]!.heading;
+      if (input.collection && catalogEntryHeading !== targetHeading) {
+        refuse(`Book Catalog readback filed this Book's entry under '${catalogEntryHeading ?? 'no collection heading'}' rather than the requested '${targetHeading}'.`);
+      }
+
+      const manifest = completeBookMutation(mutation, newBookManifestForCollectionBook(workspace, 'active', input.bookSlug));
+      mutation = null;
+      saveJournal('complete', '');
+      return {
+        operation: 'Publish a Copy',
+        destination: 'collection',
+        book_path: candidate.bookRoot,
+        publication_complete: true,
+        catalog_entry_verified: catalogEntryVerified,
+        catalog_updated: catalogUpdated,
+        catalog_entry_state: catalogEntryState,
+        catalog_entry_heading: catalogEntryHeading,
+        catalog_entry_moved_from: movedFrom,
+        catalog_entry: entry,
+        journal_path: journalPath,
+        created_records: created,
+        reused_records: reused,
+        discovery_manifest: manifest.summary,
+        local_original_preserved: true,
+      };
+    } catch (error) {
+      const message = (error as Error).message;
+      // NOTHING WRITTEN, NOTHING DIRTY: a refusal before the first write leaves the Book as its manifest describes.
+      // After one, the Book's state is not what any manifest says, and `dirty` is the honest answer until a rebuild.
+      if (mutation !== null && attempted.length === 0) undoBookMutation(mutation);
+      saveJournal('copying', message);
+      refuse(
+        'Local publication stopped safely. No Shelf source was changed. Resume is allowed only when the existing root metadata and manifest ' +
+          `match. Journal: ${journalPath}. ${message}`,
+      );
+    }
+  });
+}
+
 // --- the arguments ----------------------------------------------------------------------------------------
 
 interface PublishInput extends CandidateInput {
@@ -628,30 +883,50 @@ function required(value: string | undefined, name: string, usage: string): strin
 
 const VALUED = [
   'title', 'summary', 'book-slug', 'collection', 'topics', 'book-version', 'reason', 'plan', 'workspace', 'plan-id',
-  'journal-path', 'publication-journal-path', 'workflow-journal-path',
+  'journal-path', 'publication-journal-path', 'workflow-journal-path', 'lock-timeout',
 ];
 
 // --- library publish ----------------------------------------------------------------------------------------
 
 /** Publish-ShelfBookToShared.ps1 as far as its composite plan. */
 function publishPlan(workspace: string, input: PublishInput): Record<string, PsJsonValue> {
-  const projectId = resolveCollectionId(workspace);
+  const local = isLocalBackend(workspace);
+  const projectId = local ? localCollectionId(workspace) : resolveCollectionId(workspace);
   if (!SLUG.test(input.shelfSlug)) refuse('ShelfBookSlug must use lowercase letters, digits, and single hyphens.');
   if (!SLUG.test(input.bookSlug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
   if (input.bookSlug === 'blog') refuse("The shared Book slug 'blog' is reserved and cannot be used by this workflow.");
   const publication = candidatePreflight(workspace, input);
   const deletePlan = shelfDeletePreflight(workspace, input.shelfSlug, input.deleteReason);
   const digestLines = [
-    'action=publish-shelf-book-to-shared',
+    local ? 'action=publish-shelf-book-to-collection' : 'action=publish-shelf-book-to-shared',
     `shelf_slug=${input.shelfSlug}`,
     `shared_slug=${input.bookSlug}`,
-    `project_id=${projectId}`,
+    local ? `collection_id=${projectId}` : `project_id=${projectId}`,
     `collection=${input.collection}`,
     `book_version=${input.bookVersion}`,
     `replace_existing=${input.replaceExisting ? 'true' : 'false'}`,
     `publication_plan=${publication.planId}`,
     `delete_plan=${String(deletePlan['plan_id'])}`,
   ];
+  if (local) {
+    return {
+      operation: 'Publish a Shelf Book to the Local collection, then delete the Shelf copy',
+      shelf_book: `shelf/${input.shelfSlug}`,
+      shared_book: `books/${input.bookSlug}`,
+      destination: 'collection',
+      execution_order: ['publish and verify every page in collection/', 'verify the Local collection Catalog entry', 'permanently delete the Shelf Book'],
+      publication_plan: publication.plan,
+      local_delete_plan: deletePlan,
+      plan_id: 'publish-delete-shelf-book-' + sha256OfText(digestLines.join('\n')),
+      confirmation_required: true,
+      destructive: true,
+      recoverable: false,
+      shared_library_write: false,
+      scope:
+        "Creates or refreshes the verified Book in this Library's own collection/ first -- nothing is written to Basic Memory. Only after " +
+        'the Catalog readback succeeds does it permanently delete the Shelf Book. No archive copy of the Shelf Book is created.',
+    };
+  }
   return {
     operation: 'Publish a Shelf Book to shared, then delete the local copy',
     shelf_book: `shelf/${input.shelfSlug}`,
@@ -684,6 +959,7 @@ async function publishVerb(argv: string[], workspace: string): Promise<Record<st
     bookVersion: parsed.options.get('book-version') ?? '0.1.0',
     replaceExisting: parsed.flags.has('replace-existing'),
     deleteReason: parsed.options.get('reason') ?? DEFAULT_DELETE_REASON,
+    lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
   };
   const plan = publishPlan(workspace, input);
   if (parsed.flags.has('preflight')) return { schema: 1, ...plan };
@@ -795,6 +1071,7 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
     title: required(parsed.options.get('title'), '--title', usage),
     summary: required(parsed.options.get('summary'), '--summary', usage),
     collection: collectionOption(parsed.options.get('collection')),
+    lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
   };
   const candidate = candidatePreflight(workspace, input);
   if (parsed.flags.has('preflight')) return { schema: 1, ...candidate.plan };
@@ -835,7 +1112,7 @@ function optionalString(item: Record<string, unknown>, name: string, fallback = 
  */
 async function batchVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, VALUED);
-  resolveCollectionId(workspace);
+  if (!isLocalBackend(workspace)) resolveCollectionId(workspace);
   const planPath = required(parsed.options.get('plan'), '--plan', 'publish batch --plan <path>');
   const full = path.resolve(planPath);
   if (!fs.existsSync(full)) refuse(`Cannot find path '${full}' because it does not exist.`);

@@ -7,6 +7,10 @@
     "test": "A test runner, invoked by Invoke-LibraryChecks.ps1 rather than by the Librarian. Must NOT be allowlisted."
   },
   "helpers": {
+    "Finish-Uninstall.ps1": {
+      "role": "internal",
+      "summary": "The uninstall finisher (PLAN-install-onboarding.md step 8, S54): started by `deskpost uninstall` as a copy in %TEMP%, it hands ownership over through a two-way handshake, waits for the program to exit, then removes the PATH entry and the frozen list of program files -- links as links, files only while they still match -- and clears the receipt only on completion. install.ps1 carries its removal block byte for byte for -Resume finish."
+    },
     "AcceptanceFixtures.ps1": {
       "role": "internal",
       "summary": "The eight fixture workspace shapes the supported-operation matrix runs over (PLAN-public-release.md step 23), built through the real writers rather than composed by hand. Dot-sourced by AcceptanceMatrix.ps1."
@@ -442,9 +446,21 @@
       "role": "test",
       "summary": "ADR-0029's migration, judged over workspace-legacy-notebook -- every state of the shared Notebook, each built by the legacy writer that produces it -- through the kernel's front door: activation refused while anything is undecided, nothing moved by a refused run, no byte lost by a completed one, and the run killed at every step on both sides of each journal write, then resumed to the reference tree and rolled back to the legacy one. Run by Invoke-LibraryChecks.ps1 as notebook.migration."
     },
+    "Test-InstallLifecycle.ps1": {
+      "role": "test",
+      "summary": "The install lifecycle fixture (PLAN-install-onboarding.md step 10, S54): one version installed, a second upgraded over it in place with the Library's hooks byte for byte, `deskpost rollback`, then `deskpost uninstall` through its finisher, the program folder gone and a reader's own hook surviving. Takes -ReleaseA and -ReleaseB, so it is run by hand after two builds rather than in the gate; never changes PATH or the real registry."
+    },
+    "Test-InstallOnboarding.ps1": {
+      "role": "test",
+      "summary": "The install onboarding fixture (PLAN-install-onboarding.md step 10, S54): the Windows installer's Ask / Stage / Plan / Place / Apply passes against a built release under a scratch folder -- a fresh install, a same-version reinstall refused without -Repair and reused with it, faults injected after named marks and finished or undone with -Resume, -DryRun leaving no trace, -Json printing one result, a non-empty program folder refused, and a live or reused-pid owner. Takes -Release, so it is run by hand after a build rather than in the gate; never changes PATH or the real registry."
+    },
+    "Test-InstallProof.ps1": {
+      "role": "test",
+      "summary": "The install proof fixture (PLAN-install-onboarding.md step 7, S55): the cases the S54 inspection left open, against the REAL published 1.0.0 and a built 1.1 release -- an upgrade in place from a 1.0.0 install and Library with its registrations byte for byte and doctor green on the double-quoted Codex render, a live seat refusing a repair and an uninstall, the finisher's failed path finished by install.ps1 -Resume finish with no program, legacy adoption of versions\\1.0.0 from its kept archive with a reader's own files surviving, a missing archive leaving the folder in place, and the cancel path. Takes -Release, so it is run by hand after a build; never changes PATH or the real registry."
+    },
     "Test-KernelUpgrade.ps1": {
       "role": "test",
-      "summary": "The upgrade and rollback fixture (S30): under a scratch install root, a workspace initialised through one installed version keeps every hook and adapter path pointed at <install>/current, and `library init --force` still succeeds, across an upgrade to a second version, a -Rollback to the first, and the first version's removal. Takes -Release, a folder tools/Build-KernelRelease.ps1 wrote, so it is run by hand after a build rather than in the gate; -PlantDefect initialises from the version's own path and must fail."
+      "summary": "The upgrade and rollback fixture (S30): under a scratch install root, a workspace initialised through one installed version keeps every hook and adapter path pointed at <install>/current, and `library init` still succeeds, across an upgrade to a second version, a -Rollback to the first, and the first version's removal. Takes -Release, a folder tools/Build-KernelRelease.ps1 wrote, so it is run by hand after a build rather than in the gate; -PlantDefect initialises from the version's own path and must fail."
     },
     "Test-RecoveryRoutes.ps1": {
       "role": "test",

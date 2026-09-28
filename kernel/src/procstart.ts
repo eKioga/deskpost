@@ -284,7 +284,43 @@ export function resolveAgentClientProcess(
   return answer(0, '', AGENT_ANCESTRY_MAX_DEPTH, 'depth');
 }
 
-let currentAgentCache: { pid: number; route: string } | null = null;
+/**
+ * THE LAUNCHER'S OWN AGENT, OR NULL (S55 post-build inspection #1). A launcher-held session's environment --
+ * LIBRARY_SEAT_CLAIM, DESKPOST_ASSISTANT -- is inherited by EVERYTHING under it, so Codex run from a Claude seat's
+ * shell carries the Claude seat's token. The proof is the process tree instead: walking up from this process, the
+ * first agent client met must have the launcher (`launcherPid`) as an ancestor with no other agent client between
+ * them. Its image name is the assistant. Anything else -- a nested agent, no agent, the launcher not found -- is null.
+ */
+export function launcherDirectAgent(launcherPid: number, records: AncestryRecord[] = readProcessAncestry(process.pid)): { pid: number; assistant: 'claude' | 'codex' } | null {
+  if (!Number.isInteger(launcherPid) || launcherPid <= 0) return null;
+  const at = records.findIndex((record) => isAgentClientProcessName(record.name));
+  if (at < 0) return null;
+  for (let i = at + 1; i < records.length; i += 1) {
+    const record = records[i]!;
+    if (record.pid === launcherPid) {
+      const name = records[at]!.name.toLowerCase().replace(/\.exe$/, '');
+      return name === 'codex' || name === 'claude' ? { pid: records[at]!.pid, assistant: name } : null;
+    }
+    if (isAgentClientProcessName(record.name)) return null;
+  }
+  return null;
+}
+
+let currentAgentCache: { pid: number; route: string; name?: string } | null = null;
+
+/**
+ * Which assistant THIS process's agent is, or null when it cannot be told (ADR-0059): `CLAUDE_PID` is set only in
+ * Claude Code's tool and hook children, and otherwise the walk's process name says `claude` or `codex`.
+ */
+export function currentAgentAssistant(): 'claude' | 'codex' | null {
+  const raw = (process.env['CLAUDE_PID'] ?? '').trim();
+  if (/^\d+$/.test(raw) && Number(raw) > 0) return 'claude';
+  const answer = resolveCurrentAgentProcess();
+  const name = (currentAgentCache?.name ?? '').toLowerCase().replace(/\.exe$/, '');
+  if (answer.pid > 0 && name === 'codex') return 'codex';
+  if (answer.pid > 0 && name === 'claude') return 'claude';
+  return null;
+}
 
 /**
  * THIS process's agent, and which route answered: `environment-pid`, `parent-chain` or `none`.
@@ -297,7 +333,7 @@ export function resolveCurrentAgentProcess(): { pid: number; route: string } {
   if (/^\d+$/.test(raw) && Number(raw) > 0) return { pid: Number(raw), route: 'environment-pid' };
   if (currentAgentCache) return currentAgentCache;
   const walked = resolveAgentClientProcess();
-  currentAgentCache = walked.agentPid > 0 ? { pid: walked.agentPid, route: 'parent-chain' } : { pid: 0, route: 'none' };
+  currentAgentCache = walked.agentPid > 0 ? { pid: walked.agentPid, route: 'parent-chain', name: walked.agentName } : { pid: 0, route: 'none' };
   return currentAgentCache;
 }
 

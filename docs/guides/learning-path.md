@@ -9,7 +9,7 @@
 
 ## 1. Find out what a session without a seat can do
 
-Open a session in your Library folder **without** `library seat start`. For example, open Claude
+Open a session in your Library folder **without** `deskpost seat start`. For example, open Claude
 Code or Codex there directly. It will tell you it has no seat and ask where you want to sit. **Say
 "not yet, I want to look around first."**
 
@@ -23,7 +23,7 @@ session that is not sitting anywhere reads the Library's own files and nothing e
 time, because it is worded in exactly one place. You will meet it again and recognise it.
 
 Then sit down. In Claude Code, say which seat you want. In Codex, or if you would rather, leave and
-run `library seat start <seat>`. Everything from step 2 assumes a seat.
+run `deskpost seat start <seat>`. Everything from step 2 assumes a seat.
 
 ## 2. See where you landed
 

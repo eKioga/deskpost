@@ -33,10 +33,12 @@ _Avoid_: the NAS, Basic Memory, remote library, the cloud
 
 **Local collection**:
 A workspace's own collection at `collection/`, in the shared collection's exact layout, that a workspace
-with no Basic Memory endpoint writes Project Hubs to (ADR-0030). `library init` lays it out and records
-its persistent id in `collection/.library/collection.json`; it takes no ownership claim, because it sits
-inside one workspace. So far the kernel alone reads and writes it (`library hub new`, seat creation, the
-Project Catalog read); the PowerShell tools still reach only the shared collection.
+with no Basic Memory endpoint writes its Books and Project Hubs to (ADR-0030). `library init` lays it out
+and records its persistent id in `collection/.library/collection.json`; it takes no ownership claim,
+because it sits inside one workspace. Its Books are first-class (ADR-0049): published, refreshed,
+archived, discovered and searched like any other. It is one of a Book's three **places**, with the Shelf
+and the shared collection a Basic Memory connection reaches. The kernel alone reads and writes it; the
+PowerShell tools still reach only the shared collection.
 _Avoid_: local library, offline mode
 
 **Library Mirror**:
@@ -220,6 +222,8 @@ _Avoid_: ingest, index, summarize, process
 **Import**:
 Bringing an external document set into the collection as a Book without compiling it. An imported
 Book is someone else's material — structurally adopted, but not claim-verified.
+`library basic-memory import` is the other import: a Basic Memory collection's own Books and Hubs, brought
+into the Local collection file by file and recorded in `collection/imports.md` so it can run again.
 _Avoid_: migrate, copy, ingest
 
 **Graduate**:

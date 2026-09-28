@@ -41,7 +41,7 @@ flowchart TD
     C --> F
 ```
 
-`library seat start` is the way in that works everywhere, for Claude Code and for Codex
+`deskpost seat start` is the way in that works everywhere, for Claude Code and for Codex
 (`--command codex`). A seatless Claude Code session can also bind a seat when you answer its
 question. On Windows, that session lists the seats that exist, and a resumed conversation is put
 back at the seat it last held when nobody else is sitting there.
@@ -198,7 +198,7 @@ just to search it. Knowing what a Book is about only earns the suggestion to ope
 
 - One Library, one collection and one Shelf, with a Desk and a Notebook **per seat**. There is no
   default seat, and a session holding none can read the Library's own files and nothing else.
-- `library seat start <seat>` sits you down, in Claude Code or Codex. A seatless session says so
+- `deskpost` (the main menu) or `deskpost seat start <seat>` sits you down, in Claude Code or Codex. A seatless session says so
   and asks.
 - Open and closed mean the same thing everywhere: on the Desk and readable, or off it and not.
 - A reset sets **your seat's Notebook** aside, leaves your Desk open unless you ask otherwise, and

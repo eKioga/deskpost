@@ -33,6 +33,7 @@ import { hubEdit } from './hubedit.ts';
 import { hubArchive, sharedArchive, sharedListEntry } from './sharedwriters.ts';
 import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
+import { localSharedArchive } from './localarchive.ts';
 
 const PROJECT_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ACTIVE_CATALOG = ['projects', 'README.md'];
@@ -437,7 +438,10 @@ export async function runSharedVerb(argv: string[], workspace: string): Promise<
   const action = argv[0] ?? '';
   try {
     const marker = readMarker(workspace);
-    if (marker !== null && String(marker['backend'] ?? '') === 'local' && (action === 'archive' || action === 'list-entry')) {
+    const local = marker !== null && String(marker['backend'] ?? '') === 'local';
+    // A LOCAL LIBRARY ARCHIVES ITS OWN COLLECTION'S BOOKS (PLAN-basic-memory.md step 1): the same verb, a file writer.
+    if (local && action === 'archive') return { refusal: null, value: localSharedArchive(argv.slice(1), workspace) };
+    if (local && action === 'list-entry') {
       refuse(
         `library shared ${action} acts on a shared collection, and this workspace uses its local collection: there is no ` +
           'shared Book Catalog to change. Nothing was changed.',

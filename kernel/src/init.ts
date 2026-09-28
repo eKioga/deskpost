@@ -22,7 +22,9 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { psConvertToJson, psJsonString, type PsJsonValue } from './psjson.ts';
 import { ensureDirectory, readTextIfPresent, writeAtomicText } from './fsx.ts';
 import { createShelfBook } from './shelf.ts';
@@ -39,6 +41,8 @@ import {
   toWorkspaceRoot,
 } from './workspace.ts';
 import { HOOK_VERB_FOR_SCRIPT } from './hookregistry.ts';
+import { entryInvocation } from './machine.ts';
+import { skillPlans } from './skillcopy.ts';
 
 const SECTION_BEGIN = '<!-- library:begin -->';
 const SECTION_END = '<!-- library:end -->';
@@ -66,9 +70,10 @@ export interface InitOptions {
   mcpUrl?: string;
   collectionId?: string;
   writable?: boolean;
-  force?: boolean;
   registryRoot?: string;
   programRoot: string;
+  /** The program root registrations name, when it is not yet the one the program is read from (planLibraryInit). */
+  registerAs?: string;
 }
 
 interface FilePlan {
@@ -105,25 +110,46 @@ function programVersion(programRoot: string): string {
 }
 
 /**
- * THE BACKEND IS DERIVED FROM WHETHER AN ENDPOINT IS CONFIGURED, never asked for separately: two
- * fields that can disagree about the same fact are two chances to be wrong.
+ * The six fields init owns, and then EVERY OTHER FIELD THE MARKER ALREADY HAD, unchanged and in its order
+ * (PLAN-basic-memory.md step 2): a Library's `connections` record, and whatever a later program writes there, is
+ * not init's to drop. Until 1.1 the marker was rewritten from the six alone.
+ *
+ * THE BACKEND IS NO LONGER DERIVED FROM AN ENDPOINT (ADR-0050): it is kept as the workspace has it, and a new
+ * Library's is `local`. A local Library's endpoint is a connection, recorded under `connections.basic_memory`.
  */
-function newMarkerContent(fields: {
-  id: string;
-  programVersion: string;
-  collectionId: string;
-  mcpUrl: string;
-  writable: boolean;
-  created: string;
-}): PsJsonValue {
-  return {
+function newMarkerContent(
+  fields: { id: string; programVersion: string; collectionId: string; backend: string; writable: boolean; created: string },
+  existing: Record<string, unknown> | null,
+  connection: Record<string, PsJsonValue> | null,
+): Record<string, PsJsonValue> {
+  const owned: Record<string, PsJsonValue> = {
     id: fields.id,
     program_version: fields.programVersion,
     collection_id: fields.collectionId,
-    backend: fields.mcpUrl.trim() ? 'basic-memory' : 'local',
+    backend: fields.backend,
     writable: fields.writable,
     created: fields.created,
   };
+  const marker: Record<string, PsJsonValue> = { ...owned };
+  for (const [key, value] of Object.entries(existing ?? {})) {
+    if (!(key in owned)) marker[key] = value as PsJsonValue;
+  }
+  if (connection !== null) {
+    const connections = marker['connections'];
+    const others = connections !== null && typeof connections === 'object' && !Array.isArray(connections) ? { ...(connections as Record<string, PsJsonValue>) } : {};
+    const previous = others['basic_memory'];
+    const kept = previous !== null && typeof previous === 'object' && !Array.isArray(previous) ? (previous as Record<string, PsJsonValue>) : {};
+    // A URL given again keeps what set-up chose for it; a new URL starts a connection of its own.
+    const sameServer = String(kept['url'] ?? '') === String(connection['url']);
+    others['basic_memory'] = {
+      url: connection['url']!,
+      collection_id: String(connection['collection_id'] ?? '') || (sameServer ? String(kept['collection_id'] ?? '') : ''),
+      collection_name: sameServer ? String(kept['collection_name'] ?? '') : '',
+      storage: sameServer ? String(kept['storage'] ?? '') : '',
+    };
+    marker['connections'] = others;
+  }
+  return marker;
 }
 
 /** The `o` round-trip format PowerShell stamps `created` with, to the same seven fractional digits. */
@@ -490,7 +516,7 @@ function toProgramRootedValue(value: unknown, programRoot: string): unknown {
   return value;
 }
 
-export function desiredHookRegistration(programRoot: string): unknown {
+export function desiredHookRegistration(programRoot: string, render: string = programRoot): unknown {
   const text = readTextIfPresent(path.join(programRoot, '.claude', 'settings.json'));
   if (text === null) return null;
   let document: unknown;
@@ -500,8 +526,8 @@ export function desiredHookRegistration(programRoot: string): unknown {
     return null;
   }
   if (!isPlainObject(document) || !('hooks' in document) || document['hooks'] === null) return null;
-  if (kernelRegistersHooks(programRoot)) return kernelHookRegistration(document['hooks'], programRoot);
-  return toProgramRootedValue(document['hooks'], programRoot);
+  if (kernelRegistersHooks(programRoot)) return kernelHookRegistration(document['hooks'], render);
+  return toProgramRootedValue(document['hooks'], render);
 }
 
 /**
@@ -522,7 +548,10 @@ function hookOwnership(existingHooks: unknown, hookDirectory: string): { kind: s
         if (!entry) continue;
         entries += 1;
         const text = hookEntryText(entry).replace(/\\/g, '/');
-        if (!text.includes(ours)) foreign.push(`${eventName}: ${text}`);
+        // THE INVOCATION TOO, UNQUOTED (#11): a single-quoted render of a path holding `'` spells it `''` in the text.
+        const invocation = entryInvocation(entry);
+        const invoked = invocation === null ? '' : [invocation.program, ...invocation.args].join(' ').replace(/\\/g, '/');
+        if (!text.includes(ours) && !invoked.includes(ours)) foreign.push(`${eventName}: ${text}`);
       }
     }
   }
@@ -635,15 +664,22 @@ function codexGuardCommand(scriptPath: string, readerToolPrefix: string): string
   return readerToolPrefix ? `${command} -ReaderToolPrefix ${readerToolPrefix}` : command;
 }
 
-function codexHookScriptPath(hookDirectory: string, fileName: string): string {
+/** A PowerShell single-quoted string literal: nothing inside expands, and `'` is doubled. */
+export function powerShellLiteral(text: string): string {
+  return `'${text.replace(/'/g, "''")}'`;
+}
+
+/** The script a binding names (under `hookDirectory`), required present where the program is read (`readDirectory`). */
+function codexHookScriptPath(hookDirectory: string, fileName: string, readDirectory: string = hookDirectory): string {
   const full = path.join(hookDirectory, fileName).replace(/\\/g, '/');
-  if (!fs.existsSync(full)) {
-    throw new Error(`Required Library hook is missing, so a Codex binding naming it would fail open: ${full}`);
+  const read = path.join(readDirectory, fileName);
+  if (!fs.existsSync(read)) {
+    throw new Error(`Required Library hook is missing, so a Codex binding naming it would fail open: ${read.replace(/\\/g, '/')}`);
   }
   return full;
 }
 
-export function newCodexHooksDocument(templatePath: string, hookDirectory: string, programRoot?: string): string {
+export function newCodexHooksDocument(templatePath: string, hookDirectory: string, programRoot?: string, resources: string | undefined = programRoot): string {
   if (!fs.existsSync(templatePath)) throw new Error(`Required Codex template is missing: ${templatePath}`);
   let text = fs.readFileSync(templatePath, 'utf8').replace(/^\uFEFF/, '');
   for (const entry of CODEX_HOOK_TOKENS) {
@@ -651,10 +687,15 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
     // On Windows Codex runs a hook through `powershell.exe -Command`, where a line opening with a quoted path is a
     // string expression and runs nothing, so a release's command carries `& ` (measured on codex-cli 0.153.4, S46;
     // ConvertTo-WindowsCodexHooks in tools/PluginPackage.ps1 renders the plugin's the same way).
+    // A SINGLE-QUOTED LITERAL, NOT `& "<path>"` (PLAN-install-onboarding.md #11): inside double quotes PowerShell
+    // expands `$`, so a program under `D:\$work` ran a path that does not exist. In single quotes nothing expands, and
+    // a `'` (`C:\Users\O'Neil`) is written doubled. 1.0's double-quoted render is still recognised as Deskpost's.
     const command =
-      programRoot && kernelRegistersHooks(programRoot)
-        ? (POSIX_BINDINGS ? '' : '& ') + binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
-        : codexGuardCommand(codexHookScriptPath(hookDirectory, entry.file), prefix);
+      programRoot && kernelRegistersHooks(resources ?? programRoot)
+        ? POSIX_BINDINGS
+          ? binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
+          : `& ${powerShellLiteral(kernelBinary(programRoot))} hook ${HOOK_VERB_FOR_SCRIPT[entry.file]!}` + (prefix ? ` --reader-tool-prefix ${prefix}` : '')
+        : codexGuardCommand(codexHookScriptPath(hookDirectory, entry.file, resources !== undefined && programRoot !== undefined ? path.join(resources, '.claude', 'hooks') : hookDirectory), prefix);
     // Twice: `command` and `commandWindows` carry the same invocation, and a template that lost one
     // of them would leave Codex reading the other on one platform only.
     text = expandCodexToken(text, '"' + entry.token + '"', psJsonString(command), 2);
@@ -684,6 +725,7 @@ export function newCodexWorkspaceConfigDocument(
   stateDirectory?: string,
   programRoot?: string,
   kernelReader: boolean = POSIX_BINDINGS,
+  adapterReadPath: string = adapterPath,
 ): string {
   if (!fs.existsSync(templatePath)) throw new Error(`Required Codex template is missing: ${templatePath}`);
   if (kernelReader && programRoot) {
@@ -695,7 +737,7 @@ export function newCodexWorkspaceConfigDocument(
     if (/__[A-Z0-9_]+__/.test(posix)) throw new Error('The rendered Codex config still contains a template token.');
     return CODEX_MANAGED_MARKER + '\n' + posix;
   }
-  if (!fs.existsSync(adapterPath)) {
+  if (!fs.existsSync(adapterReadPath)) {
     throw new Error(
       `The validated reader adapter is missing, so a Codex binding naming it would start no server: ${adapterPath}`,
     );
@@ -764,21 +806,35 @@ function codexConfigPlan(filePath: string, desired: string): PlanResult {
  * case-insensitively, because Windows paths are: registering `d:\ws` where `D:\WS` is already listed
  * must update that line rather than add a second one every containment test then matches twice.
  */
-function registerWorkspace(workspace: string, id: string, root?: string): { path: string; action: string } {
+export function registerWorkspace(workspace: string, id: string, root?: string, makeDefault = false): { path: string; action: string } {
   const file = registryPath(root);
   const entries = readRegistry(root);
+  // EVERY FIELD INIT DOES NOT SET IS KEPT (PLAN-install-onboarding.md step 0, measurement 1): 1.0 rewrote the file
+  // from `{id, path}` alone, so a Library's `default: true`, or anything a later program writes, was silently dropped.
+  // The rows are read as written, and each keeps its own fields; the document keeps its other top-level fields.
+  const raw = fs.existsSync(file) ? (JSON.parse(readTextIfPresent(file)?.trim() || '{}') as Record<string, unknown>) : {};
+  const rows = Array.isArray(raw['workspaces']) ? (raw['workspaces'] as unknown[]) : [];
   const out: PsJsonValue[] = [];
   let action = 'added';
+  let kept: Record<string, PsJsonValue> = {};
   for (const entry of entries) {
+    const row = (rows.find((candidate) => isPlainObject(candidate) && toWorkspaceRoot(String(candidate['path'])) === entry.root) ?? {}) as Record<string, PsJsonValue>;
     if (entry.root.toLowerCase() === workspace.toLowerCase()) {
       action = entry.id === id ? 'unchanged' : 'updated';
+      kept = row;
       continue;
     }
-    out.push({ id: entry.id, path: entry.root });
+    const { default: _wasDefault, ...rest } = row;
+    out.push(makeDefault ? { ...rest, id: entry.id, path: entry.root } : { ...row, id: entry.id, path: entry.root });
   }
-  out.push({ id, path: workspace });
+  const { id: _id, path: _path, ...others } = kept;
+  // THE DEFAULT LIBRARY (step 5a) is one entry's `default: true`. Setting it moves it here; nothing else moves it.
+  out.push(makeDefault ? { id, path: workspace, ...others, default: true } : { id, path: workspace, ...others });
+  const document: Record<string, PsJsonValue> = { version: 1 };
+  for (const [key, value] of Object.entries(raw)) if (key !== 'version' && key !== 'workspaces') document[key] = value as PsJsonValue;
+  document['workspaces'] = out;
   ensureDirectory(path.dirname(file));
-  writeAtomicText(file, psConvertToJson({ version: 1, workspaces: out }) + '\n');
+  writeAtomicText(file, psConvertToJson(document) + '\n');
   return { path: file, action };
 }
 
@@ -822,8 +878,10 @@ const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
   },
 ];
 
+// `## Open a Book` IS THE ONE HEADING A FRESH CATALOG CARRIES (PLAN-basic-memory.md step 1, Fable #3): the heading
+// a publish with no --collection files under. Every other heading is inserted the first time a line needs it.
 export const LOCAL_COLLECTION_CATALOGS: ReadonlyArray<{ relative: string[]; text: string }> = [
-  { relative: ['books', 'README.md'], text: "# Books\n\nThe Books in this workspace's local collection.\n" },
+  { relative: ['books', 'README.md'], text: "# Books\n\nThe Books in this workspace's local collection.\n\n## Open a Book\n" },
   {
     relative: ['projects', 'README.md'],
     text:
@@ -835,7 +893,16 @@ export const LOCAL_COLLECTION_CATALOGS: ReadonlyArray<{ relative: string[]; text
   },
 ];
 
-export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string, unknown> {
+/**
+ * EVERYTHING `library init` WOULD DO, AS A PLAN, WITH NOTHING WRITTEN (PLAN-install-onboarding.md step 2's pass 4, round
+ * 2's #1). Until 1.1 init created the Library folder before it had judged anything; now not even that. The plan lists
+ * every file with its content now and the content it will hold, and `applyLibraryInit` writes exactly that.
+ *
+ * TWO PROGRAM ROOTS, WHEN AN INSTALLER ASKS (step 2). `programRoot` is where the program's own files are READ: templates,
+ * the hooks it ships, whether its binary is there -- the staged release. `registerAs` is what every registration NAMES:
+ * the install's `current`, which is not switched yet when the plan is made. Without `registerAs` they are one root.
+ */
+export function planLibraryInit(options: InitOptions): LibraryInitPlan {
   if (!options.workspacePath || !options.workspacePath.trim()) {
     throw new Error('A workspace folder is required.');
   }
@@ -845,9 +912,9 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
       `'${options.workspacePath}' is not ${rootFormName()}, so it cannot be a Library workspace: a workspace root has to be a place every tool on this machine can name the same way.`,
     );
   }
-  ensureDirectory(workspace);
 
   const programRoot = options.programRoot;
+  const render = options.registerAs && options.registerAs.trim() ? path.resolve(options.registerAs) : programRoot;
   const existingMarker = readMarker(workspace);
   const alreadyInitialised = existingMarker !== null;
 
@@ -856,20 +923,47 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
   if (!id.trim()) id = randomGuid();
   if (!created.trim()) created = roundTripNow();
 
+  // THE BACKEND IS KEPT, AND A NEW LIBRARY IS LOCAL (PLAN-basic-memory.md step 2, the S51 friction log's F21;
+  // ADR-0050). Until 1.1 the backend was re-derived on every run from whether an endpoint was configured, so an
+  // `--mcp-url`, or a `.claude/.library-mcp-url` another tool had written, silently converted a local Library to
+  // a Basic Memory backend on its next init -- a repair, an upgrade -- after which its own collection refused.
+  // A workspace that already IS Basic Memory stays so, and reads its endpoint as before; a local one never reads
+  // the three `.claude/.library-*` files, and an `--mcp-url` given it is recorded as its CONNECTION.
+  const backend = alreadyInitialised && markerField(existingMarker, 'backend') === 'basic-memory' ? 'basic-memory' : 'local';
+
   // An endpoint or collection id already written for this workspace is kept unless a new one is
   // passed: init is not a chance to silently detach a workspace from its collection.
-  let resolvedMcpUrl = options.mcpUrl ?? '';
-  if (!resolvedMcpUrl.trim()) {
-    resolvedMcpUrl = readDeploymentState(path.join(workspace, '.claude', '.library-mcp-url'));
-  }
-  let resolvedCollectionId = options.collectionId ?? '';
-  if (!resolvedCollectionId.trim()) {
-    resolvedCollectionId = readDeploymentState(path.join(workspace, '.claude', '.library-project'));
+  let resolvedMcpUrl = '';
+  let resolvedCollectionId = '';
+  if (backend === 'basic-memory') {
+    resolvedMcpUrl = options.mcpUrl ?? '';
+    if (!resolvedMcpUrl.trim()) {
+      resolvedMcpUrl = readDeploymentState(path.join(workspace, '.claude', '.library-mcp-url'));
+    }
+    resolvedCollectionId = options.collectionId ?? '';
+    if (!resolvedCollectionId.trim()) {
+      resolvedCollectionId = readDeploymentState(path.join(workspace, '.claude', '.library-project'));
+    }
+  } else if (!(options.mcpUrl ?? '').trim()) {
+    // With no endpoint, --collection-id is the Local collection's own id, as it always was.
+    resolvedCollectionId = options.collectionId ?? '';
   }
   // THE MARKER'S OWN RECORD (S30, the Report Inbox's defect of 2026-09-22): a re-run with no
   // collection id emptied a workspace's only record of its collection. Fixed in both arms at once.
   if (!resolvedCollectionId.trim() && alreadyInitialised) {
     resolvedCollectionId = markerField(existingMarker, 'collection_id');
+  }
+
+  // A LOCAL LIBRARY'S CONNECTION, when init is handed one: recorded, not checked -- `library basic-memory setup`
+  // is what checks a connection live, and says so in its answer.
+  let connectionRecorded: Record<string, PsJsonValue> | null = null;
+  if (backend === 'local' && (options.mcpUrl ?? '').trim()) {
+    connectionRecorded = {
+      url: options.mcpUrl!.trim(),
+      collection_id: (options.collectionId ?? '').trim(),
+      collection_name: '',
+      storage: '',
+    };
   }
 
   // THE LOCAL COLLECTION (ADR-0030; S30). Tools/Initialize-LibraryWorkspace.ps1 says why at length;
@@ -879,7 +973,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
   const collectionPlans: FilePlan[] = [];
   let collectionRefusal: string | null = null;
   const isProgramRootForCollection = fs.existsSync(path.join(workspace, 'tools', 'BookRootSchema.ps1'));
-  if (!resolvedMcpUrl.trim() && !isProgramRootForCollection) {
+  if (backend === 'local' && !isProgramRootForCollection) {
     const collectionRoot = path.join(workspace, 'collection');
     const idFile = path.join(collectionRoot, '.library', 'collection.json');
     if (fs.existsSync(idFile)) {
@@ -914,17 +1008,18 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
     }
   }
 
-  const markerContent = newMarkerContent({
-    id,
-    programVersion: programVersion(programRoot),
-    collectionId: resolvedCollectionId,
-    mcpUrl: resolvedMcpUrl,
-    writable: options.writable === true,
-    created,
-  }) as Record<string, PsJsonValue>;
+  // `--writable` absent keeps what the marker says: init preserves what it does not set.
+  const writable = options.writable === true || (alreadyInitialised && existingMarker!['writable'] === true);
+  const markerContent = newMarkerContent(
+    { id, programVersion: programVersion(programRoot), collectionId: resolvedCollectionId, backend, writable, created },
+    existingMarker,
+    connectionRecorded,
+  );
 
   const plans: FilePlan[] = [];
   const refusals: string[] = [];
+  const skillLeft: string[] = [];
+  const skillFiles: { path: string; name: string; action: string; content: string | null }[] = [];
   const body = fs
     .readFileSync(path.join(programRoot, 'templates', 'workspace-instructions.md'), 'utf8')
     .replace(/^\uFEFF/, '');
@@ -953,15 +1048,17 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
   // which workspace it is serving, because the program is not a workspace at all.
   const adapter = path.join(workspace, '.claude', 'adapters', 'Validated-BookReader.ps1');
   const programAdapter = path.join(programRoot, '.claude', 'adapters', 'Validated-BookReader.ps1');
+  const renderAdapter = path.join(render, '.claude', 'adapters', 'Validated-BookReader.ps1');
   let desiredServers: Record<string, unknown> | null = null;
-  const kernelReader = kernelServesReader(programRoot, resolvedMcpUrl);
+  // A Basic Memory backend keeps the adapter; the question is the backend's, not whether its endpoint file is there.
+  const kernelReader = kernelServesReader(programRoot, backend === 'basic-memory' ? resolvedMcpUrl || 'basic-memory' : '');
   if (fs.existsSync(adapter)) {
     desiredServers = desiredMcpServers('.claude/adapters/Validated-BookReader.ps1');
   } else if (!isProgramRoot && (kernelReader || fs.existsSync(programAdapter))) {
     desiredServers = desiredMcpServers(
-      programAdapter.replace(/\\/g, '/'),
+      renderAdapter.replace(/\\/g, '/'),
       path.join(workspace, '.claude').replace(/\\/g, '/'),
-      programRoot,
+      render,
       kernelReader,
     );
   }
@@ -976,7 +1073,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
     // WHAT MAKES A HOOK THE LIBRARY'S: a path into this program. Where the kernel registers itself that is the
     // program root, so a block an earlier init wrote with `.ps1` paths is still recognised as ours and replaced
     // (S42 on POSIX; S48 for a compiled Windows release, over what v0.2.1 wrote).
-    const hookDirectory = kernelRegistersHooks(programRoot) ? programRoot : path.join(programRoot, '.claude', 'hooks');
+    const hookDirectory = kernelRegistersHooks(programRoot) ? render : path.join(render, '.claude', 'hooks');
     const settingsPath = path.join(workspace, '.claude', 'settings.json');
     const settingsPlan = workspaceSettingsPlan({
       filePath: settingsPath,
@@ -994,7 +1091,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
       });
     }
 
-    const desiredHooks = desiredHookRegistration(programRoot);
+    const desiredHooks = desiredHookRegistration(programRoot, render);
     if (desiredHooks !== null) {
       const localPath = path.join(workspace, '.claude', 'settings.local.json');
       const localPlan = workspaceSettingsPlan({ filePath: localPath, desiredHooks, hookDirectory });
@@ -1016,7 +1113,7 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
       const codexHooksPath = path.join(workspace, '.codex', 'hooks.json');
       const plan = codexHooksPlan(
         codexHooksPath,
-        newCodexHooksDocument(codexHooksTemplate, hookDirectory, programRoot),
+        newCodexHooksDocument(codexHooksTemplate, hookDirectory, render, programRoot),
         hookDirectory,
       );
       if (plan.action === 'refuse') refusals.push(plan.reason!);
@@ -1027,14 +1124,14 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
       let codexStateDirectory: string | undefined;
       if (fs.existsSync(adapter)) codexAdapter = adapter;
       else if (kernelReader || fs.existsSync(programAdapter)) {
-        codexAdapter = programAdapter;
+        codexAdapter = renderAdapter;
         codexStateDirectory = path.join(workspace, '.claude');
       }
       if (codexAdapter !== null) {
         const codexConfigPath = path.join(workspace, '.codex', 'config.toml');
         const plan = codexConfigPlan(
           codexConfigPath,
-          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, programRoot, kernelReader),
+          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, render, kernelReader, codexAdapter === renderAdapter ? programAdapter : codexAdapter),
         );
         if (plan.action === 'refuse') refusals.push(plan.reason!);
         else {
@@ -1047,6 +1144,14 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
         }
       }
     }
+
+    // THE SKILL THE INSTRUCTIONS NAME, OWNED FILE BY FILE (PLAN-assistant-onboarding.md step 7; skillcopy.ts).
+    // Reported under result.skill, not result.files: the PowerShell initializer (the oracle) writes no Skill, and a
+    // list of its own keeps every other file's entry where the acceptance matrix compares it.
+    const skill = skillPlans(workspace, programRoot);
+    if (skill.refusal !== null) refusals.push(skill.refusal);
+    skillFiles.push(...skill.plans);
+    skillLeft.push(...skill.left);
   }
 
   plans.push(...collectionPlans);
@@ -1087,70 +1192,243 @@ export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string,
     throw new Error('library init refused and wrote nothing: ' + refusals.join(' | '));
   }
 
+  // --- FROM HERE ON NOTHING IS WRITTEN: every write init would make is planned (PLAN-install-onboarding.md step 4) ---
   const marker = markerPath(workspace);
-  ensureDirectory(path.dirname(marker));
-  writeAtomicText(marker, psConvertToJson(markerContent) + '\n');
-
-  const written: PsJsonValue[] = [];
+  const writes: PlannedWrite[] = [plannedWrite(workspace, marker, psConvertToJson(markerContent) + '\n')];
+  const directories: string[] = [];
+  const files: { file: string; action: string }[] = [];
   for (const plan of plans) {
-    if (plan.action === 'unchanged' || plan.action === 'skipped-program-file') {
-      written.push({ file: plan.name, action: plan.action });
-      continue;
-    }
-    ensureDirectory(path.dirname(plan.path));
-    writeAtomicText(plan.path, plan.content ?? '');
-    written.push({ file: plan.name, action: plan.action });
+    files.push({ file: plan.name, action: plan.action });
+    if (plan.action === 'unchanged' || plan.action === 'skipped-program-file') continue;
+    writes.push(plannedWrite(workspace, plan.path, plan.content ?? ''));
   }
+  for (const plan of skillFiles) if (plan.action === 'created' || plan.action === 'updated') writes.push(plannedWrite(workspace, plan.path, plan.content ?? ''));
 
   // THE FOLDERS THE WORKSPACE INSTRUCTIONS NAME (S30), as Initialize-LibraryWorkspace.ps1 now makes
   // them: without notebook/, "what's on my desk?" refused in a freshly initialised workspace.
   if (!isProgramRoot) {
-    for (const folder of WORKSPACE_FOLDERS) ensureDirectory(path.join(workspace, folder));
+    for (const folder of WORKSPACE_FOLDERS) directories.push(path.join(workspace, folder));
 
-    // THE BOOKS, THROUGH THE WRITER THAT CREATES ANY EMPTY BOOK (S42), which renders the catalog as it
-    // creates each.
-    for (const plan of bookPlans) {
-      const { book } = plan;
-      if (plan.action === 'created') {
-        createShelfBook({ workspace, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, origin: book.origin });
-      }
-      written.push({ file: `shelf/${book.slug}`, action: plan.action });
+    // THE BOOKS, THROUGH THE WRITER THAT CREATES ANY EMPTY BOOK (S42), which renders the catalog as it creates each.
+    // PLANNED BY RUNNING THAT WRITER ON A SCRATCH COPY OF THE SHELF and reading back what it wrote, so a planned Book
+    // is byte for byte what `library shelf new` makes, and the Library itself is only read.
+    const catalogMissing = !fs.existsSync(path.join(workspace, 'shelf', '_catalog.md'));
+    const creating = bookPlans.filter((plan) => plan.action === 'created');
+    if (creating.length || catalogMissing) {
+      const shelfWrites = scratchShelfWrites(workspace, programRoot, (scratch) => {
+        for (const { book } of creating) {
+          createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, origin: book.origin });
+        }
+        if (!creating.length) invokeShelfCatalogRender({ workspace: scratch, programRoot });
+      });
+      writes.push(...shelfWrites.writes);
+      directories.push(...shelfWrites.directories);
     }
-    let catalogAction = 'unchanged';
-    if (bookPlans.some((plan) => plan.action === 'created')) catalogAction = 'rendered';
-    else if (!fs.existsSync(path.join(workspace, 'shelf', '_catalog.md'))) {
-      invokeShelfCatalogRender({ workspace, programRoot });
-      catalogAction = 'rendered';
-    }
-    written.push({ file: 'shelf/_catalog.md', action: catalogAction });
+    for (const plan of bookPlans) files.push({ file: `shelf/${plan.book.slug}`, action: plan.action });
+    files.push({ file: 'shelf/_catalog.md', action: creating.length || catalogMissing ? 'rendered' : 'unchanged' });
 
     // AN EMPTY MASTER INDEX ONLY OVER AN EMPTY NOTEBOOK: its text is the one the layout reader counts as
     // no material, so a fresh workspace stays fresh; a Notebook with anything in it keeps its own renderer.
-    const masterIndex = path.join(workspace, 'notebook', '_master-index.md');
+    const notebook = path.join(workspace, 'notebook');
+    const masterIndex = path.join(notebook, '_master-index.md');
     let masterAction = 'unchanged';
     if (!fs.existsSync(masterIndex)) {
-      if (fs.readdirSync(path.join(workspace, 'notebook')).length) masterAction = 'skipped-notebook-has-content';
+      if (fs.existsSync(notebook) && fs.readdirSync(notebook).length) masterAction = 'skipped-notebook-has-content';
       else {
-        writeAtomicText(masterIndex, emptyMasterIndexText());
+        writes.push(plannedWrite(workspace, masterIndex, emptyMasterIndexText()));
         masterAction = 'created';
       }
     }
-    written.push({ file: 'notebook/_master-index.md', action: masterAction });
+    files.push({ file: 'notebook/_master-index.md', action: masterAction });
   }
 
-  const registration = registerWorkspace(workspace, id, options.registryRoot);
-
   return {
-    status: alreadyInitialised ? 'already_initialized' : 'initialized',
+    schema: 1,
+    operation: 'Plan a Library',
     workspace,
     id,
-    marker,
-    backend: markerContent['backend'],
-    writable: options.writable === true,
+    registry_root: options.registryRoot ?? null,
+    program_root: render,
+    directories: directories.filter((directory) => !fs.existsSync(directory)),
+    // A FILE ALREADY HOLDING WHAT IT WOULD BE GIVEN IS NOT A WRITE: a re-run of init rewrites nothing.
+    writes: writes.filter((write) => write.old_sha256 !== write.new_sha256),
+    result: {
+      status: alreadyInitialised ? 'already_initialized' : 'initialized',
+      workspace,
+      id,
+      marker,
+      backend: String(markerContent['backend']),
+      writable,
+      files,
+      ...(skillFiles.length || skillLeft.length ? { skill: { files: skillFiles.map((plan) => ({ file: plan.name, action: plan.action })), left: skillLeft } as unknown as PsJsonValue } : {}),
+      ...(connectionRecorded !== null
+        ? {
+            connection: connectionRecorded as PsJsonValue,
+            connection_note:
+              "The endpoint is recorded as this local Library's Basic Memory connection, in its marker, and not checked: run " +
+              '`library basic-memory setup` to check it live and choose its collection from the server. The Library itself stays local.',
+          }
+        : {}),
+    },
+  };
+}
+
+/** One file a plan writes: where, its content now (null when absent), and what it will hold. */
+export interface PlannedWrite {
+  /** Relative to the Library, forward-slashed. */
+  relative: string;
+  path: string;
+  old_sha256: string | null;
+  /** The previous text, kept so an undo can restore it (step 2's recovery); null for a file the plan creates. */
+  old_text: string | null;
+  new_sha256: string;
+  content: string;
+}
+
+export interface LibraryInitPlan {
+  schema: 1;
+  operation: 'Plan a Library';
+  workspace: string;
+  id: string;
+  registry_root: string | null;
+  program_root: string;
+  directories: string[];
+  writes: PlannedWrite[];
+  result: Record<string, PsJsonValue>;
+}
+
+function sha256Of(bytes: Buffer | string): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function currentSha(file: string): string | null {
+  try {
+    return fs.statSync(file).isFile() ? sha256Of(fs.readFileSync(file)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function plannedWrite(workspace: string, file: string, content: string): PlannedWrite {
+  const old = currentSha(file);
+  return {
+    relative: path.relative(workspace, file).replace(/\\/g, '/'),
+    path: file,
+    old_sha256: old,
+    old_text: old === null ? null : fs.readFileSync(file, 'utf8'),
+    new_sha256: sha256Of(Buffer.from(content, 'utf8')),
+    content,
+  };
+}
+
+/**
+ * THE SHELF WRITERS, RUN ON A SCRATCH COPY. The Library's `shelf/` is copied to a temporary folder, the writers run
+ * there, and every file that is new or different (and every folder that is new) becomes a planned write against the
+ * Library. The render lock the writers take lives under the scratch copy's `internal/`, which is not planned.
+ */
+function scratchShelfWrites(workspace: string, programRoot: string, run: (scratch: string) => void): { writes: PlannedWrite[]; directories: string[] } {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-plan-'));
+  try {
+    const realShelf = path.join(workspace, 'shelf');
+    if (fs.existsSync(realShelf)) fs.cpSync(realShelf, path.join(scratch, 'shelf'), { recursive: true });
+    else fs.mkdirSync(path.join(scratch, 'shelf'));
+    run(scratch);
+    const writes: PlannedWrite[] = [];
+    const directories: string[] = [];
+    const walk = (relative: string): void => {
+      for (const item of fs.readdirSync(path.join(scratch, relative), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+        const child = path.join(relative, item.name);
+        const real = path.join(workspace, child);
+        if (item.isDirectory()) {
+          if (!fs.existsSync(real)) directories.push(real);
+          walk(child);
+          continue;
+        }
+        const content = fs.readFileSync(path.join(scratch, child), 'utf8');
+        const planned = plannedWrite(workspace, real, content);
+        if (planned.old_sha256 !== planned.new_sha256) writes.push(planned);
+      }
+    };
+    walk('shelf');
+    return { writes, directories };
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * THE THREE-STATE RULE (PLAN-install-onboarding.md step 2's Place and step 6's Apply). Each planned file is compared
+ * with the plan: still its old state, so it is written; already its new state, so it is done (a crash after the write);
+ * anything else, so the whole apply refuses, naming every such file, BEFORE anything is written.
+ */
+export function libraryPlanConflicts(plan: LibraryInitPlan): string[] {
+  const conflicts: string[] = [];
+  for (const write of plan.writes) {
+    const now = currentSha(write.path);
+    if (now === write.old_sha256 || now === write.new_sha256) continue;
+    conflicts.push(`${write.relative} (${now === null ? 'removed' : 'changed'} since it was planned)`);
+  }
+  return conflicts;
+}
+
+/** Write exactly what a plan lists, under the three-state rule, then register the Library. Re-running it finishes it. */
+export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?: boolean } = {}): Record<string, unknown> {
+  const conflicts = libraryPlanConflicts(plan);
+  if (conflicts.length) {
+    throw new Error(
+      `the Library at ${plan.workspace} changed after it was planned, so nothing was written: ${conflicts.join('; ')}. ` +
+        'Plan it again to see what would change now.',
+    );
+  }
+  ensureDirectory(plan.workspace);
+  for (const directory of plan.directories) ensureDirectory(directory);
+  let written = 0;
+  for (const write of plan.writes) {
+    if (currentSha(write.path) === write.new_sha256) continue;
+    ensureDirectory(path.dirname(write.path));
+    writeAtomicText(write.path, write.content);
+    written += 1;
+  }
+  // THE REGISTRY IS MERGED WHEN THE PLAN IS APPLIED, NOT FROZEN WITH IT: another Library registered meanwhile is not a
+  // conflict, and registering is the same answer however often it runs.
+  const registration = registerWorkspace(plan.workspace, plan.id, plan.registry_root ?? undefined, options.makeDefault === true);
+  const result = plan.result;
+  return {
+    status: result['status'],
+    workspace: result['workspace'],
+    id: result['id'],
+    marker: result['marker'],
+    backend: result['backend'],
+    writable: result['writable'],
     registry: registration.path,
     registration: registration.action,
-    files: written,
+    files: result['files'],
+    ...('skill' in result ? { skill: result['skill'] } : {}),
+    ...('connection' in result ? { connection: result['connection'], connection_note: result['connection_note'] } : {}),
+    ...(written !== plan.writes.length ? { resumed: plan.writes.length - written } : {}),
   };
+}
+
+/** `library init`: plan the Library, then apply the plan. One code path, so the installer's planner is the same init. */
+export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string, unknown> {
+  const plan = planLibraryInit(options);
+  // THE FIRST LIBRARY IS THE DEFAULT, however it was made (post-build inspection #6): `setup` marked one and `init` did
+  // not, so a Library made with `init` was never the one bare `deskpost` opened from anywhere. Never replaces a default.
+  return applyLibraryInit(plan, { makeDefault: !hasLiveDefaultLibrary(plan.registry_root ?? undefined) });
+}
+
+/** Whether the registry already marks a default Library that is still there. */
+function hasLiveDefaultLibrary(root?: string): boolean {
+  try {
+    const document = JSON.parse(readTextIfPresent(registryPath(root))?.trim() || '{}') as { workspaces?: unknown };
+    return (Array.isArray(document.workspaces) ? document.workspaces : []).some((row) => {
+      if (!isPlainObject(row) || row['default'] !== true) return false;
+      const root = toWorkspaceRoot(String(row['path'] ?? ''));
+      return root !== null && fs.existsSync(path.join(root, '.library', 'workspace.json'));
+    });
+  } catch {
+    return true;
+  }
 }
 
 function randomGuid(): string {

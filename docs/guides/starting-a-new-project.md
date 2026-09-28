@@ -70,11 +70,11 @@ is all. It cannot open a Book, compile anything, or change anything.
 So sit down, from a terminal in your Library folder:
 
 ```
-library seat start fallout --project fallout-settlements
+deskpost seat start fallout --project fallout-settlements
 ```
 
 That makes the seat, binds it to the Project, opens the Hub on its Desk, and starts your assistant
-there. Add `--command codex` for Codex. Next time, `library seat start fallout` is enough.
+there. Add `--command codex` for Codex. Next time, `deskpost seat start fallout` is enough, or type `deskpost` and pick its number.
 
 **Three things worth knowing:**
 
@@ -87,7 +87,7 @@ there. Add `--command codex` for Codex. Next time, `library seat start fallout` 
 
 **A session that starts without a seat tells you so and asks.** In Claude Code you can answer in the
 conversation and it binds that seat there. On Windows it also lists the seats that exist and puts a
-resumed conversation back at the seat it last held. In Codex, leave and use `library seat start`.
+resumed conversation back at the seat it last held. In Codex, leave and use `deskpost seat start`.
 
 ## Step 3: what is on your Desk
 
@@ -145,7 +145,7 @@ first means you never need to go and get it back.
 
 ## Coming back to it, weeks later
 
-Run `library seat start fallout` again. Then ask for two things:
+Run `deskpost seat start fallout` again. Then ask for two things:
 
 > "What's on my desk?": your seat, what is open, what is waiting.
 >
@@ -175,7 +175,7 @@ Three questions answer almost everything, in this order:
    refused, so start another seat.
 3. **Is the Book open at *this* seat?** Desks do not share. Another seat's open Book is not on yours.
 
-Asking **"what's on my desk?"** answers all three at once. And `library doctor` checks the
+Asking **"what's on my desk?"** answers all three at once. And `deskpost doctor` checks the
 installation itself.
 
 ## See also

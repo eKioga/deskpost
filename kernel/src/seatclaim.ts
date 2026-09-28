@@ -639,6 +639,10 @@ export function writeSeatActivity(options: {
   seat: string;
   note: string;
   keepConversation?: boolean;
+  /** The conversation a launcher is starting here: Write-SeatActivity's -Conversation. Advisory, never identity. */
+  conversation?: string;
+  /** Which assistant owns that conversation (ADR-0059); absent means Claude Code, as every pre-1.1 record is. */
+  assistant?: 'claude' | 'codex';
 }): string | null {
   const deskDirectory = deskStateDirectory(options.stateDirectory, options.seat);
   if (!fs.existsSync(deskDirectory)) return null;
@@ -649,7 +653,11 @@ export function writeSeatActivity(options: {
     last_seen_utc: utcRoundTrip(),
     note: options.note,
   };
-  if (options.keepConversation) {
+  if (options.conversation && options.conversation.trim()) {
+    record['session_id'] = options.conversation;
+    record['conversation_recorded_utc'] = String(record['last_seen_utc']);
+    if (options.assistant) record['assistant'] = options.assistant;
+  } else if (options.keepConversation) {
     const previous = readSeatActivity(options.stateDirectory, options.seat);
     if (previous && 'session_id' in previous && 'conversation_recorded_utc' in previous) {
       record['session_id'] = String(previous['session_id']);
@@ -657,6 +665,7 @@ export function writeSeatActivity(options: {
       // than a binding written since, which is the comparison that decides which record is a seat's
       // last.
       record['conversation_recorded_utc'] = String(previous['conversation_recorded_utc']);
+      if (previous['assistant'] === 'codex' || previous['assistant'] === 'claude') record['assistant'] = previous['assistant'];
     }
   }
   const file = seatActivityPath(options.stateDirectory, options.seat);

@@ -37,7 +37,17 @@ import { deskFileEntries, deskFileName, deskStateDirectory, resolveSeatName } fr
 import { resolveAgentClientProcess } from './procstart.ts';
 import { findOpenBookLines, formatFullTextResult } from './fulltext.ts';
 import { findBookPages, formatDiscoveryResult } from './discovery.ts';
-import { deskPin, McpSession, readValidatedRecord, resolveMcpUrl } from './basicmemory.ts';
+import { deskPin, markerConnection, McpSession, readValidatedRecord, resolveMcpUrl } from './basicmemory.ts';
+import {
+  BOOK_ROOT_ACCEPT_PATTERN,
+  BOOK_ROOT_PATTERN,
+  BOOK_SLUG_PATTERN,
+  parseBookRoot,
+  parsePlaceArgument,
+  placeOfRoot,
+  type BookPlace,
+  type BookRootParts,
+} from './places.ts';
 import { psSortCompare } from './pssort.ts';
 import { hostRemedies } from './remedy.ts';
 
@@ -47,9 +57,9 @@ export interface McpResult {
   exitCode: number;
 }
 
-const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-const ROOT_PATTERN = /^(?:shelf\/_archive|books|archive|shelf)\/[a-z0-9][a-z0-9-]*$/;
-const ROOT_ACCEPT_PATTERN = /^(?:(?:shelf\/_archive|books|archive|shelf)\/)?[a-z0-9][a-z0-9-]*$/;
+const SLUG_PATTERN = BOOK_SLUG_PATTERN;
+const ROOT_PATTERN = BOOK_ROOT_PATTERN;
+void BOOK_ROOT_ACCEPT_PATTERN;
 
 class ReaderRefusal extends Error {}
 
@@ -57,29 +67,18 @@ function refuse(message: string): never {
   throw new ReaderRefusal(message);
 }
 
-interface BookRoot {
-  root: string;
-  collection: 'shelf' | 'shared';
-  shelf: 'active' | 'archive';
-  slug: string;
-  wikiRoot: string;
-}
+type BookRoot = BookRootParts;
 
 function toBookRoot(entry: string): string {
-  if (ROOT_PATTERN.test(entry)) return entry;
-  if (SLUG_PATTERN.test(entry)) return `books/${entry}`;
-  refuse('Virtual Desk open-book state is malformed.');
+  const parts = parseBookRoot(entry);
+  if (parts === null) refuse('Virtual Desk open-book state is malformed.');
+  return parts.root;
 }
 
 function splitBookRoot(entry: string): BookRoot {
-  const normalised = toBookRoot(entry);
-  const match = /^(shelf\/_archive|books|archive|shelf)\/([a-z0-9][a-z0-9-]*)$/.exec(normalised);
-  if (!match) refuse('Virtual Desk open-book state is malformed.');
-  const prefix = match[1]!;
-  const slug = match[2]!;
-  const collection = prefix === 'shelf' || prefix === 'shelf/_archive' ? 'shelf' : 'shared';
-  const shelf = prefix === 'archive' || prefix === 'shelf/_archive' ? 'archive' : 'active';
-  return { root: normalised, collection, shelf, slug, wikiRoot: `${normalised}/wiki` };
+  const parts = parseBookRoot(entry);
+  if (parts === null) refuse('Virtual Desk open-book state is malformed.');
+  return parts;
 }
 
 function assertBookSlug(slug: string): void {
@@ -244,22 +243,87 @@ async function remoteSession(workspace: string): Promise<McpSession> {
   return session;
 }
 
-/** `Read-ValidatedBookPage`: a page of a Book open at this seat, from the Shelf or from Basic Memory. */
-async function readValidatedBookPage(context: ReaderContext, slug: string, page: string): Promise<string> {
+// --- the Basic Memory connection of a local Library (PLAN-basic-memory.md step 5) ---------------------------
+//
+// A `shared/<slug>` root is a Book read over the CONNECTION the Library's marker records -- never over the three
+// `.claude/.library-*` files, which a local Library does not have, and never on a workspace whose backend is
+// Basic Memory, whose shared Books are its own `books/`. Every read goes through the same validated exact-record
+// read as a Basic Memory backend's, with the connection's collection UUID and the MCP timeout.
+
+function connectionFor(context: ReaderContext): { url: string; collectionId: string } {
+  if (!isLocalCollection(context)) {
+    refuse(
+      'A shared/ Desk entry is a local Library\'s Basic Memory connection, and this workspace is attached to Basic Memory ' +
+        'directly: its shared Books open as books/<slug>. Close the shared/ entry.',
+    );
+  }
+  const connection = markerConnection(context.workspace);
+  if (connection === null) {
+    refuse('This Library has no Basic Memory connection, so a shared Book cannot be read. Connect one with `library basic-memory setup`, or close the Book.');
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(connection.collection_id)) {
+    refuse('The Basic Memory connection records no collection UUID, so no shared Book can be addressed. Run `library basic-memory setup` again.');
+  }
+  return { url: connection.url, collectionId: connection.collection_id };
+}
+
+async function readConnectionRecord(
+  context: ReaderContext,
+  requested: string,
+  words: { rejected: string; unreadable: string; different: string; empty: string },
+): Promise<{ content: string } | 'absent'> {
+  const connection = connectionFor(context);
+  const session = new McpSession(connection.url, 'deskpost-shared-book-reader');
+  await session.initialize();
+  return readValidatedRecord(session, connection.collectionId, requested, words);
+}
+
+/**
+ * THE SAME SLUG IN TWO PLACES (PLAN-basic-memory.md step 1, Fable #5): an imported Book and its shared original
+ * can both be open. The slug alone is still refused as ambiguous -- choosing between them would be a guess about
+ * which copy the reader means -- and the refusal names the argument that settles it.
+ */
+function selectOpenRoot(context: ReaderContext, openBooks: string[], slug: string, place: BookPlace | null): BookRoot {
+  const local = isLocalCollection(context);
+  // On a workspace attached to Basic Memory its collection IS the shared one, so `collection` names that place.
+  if (!local && place === 'collection') place = 'shared';
+  const candidates = openBooks.map((entry) => splitBookRoot(entry)).filter((parts) => parts.slug === slug);
+  const chosen = place === null ? candidates : candidates.filter((parts) => placeOfRoot(parts, local) === place);
+  if (chosen.length === 0) {
+    if (place !== null && candidates.length > 0) {
+      refuse(`Book '${slug}' is not open in the ${place}; it is open in the ${candidates.map((parts) => placeOfRoot(parts, local)).join(' and the ')}.`);
+    }
+    refuse(`Book '${slug}' is closed.`);
+  }
+  if (chosen.length !== 1) {
+    const places = [...new Set(chosen.map((parts) => placeOfRoot(parts, local)))];
+    if (place === null && places.length > 1) {
+      refuse(`Book '${slug}' is open in two places (${places.join(' and ')}): pass place, one of ${places.join(', ')}.`);
+    }
+    refuse(`Book '${slug}' is ambiguous; close one location before reading.`);
+  }
+  return chosen[0]!;
+}
+
+/** `Read-ValidatedBookPage`: a page of a Book open at this seat, from the Shelf, the collection or the connection. */
+async function readValidatedBookPage(context: ReaderContext, slug: string, page: string, place: BookPlace | null = null): Promise<string> {
   assertBookSlug(slug);
   assertPage(page);
   const state = deskState(context);
-  const roots = state.openBooks.filter((entry) => splitBookRoot(entry).slug === slug);
-  if (roots.length === 0) refuse(`Book '${slug}' is closed.`);
-  if (roots.length !== 1) refuse(`Book '${slug}' is ambiguous; close one location before reading.`);
-  const bookRoot = splitBookRoot(roots[0]!);
-  if (bookRoot.collection === 'shelf') return readShelfBookPage(context.workspace, bookRoot.wikiRoot, page);
-  const record = await readCollectionRecord(context, state.projectId, `${bookRoot.wikiRoot}/${page}`, {
+  const bookRoot = selectOpenRoot(context, state.openBooks, slug, place);
+  if (bookRoot.form === 'shelf') return readShelfBookPage(context.workspace, bookRoot.wikiRoot, page);
+  const words = {
     rejected: 'The shared Library rejected this exact page request.',
     unreadable: 'The shared Library returned an unreadable page response.',
     different: 'The shared Library returned a different record; its content was withheld.',
     empty: 'The exact shared Book page has no readable content.',
-  });
+  };
+  // THE ROOT'S FORM DECIDES HOW IT IS READ, not the marker's backend (step 1): `shared/` over the connection,
+  // everything else from the collection the workspace is attached to.
+  const record =
+    bookRoot.form === 'shared'
+      ? await readConnectionRecord(context, `${bookRoot.storeWiki}/${page}`, words)
+      : await readCollectionRecord(context, state.projectId, `${bookRoot.wikiRoot}/${page}`, words);
   if (record === 'absent') refuse('That page is not in this Book.');
   return record.content;
 }
@@ -289,11 +353,41 @@ async function readSharedBookCatalog(context: ReaderContext, requested: string):
 const ARCHIVE_CATALOG_NOTE =
   "\n\nThis is the SHARED collection's archive. Archived Books here can be opened with Set-VirtualDesk -Location Archive. The local Shelf keeps its own separate archive; list it with tools/Archive-ShelfBook.ps1 -Action List. discover_book_pages covers archived Books in both archives and labels every archived hit ARCHIVED; each answer states which archives it actually searched, and names tools/Update-SharedBookManifests.ps1 -IncludeArchive when this one has no manifests yet. search_open_books reaches an archived Book only while it is open on the Desk.";
 
-/** `Read-ValidatedBookCatalog`: `shelf`, `archive`, `shared`, or anything else as `all`. */
+/** The connection's own Book Catalog, or its archive's: the `shared` scopes of a connected local Library. */
+async function readConnectionBookCatalog(context: ReaderContext, requested: string): Promise<string> {
+  deskState(context);
+  const what = requested === 'books/README' ? 'shared Book Catalog' : 'shared archive catalog';
+  const record = await readConnectionRecord(context, requested, {
+    rejected: `The shared Library rejected the exact ${what} request.`,
+    unreadable: `The shared Library returned an unreadable ${what} response.`,
+    different: 'The shared Library returned a different record; its content was withheld.',
+    empty: `The exact ${what} has no readable content.`,
+  });
+  if (record === 'absent') refuse(`The ${what} has not been created yet.`);
+  return (
+    record.content +
+    "\n\nThese Books are in the shared collection this Library connects to. Open one with library desk open book <slug> --location shared; read it with read_open_book_page, passing place 'shared' if the Library holds a Book of the same slug."
+  );
+}
+
+/**
+ * `Read-ValidatedBookCatalog`: `shelf`, `archive`, `shared`, or anything else as `all` -- and on a local Library
+ * (PLAN-basic-memory.md step 1) `collection` and `shared-archive` as well. There `collection` and `archive` are the
+ * Library's own catalogs; `shared` is the Basic Memory connection's when one is set up, and with none it stays the
+ * spelling of the collection it always was, so no existing reader's call changes answer.
+ */
 async function readValidatedBookCatalog(context: ReaderContext, location: string): Promise<string> {
   if (location === 'shelf') return readShelfCatalog(context.workspace);
+  const connected = isLocalCollection(context) && markerConnection(context.workspace) !== null;
+  // On a workspace attached to Basic Memory the shared archive IS its own archive.
+  if (location === 'shared-archive' && !isLocalCollection(context)) location = 'archive';
+  if (location === 'shared-archive') {
+    if (!connected) refuse("The shared-archive scope reads a Basic Memory connection's archive, and this Library has none. Use 'archive' for the Library's own.");
+    return readConnectionBookCatalog(context, 'archive/README');
+  }
+  if (location === 'shared' && connected) return readConnectionBookCatalog(context, 'books/README');
   if (location === 'archive') return (await readSharedBookCatalog(context, 'archive/README')) + ARCHIVE_CATALOG_NOTE;
-  if (location === 'shared') return readSharedBookCatalog(context, 'books/README');
+  if (location === 'shared' || location === 'collection') return readSharedBookCatalog(context, 'books/README');
   const shared = await readSharedBookCatalog(context, 'books/README');
   // The Shelf is local and must not make the whole catalog unreadable if it is absent.
   let shelf: string;
@@ -529,10 +623,17 @@ export async function answerReaderTool(context: ReaderContext, tool: string, arg
     case 'read_book_catalog': {
       const location = args.optional('location');
       const named = location === null || location === undefined ? '' : String(location).toLowerCase();
-      return readValidatedBookCatalog(context, ['shared', 'shelf', 'archive'].includes(named) ? named : 'all');
+      return readValidatedBookCatalog(context, ['shared', 'shelf', 'archive', 'collection', 'shared-archive'].includes(named) ? named : 'all');
     }
-    case 'read_open_book_page':
-      return readValidatedBookPage(context, args.required('slug'), args.required('page'));
+    case 'read_open_book_page': {
+      let place: BookPlace | null;
+      try {
+        place = parsePlaceArgument(args.optional('place'));
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return readValidatedBookPage(context, args.required('slug'), args.required('page'), place);
+    }
     case 'read_project_catalog': {
       // A Project Hub lives in the collection the workspace is attached to: the local collection in Tier 0
       // (ADR-0030, S30), which the adapter has no counterpart for, and Basic Memory otherwise (S33).
@@ -555,8 +656,14 @@ export async function answerReaderTool(context: ReaderContext, tool: string, arg
     case 'search_open_books': {
       const query = args.required('query');
       const cap = resultCap(args.optional('max_results'));
+      let place: BookPlace | null;
+      try {
+        place = parsePlaceArgument(args.optional('place'));
+      } catch (error) {
+        refuse((error as Error).message);
+      }
       if (!context.deskDirectory) refuse(context.seatMessage);
-      return formatFullTextResult(findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory }));
+      return formatFullTextResult(findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory, place }));
     }
     case 'discover_book_pages': {
       const query = args.required('query');
@@ -591,7 +698,7 @@ export async function runMcpVerb(argv: string[]): Promise<McpResult> {
     return { refusal: `library mcp has no action '${action}'. It has: call, serve.`, value: null, exitCode: 1 };
   }
 
-  const parsed = parseArguments(argv.slice(1), ['slug', 'page', 'location', 'shelf', 'workspace', 'seat', 'id', 'query', 'max-results']);
+  const parsed = parseArguments(argv.slice(1), ['slug', 'page', 'location', 'shelf', 'workspace', 'seat', 'id', 'query', 'max-results', 'place']);
   const tool = parsed.positional[0] ?? '';
   const id = Number(parsed.options.get('id') ?? '1');
   // The CLI's spelling of an argument is the option's; `max_results` arrives as `--max-results`.

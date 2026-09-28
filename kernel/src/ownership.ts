@@ -20,7 +20,8 @@ import { markerField, readMarker } from './workspace.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { parseArguments } from './argv.ts';
-import { configuredCollectionId, configuredMcpUrl, configuredSharedRoot } from './basicmemory.ts';
+import { rebuildAllCollectionManifests } from './collectionbooks.ts';
+import { configuredCollectionId, configuredMcpUrl, configuredSharedRoot, isLocalBackend } from './basicmemory.ts';
 
 const OWNERSHIP_SCHEMA = '1';
 const RECORD_PATTERN = /^(\d{4,})\.(claim|release)\.json$/;
@@ -71,11 +72,18 @@ export function isSharedCollectionRoot(root: string): boolean {
   }
 }
 
-/** `Get-CollectionBackendState`: one state, in the oracle's precedence. */
+/**
+ * `Get-CollectionBackendState`: one state, in the oracle's precedence.
+ *
+ * A LOCAL LIBRARY IS `local` WHATEVER ITS CONNECTION (PLAN-basic-memory.md step 2). Its Basic Memory connection
+ * is for reading and comparing, and nothing is written to Basic Memory in 1.1, so the fence -- which every
+ * shared writer passes -- keeps refusing them there exactly as it did before the Library had a connection.
+ */
 export function collectionBackendState(workspace: string): BackendState {
-  const mcpUrl = configuredMcpUrl(workspace);
-  const collectionId = configuredCollectionId(workspace);
-  const sharedRoot = configuredSharedRoot(workspace);
+  const localMarker = isLocalBackend(workspace);
+  const mcpUrl = localMarker ? '' : configuredMcpUrl(workspace);
+  const collectionId = localMarker ? '' : configuredCollectionId(workspace);
+  const sharedRoot = localMarker ? '' : configuredSharedRoot(workspace);
   if (mcpUrl && !collectionId) {
     return {
       state: 'misconfigured',
@@ -492,8 +500,19 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
   try {
     const parsed = parseArguments(argv, ['workspace']);
     const action = parsed.positional[0] ?? '';
+    // THE LOCAL COLLECTION'S DISCOVERY MANIFESTS (PLAN-basic-memory.md step 1): the repair Discovery names for a Book
+    // it could not read, and the route for a Book copied into collection/ by hand.
+    if (action === 'rebuild') {
+      if (!isLocalBackend(workspace)) {
+        refuse(
+          "library collection rebuild rebuilds a local Library's own collection, and this workspace is attached to Basic Memory: " +
+            'its shared manifests are rebuilt by tools/Update-SharedBookManifests.ps1. Nothing was changed.',
+        );
+      }
+      return { refusal: null, value: rebuildAllCollectionManifests(workspace) };
+    }
     if (action !== 'owner') {
-      return { refusal: `library collection has no action '${action}'. It has: owner.`, value: null };
+      return { refusal: `library collection has no action '${action}'. It has: owner, rebuild.`, value: null };
     }
     const acquire = parsed.flags.has('acquire');
     const release = parsed.flags.has('release');

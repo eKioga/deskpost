@@ -422,7 +422,7 @@ function Read-ShelfBookPage([string]$Slug, [string]$Page, [string]$WikiRoot, [st
     [pscustomobject]@{ path = $requestedPath; file_path = "$requestedPath.md"; title = $title; content = $content }
 }
 
-function Read-ValidatedBookPage([string]$Slug, [string]$Page, [string]$DeskStateDirectory = $script:DeskDirectory) {
+function Read-ValidatedBookPage([string]$Slug, [string]$Page, [string]$DeskStateDirectory = $script:DeskDirectory, [string]$Place = '') {
     # -cnotmatch: -notmatch is case-insensitive, so 'Odysseus' passes this lowercase-only rule and is
     # then reported as a *closed* Book by the -cmatch below. Fail-closed, but the wrong reason.
     # Assert-BookSlug words both refusals in one place. A ROOT -- books/<slug>, which Discovery and
@@ -435,8 +435,27 @@ function Read-ValidatedBookPage([string]$Slug, [string]$Page, [string]$DeskState
     # the ambiguity this refuses is wider than it was, and refusing is still the only right answer:
     # they are three different Books that happen to share a name.
     $roots = @(Select-BookRootsForSlug -OpenBooks $state.open_books -Slug $Slug)
+    # PLACE (PLAN-basic-memory.md step 1), as the kernel reads it: on a workspace attached to Basic Memory a
+    # Book is on the Shelf or in the shared collection, so `collection` names the same place as `shared`.
+    $placeOf = { param($root) if ((Split-BookRoot $root).collection -ceq 'shelf') { 'shelf' } else { 'shared' } }
+    $candidates = $roots
+    if (-not [string]::IsNullOrWhiteSpace($Place)) {
+        $named = $Place.Trim().ToLowerInvariant()
+        if ($named -cnotin @('shelf', 'collection', 'shared')) { throw "place is one of shelf, collection, shared; got '$Place'." }
+        if ($named -ceq 'collection') { $named = 'shared' }
+        $roots = @($roots | Where-Object { (& $placeOf $_) -ceq $named })
+        if ($roots.Count -eq 0 -and $candidates.Count -gt 0) {
+            throw "Book '$Slug' is not open in the $named; it is open in the $((@($candidates | ForEach-Object { & $placeOf $_ })) -join ' and the ')."
+        }
+    }
     if ($roots.Count -eq 0) { throw "Book '$Slug' is closed." }
-    if ($roots.Count -ne 1) { throw "Book '$Slug' is ambiguous; close one location before reading." }
+    if ($roots.Count -ne 1) {
+        $places = @($roots | ForEach-Object { & $placeOf $_ } | Select-Object -Unique)
+        if ([string]::IsNullOrWhiteSpace($Place) -and $places.Count -gt 1) {
+            throw "Book '$Slug' is open in two places ($($places -join ' and ')): pass place, one of $($places -join ', ')."
+        }
+        throw "Book '$Slug' is ambiguous; close one location before reading."
+    }
     $bookRoot = Split-BookRoot $roots[0]
     if ($bookRoot.collection -ceq 'shelf') { return Read-ShelfBookPage -Slug $Slug -Page $Page -WikiRoot $bookRoot.wiki_root -DeskStateDirectory $DeskStateDirectory }
     # wiki_root, never a composed 'books/<slug>/wiki': an ARCHIVED shared Book's pages are at
@@ -1484,13 +1503,13 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
             'initialize' { New-McpResult -Id $inboundId -Result @{ protocolVersion = '2025-03-26'; capabilities = @{ tools = @{ listChanged = $false } }; serverInfo = @{ name = 'AI Library Validated Book Reader'; version = '0.1.0' } } }
             'notifications/initialized' { }
             'tools/list' { New-McpResult -Id $inboundId -Result @{ tools = @(
-                @{ name = 'read_book_catalog'; description = 'Read the AI Library Book Catalog: the shared collection, the local Shelf, both, or the shared ARCHIVE. The adapter returns shared content only when the response is the exact canonical catalog record. discover_book_pages covers archived Books and labels every archived hit ARCHIVED, so this listing is the archive''s own index rather than the only way to find one; each Discovery answer states which archives it searched.'; inputSchema = @{ type = 'object'; additionalProperties = $false; properties = @{ location = @{ type = 'string'; enum = @('shared', 'shelf', 'all', 'archive'); description = 'Which collection to list. Defaults to all. Use archive to list Books retired from the shared collection.' } } } },
-                @{ name = 'read_open_book_page'; description = 'Read one exact page from an open AI Library Book, shared or Shelf. The adapter rejects closed Books and any page whose canonical file path differs from the requested path.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('slug', 'page'); properties = @{ slug = @{ type = 'string'; description = 'Open Book slug.' }; page = @{ type = 'string'; description = 'Canonical page path below wiki/, without .md.' } } } },
+                @{ name = 'read_book_catalog'; description = 'Read the AI Library Book Catalog: the shared collection, the local Shelf, both, or the shared ARCHIVE. The adapter returns shared content only when the response is the exact canonical catalog record. discover_book_pages covers archived Books and labels every archived hit ARCHIVED, so this listing is the archive''s own index rather than the only way to find one; each Discovery answer states which archives it searched.'; inputSchema = @{ type = 'object'; additionalProperties = $false; properties = @{ location = @{ type = 'string'; enum = @('shared', 'shelf', 'all', 'archive', 'collection', 'shared-archive'); description = 'Which collection to list. Defaults to all. Use archive to list Books retired from the shared collection. On a local Library collection is its own collection, and shared and shared-archive are its Basic Memory connection''s, once one is set up.' } } } },
+                @{ name = 'read_open_book_page'; description = 'Read one exact page from an open AI Library Book, shared or Shelf. The adapter rejects closed Books and any page whose canonical file path differs from the requested path.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('slug', 'page'); properties = @{ slug = @{ type = 'string'; description = 'Open Book slug.' }; page = @{ type = 'string'; description = 'Canonical page path below wiki/, without .md.' }; place = @{ type = 'string'; enum = @('shelf', 'collection', 'shared'); description = 'Where the open Book is, when the same slug is open in two places: shelf, collection (the Library''s own), or shared.' } } } },
                 @{ name = 'read_project_catalog'; description = 'Read the exact active or archived AI Library Project Catalog.'; inputSchema = @{ type = 'object'; additionalProperties = $false; properties = @{ shelf = @{ type = 'string'; enum = @('active', 'archive'); description = 'Project shelf. Defaults to active.' } } } },
                 @{ name = 'suggest_active_projects'; description = 'Search concise summaries of active AI Library Project Hubs using reader-provided words. Returns up to five ranked suggestions and never opens or changes a Project.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('query'); properties = @{ query = @{ type = 'string'; description = 'Words describing the work or Project to find.' } } } },
                 @{ name = 'read_open_project_page'; description = 'Read one exact page from an open active or archived AI Library Project Hub.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('slug', 'page'); properties = @{ slug = @{ type = 'string'; description = 'Open Project slug.' }; page = @{ type = 'string'; description = 'Canonical Project page path below the Project root, without .md. For example _project or research/Finding.' } } } },
                 @{ name = 'read_open_project_briefing'; description = "Give a short return briefing using an open Project Hub's explicit Connected knowledge and Connected tools sections, whether recorded on the Hub root or its companion connections page. It does not search, infer missing dependencies, or open Books."; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('slug'); properties = @{ slug = @{ type = 'string'; description = 'Open Project slug.' } } } },
-                @{ name = 'search_open_books'; description = 'Search the FULL TEXT of Shelf Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. An open SHARED Book is named in the answer as out of scope rather than searched, because its pages arrive one network read at a time. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('query'); properties = @{ query = @{ type = 'string'; description = 'A literal term to look for in page text. Matching is literal, case-insensitive, and Unicode-normalised; regular expressions are not interpreted.' }; max_results = @{ type = 'integer'; description = 'Maximum matching lines to return. Defaults to 50; the answer reports the total when it truncates.' } } } },
+                @{ name = 'search_open_books'; description = 'Search the FULL TEXT of Shelf Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. An open SHARED Book is named in the answer as out of scope rather than searched, because its pages arrive one network read at a time. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('query'); properties = @{ query = @{ type = 'string'; description = 'A literal term to look for in page text. Matching is literal, case-insensitive, and Unicode-normalised; regular expressions are not interpreted.' }; max_results = @{ type = 'integer'; description = 'Maximum matching lines to return. Defaults to 50; the answer reports the total when it truncates.' }; place = @{ type = 'string'; enum = @('shelf', 'collection', 'shared'); description = 'Search only the open Books in this place: shelf, collection or shared.' } } } },
                 @{ name = 'discover_book_pages'; description = 'Find which Books and pages mention a term, across the local Shelf and the shared collection, from closed-readable metadata manifests only. Covers closed Books, opens nothing, reaches no network, and returns Book slug, canonical page path, the heading that matched, and the Book overlap status -- never page text. A hit licenses "shall I open it?", never an answer about what the page says. Every answer states its own coverage: which Books were searched, and any it could not read.'; inputSchema = @{ type = 'object'; additionalProperties = $false; required = @('query'); properties = @{ query = @{ type = 'string'; description = 'A literal term to look for in Book titles, summaries, topics, reader-map links, page titles, and headings. Matching is literal and case-insensitive; regular expressions are not interpreted.' }; max_results = @{ type = 'integer'; description = 'Maximum hits to return. Defaults to 50; the answer reports the total when it truncates.' } } } }
             ) } }
             'tools/call' {
@@ -1515,15 +1534,19 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                     switch ($callName) {
                         'read_book_catalog' {
                             $requestedLocation = Get-OptionalArgument $callArguments 'location'
+                            # `collection` and `shared-archive` (PLAN-basic-memory.md step 1) are this workspace's own
+                            # collection and its archive, which on a Basic Memory backend ARE the shared ones.
                             $location = switch ([string]$requestedLocation) {
-                                'shared'  { 'Shared' }
-                                'shelf'   { 'Shelf' }
-                                'archive' { 'Archive' }
-                                default   { 'All' }
+                                'shared'         { 'Shared' }
+                                'collection'     { 'Shared' }
+                                'shelf'          { 'Shelf' }
+                                'archive'        { 'Archive' }
+                                'shared-archive' { 'Archive' }
+                                default          { 'All' }
                             }
                             $page = Read-ValidatedBookCatalog -Location $location
                         }
-                        'read_open_book_page' { $page = Read-ValidatedBookPage -Slug (Get-RequiredArgument $callArguments 'slug') -Page (Get-RequiredArgument $callArguments 'page') }
+                        'read_open_book_page' { $page = Read-ValidatedBookPage -Slug (Get-RequiredArgument $callArguments 'slug') -Page (Get-RequiredArgument $callArguments 'page') -Place ([string](Get-OptionalArgument $callArguments 'place')) }
                         'read_project_catalog' {
                             $requestedShelf = Get-OptionalArgument $callArguments 'shelf'
                             $shelf = if ($null -ne $requestedShelf -and [string]$requestedShelf -eq 'archive') { 'Archive' } else { 'Active' }

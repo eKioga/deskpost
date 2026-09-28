@@ -44,6 +44,12 @@ import { parseArguments } from './argv.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { notPortedRefusal, usageText, verbInventory, VERBS } from './verbs.ts';
 import { hostRemedies, hostRemedyFields, REMEDY_HOST } from './remedy.ts';
+import { runBasicMemoryVerb } from './bmconnection.ts';
+import { BASIC_MEMORY_ACTIONS } from './bmactions.ts';
+import { doctorText, initText } from './human.ts';
+import { runSetupVerb } from './setup.ts';
+import { rollbackVerb, uninstallVerb } from './lifecycle.ts';
+import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
 
 
 function writeStdout(text: string): void {
@@ -82,6 +88,13 @@ function refuse(message: string): never {
 }
 
 async function main(argv: string[]): Promise<number> {
+  // BARE `deskpost` IS THE MAIN MENU (ADR-0059), where a person can answer; anywhere else it prints usage, as before,
+  // so a caller that cannot be prompted never waits.
+  if (argv.length === 0 && menuIsInteractive()) {
+    const result = await runMenuVerb([]);
+    if (result.refusal !== null) refuse(result.refusal);
+    return result.exitCode;
+  }
   if (argv.length === 0 || ['help', '--help', '-h', '-?', '/?'].includes(argv[0]!)) {
     writeStdout(usageText());
     return 0;
@@ -114,17 +127,21 @@ async function main(argv: string[]): Promise<number> {
 
     case 'init': {
       const parsed = parseArguments(rest, ['registry-root', 'collection-id', 'mcp-url', 'workspace']);
+      // `--force` IS GONE (F9): it was parsed and did nothing, while its name promised an overwrite init never does.
+      if (parsed.flags.has('force')) {
+        refuse('library init has no --force: init already brings a Library\'s managed files up to date, and refuses, naming the file, whatever it cannot merge. Run it again without --force.');
+      }
       const folder = parsed.positional[0] ?? parsed.options.get('workspace') ?? process.cwd();
       const result = invokeLibraryWorkspaceInit({
         workspacePath: folder,
         mcpUrl: parsed.options.get('mcp-url'),
         collectionId: parsed.options.get('collection-id'),
         writable: parsed.flags.has('writable'),
-        force: parsed.flags.has('force'),
         registryRoot: parsed.options.get('registry-root'),
         programRoot: programRoot(),
       });
-      emit(result as PsJsonValue, true);
+      // LINES FOR A PERSON, THE DOCUMENT WITH --json (F7): until 1.1 `--json` was a no-op and a person got the document.
+      emit(result as PsJsonValue, parsed.flags.has('json'), initText(result));
       return 0;
     }
 
@@ -153,7 +170,13 @@ async function main(argv: string[]): Promise<number> {
         // THE DEFAULTS ARE THE POWERSHELL HELPER'S DEFAULTS, deliberately, down to `clear` echoing a
         // Book and the shared collection it never consulted. Two CLIs whose unstated arguments mean
         // different things are two CLIs, and the matrix compares what each one reports it did.
-        const location = (parsed.options.get('location') ?? 'shared') as 'shared' | 'shelf';
+        // NO LOCATION IS THE LIBRARY'S OWN COLLECTION (PLAN-basic-memory.md step 1); `shared` on a local Library
+        // is its Basic Memory connection once one is set up.
+        const locationWord = parsed.options.get('location');
+        if (locationWord !== undefined && !['shared', 'shelf', 'collection'].includes(locationWord.toLowerCase())) {
+          refuse(`library desk --location is collection, shelf or shared; got '${locationWord}'.`);
+        }
+        const location = locationWord?.toLowerCase() as 'shared' | 'shelf' | 'collection' | undefined;
         const shelf = (parsed.options.get('shelf') ?? 'active') as 'active' | 'archive';
         const kind = (parsed.positional[1] ?? 'book') as 'book' | 'project';
         const result = deskWrite({
@@ -218,6 +241,22 @@ async function main(argv: string[]): Promise<number> {
         refuse(`library collection : ${(error as Error).message}`);
       }
       const result = runCollectionVerb(rest, workspace);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, true);
+      return 0;
+    }
+
+    // A LOCAL LIBRARY'S BASIC MEMORY CONNECTION (PLAN-basic-memory.md): set-up, status, import, open-shared.
+    case 'basic-memory': {
+      const parsed = parseArguments(rest.slice(1), ['url', 'collection', 'storage', 'workspace', 'seat', 'plan-id', 'lock-timeout', 'claim-token', 'shelf', 'registry-root']);
+      let workspace = '';
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        // THE ROLLBACK CHECK SCANS EVERY REGISTERED LIBRARY, so it answers from anywhere: install.ps1 runs it from no workspace.
+        if (rest[0] !== 'rollback-check' || parsed.options.get('workspace') !== undefined) refuse(`library basic-memory : ${(error as Error).message}`);
+      }
+      const result = await runBasicMemoryVerb(rest, workspace, BASIC_MEMORY_ACTIONS);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
       return 0;
@@ -311,7 +350,48 @@ async function main(argv: string[]): Promise<number> {
     case 'doctor': {
       const result = runDoctor(rest, programRoot());
       if (result.refusal !== null) refuse(result.refusal);
-      emit(result.value!, true);
+      emit(result.value!, rest.includes('--json'), doctorText(result.value as Record<string, unknown>));
+      return result.exitCode;
+    }
+
+    // THE INSTALLER'S CONVERSATION, ITS PLANNER AND ITS APPLY, and a Library made later (PLAN-install-onboarding.md, ADR-0057).
+    // THE MAIN MENU BY NAME, which is also how a suite reaches it with scripted answers (ADR-0059).
+    case 'menu': {
+      const result = await runMenuVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      return result.exitCode;
+    }
+
+    // WHICH LIBRARY BARE `deskpost` OPENS (step 5a): the list, and `default <folder>`.
+    case 'library': {
+      const result = runLibraryVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, rest.includes('--json'), result.humanText);
+      return 0;
+    }
+
+    case 'setup': {
+      // THE FORK AN INSTALL ENDS ON (step 5): install.ps1 runs it once the lock is released and `pending` is cleared.
+      if (rest.includes('--welcome')) {
+        const welcome = await runWelcomeVerb(rest);
+        if (welcome.refusal !== null) refuse(welcome.refusal);
+        return welcome.exitCode;
+      }
+      const result = await runSetupVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      if (result.value !== null) emit(result.value, result.asJson, result.humanText);
+      else if (result.humanText) writeStdout(result.humanText);
+      return result.exitCode;
+    }
+
+    // AN INSTALL'S LIFE AFTER IT IS MADE (PLAN-install-onboarding.md step 8, ADR-0058).
+    case 'uninstall':
+    case 'rollback': {
+      if (process.platform !== 'win32') refuse(`library ${verb} is for a Windows install in 1.1; on macOS and Linux, install.sh --rollback switches back, and removing ~/.local/share/deskpost and its link removes it.`);
+      const result = verb === 'uninstall' ? await uninstallVerb(rest) : await rollbackVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      if (result.value !== null) emit(result.value, result.asJson, result.humanText);
+      else if (result.humanText) writeStdout(result.humanText);
       return result.exitCode;
     }
 

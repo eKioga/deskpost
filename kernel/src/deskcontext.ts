@@ -19,12 +19,14 @@ import { parseArguments } from './argv.ts';
 import { splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
-import { currentAgentProcessId } from './procstart.ts';
+import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
 import { getSeatClaimState } from './seatclaim.ts';
 import { deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
-import { updateSeatConversationRecord } from './seat.ts';
+import { recordLauncherConversation, updateSeatConversationRecord } from './seat.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
 import { resolveWorkspace } from './workspace.ts';
+import { placeOfRoot } from './places.ts';
+import { isLocalBackend } from './basicmemory.ts';
 
 const EVENT = 'UserPromptSubmit';
 /**
@@ -53,10 +55,17 @@ function contextDocument(text: string): string {
 }
 
 /** `Get-BookRootLabel`: how one open Book is named to the reader, the two archives told apart. */
-export function bookRootLabel(entry: string): string {
+/**
+ * A Book as the prompt names it. ITS PLACE, NOT ITS PREFIX (PLAN-basic-memory.md step 1): a local Library's own
+ * `books/` Book is `(collection)`, where until 1.1 it read `(shared)`; a `shared/` connection Book is `(shared)`.
+ */
+export function bookRootLabel(entry: string, localBackend = false): string {
   const parts = splitBookRoot(convertToBookRoot(entry));
-  if (parts.shelf === 'archive') return parts.collection === 'shelf' ? `${parts.slug} (shelf, archived)` : `${parts.slug} (archived)`;
-  return parts.collection === 'shelf' ? `${parts.slug} (shelf)` : `${parts.slug} (shared)`;
+  const place = placeOfRoot(parts, localBackend);
+  if (parts.shelf === 'archive') {
+    return place === 'shelf' ? `${parts.slug} (shelf, archived)` : place === 'collection' ? `${parts.slug} (collection, archived)` : `${parts.slug} (archived)`;
+  }
+  return `${parts.slug} (${place})`;
 }
 
 /** The hook's stdout: always one document, whatever happened. */
@@ -138,9 +147,33 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
       }
     } else {
       seatNote = `, ${seatState.source === 'environment' ? 'named by LIBRARY_SEAT' : 'named explicitly'} and not bound to this conversation`;
+      // A LAUNCHER-HELD SESSION REPORTS ITS CONVERSATION (ADR-0059): Codex takes no id at launch, so `seat start` could
+      // not record one, and this is the first moment the id is known. The token proves the seat; THE PROCESS TREE PROVES
+      // THE SESSION (inspection #1): the environment is inherited by anything run under the agent, a nested Codex
+      // included, so only the launcher's direct agent may report, and its image name, not the variable, is the assistant.
+      const claimToken = process.env['LIBRARY_SEAT_CLAIM'] ?? '';
+      const launcherPid = Number(process.env['DESKPOST_LAUNCHER_PID'] ?? '');
+      if (seatState.source === 'environment' && claimToken.trim() && sessionId.trim() && launcherPid > 0) {
+        try {
+          const ledgerKey = `launcher-conversation:${seat}:${sessionId}`;
+          if (!testHookServed(stateDirectory, sessionId, ledgerKey)) {
+            const direct = launcherDirectAgent(launcherPid);
+            const declared = process.env['DESKPOST_ASSISTANT'] ?? '';
+            if (direct !== null && (!declared || declared === direct.assistant)) {
+              const recorded = recordLauncherConversation({ workspace, seat, sessionId, claimToken, assistant: direct.assistant });
+              if (recorded !== 'not-this-launcher') setHookServed(stateDirectory, sessionId, ledgerKey);
+            } else setHookServed(stateDirectory, sessionId, ledgerKey);
+          }
+        } catch {
+          // swallowed: a record, and a prompt must not wait on it
+        }
+      }
     }
 
-    const openBooks = readStateLines(path.join(deskDirectory!, deskFileName('books')), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', false).map(bookRootLabel);
+    const localBackend = isLocalBackend(workspace);
+    const openBooks = readStateLines(path.join(deskDirectory!, deskFileName('books')), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', false).map((entry) =>
+      bookRootLabel(entry, localBackend),
+    );
     const openProjects = readStateLines(path.join(deskDirectory!, deskFileName('projects')), PROJECT_PATTERN, 'open-project', true);
     const books = openBooks.length ? openBooks.join(', ') : '(none)';
     const projects = openProjects.length ? openProjects.join(', ') : '(none)';

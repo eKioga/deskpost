@@ -257,6 +257,14 @@ try {
         }
         Write-LfFile (Join-Path $stage 'release.json') (($tuple | ConvertTo-Json) + "`n")
 
+        # THE INVENTORY (PLAN-install-onboarding.md step 8, from 1.1): every file the release ships, with its SHA-256.
+        # install.ps1 checks the staged tree against it, and uninstall removes a file only if it is listed and still
+        # matches, so a file a reader added inside the version folder is never Deskpost's to delete.
+        $inventory = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+            [ordered]@{ path = $_.FullName.Substring($stage.Length).TrimStart('\', '/').Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+        })
+        Write-LfFile (Join-Path $stage '.inventory.json') ((([ordered]@{ schema = 1; files = $inventory }) | ConvertTo-Json -Depth 4) + "`n")
+
         # THE HOST'S BINARY IS RUN BEFORE IT IS SHIPPED. A cross-built one cannot be run here, and the
         # result says so rather than reporting it verified.
         $smoke = 'not run: built for another platform'
@@ -296,6 +304,22 @@ try {
 # release URL it then reads SHA256SUMS from. They are not in SHA256SUMS: they are what reads it.
 foreach ($installer in 'install.ps1', 'install.sh') {
     Copy-Item -LiteralPath (Join-Path $SourceRoot $installer) -Destination (Join-Path $Destination $installer)
+}
+
+# THE PAGE AN ASSISTANT INSTALLS FROM (PLAN-assistant-onboarding.md step 1) ships beside them, and it must name the
+# release it ships in: an assistant passes the page's release base as -Release, so a page naming another version
+# would plan one release and install another.
+$page = Join-Path $SourceRoot 'llms-install.md'
+if (Test-Path -LiteralPath $page) {
+    $pageText = [IO.File]::ReadAllText($page)
+    $expectedBase = "releases/download/v$pluginVersion"
+    if ($pageText -notmatch "\*\*Deskpost $([regex]::Escape($pluginVersion))\.\*\*" -or -not $pageText.Contains($expectedBase)) {
+        throw "llms-install.md does not name this release (Deskpost $pluginVersion, $expectedBase); update the page with the version fields."
+    }
+    if ($pageText.Replace($expectedBase, '') -match 'releases/download/v\d') {
+        throw "llms-install.md names a release other than v$pluginVersion; every release base on the page must be this one."
+    }
+    Copy-Item -LiteralPath $page -Destination (Join-Path $Destination 'llms-install.md')
 }
 
 # sha256sum's own format, so `sha256sum -c` and install.sh read the same file install.ps1 does.

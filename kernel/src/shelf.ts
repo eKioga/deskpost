@@ -29,6 +29,7 @@ import {
 } from './shelfcatalog.ts';
 import { archiveVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './shelfwriters.ts';
 import { updateShelfNoteIndex } from './capture.ts';
+import { shelfCarryVerb } from './shelfcarry.ts';
 
 export interface VerbResult {
   refusal: string | null;
@@ -37,7 +38,7 @@ export interface VerbResult {
   humanText?: string;
 }
 
-const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates'];
+const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry'];
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -224,6 +225,12 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         return renderVerb(argv.slice(1), programRoot);
       case 'new':
         return newBookVerb(argv.slice(1), programRoot);
+      case 'carry': {
+        // PLAN-basic-memory.md step 4b: another workspace's capture notes, carried byte for byte into this Library's Shelf.
+        const parsed = parseArguments(argv.slice(1), ['workspace', 'book', 'plan-id']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        return { refusal: null, value: shelfCarryVerb(argv.slice(1), workspace), asJson: true };
+      }
       case 'rename':
       case 'remove':
       case 'archive':

@@ -21,6 +21,8 @@
 
 import * as path from 'node:path';
 import { isCompiled, programRoot } from './programroot.ts';
+import { COMMAND_NAME } from './machine.ts';
+import { VERBS } from './verbs.ts';
 
 /** How remedies are said: `win32` is the oracle's own words; `win32-compiled` is an installed kernel on Windows. */
 export type RemedyHost = 'posix' | 'win32' | 'win32-compiled';
@@ -111,8 +113,15 @@ export function hostRemedies(text: string, flavor: RemedyHost = HOST, root: stri
     });
   }
   // The resolvers' own refusals name the PowerShell parameters; the kernel's are `--workspace` and `--seat`.
-  return out.replace(/\bpass -WorkspacePath\b/g, 'pass --workspace').replace(/\bpass -Seat\b/g, 'pass --seat');
+  out = out.replace(/\bpass -WorkspacePath\b/g, 'pass --workspace').replace(/\bpass -Seat\b/g, 'pass --seat');
+  // THE COMMAND A READER TYPES IS `deskpost` (ADR-0055). The sentences, and the rewrites above, say `library <verb>`,
+  // the oracle's word and a quiet alias through 1.x; where a remedy leaves an installed kernel it says the product's
+  // name. Only a verb this kernel has is renamed, so a path (`bin/library`) or prose is never touched.
+  return out.replace(LIBRARY_COMMAND, `$1${COMMAND_NAME}`);
 }
+
+/** `library` as a command: not inside a path or a word, and followed by one of the kernel's verbs. */
+const LIBRARY_COMMAND = new RegExp(String.raw`(^|[^\w./\\-])library(?= (?:${[...Object.keys(VERBS), 'help'].map((verb) => verb.replace(/-/g, '\\-')).join('|')})\b)`, 'g');
 
 /** The fields of a result that carry a remedy, and only those: a result's content is never rewritten. */
 const REMEDY_KEYS = new Set(['next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext']);

@@ -32,6 +32,9 @@ import {
   testSearchContains,
 } from './rawsearch.ts';
 import { getMarkdownHeadings, type Heading } from './manifest.ts';
+import { parseBookRoot } from './places.ts';
+import { collectionBookSlugs } from './collectionbooks.ts';
+import { isLocalBackend, markerConnection } from './basicmemory.ts';
 import { getStoredBookManifest, MANIFEST_COLLECTIONS } from './manifeststore.ts';
 import {
   ARCHIVE_FOLDER,
@@ -62,6 +65,10 @@ const SHARED_ARCHIVE_NOTE_NONE =
 const CLOSING_RULE =
   'A hit is a location, not a reading: these are headings and titles, not content, so a hit says which Book to open ' +
   'and never what the page says. Open it with read_open_book_page before answering from it.';
+const COLLECTION_REPAIR_HINT = "run `library collection rebuild` to rebuild the Local collection's Discovery manifests";
+const SHARED_NOTE_NOT_REBUILT =
+  "The shared collection this Library connects to is NOT covered: shared manifests not rebuilt by this program -- their " +
+  "kernel port is 1.2. Open a shared Book from its catalog, read_book_catalog with location 'shared'.";
 
 /**
  * Deterministic ordering. Book-level matches come before page-level ones because they ORIENT: a
@@ -76,21 +83,37 @@ const FIELD_RANK: Record<string, number> = {
   heading: 5,
 };
 
-/** manifest collection -> the Book-root prefix its Books live under. One map, both directions. */
-const COLLECTION_PREFIXES: Record<string, string> = {
-  shelf: 'shelf',
-  shared: 'books',
-  'shelf-archive': `shelf/${ARCHIVE_FOLDER}`,
-  'shared-archive': 'archive',
-};
+/**
+ * manifest collection -> the Book-root prefix its Books live under. One map, both directions -- and ONE ENTRY
+ * DEPENDS ON THE WORKSPACE: on a local Library the shared collection is its Basic Memory CONNECTION, whose Books
+ * open as `shared/<slug>`, while `books/<slug>` is the Library's own collection (PLAN-basic-memory.md step 1).
+ */
+function collectionPrefix(name: string, localBackend: boolean): string {
+  switch (name) {
+    case 'shelf':
+      return 'shelf';
+    case 'shelf-archive':
+      return `shelf/${ARCHIVE_FOLDER}`;
+    case 'collection':
+      return 'books';
+    case 'collection-archive':
+      return 'archive';
+    case 'shared':
+      return localBackend ? 'shared' : 'books';
+    default:
+      return localBackend ? 'shared/archive' : 'archive';
+  }
+}
 
-function splitManifestCollection(name: string): { collection: 'shelf' | 'shared'; shelf: 'active' | 'archive'; prefix: string } {
+type Place = 'shelf' | 'collection' | 'shared';
+
+function splitManifestCollection(name: string, localBackend: boolean): { collection: Place; shelf: 'active' | 'archive'; prefix: string } {
   if (!MANIFEST_COLLECTIONS.includes(name)) {
     throw new Error(`Book manifest collection '${name}' must be one of: ${MANIFEST_COLLECTIONS.join(', ')}.`);
   }
   const shelf = name.endsWith('-archive') ? 'archive' : 'active';
-  const collection = (shelf === 'archive' ? name.substring(0, name.length - '-archive'.length) : name) as 'shelf' | 'shared';
-  return { collection, shelf, prefix: COLLECTION_PREFIXES[name]! };
+  const collection = (shelf === 'archive' ? name.substring(0, name.length - '-archive'.length) : name) as Place;
+  return { collection, shelf, prefix: collectionPrefix(name, localBackend) };
 }
 
 interface DiscoveryHit {
@@ -247,6 +270,11 @@ function sharedRoster(workspace: string, manifestCollection = 'shared'): { slugs
   }
 }
 
+/**
+ * EACH HIT CARRIES ITS PLACE, HANDED IN, never inferred from the root's prefix (PLAN-basic-memory.md step 1,
+ * Fable #6): `books/<slug>` is the Local collection on a local Library and the shared collection elsewhere, so
+ * a prefix alone labelled a local Library's own Book `shared`.
+ */
 function newHit(options: {
   slug: string;
   bookRoot: string;
@@ -257,18 +285,18 @@ function newHit(options: {
   heading: string | null;
   matchField: string;
   overlap: string | null;
+  place: Place;
 }): DiscoveryHit {
-  const match = /^(shelf\/_archive|books|archive|shelf)\/([a-z0-9][a-z0-9-]*)$/.exec(options.bookRoot);
-  if (!match) throw new Error('Virtual Desk open-book state is malformed.');
-  const prefix = match[1]!;
+  const parts = parseBookRoot(options.bookRoot);
+  if (parts === null || parts.root !== options.bookRoot) throw new Error('Virtual Desk open-book state is malformed.');
   return {
     book: options.slug,
     book_root: options.bookRoot,
     book_title: options.bookTitle,
     book_kind: options.kind,
     book_open: options.isOpen,
-    book_shelf: prefix === 'archive' || prefix === 'shelf/_archive' ? 'archive' : 'active',
-    collection: prefix === 'shelf' || prefix === 'shelf/_archive' ? 'shelf' : 'shared',
+    book_shelf: parts.shelf,
+    collection: options.place,
     page: options.page,
     heading: options.heading,
     match_field: options.matchField,
@@ -289,6 +317,7 @@ function bookHits(options: {
   needle: string;
   overlap: string | null;
   livePages: LivePage[];
+  place: Place;
 }): DiscoveryHit[] {
   const hits: DiscoveryHit[] = [];
   const title = String(options.manifest['title'] ?? '');
@@ -299,6 +328,7 @@ function bookHits(options: {
     kind: options.kind,
     isOpen: options.isOpen,
     overlap: options.overlap,
+    place: options.place,
   };
 
   if (testSearchContains(title, options.needle)) {
@@ -379,6 +409,11 @@ export interface DiscoveryResult {
   shelf_archive_books_searched: number;
   shared_archive_books_total: number;
   shared_archive_books_searched: number;
+  collection_books_total: number;
+  collection_books_searched: number;
+  collection_archive_books_total: number;
+  collection_archive_books_searched: number;
+  collection_note: string;
   books_total: number;
   books_searched: number;
   books_unavailable: UnavailableBook[];
@@ -405,10 +440,16 @@ export function findBookPages(options: {
 
   const overlaps = overlapIndex(root);
   const open = openRoots(options.deskStateDirectory);
+  const localBackend = isLocalBackend(root);
 
   const roster = sharedRoster(root, 'shared');
   const sharedSlugs = roster ? roster.slugs : [];
   const sharedRosterAsOf = roster ? roster.asOf : '';
+
+  // THE LOCAL COLLECTION'S ROSTER IS ITS DISK, both halves, read offline like the Shelf archive. A workspace
+  // attached to Basic Memory has no Local collection of its own: its `books/` IS the shared collection.
+  const collectionSlugs = localBackend ? collectionBookSlugs(root, 'active') : [];
+  const collectionArchiveSlugs = localBackend ? collectionBookSlugs(root, 'archive') : [];
 
   // The Shelf archive needs no roster file: it is a local directory, readable offline. The SHARED
   // archive does, for the same reason the active shared collection does -- it is behind MCP, and
@@ -423,6 +464,8 @@ export function findBookPages(options: {
     shared: { slugs: sharedSlugs, repair: SHARED_REPAIR_HINT },
     'shelf-archive': { slugs: shelfArchiveSlugs, repair: SHELF_ARCHIVE_REPAIR_HINT },
     'shared-archive': { slugs: sharedArchiveSlugs, repair: SHARED_ARCHIVE_REPAIR_HINT },
+    collection: { slugs: collectionSlugs, repair: COLLECTION_REPAIR_HINT },
+    'collection-archive': { slugs: collectionArchiveSlugs, repair: COLLECTION_REPAIR_HINT },
   };
 
   const hits: { order: number; rank: number; hit: DiscoveryHit }[] = [];
@@ -438,7 +481,7 @@ export function findBookPages(options: {
         `Discovery has no roster for the '${manifestCollection}' Book collection, so it cannot say whether that collection was searched.`,
       );
     }
-    const parts = splitManifestCollection(manifestCollection);
+    const parts = splitManifestCollection(manifestCollection, localBackend);
     const isLocal = parts.collection === 'shelf';
     for (const slug of plan.slugs) {
       order += 1;
@@ -484,7 +527,7 @@ export function findBookPages(options: {
 
       const livePages = kind === 'capture' && isOpen && book !== null ? discoveryLivePages(book.wikiPath) : [];
 
-      for (const hit of bookHits({ slug, bookRoot, manifest, kind, isOpen, needle, overlap, livePages })) {
+      for (const hit of bookHits({ slug, bookRoot, manifest, kind, isOpen, needle, overlap, livePages, place: parts.collection })) {
         hits.push({ order, rank: FIELD_RANK[hit.match_field] ?? 99, hit });
       }
     }
@@ -494,6 +537,8 @@ export function findBookPages(options: {
   const sharedSearched = searchedByCollection['shared'] ?? 0;
   const shelfArchiveSearched = searchedByCollection['shelf-archive'] ?? 0;
   const sharedArchiveSearched = searchedByCollection['shared-archive'] ?? 0;
+  const collectionSearched = searchedByCollection['collection'] ?? 0;
+  const collectionArchiveSearched = searchedByCollection['collection-archive'] ?? 0;
 
   const sorted = [...hits].sort((left, right) => {
     if (left.order !== right.order) return left.order - right.order;
@@ -521,8 +566,13 @@ export function findBookPages(options: {
   const asOfText = !sharedRosterAsOf.trim()
     ? ''
     : ` Shared Book list as of ${sharedRosterAsOf.substring(0, Math.min(10, sharedRosterAsOf.length))}; a Book added since then is not in this answer.`;
+  // A LOCAL LIBRARY WITH A CONNECTION HAS NO REBUILDER FOR ITS SHARED MANIFESTS YET (step 5): the rebuild is
+  // PowerShell, and its kernel port is 1.2. So that absence is named as what it is, not as a script to run.
+  const connected = localBackend && markerConnection(root) !== null;
   const sharedNote = !sharedCovered
-    ? SHARED_NOTE_NONE
+    ? connected
+      ? SHARED_NOTE_NOT_REBUILT
+      : SHARED_NOTE_NONE
     : sharedUnavailable > 0
       ? `Shared collection: ${sharedSearched} of ${sharedSlugs.length} Books searched -- ${sharedUnavailable} could not be read, named below, so this answer is PARTIAL for the shared collection.${asOfText}`
       : `Shared collection: all ${sharedSearched} Book(s) searched.${asOfText}`;
@@ -552,12 +602,23 @@ export function findBookPages(options: {
         : `shared archive: all ${sharedArchiveSearched} Book(s) searched`,
   );
 
+  // THE LOCAL COLLECTION IS NAMED WHENEVER IT HOLDS A BOOK, active or archived, and its partial state is a
+  // state of its own as the shared collection's is. A Library whose collection holds none reads exactly as it
+  // did before the pair existed: there is nothing there to have searched or to have missed.
+  const collectionHasBooks = collectionSlugs.length + collectionArchiveSlugs.length > 0;
+  const collectionUnavailable = unavailable.filter((entry) => entry.collection === 'collection').length;
+  const collectionNote = !collectionHasBooks
+    ? ''
+    : `Local collection: ${collectionSearched} of ${collectionSlugs.length} Book(s) searched, and ${collectionArchiveSearched} of ` +
+      `${collectionArchiveSlugs.length} archived` +
+      (collectionUnavailable > 0 ? ` -- ${collectionUnavailable} could not be read, named below, so this answer is PARTIAL for it.` : '.');
+  const places = ['local Shelf', ...(collectionHasBooks ? ['Local collection'] : []), ...(sharedCovered ? ['shared collection'] : [])];
+  const scope = `${places.length === 3 ? `${places[0]}, ${places[1]} and ${places[2]}` : places.join(' and ')}, including what is archived`;
+
   return {
     schema: DISCOVERY_SCHEMA,
     query: convertToSearchDisplay(options.query),
-    scope: sharedCovered
-      ? 'local Shelf and shared collection, including what is archived'
-      : 'local Shelf, including what is archived',
+    scope,
     shared_books_covered: sharedCovered,
     shared_roster_as_of: sharedRosterAsOf,
     shared_books_note: sharedNote,
@@ -572,8 +633,13 @@ export function findBookPages(options: {
     shelf_archive_books_searched: shelfArchiveSearched,
     shared_archive_books_total: sharedArchiveSlugs.length,
     shared_archive_books_searched: sharedArchiveSearched,
-    books_total: slugs.length + sharedSlugs.length + shelfArchiveSlugs.length + sharedArchiveSlugs.length,
-    books_searched: shelfSearched + sharedSearched + shelfArchiveSearched + sharedArchiveSearched,
+    collection_books_total: collectionSlugs.length,
+    collection_books_searched: collectionSearched,
+    collection_archive_books_total: collectionArchiveSlugs.length,
+    collection_archive_books_searched: collectionArchiveSearched,
+    collection_note: collectionNote,
+    books_total: slugs.length + sharedSlugs.length + shelfArchiveSlugs.length + sharedArchiveSlugs.length + collectionSlugs.length + collectionArchiveSlugs.length,
+    books_searched: shelfSearched + sharedSearched + shelfArchiveSearched + sharedArchiveSearched + collectionSearched + collectionArchiveSearched,
     books_unavailable: unavailable,
     match_count: sorted.length,
     result_count: returned.length,
@@ -593,6 +659,7 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
       `Shelf archive ${result.shelf_archive_books_searched}/${result.shelf_archive_books_total}, shared archive ` +
       `${result.shared_archive_books_searched}/${result.shared_archive_books_total}. ${result.shared_books_note}`,
   );
+  if (result.collection_note) lines.push(result.collection_note);
   lines.push(result.archive_note);
   if (result.truncated) {
     lines.push(

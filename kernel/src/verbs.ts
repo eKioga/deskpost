@@ -39,6 +39,18 @@ export interface VerbDeclaration {
 }
 
 export const VERBS: Record<string, VerbDeclaration> = {
+  'basic-memory': {
+    summary: "A local Library's connection to a Basic Memory server: set it up, see how the two differ, import from it, open a shared Book.",
+    usage:
+      'library basic-memory setup --url <mcp-url> --collection <name> [--storage <folder>] [--preflight]; library basic-memory disconnect; ' +
+      'library basic-memory status; library basic-memory import (--preflight | --dry-run | --user-confirmed --plan-id <id> [--lock-timeout <s>]); ' +
+      'library basic-memory open [<slug> [--shelf archive] [--seat <s>]]; library basic-memory rollback-check [--registry-root <d>]',
+    actions: ['disconnect', 'import', 'open', 'rollback-check', 'setup', 'status'],
+    positional: false,
+    // PLAN-basic-memory.md (S52): a connection, never a backend, and nothing written to Basic Memory in 1.1.
+    ported: true,
+    row: 'S52',
+  },
   book: {
     summary: 'Add a page to an open curated Book, or graduate a Notebook topic into one.',
     usage: 'library book <add-page|graduate> <slug> [arguments]',
@@ -58,9 +70,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S15',
   },
   collection: {
-    summary: "The shared collection's ownership claim: who may write to it from this machine.",
-    usage: 'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]',
-    actions: ['owner'],
+    summary: "The shared collection's ownership claim, and the Local collection's Discovery manifests.",
+    usage: 'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]; library collection rebuild [--json]',
+    actions: ['owner', 'rebuild'],
     positional: false,
     // Set-CollectionOwner.ps1 whole (S43), judged by kernel self-test section 28.
     ported: true,
@@ -81,7 +93,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   desk: {
     summary: "What is on this seat's Desk, and one line per other seat.",
-    usage: 'library desk [open|close|clear] [--seat <name>] [--json]',
+    usage: 'library desk [open|close|clear] [book|project <slug>] [--location collection|shelf|shared] [--shelf archive] [--seat <name>] [--json]',
     actions: ['clear', 'close', 'open'],
     positional: false,
     ported: true,
@@ -126,11 +138,29 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   init: {
     summary: 'Make a folder a Library workspace, and tell this machine about it.',
-    usage: 'library init [<folder>] [--force] [--json]',
+    usage: 'library init [<folder>] [--writable] [--json]',
     actions: [],
     positional: true,
     ported: true,
     row: 'S13',
+  },
+  library: {
+    summary: 'The Libraries registered on this machine, and which one bare `deskpost` opens from anywhere.',
+    usage: 'library library [list] [--json]; library library default <folder> [--json]',
+    actions: ['default', 'list'],
+    positional: false,
+    // PLAN-install-onboarding.md step 5a (S55, ADR-0059): the default Library is one registry entry's `default: true`.
+    ported: true,
+    row: 'S55',
+  },
+  menu: {
+    summary: 'The main menu, which bare `deskpost` opens: your seats, a number to resume one, n<number> for a new conversation, + for a new seat.',
+    usage: 'library menu [--workspace <path>] [--width <n>] [--plain] [--assistant claude|codex] [--script <answers-file>]',
+    actions: [],
+    positional: false,
+    // PLAN-install-onboarding.md step 5a (S55, ADR-0059): tools/SeatPicker.ps1 ported, launching through `seat start`.
+    ported: true,
+    row: 'S55',
   },
   mcp: {
     summary: 'The validated reader: one tool call the way a harness makes it, or the stdio MCP server a harness launches.',
@@ -160,7 +190,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S17',
   },
   publish: {
-    summary: 'Publish, batch-publish or refresh a Shelf Book into the shared collection.',
+    summary: "Publish, batch-publish or refresh a Shelf Book into the Library's collection: collection/ on a local Library, Basic Memory on one attached to it.",
     usage:
       'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] --preflight; ' +
       'library publish batch --plan <path> --preflight; library publish refresh <slug> --title <t> --summary <s> --preflight',
@@ -192,9 +222,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
-    usage: 'library seat <enter|start|status|retire> [<name>] [arguments]',
-    // `enter` and `retire` are ported (S14's second half); `start` and `status` refuse by name, and
-    // `hold` is the claim holder `enter` spawns, never run by hand.
+    usage:
+      'library seat <enter|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]',
+    // All four answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
+    // `enter` spawns, never run by hand.
     actions: ['enter', 'hold', 'retire', 'start', 'status'],
     positional: false,
     ported: true,
@@ -211,6 +243,27 @@ export const VERBS: Record<string, VerbDeclaration> = {
     ported: false,
     row: 'S18',
   },
+  rollback: {
+    summary: 'Switch this install back to the version before it, once every session is closed; a shared Book open on a Desk blocks it.',
+    usage: 'library rollback [--yes] [--json]',
+    actions: [],
+    positional: false,
+    // PLAN-install-onboarding.md step 8 (S54, ADR-0058), keeping ADR-0054's shared-Desk preflight. Windows in 1.1.
+    ported: true,
+    row: 'S54',
+  },
+  setup: {
+    summary: 'Set up Deskpost: the installer\'s one question and screen, its read-only plan and its apply; or a Library made later, shown first and made on one yes.',
+    usage:
+      'library setup [<folder>] [--repair] [--yes] [--json]; library setup --ask --answers <file> [--library <dir|none>] [--install-root <dir>] [--yes] [--allow-overlap] [--repair] [--no-path-change]; ' +
+      'library setup --plan --answers <file> --resources <tree> [--register-as <root>/current] --out <file>; library setup --apply --plan-file <file>; ' +
+      'library setup --welcome --workspace <Library> [--assistant claude|codex]',
+    actions: [],
+    positional: true,
+    // PLAN-install-onboarding.md steps 2-4 (S54, ADR-0057). The installer runs --ask, --plan and --apply; a reader runs the bare verb.
+    ported: true,
+    row: 'S54',
+  },
   shared: {
     summary: "The shared collection's own Catalog: list an entry, archive a Book.",
     usage: 'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight',
@@ -221,9 +274,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S16',
   },
   shelf: {
-    summary: 'The local Shelf: render, new, rename, remove, archive, restore, stub.',
-    usage: 'library shelf <action> [arguments] [--workspace <path>] [--json]',
-    actions: ['archive', 'duplicates', 'new', 'remove', 'rename', 'render', 'restore', 'stub'],
+    summary: "The local Shelf: render, new, rename, remove, archive, restore, stub, and carry another workspace's capture notes in.",
+    usage: 'library shelf <action> [arguments] [--workspace <path>] [--json]; library shelf carry <old-workspace> --book <capture-book> (--preflight | --user-confirmed --plan-id <id>)',
+    actions: ['archive', 'carry', 'duplicates', 'new', 'remove', 'rename', 'render', 'restore', 'stub'],
     positional: false,
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.
@@ -239,6 +292,15 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // book action by name; the old `resume` action is gone, because a resume IS the same batch run again.
     ported: true,
     row: 'S15',
+  },
+  uninstall: {
+    summary: 'Remove what this install put on the machine, shown first: its entries in your Libraries, its PATH entry and its program files. Your Libraries stay.',
+    usage: 'library uninstall [--dry-run] [--yes] [--json]',
+    actions: [],
+    positional: false,
+    // PLAN-install-onboarding.md step 8 (S54, ADR-0058): a frozen list, the Libraries edited first, then a finisher. Windows in 1.1.
+    ported: true,
+    row: 'S54',
   },
   verbs: {
     summary: 'This table, as JSON, for the gate check that resolves a matrix row against it.',
@@ -281,12 +343,16 @@ export function verbInventory(): Record<string, unknown> {
   return { schema: 1, verbs, reader_tools: [...READER_TOOLS].sort() };
 }
 
-/** The usage text, composed from the table so the help and the dispatch cannot drift apart. */
+/**
+ * The usage text, composed from the table so the help and the dispatch cannot drift apart. It says `deskpost`, the
+ * command a reader types (ADR-0055); the table's own usage lines keep `library`, the alias, which is what the
+ * acceptance matrix's rows name.
+ */
 export function usageText(): string {
   const lines = [
-    'library -- the Library, from the command line.',
+    'deskpost -- the Library, from the command line. (`library` is the same command, kept as an alias through 1.x.)',
     '',
-    'Usage: library [--workspace <path>] <command> [arguments]',
+    'Usage: deskpost [--workspace <path>] <command> [arguments]',
     '',
     'Commands:',
   ];
@@ -294,7 +360,7 @@ export function usageText(): string {
     const declaration = VERBS[name]!;
     const mark = declaration.ported ? '' : `   (not ported yet -- ${declaration.row})`;
     lines.push(`  ${name.padEnd(10)} ${declaration.summary}${mark}`);
-    lines.push(`             ${declaration.usage}`);
+    lines.push(`             ${declaration.usage.replace(/(^|; )library /g, '$1deskpost ')}`);
   }
   lines.push('');
   lines.push('Every command but `init` runs against one workspace, chosen in this order:');

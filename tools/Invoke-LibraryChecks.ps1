@@ -3336,6 +3336,7 @@ Invoke-Check 'skill.library-help-pointers-resolve' {
     }
     $skillText = Get-Content -LiteralPath $skillFile -Raw
     $problems = [Collections.Generic.List[string]]::new()
+    $skillVersion = [string](Get-Content -LiteralPath (Join-Path $program '.codex-plugin/plugin.json') -Raw | ConvertFrom-Json).version
 
     # --- 1. Every relative .md link out of the Skill resolves. --------------------------------------
     $skillFiles = @(Get-ChildItem -LiteralPath $skillRoot -Filter '*.md' -File -Recurse)
@@ -3346,6 +3347,17 @@ Invoke-Check 'skill.library-help-pointers-resolve' {
             $resolved = Join-Path (Split-Path -Parent $file.FullName) $target
             if (-not (Test-Path -LiteralPath $resolved)) {
                 [void]$problems.Add("$($file.Name) -> $target does not resolve")
+            }
+        }
+        # A LINK PINNED TO THE RELEASE'S TAG (PLAN-assistant-onboarding.md step 7): init copies the Skill into a
+        # Library, where `../../../docs/` names nothing, so its design-record links name the repository at this
+        # release's tag. Such a link resolves when it names THIS version and the doc is in the tree it is built from.
+        foreach ($m in [regex]::Matches($text, '\]\(https://github\.com/eKioga/deskpost/blob/v([0-9A-Za-z.+-]+)/([^)#]+\.md)(?:#[^)]*)?\)')) {
+            if ($m.Groups[1].Value -cne $skillVersion) {
+                [void]$problems.Add("$($file.Name) links docs at v$($m.Groups[1].Value), not this release's v$skillVersion")
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $program $m.Groups[2].Value))) {
+                [void]$problems.Add("$($file.Name) -> $($m.Groups[2].Value) (pinned) is not in this tree")
             }
         }
     }
@@ -3410,7 +3422,7 @@ Invoke-Check 'skill.library-help-pointers-resolve' {
     if (-not $skillGuidesSection.Success) {
         throw 'SKILL.md has no "## Guides to hand the reader" section, so a session is never told the reader guides exist'
     }
-    $skillGuides = @([regex]::Matches($skillGuidesSection.Groups[1].Value, '(?m)^[*-]\s+\[[^\]]*\]\(\.\./\.\./\.\./docs/([A-Za-z0-9_./-]+\.md)\)') |
+    $skillGuides = @([regex]::Matches($skillGuidesSection.Groups[1].Value, '(?m)^[*-]\s+\[[^\]]*\]\((?:\.\./\.\./\.\./|https://github\.com/eKioga/deskpost/blob/v[0-9A-Za-z.+-]+/)docs/([A-Za-z0-9_./-]+\.md)\)') |
         ForEach-Object { $_.Groups[1].Value } | Sort-Object -CaseSensitive -Unique)
     if (-not $skillGuides.Count) { throw 'SKILL.md "## Guides to hand the reader" lists nothing; this half would pass vacuously' }
     foreach ($guide in $indexGuides) {

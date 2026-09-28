@@ -63,3 +63,7 @@ reachable only by direct link. A page meant to be the public home for the name t
 added to the site navigation, announced in a post, or both — which a domain would not have needed.
 - Librarian 2.0's own repository records its rename in its own ADRs, per ADR-0009; this record
   binds only the family name.
+
+**Amended 2026-09-27 (S54).** 1.0 shipped the CLI as `library`, so "CLI `deskpost`" above was not carried out.
+[ADR-0055](0055-the-command-is-deskpost-and-the-binary-stays-library-exe.md) supersedes that consequence: from 1.1
+the command is `deskpost`, with `library` kept as an alias, and the binary stays `library.exe` through 1.x.

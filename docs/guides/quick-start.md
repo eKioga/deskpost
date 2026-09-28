@@ -3,7 +3,7 @@
 > Your first session, from a fresh install to your first answer. It takes about ten minutes.
 >
 > Not installed yet? The [README](../../README.md#install) has the one line for Windows and the one
-> line for Linux. Come back when `library doctor` has passed.
+> line for Linux. Come back when the installer's `deskpost doctor` has passed.
 
 ## The one sentence
 
@@ -13,27 +13,59 @@ so "what does it know right now?" always has an answer you can point at.
 Everything else follows from that. A Desk belongs to a **seat**, which is a named place to work.
 Nothing sits you at one by default, so the first thing any session needs is a seat.
 
-## 1. Make a Library, a Project and a seat
+## 1. Sit down at your first seat
 
-A Library is a workspace folder. This is the only part of this guide that you type:
+The main menu is the way in, and the one you will use every day:
 
 ```
-library init ~/Library
-cd ~/Library
-library hub new my-project --title "My project"
-library seat start me --project my-project
+deskpost
 ```
 
-On Windows, write `$HOME\Library` for the folder. Here is what each line does:
+Type it in any terminal. Inside a Library it opens that Library; anywhere else it opens your
+**default Library**, the first one you made. The first time, with no seats yet, it offers two ways
+to start (a terminal install offers the same choice as it ends):
 
-- `init` lays the workspace out. You get the Notebook, the Shelf with its **Holding Shelf** and
-  **Report Inbox**, and a local collection for your Projects and Books, all on your own disk.
-- `hub new` makes a **Project Hub**. It is the durable record of one piece of work: what it is for,
-  what is open, what was decided.
-- `seat start` makes the seat `me`, binds it to `my-project`, opens the Hub on its Desk, and starts
-  Claude Code there. For Codex, add `--command codex`.
+```
+This Library has no seats yet. A seat is a place to work, with its own Desk and one Project.
+  [Enter] Show me around   a deskpost-help seat with the Librarian as your guide
+  [+]     Your first seat  name a project, and start working in it
+  [q]     Later
+```
 
-Next time, `library seat start me` is enough. The seat remembers its Project.
+**Show me around** starts the Librarian in a seat called `deskpost-help`, as your guide; it is an
+ordinary seat you can come back to, and `h` offers it again from the menu any time. **`+`** makes a
+seat for your own project:
+
+```
+Your first seat. A seat is a place to work, with its own Desk and one Project.
+Name your project (empty to cancel) › Home lab
+```
+
+It shows what it will make and waits for Enter:
+
+- a **Project Hub**, `home-lab`: the durable record of one piece of work, what it is for, what is
+  open, what was decided. An existing Hub of that name is reused.
+- a **seat** of the same name, bound to that Project, with the Hub open on its Desk.
+
+Then it starts Claude Code there (or Codex, if that is the one you chose; `a` switches).
+
+**Next time, `deskpost` shows your seats**, one numbered line each with its Project, whether anyone is
+at it, when it was last used, and what its last conversation was called:
+
+| Type | And |
+| --- | --- |
+| a number | you are back in that seat's last conversation, in the assistant it was held with |
+| `n` and a number | a new conversation at that seat |
+| `+` | a new seat |
+| `r` and a number | retire that seat, after it shows you what it archives |
+| `b` | Basic Memory, which shares your Books across machines (optional) |
+| `q` | nothing; you stay where you are |
+
+A seat already in use by another session is shown as held, and choosing it says so: one session per
+seat. Seats cost nothing, so start another.
+
+Made the program without a Library (`-Library none`)? `deskpost setup <folder>` makes one, shown
+first and made on one Enter.
 
 ## 2. Ask where you are
 
@@ -104,7 +136,7 @@ Three questions answer almost everything, and "what's on my desk?" answers all t
 3. **Is the Book open at *this* seat?** Desks do not share. What is open at another seat is not
    open at yours.
 
-`library doctor` in your Library checks the installation itself: the guards, the reader, and each
+`deskpost doctor` in your Library checks the installation itself: the guards, the reader, and each
 assistant's settings. Every result it prints names its own remedy.
 
 ## Where to go next

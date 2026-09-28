@@ -20,7 +20,7 @@
     upgrade does to a workspace is decided by where the program root is, and that is what moves.
 
     In order: install A; init through the shim; every program path in the workspace names current and
-    exists; install B; `init --force` succeeds and leaves every program path as it was; -Rollback to
+    exists; install B; `init` succeeds and leaves every program path as it was; -Rollback to
     A and the same again; upgrade to B again, DELETE versions\A, and every program path still exists
     and `init --force` still succeeds.
 
@@ -58,6 +58,11 @@ $registry = Join-Path $WorkRoot 'registry'
 $current = Join-Path $installRoot 'current'
 $shim = Join-Path $installRoot 'bin\library.cmd'
 New-Item -ItemType Directory -Path $workspace, $registry | Out-Null
+# THE MACHINE'S OWN INSTALL AND REGISTRY STAY OUT OF IT (S58): since 1.2 the installer reads the stored user PATH and
+# the registered Libraries, so a real install on this machine would refuse the fixture's. Restored in the finally below.
+$savedEnv = @{}
+foreach ($name in 'DESKPOST_USER_PATH', 'LIBRARY_WORKSPACES', 'LIBRARY_WORKSPACE', 'LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM') { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+$env:DESKPOST_USER_PATH = ';'; $env:LIBRARY_WORKSPACES = $registry; $env:LIBRARY_WORKSPACE = ''; $env:LIBRARY_SEAT = ''; $env:LIBRARY_SEAT_CLAIM = ''
 
 $checks = [Collections.Generic.List[object]]::new()
 function Check([bool]$Condition, [string]$Label) { [void]$checks.Add([pscustomobject]@{ ok = $Condition; check = $Label }) }
@@ -73,8 +78,18 @@ function Invoke-Quiet([string]$Executable, [string[]]$Arguments) {
 
 function Install-From([string]$Folder, [switch]$Rollback) {
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installer, '-InstallRoot', $installRoot, '-NoPathChange', '-SkipPlugin', '-Json')
-    if ($Rollback) { $arguments += '-Rollback' } else { $arguments += @('-Release', $Folder) }
-    Invoke-Quiet 'powershell.exe' $arguments
+    # -Library none: since 1.1 the installer sets up a Library, and this fixture initialises its own workspace below.
+    if ($Rollback) { return Invoke-Quiet 'powershell.exe' ($arguments + '-Rollback') }
+    $arguments += @('-Release', $Folder, '-Library', 'none')
+    # SINCE 1.2 A -Json INSTALL NAMES THE PLAN IT WAS SHOWN (PLAN-assistant-onboarding.md step 2), so the fixture does
+    # what an assistant does: a dry run, then the install by its plan_id. stdout alone carries the JSON object.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $dry = @(& powershell.exe @($arguments + '-DryRun') 2>$null) } finally { $ErrorActionPreference = $previous }
+    $planId = ''
+    try { $planId = [string](($dry | Where-Object { $_ -like '{*' } | Select-Object -Last 1) | ConvertFrom-Json).plan_id } catch { $planId = '' }
+    if (-not $planId) { return [pscustomobject]@{ exit = 1; text = "the dry run gave no plan_id: $($dry -join ' ')" } }
+    Invoke-Quiet 'powershell.exe' ($arguments + @('-PlanId', $planId))
 }
 
 function Get-LinkLeaf { if (Test-Path -LiteralPath $current) { Split-Path -Leaf ([string]@((Get-Item -LiteralPath $current -Force).Target)[0]) } }
@@ -88,7 +103,9 @@ function Get-ProgramPaths {
         if (-not (Test-Path -LiteralPath $file)) { continue }
         # An escaped quote is a quote BEFORE any backslash becomes a slash: a JSON command line carries
         # `\"<path>\"`, and turning that into `/"` gave every quoted path a trailing slash (measured).
-        $text = (Get-Content -LiteralPath $file -Raw).Replace('\\', '/').Replace('\"', '"').Replace('\', '/')
+        # THE ESCAPED QUOTE FIRST (S58): Windows PowerShell's ConvertTo-Json writes `'` as backslash-u0027, and read
+        # as a path that became `<path>/u0027`, a program path that does not exist.
+        $text = (Get-Content -LiteralPath $file -Raw).Replace(('\' + 'u0027'), "'").Replace('\\', '/').Replace('\"', '"').Replace('\', '/')
         foreach ($match in [regex]::Matches($text, $pattern, 'IgnoreCase')) { [void]$found.Add($match.Value) }
     }
     @($found | Sort-Object -Unique)
@@ -109,7 +126,7 @@ function Test-ProgramPaths([string]$When) {
 }
 
 function Initialize-Again([string]$When) {
-    $ran = Invoke-Quiet $shim @('init', $workspace, '--registry-root', $registry, '--force', '--json')
+    $ran = Invoke-Quiet $shim @('init', $workspace, '--registry-root', $registry, '--json')
     Check ($ran.exit -eq 0) "$When`: library init --force exited $($ran.exit): $(($ran.text -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1))"
 }
 
@@ -140,6 +157,18 @@ try {
         $bumped = [regex]::Replace($text, '("' + $field + '"\s*:\s*")' + [regex]::Escape($versionA) + '"', ('${1}' + $versionB + '"'))
         if ($bumped -eq $text) { throw "$manifest has no $field of $versionA to re-version." }
         [IO.File]::WriteAllText($file, $bumped, [Text.UTF8Encoding]::new($false))
+    }
+    # THE INVENTORY NAMES THE RE-VERSIONED FILES TOO (S58): the installer refuses a staged file whose hash is not the
+    # one `.inventory.json` records, so the three edited above are re-hashed there, as a build would have written them.
+    $inventoryFile = Join-Path $treeB '.inventory.json'
+    if (Test-Path -LiteralPath $inventoryFile) {
+        $inventory = Get-Content -LiteralPath $inventoryFile -Raw | ConvertFrom-Json
+        foreach ($entry in $inventory.files) {
+            if ($entry.path -in 'release.json', '.codex-plugin/plugin.json', '.claude-plugin/plugin.json') {
+                $entry.sha256 = (Get-FileHash -LiteralPath (Join-Path $treeB $entry.path) -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+        [IO.File]::WriteAllText($inventoryFile, ($inventory | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
     }
     $archiveB = "deskpost-$versionB-win-x64.zip"
     $zip = [IO.Compression.ZipFile]::Open((Join-Path $releaseB $archiveB), [IO.Compression.ZipArchiveMode]::Create)
@@ -202,6 +231,7 @@ catch {
     Check $false ("the fixture stopped: " + $_.Exception.Message)
 }
 finally {
+    foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
     if (-not $Keep -and (Test-Path -LiteralPath $WorkRoot)) {
         # The junction first, as a link: a recursive delete must never be asked to walk through it.
         if (Test-Path -LiteralPath $current) { [IO.Directory]::Delete($current) }

@@ -46,12 +46,12 @@ import { notebookQuarantineInventory } from './notebook.ts';
 import { homeDirectory, readMarker } from './workspace.ts';
 import { openCollection } from './collection.ts';
 import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
+import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookRootParts } from './places.ts';
+import { markerConnection } from './basicmemory.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
-const BOOK_ROOT_PATTERN = /^(shelf\/_archive|books|archive|shelf)\/([a-z0-9][a-z0-9-]*)$/;
-const BOOK_ROOT_ACCEPT_PATTERN = /^(?:(?:shelf\/_archive|books|archive|shelf)\/)?[a-z0-9][a-z0-9-]*$/;
 const PROJECT_ROOT_PATTERN = /^(projects|archive\/projects)\/[a-z0-9][a-z0-9-]*$/;
 
 export interface DeskOptions {
@@ -65,34 +65,16 @@ function refuse(message: string): never {
   throw new DeskRefusal(message);
 }
 
-interface BookRootParts {
-  root: string;
-  collection: 'shelf' | 'shared';
-  shelf: 'active' | 'archive';
-  slug: string;
-  wikiRoot: string;
-}
-
 /**
  * One Book root taken apart. `collection` decides HOW a page is fetched -- shared over MCP, shelf
  * from disk -- and `shelf` is which half of the shared collection it is in. Keeping them separate
  * matters: an archived Book is still shared, and a reader that branched on a single field would have
- * to re-derive one of the two.
+ * to re-derive one of the two. The grammar is `places.ts`'s since PLAN-basic-memory.md added `shared/`.
  */
 export function splitBookRoot(root: string): BookRootParts {
-  const match = BOOK_ROOT_PATTERN.exec(root);
-  if (!match) refuse('Virtual Desk open-book state is malformed.');
-  const prefix = match[1]!;
-  const slug = match[2]!;
-  return {
-    root,
-    collection: prefix === 'shelf' || prefix === 'shelf/_archive' ? 'shelf' : 'shared',
-    shelf: prefix === 'archive' || prefix === 'shelf/_archive' ? 'archive' : 'active',
-    slug,
-    // The value a caller must never re-derive: the archive's `archive/<slug>` shape is the one place
-    // it differs from what a reader would guess.
-    wikiRoot: `${prefix}/${slug}/wiki`,
-  };
+  const parts = parseBookRoot(root);
+  if (parts === null || parts.root !== root) refuse('Virtual Desk open-book state is malformed.');
+  return parts;
 }
 
 /**
@@ -157,9 +139,14 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     'open-book',
   ).map(convertToBookRoot);
   if (new Set(openBookRoots).size !== openBookRoots.length) refuse('Virtual Desk open-book state contains duplicates.');
+  // A BOOK'S LOCATION IS ITS PLACE (PLAN-basic-memory.md step 1): `shelf`, `shared`, and on a local Library
+  // `collection` for its own `books/` -- which until 1.1 this reported as `shared`, a Book the Library holds
+  // itself described as one it reaches.
+  const overviewMarker = readMarker(workspace);
+  const overviewLocal = overviewMarker !== null && String(overviewMarker['backend'] ?? '') === 'local';
   const openBooks = openBookRoots.map((root) => {
     const parts = splitBookRoot(root);
-    return { slug: parts.slug, location: parts.collection, shelf: parts.shelf, root: parts.root };
+    return { slug: parts.slug, location: placeOfRoot(parts, overviewLocal), shelf: parts.shelf, root: parts.root };
   });
   const openProjects = readStateLines(
     deskFilePath(stateDirectory, seat, 'projects'),
@@ -884,7 +871,13 @@ export interface DeskWriteOptions {
   workspace: string;
   action: 'open' | 'close' | 'clear';
   kind: 'book' | 'project';
-  location: 'shared' | 'shelf';
+  /**
+   * WHERE THE BOOK IS (PLAN-basic-memory.md step 1). `collection` is the Library's own collection, which is what
+   * no location has always meant. `shared` is the shared collection: on a workspace attached to Basic Memory that
+   * IS its collection, and on a local Library it is the Basic Memory CONNECTION's `shared/` form -- or, with no
+   * connection set up, the old spelling of `collection` it has always been. `undefined` is the collection.
+   */
+  location: 'shared' | 'shelf' | 'collection' | undefined;
   shelf: 'active' | 'archive';
   slug: string;
   seat?: string | undefined;
@@ -944,7 +937,10 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
       openBooks = [];
       openProjects = [];
     } else if (options.kind === 'book') {
-      const bookRoot = newBookRoot(options.location, options.shelf, options.slug);
+      const connected = local && markerConnection(workspace) !== null;
+      const place =
+        options.location === 'shelf' ? 'shelf' : options.location === 'shared' && (!local || connected) ? 'shared' : 'collection';
+      const bookRoot = rootForPlace(place, options.shelf, options.slug, local);
       if (options.action === 'open') {
         // A Shelf Book is local, so its existence is checkable here; a shared Book -- active or
         // archived -- is validated by the reader against the collection at read time.
@@ -956,9 +952,10 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
           if (!fs.existsSync(path.join(workspace, ...wikiRelative.split('/')))) {
             refuse(`No Shelf Book '${options.slug}' exists at ${wikiRelative}.`);
           }
-        } else if (localCollection) {
+        } else if (localCollection && place === 'collection') {
           // A LOCAL COLLECTION IS AS CHECKABLE AS THE SHELF, so a Book it does not hold is refused here
-          // rather than opened and refused at every read.
+          // rather than opened and refused at every read. A `shared/` Book is the connection's, and like a
+          // Basic Memory backend's it is validated by the reader at read time.
           const wikiRelative = splitBookRoot(bookRoot).wikiRoot;
           if (!fs.existsSync(path.join(localCollection.root, ...wikiRelative.split('/')))) {
             refuse(`No Book '${options.slug}' exists in this workspace's local collection at collection/${wikiRelative}.`);
@@ -966,7 +963,11 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
         }
         if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
       } else {
-        openBooks = openBooks.filter((entry) => entry !== bookRoot);
+        // A `shared/` ENTRY CLOSES WHETHER OR NOT THE CONNECTION IS STILL THERE (S53 post-build inspection #2): after a
+        // disconnect `--location shared` would otherwise mean `books/<slug>`, leaving the entry on the Desk for good --
+        // and the rollback check's own close command a silent no-op.
+        const sharedForm = local && options.location === 'shared' ? rootForPlace('shared', options.shelf, options.slug, true) : null;
+        openBooks = openBooks.filter((entry) => entry !== bookRoot && entry !== sharedForm);
       }
     } else {
       const projectRoot = options.shelf === 'archive' ? `archive/projects/${options.slug}` : `projects/${options.slug}`;
@@ -997,7 +998,8 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
     action: options.action,
     seat,
     kind: options.kind,
-    location: options.kind === 'book' ? options.location : null,
+    // NO LOCATION ECHOES `shared`, as the oracle's default always has -- `clear` included.
+    location: options.kind === 'book' ? (options.location ?? 'shared') : null,
     // Reported for a Book too, now that it means something there.
     shelf: options.shelf,
     slug: options.slug,
@@ -1024,13 +1026,6 @@ function assertBookSlug(slug: string): void {
   refuse(
     `Book slug '${slug}' is malformed. A slug is lowercase letters, digits and hyphens, starting with a letter or a digit.`,
   );
-}
-
-function newBookRoot(location: 'shared' | 'shelf', shelf: 'active' | 'archive', slug: string): string {
-  if (location === 'shelf') {
-    return shelf === 'archive' ? `shelf/_archive/${slug}` : `shelf/${slug}`;
-  }
-  return shelf === 'archive' ? `archive/${slug}` : `books/${slug}`;
 }
 
 void getShelfBook;

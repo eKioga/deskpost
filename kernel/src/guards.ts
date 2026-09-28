@@ -52,11 +52,12 @@ import { claudeHookShapeFaults, hookRegistrationProblems, isObject } from './hoo
 import { programRoot } from './programroot.ts';
 import { runDeskContextVerb } from './deskcontext.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
+import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, BOOK_SLUG_PATTERN } from './places.ts';
 
 const EVENT = 'PreToolUse';
-const BOOK_ROOT_PATTERN = /^(?:shelf\/_archive|books|archive|shelf)\/[a-z0-9][a-z0-9-]*$/;
-export const BOOK_ROOT_ACCEPT_PATTERN = /^(?:(?:shelf\/_archive|books|archive|shelf)\/)?[a-z0-9][a-z0-9-]*$/;
-const BOOK_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+// The Book-root grammar is `places.ts`'s (PLAN-basic-memory.md step 1): a Desk holding a `shared/` connection
+// Book must read as a Desk here too, or every guard would deny the whole of it as malformed.
+export { BOOK_ROOT_ACCEPT_PATTERN };
 
 class GuardExit {}
 

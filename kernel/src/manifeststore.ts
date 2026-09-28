@@ -30,7 +30,12 @@ const STORE_SCHEMA = 1;
 const STORE_ROOT = 'internal/book-manifests';
 const KEEP_GENERATIONS = 5;
 
-export const MANIFEST_COLLECTIONS = ['shelf', 'shelf-archive', 'shared', 'shared-archive'];
+/**
+ * Every store, each paired with its archive by suffix (`discovery.ts` derives the pair). The Local collection's
+ * pair (PLAN-basic-memory.md step 1) sits between the Shelf's and the shared collection's, so a Book the
+ * Library holds itself orders ahead of one it only reaches.
+ */
+export const MANIFEST_COLLECTIONS = ['shelf', 'shelf-archive', 'collection', 'collection-archive', 'shared', 'shared-archive'];
 
 export interface CommitPointer {
   generation: number;

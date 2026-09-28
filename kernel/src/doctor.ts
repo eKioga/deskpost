@@ -46,7 +46,8 @@ import {
   type OwnerRow,
 } from './notebook.ts';
 import { readNotebookLayout, seatNotebookRoots } from './notebooklayout.ts';
-import { asList, codexHookShapeFaults, enabledClaudePluginHooks, codexRegistrationProblems, claudeHookShapeFaults, hookEntryText, hookRegistrationProblems, isObject, type Json } from './hookregistry.ts';
+import { asList, codexHookShapeFaults, enabledClaudePluginHooks, codexRegistrationProblems, claudeHookShapeFaults, hookRegistrationProblems, isObject, REQUIRED_HOOKS, type Json } from './hookregistry.ts';
+import { COMMAND_NAME, findAssistant, installRootOf, installShim, ownedRegistration, programOfBinary, programRelation, readInstallReceipt, resolveOnPath } from './machine.ts';
 
 const WORKSPACE_ABSENT_REASON =
   'no reader workspace is attached, so nothing was read from a Shelf, a Notebook or ' +
@@ -59,20 +60,6 @@ interface CheckResult {
   check: string;
   status: string;
   detail: string;
-}
-
-/** Every absolute `.ps1` a registration names that is not on disk. The count is of registrations. */
-/**
- * The program a hook entry starts, on POSIX (S42): `command` itself when `args` carries the rest, and
- * otherwise the command line's first word, quoted or bare. Null when there is nothing to name.
- */
-function hookProgram(entry: unknown): string | null {
-  if (!isObject(entry) || typeof entry['command'] !== 'string') return null;
-  const command = entry['command'].trim();
-  if (!command) return null;
-  if (Array.isArray(entry['args'])) return command;
-  const quoted = /^"([^"]*)"/.exec(command) ?? /^'([^']*)'/.exec(command);
-  return quoted ? quoted[1]! : command.split(/\s+/)[0]!;
 }
 
 /** Whether this machine can start a program: a path that exists and is executable, or a bare name on PATH. */
@@ -110,52 +97,104 @@ function gitBashPresent(): boolean {
   return programFiles !== undefined && fs.existsSync(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
 }
 
-function unresolvedHookPaths(trees: unknown[]): { registrations: number; unresolved: string[]; unstartable: string[]; shellForm: string[] } {
-  let registrations = 0;
-  const unresolved: string[] = [];
-  const shellForm: string[] = [];
-  // A REGISTRATION THIS MACHINE CANNOT START IS NO GUARD (S42). Measured in a clean Linux distro: every hook
-  // `library init` wrote there was `powershell.exe`, which does not exist, and this check passed them all,
-  // because it asked only whether the named SCRIPT exists. A Claude hook that cannot start does not block.
-  // POSIX only, where it was measured; on Windows powershell.exe is part of the system.
-  const unstartable: string[] = [];
-  for (const tree of trees) {
+/**
+ * DESKPOST'S OWN SCRIPT NAMES, lowercased: the hooks it requires, the reader adapter, and every script the running
+ * program ships under `.claude/hooks`. A PowerShell registration is Deskpost's only when it runs one of these with
+ * `-File` (PLAN-install-onboarding.md step 8's table); a reader's own `.ps1` hook is theirs and never judged.
+ */
+export function deskpostScripts(program: string): Set<string> {
+  const names = new Set<string>([...REQUIRED_HOOKS.map((hook) => hook.file.toLowerCase()), 'validated-bookreader.ps1']);
+  try {
+    for (const name of fs.readdirSync(path.join(program, '.claude', 'hooks'))) if (name.toLowerCase().endsWith('.ps1')) names.add(name.toLowerCase());
+  } catch {
+    // A program with no hooks folder ships none; the required names still stand.
+  }
+  return names;
+}
+
+/** A kernel binary as the shell resolves it (S47): a registration naming `bin/library` on Windows runs `library.exe`. */
+function kernelFileOnDisk(file: string): string {
+  return process.platform === 'win32' && !/\.exe$/i.test(file) && !fs.existsSync(file) ? `${file}.exe` : file;
+}
+
+interface RegistrationFaults {
+  registrations: number;
+  unresolved: string[];
+  unstartable: string[];
+  shellForm: string[];
+  /** A kernel binary of a different Deskpost program than the one running doctor (F16). */
+  otherProgram: string[];
+  /** This install's own `versions/<v>`, named directly rather than through `current` (ADR-0038). */
+  versionFolder: string[];
+}
+
+/**
+ * THE REGISTRATIONS DESKPOST OWNS, JUDGED ONE BY ONE (PLAN-install-onboarding.md step 9, #15, F16). Each entry is read
+ * as the invocation its harness runs (machine.ts): exec form's `command` + `args`, or the command line tokenized
+ * quote-aware, so a program path holding a space is seen. Only Deskpost's own are judged -- a kernel binary running
+ * `hook` or `mcp`, or one of Deskpost's scripts run with `-File` -- and a reader's own hooks are counted but never
+ * flagged. `judgeProgram` marks the trees the WORKSPACE wrote, whose kernel binaries must be the running program's:
+ * an enabled plugin's tree is its own install and is judged only for presence.
+ */
+function registrationFaults(trees: { tree: unknown; judgeProgram: boolean }[], program: string): RegistrationFaults {
+  const own = deskpostScripts(program);
+  const faults: RegistrationFaults = { registrations: 0, unresolved: [], unstartable: [], shellForm: [], otherProgram: [], versionFolder: [] };
+  for (const { tree, judgeProgram } of trees) {
     if (!isObject(tree) || !('hooks' in tree) || tree['hooks'] === null) continue;
     for (const [eventName, blocks] of Object.entries(isObject(tree['hooks']) ? (tree['hooks'] as Json) : {})) {
       for (const block of asList(blocks)) {
         if (!isObject(block) || !('hooks' in block)) continue;
         for (const entry of asList(block['hooks'])) {
           if (entry === null) continue;
-          registrations += 1;
-          if (process.platform !== 'win32') {
-            const program = hookProgram(entry);
-            if (program !== null && !program.includes('${') && !canStart(program)) unstartable.push(`${eventName} -> ${program}`);
+          faults.registrations += 1;
+          const owned = ownedRegistration(entry, own);
+          if (owned === null) continue;
+          // A REGISTRATION THIS MACHINE CANNOT START IS NO GUARD (S42). Measured in a clean Linux distro: every hook
+          // `library init` wrote there was `powershell.exe`, which does not exist. POSIX only, where it was measured.
+          const starter = owned.invocation.program;
+          if (process.platform !== 'win32' && owned.kind === 'script' && !starter.includes('${') && !canStart(starter)) {
+            faults.unstartable.push(`${eventName} -> ${starter}`);
+            continue;
           }
-          for (const token of hookEntryText(entry).split(/\s+/)) {
-            const candidate = token.replace(/^"+|"+$/g, '');
-            // THE KERNEL BINARY A REGISTRATION NAMES (S42) must be there, as a script must.
-            if (/[\\/]bin[\\/]library(\.exe)?$/i.test(candidate) && path.isAbsolute(candidate)) {
-              // ON WINDOWS THE BINARY IS `library.exe` (S47, the Report Inbox): a registration naming `bin/library` is
-              // resolved as the shell resolves it before it is called missing. What fails there is the FORM -- measured
-              // in S7's Windows Sandbox, a quoted command in shell form runs through PowerShell where Git Bash is absent,
-              // and PowerShell refuses it as 'Unexpected token' -- and doctor says that rather than "not there".
-              const file = process.platform === 'win32' && !/\.exe$/i.test(candidate) && !fs.existsSync(candidate) ? `${candidate}.exe` : candidate;
-              if (!fs.existsSync(file) || !fs.statSync(file).isFile()) unresolved.push(`${eventName} -> ${candidate}`);
-              else if (process.platform === 'win32' && isObject(entry) && !Array.isArray(entry['args']) && typeof entry['command'] === 'string' && /^\s*["']/.test(entry['command']) && !gitBashPresent()) {
-                shellForm.push(`${eventName} -> ${candidate}`);
-              }
-              continue;
-            }
-            if (!candidate.endsWith('.ps1')) continue;
-            if (candidate.includes('${')) continue;
-            if (!path.isAbsolute(candidate)) continue;
-            if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) unresolved.push(`${eventName} -> ${candidate}`);
+          if (owned.file.includes('${') || !path.isAbsolute(owned.file)) continue;
+          const file = owned.kind === 'kernel' ? kernelFileOnDisk(owned.file) : owned.file;
+          if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+            faults.unresolved.push(`${eventName} -> ${owned.file}`);
+            continue;
           }
+          if (owned.kind !== 'kernel') continue;
+          // ON WINDOWS WHAT FAILS IS THE FORM (S47): measured in S7's Windows Sandbox, a quoted command in shell form
+          // runs through PowerShell where Git Bash is absent, and PowerShell refuses it as 'Unexpected token'.
+          if (process.platform === 'win32' && isObject(entry) && !Array.isArray(entry['args']) && typeof entry['command'] === 'string' && /^\s*["']/.test(entry['command']) && !gitBashPresent()) {
+            faults.shellForm.push(`${eventName} -> ${owned.file}`);
+            continue;
+          }
+          if (!judgeProgram) continue;
+          const relation = programRelation(programOfBinary(owned.file), program);
+          if (relation === 'other') faults.otherProgram.push(`${eventName} -> ${owned.file}`);
+          else if (relation === 'version-folder') faults.versionFolder.push(`${eventName} -> ${owned.file}`);
         }
       }
     }
   }
-  return { registrations, unresolved, unstartable, shellForm };
+  return faults;
+}
+
+/** The refusal for a registration naming another program or a version folder, or null when there is none. */
+function programFaultText(faults: RegistrationFaults, workspace: string, program: string, harness: string): string | null {
+  if (faults.otherProgram.length) {
+    return (
+      `${harness} runs a different Deskpost program than this one (${program}): ${faults.otherProgram.join('; ')}. ` +
+      `A Library answers to one install. Re-run \`library init ${workspace}\` with this one, or run doctor from the install it names.`
+    );
+  }
+  if (faults.versionFolder.length) {
+    return (
+      `${harness} names a version folder directly rather than ${program}: ${faults.versionFolder.join('; ')}. ` +
+      `The next upgrade would leave it running an old version (ADR-0038). Re-run \`library init ${workspace}\`.`
+    );
+  }
+  return null;
 }
 
 function parseJsonFile(file: string): unknown {
@@ -224,7 +263,8 @@ function guardsRegistered(workspace: string, program: string): string {
   if (blocking.length) {
     throw new Error(blocking.map((problem) => problem.detail).join('; ') + ` -- a session rooted in ${workspace} would run without them. Re-run \`library init ${workspace}\`.`);
   }
-  const { registrations, unresolved, unstartable, shellForm } = unresolvedHookPaths(trees);
+  const faults = registrationFaults([...ownTrees.map((tree) => ({ tree, judgeProgram: true })), ...(pluginTree !== null ? [{ tree: pluginTree, judgeProgram: false }] : [])], program);
+  const { registrations, unresolved, unstartable, shellForm } = faults;
   if (unresolved.length) {
     throw new Error(
       'a registered hook names a script that is not there, so it fails open silently: ' + unresolved.join('; ') + `. Re-run \`library init ${workspace}\` to re-point them.`,
@@ -242,6 +282,8 @@ function guardsRegistered(workspace: string, program: string): string {
         shellForm.join('; ') + '. A release since 0.2.0 registers the binary in exec form; update the plugin, or re-run ' + `\`library init ${workspace}\`.`,
     );
   }
+  const programFault = programFaultText(faults, workspace, program, `${workspace} registers a hook that`);
+  if (programFault !== null) throw new Error(programFault);
   const shapeFaults: string[] = [];
   for (const tree of trees) {
     if (!isObject(tree) || !('hooks' in tree) || tree['hooks'] === null) continue;
@@ -268,8 +310,28 @@ function guardsRegistered(workspace: string, program: string): string {
       serverDetail = servers.includes('validated-book-reader') ? 'reader declared' : `declares ${servers.length} server(s), none of them the validated reader`;
       // A reader this machine cannot start is no reader (S42; POSIX, as the hooks above).
       const reader = servers.includes('validated-book-reader') ? (mcp['mcpServers'] as Json)['validated-book-reader'] : null;
-      const program = process.platform !== 'win32' && isObject(reader) && typeof reader['command'] === 'string' ? reader['command'] : null;
-      if (program !== null && !program.includes('${') && !canStart(program)) serverDetail = `declares the validated reader as '${program}', which this machine cannot start`;
+      const starter = process.platform !== 'win32' && isObject(reader) && typeof reader['command'] === 'string' ? reader['command'] : null;
+      if (starter !== null && !starter.includes('${') && !canStart(starter)) serverDetail = `declares the validated reader as '${starter}', which this machine cannot start`;
+      // THE READER IS A DESKPOST REGISTRATION TOO (step 8's table), held to the same two rules as a hook: its program
+      // must be there, and a kernel reader must be this program's (F16).
+      const owned = reader !== null ? ownedRegistration(reader, deskpostScripts(program)) : null;
+      if (owned !== null && !owned.file.includes('${') && path.isAbsolute(owned.file)) {
+        const file = owned.kind === 'kernel' ? kernelFileOnDisk(owned.file) : owned.file;
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+          throw new Error(
+            `${mcpPath} declares the validated reader as ${owned.file}, which is not there, so a session in ${workspace} has no ` +
+              `tool to read an open Book. Re-run \`library init ${workspace}\` to re-point it.`,
+          );
+        }
+        const relation = owned.kind === 'kernel' ? programRelation(programOfBinary(owned.file), program) : 'same';
+        const fault = programFaultText(
+          { registrations: 1, unresolved: [], unstartable: [], shellForm: [], otherProgram: relation === 'other' ? [`validated-book-reader -> ${owned.file}`] : [], versionFolder: relation === 'version-folder' ? [`validated-book-reader -> ${owned.file}`] : [] },
+          workspace,
+          program,
+          `${mcpPath} declares a reader that`,
+        );
+        if (fault !== null) throw new Error(fault);
+      }
     }
   }
   if (serverDetail !== 'reader declared' && plugin !== null && plugin.declaresReader) serverDetail = 'reader declared';
@@ -370,7 +432,8 @@ function codexGuardsRegistered(workspace: string, program: string): string {
   }
   const problems = codexRegistrationProblems(document);
   if (problems.length) throw new Error(problems.join(' ') + ` A Codex seat in ${workspace} would run without them. Re-run \`library init ${workspace}\`.`);
-  const { registrations, unresolved, unstartable } = unresolvedHookPaths([document]);
+  const codexFaults = registrationFaults([{ tree: document, judgeProgram: true }], program);
+  const { registrations, unresolved, unstartable } = codexFaults;
   if (unresolved.length) {
     throw new Error(
       'a registered Codex hook names a script that is not there, so it cannot start and the boundary is ' +
@@ -383,6 +446,8 @@ function codexGuardsRegistered(workspace: string, program: string): string {
         unstartable.join('; ') + `. Re-run \`library init ${workspace}\` to re-point them.`,
     );
   }
+  const codexProgramFault = programFaultText(codexFaults, workspace, program, `${workspace} registers a Codex hook that`);
+  if (codexProgramFault !== null) throw new Error(codexProgramFault);
   const trust = codexProjectTrust(workspace);
   if (!trust.trusted) {
     const where = trust.config_present ? trust.config : `${trust.config} (which does not exist)`;
@@ -740,6 +805,69 @@ function outputNamespaced(workspace: string): string {
   return `${slugs.length} project namespace(s), no loose files`;
 }
 
+// --- The program's own checks (PLAN-install-onboarding.md step 9, ADR-0055) -------------------------------
+
+function samePath(left: string, right: string): boolean {
+  // BY NAME, THEN PHYSICALLY (post-build inspection #10): a PATH entry spelled through a junction, subst or 8.3 name is the same shim.
+  if (process.platform === 'win32' && path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()) return true;
+  try {
+    const [a, b] = [fs.realpathSync.native(left), fs.realpathSync.native(right)];
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * WHETHER TYPING `deskpost` RUNS THIS INSTALL. Only an installed program is asked: a checkout run from source, or a
+ * release tree being checked, has no command to resolve and says so. A shim that resolves elsewhere -- another
+ * install's `bin`, an earlier PATH entry -- fails, naming it, because a reader typing the word would run that one.
+ * Not on PATH fails too, unless the receipt records that the reader chose `-NoPathChange` (step 7).
+ */
+function commandResolves(program: string): string {
+  const root = installRootOf(program);
+  if (root === null) return `SKIP: this program is not an installed release (it runs from ${program}), so no \`${COMMAND_NAME}\` command is expected`;
+  const shim = installShim(root);
+  const found = resolveOnPath(COMMAND_NAME);
+  const expected = process.platform === 'win32' ? shim : path.join(program, 'bin', 'library');
+  if (found !== null && samePath(found, expected)) return `\`${COMMAND_NAME}\` resolves to this install (${found})`;
+  if (found !== null) {
+    throw new Error(
+      `\`${COMMAND_NAME}\` in this terminal runs ${found}, not this install's ${expected}: an earlier PATH entry shadows it. ` +
+        `Remove that entry, or put ${path.dirname(shim)} before it.`,
+    );
+  }
+  if (process.platform === 'win32' && !fs.existsSync(shim)) throw new Error(`this install has no ${shim}, so \`${COMMAND_NAME}\` cannot run it. Re-run the installer to put it back.`);
+  if (readInstallReceipt(root)?.['path_change'] === false) {
+    return `WARN: \`${COMMAND_NAME}\` is not on PATH, as chosen at install (-NoPathChange); run it as ${expected}`;
+  }
+  throw new Error(
+    `\`${COMMAND_NAME}\` is not on this terminal's PATH, so typing it runs nothing. Open a new terminal; if it is still ` +
+      `missing, add ${path.dirname(shim)} to your user PATH or re-run the installer.`,
+  );
+}
+
+/** Which assistant can be the Librarian here: informational, never a failure (step 9). */
+function assistantPresent(): string {
+  const claude = findAssistant('claude');
+  const codex = findAssistant('codex');
+  if (claude === null && codex === null) {
+    return 'WARN: no assistant found: install Claude Code or Codex to talk to the Librarian. Deskpost itself works without one.';
+  }
+  return [claude !== null ? `Claude Code at ${claude}` : null, codex !== null ? `Codex at ${codex}` : null].filter((part) => part !== null).join('; ');
+}
+
+function runCheck(check: string, body: () => string): CheckResult {
+  try {
+    const detail = body();
+    if (detail.startsWith('WARN: ')) return { check, status: 'warn', detail: detail.substring(6) };
+    if (detail.startsWith('SKIP: ')) return { check, status: 'skipped', detail: detail.substring(6) };
+    return { check, status: 'pass', detail };
+  } catch (error) {
+    return { check, status: 'fail', detail: (error as Error).message };
+  }
+}
+
 // --- The runner -----------------------------------------------------------------------------------
 
 export interface DoctorResult {
@@ -767,16 +895,18 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
   ];
   const results: CheckResult[] = checks.map(([check, body]) => {
     if (!workspace) return { check, status: 'skipped', detail: WORKSPACE_ABSENT_REASON };
-    try {
-      const detail = body();
-      return detail.startsWith('WARN: ') ? { check, status: 'warn', detail: detail.substring(6) } : { check, status: 'pass', detail };
-    } catch (error) {
-      return { check, status: 'fail', detail: (error as Error).message };
-    }
+    return runCheck(check, body);
   });
+  // THE PROGRAM'S OWN CHECKS RUN WITH OR WITHOUT A LIBRARY (F4), in their own list: `checks` stays the workspace checks
+  // the PowerShell runner's -WorkspaceOnly reports, which the acceptance matrix compares row for row.
+  const programChecks: CheckResult[] = [
+    runCheck('program.command-resolves', () => commandResolves(program)),
+    runCheck('program.assistant-present', assistantPresent),
+  ];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;
   const failed = count('fail');
+  const programFailed = programChecks.filter((row) => row.status === 'fail').length;
   return {
     refusal: null,
     value: {
@@ -789,8 +919,9 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
       failed,
       skipped: count('skipped'),
       checks: results as unknown as PsJsonValue,
+      program_checks: programChecks as unknown as PsJsonValue,
       shared_library_write: false,
     },
-    exitCode: failed ? 1 : 0,
+    exitCode: failed || programFailed ? 1 : 0,
   };
 }

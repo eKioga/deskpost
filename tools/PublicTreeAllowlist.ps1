@@ -111,6 +111,9 @@ $script:PublicTreeIncludeFiles = @(
     'install.ps1',
     'install.sh',
     'LICENSE',
+    # THE PAGE AN ASSISTANT INSTALLS FROM (PLAN-assistant-onboarding.md step 1, S57). A release ships it beside the
+    # installers, copied from here, and the README's one sentence points an assistant at the release's copy.
+    'llms-install.md',
     # THE ENTRY POINT, and it is product before anything else here is. library desk is what the
     # workspace instructions this tree ships tell a reader to type, so a published program without
     # it is one whose own first instruction refuses. The .cmd shim travels with the .ps1 it names:

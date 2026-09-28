@@ -20,6 +20,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readMarker } from './workspace.ts';
 
 const PIN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -42,8 +43,61 @@ function stateFile(workspace: string, name: string): string {
   return path.join(workspace, '.claude', name);
 }
 
+// --- a local Library's connection (PLAN-basic-memory.md step 2; ADR-0050) --------------------------------
+//
+// A LOCAL LIBRARY'S BASIC MEMORY LIVES IN ITS MARKER AND NOWHERE ELSE, as `connections.basic_memory`. The three
+// `.claude/.library-*` files are what `init` reads to decide a workspace's BACKEND and what the fence reads to
+// decide who may write, so a connection written there would turn the next `init` into a silent conversion to
+// `backend: basic-memory` (the plan's Fable #1). And the marker's `backend: local` is honoured BEFORE the
+// environment: a shell with AI_LIBRARY_MCP_URL set must not make a local Library reach for a server it never
+// connected (round 2). A workspace whose backend IS Basic Memory reads the environment and the files as before.
+
+export interface BasicMemoryConnection {
+  url: string;
+  collection_id: string;
+  /** The collection's name on the server, as set-up chose it. Shown, never addressed by. */
+  collection_name: string;
+  /** The server's storage folder on this machine, which import reads. '' when set-up was given none. */
+  storage: string;
+}
+
+/** Whether this workspace's marker says `backend: local`. An unreadable marker is not local: it answers nothing. */
+export function isLocalBackend(workspace: string): boolean {
+  let marker: Record<string, unknown> | null = null;
+  try {
+    marker = readMarker(workspace);
+  } catch {
+    return false;
+  }
+  return marker !== null && String(marker['backend'] ?? '') === 'local';
+}
+
+function textField(record: unknown, name: string): string {
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) return '';
+  const value = (record as Record<string, unknown>)[name];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** The connection a local Library's marker records, or null when it records none (or is not local). */
+export function markerConnection(workspace: string): BasicMemoryConnection | null {
+  if (!isLocalBackend(workspace)) return null;
+  const connections = (readMarker(workspace) ?? {})['connections'];
+  const record = connections !== null && typeof connections === 'object' && !Array.isArray(connections)
+    ? (connections as Record<string, unknown>)['basic_memory']
+    : undefined;
+  const url = textField(record, 'url');
+  if (!url) return null;
+  return {
+    url,
+    collection_id: textField(record, 'collection_id'),
+    collection_name: textField(record, 'collection_name'),
+    storage: textField(record, 'storage'),
+  };
+}
+
 /** `Resolve-LibraryMcpUrl` without its program-root fallback: the endpoint, or '' when none is configured. */
 export function configuredMcpUrl(workspace: string): string {
+  if (isLocalBackend(workspace)) return markerConnection(workspace)?.url ?? '';
   const fromEnvironment = (process.env['AI_LIBRARY_MCP_URL'] ?? '').trim();
   return fromEnvironment || readState(stateFile(workspace, '.library-mcp-url'));
 }
@@ -51,6 +105,12 @@ export function configuredMcpUrl(workspace: string): string {
 /** The endpoint, or `Resolve-LibraryMcpUrl`'s own refusal, naming all three routes. */
 export function resolveMcpUrl(workspace: string): string {
   const resolved = configuredMcpUrl(workspace);
+  if (!resolved && isLocalBackend(workspace)) {
+    refuse(
+      'This Library has no Basic Memory connection, so there is nothing to talk to. Connect one with ' +
+        '`library basic-memory setup`; the Library itself needs none.',
+    );
+  }
   if (!resolved) {
     refuse(
       'No Basic Memory endpoint is configured, so there is nothing to talk to. Pass -McpUrl <url>, ' +
@@ -65,6 +125,7 @@ export function resolveMcpUrl(workspace: string): string {
 
 /** `Resolve-LibraryCollectionId -Optional`: the collection id, or ''. */
 export function configuredCollectionId(workspace: string): string {
+  if (isLocalBackend(workspace)) return markerConnection(workspace)?.collection_id ?? '';
   const fromEnvironment = (process.env['AI_LIBRARY_PROJECT_ID'] ?? '').trim();
   return fromEnvironment || readState(stateFile(workspace, '.library-project'));
 }
@@ -84,6 +145,7 @@ export function resolveCollectionId(workspace: string): string {
 
 /** `Resolve-LibrarySharedCollectionRoot`, which never throws: the share root, or ''. */
 export function configuredSharedRoot(workspace: string): string {
+  if (isLocalBackend(workspace)) return markerConnection(workspace)?.storage ?? '';
   const fromEnvironment = (process.env['LIBRARY_SHARED_COLLECTION_ROOT'] ?? '').trim();
   return fromEnvironment || readState(stateFile(workspace, '.library-shared-root'));
 }
@@ -115,6 +177,17 @@ function field(object: unknown, name: string): unknown {
   return (object as Record<string, unknown>)[name];
 }
 
+/**
+ * EVERY MCP CALL IS BOUNDED (PLAN-basic-memory.md step 2, Fable #11). Until 1.1 `fetch` ran with no signal, so a
+ * host that accepted the connection and never answered -- a black-holed route, a server stuck in a start --
+ * hung whatever asked it, the menu included. Twenty seconds per request, or LIBRARY_MCP_TIMEOUT_MS; the
+ * request and the reading of its answer share the one deadline.
+ */
+export function mcpTimeoutMs(): number {
+  const configured = Number((process.env['LIBRARY_MCP_TIMEOUT_MS'] ?? '').trim());
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20000;
+}
+
 export class McpSession {
   private sessionId: string | null = null;
   private nextId = 1;
@@ -141,11 +214,16 @@ export class McpSession {
     if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
     let response: Response;
     let body: string;
+    const timeout = mcpTimeoutMs();
     try {
-      response = await fetch(this.url, { method: 'POST', headers, body: asciiJson(payload) });
+      response = await fetch(this.url, { method: 'POST', headers, body: asciiJson(payload), signal: AbortSignal.timeout(timeout) });
       body = await response.text();
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.substring(0, 4096)}`);
     } catch (error) {
+      const name = (error as Error).name;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        refuse(`MCP ${method} failed: ${this.url} did not answer within ${Math.round(timeout / 100) / 10} s, so nothing was read from it.`);
+      }
       refuse(`MCP ${method} failed: ${(error as Error).message}`);
     }
     if (method === 'initialize') {
