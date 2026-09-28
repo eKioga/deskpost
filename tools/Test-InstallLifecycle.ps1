@@ -19,6 +19,15 @@ param(
     [string]$Installer
 )
 $ErrorActionPreference = 'Continue'
+# EACH RELEASE'S OWN VERSION, read from its SHA256SUMS, so the fixture judges whatever two releases it is given (S59):
+# the labels were typed as 1.0.0 and 1.1.0-s54, and 4 of 16 cases failed on every build after S54 for that alone.
+function Get-ReleaseVersion([string]$Folder) {
+    $names = @(Get-Content -LiteralPath (Join-Path $Folder 'SHA256SUMS') | ForEach-Object { if ($_ -match 'deskpost-(\S+)-win-x64\.zip') { $Matches[1] } })
+    if ($names.Count -ne 1) { throw "$Folder\SHA256SUMS names $($names.Count) win-x64 archives; the fixture needs one." }
+    $names[0]
+}
+$versionA = Get-ReleaseVersion $ReleaseA; $versionB = Get-ReleaseVersion $ReleaseB
+if ($versionA -eq $versionB) { throw "-ReleaseA and -ReleaseB are both $versionA; an upgrade needs two versions." }
 $results = [Collections.Generic.List[string]]::new()
 function Check([bool]$c, [string]$l) { $results.Add($(if ($c) { "PASS  $l" } else { "FAIL  $l" })) }
 if (Test-Path $Work) { Remove-Item $Work -Recurse -Force }
@@ -31,7 +40,7 @@ Push-Location $Work
 try {
 $R = "$Work\prog"; $L = "$Work\lib"; $installer = if ($Installer) { $Installer } else { Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'install.ps1' }
 try { & $installer -Release $ReleaseA -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "A: $($_.Exception.Message)" }
-Check $ok 'install 1.0.0'
+Check $ok "install $versionA"
 $hooks = Get-FileHash "$L\.claude\settings.local.json"
 # AN UPGRADE INTERRUPTED AFTER current SWITCHED, THEN UNDONE: current, current.json and the hooks as they were.
 $recordBefore = [IO.File]::ReadAllText("$R\current.json")
@@ -39,26 +48,26 @@ $env:DESKPOST_INSTALL_FAULT_AFTER = 'activated'
 try { & $installer -Release $ReleaseB -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null } catch { }
 $env:DESKPOST_INSTALL_FAULT_AFTER = ''
 try { & $installer -Release $ReleaseB -InstallRoot $R -Yes -NoPathChange -Resume undo | Out-Null; $ok = $true } catch { $ok = $false; "undo: $($_.Exception.Message)" }
-Check ($ok -and (Get-Item "$R\current").Target -like '*1.0.0' -and [IO.File]::ReadAllText("$R\current.json") -eq $recordBefore -and -not (Test-Path "$R\versions\1.1.0-s54")) 'an interrupted upgrade is undone: current, current.json and the new version folder as they were'
+Check ($ok -and (Get-Item "$R\current").Target -like "*\$versionA" -and [IO.File]::ReadAllText("$R\current.json") -eq $recordBefore -and -not (Test-Path "$R\versions\$versionB")) 'an interrupted upgrade is undone: current, current.json and the new version folder as they were'
 Check ((Get-FileHash "$L\.claude\settings.local.json").Hash -eq $hooks.Hash) 'the undone upgrade left the Library''s hooks byte for byte'
 try { & $installer -Release $ReleaseB -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "B: $($_.Exception.Message)" }
 $record = Get-Content "$R\current.json" -Raw | ConvertFrom-Json
-Check ($ok -and $record.version -eq '1.1.0-s54' -and $record.previous -eq '1.0.0') "upgrade 1.0.0 -> 1.1.0-s54 in place ($($record.version), previous $($record.previous))"
+Check ($ok -and $record.version -eq $versionB -and $record.previous -eq $versionA) "upgrade $versionA -> $versionB in place ($($record.version), previous $($record.previous))"
 Check ((Get-FileHash "$L\.claude\settings.local.json").Hash -eq $hooks.Hash) 'the upgrade left the Library''s hooks byte for byte'
 $doctor = & "$R\bin\deskpost.cmd" doctor --workspace $L --json | ConvertFrom-Json
 Check ($doctor.failed -eq 0) "doctor green after the upgrade ($($doctor.failed) failed)"
 # AN INTERRUPTED `deskpost rollback` MET BY THE INSTALLER (post-build inspection #1): current put back, never removed.
 $receipt = Get-Content "$R\install-receipt.json" -Raw | ConvertFrom-Json
-$receipt.pending = [pscustomobject]@{ id = 'plantedrollback'; operation = 'rollback'; owner = $null; phase = 'recorded'; version = '1.0.0'; from = '1.1.0-s54'; previous_record = [IO.File]::ReadAllText("$R\current.json") }
+$receipt.pending = [pscustomobject]@{ id = 'plantedrollback'; operation = 'rollback'; owner = $null; phase = 'recorded'; version = $versionA; from = $versionB; previous_record = [IO.File]::ReadAllText("$R\current.json") }
 [IO.File]::WriteAllText("$R\install-receipt.json", ($receipt | ConvertTo-Json -Depth 12))
-[IO.Directory]::Delete("$R\current"); New-Item -ItemType Junction -Path "$R\current" -Target "$R\versions\1.0.0" | Out-Null
+[IO.Directory]::Delete("$R\current"); New-Item -ItemType Junction -Path "$R\current" -Target "$R\versions\$versionA" | Out-Null
 $refused = $false; try { & "$R\bin\deskpost.cmd" rollback --yes 2>&1 | Out-Null; $refused = $LASTEXITCODE -ne 0 } catch { $refused = $true }
 try { & $installer -Release $ReleaseB -InstallRoot $R -Yes -NoPathChange -Resume undo | Out-Null; $ok = $true } catch { $ok = $false; "rollback recovery: $($_.Exception.Message)" }
 $afterRecovery = Get-Content "$R\install-receipt.json" -Raw | ConvertFrom-Json
-Check ($refused -and $ok -and (Get-Item "$R\current").Target -like '*1.1.0-s54' -and (Test-Path "$R\bin\deskpost.cmd") -and $null -eq $afterRecovery.pending) 'an interrupted rollback is recovered by putting current back, the shims kept'
+Check ($refused -and $ok -and (Get-Item "$R\current").Target -like "*\$versionB" -and (Test-Path "$R\bin\deskpost.cmd") -and $null -eq $afterRecovery.pending) 'an interrupted rollback is recovered by putting current back, the shims kept'
 & "$R\bin\deskpost.cmd" rollback --yes | Out-Null
 $record = Get-Content "$R\current.json" -Raw | ConvertFrom-Json
-Check ($LASTEXITCODE -eq 0 -and $record.version -eq '1.0.0' -and (Get-Item "$R\current").Target -like '*1.0.0') "deskpost rollback switches current back ($($record.version))"
+Check ($LASTEXITCODE -eq 0 -and $record.version -eq $versionA -and (Get-Item "$R\current").Target -like "*\$versionA") "deskpost rollback switches current back ($($record.version))"
 $doctor = & "$R\bin\deskpost.cmd" doctor --workspace $L --json | ConvertFrom-Json
 Check ($doctor.failed -eq 0) "doctor green after the rollback, the Library still guarded ($($doctor.failed) failed)"
 # A reader's own hook in the same block must survive uninstall.

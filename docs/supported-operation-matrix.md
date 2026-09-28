@@ -799,6 +799,13 @@ agrees with everything.
 | `tools/Build-KernelRelease.ps1` | The release: `bun build --compile` per platform, inside the public program tree, zipped, with SHA256SUMS. |
 | `install.ps1`, `install.sh` | Verify a release, place it in a versioned directory, switch the `current` link onto it, then `library doctor`. |
 | `tools/Test-KernelUpgrade.ps1` | The upgrade and rollback fixture, run over a built release under a scratch install root. |
+| `tools/Test-BuiltRelease.ps1` | Every release fixture against one built release folder; the gate row `release.fixtures-all-run` fails when a fixture that takes a release is missing from its list. |
+
+**Before a release is pushed,** run `tools/Test-BuiltRelease.ps1 -Release <the folder to publish> -PreviousRelease
+<an older release folder> -Work <a scratch folder on another drive from %TEMP%>` against the exact folder that will be
+published, and push nothing unless it ends "All N release fixtures passed". A fixture that is not run reports NOT
+RUN, and that fails the run too. The fixtures take a built release, so the gate cannot run them; S57 built 1.2
+without running `Test-KernelUpgrade.ps1`, and S58 found it failing at its first install.
 
 ## The matrix
 

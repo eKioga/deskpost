@@ -169,8 +169,11 @@ try {
     elseif ($resolution.status -ceq 'named') {
         # Named by LIBRARY_SEAT or by an explicit -Seat: a name, not a verified binding.
         if ($source -cne 'compact') {
-            Add-Paragraph ("Virtual Desk: seat '$([string]$resolution.seat)', named by the environment rather than by a " +
-                'verified binding. Its claim is held by whatever started this session.')
+            # NOT "UNBOUND" TO A NEW USER (the Report Inbox's S60 note, #1): a seat `deskpost` started is held by the
+            # launcher, and there is nothing to bind. The kernel's Desk context proves which case this is on each prompt.
+            Add-Paragraph ("Virtual Desk: seat '$([string]$resolution.seat)', named by the environment. Its claim is held " +
+                'by whatever started this session; when that is the deskpost launcher, the seat is this session''s and ' +
+                'there is nothing to bind.')
         }
     }
     elseif ($source -ceq 'compact') {

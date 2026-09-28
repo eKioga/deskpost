@@ -33,6 +33,7 @@ import { emptyMasterIndexText } from './notebook.ts';
 import {
   markerField,
   markerPath,
+  pathIsInsideWorkspace,
   readMarker,
   readRegistry,
   HOST_FLAVOR,
@@ -911,6 +912,24 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     throw new Error(
       `'${options.workspacePath}' is not ${rootFormName()}, so it cannot be a Library workspace: a workspace root has to be a place every tool on this machine can name the same way.`,
     );
+  }
+
+  // NO LIBRARY INSIDE ANOTHER, NOR AROUND ONE (the Report Inbox's S61 note). `init` run from a registered Library's
+  // `.claude` folder made that folder a Library, and its `CLAUDE.md` is one Claude Code loads as the outer Library's
+  // project instructions. Judged here, in the plan, so `setup` refuses it too and nothing is written first. Only a
+  // registered Library whose marker is still there counts: a stale row for a folder that has gone blocks nothing.
+  for (const entry of readRegistry(options.registryRoot)) {
+    if (entry.root.toLowerCase() === workspace.toLowerCase() || !fs.existsSync(markerPath(entry.root))) continue;
+    if (pathIsInsideWorkspace(workspace, entry.root)) {
+      throw new Error(
+        `${workspace} is inside the Library at ${entry.root}, and a Library cannot hold another one; nothing has been written. Choose a folder outside it.`,
+      );
+    }
+    if (pathIsInsideWorkspace(entry.root, workspace)) {
+      throw new Error(
+        `${workspace} holds the Library at ${entry.root}, and a Library cannot hold another one; nothing has been written. Choose a folder that does not contain it.`,
+      );
+    }
   }
 
   const programRoot = options.programRoot;

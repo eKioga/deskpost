@@ -5621,6 +5621,32 @@ Invoke-Check 'acceptance.matrix-doc-matches-rows' {
     'the generated region of docs/supported-operation-matrix.md is byte-identical to a render of the rows'
 }
 
+# The release fixtures take a built release, so the gate cannot run them; tools/Test-BuiltRelease.ps1 runs them all
+# before a release is pushed. What the gate CAN hold is that list: S57 never ran Test-KernelUpgrade.ps1, and S58 found
+# it failing against 1.2.0 (the S58 Report Inbox note, #10). A tools/Test-*.ps1 whose parameters take a release and
+# which the runner does not name fails here, read from both files' parse trees rather than by pattern. A static read,
+# so it sits above the if ($Fast) block and runs in both modes, the pre-commit run above all.
+Invoke-Check 'release.fixtures-all-run' {
+    $runner = Join-Path $PSScriptRoot 'Test-BuiltRelease.ps1'
+    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) { throw 'tools/Test-BuiltRelease.ps1 is missing, so nothing runs the release fixtures.' }
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
+    if ($errors) { throw "tools/Test-BuiltRelease.ps1 does not parse: $($errors[0].Message)" }
+    $listed = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -like 'Test-*.ps1' }, $true) | ForEach-Object Value | Sort-Object -Unique)
+    $takesRelease = [Collections.Generic.List[string]]::new()
+    foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'Test-*.ps1' -File)) {
+        if ($file.Name -eq 'Test-BuiltRelease.ps1') { continue }
+        $fileAst = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+        $names = @(if ($fileAst.ParamBlock) { $fileAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath } })
+        if (@($names | Where-Object { $_ -in 'Release', 'ReleaseA', 'ReleaseB' }).Count) { $takesRelease.Add($file.Name) }
+    }
+    $missing = @($takesRelease | Where-Object { $_ -notin $listed })
+    if ($missing.Count) { throw "tools/Test-BuiltRelease.ps1 does not run $($missing -join ', '), which take(s) a built release: add it to `$script:Fixtures." }
+    $absent = @($listed | Where-Object { -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $_) -PathType Leaf) })
+    if ($absent.Count) { throw "tools/Test-BuiltRelease.ps1 names $($absent -join ', '), which is not in tools/." }
+    "tools/Test-BuiltRelease.ps1 runs all $($takesRelease.Count) release fixture(s): $($takesRelease -join ', ')"
+}
+
 # --- Offline self-test suites ---------------------------------------------------------------------
 if ($Fast) {
     foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.migration', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'collection-ownership.selftest', 'acceptance.harness-selftest')) {

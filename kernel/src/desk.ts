@@ -37,6 +37,7 @@ import {
   assertNoMaintenanceBarrier,
   assertSeatClaimHeld,
   getSeatClaimState,
+  launcherHoldsSeatForThisAgent,
   readSeatActivity,
   readSeatBinding,
   writeSeatActivity,
@@ -278,10 +279,14 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     seat_source: resolved.source ?? '',
     claim_state: thisClaim.state,
     claimed: thisClaim.state !== 'free',
+    // A LAUNCHER-HELD SEAT SAYS SO HERE TOO (the S60 report, #1), in the field that already carries the claim's story,
+    // so `this_agent: false` -- no ADR-0018 binding -- is not read as "this seat is not yours".
     state_note:
       thisClaim.state === 'orphaned'
         ? `agent ${thisClaim.agentPid} alive, claim holder gone; re-enter this seat to repair it`
-        : '',
+        : resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat)
+          ? 'held for this session by the deskpost launcher that started it; there is nothing to bind'
+          : '',
     agent_pid: thisClaim.agentPid,
     agent_start_utc: thisClaim.agentStartUtc,
     bound_utc: thisClaim.boundUtc,

@@ -1,7 +1,7 @@
 # Installing Deskpost: instructions for the assistant
 
-**Deskpost 1.2.0.** This page belongs to the release at
-`https://github.com/eKioga/deskpost/releases/download/v1.2.0`, called **the release base** below. Pass it as
+**Deskpost 1.2.1.** This page belongs to the release at
+`https://github.com/eKioga/deskpost/releases/download/v1.2.1`, called **the release base** below. Pass it as
 `-Release` on both commands, so the plan you show and the install you run come from the same release.
 
 You are reading this because the person you are working with asked you to install Deskpost. That request is
@@ -19,8 +19,9 @@ what it put there.
 Say this, or close to it:
 
 > I'll ask you one question, where your Library should live. Then I'll ask to run one command that downloads
-> Deskpost and shows its plan without changing anything. If you say yes to the plan, I'll ask to run one more
-> command that installs it. Each takes about a minute.
+> Deskpost and shows its plan without changing anything. The plan is a conversation: you can change any row of
+> it just by telling me, for example where the program itself is installed. If you say yes to the plan, I'll ask
+> to run one more command that installs it. Each takes about a minute.
 
 Your harness may show its own permission prompt for each command, so the person may see two. In a mode that approves
 commands by itself, such as Claude Code's auto mode, they see none, and your question in step 4 is their only
@@ -40,13 +41,13 @@ their answer, and `<ASSISTANT>` with `claude` if you are Claude Code, or `codex`
 **In PowerShell:**
 
 ```powershell
-$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.2.0/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.0' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.2.1/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.1' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 **In Git Bash:**
 
 ```bash
-d="$(cygpath -w "$(mktemp -d)")" && curl -fsSL 'https://github.com/eKioga/deskpost/releases/download/v1.2.0/install.ps1' -o "$d\\install.ps1" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$d\\install.ps1" -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.0' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+d="$(cygpath -w "$(mktemp -d)")" && curl -fsSL 'https://github.com/eKioga/deskpost/releases/download/v1.2.1/install.ps1' -o "$d\\install.ps1" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$d\\install.ps1" -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.1' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 Quote `<LIBRARY>` in single quotes. In PowerShell a `'` inside it is written `''`. In Git Bash it is written `'\''`.
@@ -70,9 +71,11 @@ when they choose it, and then run command 1 again with it.
 ## 4. Show the plan, and ask
 
 Show `plan.rows` as a small table, then "and N files in your Library", and the Undo row. Then ask one short
-question: **"Install it? Say yes, no, or what to change."** The table shows what can change: the Library folder,
-the program folder, the other assistant when both are found, and bringing an existing Library up to date when
-it is offered. A change means running command 1 again with it, and showing the new plan.
+question that says any row can change: **"Install it? Say yes, no, or change any row, for example 'put the
+program in D:\Tools\Deskpost'."** The table shows what can change: the Library folder, the program folder, the
+other assistant when both are found, and bringing an existing Library up to date when it is offered. The person
+asked only about the Library, so they will not assume the program folder is theirs to choose unless the question
+says so. A change means running command 1 again with it, and showing the new plan.
 
 **Wait for their answer.** Do not run command 2 until they have said yes to this plan.
 
@@ -82,7 +85,7 @@ Run the **same script** from `script.path`, with the same answers, plus `-Json -
 `-DryRun`.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<script.path>' -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.0' -Json -PlanId <plan_id> -Library '<LIBRARY>' -Librarian <ASSISTANT>
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<script.path>' -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.1' -Json -PlanId <plan_id> -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 Add any flag the person chose in step 3. The script plans again from the same release before it writes anything,
@@ -123,7 +126,7 @@ For an upgrade, add: "`deskpost rollback` returns to the version you had."
   both commands outside the sandbox, in Codex's own dialog. If escalation is unavailable or declined, do not
   change a policy or look for a way round it. Give the person the terminal install instead, to run themselves in
   PowerShell:
-  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.2.0/install.ps1)))`
+  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.2.1/install.ps1)))`
 - **First start.** Codex reads a Library's guards only once the folder is trusted and its hooks are reviewed, and it
   skips unreviewed hooks silently. Tell the person: when Codex starts in the Library, trust the folder, then type
   `/hooks` and approve Deskpost's hooks, and only then ask to be shown around.

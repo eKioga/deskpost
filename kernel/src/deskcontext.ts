@@ -20,7 +20,7 @@ import { splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
-import { getSeatClaimState } from './seatclaim.ts';
+import { getSeatClaimState, launcherHoldsSeatForThisAgent } from './seatclaim.ts';
 import { deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { recordLauncherConversation, updateSeatConversationRecord } from './seat.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
@@ -146,7 +146,12 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
         // swallowed: a record, and a prompt must not wait on it
       }
     } else {
-      seatNote = `, ${seatState.source === 'environment' ? 'named by LIBRARY_SEAT' : 'named explicitly'} and not bound to this conversation`;
+      // A LAUNCHER-HELD SEAT IS SAID AS ONE (the S60 report, #1): "not bound" sent a new user, seconds after `deskpost`
+      // started the seat, off to bind it. Only when the claim's token and the process tree both prove it.
+      seatNote =
+        seatState.source === 'environment' && launcherHoldsSeatForThisAgent(stateDirectory, seat)
+          ? ', held for this session by the deskpost launcher that started it'
+          : `, ${seatState.source === 'environment' ? 'named by LIBRARY_SEAT' : 'named explicitly'} and not bound to this conversation`;
       // A LAUNCHER-HELD SESSION REPORTS ITS CONVERSATION (ADR-0059): Codex takes no id at launch, so `seat start` could
       // not record one, and this is the first moment the id is known. The token proves the seat; THE PROCESS TREE PROVES
       // THE SESSION (inspection #1): the environment is inherited by anything run under the agent, a nested Codex

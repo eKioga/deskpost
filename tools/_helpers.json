@@ -406,6 +406,10 @@
       "role": "test",
       "summary": "Fixture-only, fully offline suite for the currency check's -Book tier on its SHELF path: the Virtual Desk guard in both directions and per seat, a missing Desk file reading as closed, a shared root of the same slug not opening the Shelf Book, the exclusion of _book.md and _index.md, the Notebook source winning when both exist, and Shelf-read article text reaching the pin mapping and the host allowlist. Every Book that must be refused carries a decoy article, so a dropped guard reports a WRONG VERDICT rather than a missing file."
     },
+    "Test-BuiltRelease.ps1": {
+      "role": "test",
+      "summary": "Every release fixture against one built release folder (S59): Test-KernelUpgrade, Test-InstallOnboarding, Test-InstallProof and Test-InstallLifecycle, each in its own powershell.exe with the seat variables blanked and the installed program off PATH; a fixture it cannot run reports NOT RUN and fails the run. The release checklist's one line, run by hand before a release is pushed; the gate row release.fixtures-all-run holds its list complete."
+    },
     "Test-CodexPortability.ps1": {
       "role": "test",
       "summary": "Exercise generated Codex bindings, validated-reader handshakes, both Codex hooks, relocation with spaces, Claude independence, and plugin-free startup in disposable fixtures."

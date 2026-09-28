@@ -14,7 +14,25 @@
 # Installed via:  git config core.hooksPath .githooks
 # Invoke-LibraryChecks asserts that installation, so an uninstalled hook fails the full suite.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
+# THE MACHINE'S OWN DESKPOST STAYS OUT OF THE GATE (PLAN-migrate-to-deskpost-dev.md, Q6). A commit made from a seat
+# inherits the seat's LIBRARY_WORKSPACE, LIBRARY_SEAT and LIBRARY_SEAT_CLAIM, and its launcher puts the installed
+# program on PATH, where the install fixtures then refuse "already installed". So the three are blanked and every
+# PATH entry holding a deskpost shim is dropped, as tools/Test-BuiltRelease.ps1 does, for this run only.
+set -f
+clean_path=""
+old_ifs=$IFS
+IFS=:
+for entry in $PATH; do
+    [ -n "$entry" ] || continue
+    [ -f "$entry/deskpost.cmd" ] && continue
+    [ -f "$entry/deskpost" ] && continue
+    clean_path="${clean_path:+$clean_path:}$entry"
+done
+IFS=$old_ifs
+set +f
+
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= PATH="$clean_path" \
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
 status=$?
 
 if [ $status -ne 0 ]; then

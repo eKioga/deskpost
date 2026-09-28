@@ -33,6 +33,7 @@ import { hubEdit } from './hubedit.ts';
 import { hubArchive, sharedArchive, sharedListEntry } from './sharedwriters.ts';
 import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
+import { hubRename } from './hubrename.ts';
 import { localSharedArchive } from './localarchive.ts';
 
 const PROJECT_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -417,6 +418,9 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
         }
         return { refusal: null, value: await hubArchive(argv.slice(1), workspace) };
       }
+      case 'rename':
+        // A LOCAL HUB RENAMED BY COPYING FORWARD AND ARCHIVING THE OLD (PLAN-hub-rename.md, `hubrename.ts`).
+        return { refusal: null, value: hubRename(argv.slice(1), workspace) };
       case 'copy-pages':
         // The Hub-creation preflight is handed in, so hubcopy.ts does not import this file back.
         return {
@@ -426,7 +430,7 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
           ),
         };
       default:
-        refuse(`library hub has no action '${action}'. It has: new, edit, archive, copy-pages.`);
+        refuse(`library hub has no action '${action}'. It has: new, edit, archive, copy-pages, rename.`);
     }
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

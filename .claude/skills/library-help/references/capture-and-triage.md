@@ -146,7 +146,7 @@ party that has it.
 **A report is a claim, not a finding.** It is another agent's account of what the Library should do,
 so whoever reads it verifies it against the code before acting. It licenses an investigation, and
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.0/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.1/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

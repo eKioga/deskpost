@@ -43,7 +43,7 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { assertNoCollectionExport } from './locks.ts';
 import { deskStateDirectory } from './seatdesk.ts';
-import { agentProcessIdentity, currentAgentProcessId, testSeatAgentAlive } from './procstart.ts';
+import { agentProcessIdentity, currentAgentProcessId, launcherDirectAgent, testSeatAgentAlive } from './procstart.ts';
 
 export type ClaimState = 'free' | 'held' | 'orphaned';
 export type SeatOperation = 'enter' | 'mutate' | 'retire' | 'sweep';
@@ -311,6 +311,26 @@ export function exitSeatClaim(claim: HeldClaim | null): void {
 
 function randomHex(): string {
   return crypto.randomUUID().replace(/-/g, '');
+}
+
+/**
+ * WHETHER THIS SESSION IS THE ONE THE `deskpost` LAUNCHER STARTED AT THIS SEAT (the Report Inbox's S60 note, #1; S56
+ * finding 13). A seat the menu or `seat start` began is named by LIBRARY_SEAT and held by the launcher, never bound to
+ * the conversation by ADR-0018's other route, so every surface used to tell a new user it "wasn't bound" and to bind
+ * it. Two proofs, both required: the token in LIBRARY_SEAT_CLAIM is the live claim's own, and the process tree shows
+ * this agent is the launcher's direct child (`launcherDirectAgent`), because the environment alone is inherited by
+ * anything run under the agent. This changes what is SAID about the seat and nothing it may do: it authorises nothing.
+ */
+export function launcherHoldsSeatForThisAgent(stateDirectory: string, seat: string): boolean {
+  const token = (process.env['LIBRARY_SEAT_CLAIM'] ?? '').trim();
+  const launcherPid = Number(process.env['DESKPOST_LAUNCHER_PID'] ?? '');
+  if (!token || !Number.isInteger(launcherPid) || launcherPid <= 0) return false;
+  try {
+    if (!testSeatClaim(stateDirectory, seat) || seatClaimField(stateDirectory, seat, 'token') !== token) return false;
+    return launcherDirectAgent(launcherPid) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -570,8 +570,15 @@ function localStore(workspace: string): PageStore {
       const full = file(pagePath);
       return fs.existsSync(full) && fs.statSync(full).isFile() ? fs.readFileSync(full, 'utf8').replace(/^﻿/, '') : null;
     },
+    // THE PAGE'S OWN FRONTMATTER IS KEPT (S62). Every edit plans against the body alone (`removeFrontmatter`), and a
+    // local page imported from Basic Memory carries `title`, `type` and `permalink` above it: writing the body alone
+    // dropped them on the first edit, and the body-only readback could not see it. Basic Memory's own write keeps
+    // them on its side, which is why the shared store never showed it.
     async write(pagePath: string, body: string): Promise<void> {
-      writeAtomicText(file(pagePath), body);
+      const full = file(pagePath);
+      const current = fs.existsSync(full) ? fs.readFileSync(full, 'utf8').replace(/^﻿/, '') : '';
+      const head = /^---\r?\n[\s\S]*?\r?\n---\r?\n(?:\r?\n)*/.exec(current);
+      writeAtomicText(full, head ? head[0] + body : body);
     },
   };
 }

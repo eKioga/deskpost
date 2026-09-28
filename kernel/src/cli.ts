@@ -131,6 +131,23 @@ async function main(argv: string[]): Promise<number> {
       if (parsed.flags.has('force')) {
         refuse('library init has no --force: init already brings a Library\'s managed files up to date, and refuses, naming the file, whatever it cannot merge. Run it again without --force.');
       }
+      // `--help` PRINTS USAGE, AND ANY OTHER FLAG INIT DOES NOT TAKE IS REFUSED BEFORE A WRITE (the Report Inbox's S61
+      // note). The parser files an undeclared `--name` as a flag, so `init --help` used to make the working directory a
+      // Library; and a word starting `-` is a mistyped flag (`-h`), never a folder to initialise.
+      if (parsed.flags.has('help') || parsed.positional.some((word) => word === '-h' || word === '-?' || word === '/?')) {
+        process.stdout.write(`${VERBS.init!.summary}\n\nUsage: ${VERBS.init!.usage}\n`);
+        return 0;
+      }
+      const unknown = [...parsed.flags].filter((name) => !['writable', 'json'].includes(name));
+      if (unknown.length) {
+        refuse(`library init has no ${unknown.map((name) => `--${name}`).join(', ')}; nothing has been written. It takes: ${VERBS.init!.usage}`);
+      }
+      if (parsed.positional.some((word) => word.startsWith('-'))) {
+        refuse(`library init has no option '${parsed.positional.find((word) => word.startsWith('-'))}'; nothing has been written. It takes: ${VERBS.init!.usage}`);
+      }
+      if (parsed.positional.length > 1) {
+        refuse(`library init takes one folder, and was given ${parsed.positional.length}: ${parsed.positional.join(' ')}. Nothing has been written.`);
+      }
       const folder = parsed.positional[0] ?? parsed.options.get('workspace') ?? process.cwd();
       const result = invokeLibraryWorkspaceInit({
         workspacePath: folder,

@@ -67,6 +67,13 @@ the guard. The refusal names the allowlisted files that have changed since the s
   current workspace would have reported no drift and meant nothing.
 - The original `plan_id` of that seed cannot be recovered, and is recorded as unrecoverable rather
   than invented.
+- **Amended 2026-09-28: the record belongs to the machine, not the checkout.** It was first written
+  to the checkout's `internal/public-tree-seed.json`, and when the program moved to a new checkout the
+  record stayed in the old one: the new checkout's preflight said `already_seeded: False` about a
+  repository that had been public for a week, and its export would have run. The record is now written
+  to `%USERPROFILE%\.library\public-tree-seed.json`, beside the identity denylist, and the checkout's
+  `internal/` is still read as the legacy place. Either one refuses, and the preflight names both
+  places it checked.
 - The seed record is gitignored and is not on the export allowlist, so it neither commits nor
   exports. A clone of the public repository therefore carries no seed record and would consider
   itself unseeded, which is correct: it is a different repository.

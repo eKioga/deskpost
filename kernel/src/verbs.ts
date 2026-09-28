@@ -127,8 +127,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '[--section <s>] [--match-text <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | --user-confirmed --plan-id <id>]; ' +
       'library hub archive <slug> --preflight; ' +
       'library hub copy-pages <slug> --source <path> --title <t> --purpose <p> [--next-action <a>]... [--include-page <p>]... ' +
-      '[--at-project-root | --destination-directory <d>] --preflight',
-    actions: ['archive', 'copy-pages', 'edit', 'new'],
+      '[--at-project-root | --destination-directory <d>] --preflight; ' +
+      'library hub rename <old-slug> <new-slug> --title <t> [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
+    actions: ['archive', 'copy-pages', 'edit', 'new', 'rename'],
     positional: false,
     // `new` against both backends (S30 local, S33 Basic Memory); `edit` against both (S34); `archive`
     // (S34) and `copy-pages` (S35) against Basic Memory, their preflights, with the confirmed halves

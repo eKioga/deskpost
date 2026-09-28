@@ -27,9 +27,9 @@ to start (a terminal install offers the same choice as it ends):
 
 ```
 This Library has no seats yet. A seat is a place to work, with its own Desk and one Project.
-  [Enter] Show me around   a deskpost-help seat with the Librarian as your guide
-  [+]     Your first seat  name a project, and start working in it
-  [q]     Later
+  [h, Enter] Show me around   a deskpost-help seat with the Librarian as your guide
+  [+]        Your first seat  name a project, and start working in it
+  [q]        Later
 ```
 
 **Show me around** starts the Librarian in a seat called `deskpost-help`, as your guide; it is an

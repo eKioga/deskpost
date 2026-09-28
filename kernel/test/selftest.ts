@@ -920,6 +920,14 @@ if (selected(13)) {
     check(fs.readFileSync(page, 'utf8').endsWith('## Log\n\nRewritten.\n'), 'the confirmed ReplaceSection did not write its section');
     const same = JSON.parse(edit(['--mode', 'replace-section', '--section', 'Log', '--content', 'Rewritten.', '--user-confirmed', '--plan-id', 'x']).stdout) as { unchanged: boolean; written: boolean };
     check(same.unchanged === true && same.written === false, 'an edit changing nothing was not reported unchanged');
+    // AN IMPORTED PAGE KEEPS ITS FRONTMATTER (S62): the local writer wrote the edited body alone, so every Hub
+    // `basic-memory import` brought lost `title`, `type` and `permalink` on its first edit, and the body-only
+    // readback could not see it.
+    const frontmatter = '---\ntitle: _project\ntype: note\npermalink: ai-library/projects/demo/project\n---\n\n';
+    fs.writeFileSync(page, frontmatter + fs.readFileSync(page, 'utf8'));
+    equal(edit(['--mode', 'add-section', '--section', 'Imported', '--content', 'Kept.']).exit, 0, 'an edit of a page with frontmatter failed');
+    const kept = fs.readFileSync(page, 'utf8');
+    check(kept.startsWith(frontmatter) && kept.endsWith('## Imported\n\nKept.\n'), `an edit dropped the page's frontmatter: ${kept.slice(0, 160)}`);
 
     // (c) the fence: a collection whose writable role another workspace holds. Nothing listens at the
     // endpoint, so a verb that got past the fence would fail on the network instead of refusing here.
@@ -4326,6 +4334,23 @@ if (selected(48)) {
     check(human.exit === 0 && human.stdout.includes('is now a Library') && /^Next: /m.test(human.stdout) && !human.stdout.trim().startsWith('{'), `init without --json did not speak to a person: ${human.stdout.slice(0, 300)}`);
     const forced = runCli(['init', a, '--force'], { cwd: root, env });
     check(forced.exit !== 0 && forced.stderr.includes('no --force'), `init --force was not refused by name: ${forced.exit} ${forced.stderr.trim()}`);
+
+    // THE S61 REPORT: `init --help` made the working directory a Library, even inside a registered one.
+    const helpCwd = path.join(root, 'help-cwd');
+    fs.mkdirSync(helpCwd);
+    for (const asked of [['--help'], ['-h']]) {
+      const help = runCli(['init', ...asked], { cwd: helpCwd, env });
+      check(help.exit === 0 && help.stdout.includes('Usage: library init'), `init ${asked[0]} did not print usage: ${help.exit} ${help.stdout.slice(0, 200)}`);
+    }
+    const typo = runCli(['init', '--hepl'], { cwd: helpCwd, env });
+    check(typo.exit !== 0 && typo.stderr.includes('no --hepl') && typo.stderr.includes('nothing has been written'), `init with an unknown flag was not refused by name: ${typo.exit} ${typo.stderr.trim()}`);
+    check(runCli(['init', path.join(root, 'x'), path.join(root, 'y')], { cwd: root, env }).exit !== 0, 'init given two folders was not refused');
+    check(fs.readdirSync(helpCwd).length === 0 && !fs.existsSync(path.join(root, 'x')), `a refused init wrote something: ${fs.readdirSync(helpCwd).join(', ')}`);
+    const nested = runCli(['init', path.join(a, '.claude')], { cwd: root, env });
+    check(nested.exit !== 0 && nested.stderr.includes('is inside the Library at') && !fs.existsSync(path.join(a, '.claude', '.library')), `init inside a registered Library was not refused: ${nested.exit} ${nested.stderr.trim()}`);
+    const around = runCli(['init', root], { cwd: root, env });
+    check(around.exit !== 0 && around.stderr.includes('holds the Library at') && !fs.existsSync(path.join(root, '.library')), `init around a registered Library was not refused: ${around.exit} ${around.stderr.trim()}`);
+
     const again = runCli(['init', a, '--json'], { cwd: root, env });
     equal((JSON.parse(again.stdout) as { status: string }).status, 'already_initialized', 'init --json did not print the document');
 
@@ -4646,7 +4671,7 @@ if (selected(51)) {
     const declined = menu(['no'], ['--workspace', library]);
     check(declined.stdout.includes('This Library has no seats yet.') && !fs.existsSync(path.join(library, 'collection', 'projects', 'deskpost-help')), `the no-seat fork was missing, or an answer that is not a key created something: ${declined.stdout.slice(0, 400)}`);
     const first = menu(['+', 'Home Lab', ''], ['--workspace', library]);
-    check(first.exit === 0 && first.stdout.includes('[Enter] Show me around') && first.stdout.includes('Your first seat.') && !first.stdout.includes('Seats in this Library'), `the first run was not the fork, then the wizard: ${first.stdout.slice(0, 400)} ${first.stderr}`);
+    check(first.exit === 0 && first.stdout.includes('[h, Enter] Show me around') && first.stdout.includes('Your first seat.') && !first.stdout.includes('Seats in this Library'), `the first run was not the fork, then the wizard: ${first.stdout.slice(0, 400)} ${first.stderr}`);
     check(/plan_id\s+[0-9a-f]{16}/.test(first.stdout) && first.stdout.includes('seat start home-lab --project home-lab --plan-id'), `the wizard did not show its plan_id and the commands it ran: ${first.stdout}`);
     check(fs.existsSync(path.join(library, 'collection', 'projects', 'home-lab', '_project.md')), 'the wizard did not create the Hub named after the project');
     const registryRows = () => (JSON.parse(fs.readFileSync(path.join(library, '.claude', 'seats', '_registry.json'), 'utf8').replace(/^﻿/, '')) as { seats: unknown }).seats;
@@ -4695,7 +4720,29 @@ if (selected(51)) {
       check(nested === null, `a Codex run from inside the launcher's Claude session was allowed to report: ${JSON.stringify(nested)}`);
       const elsewhere = launcherDirectAgent(10, [at(1, 2, 'library.exe'), at(2, 3, 'codex.exe'), at(3, 4, 'explorer.exe')]);
       check(elsewhere === null, `an agent with no launcher above it was allowed to report: ${JSON.stringify(elsewhere)}`);
-    }    // n<number> WITH CLAUDE CODE CHOSEN STARTS A NEW CLAUDE CONVERSATION; THE CODEX ID IS NEVER HANDED TO IT.
+      // A LAUNCHER-HELD SEAT IS SAID AS ONE ONLY ON BOTH PROOFS (the S60 report, #1): never on the environment alone.
+      const { launcherHoldsSeatForThisAgent } = await import('../src/seatclaim.ts');
+      const stateDirectory = path.join(library, '.claude');
+      const savedClaim = process.env['LIBRARY_SEAT_CLAIM'];
+      const savedLauncher = process.env['DESKPOST_LAUNCHER_PID'];
+      try {
+        for (const [claim, launcher, label] of [
+          ['', String(process.pid), 'no claim token'],
+          ['0123456789abcdef0123456789abcdef', String(process.pid), 'a token that is not the live claim'],
+          ['0123456789abcdef0123456789abcdef', '', 'no launcher pid'],
+        ] as const) {
+          process.env['LIBRARY_SEAT_CLAIM'] = claim;
+          process.env['DESKPOST_LAUNCHER_PID'] = launcher;
+          check(!launcherHoldsSeatForThisAgent(stateDirectory, 'home-lab'), `a seat was said to be launcher-held with ${label}`);
+        }
+      } finally {
+        if (savedClaim === undefined) delete process.env['LIBRARY_SEAT_CLAIM'];
+        else process.env['LIBRARY_SEAT_CLAIM'] = savedClaim;
+        if (savedLauncher === undefined) delete process.env['DESKPOST_LAUNCHER_PID'];
+        else process.env['DESKPOST_LAUNCHER_PID'] = savedLauncher;
+      }
+    }
+    // n<number> WITH CLAUDE CODE CHOSEN STARTS A NEW CLAUDE CONVERSATION; THE CODEX ID IS NEVER HANDED TO IT.
     const claudeNew = menu(['n1'], ['--workspace', library, '--assistant', 'claude']);
     check(claudeNew.stdout.includes("the last one at 'home-lab' was Codex's") && !logLines().some((line) => line.startsWith('claude') && line.includes(codexSession)), `a Codex id was handed to Claude Code, or it was not said: ${claudeNew.stdout.slice(-400)}`);
 
@@ -4841,6 +4888,12 @@ if (selected(52)) {
 
     const quiet = runCli(['setup', '--welcome', '--workspace', library], { env });
     check(quiet.exit === 0 && !quiet.stdout.trim() && !fs.existsSync(log), `the fork with no terminal said something or launched: ${quiet.stdout}`);
+
+    // `h` AT THE NO-SEAT FORK IS SHOW ME AROUND, AND THE FORK SAYS SO (S58 #6): "no" at its preview creates nothing.
+    const forkScript = path.join(root, 'fork-h.txt');
+    fs.writeFileSync(forkScript, 'h\nno\n');
+    const forkH = runCli(['menu', '--workspace', library, '--script', forkScript], { cwd: root, env });
+    check(forkH.stdout.includes('[h, Enter] Show me around') && forkH.stdout.includes('Nothing was created') && !fs.existsSync(path.join(library, 'collection', 'projects', 'deskpost-help')) && !fs.existsSync(log), `h at the no-seat fork did not reach Show me around, or the fork did not show h: ${forkH.stdout.slice(0, 600)} ${forkH.stderr}`);
 
     // ONLY ENTER OR y GOES (Codex #12): "no" at the preview creates nothing.
     const refused = welcome(['', 'no']);
@@ -5080,6 +5133,91 @@ if (selected(56)) {
     check(named !== null && named.clear === false && named.seats.some((row) => row.seat === 'held'), `the repaired Library's live seat was not counted: ${JSON.stringify(named)}`);
   } finally {
     w.dispose();
+  }
+}
+
+// --- 57. A LOCAL HUB RENAMED BY COPYING FORWARD AND ARCHIVING THE OLD (PLAN-hub-rename.md) --------------------------
+
+// The preview writes nothing; the run gives the new Hub byte for byte but for the permalinks and the root's H1, both
+// catalogs, the free seat's Desk and the archive, and lists (never edits) the page elsewhere that names the old slug.
+// Each refusal fires by name; a run stopped after a step finishes from its journal with the same plan_id; and a
+// re-import reads the renamed-away files as `keep-local`, so the old name does not come back.
+if (selected(57)) {
+  const { classify } = await import('../src/bmsource.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-hubrename-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_HUB_RENAME_FAULT_AFTER: '' };
+    const lib = path.join(root, 'lib');
+    const collection = path.join(lib, 'collection');
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...extra } });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the rename fixture Library did not initialise');
+    for (const [slug, title] of [['old-hub', 'Old Hub'], ['other-hub', 'Other Hub'], ['bound-hub', 'Bound Hub'], ['taken-hub', 'Taken Hub']]) {
+      equal(cli(['hub', 'new', slug!, '--title', title!]).exit, 0, `hub new ${slug} failed in the rename fixture`);
+    }
+    fs.mkdirSync(path.join(collection, 'projects', 'old-hub', 'notes'));
+    const note = '---\ntitle: n1\npermalink: ai-library/projects/old-hub/notes/n1\n---\n\n# A note\n\nWe began old-hub today.\n';
+    fs.writeFileSync(path.join(collection, 'projects', 'old-hub', 'notes', 'n1.md'), note);
+    fs.writeFileSync(path.join(collection, 'projects', 'other-hub', 'links.md'), 'See [[projects/old-hub/_project|Old Hub]].\n');
+    equal(cli(['seat', 'start', 'other', '--project', 'other-hub', '--no-launch']).exit, 0, 'seat other was not created');
+    equal(cli(['seat', 'start', 'bound', '--project', 'bound-hub', '--no-launch']).exit, 0, 'seat bound was not created');
+    const otherDesk = path.join(lib, '.claude', 'seats', 'other', '.open-projects');
+    fs.writeFileSync(otherDesk, 'projects/other-hub\nprojects/old-hub\n');
+
+    const refusal = (args: string[], expected: string, label: string) => {
+      const ran = cli(['hub', 'rename', ...args]);
+      check(ran.exit !== 0 && ran.stderr.includes(expected), `${label} was not refused by name: ${ran.exit} ${ran.stderr.trim()}`);
+    };
+    refusal(['old-hub', 'old-hub', '--title', 'X', '--preflight'], 'the same', 'a rename to the same name');
+    refusal(['old-hub', 'new-hub', '--title', 'A | B', '--preflight'], 'catalog link', 'a title that would break the catalog link');
+    refusal(['old-hub', 'taken-hub', '--title', 'X', '--preflight'], 'already taken', 'a rename onto an existing Hub');
+    refusal(['bound-hub', 'new-bound', '--title', 'X', '--preflight'], "is bound to Project 'bound-hub'", 'a rename of a Hub a seat is bound to');
+    refusal(['missing-hub', 'new-missing', '--title', 'X', '--preflight'], 'no active Project Hub', 'a rename of a Hub that is not there');
+
+    const before = fs.readFileSync(path.join(collection, 'projects', 'README.md'), 'utf8');
+    const preview = cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--preflight']);
+    const planned = JSON.parse(preview.stdout) as { plan_id: string; file_count: number; desks_rewritten: string[]; mentions_left_alone: { path: string }[] };
+    check(preview.exit === 0 && /^[0-9a-f]{16}$/.test(planned.plan_id) && planned.file_count === 3, `the rename preview was not a plan: ${preview.stdout.slice(0, 400)} ${preview.stderr}`);
+    check(JSON.stringify(planned.desks_rewritten) === '["other"]' && planned.mentions_left_alone.some((row) => row.path.endsWith('projects/other-hub/links.md')), `the preview did not name the Desk and the mention: ${preview.stdout.slice(0, 900)}`);
+    check(!fs.existsSync(path.join(collection, 'projects', 'new-hub')) && fs.readFileSync(path.join(collection, 'projects', 'README.md'), 'utf8') === before, 'the rename preview wrote something');
+    check(cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--user-confirmed', '--plan-id', '0000000000000000']).exit !== 0 && !fs.existsSync(path.join(collection, 'projects', 'new-hub')), 'a rename ran on a plan_id that was not the preview\'s');
+
+    // STOPPED AFTER THE CATALOG, THEN FINISHED FROM THE JOURNAL WITH THE SAME plan_id.
+    const stopped = cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--user-confirmed', '--plan-id', planned.plan_id], { LIBRARY_HUB_RENAME_FAULT_AFTER: 'catalog' });
+    check(stopped.exit !== 0 && stopped.stderr.includes("Stopped after step 'catalog'"), `the injected stop did not fire: ${stopped.stderr.trim()}`);
+    const resumePreview = JSON.parse(cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--preflight']).stdout) as { resuming: boolean; plan_id: string; steps_done: string[] };
+    check(resumePreview.resuming && resumePreview.plan_id === planned.plan_id && resumePreview.steps_done.join(',') === 'copy,catalog', `a stopped rename's preview did not resume its journal: ${JSON.stringify(resumePreview)}`);
+    const finished = cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--user-confirmed', '--plan-id', planned.plan_id]);
+    check(finished.exit === 0 && (JSON.parse(finished.stdout) as { renamed: boolean }).renamed, `the stopped rename did not finish: ${finished.stdout.slice(0, 300)} ${finished.stderr}`);
+
+    const newRoot = path.join(collection, 'projects', 'new-hub');
+    const archived = path.join(collection, 'archive', 'projects', 'old-hub');
+    check(fs.readFileSync(path.join(newRoot, '_project.md'), 'utf8').split('\n')[0] === '# New Hub', 'the new Hub root does not carry the new title');
+    const copiedNote = fs.readFileSync(path.join(newRoot, 'notes', 'n1.md'), 'utf8');
+    check(copiedNote === note.replace('projects/old-hub/notes', 'projects/new-hub/notes'), `the copied note changed beyond its permalink: ${copiedNote}`);
+    check(fs.readFileSync(path.join(archived, 'notes', 'n1.md'), 'utf8') === note && !fs.existsSync(path.join(collection, 'projects', 'old-hub')), 'the old Hub was not archived unchanged, or its folder was left behind');
+    const active = fs.readFileSync(path.join(collection, 'projects', 'README.md'), 'utf8');
+    check(active.includes('[[projects/new-hub/_project|New Hub]]') && !active.includes('projects/old-hub/'), `the Active Project Catalog was not rewritten in place: ${active}`);
+    check(fs.readFileSync(path.join(collection, 'archive', 'projects', 'README.md'), 'utf8').includes('[[archive/projects/old-hub/_project|Old Hub]]'), 'the archived Project Catalog does not list the old Hub');
+    check(fs.readFileSync(otherDesk, 'utf8').split(/\r?\n/).includes('projects/new-hub') && !fs.readFileSync(otherDesk, 'utf8').includes('projects/old-hub'), 'the free seat\'s Desk still names the old Hub');
+    check(fs.readFileSync(path.join(collection, 'projects', 'other-hub', 'links.md'), 'utf8').includes('projects/old-hub/_project'), 'a page outside the Hub was edited rather than listed');
+    check(cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--preflight']).exit !== 0, 'a finished rename previewed again as if the old Hub were still active');
+
+    // A NEW NAME OF ANOTHER LENGTH (S62: home-lab-revitalization -> home-lab-admin kept its old H1, because the title
+    // was found at an offset measured before the permalink shortened the frontmatter). The root carries frontmatter.
+    const takenRoot = path.join(collection, 'projects', 'taken-hub', '_project.md');
+    fs.writeFileSync(takenRoot, `---\ntitle: _project\npermalink: ai-library/projects/taken-hub/project\n---\n\n${fs.readFileSync(takenRoot, 'utf8')}`);
+    const shorter = JSON.parse(cli(['hub', 'rename', 'taken-hub', 'th', '--title', 'Short', '--preflight']).stdout) as { plan_id: string };
+    const shorterRun = cli(['hub', 'rename', 'taken-hub', 'th', '--title', 'Short', '--user-confirmed', '--plan-id', shorter.plan_id]);
+    check(shorterRun.exit === 0, `the rename to a shorter name failed: ${shorterRun.stderr.trim()}`);
+    const shorterRoot = fs.readFileSync(path.join(collection, 'projects', 'th', '_project.md'), 'utf8');
+    check(/^# Short$/m.test(shorterRoot) && !/^# Taken Hub$/m.test(shorterRoot) && shorterRoot.includes('permalink: ai-library/projects/th/project'), `a rename to a name of another length kept the old title: ${shorterRoot.slice(0, 200)}`);
+
+    // A RE-IMPORT AFTER THE RENAME: the old file absent here, unchanged there, recorded -- kept as the reader's.
+    equal(classify('same-sha', null, 'same-sha'), 'keep-local', 'a renamed-away file would be brought back by a re-import');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 

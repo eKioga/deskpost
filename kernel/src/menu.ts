@@ -489,9 +489,11 @@ async function menuLoop(state: MenuState): Promise<number> {
     if (!rows.length) {
       talk.say(`\n  Library  ${workspace}`);
       talk.say('\nThis Library has no seats yet. A seat is a place to work, with its own Desk and one Project.');
-      talk.say(`  [Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
-      talk.say('  [+]     Your first seat  name a project, and start working in it');
-      talk.say('  [q]     Later');
+      // `h` IS SHOWN AS WELL AS ENTER (S58 #6): the closing words say "`h`, or Enter", and `h` is the key every later menu
+      // offers Show me around on, so the first screen teaches the key that keeps working.
+      talk.say(`  [h, Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
+      talk.say('  [+]        Your first seat  name a project, and start working in it');
+      talk.say('  [q]        Later');
       for (;;) {
         const key = (await talk.ask('› ')).toLowerCase();
         if (key === 'q') {
