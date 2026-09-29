@@ -73,6 +73,7 @@ import {
   updateDeskEntryAcrossSeats,
 } from './seatdesk.ts';
 import { psConvertToJson } from './psjson.ts';
+import { convertToBookPagePath } from './pagepath.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -1573,27 +1574,6 @@ function newStubBody(options: {
     `> breaks. See [Duplicate Topic Resolution](${docsLink}).`,
     '',
   ].join('\n');
-}
-
-/**
- * A page path is a Book-relative LOCATION, never a filesystem path: no drive, no traversal, no
- * absolute form. Reserved names are checked first so they are refused for the accurate reason --
- * being told `_index is not lowercase` would be true and useless.
- */
-function convertToBookPagePath(raw: string): string {
-  let candidate = raw.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  if (!candidate) refuse('PagePath is required, for example rendering/shaders.');
-  if (candidate.endsWith('.md')) candidate = candidate.substring(0, candidate.length - 3);
-  const segments = candidate.split('/');
-  if (['_book', '_index'].includes(segments[segments.length - 1]!)) {
-    refuse('PagePath must not name the Book metadata page or the reader map.');
-  }
-  for (const segment of segments) {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(segment)) {
-      refuse(`PagePath segment '${segment}' must contain only lowercase letters, digits, and hyphens.`);
-    }
-  }
-  return segments.join('/');
 }
 
 /**

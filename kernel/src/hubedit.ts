@@ -30,6 +30,7 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
+import { hubNewPage } from './hubnewpage.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -600,14 +601,35 @@ function nullable(value: string): PsJsonValue {
 }
 
 export async function hubEdit(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'seat', 'plan-id', 'workspace', 'lock-timeout']);
+  const parsed = parseArguments(argv, ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'seat', 'plan-id', 'workspace', 'lock-timeout', 'title']);
   const slug = parsed.positional[0] ?? '';
   const modeWord = parsed.options.get('mode') ?? '';
   if (isBlank(slug)) refuse('ProjectSlug is required.');
-  if (isBlank(modeWord)) refuse('Mode is required: AddSection, AppendSection, CheckItem, RemoveSection, ReplaceItem, ReplaceSection, or ReplaceBody.');
+  if (isBlank(modeWord)) refuse('Mode is required: AddSection, AppendSection, CheckItem, RemoveSection, ReplaceItem, ReplaceSection, ReplaceBody, or new-page.');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && ['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
+    refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
+  }
+  // A NEW PAGE ON A LOCAL HUB (S67, PLAN-local-collection-writers.md step B): a mode of this verb with a write half of
+  // its own, because the edit store below overwrites and a creation must never replace a page.
+  if (['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
+    const timeout = Number(parsed.options.get('lock-timeout') ?? '20');
+    return hubNewPage(
+      {
+        slug,
+        page: parsed.options.get('page') ?? '',
+        content: parsed.options.get('content') ?? '',
+        contentPath: parsed.options.get('content-path') ?? '',
+        title: parsed.options.get('title') ?? '',
+        seat: parsed.options.get('seat'),
+        preflight: parsed.flags.has('preflight'),
+        lockTimeout: Number.isFinite(timeout) ? timeout : 20,
+      },
+      workspace,
+    );
+  }
   const mode = MODE_WORDS[modeWord] ?? (EDIT_MODES as readonly string[]).find((name) => name.toLowerCase() === modeWord.toLowerCase());
   if (mode === undefined) {
-    refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}.`);
+    refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}, new-page.`);
   }
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
 
@@ -681,14 +703,22 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
   const openProjects = deskEntriesForSeat(stateDirectory, seat, 'projects');
   if (openProjects.includes(`archive/projects/${slug}`)) refuse(`Project '${slug}' is open from the archive shelf. Archived Project Hubs are read-only.`);
   if (!openProjects.includes(`projects/${slug}`)) {
-    refuse(`Project '${slug}' is not open. Open it first: tools/Set-VirtualDesk.ps1 -Action Open -Kind Project -Slug ${slug}`);
+    refuse(
+      shared
+        ? `Project '${slug}' is not open. Open it first: tools/Set-VirtualDesk.ps1 -Action Open -Kind Project -Slug ${slug}`
+        : `Project '${slug}' is not open. Open it first: deskpost desk open project ${slug}`,
+    );
   }
 
   const isReplacing = ['RemoveSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem'].includes(mode);
   const existing = await store.read(pagePath);
   if (existing === null) {
+    // THE ROUTE NAMED IS THE ONE THAT WORKS HERE (S67, deskpost-prompts-dev's Report): both PowerShell helpers need
+    // Basic Memory, so a local Library is sent to the mode that makes a page in its own collection.
     refuse(
-      `Page '${pagePath}' does not exist. This helper edits existing Project pages; create a Hub with tools/New-ProjectHub.ps1 or copy Notebook pages with tools/Copy-LocalPagesToProject.ps1.`,
+      shared
+        ? `Page '${pagePath}' does not exist. This helper edits existing Project pages; create a Hub with tools/New-ProjectHub.ps1 or copy Notebook pages with tools/Copy-LocalPagesToProject.ps1.`
+        : `Page '${pagePath}' does not exist. This mode edits an existing page; make a new one with deskpost hub edit ${slug} --mode new-page --page ${pageName} --content-path <file>.`,
     );
   }
   const currentBody = removeFrontmatter(existing);

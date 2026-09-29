@@ -230,22 +230,37 @@ export function writeNotebookLayoutRecord(workspace: string, activatedBy: 'fresh
 export function prepareNotebookScopeForWrite(scope: NotebookScope, operation: string): void {
   if (scope.layout !== 'seat-owned') throw new Error(legacyRefusal(operation, readNotebookLayout(scope.workspace)));
   if (scope.activates) {
-    const lock = isBookLockHeld(scope.workspace, NOTEBOOK_LAYOUT_LOCK_ROOT) ? null : enterBookLock(scope.workspace, NOTEBOOK_LAYOUT_LOCK_ROOT);
-    try {
-      const layout = readNotebookLayout(scope.workspace);
-      if (layout.state === 'fresh') {
-        const shared = path.join(scope.workspace, 'notebook', SEAT_INDEX_NAME);
-        writeNotebookLayoutRecord(scope.workspace, 'fresh-workspace', null);
-        if (fs.existsSync(shared) && isEmptyIndexFile(shared)) fs.rmSync(shared);
-      } else if (layout.state !== 'seat-owned') {
-        throw new Error(layout.state === 'migrating' ? migratingRefusal(operation) : legacyRefusal(operation, layout));
-      }
-    } finally {
-      exitBookLock(lock);
-    }
+    const outcome = activateFreshNotebookLayout(scope.workspace);
+    if (outcome.state === 'migrating') throw new Error(migratingRefusal(operation));
+    if (outcome.state === 'legacy') throw new Error(legacyRefusal(operation, outcome.layout));
     scope.activates = false;
   }
   fs.mkdirSync(scope.root, { recursive: true });
+}
+
+/**
+ * THE ONE ACTIVATION (S67, PLAN-local-collection-writers.md E.1), shared by the first Notebook write and by `seat
+ * start`: under the layout lock, the state re-read INSIDE it, and the record written only while it is still `fresh`
+ * -- so two first writers activate it once, and material that appeared since anyone last looked is never swept under
+ * a seat-owned record. The empty shared index, which holds nothing, is retired. A state other than `fresh` is left
+ * exactly as it is and reported. Throws only when the lock cannot be taken.
+ *
+ * WHY `seat start` CALLS IT (S67): on a `fresh` workspace a write that went around the kernel -- a shell heredoc, a
+ * retired PowerShell helper -- turned this Library legacy, and every seat's Notebook refused until a migration ran.
+ * A Library a seat has started in is seat-owned from then on, so that state cannot be left by accident.
+ */
+export function activateFreshNotebookLayout(workspace: string): { state: 'activated' | NotebookLayoutState; layout: NotebookLayout } {
+  const lock = isBookLockHeld(workspace, NOTEBOOK_LAYOUT_LOCK_ROOT) ? null : enterBookLock(workspace, NOTEBOOK_LAYOUT_LOCK_ROOT);
+  try {
+    const layout = readNotebookLayout(workspace);
+    if (layout.state !== 'fresh') return { state: layout.state, layout };
+    const shared = path.join(workspace, 'notebook', SEAT_INDEX_NAME);
+    writeNotebookLayoutRecord(workspace, 'fresh-workspace', null);
+    if (fs.existsSync(shared) && isEmptyIndexFile(shared)) fs.rmSync(shared);
+    return { state: 'activated', layout: readNotebookLayout(workspace) };
+  } finally {
+    exitBookLock(lock);
+  }
 }
 
 /** Every seat root on disk under the seat-owned layout, sorted. */

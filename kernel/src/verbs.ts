@@ -71,9 +71,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S15',
   },
   collection: {
-    summary: "The shared collection's ownership claim, and the Local collection's Discovery manifests.",
-    usage: 'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]; library collection rebuild [--json]',
-    actions: ['owner', 'rebuild'],
+    summary: "The shared collection's ownership claim, the Local collection's Discovery manifests, and a page added to one of its Books.",
+    usage:
+      'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]; library collection rebuild [--json]; ' +
+      'library collection add-page <slug> <page> (--content-path <f> | --body <b>) [--title <t>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]',
+    actions: ['add-page', 'owner', 'rebuild'],
     positional: false,
     // Set-CollectionOwner.ps1 whole (S43), judged by kernel self-test section 28.
     ported: true,
@@ -124,7 +126,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     summary: 'Project Hubs, local and shared, and the bounded Hub edit.',
     usage:
       'library hub new <slug> --title <t> [--purpose <p>] [--next-action <a>] [--dev] [--preflight] [--json]; ' +
-      'library hub edit <slug> --mode <add-section|append-section|remove-section|replace-section|replace-body|check-item|replace-item> ' +
+      'library hub edit <slug> --mode <add-section|append-section|remove-section|replace-section|replace-body|check-item|replace-item|new-page> [--title <t>] ' +
       '[--section <s>] [--match-text <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | --user-confirmed --plan-id <id>]; ' +
       'library hub archive <slug> --preflight; ' +
       'library hub copy-pages <slug> --source <path> --title <t> --purpose <p> [--next-action <a>]... [--include-page <p>]... ' +
@@ -166,7 +168,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   mcp: {
     summary: 'The validated reader: one tool call the way a harness makes it, or the stdio MCP server a harness launches.',
-    usage: 'library mcp call <tool> [--slug <s>] [--page <p>] [--location <l>]; library mcp serve [--workspace <path>] [--state-directory <d>] [--seat <s>]',
+    usage:
+      'library mcp call <tool> [--slug <s>] [--page <p>] [--place shelf|collection|shared] [--query <q>] [--location <l>]; ' +
+      'library mcp serve [--workspace <path>] [--state-directory <d>] [--seat <s>]',
     actions: ['call', 'serve'],
     positional: false,
     ported: true,
@@ -350,6 +354,21 @@ export function verbInventory(): Record<string, unknown> {
  * command a reader types (ADR-0055); the table's own usage lines keep `library`, the alias, which is what the
  * acceptance matrix's rows name.
  */
+/**
+ * ONE VERB'S USAGE, for `deskpost <verb> [<action>] --help` and `deskpost help <verb>` (S67, three Reports: `hub edit
+ * --help` failed, `book add-page --help` was read as a slug, and `init --help` once made a Library). An action that
+ * names its own clauses shows only those; anything else shows the verb's whole usage.
+ */
+export function verbUsageText(verb: string, action?: string): string {
+  const declaration = VERBS[verb]!;
+  const clauses = declaration.usage.split(/;\s+(?=library )/).map((clause) => clause.replace(/^library /, 'deskpost '));
+  const picked = action && declaration.actions.includes(action) ? clauses.filter((clause) => clause.startsWith(`deskpost ${verb} ${action}`)) : [];
+  const shown = picked.length ? picked : clauses;
+  const lines = [`deskpost ${verb} -- ${declaration.summary}`, '', 'Usage:', ...shown.map((clause) => `  ${clause}`)];
+  if (declaration.actions.length && !picked.length) lines.push('', `Actions: ${declaration.actions.join(', ')}`);
+  return lines.join('\n') + '\n';
+}
+
 export function usageText(): string {
   const lines = [
     'deskpost -- the Library, from the command line. (`library` is the same command, kept as an alias through 1.x.)',

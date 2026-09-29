@@ -76,6 +76,17 @@ const REWRITES: { helper: string; to: (parameterText: string) => string | null }
   { helper: 'ShelfCatalog', to: (text) => (parameters(text).has('render') ? 'library shelf render' : null) },
   { helper: 'NotebookIndex', to: (text) => (parameters(text).has('render') ? 'library notebook render' : null) },
   { helper: 'Add-ShelfNote', to: (text) => `library capture ${parameters(text).get('bookslug') ?? '<book>'} --title <title> --body <text>` },
+  // THE WRITERS A SEAT IS SENT TO (S67): `shelf new`'s next line and the Shelf refusals named these helpers, so an
+  // installed kernel told a reader to run a PowerShell script for a verb it already has.
+  {
+    helper: 'Add-ShelfBookPage',
+    to: (text) => {
+      const given = parameters(text);
+      return `library book add-page ${given.get('bookslug') ?? '<slug>'} ${given.get('pagepath') ?? '<page>'} --content-path <file>`;
+    },
+  },
+  { helper: 'Edit-ProjectHub', to: (text) => `library hub edit ${parameters(text).get('projectslug') ?? '<slug>'} --mode ${parameters(text).get('mode') ?? '<mode>'}` },
+  { helper: 'New-ProjectHub', to: (text) => `library hub new ${parameters(text).get('projectslug') ?? '<slug>'} --title <title>` },
   {
     helper: 'Restore-NotebookQuarantine',
     to: (text) => {

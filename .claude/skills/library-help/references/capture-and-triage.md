@@ -150,7 +150,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.2/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.3/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

@@ -27,6 +27,7 @@ import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './read
 import { resolveWorkspace } from './workspace.ts';
 import { placeOfRoot } from './places.ts';
 import { isLocalBackend } from './basicmemory.ts';
+import { readNotebookLayout } from './notebooklayout.ts';
 
 const EVENT = 'UserPromptSubmit';
 /**
@@ -189,8 +190,17 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     const capability = readerCalls.length
       ? ' The validated reader is connected: call ' + readerCalls.join(', ') + '.'
       : ` The validated reader is connected: call ${prefix}read_book_catalog or ${prefix}read_project_catalog to see what could be opened.`;
+    // ONE SENTENCE, AND ONLY WHEN NOTEBOOK WRITES WILL REFUSE (S67), so the always-on margin is unchanged otherwise.
+    let notebookWarning = '';
+    try {
+      const layoutState = readNotebookLayout(workspace).state;
+      if (layoutState === 'legacy') notebookWarning = " This Library's Notebook is in the retired shared layout, so Notebook writes refuse until 'deskpost migrate' runs; save to the Holding Shelf meanwhile.";
+      if (layoutState === 'migrating') notebookWarning = " A Notebook migration is unfinished, so Notebook writes refuse until 'deskpost migrate --resume' or '--rollback'.";
+    } catch {
+      // a layout that cannot be read is the migration verb's to report, not a prompt's to wait on
+    }
     return contextDocument(
-      `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}`,
+      `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}${notebookWarning}`,
     );
   } catch {
     return contextDocument(INVALID);

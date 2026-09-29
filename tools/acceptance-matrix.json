@@ -2173,6 +2173,30 @@
       "kernel": { "steps": [ { "command": ["collection", "owner", "--status", "--workspace", "{workspace}", "--json"] } ] }
     },
     {
+      "id": "publication.collection-add-page-only-ever-adds",
+      "area": "publication",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A page added to a Book in a local Library's own collection (library collection add-page) is previewed with a plan_id, then written under the Book lock with its reader map gaining exactly one line at its end: the map's frontmatter kept, a topic index beside the page named and never edited, a Discovery manifest committed and read back. A closed or archived Book, an existing page, another plan_id, a map changed while the run waited for the lock, a map ending in an open fence and a folder that is a junction are each refused with nothing written, and a manifest that did not commit is rolled back to the Book as it was (S67, PLAN-local-collection-writers.md step A).",
+      "reason": "The PowerShell oracle has no local half: tools/Add-ShelfBookPage.ps1 adds a page to a Shelf Book, and no helper writes a local collection. Judged by section 59 of kernel/test/selftest.ts (S67) against the kernel under test, entirely through the front door, over a fixture Book shaped as an import leaves one (frontmatter, full-prefix links, a curated topic index); it fails against 1.2.1, which has no add-page.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "59" } },
+      "fixture": "workspace-seated",
+      "powershell": { "steps": [ { "script": "tools/Add-ShelfBookPage.ps1", "args": ["-BookSlug", "holding", "-PagePath", "acceptance-page", "-Content", "# Acceptance", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["collection", "add-page", "acceptance", "acceptance-page", "--body", "# Acceptance", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
+    },
+    {
+      "id": "hub.new-page-makes-a-page-and-never-replaces-one",
+      "area": "hub",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "hub edit --mode new-page makes a new page in a Project Hub on a local collection, open at this seat: an existing page, a reserved name (_project, connections, README), a capitalised segment, a junction and a Library attached to Basic Memory are refused by name; the page is created exclusively and journalled pending, created, complete; a failure it can undo is rolled back and verified gone, and one it cannot (a failed removal, a file someone else changed) is recorded recovery-required with the page left and a retry told which journal. The missing-page refusal of the other modes and hub copy-pages on a local Library name this mode (S67, PLAN-local-collection-writers.md step B).",
+      "reason": "The PowerShell oracle has no local half: tools/Edit-ProjectHub.ps1 edits existing pages on Basic Memory, and tools/Copy-LocalPagesToProject.ps1 needs Basic Memory too. Judged by section 60 of kernel/test/selftest.ts (S67) against the kernel under test, entirely through the front door; it fails against 1.2.1, which has no new-page mode.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "60" } },
+      "fixture": "workspace-seated",
+      "powershell": { "steps": [ { "script": "tools/Edit-ProjectHub.ps1", "args": ["-ProjectId", "{collection_id}", "-ProjectSlug", "acceptance", "-Mode", "AppendSection", "-Section", "Now", "-Content", "- [ ] A line the acceptance row would add.", "-Preflight", "-WorkspacePath", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["hub", "edit", "acceptance", "--mode", "new-page", "--page", "notes/acceptance", "--content", "# Acceptance", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
+    },
+    {
       "id": "checks.reports-every-registered-check",
       "area": "checks",
       "class": "success",

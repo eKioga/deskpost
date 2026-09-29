@@ -44,7 +44,7 @@ import {
 import { assertSeatRegistered, psSortCompare, readNotebookTopicOwners, seatIncarnationStatus } from './notebook.ts';
 import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { openCollection } from './collection.ts';
-import { migratingRefusal, readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
+import { activateFreshNotebookLayout, migratingRefusal, readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import {
   agentProcessIdentity,
   assertNoMaintenanceBarrier,
@@ -1227,6 +1227,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
           legacy_desk_retired: false,
           other_seats: otherSeats,
           launch: noLaunch ? 'none' : command,
+          // What a launch would do to the Notebook's layout (S67), read and never written here.
+          notebook_activation: noLaunch ? 'none' : notebookActivationPreview(workspace),
           shared_library_write: false,
         },
         exitCode: 0,
@@ -1311,6 +1313,13 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       shared_library_write: false,
     };
     if (noLaunch) return { result, exitCode: 0 };
+    // A FRESH NOTEBOOK IS ACTIVATED BEFORE THE SESSION STARTS (S67, PLAN-local-collection-writers.md E.1), so nothing
+    // the session writes around the kernel can turn it legacy. Only on a real launch; never refuses one.
+    try {
+      result['notebook_activation'] = activateFreshNotebookLayout(workspace).state;
+    } catch (error) {
+      result['notebook_activation'] = `not activated: ${(error as Error).message}`;
+    }
     if (options.human) {
       const what = conversationAction === 'resume' ? `resuming conversation ${conversationId}` : conversationId ? `conversation ${conversationId}` : 'a new conversation';
       process.stdout.write(`Starting ${assistant ? ASSISTANT_LABEL[assistant] : command} at seat '${seat}' (Project ${bound}), ${what}.\n`);
@@ -1333,6 +1342,16 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     return { result: null, exitCode };
   } finally {
     exitSeatClaim(claim);
+  }
+}
+
+/** What `seat start` would do to the Notebook's layout on a launch: read, never written (S67). */
+function notebookActivationPreview(workspace: string): string {
+  try {
+    const state = readNotebookLayout(workspace).state;
+    return state === 'fresh' ? 'would-activate' : state === 'seat-owned' ? 'already-active' : state;
+  } catch (error) {
+    return `unreadable: ${(error as Error).message}`;
   }
 }
 

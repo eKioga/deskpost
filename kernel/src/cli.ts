@@ -36,13 +36,14 @@ import { runDoctor } from './doctor.ts';
 import { runSeatVerb } from './seat.ts';
 import { runHubVerb, runPublishVerb, runSharedVerb } from './collection.ts';
 import { runCollectionVerb } from './ownership.ts';
+import { COLLECTION_ADD_PAGE_OPTIONS, collectionAddPage } from './collectionpage.ts';
 import { runMcpVerb } from './reader.ts';
 import { runHookVerb } from './guards.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
 import { parseArguments } from './argv.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
-import { notPortedRefusal, usageText, verbInventory, VERBS } from './verbs.ts';
+import { notPortedRefusal, usageText, verbInventory, verbUsageText, VERBS } from './verbs.ts';
 import { hostRemedies, hostRemedyFields, REMEDY_HOST } from './remedy.ts';
 import { runBasicMemoryVerb } from './bmconnection.ts';
 import { BASIC_MEMORY_ACTIONS } from './bmactions.ts';
@@ -95,6 +96,11 @@ async function main(argv: string[]): Promise<number> {
     if (result.refusal !== null) refuse(result.refusal);
     return result.exitCode;
   }
+  // `help <verb>` IS THAT VERB'S USAGE (S67), and exits 0 like the whole table does.
+  if (argv[0] === 'help' && argv[1] !== undefined && Object.prototype.hasOwnProperty.call(VERBS, argv[1])) {
+    writeStdout(verbUsageText(argv[1], argv[2]));
+    return 0;
+  }
   if (argv.length === 0 || ['help', '--help', '-h', '-?', '/?'].includes(argv[0]!)) {
     writeStdout(usageText());
     return 0;
@@ -117,6 +123,13 @@ async function main(argv: string[]): Promise<number> {
       `library has no command '${verb}'. It has: ${Object.keys(VERBS).sort().join(', ')}. ` +
         'Run `library help` for what each one does.',
     );
+  }
+
+  // `--help` ON ANY VERB OR ACTION PRINTS ITS USAGE AND EXITS 0, before any parser can take it for a slug or a flag
+  // to act on (S67: `hub edit --help` failed, `book add-page --help` was read as a Book slug).
+  if (rest.includes('--help') || rest[0] === '-h' || (rest[1] === '-h' && VERBS[verb]!.actions.includes(rest[0]!))) {
+    writeStdout(verbUsageText(verb, VERBS[verb]!.actions.includes(rest[0] ?? '') ? rest[0] : undefined));
+    return 0;
   }
 
   switch (verb) {
@@ -250,12 +263,23 @@ async function main(argv: string[]): Promise<number> {
     // read as a flag would make `Now` positional and move nothing else, but a value that happened to be
     // the word `--workspace` would be taken for the option.
     case 'collection': {
-      const parsed = parseArguments(rest, ['workspace']);
+      // `add-page` takes values of its own (S67), which a parser valuing only `--workspace` would turn into flags
+      // and stray positionals, so it is dispatched to its own module with its own names.
+      const addingPage = rest[0] === 'add-page';
+      const parsed = parseArguments(rest, addingPage ? COLLECTION_ADD_PAGE_OPTIONS : ['workspace']);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
       } catch (error) {
         refuse(`library collection : ${(error as Error).message}`);
+      }
+      if (addingPage) {
+        try {
+          emit(collectionAddPage(rest.slice(1), workspace), true);
+        } catch (error) {
+          refuse((error as Error).message);
+        }
+        return 0;
       }
       const result = runCollectionVerb(rest, workspace);
       if (result.refusal !== null) refuse(result.refusal);

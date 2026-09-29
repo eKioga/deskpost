@@ -815,7 +815,7 @@ the two disagree. Edit the rows, not the table.
 
 <!-- BEGIN GENERATED MATRIX -- rendered by tools/Invoke-AcceptanceMatrix.ps1 -RenderDoc; do not edit by hand -->
 
-**177 rows** across 18 areas: 156 compared against PowerShell, 21 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
+**179 rows** across 18 areas: 156 compared against PowerShell, 23 judged independently. 30 need a reachable shared collection and are skipped offline. 23 public helpers are excluded with a reason rather than given a row.
 
 Approved for **every** row, so not repeated on each one: `kernel-reports-its-own-version`.
 
@@ -968,6 +968,7 @@ Project Hubs, local and shared, and the bounded Hub edit.
 | `hub.archive-confirmed-moves-the-hub-and-both-catalogs` | archive | differential | `workspace-seated` | A confirmed Hub archive moves every page to `archive/projects/<slug>`, rewrites the root's own links, lists it in the archive Catalog, removes its active Catalog line, and removes the emptied directory. _(delta: hubs-can-be-local; needs shared-collection)_ |
 | `hub.archive-confirmed-rewrites-root-links-into-an-existing-catalog` | archive | differential | `workspace-seated` | A confirmed Hub archive rewrites every link the root makes into its own directory, and adds one line to an archive Catalog that already lists another Hub, keeping that one. _(delta: hubs-can-be-local; needs shared-collection)_ |
 | `hub.briefing-orients-without-opening-dependencies` | success | differential | `workspace-open-book` | `read_open_project_briefing` returns a Project's orientation without opening the Books it depends on. _(delta: hubs-can-be-local; needs shared-collection)_ |
+| `hub.new-page-makes-a-page-and-never-replaces-one` | success | independent | `workspace-seated` | hub edit --mode new-page makes a new page in a Project Hub on a local collection, open at this seat: an existing page, a reserved name (_project, connections, README), a capitalised segment, a junction and a Library attached to Basic Memory are refused by name; the page is created exclusively and journalled pending, created, complete; a failure it can undo is rolled back and verified gone, and one it cannot (a failed removal, a file someone else changed) is recorded recovery-required with the page left and a retry told which journal. The missing-page refusal of the other modes and hub copy-pages on a local Library name this mode (S67, PLAN-local-collection-writers.md step B). _(delta: hubs-can-be-local)_ |
 
 ### compile
 
@@ -1028,6 +1029,7 @@ Publication, refresh and archive against the shared collection.
 | `publication.catalog-entry-confirmed-creates-its-heading` | publication | differential | `workspace-open-book` | A confirmed listing into a Book Catalog without the collection's heading appends the heading and the one entry, and reads the entry back. _(needs collection-ownership; needs shared-collection)_ |
 | `publication.catalog-entry-confirmed-inserts-under-its-heading` | publication | differential | `workspace-open-book` | A confirmed listing into a Book Catalog that has the collection's heading inserts the one entry directly under it and keeps the entry already there. _(needs collection-ownership; needs shared-collection)_ |
 | `publication.collection-ownership-is-acquired-and-released` | concurrency | independent | `workspace-two-seat` | One writable workspace per collection: ownership is an exclusive per-incarnation claim record, and a second workspace is refused while it stands. |
+| `publication.collection-add-page-only-ever-adds` | success | independent | `workspace-seated` | A page added to a Book in a local Library's own collection (library collection add-page) is previewed with a plan_id, then written under the Book lock with its reader map gaining exactly one line at its end: the map's frontmatter kept, a topic index beside the page named and never edited, a Discovery manifest committed and read back. A closed or archived Book, an existing page, another plan_id, a map changed while the run waited for the lock, a map ending in an open fence and a folder that is a junction are each refused with nothing written, and a manifest that did not commit is rolled back to the Book as it was (S67, PLAN-local-collection-writers.md step A). |
 
 ### concurrency
 

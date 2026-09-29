@@ -10,10 +10,12 @@
  * own `shelf remove` plan, ported in S14 -- and one composite `plan_id` over both; `publish batch` composes
  * `publish` (or the delete plan alone) per item; `publish refresh` IS the candidate plan.
  *
- * THE CANDIDATE'S PREFLIGHT READS NOTHING FROM THE COLLECTION, measured and read: past the fence it is
+ * THE CANDIDATE'S PREFLIGHT READS NOTHING FROM A SHARED COLLECTION, measured and read: past the fence it is
  * local. So a refresh preflight is the same document as a first publication's, and `-ReplaceExisting`
  * is neither in it nor in its `plan_id` -- which the kernel carries rather than corrects, and S35 records
- * for the reader.
+ * for the reader. ON A LOCAL LIBRARY IT READS ONE THING MORE (S67): the collection Book's pages that no planned
+ * record names, `pages_left_behind`, which the publication never removes. They are bound into the outer approval
+ * (`publish`'s composite id, `refresh`'s `refresh_plan_id`), never into the candidate id, which is the resume key.
  *
  * THE CONFIRMED HALVES OF `publish` AND `publish refresh` SINCE S39, after the oracle's own two gates (the
  * confirmation, then the exact `plan_id`): the per-page write, compare and readback, the root's completion
@@ -40,7 +42,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
-import { sha256OfText } from './sha.ts';
+import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson } from './psjson.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { psSortCompare } from './pssort.ts';
@@ -147,6 +149,10 @@ interface CandidateInput {
   bookVersion?: string;
   /** How long the local branch waits for its locks (`--lock-timeout`, seconds). Neither in the plan nor in its id. */
   lockTimeoutSeconds?: number;
+  /** The left-behind digest the approval covered, rechecked under the Book lock by the local confirmed half. */
+  expectedLeftBehindDigest?: string;
+  /** Whether the collection Book was there when the approval was read, rechecked with the digest (inspection). */
+  expectedDestinationPresent?: boolean;
 }
 
 /** `--lock-timeout <seconds>`, twenty when absent or unreadable, as `library hub edit` reads it. */
@@ -173,6 +179,38 @@ interface CandidatePlan {
   bookRoot: string;
   sourceBoundary: string;
   records: CandidateRecord[];
+  /** Local only: pages already in the collection Book that no planned record names. Empty for Basic Memory. */
+  leftBehind: LeftBehind;
+}
+
+interface LeftBehind {
+  pages: { path: string; sha256: string }[];
+  /** SHA-256 over the list; '' when it is empty, so an approval with nothing left behind is unchanged. */
+  digest: string;
+}
+
+/**
+ * THE PAGES A LOCAL REFRESH WOULD LEAVE BEHIND (S67, Eric's Q4). A local publication writes its planned records and
+ * deletes nothing, while Discovery indexes every file on disk (collectionbooks.ts), so a page the new Shelf copy no
+ * longer carries stays findable and drops out of the reader map, and nobody is told. It is reported, bound into the
+ * approval, and never removed: removing a collection page is a shared deletion, which has no route yet.
+ *
+ * THIS IS THE ONE PLACE THE LOCAL PREFLIGHT READS THE DESTINATION; the candidate's own plan_id does not include it,
+ * because that id is the resume key written into `_book.md` (approved_plan_id).
+ */
+function localPagesLeftBehind(workspace: string, bookSlug: string, records: CandidateRecord[]): LeftBehind {
+  const wiki = path.join(workspace, 'collection', 'books', bookSlug, 'wiki');
+  if (!fs.existsSync(wiki) || !fs.statSync(wiki).isDirectory()) return { pages: [], digest: '' };
+  // CASE FOLDED ONLY WHERE THE FILE SYSTEM FOLDS IT (inspection): on a case-sensitive one `Guide.md` is its own page.
+  const fold = (value: string) => (process.platform === 'win32' || process.platform === 'darwin' ? value.toLowerCase() : value);
+  const planned = new Set(records.map((record) => fold(record.path)));
+  const pages = filesBelow(wiki)
+    .filter((file) => path.extname(file).toLowerCase() === '.md')
+    .map((file) => ({ file, relative: `books/${bookSlug}/wiki/${file.substring(wiki.length).replace(/^[\\/]+/, '').replace(/\\/g, '/')}` }))
+    .filter((item) => !planned.has(fold(item.relative)))
+    .map((item) => ({ path: `collection/${item.relative}`, sha256: sha256OfBytes(fs.readFileSync(item.file)) }))
+    .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  return { pages, digest: pages.length ? sha256OfText(pages.map((page) => `${page.path}|${page.sha256}`).join('\n')) : '' };
 }
 
 /**
@@ -223,6 +261,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     })
     .sort(psSortCompare);
   if (files.length === 0) refuse('The selected Shelf Book contains no publishable Markdown pages.');
+  if (local) assertNotArchivedAway(workspace, input.bookSlug);
 
   const bookRoot = `books/${input.bookSlug}/wiki`;
   const sources = files.map((file) => {
@@ -258,6 +297,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
   ];
   const manifestDigest = sha256OfText(records.map((record) => `${record.path}|${record.sha256}|${record.source ?? ''}`).join('\n'));
   const planId = `shelf-copy-${sourceDigest}-${manifestDigest}`;
+  const leftBehind = local ? localPagesLeftBehind(workspace, input.bookSlug, records) : { pages: [], digest: '' };
   return {
     planId,
     sourceDigest,
@@ -266,7 +306,9 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     bookRoot,
     sourceBoundary,
     records,
+    leftBehind,
     plan: {
+      ...(local ? { pages_left_behind: leftBehind.pages as unknown as PsJsonValue } : {}),
       operation: 'Publish a Copy',
       destination: local ? 'collection' : 'shared',
       ...(local ? { collection_id: projectId } : { project_id: projectId }),
@@ -285,6 +327,22 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
       local_original_preserved: true,
     },
   };
+}
+
+/**
+ * A SLUG WHOSE BOOK IS IN THE COLLECTION'S ARCHIVE AND NOT ON ITS ACTIVE SHELF IS NOT PUBLISHED TO (S67, inspection
+ * round 2): a publication would recreate the Book beside its archived copy. It is refused at the preview and again
+ * under the Book lock, so a Book archived between the preview and the yes is never brought back by the run.
+ */
+function assertNotArchivedAway(workspace: string, bookSlug: string): void {
+  const active = fs.existsSync(path.join(workspace, 'collection', 'books', bookSlug, 'wiki'));
+  const archived = fs.existsSync(path.join(workspace, 'collection', 'archive', bookSlug, 'wiki'));
+  if (!active && archived) {
+    refuse(
+      `Book '${bookSlug}' is in this Library's collection archive (collection/archive/${bookSlug}) and not on its active shelf, so ` +
+        'publishing it would recreate it beside the archived copy. Restore it first, or publish under another --book-slug. Nothing was written.',
+    );
+  }
 }
 
 /** The Local collection's persistent id, read from where `library init` records it; a Library without one is told to run init. */
@@ -721,6 +779,24 @@ async function localCandidateConfirmed(
 
   return withBookLocks(workspace, [candidate.bookRoot.replace(/\/wiki$/, ''), 'collection/books'], input.lockTimeoutSeconds ?? 20, (locks) => {
     const bookLock = locks.find((lock) => lock.bookRoot === candidate.bookRoot.replace(/\/wiki$/, ''))!;
+    // THE PAGES LEFT BEHIND, AGAIN, UNDER THE LOCK (S67): the approval covered a list read with nobody excluded.
+    if (input.expectedLeftBehindDigest !== undefined) {
+      const now = localPagesLeftBehind(workspace, input.bookSlug, candidate.records);
+      assertNotArchivedAway(workspace, input.bookSlug);
+      const present = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
+      if (input.expectedDestinationPresent !== undefined && present !== input.expectedDestinationPresent) {
+        refuse(
+          `collection/books/${input.bookSlug} ${present ? 'appeared' : 'left the active shelf'} after the preview, so the approval no longer ` +
+            'describes what the run would do. Rerun --preflight. Nothing was written.',
+        );
+      }
+      if (now.digest !== input.expectedLeftBehindDigest) {
+        refuse(
+          `The pages this publication would leave behind in collection/books/${input.bookSlug}/wiki changed after the preview, so the ` +
+            'approval no longer describes what the run would do. Rerun --preflight. Nothing was written.',
+        );
+      }
+    }
     let mutation: BookMutation | null = null;
     try {
       mutation = enterBookMutation({
@@ -841,6 +917,14 @@ async function localCandidateConfirmed(
         created_records: created,
         reused_records: reused,
         discovery_manifest: manifest.summary,
+        pages_left_behind: candidate.leftBehind.pages as unknown as PsJsonValue,
+        ...(candidate.leftBehind.pages.length
+          ? {
+              left_behind_note:
+                `${candidate.leftBehind.pages.length} page(s) already in collection/books/${input.bookSlug}/wiki are not in this ` +
+                'publication. They were left as they are: still on disk, still found by Discovery, and no longer in the reader map.',
+            }
+          : {}),
         local_original_preserved: true,
       };
     } catch (error) {
@@ -907,6 +991,8 @@ function publishPlan(workspace: string, input: PublishInput): Record<string, PsJ
     `replace_existing=${input.replaceExisting ? 'true' : 'false'}`,
     `publication_plan=${publication.planId}`,
     `delete_plan=${String(deletePlan['plan_id'])}`,
+    // Only when something would be left behind, so an approval with nothing to report keeps its id (S67).
+    ...(publication.leftBehind.digest ? [`left_behind=${publication.leftBehind.digest}`] : []),
   ];
   if (local) {
     return {
@@ -1020,6 +1106,12 @@ async function publishWorkflow(
   try {
     saveWorkflowJournal(state, '');
     const candidate = candidatePreflight(workspace, input);
+    // THE LIST THE APPROVAL COVERED, rechecked under the Book lock by the local publisher (S67).
+    if (isLocalBackend(workspace)) {
+      const approved = ((publicationPlan['pages_left_behind'] as unknown as { path: string; sha256: string }[] | undefined) ?? []);
+      input.expectedLeftBehindDigest = approved.length ? sha256OfText(approved.map((page) => `${page.path}|${page.sha256}`).join('\n')) : '';
+      input.expectedDestinationPresent = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
+    }
     const publicationResult = await candidateConfirmed(workspace, input, candidate, input.replaceExisting, publicationJournalPath);
     if (publicationResult['publication_complete'] !== true || publicationResult['catalog_entry_verified'] !== true) {
       refuse('the shared publisher did not report both publication completion and Catalog verification');
@@ -1074,10 +1166,36 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
     lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
   };
   const candidate = candidatePreflight(workspace, input);
-  if (parsed.flags.has('preflight')) return { schema: 1, ...candidate.plan };
+  // A LOCAL REFRESH THAT LEAVES PAGES BEHIND HAS AN APPROVAL OF ITS OWN (S67, Eric's Q4): the candidate plan_id stays the
+  // resume key, and `refresh_plan_id` covers it and the list. With nothing left behind the two are the same.
+  const refreshPlanId = candidate.leftBehind.digest
+    ? 'refresh-' + sha256OfText(`${candidate.planId}\n${candidate.leftBehind.digest}`)
+    : candidate.planId;
+  if (parsed.flags.has('preflight')) {
+    return {
+      schema: 1,
+      ...candidate.plan,
+      ...(candidate.leftBehind.digest
+        ? {
+            refresh_plan_id: refreshPlanId,
+            approve_with:
+              `--user-confirmed --plan-id ${refreshPlanId}: this id covers the ${candidate.leftBehind.pages.length} page(s) listed in ` +
+              'pages_left_behind, which the refresh leaves on disk and does not remove.',
+          }
+        : {}),
+    };
+  }
   if (!parsed.flags.has('user-confirmed')) refuse('Shared publication is not yet performed: review the manifest and rerun with -UserConfirmed.');
-  if ((parsed.options.get('plan-id') ?? '') !== candidate.planId) {
-    refuse('Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.');
+  if ((parsed.options.get('plan-id') ?? '') !== refreshPlanId) {
+    refuse(
+      candidate.leftBehind.digest
+        ? 'The refresh is not yet performed: it leaves pages behind, so its approval is refresh_plan_id, not plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
+        : 'Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.',
+    );
+  }
+  if (isLocalBackend(workspace)) {
+    input.expectedLeftBehindDigest = candidate.leftBehind.digest;
+    input.expectedDestinationPresent = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
   }
   // THE CONFIRMED HALF (S39): the candidate with -ReplaceExisting, its result under Publish-BookCopy's `schema`.
   return { schema: 1, ...(await candidateConfirmed(workspace, input, candidate, true, parsed.options.get('journal-path') ?? '')) };

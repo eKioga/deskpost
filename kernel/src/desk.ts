@@ -337,6 +337,18 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       ...(layout.state === 'migrating'
         ? { migration: "A Notebook migration is in progress and has not completed; every Notebook verb refuses until 'library migrate --resume' finishes it or '--rollback' undoes it." }
         : {}),
+      // THE LAYOUT, SAID ONLY WHEN WRITES WILL REFUSE (S67, two seats' Reports): a legacy Notebook refused every
+      // Notebook write, and the overview said nothing until one did. Absent in the ordinary case, as `migration` is,
+      // so the overview's differential row is unchanged there.
+      ...(layout.state === 'legacy' || layout.state === 'migrating'
+        ? {
+            layout: layout.state,
+            write_note:
+              layout.state === 'legacy'
+                ? `This Library's Notebook is still in the shared layout ADR-0029 retires (${layout.legacy.join('; ')}), so every Notebook write refuses. Run 'deskpost migrate --preflight' to see what moving it takes; every other session must be closed first.`
+                : "Every Notebook write refuses until 'deskpost migrate --resume' finishes the migration or '--rollback' undoes it.",
+          }
+        : {}),
     },
     scope:
       'Read-only local state: Virtual Desk lists, Notebook indexes, the Notebook topic-ownership record, ' +

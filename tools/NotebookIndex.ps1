@@ -358,6 +358,15 @@ if ($MyInvocation.InvocationName -ne '.' -and (@($args) -contains '-Render' -or 
     if ([string]::IsNullOrWhiteSpace($workspaceArgument)) { $workspaceArgument = Split-Path -Parent $PSScriptRoot }
     $resolvedWorkspace = (Resolve-Path -LiteralPath $workspaceArgument).Path
 
+    # A SEAT-OWNED NOTEBOOK HAS NO SHARED MASTER INDEX (S67, ADR-0029): rendering one lists topics in the retired shared
+    # tree, which turned a fresh Library legacy. The kernel renders a seat's own index.
+    if (@($argumentList) -contains '-Render' -and -not (@($argumentList) -contains '-SelfTest') -and
+        (Test-Path -LiteralPath (Join-Path $resolvedWorkspace 'internal/notebook-layout.json') -PathType Leaf)) {
+        [Console]::Error.WriteLine("This Library's Notebook is seat-owned (ADR-0029), so there is no shared master index to render; " +
+            'rendering one would put the Notebook back in the shared layout. Nothing was changed. Render your own seat''s index with deskpost notebook render.')
+        exit 1
+    }
+
     if (@($argumentList) -contains '-SelfTest') {
         $failures = [Collections.Generic.List[string]]::new()
         function Assert([bool]$Condition, [string]$Label) { if (-not $Condition) { [void]$failures.Add($Label) } }

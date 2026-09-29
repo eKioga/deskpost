@@ -38,6 +38,7 @@ import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts
 import { notebookScope } from './notebooklayout.ts';
 import { triageInventory } from './triageinventory.ts';
 import { triageBatch } from './triagebatch.ts';
+import { convertToBookPagePath } from './pagepath.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 const ARCHIVE_FOLDER = '_archive';
@@ -354,23 +355,6 @@ function assertKindReachable(kind: string, sourceKind: string): void {
     REFUSAL_REASON[`${sourceKind}|${kind}`] ??
     `From source '${sourceKind}' the reachable kinds are: ${SOURCE_KINDS[sourceKind]!.join(', ')}.`;
   refuse(`Action kind '${kind}' is not reachable from source '${sourceKind}'. ${reason}`);
-}
-
-/** A page path is a Book-relative location, never a filesystem path. */
-function convertToBookPagePath(raw: string): string {
-  let candidate = raw.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  if (!candidate) refuse('PagePath is required, for example rendering/shaders.');
-  if (candidate.endsWith('.md')) candidate = candidate.substring(0, candidate.length - 3);
-  const segments = candidate.split('/');
-  if (['_book', '_index'].includes(segments[segments.length - 1]!)) {
-    refuse('PagePath must not name the Book metadata page or the reader map.');
-  }
-  for (const segment of segments) {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(segment)) {
-      refuse(`PagePath segment '${segment}' must contain only lowercase letters, digits, and hyphens.`);
-    }
-  }
-  return segments.join('/');
 }
 
 function convertToNoteSlug(title: string): string {

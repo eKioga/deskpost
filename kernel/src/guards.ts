@@ -607,6 +607,46 @@ function formatMatchedText(text: string): string {
   return `'${text}'`;
 }
 
+/**
+ * A SHELL WRITE INTO THE NOTEBOOK, JUDGED BY THE WRITE TOOL'S OWN RULE (S67, PLAN-local-collection-writers.md E.5;
+ * deskpost-prompts-dev's "Correction" Report). A Bash heredoc and `cp` into `notebook/<topic>/` went round the Write
+ * guard and turned a fresh Library legacy, so every seat's Notebook refused. Each path under `notebook/` that the
+ * command writes -- a redirection's target, or any Notebook path in a command that runs a writing verb -- goes
+ * through `notebookWriteDenial` as a `Write`, so the shell and the Write tool can never disagree.
+ *
+ * BEST-EFFORT, AND SAID SO: this reads command TEXT, so a write it cannot parse passes, and a copy FROM another seat's
+ * Notebook in a writing command is refused with it. The kernel's own writers and the layout check are the fence.
+ */
+const SHELL_WRITE_VERB = /(?:^|[\s;&|(`])(?:tee|cp|mv|mkdir|touch|rsync|install|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item)(?=[\s;&|)]|$)/i;
+
+function shellNotebookWriteDenial(command: string, workspace: string, seat: string | undefined, stateDirectory: string): string | null {
+  const text = convertToPathSeparators(removeHeredocBodies(command).replace(/<<heredoc-body-elided/g, ' ')).text;
+  const token = /^["']?(.*?)["']?$/;
+  const notebookRelative = (raw: string): string | null => {
+    const bare = token.exec(raw)![1]!.replace(/^\.\//, '');
+    const placed = workspaceRelative(dotnetIsPathRooted(bare) ? bare : joinPath(workspace, bare), workspace);
+    if (placed.kind !== 'inside') return null;
+    const relative = (placed.relative ?? '').replace(/\\/g, '/');
+    return /^notebook\//i.test(relative) ? relative : null;
+  };
+  const targets = new Set<string>();
+  for (const match of text.matchAll(/(?:^|[^0-9&>])>{1,2}\s*([^\s|;&<>]+)/g)) {
+    const relative = notebookRelative(match[1]!);
+    if (relative) targets.add(relative);
+  }
+  if (SHELL_WRITE_VERB.test(text)) {
+    for (const match of text.matchAll(/(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[^\s"'|;&<>]*notebook\/[^\s"'|;&<>]*/gi)) {
+      const relative = notebookRelative(match[0]);
+      if (relative) targets.add(relative);
+    }
+  }
+  for (const relative of [...targets].sort()) {
+    const denial = notebookWriteDenial({ target: joinPath(workspace, relative), workspace, toolName: 'Write', seat, stateDirectory });
+    if (denial) return `This shell command writes '${relative}'. ${denial}`;
+  }
+  return null;
+}
+
 /** `Guard-ShellShelfRead.ps1`: a shell command, judged on its literal text. */
 function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => never): void {
   const { workspace, stateDirectory, seat, call } = context;
@@ -621,6 +661,9 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
     if (cross) deny(`This command names '${rooted[0]}'. ${cross}`);
   }
   if (!workspace) return;
+
+  const notebookDenial = shellNotebookWriteDenial(command, workspace, seat, stateDirectory);
+  if (notebookDenial) deny(notebookDenial);
 
   const hits = shelfTokens(command);
   if (hits.length === 0) return;

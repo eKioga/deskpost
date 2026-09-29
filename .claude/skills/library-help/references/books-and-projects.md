@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.2/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.3/docs/seats.md).
 
 ## Books
 
@@ -54,7 +54,7 @@ reader or search for ordinary reader requests.
 
 ```
 library shelf new <slug> --title "<title>" --summary "<one line>"      # a new curated Book
-library book add-page <slug> --title "<page>" --content-path <file>    # add a page; the Book open
+library book add-page <slug> <page> --content-path <file>             # add a page; the Book open
 library shelf rename | remove | archive | restore                      # each previews first
 ```
 
@@ -128,8 +128,11 @@ way the Hub carries only the pointer, and pointers are **operative only**. Reaso
 `hub edit` has **seven** modes. `add-section`, `append-section` and `check-item` apply directly and
 are checked so they cannot lose text. `replace-item`, `replace-section`, `remove-section` and
 `replace-body` need a `--preflight` plan id and one clear approval (`--user-confirmed --plan-id`).
-There is no remove-item mode. An archived Hub is read-only, and `hub edit` edits only pages that
-already **exist**. `hub archive` and `hub copy-pages` work against a shared collection only.
+There is no remove-item mode. An archived Hub is read-only, and those seven edit only pages that
+already **exist**. On a local collection an eighth, `--mode new-page --page <path> --content-path <f>`,
+makes a page that does not exist -- the dated `notes/` page history belongs on -- and never replaces one;
+on Basic Memory a new page goes through `tools/Copy-LocalPagesToProject.ps1`. `hub archive` and
+`hub copy-pages` work against a shared collection only.
 
 **Renaming a Hub** in this Library's own collection is `library hub rename <old> <new> --title "<t>"`: preview with
 `--preflight`, show the reader what it reports, then `--user-confirmed --plan-id <id>` after one clear yes. It

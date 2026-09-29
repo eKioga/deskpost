@@ -710,7 +710,10 @@ export async function runMcpVerb(argv: string[]): Promise<McpResult> {
       if (!value.trim()) refuse(`parameter '${name}' must be a non-empty string.`);
       return value;
     },
-    optional: (name) => option(name),
+    // `--location` ANSWERS FOR `place` (S67, game-admin's Report): `library help` documented `--location` for the page
+    // tools, whose argument is `place`, so the documented flag was ignored and the read refused as ambiguous. `--place`
+    // wins when both are given; the catalog's own `location` is untouched.
+    optional: (name) => (name === 'place' ? option('place') ?? option('location') : option(name)),
   };
 
   try {

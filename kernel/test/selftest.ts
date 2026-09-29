@@ -4360,7 +4360,7 @@ if (selected(48)) {
     fs.mkdirSync(helpCwd);
     for (const asked of [['--help'], ['-h']]) {
       const help = runCli(['init', ...asked], { cwd: helpCwd, env });
-      check(help.exit === 0 && help.stdout.includes('Usage: library init'), `init ${asked[0]} did not print usage: ${help.exit} ${help.stdout.slice(0, 200)}`);
+      check(help.exit === 0 && help.stdout.includes('deskpost init [<folder>]'), `init ${asked[0]} did not print usage: ${help.exit} ${help.stdout.slice(0, 200)}`);
     }
     const typo = runCli(['init', '--hepl'], { cwd: helpCwd, env });
     check(typo.exit !== 0 && typo.stderr.includes('no --hepl') && typo.stderr.includes('nothing has been written'), `init with an unknown flag was not refused by name: ${typo.exit} ${typo.stderr.trim()}`);
@@ -5265,6 +5265,799 @@ if (selected(57)) {
 
     // A RE-IMPORT AFTER THE RENAME: the old file absent here, unchanged there, recorded -- kept as the reader's.
     equal(classify('same-sha', null, 'same-sha'), 'keep-local', 'a renamed-away file would be brought back by a re-import');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 58. ONE PAGE GRAMMAR, UNDERSCORE TOPIC INDEXES, FRONTMATTER KEPT ON TOP (PLAN-local-collection-writers.md 0.1, 0.2, 0.5, C)
+
+// A topic index below the top level is a page every writer accepts, and the top-level `_book`/`_index` are still
+// refused; the three writers share one grammar; a body with frontmatter keeps it on top, whether it brings its own
+// H1 or is given one; and a Book page named `_master-index` can be journalled, while the Notebook's and the Shelf's
+// derived indexes still cannot.
+if (selected(58)) {
+  const { convertToBookPagePath, renderPageBody } = await import('../src/pagepath.ts');
+  const { writeBookJournal } = await import('../src/journal.ts');
+  const grammar = (raw: string): string => {
+    try {
+      return convertToBookPagePath(raw);
+    } catch (error) {
+      return `refused: ${(error as Error).message}`;
+    }
+  };
+  equal(grammar('topic/_index'), 'topic/_index', 'a topic index below the top level was refused');
+  equal(grammar('game-server-admin/_master-index.md'), 'game-server-admin/_master-index', 'a nested _master-index was refused');
+  equal(grammar('a/b/_index'), 'a/b/_index', 'a topic index two folders down was refused');
+  check(grammar('_index').startsWith('refused: PagePath must not name'), `the top-level reader map was not refused: ${grammar('_index')}`);
+  check(grammar('_book').startsWith('refused: PagePath must not name'), `the top-level Book page was not refused: ${grammar('_book')}`);
+  check(grammar('_notes').includes('underscore name at the top of the Book'), `a top-level underscore page was not refused by name: ${grammar('_notes')}`);
+  check(grammar('_topic/page').startsWith('refused:'), 'an underscore folder was accepted');
+  check(grammar('topic/_Index').startsWith('refused:') && grammar('topic/_').startsWith('refused:'), 'a malformed underscore page was accepted');
+  equal(grammar('rendering/shaders'), 'rendering/shaders', 'an ordinary page path changed');
+  // ONE GRAMMAR: the two other writers import it rather than keeping a copy.
+  for (const file of ['capture.ts', 'triage.ts', 'shelfwriters.ts']) {
+    const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'src', file), 'utf8');
+    check(!/function convertToBookPagePath\(/.test(text) && /from '\.\/pagepath\.ts'/.test(text), `${file} still carries its own page grammar`);
+  }
+
+  // THE BODY RULE: unchanged without frontmatter, frontmatter kept on top with it.
+  equal(renderPageBody('# Own\n\nText.\n', 'Given').body, '# Own\n\nText.\n', 'a body with its own H1 changed');
+  equal(renderPageBody('Text.', 'Given').body, '# Given\n\nText.\n', 'a body without an H1 was not given the title as before');
+  const imported = '---\ntitle: page\npermalink: ai-library/books/x/wiki/page\n---\n\n# Imported\n\nText.\n';
+  const kept = renderPageBody(imported, '');
+  check(kept.body === imported && kept.title === 'Imported' && kept.titleSource === 'body H1', `a body with frontmatter and an H1 was not kept whole: ${JSON.stringify(kept)}`);
+  const titled = renderPageBody('---\ntitle: page\n---\n\nText.\n', 'Given');
+  equal(titled.body, '---\ntitle: page\n---\n\n# Given\n\nText.\n', 'a synthesised H1 was not put after the frontmatter');
+  let refusedUntitled = false;
+  try {
+    renderPageBody('---\ntitle: page\n---\n\nText.\n', '');
+  } catch {
+    refusedUntitled = true;
+  }
+  check(refusedUntitled, 'a body with frontmatter and no H1 was accepted without a title');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-pagepath-')));
+  try {
+    // THE JOURNAL: a curated Book page named _master-index is journalled; the derived indexes are still refused.
+    const journals = (file: string): boolean => {
+      try {
+        writeBookJournal({ workspace: root, bookRoot: 'shelf/demo', operation: 'probe', paths: [path.join(root, ...file.split('/'))] });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    check(journals('shelf/demo/wiki/topic/_master-index.md'), 'a Book page named _master-index could not be journalled');
+    check(journals('collection/books/demo/wiki/topic/_master-index.md'), 'a collection Book page named _master-index could not be journalled');
+    check(!journals('notebook/_master-index.md') && !journals('notebook/some-seat/_master-index.md'), 'a Notebook master index was journalled');
+    check(!journals('shelf/_catalog.md'), 'the Shelf catalog was journalled');
+
+    // THROUGH THE FRONT DOOR: a Shelf Book takes a topic index and a frontmatter page, and still refuses _index.
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    // The Shelf writers' Desk gate reads the seat from the environment, as a seated session's tool child does.
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the page-path fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--json']).exit, 0, 'the fixture Book was not made');
+    // A Desk write needs a live claim, which a fixture has none of; the Desk file is written as section 57 writes it.
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/demo\n');
+    const wiki = path.join(lib, 'shelf', 'demo', 'wiki');
+    const added = cli(['book', 'add-page', 'demo', 'topic/_index', '--body', '# Topic\n\nThe topic index.', '--seat', 'first', '--json']);
+    check(added.exit === 0 && fs.existsSync(path.join(wiki, 'topic', '_index.md')), `a topic index could not be added to a Shelf Book: ${added.stderr.trim()}`);
+    const master = cli(['book', 'add-page', 'demo', 'topic/_master-index', '--body', '# Master\n\nThe master index.', '--seat', 'first', '--json']);
+    check(master.exit === 0, `a _master-index page could not be added, the journal refusing it: ${master.stderr.trim()}`);
+    const frontFile = path.join(root, 'front.md');
+    fs.writeFileSync(frontFile, '---\ntitle: fm\n---\n\nBody only.\n');
+    const front = cli(['book', 'add-page', 'demo', 'fm-page', '--title', 'Front Page', '--content-path', frontFile, '--seat', 'first', '--json']);
+    check(front.exit === 0 && fs.readFileSync(path.join(wiki, 'fm-page.md'), 'utf8') === '---\ntitle: fm\n---\n\n# Front Page\n\nBody only.\n', `a frontmatter page was not written with its frontmatter on top: ${front.stderr.trim()}`);
+    const outsideShelf = path.join(root, 'outside-shelf');
+    fs.mkdirSync(outsideShelf);
+    fs.symlinkSync(outsideShelf, path.join(wiki, 'linked'), 'junction');
+    const through = cli(['book', 'add-page', 'demo', 'linked/page', '--body', '# Through\n\nText.', '--seat', 'first', '--json']);
+    check(through.exit !== 0 && through.stderr.includes('is a link or junction') && fs.readdirSync(outsideShelf).length === 0, `book add-page wrote through a junction: ${through.stderr.trim()}`);
+    const top = cli(['book', 'add-page', 'demo', '_index', '--body', '# X\n\nY', '--seat', 'first', '--json']);
+    check(top.exit !== 0 && top.stderr.includes('must not name the Book metadata page'), `the top-level reader map was accepted as a page: ${top.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 59. A PAGE ADDED TO A LOCAL COLLECTION BOOK (PLAN-local-collection-writers.md step A) ---------------------------
+
+// Judged through the front door only, so with LIBRARY_SELFTEST_KERNEL it judges that kernel (the acceptance row
+// `publication.collection-add-page-only-ever-adds`). The preview writes nothing; the run adds the page and one line at
+// the end of the reader map, keeps the map's frontmatter, commits a manifest, and names a topic index it did not edit.
+// Each refusal fires by name and writes nothing: a closed Book, an archived one, a page that exists, a plan_id that is
+// not the preview's, a map that changed after the preview, a map ending in an open fence, a folder that is a junction
+// (live or dangling), and a Library attached to Basic Memory. Three manifest failures each roll the page back, and
+// the Book reads as it was. A Notebook page filed whole leaves the publication evidence triage reads.
+if (selected(59)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-colpage-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_COLLECTION_ADD_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], extra: Record<string, string> = {}) =>
+      runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the collection-page fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+
+    // A COLLECTION BOOK AS AN IMPORT LEAVES ONE: frontmatter on every page, full-prefix links, a curated topic index.
+    const wiki = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(path.join(wiki, 'guide'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '---\ntitle: _book\ntype: note\n---\n\n# Demo\n\n## Purpose\n\nA fixture Book.\n');
+    const map = '---\ntitle: _index\ntype: note\npermalink: ai-library/books/demo/wiki/index\n---\n\n# Demo - Reader Map\n\n- [[books/demo/wiki/_book|Book metadata and limits]]\n- [[books/demo/wiki/guide/_index|guide/_index.md]]\n- [[books/demo/wiki/guide/start|guide/start.md]]\n';
+    fs.writeFileSync(path.join(wiki, '_index.md'), map);
+    const topicIndex = '# Guide\n\n## Articles\n\n- [[start|Getting Started]]\n';
+    fs.writeFileSync(path.join(wiki, 'guide', '_index.md'), topicIndex);
+    fs.writeFileSync(path.join(wiki, 'guide', 'start.md'), '# Getting Started\n\nText.\n');
+    const archived = path.join(lib, 'collection', 'archive', 'old', 'wiki');
+    fs.mkdirSync(archived, { recursive: true });
+    fs.writeFileSync(path.join(archived, '_book.md'), '# Old\n');
+    equal(cli(['collection', 'rebuild']).exit, 0, 'the fixture collection manifests were not built');
+    const deskFile = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    const store = path.join(lib, 'internal', 'book-manifests', 'collection', 'demo');
+    const body = path.join(root, 'page.md');
+    fs.writeFileSync(body, '# Valheim Server\n\nThe compiled reference.\n');
+    const add = (page: string, extra: string[] = []) => cli(['collection', 'add-page', 'demo', page, '--content-path', body, ...extra]);
+    const preview = (page: string) => {
+      const ran = add(page, ['--preflight']);
+      try {
+        return { ran, plan: JSON.parse(ran.stdout) as Record<string, unknown> };
+      } catch {
+        return { ran, plan: {} as Record<string, unknown> };
+      }
+    };
+    const refused = (ran: { exit: number; stderr: string }, expected: string, label: string) =>
+      check(ran.exit !== 0 && ran.stderr.includes(expected), `${label} was not refused by name: ${ran.exit} ${ran.stderr.trim()}`);
+
+    // CLOSED, then open by a bare slug (a local Library's Desk may spell books/<slug> as <slug>).
+    fs.writeFileSync(deskFile, '');
+    refused(add('guide/valheim', ['--preflight']), 'deskpost desk open book demo --location collection', 'a page for a closed Book');
+    fs.writeFileSync(deskFile, 'demo\n');
+    const first = preview('guide/valheim');
+    check(first.ran.exit === 0, `a bare-slug Desk entry did not open the Book: ${first.ran.stderr.trim()}`);
+    fs.writeFileSync(deskFile, 'books/demo\nbooks/old\narchive/old\n');
+
+    // THE PREVIEW: what it will write, and nothing written.
+    const planned = first.plan;
+    check(/^collection-page-[0-9a-f]{64}$/.test(String(planned['plan_id'])), `the preview carries no plan_id: ${first.ran.stdout.slice(0, 300)}`);
+    equal(planned['reader_map_line'], '- [[books/demo/wiki/guide/valheim|Valheim Server]]', 'the preview did not show the exact map line');
+    equal(planned['topic_index_not_updated'], 'collection/books/demo/wiki/guide/_index.md', 'the preview did not name the topic index it leaves alone');
+    check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')) && fs.readFileSync(path.join(wiki, '_index.md'), 'utf8') === map, 'the preview wrote something');
+    refused(add('guide/valheim'), '--user-confirmed', 'a run with no confirmation');
+    refused(add('guide/valheim', ['--user-confirmed', '--plan-id', 'collection-page-0']), "not this preview's", 'a run on a plan_id that was not the preview\'s');
+    check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')), 'a refused run wrote the page');
+
+    // A MAP CHANGED BEFORE THE RUN no longer matches the preview's plan_id.
+    fs.writeFileSync(path.join(wiki, '_index.md'), map + '- [[books/demo/wiki/extra|Extra]]\n');
+    refused(add('guide/valheim', ['--user-confirmed', '--plan-id', String(planned['plan_id'])]), "not this preview's", 'a run after the map changed');
+    fs.writeFileSync(path.join(wiki, '_index.md'), map);
+    // A MAP CHANGED WHILE THE RUN WAITS FOR THE LOCK: the recheck under the lock refuses it (plan 0.4). The Book's
+    // lock file is held by this judge, the run is started, the map changes, and the lock is released.
+    {
+      const { spawn } = await import('node:child_process');
+      const lockFile = path.join(lib, 'internal', 'book-locks', 'books-demo.lock');
+      fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+      fs.writeFileSync(lockFile, `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=books/demo\n`);
+      const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+      const waiting = spawn(file!, [...prefix, 'collection', 'add-page', 'demo', 'guide/valheim', '--content-path', body, '--user-confirmed', '--plan-id', String(planned['plan_id']), '--workspace', lib], {
+        cwd: root,
+        env: { ...process.env, ...env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: 'first' },
+      });
+      let waitedErr = '';
+      waiting.stderr.on('data', (chunk: Buffer) => (waitedErr += chunk.toString()));
+      const exited = new Promise<number>((resolve) => waiting.on('close', (code) => resolve(code ?? -1)));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      fs.writeFileSync(path.join(wiki, '_index.md'), map + '- [[books/demo/wiki/late|Late]]\n');
+      fs.rmSync(lockFile, { force: true });
+      const code = await exited;
+      check(code !== 0 && waitedErr.includes('reader map changed after the preview'), `a map changed while the run waited for the lock was not refused by name: ${code} ${waitedErr.trim()}`);
+      check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')), 'a run whose map changed under it wrote the page');
+      fs.writeFileSync(path.join(wiki, '_index.md'), map);
+    }
+
+    // THREE MANIFEST FAILURES, each rolled back, the Book as it was.
+    for (const fault of ['commit', 'marker', 'prune']) {
+      fs.writeFileSync(path.join(wiki, '_index.md'), map);
+      if (fs.existsSync(path.join(wiki, 'guide', 'valheim.md'))) fs.rmSync(path.join(wiki, 'guide', 'valheim.md'));
+      equal(cli(['collection', 'rebuild']).exit, 0, `the manifests were not rebuilt before the ${fault} fault`);
+      const again = preview('guide/valheim');
+      const ran = cli(['collection', 'add-page', 'demo', 'guide/valheim', '--content-path', body, '--user-confirmed', '--plan-id', String(again.plan['plan_id'])], { LIBRARY_COLLECTION_ADD_PAGE_FAULT: fault });
+      check(ran.exit !== 0 && ran.stderr.includes('Rollback: complete and verified') && ran.stderr.includes('Discovery: the Book is as it was'), `the ${fault} fault was not rolled back and reported: ${ran.stderr.trim()}`);
+      check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')) && fs.readFileSync(path.join(wiki, '_index.md'), 'utf8') === map, `the ${fault} fault left the page or a changed map`);
+      check(!fs.existsSync(path.join(store, 'dirty.json')) && fs.existsSync(path.join(store, 'current.json')), `the ${fault} fault left the Book's manifest dirty`);
+    }
+
+    // THE RUN.
+    fs.writeFileSync(path.join(wiki, '_index.md'), map);
+    if (fs.existsSync(path.join(wiki, 'guide', 'valheim.md'))) fs.rmSync(path.join(wiki, 'guide', 'valheim.md'));
+    const current = preview('guide/valheim');
+    const ran = add('guide/valheim', ['--user-confirmed', '--plan-id', String(current.plan['plan_id'])]);
+    check(ran.exit === 0 && (JSON.parse(ran.stdout || '{}') as { status?: string }).status === 'added', `the page was not added: ${ran.stdout.slice(0, 300)} ${ran.stderr.trim()}`);
+    equal(fs.readFileSync(path.join(wiki, 'guide', 'valheim.md'), 'utf8'), '# Valheim Server\n\nThe compiled reference.\n', 'the page was not written as given');
+    equal(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8'), map + '- [[books/demo/wiki/guide/valheim|Valheim Server]]\n', 'the map was not the old map plus one line');
+    equal(fs.readFileSync(path.join(wiki, 'guide', '_index.md'), 'utf8'), topicIndex, 'the topic index was edited');
+    check(!fs.existsSync(path.join(store, 'dirty.json')) && fs.existsSync(path.join(store, 'current.json')), 'the run left the manifest dirty or uncommitted');
+    const found = cli(['mcp', 'call', 'discover_book_pages', '--query', 'Valheim Server', '--seat', 'first']);
+    check(found.stdout.includes('guide/valheim'), `Discovery does not find the new page: ${found.stdout.slice(0, 300)} ${found.stderr.trim()}`);
+    refused(add('guide/valheim', ['--preflight']), 'already exists', 'a page that exists');
+
+    // A TOPIC INDEX PAGE ITSELF can be added below the top level, and an already-linked page adds no line.
+    fs.writeFileSync(path.join(wiki, '_index.md'), map + '- [[books/demo/wiki/notes/_index|notes]]\n');
+    const linked = preview('notes/_index');
+    check(linked.ran.exit === 0 && linked.plan['reader_map_line'] === null, `an already-linked page would add a map line: ${linked.ran.stdout.slice(0, 300)} ${linked.ran.stderr.trim()}`);
+
+    // FENCES: a link inside one does not count, and a map ending inside one is refused.
+    fs.writeFileSync(path.join(wiki, '_index.md'), map + '\n```\n- [[books/demo/wiki/fenced|Fenced]]\n```\n');
+    const fenced = preview('fenced');
+    check(fenced.ran.exit === 0 && fenced.plan['reader_map_line'] === '- [[books/demo/wiki/fenced|Valheim Server]]', `a link inside a fence suppressed the real entry: ${fenced.ran.stdout.slice(0, 300)}`);
+    fs.writeFileSync(path.join(wiki, '_index.md'), map + '\n```\nexample\n');
+    refused(add('open-fence', ['--preflight']), 'unclosed code fence', 'a map ending inside a fence');
+    fs.writeFileSync(path.join(wiki, '_index.md'), map);
+
+    // LINKS AND JUNCTIONS under the Book, live and dangling, and the archive, and a Basic Memory Library.
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(wiki, 'linked'), 'junction');
+    refused(add('linked/page', ['--preflight']), 'is a link or junction', 'a page through a junction');
+    check(fs.readdirSync(outside).length === 0, 'a page landed outside the Book');
+    const gone = path.join(root, 'gone');
+    fs.mkdirSync(gone);
+    fs.symlinkSync(gone, path.join(wiki, 'dangling'), 'junction');
+    fs.rmdirSync(gone);
+    refused(add('dangling/page', ['--preflight']), 'is a link or junction', 'a page through a dangling junction');
+    refused(cli(['collection', 'add-page', 'old', 'page', '--content-path', body, '--preflight']), 'archive, which is read-only', 'a page for an archived Book');
+    refused(cli(['collection', 'add-page', 'nothere', 'page', '--content-path', body, '--preflight']), "no Book 'nothere'", 'a page for a Book that is not there');
+
+    // THE PUBLICATION EVIDENCE: a Notebook page filed whole is covered.
+    const note = path.join(lib, 'notebook', 'first', 'valheim', 'server.md');
+    fs.mkdirSync(path.dirname(note), { recursive: true });
+    fs.writeFileSync(note, '# Server Notes\n\nFrom the Notebook.\n');
+    const fromNotebook = JSON.parse(cli(['collection', 'add-page', 'demo', 'server-notes', '--content-path', note, '--preflight']).stdout || '{}') as { plan_id?: string };
+    const filed = cli(['collection', 'add-page', 'demo', 'server-notes', '--content-path', note, '--user-confirmed', '--plan-id', String(fromNotebook.plan_id)]);
+    const evidence = (JSON.parse(filed.stdout || '{}') as { publication_evidence?: string }).publication_evidence ?? '';
+    check(filed.exit === 0 && evidence.startsWith('internal/publication-journals/'), `a Notebook page filed whole left no publication evidence: ${filed.stdout.slice(0, 300)} ${filed.stderr.trim()}`);
+    if (evidence) {
+      const journal = JSON.parse(fs.readFileSync(path.join(lib, ...evidence.split('/')), 'utf8').replace(/^﻿/, '')) as { state: string; planned_records: { source: string }[] };
+      check(journal.state === 'complete' && journal.planned_records[0]?.source === 'notebook/first/valheim/server.md', `the evidence does not name the Notebook source: ${JSON.stringify(journal)}`);
+    }
+    const copyStatus = (source: string): string => {
+      const inventory = runCli(['triage', 'inventory', '--workspace', lib, '--json'], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+      let found = '';
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) node.forEach(walk);
+        else if (node !== null && typeof node === 'object') {
+          const record = node as Record<string, unknown>;
+          if (record['path'] === source && typeof record['copy_status'] === 'string') found = record['copy_status'] as string;
+          Object.values(record).forEach(walk);
+        }
+      };
+      try {
+        walk(JSON.parse(inventory.stdout));
+      } catch {
+        return `unreadable: ${inventory.stderr.trim().slice(0, 200)}`;
+      }
+      return found || 'not listed';
+    };
+    equal(copyStatus('notebook/first/valheim/server.md'), 'known-current-copy', 'triage does not read the filed Notebook page as covered');
+    fs.writeFileSync(note, '# Server Notes\n\nFrom the Notebook, changed since.\n');
+    equal(copyStatus('notebook/first/valheim/server.md'), 'known-copy-drifted', 'triage does not read a changed Notebook source as drifted');
+
+    const bmLib = path.join(root, 'bm');
+    equal(basicMemoryWorkspace(bmLib, path.join(root, 'reg'), 'http://127.0.0.1:9/mcp', 'bm-collection', { cwd: root, env }).exit, 0, 'the Basic Memory fixture did not initialise');
+    const onBm = runCli(['collection', 'add-page', 'demo', 'page', '--content-path', body, '--preflight', '--workspace', bmLib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    refused(onBm, 'attached to Basic Memory', 'a page for a Library attached to Basic Memory');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 60. A NEW PAGE IN A LOCAL PROJECT HUB (PLAN-local-collection-writers.md step B) --------------------------------
+
+// Through the front door only (the acceptance row `hub.new-page-makes-a-page-and-never-replaces-one`). The preview
+// writes nothing; the run makes the page, journals it `complete`, and suggests the Next link; an existing page, a
+// reserved name, a capitalised segment, a closed Hub, a junction and a Library on Basic Memory are refused by name.
+// Three failures after the create: one this run can undo (`rolled-back`, the page gone, a retry free), and two it
+// cannot (`recovery-required`, the page left, a retry told which journal). The other modes' missing-page refusal and
+// hub copy-pages on a local Library name new-page, and a Notebook page carried whole is triage evidence.
+if (selected(60)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-newpage-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_HUB_NEW_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], extra: Record<string, string> = {}) =>
+      runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the new-page fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const desk = path.join(lib, '.claude', 'seats', 'first', '.open-projects');
+    const hub = path.join(lib, 'collection', 'projects', 'work');
+    const body = path.join(root, 'note.md');
+    fs.writeFileSync(body, '# The parked design\n\nWhat we decided, and why.\n');
+    const make = (page: string, extra: string[] = [], faults: Record<string, string> = {}) =>
+      cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--content-path', body, ...extra], faults);
+    const refused = (ran: { exit: number; stderr: string }, expected: string, label: string) =>
+      check(ran.exit !== 0 && ran.stderr.includes(expected), `${label} was not refused by name: ${ran.exit} ${ran.stderr.trim()}`);
+    const journals = () => {
+      const directory = path.join(lib, 'internal', 'publication-journals');
+      return fs.existsSync(directory) ? fs.readdirSync(directory).filter((name) => name.startsWith('project-new-page-')) : [];
+    };
+    const lastJournal = () => {
+      const stamp = (name: string) => fs.statSync(path.join(lib, 'internal', 'publication-journals', name)).mtimeMs;
+      const names = journals().sort((left, right) => stamp(left) - stamp(right));
+      return names.length ? (JSON.parse(fs.readFileSync(path.join(lib, 'internal', 'publication-journals', names[names.length - 1]!), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>) : {};
+    };
+
+    fs.writeFileSync(desk, '');
+    refused(make('notes/2026-09-28-parked', ['--preflight']), 'deskpost desk open project work', 'a new page for a closed Hub');
+    fs.writeFileSync(desk, 'projects/work\n');
+
+    const preview = make('notes/2026-09-28-parked', ['--preflight']);
+    const planned = JSON.parse(preview.stdout || '{}') as Record<string, unknown>;
+    check(preview.exit === 0 && planned['page_path'] === 'projects/work/notes/2026-09-28-parked.md' && planned['confirmation_required'] === false, `the new-page preview is not a plan: ${preview.stdout.slice(0, 300)} ${preview.stderr.trim()}`);
+    check(!fs.existsSync(path.join(hub, 'notes')), 'the new-page preview wrote something');
+
+    refused(make('_project', ['--preflight']), 'hub new seeds', 'a new page named _project');
+    refused(make('Connections', ['--preflight']), 'hub new seeds', 'a new page named Connections');
+    refused(make('notes/Capital', ['--preflight']), "new-page's own rule", 'a capitalised new page');
+    refused(cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/x', '--content', 'a', '--content-path', body, '--preflight']), 'exactly one of --content or --content-path', 'a new page given two bodies');
+
+    // THE RUN.
+    const ran = make('notes/2026-09-28-parked');
+    check(ran.exit === 0 && (JSON.parse(ran.stdout || '{}') as { written?: boolean }).written === true, `the new page was not made: ${ran.stdout.slice(0, 300)} ${ran.stderr.trim()}`);
+    equal(fs.readFileSync(path.join(hub, 'notes', '2026-09-28-parked.md'), 'utf8'), '# The parked design\n\nWhat we decided, and why.\n', 'the new page was not written as given');
+    equal(lastJournal()['state'], 'complete', 'the new page\'s journal did not end complete');
+    check(String((JSON.parse(ran.stdout || '{}') as { next?: string }).next).includes('--mode append-section --section Next'), 'the result does not suggest linking the page from Next');
+    refused(make('notes/2026-09-28-parked', ['--preflight']), 'already exists', 'a new page over an existing one');
+    const read = cli(['mcp', 'call', 'read_open_project_page', '--slug', 'work', '--page', 'notes/2026-09-28-parked', '--seat', 'first']);
+    check(read.stdout.includes('The parked design'), `the new page cannot be read through the reader: ${read.stdout.slice(0, 200)} ${read.stderr.trim()}`);
+
+    // A FAILURE THIS RUN CAN UNDO: the page gone, verified, and a retry free.
+    const undone = make('notes/undoable', [], { LIBRARY_HUB_NEW_PAGE_FAULT: 'readback' });
+    check(undone.exit !== 0 && undone.stderr.includes('removed and verified gone'), `a failed readback was not rolled back: ${undone.stderr.trim()}`);
+    check(!fs.existsSync(path.join(hub, 'notes', 'undoable.md')) && lastJournal()['state'] === 'rolled-back', 'a rolled-back page was left, or its journal does not say rolled-back');
+    equal(make('notes/undoable').exit, 0, 'a retry after a rolled-back page was blocked');
+
+    // TWO IT CANNOT: a removal that fails, and a file someone else changed. Both left, both named.
+    for (const [fault, page] of [['remove', 'notes/stuck'], ['foreign', 'notes/foreign']] as const) {
+      const failed = make(page, [], { LIBRARY_HUB_NEW_PAGE_FAULT: fault });
+      const journal = lastJournal();
+      check(failed.exit !== 0 && failed.stderr.includes('still on disk') && journal['state'] === 'recovery-required' && journal['surviving_path'] === `projects/work/${page}.md`, `the ${fault} failure was not recorded as recovery-required: ${failed.stderr.trim()} ${JSON.stringify(journal)}`);
+      check(fs.existsSync(path.join(hub, ...`${page}.md`.split('/'))), `the ${fault} failure removed a page it could not prove was its own`);
+      refused(make(page, ['--preflight']), 'could not be undone; read internal/publication-journals/project-new-page-', `a retry after the ${fault} failure`);
+    }
+
+    // A JUNCTION under the Hub, and a Library on Basic Memory.
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(hub, 'linked'), 'junction');
+    refused(make('linked/page', ['--preflight']), 'is a link or junction', 'a new page through a junction');
+    const bmLib = path.join(root, 'bm');
+    equal(basicMemoryWorkspace(bmLib, path.join(root, 'reg'), 'http://127.0.0.1:9/mcp', 'bm-collection', { cwd: root, env }).exit, 0, 'the Basic Memory fixture did not initialise');
+    refused(runCli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/x', '--content', '# X', '--preflight', '--workspace', bmLib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } }), 'Copy-LocalPagesToProject.ps1', 'a new page on a Library attached to Basic Memory');
+
+    // THE REFUSALS THAT USED TO POINT AT BASIC MEMORY-ONLY HELPERS now name new-page on a local Library.
+    const missing = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--page', 'notes/absent', '--content', '- x', '--preflight']);
+    check(missing.exit !== 0 && missing.stderr.includes('--mode new-page') && !missing.stderr.includes('Copy-LocalPagesToProject'), `the missing-page refusal does not name new-page: ${missing.stderr.trim()}`);
+    const copy = cli(['hub', 'copy-pages', 'work', '--source', 'notebook/x', '--title', 'X', '--purpose', 'Y', '--preflight']);
+    check(copy.exit !== 0 && copy.stderr.includes('--mode new-page'), `hub copy-pages on a local Library does not name new-page: ${copy.stderr.trim()}`);
+
+    // COPY EVIDENCE: a Notebook page carried whole is covered.
+    const note = path.join(lib, 'notebook', 'first', 'design', 'parked.md');
+    fs.mkdirSync(path.dirname(note), { recursive: true });
+    fs.writeFileSync(note, '# Parked from the Notebook\n\nText.\n');
+    equal(cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/from-notebook', '--content-path', note]).exit, 0, 'a Notebook page could not be carried into the Hub');
+    const evidence = lastJournal() as { state?: string; planned_records?: { source: string }[] };
+    check(evidence.state === 'complete' && evidence.planned_records?.[0]?.source === 'notebook/first/design/parked.md', `a Notebook page carried whole left no evidence: ${JSON.stringify(evidence)}`);
+    const copyStatus = (source: string): string => {
+      const inventory = runCli(['triage', 'inventory', '--workspace', lib, '--json'], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+      let found = '';
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) node.forEach(walk);
+        else if (node !== null && typeof node === 'object') {
+          const record = node as Record<string, unknown>;
+          if (record['path'] === source && typeof record['copy_status'] === 'string') found = record['copy_status'] as string;
+          Object.values(record).forEach(walk);
+        }
+      };
+      try {
+        walk(JSON.parse(inventory.stdout));
+      } catch {
+        return `unreadable: ${inventory.stderr.trim().slice(0, 200)}`;
+      }
+      return found || 'not listed';
+    };
+    equal(copyStatus('notebook/first/design/parked.md'), 'known-current-copy', 'triage does not read the Hub page copied from the Notebook as covered');
+    fs.writeFileSync(note, '# Parked from the Notebook\n\nChanged since.\n');
+    equal(copyStatus('notebook/first/design/parked.md'), 'known-copy-drifted', 'triage does not read a changed Notebook source as drifted');
+    // TWO PAGES WHOSE LABELS COLLIDE, ONE BODY: two journals, neither overwritten. Before the fix they collided only
+    // within one UTC second, so this check can pass by luck against a kernel without it; it cannot fail with it.
+    const before = journals().length;
+    equal(make('notes/a-b').exit, 0, 'notes/a-b was not made');
+    equal(make('notes/a/b').exit, 0, 'notes/a/b was not made');
+    equal(journals().length, before + 2, 'two new pages whose labels collide shared a journal');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 61. A LOCAL REFRESH SAYS WHICH PAGES IT LEAVES BEHIND (PLAN-local-collection-writers.md step D) ----------------
+
+// A collection Book holding a page the Shelf copy no longer carries: the refresh preview lists it with its SHA-256,
+// gives a refresh_plan_id that is not the candidate plan_id, and refuses the candidate id; the run leaves the page on
+// disk and repeats the list; a page added while the run waits on the Book lock refuses it. `publish --replace-existing`
+// binds the list into its composite id, and with nothing left behind the refresh approval is the candidate id, as
+// before.
+if (selected(61)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-leftbehind-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the left-behind fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--json']).exit, 0, 'the fixture Shelf Book was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/demo\n');
+    equal(cli(['book', 'add-page', 'demo', 'kept', '--body', '# Kept\n\nStill in the Shelf copy.', '--json']).exit, 0, 'the kept page was not added');
+    const refresh = ['publish', 'refresh', 'demo', '--title', 'Demo', '--summary', 'A curated Book.'];
+
+    // NOTHING LEFT BEHIND: a first publication into the collection, approved by the candidate id as before.
+    const firstPlan = json(cli([...refresh, '--preflight']));
+    check(Array.isArray(firstPlan['pages_left_behind']) && (firstPlan['pages_left_behind'] as unknown[]).length === 0 && firstPlan['refresh_plan_id'] === undefined, `a refresh with nothing left behind reported something: ${JSON.stringify(firstPlan).slice(0, 300)}`);
+    const firstRun = cli([...refresh, '--user-confirmed', '--plan-id', String(firstPlan['plan_id'])]);
+    check(firstRun.exit === 0, `a refresh with nothing left behind did not run on its plan_id: ${firstRun.stderr.trim()}`);
+
+    // A PAGE THE SHELF COPY NO LONGER CARRIES.
+    const wiki = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    const orphan = path.join(wiki, 'topic', '_index.md');
+    fs.mkdirSync(path.dirname(orphan), { recursive: true });
+    fs.writeFileSync(orphan, '# An old topic index\n');
+    const preview = json(cli([...refresh, '--preflight']));
+    const listed = (preview['pages_left_behind'] as { path: string; sha256: string }[] | undefined) ?? [];
+    check(listed.length === 1 && listed[0]!.path === 'collection/books/demo/wiki/topic/_index.md' && /^[0-9a-f]{64}$/.test(listed[0]!.sha256), `the preview does not list the page left behind: ${JSON.stringify(listed)}`);
+    const refreshId = String(preview['refresh_plan_id'] ?? '');
+    check(/^refresh-[0-9a-f]{64}$/.test(refreshId) && refreshId !== preview['plan_id'], `the preview has no refresh_plan_id of its own: ${refreshId}`);
+    const onCandidate = cli([...refresh, '--user-confirmed', '--plan-id', String(preview['plan_id'])]);
+    check(onCandidate.exit !== 0 && onCandidate.stderr.includes('refresh_plan_id'), `a refresh leaving pages behind ran on the candidate plan_id: ${onCandidate.stderr.trim()}`);
+
+    // A PAGE ADDED WHILE THE RUN WAITS ON THE LOCK refuses it.
+    {
+      const { spawn } = await import('node:child_process');
+      const lockFile = path.join(lib, 'internal', 'book-locks', 'books-demo.lock');
+      fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+      fs.writeFileSync(lockFile, `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=books/demo\n`);
+      const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+      const waiting = spawn(file!, [...prefix, ...refresh, '--user-confirmed', '--plan-id', refreshId, '--workspace', lib], {
+        cwd: root,
+        env: { ...process.env, ...env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: 'first' },
+      });
+      let waitedErr = '';
+      waiting.stderr.on('data', (chunk: Buffer) => (waitedErr += chunk.toString()));
+      const exited = new Promise<number>((resolve) => waiting.on('close', (code) => resolve(code ?? -1)));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      fs.writeFileSync(path.join(wiki, 'late.md'), '# Late\n');
+      fs.rmSync(lockFile, { force: true });
+      const code = await exited;
+      check(code !== 0 && waitedErr.includes('would leave behind') && waitedErr.includes('changed after the preview'), `a page added under the waiting refresh was not refused by name: ${code} ${waitedErr.trim()}`);
+      fs.rmSync(path.join(wiki, 'late.md'));
+    }
+
+    // THE BOOK ARCHIVED WHILE THE RUN WAITS, WITH NOTHING LEFT BEHIND (inspection round 2): the empty-digest path,
+    // approved by the candidate plan_id, where only the archive check can refuse it.
+    {
+      const { spawn } = await import('node:child_process');
+      const lockFile = path.join(lib, 'internal', 'book-locks', 'books-demo.lock');
+      fs.rmSync(orphan, { force: true });
+      const current = json(cli([...refresh, '--preflight']));
+      check(current['refresh_plan_id'] === undefined, 'the archive scenario did not start with nothing left behind');
+      const id = String(current['plan_id']);
+      fs.writeFileSync(lockFile, `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=books/demo\n`);
+      const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+      const waiting = spawn(file!, [...prefix, ...refresh, '--user-confirmed', '--plan-id', id, '--workspace', lib], {
+        cwd: root,
+        env: { ...process.env, ...env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: 'first' },
+      });
+      let waitedErr = '';
+      waiting.stderr.on('data', (chunk: Buffer) => (waitedErr += chunk.toString()));
+      const exited = new Promise<number>((resolve) => waiting.on('close', (code) => resolve(code ?? -1)));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      const archivedTo = path.join(lib, 'collection', 'archive', 'demo');
+      fs.mkdirSync(path.dirname(archivedTo), { recursive: true });
+      fs.renameSync(path.join(lib, 'collection', 'books', 'demo'), archivedTo);
+      fs.rmSync(lockFile, { force: true });
+      const code = await exited;
+      check(code !== 0 && waitedErr.includes('collection archive'), `a refresh whose Book was archived under it was not refused: ${code} ${waitedErr.trim()}`);
+      const afterArchive = cli([...refresh, '--preflight']);
+      check(afterArchive.exit !== 0 && afterArchive.stderr.includes('collection archive'), `a refresh preview onto an archived slug was not refused: ${afterArchive.stderr.trim()}`);
+      check(!fs.existsSync(path.join(lib, 'collection', 'books', 'demo')), 'a refresh recreated an archived Book on the active shelf');
+      fs.renameSync(archivedTo, path.join(lib, 'collection', 'books', 'demo'));
+      fs.writeFileSync(orphan, '# An old topic index\n');
+    }
+
+    // THE RUN: the page left on disk, and the list repeated.
+    const ran = cli([...refresh, '--user-confirmed', '--plan-id', refreshId]);
+    const result = json(ran);
+    check(ran.exit === 0 && ((result['pages_left_behind'] as unknown[] | undefined) ?? []).length === 1 && String(result['left_behind_note'] ?? '').includes('still on disk'), `the refresh did not run, or did not repeat the list: ${ran.stdout.slice(0, 300)} ${ran.stderr.trim()}`);
+    check(fs.existsSync(orphan), 'the refresh removed a page it left behind');
+
+    // PUBLISH --replace-existing binds the list into its composite id.
+    const withList = json(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--replace-existing', '--preflight']));
+    fs.rmSync(orphan);
+    const withoutList = json(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--replace-existing', '--preflight']));
+    check(withList['plan_id'] !== undefined && withList['plan_id'] !== withoutList['plan_id'], `publish --replace-existing does not bind the left-behind list into its id: ${String(withList['plan_id'])} ${String(withoutList['plan_id'])}`);
+    const nested = (withList['publication_plan'] as Record<string, unknown> | undefined)?.['pages_left_behind'] as unknown[] | undefined;
+    check((nested ?? []).length === 1, `publish --replace-existing does not list the page left behind: ${JSON.stringify(nested)}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 62. THE NOTEBOOK CANNOT BE PUT BACK IN THE SHARED LAYOUT BY ACCIDENT (PLAN-local-collection-writers.md step E) ---
+
+// `seat start` activates a fresh Notebook on a real launch and never on its preview, and leaves a Notebook that
+// turned legacy between the two alone; the overview and the Desk hook name a legacy layout and say nothing otherwise;
+// a shell write into another seat's Notebook, or any Notebook write on a fresh or legacy layout, is refused as the
+// Write tool refuses it, while this seat's own root and a plain read pass; and the two PowerShell helpers refuse on a
+// seat-owned Library.
+if (selected(62)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-nbguard-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const kernel = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+    const library = (name: string) => {
+      const lib = path.join(root, name);
+      equal(runCli(['init', lib], { cwd: root, env }).exit, 0, `the ${name} fixture Library did not initialise`);
+      equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--workspace', lib], { cwd: root, env }).exit, 0, `the ${name} fixture Hub was not made`);
+      return lib;
+    };
+    const record = (lib: string) => path.join(lib, 'internal', 'notebook-layout.json');
+    const start = (lib: string, seat: string, extra: string[] = []) =>
+      runCli(['seat', 'start', seat, '--project', 'work', '--workspace', lib, ...extra, '--command', kernel[0]!, '--', ...kernel.slice(1), 'verbs'], { cwd: lib, env });
+    const firstDocument = (text: string) => {
+      try {
+        return JSON.parse(text.substring(0, text.indexOf('\n{') >= 0 ? text.indexOf('\n{') : text.length)) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+
+    // E.1: THE PREVIEW READS, THE LAUNCH ACTIVATES.
+    const fresh = library('fresh');
+    const preview = runCli(['seat', 'start', 'first', '--project', 'work', '--preflight', '--workspace', fresh, '--json'], { cwd: fresh, env });
+    check(preview.stdout.includes('"notebook_activation":  "would-activate"') && !fs.existsSync(record(fresh)), `seat start's preview did not report the activation, or made it: ${preview.stdout.slice(0, 400)} ${preview.stderr.trim()}`);
+    const launched = start(fresh, 'first');
+    check(launched.exit === 0 && firstDocument(launched.stdout)['notebook_activation'] === 'activated', `seat start did not activate a fresh Notebook: ${launched.stdout.slice(0, 400)} ${launched.stderr.trim()}`);
+    const activatedBy = fs.existsSync(record(fresh)) ? (JSON.parse(fs.readFileSync(record(fresh), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['activated_by'] : null;
+    equal(activatedBy, 'fresh-workspace', 'the layout record was not written by the fresh activation');
+    const again = start(fresh, 'first');
+    equal(firstDocument(again.stdout)['notebook_activation'], 'seat-owned', 'a second start did not report the layout already active');
+    equal(runCli(['hub', 'new', 'other', '--title', 'Other', '--workspace', fresh], { cwd: root, env }).exit, 0, 'the second fixture Hub was not made');
+    const quiet = runCli(['seat', 'start', 'second', '--project', 'other', '--no-launch', '--workspace', fresh], { cwd: fresh, env });
+    check(quiet.exit === 0 && !quiet.stdout.includes('notebook_activation'), `a --no-launch start reported or made an activation: ${quiet.exit} ${quiet.stdout.slice(0, 200)} ${quiet.stderr.trim().slice(0, 300)}`);
+
+    // A TOPIC WRITTEN AROUND THE KERNEL BETWEEN THE PREVIEW AND THE LAUNCH: left alone, reported, not activated.
+    const raced = library('raced');
+    runCli(['seat', 'start', 'first', '--project', 'work', '--preflight', '--workspace', raced], { cwd: raced, env });
+    fs.mkdirSync(path.join(raced, 'notebook', 'loose-topic'), { recursive: true });
+    fs.writeFileSync(path.join(raced, 'notebook', 'loose-topic', 'page.md'), '# Loose\n');
+    const racedStart = start(raced, 'first');
+    check(firstDocument(racedStart.stdout)['notebook_activation'] === 'legacy' && !fs.existsSync(record(raced)), `a Notebook that turned legacy before the launch was activated anyway: ${racedStart.stdout.slice(0, 300)}`);
+
+    // E.2 AND E.3: THE OVERVIEW AND THE DESK HOOK NAME A LEGACY LAYOUT, AND ONLY THEN.
+    const desk = (lib: string) => {
+      try {
+        return (JSON.parse(runCli(['desk', '--seat', 'first', '--workspace', lib, '--json'], { cwd: lib, env }).stdout) as { notebook: Record<string, unknown> }).notebook;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    const legacyDesk = desk(raced);
+    check(legacyDesk['layout'] === 'legacy' && String(legacyDesk['write_note']).includes('deskpost migrate --preflight'), `the overview does not name a legacy layout: ${JSON.stringify(legacyDesk).slice(0, 300)}`);
+    check(desk(fresh)['layout'] === undefined && desk(fresh)['write_note'] === undefined, 'the overview named a layout that is not legacy');
+    const context = (lib: string) => runCli(['hook', 'desk-context', '--workspace', lib, '--seat', 'first', '--agent-pid', '0'], { cwd: lib, env, input: '{"session_id":"s"}' }).stdout;
+    check(context(raced).includes('retired shared layout'), `the Desk hook does not warn of a legacy layout: ${context(raced).slice(0, 300)}`);
+    check(!context(fresh).includes('retired shared layout') && !context(fresh).includes('Notebook migration'), 'the Desk hook warned on a seat-owned Notebook');
+
+    // E.5: THE SHELL GUARD, BY THE WRITE TOOL'S RULE.
+    const shell = (lib: string, command: string) =>
+      runCli(['hook', 'shell-shelf-read', '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }) }).stdout;
+    const denied = (answer: string, words: string, label: string) =>
+      check(answer.includes('"permissionDecision":"deny"') && answer.includes(words), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => check(answer.trim() === '', `${label}: ${answer}`);
+    denied(shell(fresh, "mkdir -p notebook/some-topic && cat > notebook/some-topic/page.md <<'EOF'\nx\nEOF"), "writes 'notebook/some-topic", 'a heredoc into a topic outside any seat was not denied');
+    denied(shell(fresh, 'cp /tmp/x.md notebook/second/topic/x.md'), "writes 'notebook/second/topic/x.md'", "a copy into another seat's Notebook was not denied");
+    denied(shell(fresh, 'Set-Content -Path notebook\\second\\t\\a.md -Value x'), "writes 'notebook/second/t/a.md'", "a PowerShell write into another seat's Notebook was not denied");
+    allowed(shell(fresh, 'echo x > notebook/first/topic/a.md'), "a write into this seat's own Notebook was denied");
+    allowed(shell(fresh, 'cat notebook/second/topic/x.md'), "a read of another seat's Notebook was denied");
+    allowed(shell(fresh, 'cat notebook/first/a.md 2>/dev/null'), 'a read with a redirected stderr was denied');
+    denied(shell(raced, 'echo x > notebook/first/topic/a.md'), 'shared layout', 'a shell write on a legacy Notebook was not denied');
+    const untouched = library('untouched');
+    denied(shell(untouched, 'echo x > notebook/first/topic/a.md'), 'not active yet', 'a shell write on a fresh Notebook was not denied');
+
+    // E.4: THE TWO POWERSHELL HELPERS REFUSE ON A SEAT-OWNED LIBRARY.
+    if (process.platform === 'win32') {
+      const ps = (script: string, args: string[]) =>
+        spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(PROGRAM_ROOT, 'tools', script), ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+      const owner = ps('Set-NotebookTopicOwner.ps1', ['-Topic', 'some-topic', '-Seat', 'first', '-WorkspacePath', fresh]);
+      check(owner.status !== 0 && (owner.stderr + owner.stdout).includes('seat-owned') && !fs.existsSync(path.join(fresh, 'internal', 'notebook-topic-owners.json')), `Set-NotebookTopicOwner.ps1 wrote an ownership row on a seat-owned Library: ${owner.status} ${(owner.stderr + owner.stdout).trim().slice(0, 300)}`);
+      const render = ps('NotebookIndex.ps1', ['-Render', '-WorkspacePath', fresh]);
+      check(render.status !== 0 && (render.stderr + render.stdout).includes('seat-owned') && !fs.existsSync(path.join(fresh, 'notebook', '_master-index.md')), `NotebookIndex.ps1 -Render wrote a shared index on a seat-owned Library: ${render.status} ${(render.stderr + render.stdout).trim().slice(0, 300)}`);
+    }
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 63. THE ROUTES A SEAT IS SENT TO NAME VERBS THAT WORK (PLAN-local-collection-writers.md step F) -------------
+
+// An installed kernel, and a POSIX one, say the kernel verb for the three writers a seat is sent to -- `shelf new`'s
+// next line named Add-ShelfBookPage.ps1 (game-admin's Report) -- and `book add-page` on a collection Book's slug names
+// `collection add-page` rather than only saying no Shelf Book is listed.
+if (selected(63)) {
+  const { hostRemedies } = await import('../src/remedy.ts');
+  const next = 'Add pages with tools/Add-ShelfBookPage.ps1, which needs the Book open: tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug demo.';
+  for (const flavor of ['posix', 'win32-compiled'] as const) {
+    const said = hostRemedies(next, flavor, 'C:\prog');
+    check(said.includes('deskpost book add-page <slug> <page> --content-path <file>') && said.includes('deskpost desk open book demo --location shelf') && !said.includes('.ps1'), `${flavor}: shelf new's next line still names a helper: ${said}`);
+    const edit = hostRemedies('use tools/Edit-ProjectHub.ps1 -ProjectSlug work -Mode AppendSection', flavor, 'C:\prog');
+    check(edit.includes('deskpost hub edit work --mode AppendSection') && !edit.includes('.ps1'), `${flavor}: Edit-ProjectHub was not said as hub edit: ${edit}`);
+    const hub = hostRemedies('create a Hub with tools/New-ProjectHub.ps1 -ProjectSlug work', flavor, 'C:\prog');
+    check(hub.includes('deskpost hub new work --title <title>') && !hub.includes('.ps1'), `${flavor}: New-ProjectHub was not said as hub new: ${hub}`);
+  }
+  equal(hostRemedies(next, 'win32'), next, "the oracle's own host had its sentence rewritten");
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-routes-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the routes fixture Library did not initialise');
+    const wiki = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    const onCollection = runCli(['book', 'add-page', 'demo', 'guide/page', '--body', '# Page', '--workspace', lib], { cwd: root, env });
+    check(onCollection.exit !== 0 && onCollection.stderr.includes('deskpost collection add-page demo guide/page'), `book add-page on a collection Book did not name collection add-page: ${onCollection.stderr.trim()}`);
+    const nowhere = runCli(['book', 'add-page', 'nothere', 'page', '--body', '# Page', '--workspace', lib], { cwd: root, env });
+    check(nowhere.exit !== 0 && !nowhere.stderr.includes('collection add-page'), `a slug in no collection was sent to collection add-page: ${nowhere.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 64. --help ON A VERB OR AN ACTION PRINTS ITS USAGE AND EXITS 0 (S67; three Reports) ---------------------------
+
+// `hub edit --help` failed with "ProjectSlug is required", `hub --help` refused as an unknown action, `book add-page
+// --help` was read as a Book slug, and `init --help` once made the working directory a Library. Each prints that verb's
+// usage, the action's own clauses where it has them, exits 0 and writes nothing; `help <verb>` does the same.
+if (selected(64)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-help-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const help = (args: string[]) => runCli(args, { cwd: root, env });
+    const shows = (args: string[], words: string[], label: string) => {
+      const ran = help(args);
+      check(ran.exit === 0 && words.every((word) => ran.stdout.includes(word)), `${label}: ${ran.exit} ${ran.stdout.slice(0, 200)} ${ran.stderr.trim().slice(0, 200)}`);
+    };
+    shows(['hub', 'edit', '--help'], ['deskpost hub edit <slug> --mode', 'new-page'], 'hub edit --help did not print its usage');
+    shows(['hub', '--help'], ['deskpost hub new', 'deskpost hub rename', 'Actions: archive, copy-pages, edit, new, rename'], 'hub --help did not print its usage');
+    shows(['book', 'add-page', '--help'], ['deskpost book'], 'book add-page --help did not print its usage');
+    shows(['collection', 'add-page', '-h'], ['deskpost collection add-page <slug> <page>'], 'collection add-page -h did not print its usage');
+    shows(['help', 'hub'], ['deskpost hub edit'], 'help hub did not print the hub usage');
+    shows(['init', '--help'], ['deskpost init'], 'init --help did not print its usage');
+    check(fs.readdirSync(root).filter((name) => name !== 'reg').length === 0 && !fs.existsSync(path.join(root, 'CLAUDE.md')), 'a --help wrote something in the working directory');
+    const unknown = help(['nonsense', '--help']);
+    check(unknown.exit !== 0 && unknown.stderr.includes("no command 'nonsense'"), `--help on an unknown command was not refused by name: ${unknown.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 65. A CAPTURE NAMED BY ITS OWN H1, ONCE, AND SAYING SO (S67; two Reports) -----------------------------------
+
+// `capture` without --title refused even when the body had an H1 (game-admin); a body whose H1 starts with the date
+// got the date twice in its file name, and a --title the H1 replaced was ignored in silence (deskpost-prompts-dev).
+if (selected(65)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-capname-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the capture-naming fixture Library did not initialise');
+    const capture = (args: string[]) => {
+      const ran = runCli(['capture', 'holding', ...args, '--workspace', lib, '--json'], { cwd: root, env });
+      try {
+        return { ran, result: JSON.parse(ran.stdout) as Record<string, unknown> };
+      } catch {
+        return { ran, result: {} as Record<string, unknown> };
+      }
+    };
+    const body = path.join(root, 'note.md');
+    const today = (() => {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    })();
+
+    fs.writeFileSync(body, '# Parked design\n\nText.\n');
+    const untitled = capture(['--content-path', body]);
+    check(untitled.ran.exit === 0 && untitled.result['note_title'] === 'Parked design', `a capture with an H1 and no --title was refused: ${untitled.ran.stderr.trim()}`);
+
+    fs.writeFileSync(body, 'No heading here.\n');
+    const bare = capture(['--content-path', body]);
+    check(bare.ran.exit !== 0 && bare.ran.stderr.includes('--title'), `a capture with neither an H1 nor --title was not refused by name: ${bare.ran.stderr.trim()}`);
+
+    fs.writeFileSync(body, `# ${today} -- Feedback utility, parked\n\nText.\n`);
+    const dated = capture(['--title', 'Feedback report utility - parked', '--content-path', body]);
+    const page = String(dated.result['note_page'] ?? '');
+    check(page.endsWith(`/notes/${today}-feedback-utility-parked`), `a dated H1 was dated twice, or not named by its H1: ${page}`);
+    check(String(dated.result['title_note'] ?? '').includes("--title 'Feedback report utility - parked' was not used"), `a --title the H1 replaced was not named: ${JSON.stringify(dated.result).slice(0, 300)}`);
+    const again = capture(['--content-path', body]);
+    check(String(again.result['note_page'] ?? '').endsWith(`/notes/${today}-feedback-utility-parked-2`), `a second note of the same dated title did not take a suffix once: ${String(again.result['note_page'])}`);
+    check(again.result['title_note'] === undefined, 'a capture with no --title reported one as replaced');
+  } catch (error) {
+    failures.push(`section stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 66. mcp call's documented --location, and a loose raw file (S67; game-admin's Report) -------------------------
+
+// `library help` documented `mcp call ... --location`, but the page tools read `place`, so `--location collection` was
+// ignored and the read refused as ambiguous; and compiling a single file under raw/ said only that no directory
+// existed. `--location` now answers for `place`, and the refusal says how to make the file a batch.
+if (selected(66)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-small-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    // ONE SLUG OPEN IN TWO PLACES, so a read that names no place is ambiguous.
+    const wiki = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    fs.writeFileSync(path.join(wiki, 'page.md'), '# The collection page\n');
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A Shelf twin.', '--json']).exit, 0, 'the Shelf twin was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'books/demo\nshelf/demo\n');
+    const read = (extra: string[]) => cli(['mcp', 'call', 'read_open_book_page', '--slug', 'demo', '--page', 'page', '--seat', 'first', ...extra]).stdout;
+    check(read(['--location', 'collection']).includes('The collection page'), `mcp call --location collection did not read the collection page: ${read(['--location', 'collection']).slice(0, 300)}`);
+    check(read(['--place', 'collection']).includes('The collection page'), 'mcp call --place collection stopped working');
+    check(!read([]).includes('The collection page'), 'a read naming no place was not refused as ambiguous');
+
+    fs.mkdirSync(path.join(lib, 'raw'), { recursive: true });
+    fs.writeFileSync(path.join(lib, 'raw', '2026-09-28-server-setup.md'), '# Setup\n');
+    const note = path.join(root, 'article.md');
+    fs.writeFileSync(note, '# Server\n\nText.\n\n## Key Takeaways\n\n- One.\n');
+    const loose = cli(['compile', '2026-09-28-server-setup', '--topic', 't', '--topic-title', 'T', '--topic-overview', 'O', '--article-slug', 'a', '--content-path', note, '--source-file', 'x.md', '--preflight', '--json']);
+    check(loose.exit !== 0 && (loose.stderr + loose.stdout).includes('is a single file, not a batch folder'), `compiling a loose raw file did not say how to batch it: ${(loose.stderr + loose.stdout).trim().slice(0, 300)}`);
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {

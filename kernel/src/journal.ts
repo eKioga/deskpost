@@ -68,9 +68,14 @@ export function writeBookJournal(options: {
   paths: string[];
   operationDigest?: string;
 }): JournalHandle {
-  const rendered = options.paths.filter((file) =>
-    RENDERED_INDEX_FILE_NAMES.includes(path.basename(file).toLowerCase()),
-  );
+  // ONLY THE INDEXES THE APPLICATION DERIVES (S67): the Notebook's master index, at its top or a seat's, and the
+  // Shelf catalog. A Book PAGE may carry one of those names -- collection Books hold curated
+  // `<topic>/_master-index` pages -- and refusing it by name alone made such a page impossible to write.
+  const rendered = options.paths.filter((file) => {
+    if (!RENDERED_INDEX_FILE_NAMES.includes(path.basename(file).toLowerCase())) return false;
+    const relative = path.relative(path.resolve(options.workspace), path.resolve(file)).replace(/\\/g, '/').toLowerCase();
+    return /^notebook\/(?:[^/]+\/)?_master-index\.md$/.test(relative) || relative === 'shelf/_catalog.md';
+  });
   if (rendered.length) {
     throw new Error(
       `A journal cannot carry a derived index: ${rendered.join(', ')}. ` +

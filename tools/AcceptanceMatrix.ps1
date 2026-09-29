@@ -751,6 +751,9 @@ function ConvertTo-AcceptanceInstalledRemedy {
                     'ShelfCatalog' { if ($given.ContainsKey('render')) { 'library shelf render' } else { $null } }
                     'NotebookIndex' { if ($given.ContainsKey('render')) { 'library notebook render' } else { $null } }
                     'Add-ShelfNote' { "library capture $(& $named 'bookslug' '<book>') --title <title> --body <text>" }
+                    'Add-ShelfBookPage' { "library book add-page $(& $named 'bookslug' '<slug>') $(& $named 'pagepath' '<page>') --content-path <file>" }
+                    'Edit-ProjectHub' { "library hub edit $(& $named 'projectslug' '<slug>') --mode $(& $named 'mode' '<mode>')" }
+                    'New-ProjectHub' { "library hub new $(& $named 'projectslug' '<slug>') --title <title>" }
                     'Restore-NotebookQuarantine' {
                         if ($given.ContainsKey('list')) { 'library reset restore --list' }
                         elseif ($given.ContainsKey('quarantine')) {

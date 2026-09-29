@@ -512,7 +512,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
       return { refusal: null, value: rebuildAllCollectionManifests(workspace) };
     }
     if (action !== 'owner') {
-      return { refusal: `library collection has no action '${action}'. It has: owner, rebuild.`, value: null };
+      return { refusal: `library collection has no action '${action}'. It has: add-page, owner, rebuild.`, value: null };
     }
     const acquire = parsed.flags.has('acquire');
     const release = parsed.flags.has('release');

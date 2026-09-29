@@ -48,6 +48,9 @@ import { getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './sh
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { seatConversationRecord } from './desk.ts';
 import { notebookScope } from './notebooklayout.ts';
+import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedPage } from './pagepath.ts';
+import { collectionBookSlugs } from './collectionbooks.ts';
+import { isLocalBackend } from './basicmemory.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -93,32 +96,7 @@ function localDate(): string {
 
 // --- shared page grammar ---------------------------------------------------------------------------
 
-/**
- * A page path is a Book-relative LOCATION, never a filesystem path. Reserved names are checked
- * first so they are refused for the accurate reason -- being told `_index is not lowercase` would
- * be true and useless.
- */
-function convertToBookPagePath(raw: string): string {
-  let candidate = raw.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  if (!candidate) refuse('PagePath is required, for example rendering/shaders.');
-  if (candidate.endsWith('.md')) candidate = candidate.substring(0, candidate.length - 3);
-  const segments = candidate.split('/');
-  if (['_book', '_index'].includes(segments[segments.length - 1]!)) {
-    refuse('PagePath must not name the Book metadata page or the reader map.');
-  }
-  for (const segment of segments) {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(segment)) {
-      refuse(`PagePath segment '${segment}' must contain only lowercase letters, digits, and hyphens.`);
-    }
-  }
-  return segments.join('/');
-}
-
-interface RenderedPage {
-  title: string;
-  titleSource: string;
-  body: string;
-}
+// The page grammar and the body rule live in pagepath.ts, which every page writer imports (S67).
 
 /**
  * The exact bytes a Shelf Book page write will store, and the title it will carry. Shared with the
@@ -127,18 +105,7 @@ interface RenderedPage {
  * single-page write would actually produce.
  */
 function convertToShelfPageBody(body: string, title: string): RenderedPage {
-  const normalised = body.replace(/\s+$/, '');
-  const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalised);
-  const keepsOwn = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
-  if (!keepsOwn && !title.trim()) {
-    refuse('The body has no leading H1, so -Title is required to give the page a heading.');
-  }
-  const pageTitle = keepsOwn ? heading![1]!.trim() : title.trim();
-  return {
-    title: pageTitle,
-    titleSource: keepsOwn ? 'body H1' : '-Title',
-    body: keepsOwn ? normalised + '\n' : `# ${pageTitle}\n\n` + normalised + '\n',
-  };
+  return renderPageBody(body, title);
 }
 
 function convertToNoteSlug(title: string): string {
@@ -392,7 +359,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
   try {
     const slug = parsed.positional[0] ?? 'holding';
     const title = (parsed.options.get('title') ?? '').trim();
-    if (!title) refuse('Title is required.');
+    // --title IS NEEDED ONLY WHEN THE BODY HAS NO H1 (S67, game-admin's Report): the H1 names the note either way.
 
     const book = getShelfBook(workspace, slug);
     if (!book.isCapture) {
@@ -442,8 +409,14 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     const normalisedBody = body.replace(/\s+$/, '');
     const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalisedBody);
     const keepsOwnHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
+    if (!keepsOwnHeading && !title) refuse('Title is required: the body has no leading H1 to name the note, so pass --title.');
     const pageTitle = keepsOwnHeading ? heading![1]!.trim() : title;
     const noteSlug = convertToNoteSlug(pageTitle);
+    // SAID, NOT SILENT (S67, deskpost-prompts-dev's Report): a --title the body's H1 replaced is named in the result.
+    const titleNote =
+      keepsOwnHeading && title && title !== pageTitle
+        ? `The body's own H1 names this note ('${pageTitle}'); --title '${title}' was not used.`
+        : null;
 
     const requireNoteFile = (parsed.options.get('require-note-file') ?? '').trim();
     // Picking a free name is a check-then-write sequence, so on its own it is a race. It is called
@@ -459,11 +432,14 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
         return { name: requireNoteFile, full: pinned, page: `notes/${requireNoteFile.replace(/\.md$/i, '')}` };
       }
       const stamp = captureDate || localDate();
-      let name = `${stamp}-${noteSlug}.md`;
+      // A TITLE THAT ALREADY STARTS WITH THE CAPTURE'S DATE IS NOT DATED TWICE (S67): `2026-09-28 -- x` names
+      // `2026-09-28-x.md`, not `2026-09-28-2026-09-28-x.md`.
+      const stem = noteSlug.startsWith(`${stamp}-`) ? noteSlug : `${stamp}-${noteSlug}`;
+      let name = `${stem}.md`;
       let full = path.join(book.notesPath, name);
       let suffix = 2;
       while (fs.existsSync(full)) {
-        name = `${stamp}-${noteSlug}-${suffix}.md`;
+        name = `${stem}-${suffix}.md`;
         full = path.join(book.notesPath, name);
         suffix += 1;
       }
@@ -480,6 +456,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       note_page: `${book.bookRoot}/wiki/${selected.page}`,
       note_title: pageTitle,
       title_source: keepsOwnHeading ? 'body H1' : '-Title',
+      ...(titleNote !== null ? { title_note: titleNote } : {}),
       body_characters: body.length,
       ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),
       source,
@@ -581,7 +558,20 @@ function addPage(argv: string[], workspace: string): WriterResult {
   const slug = parsed.positional[0] ?? '';
   const pagePath = parsed.positional[1] ?? '';
 
-  const book = getShelfBook(workspace, slug);
+  // A BOOK OF THIS LIBRARY'S OWN COLLECTION, NOT THE SHELF (S67, game-admin's Report): the refusal names its writer
+  // rather than only saying no Shelf Book is listed.
+  let book: ReturnType<typeof getShelfBook>;
+  try {
+    book = getShelfBook(workspace, slug);
+  } catch (error) {
+    if (/^[a-z0-9][a-z0-9-]*$/.test(slug) && isLocalBackend(workspace) && collectionBookSlugs(workspace, 'active').includes(slug)) {
+      refuse(
+        `'${slug}' is a Book in this Library's own collection, not on the Shelf. Add a page to it with ` +
+          `deskpost collection add-page ${slug} ${pagePath || '<page>'} --content-path <file> --preflight, then --user-confirmed --plan-id <id>.`,
+      );
+    }
+    throw error;
+  }
   if (book.isCapture) {
     refuse(
       `Shelf Book '${slug}' is a capture Book. Use tools/Add-ShelfNote.ps1 for it; this helper is for graduating material into a curated Book.`,
@@ -597,6 +587,8 @@ function addPage(argv: string[], workspace: string): WriterResult {
   const page = convertToBookPagePath(pagePath);
   const relative = `${page}.md`;
   const fullPath = path.join(book.wikiPath, ...relative.split('/'));
+  // THE PAGE STAYS INSIDE THE BOOK (S67, plan 0.3): a folder that is a link or junction would carry it out.
+  assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
   if (fs.existsSync(fullPath)) {
     refuse(`shelf/${slug}/wiki/${relative} already exists. This helper only ever adds a page; choose another PagePath.`);
   }
@@ -637,6 +629,7 @@ function addPage(argv: string[], workspace: string): WriterResult {
 
     // Re-checked under the lock: the collision test above happened before anyone was excluded, so
     // on its own it is exactly the check-then-write race this item exists to close.
+    assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
     if (fs.existsSync(fullPath)) {
       refuse(`shelf/${slug}/wiki/${relative} was created while this page was being prepared. Nothing was written.`);
     }

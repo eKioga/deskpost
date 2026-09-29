@@ -83,6 +83,15 @@ $ErrorActionPreference = 'Stop'
 $WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 
+# A SEAT-OWNED NOTEBOOK HAS NO OWNERSHIP RECORD (S67, ADR-0029). On a Library whose layout record exists, an
+# ownership row is the retired shared layout's, and writing one turned a fresh Library legacy: every seat's Notebook
+# then refused until a migration ran. -List stays: it reads and changes nothing.
+if (-not $List -and (Test-Path -LiteralPath (Join-Path $workspace 'internal/notebook-layout.json') -PathType Leaf)) {
+    throw ("This Library's Notebook is seat-owned (ADR-0029): a topic belongs to the seat whose notebook/<seat>/ holds it, and " +
+        'there is no ownership record to write. Writing one would put the Notebook back in the shared layout. Nothing was changed. ' +
+        'Write the topic under your own seat with deskpost compile, or ask deskpost desk where your Notebook is.')
+}
+
 if ($List) {
     $inventory = @(Get-NotebookOwnershipInventory -Workspace $workspace)
     Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{

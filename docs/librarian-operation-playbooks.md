@@ -172,6 +172,14 @@ triage as part of the reset confirmation itself — offer it first, as its own s
 
 ## Publish or refresh a shared Book copy
 
+**Which collection this serves (S67).** On a Library with its own local collection, `deskpost publish` and
+`deskpost publish refresh` write `collection/books/<slug>/` and nothing goes to Basic Memory. Their preview lists
+`pages_left_behind`: pages already in that Book which this publication does not carry. They stay on disk and in
+Discovery, drop out of the reader map, and are never removed. When the list is not empty, a refresh is approved with
+its `refresh_plan_id`, not its `plan_id`. **To add one page to a collection Book, do not rebuild it**:
+`deskpost collection add-page <slug> <page> --content-path <file> --preflight`, then
+`--user-confirmed --plan-id <id>` after one yes -- it only ever adds, and the reader map gains one line.
+
 Before publishing a Book, run
 `tools/Publish-BookCopy.ps1 -Destination Shared ... -Preflight`. Show the source, Book name,
 manifest digest, `plan_id`, and pages that would be created. After a clear yes, rerun with
@@ -275,6 +283,12 @@ publish or delete the original.
 
 ## Copy local pages into a Project Hub
 
+**Which collection this serves (S67).** Everything below is for a Library attached to Basic Memory. On a Library
+with its own local collection, `Copy-LocalPagesToProject.ps1` and `deskpost hub copy-pages` refuse, and a page goes
+into a local Hub with `deskpost hub edit <slug> --mode new-page --page notes/<yyyy-mm-dd>-<name> --content-path <file>`:
+additive, no approval, journalled, and refused if the page exists. A Notebook page carried whole that way is recorded
+as copy evidence, so triage reads it as covered.
+
 Sending finished local pages to an active Hub is a **shared write**, so it takes a preflight, an
 exact `plan_id`, and one approval. `tools/Copy-LocalPagesToProject.ps1` is the only route: a
 Claude session has no direct Basic Memory write tool, and `Edit-ProjectHub.ps1` refuses a page
@@ -328,6 +342,11 @@ exposed a label defect on 2026-09-08 that six falsification rounds had not.
 Detail: [Project Hub Design](project-hub-design.md), *The subject-follows rule*.
 
 ## Edit an open Project Hub page
+
+**On a local collection (S67)** the same modes edit `collection/projects/<slug>/`, and `--mode new-page` makes a
+page that does not exist yet -- the dated `notes/` page ADR-0013 sends history to. Its page path is lowercase letters,
+digits and hyphens, and it never replaces a page. On Basic Memory a new page goes through
+`tools/Copy-LocalPagesToProject.ps1` instead.
 
 Filling in `Now`, `Connected knowledge`, or any other section of a Hub is ordinary work, not a
 ceremony. Use `tools/Edit-ProjectHub.ps1` with the exact open Project slug and page; `_project` is

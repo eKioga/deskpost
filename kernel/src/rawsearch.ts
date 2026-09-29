@@ -381,7 +381,17 @@ export function resolveRawBatch(workspace: string, batch: string | undefined): R
   if (!safeIsDirectory(rawRoot)) return failure('this workspace has no raw/ directory');
 
   const candidate = path.join(rawRoot, ...segments);
-  if (!safeIsDirectory(candidate)) return failure(`no directory raw/${name} exists`);
+  if (!safeIsDirectory(candidate)) {
+    // A LOOSE FILE IS NOT A BATCH, AND THE REFUSAL SAYS HOW TO MAKE ONE (S67, game-admin's Report).
+    const file = [candidate, `${candidate}.md`].find((item) => fs.existsSync(item) && fs.statSync(item).isFile());
+    if (file) {
+      return failure(
+        `raw/${name}${file.endsWith('.md') && !name.endsWith('.md') ? '.md' : ''} is a single file, not a batch folder: move it into a folder of its own ` +
+          `(for example raw/<batch>/${path.basename(file)}) and name that folder as the batch`,
+      );
+    }
+    return failure(`no directory raw/${name} exists`);
+  }
   if (isReparsePoint(candidate)) return failure('that path is a reparse point, and this tier does not follow one');
 
   const relative = convertToRawRelativePath(rawRoot, candidate);

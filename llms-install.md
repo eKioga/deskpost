@@ -1,7 +1,7 @@
 # Installing Deskpost: instructions for the assistant
 
-**Deskpost 1.2.2.** This page belongs to the release at
-`https://github.com/eKioga/deskpost/releases/download/v1.2.2`, called **the release base** below. Pass it as
+**Deskpost 1.2.3.** This page belongs to the release at
+`https://github.com/eKioga/deskpost/releases/download/v1.2.3`, called **the release base** below. Pass it as
 `-Release` on both commands, so the plan you show and the install you run come from the same release.
 
 You are reading this because the person you are working with asked you to install Deskpost. That request is
@@ -41,13 +41,13 @@ their answer, and `<ASSISTANT>` with `claude` if you are Claude Code, or `codex`
 **In PowerShell:**
 
 ```powershell
-$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.2.2/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.2' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.2.3/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.3' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 **In Git Bash:**
 
 ```bash
-d="$(cygpath -w "$(mktemp -d)")" && curl -fsSL 'https://github.com/eKioga/deskpost/releases/download/v1.2.2/install.ps1' -o "$d\\install.ps1" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$d\\install.ps1" -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.2' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+d="$(cygpath -w "$(mktemp -d)")" && curl -fsSL 'https://github.com/eKioga/deskpost/releases/download/v1.2.3/install.ps1' -o "$d\\install.ps1" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$d\\install.ps1" -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.3' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 Quote `<LIBRARY>` in single quotes. In PowerShell a `'` inside it is written `''`. In Git Bash it is written `'\''`.
@@ -85,7 +85,7 @@ Run the **same script** from `script.path`, with the same answers, plus `-Json -
 `-DryRun`.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<script.path>' -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.2' -Json -PlanId <plan_id> -Library '<LIBRARY>' -Librarian <ASSISTANT>
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<script.path>' -Release 'https://github.com/eKioga/deskpost/releases/download/v1.2.3' -Json -PlanId <plan_id> -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 Add any flag the person chose in step 3. The script plans again from the same release before it writes anything,
@@ -126,7 +126,7 @@ For an upgrade, add: "`deskpost rollback` returns to the version you had."
   both commands outside the sandbox, in Codex's own dialog. If escalation is unavailable or declined, do not
   change a policy or look for a way round it. Give the person the terminal install instead, to run themselves in
   PowerShell:
-  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.2.2/install.ps1)))`
+  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.2.3/install.ps1)))`
 - **First start.** Codex reads a Library's guards only once the folder is trusted and its hooks are reviewed, and it
   skips unreviewed hooks silently. Tell the person: when Codex starts in the Library, trust the folder, then type
   `/hooks` and approve Deskpost's hooks, and only then ask to be shown around.

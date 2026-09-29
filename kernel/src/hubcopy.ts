@@ -156,7 +156,8 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   if (marker !== null && String(marker['backend'] ?? '') === 'local') {
     refuse(
       'library hub copy-pages is ported against Basic Memory only, and this workspace uses its local collection: the ' +
-        'oracle has no local half and no row holds a local copy. Nothing was copied.',
+        'oracle has no local half and no row holds a local copy. Nothing was copied. To put one page into a local Hub, use ' +
+        'deskpost hub edit <slug> --mode new-page --page notes/<yyyy-mm-dd>-<name> --content-path <file>.',
     );
   }
   resolveMcpUrl(workspace);
