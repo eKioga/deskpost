@@ -63,7 +63,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   capture: {
     summary: 'Capture a note into a capture-enabled Book. Saving is ungated and needs no open Book; reading the note back needs its Book open.',
-    usage: 'library capture <book> --title <t> --body <b>',
+    // --content-path beside --body (S66): on Windows the shim keeps only an inline body's first line.
+    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>)',
     actions: [],
     positional: true,
     ported: true,

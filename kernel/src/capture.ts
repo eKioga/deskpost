@@ -330,6 +330,25 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
   return { body: readUtf8(full), source: contentPath! };
 }
 
+/**
+ * A `--body` THE WINDOWS SHIM MAY HAVE CUT SHORT (S66, the S64 Report). `deskpost.cmd` runs through
+ * cmd.exe, which ends the whole command line at the first line break: a 33-line body arrived as its
+ * first 80 characters, anything after it on the line was never passed, and the writer said
+ * "captured". Nothing on this side of the shim can see what was dropped, so this cannot refuse. What
+ * it can see is the only shape a cut leaves: an inline body that is the LAST argument and holds no
+ * line break. A `--body` followed by anything else, or holding a newline, was not cut, and says
+ * nothing; `--content-path` never goes through the command line at all.
+ */
+function inlineBodyWarning(argv: string[], source: string, body: string, platform: string = process.platform): string | null {
+  if (platform !== 'win32' || source !== '(inline)' || /[\r\n]/.test(body)) return null;
+  if (argv.length < 2 || argv[argv.length - 2] !== '--body') return null;
+  return (
+    'On Windows the deskpost shim ends the command line at the first line break, so an inline --body keeps only ' +
+    'its first line and nothing after it arrives. If this body had more lines, they were not saved: pass it with ' +
+    '--content-path <file>.'
+  );
+}
+
 function settle(mutation: BookMutation | null, rollback: string): void {
   // Cleared only when the Book is provably back to the state the committed manifest describes.
   // After a rollback that FAILED the Book's state is unknown, and dirty is the only honest answer.
@@ -385,6 +404,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
 
     const { body, source } = resolveBody(workspace, parsed.options.get('content-path'), parsed.options.get('body'), 'note');
     if (!body.trim()) refuse('The note body is empty; nothing was captured.');
+    const bodyWarning = inlineBodyWarning(argv, source, body);
 
     // THE DATE THAT NAMES THE NOTE, when a caller planned it (S44): a triage batch binds the note's file name
     // into its approval and asserts this writer's own plan against it, so naming it by today made every
@@ -461,6 +481,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       note_title: pageTitle,
       title_source: keepsOwnHeading ? 'body H1' : '-Title',
       body_characters: body.length,
+      ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),
       source,
       from_seat: fromSeat,
       seat_source: seatSource,
@@ -571,6 +592,7 @@ function addPage(argv: string[], workspace: string): WriterResult {
 
   const { body, source } = resolveBody(workspace, parsed.options.get('content-path'), parsed.options.get('body'), 'page');
   if (!body.trim()) refuse('The page body is empty; nothing was added.');
+  const bodyWarning = inlineBodyWarning(argv, source, body);
 
   const page = convertToBookPagePath(pagePath);
   const relative = `${page}.md`;
@@ -592,6 +614,7 @@ function addPage(argv: string[], workspace: string): WriterResult {
     page_title: rendered.title,
     title_source: rendered.titleSource,
     body_characters: body.length,
+    ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),
     source,
     reader_map_action: mapIsGenerated
       ? 'regenerate from the pages on disk'

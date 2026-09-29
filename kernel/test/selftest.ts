@@ -3354,6 +3354,24 @@ if (selected(40)) {
       check(expected.has(captureDate), `triage's default capture date in ${zone} was '${captureDate}', not the local date ${[...expected].join(' or ')}: ${validated.exit} ${validated.stderr.trim().slice(0, 300)}`);
     }
 
+    // AN INLINE BODY THE WINDOWS SHIM MAY HAVE CUT (S66, the S64 Report): cmd.exe ends the command line at the
+    // first line break, so a one-line --body that is the LAST argument is the only shape a cut leaves, and there
+    // the writer must say so. Followed by anything, or holding a line break, it was not cut and says nothing.
+    const bodyPlan = (args: string[]) => {
+      const run = runCli(['capture', 'holding', '--workspace', workspace, '--preflight', '--title', 'Shim probe', ...args], { cwd: w.root, env: base });
+      try { return JSON.parse(run.stdout) as { body_warning?: string; body_characters?: number }; } catch { return { body_warning: `unreadable: ${run.exit} ${run.stderr.trim().slice(0, 300)}` }; }
+    };
+    const lastOneLine = bodyPlan(['--body', 'Only the first line.']);
+    if (process.platform === 'win32') {
+      check(/--content-path/.test(lastOneLine.body_warning ?? ''), `a one-line --body as the last argument carried no warning naming --content-path: ${JSON.stringify(lastOneLine.body_warning)}`);
+    } else {
+      equal(lastOneLine.body_warning, undefined, 'a one-line --body warned off Windows, where no shim cuts it');
+    }
+    equal(bodyPlan(['--body', 'Followed by more.', '--json']).body_warning, undefined, 'a --body followed by another argument, so not cut, warned');
+    const multiLine = bodyPlan(['--body', 'Line one.\nLine two.']);
+    equal(multiLine.body_warning, undefined, 'a --body holding a line break, so not cut, warned');
+    equal(multiLine.body_characters, 'Line one.\nLine two.'.length, 'a multi-line --body passed without the shim did not arrive whole');
+
     const instructions = fs.readFileSync(path.join(workspace, 'CLAUDE.md'), 'utf8');
     // The bullet, with its wrapped continuation lines.
     const holding = /^- .*the Holding Shelf.*(?:\r?\n  .*)*/m.exec(instructions)?.[0] ?? '';
@@ -3492,7 +3510,9 @@ if (selected(41)) {
 
     // THE DESK: a Local collection Book opens with no location; its page reads; full text searches it. The refresh's
     // Shelf copy is open too, so the read names its place.
-    equal(w.as(agent, ['desk', 'open', 'book', 'field-notes', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'a Local collection Book could not be opened');
+    // ITS PLACE IS REPORTED AS WHERE IT IS (S65; S62 step 6 printed `location: shared` for a Local collection Book).
+    const opened = json(w.as(agent, ['desk', 'open', 'book', 'field-notes', '--seat', 'first', '--workspace', w.workspace, '--json']), 'a Local collection Book\'s open');
+    equal(opened['location'], 'collection', 'desk open named a Local collection Book by the place it was asked for, not where it is');
     const page = read('read_open_book_page', ['--slug', 'field-notes', '--page', 'trees/oaks', '--place', 'collection']);
     check(!page.error && page.text.startsWith('# Oaks'), `an open Local collection Book's page did not read: ${page.text.slice(0, 200)}`);
     const search = read('search_open_books', ['--query', 'egrets']);
@@ -5058,6 +5078,9 @@ if (selected(55)) {
     const text = fs.readFileSync(path.join(skill, 'SKILL.md'), 'utf8') + fs.readdirSync(path.join(skill, 'references')).map((name) => fs.readFileSync(path.join(skill, 'references', name), 'utf8')).join('');
     check(!/\]\(\.\.\//.test(text), 'the installed Skill links above its own folder, which a Library does not have');
     check(!text.includes('the **`library` program** installs (1.0)'), 'the installed Skill still describes the 1.0 program');
+    // THE REPORT INBOX'S TRIAGE ROUTE IS WRITTEN DOWN (S66): nothing else says that a Report is reached as a
+    // holding source named by `source_slug`, and `source: "reports"` is what a reader would guess.
+    check(text.includes('`source: "holding"` with `source_slug: "reports"`'), "the installed Skill does not say how triage reaches the Report Inbox");
     const second = init(library);
     check((second.skill?.files ?? []).every((entry) => entry.action === 'unchanged'), `a second init changed the Skill: ${JSON.stringify(second.skill)}`);
     fs.appendFileSync(path.join(skill, 'SKILL.md'), '\nmine\n');
@@ -5104,6 +5127,25 @@ if (selected(55)) {
     fs.symlinkSync(real, path.join(root, 'via'), 'junction');
     const viaLink = runCli(['init', path.join(root, 'via', 'lib'), '--json'], { env });
     check(viaLink.exit === 0 && fs.existsSync(path.join(real, 'lib', '.claude', 'skills', 'library-help', 'SKILL.md')), `a Library below a junction was refused as a link: ${viaLink.exit} ${viaLink.stderr.trim()}`);
+
+    // INIT'S LINE COUNTS EVERY WRITE (S65, the Report Inbox's S62 note): a refresh whose only writes were the Skill copy
+    // and the marker's program_version said "nothing needed changing", because the line counted result.files alone.
+    const refreshed = path.join(root, 'refreshed');
+    init(refreshed);
+    const refreshedMarker = path.join(refreshed, '.library', 'workspace.json');
+    const markerFields = JSON.parse(fs.readFileSync(refreshedMarker, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(refreshedMarker, JSON.stringify({ ...markerFields, program_version: '0.0.1' }, null, 2) + '\n');
+    fs.rmSync(path.join(refreshed, '.claude', 'skills', 'library-help', 'references', 'capture-and-triage.md'));
+    const refreshLine = runCli(['init', refreshed], { env });
+    check(
+      refreshLine.exit === 0 &&
+        !refreshLine.stdout.includes('nothing needed changing') &&
+        refreshLine.stdout.includes('references/capture-and-triage.md') &&
+        refreshLine.stdout.includes('.library/workspace.json'),
+      `init's line did not name the Skill file and the marker it wrote: ${refreshLine.exit} ${refreshLine.stdout.trim()} ${refreshLine.stderr.trim()}`,
+    );
+    const againLine = runCli(['init', refreshed], { env });
+    check(againLine.exit === 0 && againLine.stdout.includes('nothing needed changing'), `a re-run that wrote nothing did not say so: ${againLine.stdout.trim()}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -5158,6 +5200,8 @@ if (selected(57)) {
     const note = '---\ntitle: n1\npermalink: ai-library/projects/old-hub/notes/n1\n---\n\n# A note\n\nWe began old-hub today.\n';
     fs.writeFileSync(path.join(collection, 'projects', 'old-hub', 'notes', 'n1.md'), note);
     fs.writeFileSync(path.join(collection, 'projects', 'other-hub', 'links.md'), 'See [[projects/old-hub/_project|Old Hub]].\n');
+    // A CURRENT PAGE OF THE HUB ITSELF naming it (S62's "Found in the first real runs"): listed for hub edit, at its new path.
+    fs.writeFileSync(path.join(collection, 'projects', 'old-hub', 'limits.md'), '# Limits\n\n## What Old Hub covers\n\nRead with read_open_project_page(old-hub, ...).\n');
     equal(cli(['seat', 'start', 'other', '--project', 'other-hub', '--no-launch']).exit, 0, 'seat other was not created');
     equal(cli(['seat', 'start', 'bound', '--project', 'bound-hub', '--no-launch']).exit, 0, 'seat bound was not created');
     const otherDesk = path.join(lib, '.claude', 'seats', 'other', '.open-projects');
@@ -5175,8 +5219,13 @@ if (selected(57)) {
 
     const before = fs.readFileSync(path.join(collection, 'projects', 'README.md'), 'utf8');
     const preview = cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--preflight']);
-    const planned = JSON.parse(preview.stdout) as { plan_id: string; file_count: number; desks_rewritten: string[]; mentions_left_alone: { path: string }[] };
-    check(preview.exit === 0 && /^[0-9a-f]{16}$/.test(planned.plan_id) && planned.file_count === 3, `the rename preview was not a plan: ${preview.stdout.slice(0, 400)} ${preview.stderr}`);
+    type Mention = { path: string; lines: number[] };
+    const planned = JSON.parse(preview.stdout) as { plan_id: string; file_count: number; desks_rewritten: string[]; mentions_left_alone: Mention[]; mentions_in_new_hub?: Mention[] };
+    check(preview.exit === 0 && /^[0-9a-f]{16}$/.test(planned.plan_id) && planned.file_count === 4, `the rename preview was not a plan: ${preview.stdout.slice(0, 400)} ${preview.stderr}`);
+    const ownMentions = (listed: Mention[] | undefined) =>
+      JSON.stringify((listed ?? []).find((row) => row.path === 'collection/projects/new-hub/limits.md')?.lines) === '[3,5]' &&
+      !(listed ?? []).some((row) => row.path.includes('/notes/') || row.path.endsWith('/_project.md'));
+    check(ownMentions(planned.mentions_in_new_hub), `the preview did not list the new Hub's own current mentions, or listed its notes or its retitled root: ${JSON.stringify(planned.mentions_in_new_hub)}`);
     check(JSON.stringify(planned.desks_rewritten) === '["other"]' && planned.mentions_left_alone.some((row) => row.path.endsWith('projects/other-hub/links.md')), `the preview did not name the Desk and the mention: ${preview.stdout.slice(0, 900)}`);
     check(!fs.existsSync(path.join(collection, 'projects', 'new-hub')) && fs.readFileSync(path.join(collection, 'projects', 'README.md'), 'utf8') === before, 'the rename preview wrote something');
     check(cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--user-confirmed', '--plan-id', '0000000000000000']).exit !== 0 && !fs.existsSync(path.join(collection, 'projects', 'new-hub')), 'a rename ran on a plan_id that was not the preview\'s');
@@ -5188,6 +5237,8 @@ if (selected(57)) {
     check(resumePreview.resuming && resumePreview.plan_id === planned.plan_id && resumePreview.steps_done.join(',') === 'copy,catalog', `a stopped rename's preview did not resume its journal: ${JSON.stringify(resumePreview)}`);
     const finished = cli(['hub', 'rename', 'old-hub', 'new-hub', '--title', 'New Hub', '--user-confirmed', '--plan-id', planned.plan_id]);
     check(finished.exit === 0 && (JSON.parse(finished.stdout) as { renamed: boolean }).renamed, `the stopped rename did not finish: ${finished.stdout.slice(0, 300)} ${finished.stderr}`);
+    const finishedMentions = (JSON.parse(finished.stdout) as { mentions_in_new_hub?: Mention[] }).mentions_in_new_hub;
+    check(ownMentions(finishedMentions), `the finished rename did not list the new Hub's own current mentions: ${JSON.stringify(finishedMentions)}`);
 
     const newRoot = path.join(collection, 'projects', 'new-hub');
     const archived = path.join(collection, 'archive', 'projects', 'old-hub');

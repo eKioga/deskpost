@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.1/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.2/docs/seats.md).
 
 ## Books
 
@@ -135,7 +135,9 @@ already **exist**. `hub archive` and `hub copy-pages` work against a shared coll
 `--preflight`, show the reader what it reports, then `--user-confirmed --plan-id <id>` after one clear yes. It
 copies the Hub forward under the new name (rewriting only each page's `permalink` and the root's title), replaces its
 catalog line, re-points every free seat's Desk, and archives the old Hub **unchanged** under its old name, so its
-history keeps the words it was written in. Pages elsewhere that mention the old name are listed, never edited. It
+history keeps the words it was written in. Pages elsewhere that mention the old name are listed, never edited, and so
+are the new Hub's own current pages that still name the old slug or title (`mentions_in_new_hub`), for `hub edit`;
+its `notes/` are history and are not listed. It
 refuses while a seat is bound to the old Hub, or while a session holds a seat that has it open.
 
 ## Why "closed" matters

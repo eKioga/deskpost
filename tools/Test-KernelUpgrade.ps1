@@ -130,6 +130,10 @@ function Initialize-Again([string]$When) {
     Check ($ran.exit -eq 0) "$When`: library init --force exited $($ran.exit): $(($ran.text -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1))"
 }
 
+# THE FIXTURE RUNS FROM ITS OWN FOLDER, as the other release fixtures do (S65, the Report Inbox's S62 note): started
+# from inside a Library, an install's closing doctor walked up from the caller's working directory and judged THAT
+# Library against the scratch install. Popped in the finally below, before the folder is removed.
+Push-Location -LiteralPath $WorkRoot
 try {
     # --- two releases from one -----------------------------------------------------------------
     $sums = @(Get-Content -LiteralPath (Join-Path $Release 'SHA256SUMS') | Where-Object { $_ -match 'deskpost-(\S+)-win-x64\.zip' })
@@ -231,6 +235,7 @@ catch {
     Check $false ("the fixture stopped: " + $_.Exception.Message)
 }
 finally {
+    Pop-Location
     foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
     if (-not $Keep -and (Test-Path -LiteralPath $WorkRoot)) {
         # The junction first, as a link: a recursive delete must never be asked to walk through it.

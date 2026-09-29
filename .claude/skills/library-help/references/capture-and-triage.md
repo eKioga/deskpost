@@ -32,7 +32,9 @@ library capture holding --title "<short title>" --body "<short body>"
 
 Optional: `--tags "godot, rendering"`, `--source-paths "raw/x/a.md; raw/x/b.md"`,
 `--source-project <slug>`, `--preflight`. Prefer `--content-path` for anything longer than a line:
-it keeps punctuation and prose off the command line.
+it keeps punctuation and prose off the command line. On Windows it is required for more than one
+line, because the `deskpost` shim ends the command line at the first line break: an inline `--body`
+keeps only its first line, and the result then carries a `body_warning` saying so.
 
 Each note is written to `shelf/holding/wiki/notes/<date>-<slug>.md`, read back to confirm it is
 byte-identical, and the reader map is regenerated from what is on disk. **The date is the local
@@ -146,7 +148,9 @@ party that has it.
 **A report is a claim, not a finding.** It is another agent's account of what the Library should do,
 so whoever reads it verifies it against the code before acting. It licenses an investigation, and
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.1/docs/cross-seat-reports.md).
+Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
+for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.2/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

@@ -47,7 +47,7 @@ import { notebookQuarantineInventory } from './notebook.ts';
 import { homeDirectory, readMarker } from './workspace.ts';
 import { openCollection } from './collection.ts';
 import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
-import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookRootParts } from './places.ts';
+import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookPlace, type BookRootParts } from './places.ts';
 import { markerConnection } from './basicmemory.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
@@ -925,6 +925,7 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
   let deskLock: BookLock | null = null;
   let openBooks: string[];
   let openProjects: string[];
+  let bookPlace: BookPlace | null = null;
   try {
     deskLock = enterSeatRegistryLock(workspace);
     openBooks = readStateLines(openBooksPath, BOOK_ROOT_ACCEPT_PATTERN, 'open-book').map(convertToBookRoot);
@@ -946,6 +947,7 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
       const place =
         options.location === 'shelf' ? 'shelf' : options.location === 'shared' && (!local || connected) ? 'shared' : 'collection';
       const bookRoot = rootForPlace(place, options.shelf, options.slug, local);
+      bookPlace = placeOfRoot(parseBookRoot(bookRoot)!, local);
       if (options.action === 'open') {
         // A Shelf Book is local, so its existence is checkable here; a shared Book -- active or
         // archived -- is validated by the reader against the collection at read time.
@@ -1003,8 +1005,11 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
     action: options.action,
     seat,
     kind: options.kind,
-    // NO LOCATION ECHOES `shared`, as the oracle's default always has -- `clear` included.
-    location: options.kind === 'book' ? (options.location ?? 'shared') : null,
+    // THE PLACE THE BOOK IS, as the Desk overview names it (S65): on a local Library with no connection, `--location
+    // shared` or none opens the Local collection's Book, and echoing the request said `shared` of it. On a workspace
+    // attached to Basic Memory that place is `shared`, as the oracle says. `clear` names no Book and still echoes
+    // `shared`, the oracle's default.
+    location: options.kind === 'book' ? (bookPlace ?? options.location ?? 'shared') : null,
     // Reported for a Book too, now that it means something there.
     shelf: options.shelf,
     slug: options.slug,

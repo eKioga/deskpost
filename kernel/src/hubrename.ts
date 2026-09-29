@@ -10,7 +10,8 @@
  *   3. desks    every seat's `projects/<old>` Desk entry becomes `projects/<new>`;
  *   4. archive  projects/<old>/ moved whole (a native rename) to archive/projects/<old>/, unchanged;
  *   5. listed   the old Hub's line added to the archived Project Catalog.
- * Then every other page that mentions <old> is LISTED and left alone (Eric's S62 ruling, Q2).
+ * Then every other page that mentions <old> is LISTED and left alone (Eric's S62 ruling, Q2), and so is every current
+ * page of the new Hub itself that still names the old slug or title, for `hub edit`; its notes/ are history (S65).
  *
  * THE APPROVAL IS A PLAN_ID over every byte the rename reads -- each source file, both catalogs, every Desk file --
  * so anything that changes after the preview refuses the run. The plan is written to a journal before the first
@@ -46,6 +47,8 @@ function refuse(message: string): never {
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const STEPS = ['copy', 'catalog', 'desks', 'archive', 'listed'] as const;
+const NEW_HUB_MENTIONS_NOTE =
+  "The new Hub's own current pages that still name the old slug or title; the rename changed only their permalinks and the root's title. Change them with library hub edit. notes/ is history and is not listed.";
 type Step = (typeof STEPS)[number];
 
 interface PlannedFile {
@@ -295,6 +298,35 @@ function mentions(context: Context): { path: string; lines: number[] }[] {
   return out.sort((a, b) => a.path.localeCompare(b.path, 'en'));
 }
 
+/**
+ * The new Hub's own CURRENT pages that still name the old slug or the old title, with their line numbers (S62, "Found in
+ * the first real runs"): a `limits` heading, a `read_open_project_page(<old>, ...)` instruction. The copy changes only
+ * the permalinks and the root's H1, so these are left for `hub edit`. `notes/` is history and is not listed. Read from
+ * the new Hub once it is written, and before that from the old Hub as the copy will write it.
+ */
+function newHubMentions(context: Context, plan: RenamePlan): { path: string; lines: number[] }[] {
+  const oldRoot = path.join(context.collection, 'projects', plan.old_slug);
+  const newRoot = path.join(context.collection, 'projects', plan.new_slug);
+  const slug = tokenPattern(plan.old_slug, '');
+  const title = plan.old_title ? new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(plan.old_title)}(?![\\p{L}\\p{N}])`, 'iu') : null;
+  const out: { path: string; lines: number[] }[] = [];
+  for (const file of plan.files) {
+    if (!file.path.toLowerCase().endsWith('.md') || file.path.startsWith('notes/')) continue;
+    const written = path.join(newRoot, ...file.path.split('/'));
+    const source = path.join(oldRoot, ...file.path.split('/'));
+    let text: string;
+    if (fs.existsSync(written)) text = fs.readFileSync(written, 'utf8');
+    else if (fs.existsSync(source)) text = transformed(fs.readFileSync(source), file.path, plan.old_slug, plan.new_slug, plan.new_title).toString('utf8');
+    else continue;
+    const lines: number[] = [];
+    text.split(/\r?\n/).forEach((line, index) => {
+      if (slug.test(line) || (title !== null && title.test(line))) lines.push(index + 1);
+    });
+    if (lines.length) out.push({ path: `collection/projects/${plan.new_slug}/${file.path}`, lines });
+  }
+  return out;
+}
+
 function describe(plan: RenamePlan): Record<string, PsJsonValue> {
   return {
     old_slug: plan.old_slug,
@@ -438,6 +470,8 @@ export function hubRename(argv: string[], workspace: string): Record<string, PsJ
       steps_done: resuming ? existing!.done : [],
       ...describe(plan),
       mentions_left_alone: mentions(context) as unknown as PsJsonValue,
+      mentions_in_new_hub: newHubMentions(context, plan) as unknown as PsJsonValue,
+      mentions_in_new_hub_note: NEW_HUB_MENTIONS_NOTE,
       confirmation_required: true,
       next: `library hub rename ${oldSlug} ${newSlug} --title "${newTitle}" --user-confirmed --plan-id ${plan.plan_id}`,
       shared_library_write: false,
@@ -485,6 +519,8 @@ export function hubRename(argv: string[], workspace: string): Record<string, PsJ
         ...describe(journal.plan),
         source_tree_removed: fs.existsSync(path.join(context.collection, 'projects', oldSlug)) ? 'not-removed' : 'moved',
         mentions_left_alone: mentions(context) as unknown as PsJsonValue,
+        mentions_in_new_hub: newHubMentions(context, journal.plan) as unknown as PsJsonValue,
+        mentions_in_new_hub_note: NEW_HUB_MENTIONS_NOTE,
         journal: path.relative(workspace, journalFile).split(path.sep).join('/'),
         shared_library_write: false,
       };

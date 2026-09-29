@@ -13,7 +13,9 @@
 
     The machine's own Deskpost stays out of it: LIBRARY_WORKSPACE, LIBRARY_SEAT and LIBRARY_SEAT_CLAIM are blanked,
     and every PATH entry holding a deskpost shim is dropped, because a seat's launcher puts the real install on PATH
-    and the install fixtures then refuse "already installed".
+    and the install fixtures then refuse "already installed". Nor is the caller's working directory an input: each
+    fixture starts in -Work, which must be outside any Library, because an install's closing doctor finds a Library by
+    walking up from where it runs (S62).
 
 .PARAMETER Release
     The release folder: SHA256SUMS, the installers and the archives.
@@ -50,6 +52,11 @@ if ($PreviousRelease) {
 }
 $Work = [IO.Path]::GetFullPath($Work)
 if (Test-Path -LiteralPath $Work) { throw "$Work already exists; the fixtures build in a folder of their own. Nothing was run." }
+# NO LIBRARY ABOVE THE FIXTURES (S65, the Report Inbox's S62 note): an install's closing doctor finds a Library by walking
+# up from its working directory, so each fixture runs from -Work, and a -Work inside a Library would bring it back.
+for ($above = Split-Path -Parent $Work; $above; $above = Split-Path -Parent $above) {
+    if (Test-Path -LiteralPath (Join-Path $above '.library\workspace.json') -PathType Leaf) { throw "$Work is inside the Library at $above, whose checks an install's doctor would judge. Choose a -Work outside any Library. Nothing was run." }
+}
 New-Item -ItemType Directory -Path $Work | Out-Null
 
 $savedPath = $env:Path
@@ -59,6 +66,8 @@ $rows = [Collections.Generic.List[object]]::new()
 try {
     foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, '', 'Process') }
     $env:Path = (@($env:Path -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'deskpost.cmd')) }) -join ';')
+    # Each fixture starts in -Work, never the caller's directory: its own folder under -Work must not exist yet.
+    Push-Location -LiteralPath $Work
 
     foreach ($fixture in $script:Fixtures) {
         $name = [IO.Path]::GetFileNameWithoutExtension($fixture.file)
@@ -80,6 +89,7 @@ try {
     }
 }
 finally {
+    Pop-Location
     $env:Path = $savedPath
     foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
 }

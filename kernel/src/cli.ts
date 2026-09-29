@@ -20,7 +20,7 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { invokeLibraryWorkspaceInit } from './init.ts';
+import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
@@ -149,7 +149,7 @@ async function main(argv: string[]): Promise<number> {
         refuse(`library init takes one folder, and was given ${parsed.positional.length}: ${parsed.positional.join(' ')}. Nothing has been written.`);
       }
       const folder = parsed.positional[0] ?? parsed.options.get('workspace') ?? process.cwd();
-      const result = invokeLibraryWorkspaceInit({
+      const { result, written } = runLibraryInit({
         workspacePath: folder,
         mcpUrl: parsed.options.get('mcp-url'),
         collectionId: parsed.options.get('collection-id'),
@@ -158,7 +158,7 @@ async function main(argv: string[]): Promise<number> {
         programRoot: programRoot(),
       });
       // LINES FOR A PERSON, THE DOCUMENT WITH --json (F7): until 1.1 `--json` was a no-op and a person got the document.
-      emit(result as PsJsonValue, parsed.flags.has('json'), initText(result));
+      emit(result as PsJsonValue, parsed.flags.has('json'), initText(result, written));
       return 0;
     }
 

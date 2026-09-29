@@ -91,10 +91,22 @@ export function doctorText(report: Record<string, unknown>, glyphs: Marks = mark
   return lines.join('\n');
 }
 
-/** init's result as lines, ending with one `Next:` line (step 9). */
-export function initText(result: Record<string, unknown>, glyphs: Marks = marks()): string {
-  const files = ((result['files'] as { file: string; action: string }[] | undefined) ?? []);
-  const changed = files.filter((file) => !['unchanged', 'skipped-program-file'].includes(file.action));
+/**
+ * init's result as lines, ending with one `Next:` line (step 9). `written` is every file the apply wrote,
+ * Library-relative (runLibraryInit): the line names each by its reported action where result.files or result.skill
+ * reports it, and every other write -- the marker's program_version refresh -- as written, so a refresh is never told
+ * that nothing changed (S65).
+ */
+export function initText(result: Record<string, unknown>, written: readonly string[], glyphs: Marks = marks()): string {
+  const reported = [
+    ...((result['files'] as { file: string; action: string }[] | undefined) ?? []),
+    ...(((result['skill'] as { files?: { file: string; action: string }[] } | undefined)?.files) ?? []),
+  ];
+  const covers = (entry: string, file: string) => file === entry || file.startsWith(`${entry}/`);
+  const changed = [
+    ...reported.filter((entry) => written.some((file) => covers(entry.file, file))),
+    ...written.filter((file) => !reported.some((entry) => covers(entry.file, file))).map((file) => ({ file, action: 'written' })),
+  ];
   const fresh = result['status'] === 'initialized';
   const workspace = String(result['workspace'] ?? '');
   const lines = [

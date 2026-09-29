@@ -1428,12 +1428,18 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
   };
 }
 
-/** `library init`: plan the Library, then apply the plan. One code path, so the installer's planner is the same init. */
-export function invokeLibraryWorkspaceInit(options: InitOptions): Record<string, unknown> {
+/**
+ * `library init`: plan the Library, then apply the plan. One code path, so the installer's planner is the same init.
+ * Returns the result and every file its plan wrote, Library-relative. The list is kept out of the result, which the
+ * acceptance matrix compares with the oracle's, and feeds init's human line: a refresh whose only writes are the Skill
+ * copy and the marker's program_version is still a refresh (S65, the Report Inbox's S62 note).
+ */
+export function runLibraryInit(options: InitOptions): { result: Record<string, unknown>; written: string[] } {
   const plan = planLibraryInit(options);
   // THE FIRST LIBRARY IS THE DEFAULT, however it was made (post-build inspection #6): `setup` marked one and `init` did
   // not, so a Library made with `init` was never the one bare `deskpost` opened from anywhere. Never replaces a default.
-  return applyLibraryInit(plan, { makeDefault: !hasLiveDefaultLibrary(plan.registry_root ?? undefined) });
+  const result = applyLibraryInit(plan, { makeDefault: !hasLiveDefaultLibrary(plan.registry_root ?? undefined) });
+  return { result, written: plan.writes.map((write) => write.relative) };
 }
 
 /** Whether the registry already marks a default Library that is still there. */
