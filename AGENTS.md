@@ -27,7 +27,7 @@ never bypass the Desk with a direct content reader.
 
 ## Where things live
 
-`notebook/` volatile working knowledge · `raw/` source material · `output/` requested
+`notebook/` volatile working knowledge · `raw/` ingestion staging · `output/` requested
 reader-facing files · `docs/` durable guidance · `internal/` application-managed records ·
 `tools/` PowerShell helpers · `.claude/` hooks, adapters, rules, and workspace settings.
 
@@ -52,7 +52,9 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
 2. **Git changes require the reader's explicit request.** By default, leave the working tree dirty
    and report what changed. When the reader explicitly asks Codex to manage the repository, commit,
    or push, first review the complete diff and run the required gate, then make the requested commit
-   and push normally. **Codex Desktop must run `git push` outside its sandbox**; when a requested
+   and push normally. A Kickoff's CHARTER, once the reader says yes at its gate, is the reader's
+   explicit request for the commits and the private push it names
+   ([dev session loop](docs/dev-session-loop.md)). **Codex Desktop must run `git push` outside its sandbox**; when a requested
    commit includes a push, use the escalated route by default rather than waiting for a reminder.
    Never force-push, rewrite published history, create a tag, or discard unrelated
    work unless the reader separately and explicitly requests that exact operation.
@@ -84,16 +86,17 @@ the final summary line. `WARN` is acceptable; `FAIL` is not. This suite is the a
 it is more authoritative than your own reading of the diff, and it is why your report can be
 short. A fix without a regression check that proves it stays fixed is a fix that comes back.
 
-**`-Fast` while you work; the full run is a phase gate, and NEVER an interactive wait.** Measured
-2026-09-17: `-Fast` is **23 seconds** for 98 checks and is exactly what the pre-commit hook fires,
-while the bare command above spawns ~50 helper self-tests as child processes and takes **20+
-minutes**. Every static check is registered above the `if ($Fast)` branch and therefore runs in
+**`-Fast` while you work; the full run is a phase gate, and NEVER an interactive wait.** `-Fast` is
+exactly what the pre-commit hook fires. It took 23 seconds for 98 checks on 2026-09-17. Since the
+kernel self-test joined it (1766 checks at S72, 2026-09-30), it takes **about 6-7 minutes**, so
+finish a change before committing it rather than committing to test it. The bare command above
+spawns ~50 helper self-tests as child processes and takes **20+ minutes**. Every static check is registered above the `if ($Fast)` branch and therefore runs in
 *both* modes, so `-Fast` answers almost any question worth asking mid-session — including whether a
 static check you just added passes. When the full run is genuinely warranted, background it and keep
 working; do not make the reader sit through it, and never start either variant merely to orient. On
 2026-09-17 a session ran the full suite twice while reading a Project Hub, discarded the first result
 to a mis-read JSON property, and cost the reader roughly forty minutes for an answer `-Fast` returns
-in twenty-three seconds.
+then in twenty-three seconds.
 
 **Codex Desktop runs the full gate outside the sandbox by default.** Several suites launch child
 processes or loopback listeners, and a sandboxed run can produce environmental failures that are
@@ -116,6 +119,19 @@ where this workspace is `/mnt/d/Library` rather than `D:\Library`. If that is yo
 invoke `powershell.exe` explicitly with a path its own shell understands, and check that the drive
 is mounted before assuming the run failed for a more interesting reason. Do not translate the
 command into a POSIX equivalent: there is one gate, and a substitute for it is not evidence.
+
+## No new PowerShell
+
+Deskpost is going PowerShell-free (the reader's goal, 2026-09-30; `docs/roadmap.md`, 1.3.1 and
+after). [ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md) already froze
+the PowerShell. Since then, **no new PowerShell file, tool, check or test is written**. New work is
+TypeScript. An existing `.ps1` changes only when:
+
+- it fixes a defect, or
+- it keeps a PowerShell oracle or a still-live PowerShell writer at parity with the kernel, so that
+  a differential row holds or a guard cannot be bypassed.
+
+That change is the smallest edit that does the job. Its commit says which of the two it is.
 
 ## PowerShell defect families
 

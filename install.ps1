@@ -1018,13 +1018,16 @@ try {
         Write-Host ''
         if ($doctorExit -ne 0) { throw "deskpost doctor is not green (exit $doctorExit): the lines marked [x] above say what to fix. The install is in place; deskpost rollback switches back." }
         $done = if ($status -eq 'upgraded') { "Deskpost is upgraded to $version." } else { "Deskpost $version is installed." }
-        Write-Host $(if ($answers.library) { "$done Your Library is at $($answers.library)." } else { "$done No Library was set up." })
+        # AN UPGRADE KEEPS THE LIBRARIES IT SERVES (S74 row 1, a defect fix for the Report "with -InstallRoot on an existing
+        # install, the installer asks the new-install Library question"): it names them, not "No Library was set up".
+        $kept = @(if ($answers.PSObject.Properties['kept_libraries']) { $answers.kept_libraries | Where-Object { $_ } })
+        Write-Host $(if ($answers.library) { "$done Your Library is at $($answers.library)." } elseif ($kept.Count) { "$done Kept as they are: $($kept -join ', ')." } else { "$done No Library was set up." })
         Write-Host "  Command  deskpost: $command"
         if ($Plugin) { Write-Host "  Plugin   $pluginResult" }
         # THE FORK, OR ONE LINE (step 5). A person is offered the tutorial or the main menu once this script has let
         # go of everything (below the finally); a script, -Yes, CI or no terminal gets `Next: deskpost`, and nothing
         # is ever launched for it. `-Library none` has no Library to show, so it names how to make one.
-        if (-not $answers.library) { Write-Host 'Next: deskpost setup <folder>, to make a Library.' }
+        if (-not $answers.library -and -not $kept.Count) { Write-Host 'Next: deskpost setup <folder>, to make a Library.' }
         elseif ($script:Interactive -and $status -eq 'installed') { $script:Welcome =@{ exe = $exe; library = [string]$answers.library; assistant = [string]$answers.assistant } }
         else { Write-Host 'Next: deskpost' }
     }

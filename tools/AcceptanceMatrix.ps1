@@ -533,6 +533,11 @@ function Test-AcceptanceMatrixShape {
                 try { [void][regex]::new($pattern) }
                 catch { [void]$problems.Add("delta '$name' has an unusable field_pattern: $($_.Exception.Message)") }
             }
+            foreach ($phrase in @(Get-AcceptanceOptionalList -Object $delta.match -Name 'phrases')) {
+                if ([string]::IsNullOrEmpty([string]$phrase.kernel) -or @(Get-AcceptanceObjectKeys $phrase) -cnotcontains 'powershell') {
+                    [void]$problems.Add("delta '$name' has a phrase pair with no kernel phrase or no powershell side")
+                }
+            }
         }
         $covers = @(@($rows) | Where-Object { @(Get-AcceptanceRowDeltas -Matrix $Matrix -Row $_) -ccontains $name })
         if (-not $covers.Count) { [void]$problems.Add("delta '$name' is approved for no row, so it is a stale approval") }
@@ -686,6 +691,29 @@ function Test-AcceptanceMatrixCoverage {
     }
 
     @($problems)
+}
+
+# --- The kernel's plan-id flag (S71 row 6) -------------------------------------------------------------
+
+# A KERNEL REFUSAL NAMES THE FLAG THE READER TYPES, `--plan-id` (B's ruling, S71). The oracle keeps `ApprovedPlanId`,
+# because that is its parameter. So the PowerShell arm's `ApprovedPlanId`, with or without its dash, is said as
+# `--plan-id` before the two are compared, whether or not the kernel under test is compiled. Only that word moves,
+# and only on the oracle's side, so a kernel sentence that went back to `ApprovedPlanId` would still differ.
+function ConvertTo-AcceptanceKernelPlanIdFlag {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    [regex]::Replace($Text, '(?<![A-Za-z0-9-])-?ApprovedPlanId\b', '--plan-id')
+}
+
+# AND THE CONFIRMATION FLAG THE SAME WAY (S72 row 7): a kernel refusal says `--user-confirmed`, the flag its parser takes,
+# where the oracle says its switch `-UserConfirmed` (and the ownership takeover's `-Force -UserConfirmed`). Only with its
+# dash, only on the oracle's side, and never in a sentence that names a `tools/*.ps1` route, where the switch is that
+# script's own and the kernel keeps it too (`tools/Move-LibraryFolder.ps1 ... -UserConfirmed`).
+function ConvertTo-AcceptanceKernelConfirmFlag {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $value = [regex]::Replace($Text, '(?<!\.ps1\b[^\r\n;]*)(?<![A-Za-z0-9-])-Force -UserConfirmed\b', '--force --user-confirmed')
+    [regex]::Replace($value, '(?<!\.ps1\b[^\r\n;]*)(?<![A-Za-z0-9-])-UserConfirmed\b', '--user-confirmed')
 }
 
 # --- The installed kernel's remedies (S47, ADR-0045) ----------------------------------------------
@@ -1409,6 +1437,16 @@ function Compare-AcceptanceOutcome {
                 $valuePattern = [string]$match.value_pattern
                 if ($leftValue -cnotmatch $valuePattern -or $rightValue -cnotmatch $valuePattern) { continue }
             }
+            # SENTENCE PAIRS ON A WHOLE-TEXT FIELD (S72 row 0): a Desk context or a seat record differs by one sentence or
+            # one key, and a value_pattern loose enough to match both sides would approve any other difference in the
+            # same text. So each kernel phrase is said as the oracle's, and the field is approved only when the kernel's
+            # value then EQUALS the oracle's. An empty oracle side is a sentence only the kernel says.
+            if ($matchKeys -ccontains 'phrases') {
+                if (-not $left.Contains($field) -or -not $right.Contains($field)) { continue }
+                $paired = $rightValue
+                foreach ($phrase in @(Get-AcceptanceOptionalList -Object $match -Name 'phrases')) { $paired = $paired.Replace([string]$phrase.kernel, [string]$phrase.powershell) }
+                if ($paired -cne $leftValue) { continue }
+            }
             $matchedDelta = $name
             break
         }
@@ -1517,7 +1555,10 @@ function Get-AcceptanceMatrixDocTable {
             if ($phrases.Count) { $parts += "$($phrases.Count) sentence pair(s), verbatim" }
             $parts -join '; '
         }
-        else { '`' + [string]$delta.match.field_pattern + '`' }
+        else {
+            $phrases = @(Get-AcceptanceOptionalList -Object $delta.match -Name 'phrases')
+            '`' + [string]$delta.match.field_pattern + '`' + $(if ($phrases.Count) { "; $($phrases.Count) sentence pair(s), verbatim, then compare content" } else { '' })
+        }
         [void]$lines.Add(('| `{0}` | {1} | {2} | {3} | {4}, {5} |' -f $name,
             ((@($delta.applies_to) | ForEach-Object { '`' + $_ + '`' }) -join ', '),
             (ConvertTo-AcceptanceCell $field),

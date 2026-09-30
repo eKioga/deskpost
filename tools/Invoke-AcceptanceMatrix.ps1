@@ -444,6 +444,16 @@ function Get-AcceptanceChildEnvironment {
     $environment = @{
         LIBRARY_WORKSPACE = ''
         LIBRARY_SEAT      = if ([bool]$Fixture.seated) { [string]$Fixture.seat } else { '' }
+        # THE RUNNER'S OWN SEAT IS NOT THE FIXTURE'S (S72 row 0). A matrix run from a launcher-held seat handed every
+        # child that seat's claim token, assistant and launcher pid, so the kernel's Desk context said "held for this
+        # session by the deskpost launcher" where the oracle said "named by LIBRARY_SEAT" -- three rows red because of
+        # who ran them. The tab handle is blanked for the same reason the gate blanks it. A step may still set any of them.
+        # A SEATED fixture's claim is its own: Enter-FixtureSeatClaim puts the fixture's token in this process's
+        # LIBRARY_SEAT_CLAIM, and that one is passed on. Only an unseated fixture's children lose it.
+        LIBRARY_SEAT_CLAIM    = if ([bool]$Fixture.seated) { [string]$env:LIBRARY_SEAT_CLAIM } else { '' }
+        DESKPOST_ASSISTANT    = ''
+        DESKPOST_LAUNCHER_PID = ''
+        ORCA_TERMINAL_HANDLE  = ''
         # THIS MACHINE'S CLAUDE CODE CONFIGURATION IS NOT THE FIXTURE'S (S42). `doctor` and the reader's
         # launch warning now read which plugins Claude has enabled, and a step would otherwise read the
         # person running the harness's own `~/.claude`. An empty directory of the fixture's; a row about
@@ -623,6 +633,12 @@ function Invoke-AcceptanceArm {
     }
     if ($null -eq $parsed) { $outcome['stdout'] = (ConvertTo-AcceptanceNormalisedText -Text ([string]$last.stdout) -Tokens $tokens) }
     else { $outcome['result'] = (ConvertTo-AcceptanceNormalisedData -Value $parsed -Tokens $tokens) }
+    # THE ORACLE'S PLAN-ID FLAG AS THE KERNEL SAYS IT (S71 row 6): see ConvertTo-AcceptanceKernelPlanIdFlag.
+    if ($Arm -ceq 'powershell') {
+        # AND ITS CONFIRMATION FLAG (S72 row 7): see ConvertTo-AcceptanceKernelConfirmFlag.
+        $outcome['stderr'] = ConvertTo-AcceptanceKernelConfirmFlag -Text (ConvertTo-AcceptanceKernelPlanIdFlag -Text ([string]$outcome['stderr']))
+        if ($outcome.Contains('stdout')) { $outcome['stdout'] = ConvertTo-AcceptanceKernelConfirmFlag -Text (ConvertTo-AcceptanceKernelPlanIdFlag -Text ([string]$outcome['stdout'])) }
+    }
     # THE ORACLE'S SENTENCES AS AN INSTALLED KERNEL SAYS THEM (S47, ADR-0045): see
     # ConvertTo-AcceptanceInstalledRemedy. After normalisation, so the program root is `<program>` in both arms.
     if ($Arm -ceq 'powershell' -and $script:KernelCompiled) {
@@ -1169,6 +1185,28 @@ function Invoke-AcceptanceMatrixSelfTest {
         $said = ConvertTo-AcceptanceInstalledRemedy -Text $case[0]
         Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
     }
+    # THE PLAN-ID FLAG (S71 row 6): the oracle's parameter is said as the kernel's flag, and nothing else moves.
+    $flagCases = @(
+        @('rerun the current preflight and pass its exact plan_id as ApprovedPlanId.', 'rerun the current preflight and pass its exact plan_id as --plan-id.'),
+        @('pass its exact plan_id as -ApprovedPlanId.', 'pass its exact plan_id as --plan-id.'),
+        @('the kernel already says --plan-id.', 'the kernel already says --plan-id.'),
+        @('an $ApprovedPlanIdValue variable', 'an $ApprovedPlanIdValue variable')
+    )
+    foreach ($case in $flagCases) {
+        $said = ConvertTo-AcceptanceKernelPlanIdFlag -Text $case[0]
+        Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
+    }
+    # THE CONFIRMATION FLAG (S72 row 7): the oracle's switch is said as the kernel's flag, except in a PowerShell route.
+    $confirmCases = @(
+        @('review the preflight and rerun with -UserConfirmed.', 'review the preflight and rerun with --user-confirmed.'),
+        @('Re-run with -Force -UserConfirmed only if workspace w is gone.', 'Re-run with --force --user-confirmed only if workspace w is gone.'),
+        @('run tools/Move-LibraryFolder.ps1 -Action LiftBarrier -RunId r -UserConfirmed', 'run tools/Move-LibraryFolder.ps1 -Action LiftBarrier -RunId r -UserConfirmed'),
+        @('a $UserConfirmed switch, and --user-confirmed already', 'a $UserConfirmed switch, and --user-confirmed already')
+    )
+    foreach ($case in $confirmCases) {
+        $said = ConvertTo-AcceptanceKernelConfirmFlag -Text $case[0]
+        Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
+    }
     $walked = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ next = 'Use tools/Get-DeskOverview.ps1 until then.'; body = 'tools/Get-DeskOverview.ps1'; items = @([pscustomobject]@{ reason = 'tools/Retire-Seat.ps1 -Seat old' }) })
     Check ($walked.next -ceq 'Use library desk until then.' -and $walked.body -ceq 'tools/Get-DeskOverview.ps1' -and $walked.items[0].reason -ceq 'library seat retire old') "the oracle side's field walk rewrote the wrong fields: $($walked | ConvertTo-Json -Compress -Depth 5)"
     # A `*_route` FIELD IS A REMEDY (S49, the reader's ruling), any such key; a field merely containing `route` is not.
@@ -1204,7 +1242,11 @@ function Invoke-AcceptanceMatrixSelfTest {
     Check $overridden 'a step was allowed to override a shared fixture''s collection'
     $offlineEnvironment = Get-AcceptanceChildEnvironment -Fixture ([pscustomobject]@{ seated = $false; seat = '' })
     Check ($offlineEnvironment.ContainsKey('AI_LIBRARY_PROJECT_ID') -and $offlineEnvironment['AI_LIBRARY_PROJECT_ID'] -ceq '') 'an offline row''s child could inherit a collection id from the shell'
-    # S41: NO ROW REACHES A READER'S INFERENCE SERVER. Without the stand-in both TEI_* are set empty, and a
+    # S72 row 0: A ROW'S CHILD NEVER INHERITS THE RUNNER'S SEAT. Each of these, left unset, reaches the child from a
+    # launcher-held session and changes what the kernel's Desk context says.
+    foreach ($seated in @('LIBRARY_SEAT_CLAIM', 'DESKPOST_ASSISTANT', 'DESKPOST_LAUNCHER_PID', 'ORCA_TERMINAL_HANDLE')) {
+        Check ($offlineEnvironment.ContainsKey($seated) -and $offlineEnvironment[$seated] -ceq '') "a row's child could inherit $seated from the session that ran the matrix"
+    }    # S41: NO ROW REACHES A READER'S INFERENCE SERVER. Without the stand-in both TEI_* are set empty, and a
     # step may not set either; with it, both name the stand-in and nothing else.
     Check ($offlineEnvironment.ContainsKey('TEI_EMBEDDING_URL') -and $offlineEnvironment['TEI_EMBEDDING_URL'] -ceq '' -and $offlineEnvironment.ContainsKey('TEI_API_KEY') -and $offlineEnvironment['TEI_API_KEY'] -ceq '') 'a row''s child could inherit an embedding endpoint or key from the shell'
     $teiOverride = try { Get-AcceptanceChildEnvironment -Fixture ([pscustomobject]@{ seated = $false; seat = '' }) -StepEnvironment ([pscustomobject]@{ TEI_EMBEDDING_URL = 'http://elsewhere' }); $false } catch { $true }
@@ -1629,6 +1671,21 @@ function Invoke-AcceptanceMatrixSelfTest {
         Check ($segment -ceq 'notebook/fixtures/x and notebook and notebook\\y') "the rebase is not whole-segment in all three spellings: '$segment'"
         $fileName = ConvertTo-AcceptanceRebasedText -Text '<stamp>-notebook-fixture-acceptance-<suffix>.json and notebook-fixtures-x' -From 'notebook/fixture' -Onto 'notebook'
         Check ($fileName -ceq '<stamp>-notebook-acceptance-<suffix>.json and notebook-fixtures-x') "the rebase does not read the hyphen-joined file-name spelling, or reads it past a segment: '$fileName'"
+
+        # --- 3c. A SENTENCE PAIR APPROVES ITS SENTENCE AND NOTHING ELSE IN THE SAME TEXT (S72 row 0) -------------
+        $pairRow = Get-AcceptanceMatrixRow -Matrix $matrix -Id 'seat.enter-an-existing-free-seat'
+        $bindingField = '.claude/seats/beta/binding.json'
+        $oracleBinding = "text:{`n    `"seat`":  `"beta`",`n    `"state`":  `"committed`"`n}"
+        function New-PairOutcome([string]$Binding) { [pscustomobject]@{ exit = 0; result = [pscustomobject]@{ seat = 'beta' }; effect = [ordered]@{ $bindingField = $Binding } } }
+        $paired = Compare-AcceptanceOutcome -Matrix $matrix -Row $pairRow -PowerShellOutcome (New-PairOutcome $oracleBinding) -KernelOutcome (New-PairOutcome ($oracleBinding.Replace('"committed"', "`"committed`",`n    `"assistant`":  `"claude`"")))
+        Check ([bool]$paired.green -and @($paired.approved | Where-Object { [string]$_.delta -ceq 'kernel-records-which-assistant-bound' }).Count -eq 1) `
+            ('a binding differing only by the paired assistant key did not compare green with the delta named: ' + ((@($paired.differences) | ForEach-Object { [string]$_.field }) -join ', '))
+        $pairedAndMore = Compare-AcceptanceOutcome -Matrix $matrix -Row $pairRow -PowerShellOutcome (New-PairOutcome $oracleBinding) -KernelOutcome (New-PairOutcome ($oracleBinding.Replace('"committed"', "`"pending`",`n    `"assistant`":  `"claude`"")))
+        Check (-not [bool]$pairedAndMore.green) 'a binding that also differed in its state compared green: the sentence pair absorbed a difference it does not name'
+        $unpaired = Compare-AcceptanceOutcome -Matrix $matrix -Row $pairRow -PowerShellOutcome (New-PairOutcome $oracleBinding) -KernelOutcome (New-PairOutcome ($oracleBinding.Replace('"committed"', "`"committed`",`n    `"assistant`":  `"gemini`"")))
+        Check (-not [bool]$unpaired.green) 'an assistant key the delta does not pair compared green'
+        $outsidePair = Compare-AcceptanceOutcome -Matrix $matrix -Row (Get-AcceptanceMatrixRow -Matrix $matrix -Id 'desk.open-a-book') -PowerShellOutcome (New-PairOutcome $oracleBinding) -KernelOutcome (New-PairOutcome ($oracleBinding.Replace('"committed"', "`"committed`",`n    `"assistant`":  `"claude`"")))
+        Check (-not [bool]$outsidePair.green) 'the assistant pairing applied to a row outside the area it is approved for'
 
         # --- 4. THE DOCUMENT AGREES WITH THE ROWS ---------------------------------------------------
         $docProblem = Test-AcceptanceDoc -Matrix $matrix -ProgramRoot $script:ProgramRoot

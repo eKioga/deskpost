@@ -26,6 +26,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed, isSharedCollectionRoot } from './ownership.ts';
+import { localDate } from './localdate.ts';
 
 class SharedWriterRefusal extends Error {}
 
@@ -166,7 +167,7 @@ export async function hubArchive(argv: string[], workspace: string): Promise<Rec
     shared_library_write: false,
   };
   if (parsed.flags.has('preflight')) return plan;
-  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with --user-confirmed.');
 
   // THE CONFIRMED HALF (S39), in the oracle's order: the one native move, every page read back at its new
   // path, the root's own links, the archive Catalog, the active Catalog line, and last the husk. Any
@@ -391,7 +392,7 @@ export async function sharedArchive(argv: string[], workspace: string): Promise<
     shared_library_write: false,
   };
   if (parsed.flags.has('preflight')) return plan;
-  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with --user-confirmed.');
 
   // THE CONFIRMED HALF (S39), in the oracle's order: the move, the root found at its new path, the two
   // publisher-owned pages relinked, the reader map proved, the archive Catalog (and its one prose repair),
@@ -519,11 +520,6 @@ async function assertReaderMap(session: McpSession, projectId: string, indexPath
 }
 
 /** `Get-Date -Format 'yyyy-MM-dd'`: the local date. */
-function localDate(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
 /** `Ensure-ArchiveIndex`: `archive/README` created with the entry, or the entry inserted under its heading. */
 async function ensureArchiveIndex(session: McpSession, projectId: string, archiveDirectory: string, bookTitle: string, words: BookWords): Promise<string> {
   const link = `[[${archiveDirectory}/wiki/_book|${bookTitle}]]`;
@@ -689,7 +685,7 @@ export async function sharedListEntry(argv: string[], workspace: string): Promis
   };
   if (parsed.flags.has('preflight')) return plan;
   if (alreadyListed) return { schema: 1, operation, root, catalog_path: catalogPath, already_listed: true, changed: false };
-  if (!parsed.flags.has('user-confirmed')) refuse('Nothing was listed: review the preflight and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Nothing was listed: review the preflight and rerun with --user-confirmed.');
 
   // THE CONFIRMED HALF (S39): one edit, never a rewrite -- a find_replace on the heading when it is there,
   // an append (never retried, being non-idempotent) when it is not -- and the entry read back.

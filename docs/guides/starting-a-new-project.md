@@ -138,7 +138,8 @@ piece of it has settled, move it somewhere a reset cannot reach:
 
 - **"Put this in the *X* Book"** adds it as a page of an open Shelf Book;
 - **"Add this to the project"** records it on the Project Hub;
-- **"Save this for later"** puts it on the Holding Shelf to sort out another day.
+- **"Save this for later"** finds it one of those homes first, and falls back to the Holding Shelf
+  only when none fits. A Holding Shelf that keeps growing is a sign something needs a better home.
 
 Nothing is ever lost by a reset, since it is quarantined rather than deleted, but moving what matters
 first means you never need to go and get it back.

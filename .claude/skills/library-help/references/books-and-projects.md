@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.3/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.2.5/docs/seats.md).
 
 ## Books
 
@@ -119,6 +119,14 @@ without `--dev` is unchanged, and existing Hubs are never migrated automatically
 `--dev` seeds **placeholder prose, not values**. `--dev --preflight` shows the exact sections it
 would write without creating anything, which is worth using because nothing deletes a Project Hub
 once it exists. To add these sections to an existing Hub, use `hub edit --mode add-section`.
+
+**Two seats on one dev Hub.** A dev Hub on a local collection can run the dev session loop: a build
+seat works long sessions from a Kickoff, `kickoffs/sNN` on its Hub, and a support seat triages and
+writes the Kickoffs. The build seat shows the Kickoff's title, revision, content hash and CHARTER
+and takes one yes; that yes is the reader's explicit request for the commits and the private push
+the CHARTER names, for that page at that hash only. It never covers a public push, a tag, a release
+or anything destructive, and each previewed action still takes its own approval. The loop is
+`docs/dev-session-loop.md` in the program repository.
 
 **Where a decision itself is written** follows its subject. If the subject has a repository you
 control, the decision goes in *that repository's* `docs/adr/`. Otherwise it goes on the Hub. Either

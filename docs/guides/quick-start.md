@@ -102,8 +102,10 @@ sitting on your disk.
 
 > **"Save this for later: *…whatever you just worked out.*"**
 
-This lands on the **Holding Shelf**. Saving needs no open Book and no approval, because it can
-only add a page, and it survives a reset. **Reading the note back does need the Book open**, as it
+The Librarian first looks for its home: your Project Hub, a Book, or the Notebook. On a fresh
+Library nothing fits yet, so it lands on the **Holding Shelf**, the last-resort shelf for notes with
+no other home. Saving there needs no open Book and no approval, because it can only add a page, and
+it survives a reset. **Reading the note back does need the Book open**, as it
 does for any Shelf Book: say "open the Holding Shelf" first. The note's name carries today's date
 as your own clock reads it.
 

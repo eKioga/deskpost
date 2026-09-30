@@ -461,8 +461,9 @@ not belong in Triage at all — `Graduate` is satisfied by the durable copy exis
 copy's departure is the Reset's.
 
 Execution order is `review`, `holding`, `notebook`, `shelf-book`, `project`, `book`, `discard`:
-cheapest and most reversible first, irreversible last. Discard running last is what makes "graduate
-this note into a Book, then discard it" safe — any failure upstream leaves the note where it was.
+cheapest and most reversible first, irreversible last. Discard running last means any failure
+upstream leaves a discarded note where it was. Since S73, "graduate this note into a Book, then
+discard it" is not one batch at all: graduating closes the note (below).
 
 ### The gate rule, stated once
 
@@ -490,8 +491,38 @@ previously invisible: two actions destroying one path, and one action creating w
 A third refusal is subtler. `review` and `notebook` rewrite the source note's own frontmatter, so a
 `discard` of that same note in the same batch would find bytes its approval never covered and fail
 `Assert-SourceUnchanged` **after** the other action had already landed. Knowable at plan time, so
-refused there. `shelf-book`, `project` and `book` only *read* the note, so those combine with a
-discard freely.
+refused there.
+
+**Since S73, filing closes the note** (`PLAN-holding-discipline.md`, row 2a). A Holding-sourced
+`shelf-book` writes the page, then marks the note `review: done` with a `reviewed:` stamp and a
+`filed_to:` naming the page. So it rewrites its source too. It joins the note-mutating kinds, and
+the refusal above covers it. The note and its Book's map join its touch set, and `new_review` and
+`filed_to` enter its digest. The stamp does not, because the runner writes it at execution. `book`
+still only reads the note.
+
+On a local collection, `project` is a filing kind too (row 2b). It makes one Hub page,
+`notes/<the source's file stem>`, through `hub edit --mode new-page`'s writer, with its write set
+under `collection/`. It needs only `slug` and the Desk state `project-open:<slug>`, and a Notebook
+folder is refused because one action makes one page. On Basic Memory it keeps its shared shape
+(`purpose`, `next_actions`) and the kernel still refuses to run it.
+
+A third filing kind, `collection-book` (row 2c), adds the note as a page of an existing collection
+Book through `collection add-page`. It is named for its destination, as `shelf-book` is, and `book`
+keeps its meaning of a new shared Book. The child confirms. Its plan_id, which binds the Book's
+reader map, is taken from the child's own preview while the batch is planned. It is shown as the
+action's `child_plan_id`, kept in the plan record and passed to the child at the run, as the oracle
+does for its confirming children. Two `collection-book` actions to one Book are refused, because
+the first page's map line would make the second's id stale. It needs `collection-book-open:<slug>`,
+and a Basic Memory workspace refuses it by name.
+
+Two consequences follow:
+
+- **A retried batch is a new plan.** Once a filing action has closed its note, the batch no longer
+  resolves to the same id. In the new plan, an action whose note is `done` and already filed to its
+  destination, with that page still there, is skipped as **already filed**. If the page has gone,
+  it is filed again.
+- **A page that lands whose close fails** leaves the note pending with no `filed_to`. A retry is
+  then refused because the page exists, and the refusal says to close the note with `review`.
 
 There is deliberately **no** delete-set existence check beside `Assert-WriteSetWritable`.
 `Resolve-TriageNoteSource` lists the Book's notes from disk on every invocation, preflight and run

@@ -102,6 +102,19 @@ if ([string]$resolvedWorkspace.kind -ceq 'none') {
 }
 else { $workspace = (Resolve-Path -LiteralPath ([string]$resolvedWorkspace.workspace)).Path }
 
+# A SEATED SESSION'S VARIABLES NEVER REACH A SUITE (the Report Inbox's S50 note, measured in S69). Run from a
+# seat, the gate inherited what `seat start` set -- the Library, the seat, its claim, which assistant and which
+# launcher -- and the Orca tab's handle, and every suite it spawned inherited them again:
+# `workspace-init.selftest` and `codex.portability-selftest` both failed, and the kernel self-test retitled
+# the reader's tab. The workspace above is resolved first, so a seated run still attaches its Library for
+# the workspace checks; Use-WorkspaceEnvironment hands it back to the one child that asks. The deployment
+# variables are not cleared: a run that set them in its own shell keeps them (Use-DeploymentEnvironment).
+$script:SeatedSessionVariables = @('LIBRARY_WORKSPACE', 'LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'DESKPOST_ASSISTANT', 'DESKPOST_LAUNCHER_PID', 'ORCA_TERMINAL_HANDLE')
+function Clear-SeatedSessionEnvironment {
+    foreach ($name in $script:SeatedSessionVariables) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+}
+Clear-SeatedSessionEnvironment
+
 # SOME CHILDREN NEED IT AND MOST MUST NOT SEE IT. Several checks are whole suites run as their own
 # processes, and a child resolves its workspace from scratch. Before the split they needed nothing:
 # the program root they were launched from WAS a workspace, so their own walk-up found it. It is not
@@ -3721,6 +3734,8 @@ Invoke-Check 'hub.sections-name-their-destinations' {
         'the closable rule'      = 'closing condition this project can cause'
         'the notes destination'  = 'notes/'
         'the limits destination' = 'limits'
+        # The Hub has no `limits` page until one is made (S71 row 9), so the seed names how to make it.
+        'the limits route'       = 'hub edit --mode new-page'
         'the decisions destination' = '## Decisions'
         'the guidance destination'  = 'own rules or docs'
     }
@@ -4131,6 +4146,7 @@ Invoke-Check 'restore-book-source.canonical-source' {
         @{ value = 'notebook/obsidian-app/bases.md';     expect = '';                             label = 'a canonical Notebook page is accepted' },
         @{ value = 'shelf/obsidian-app/wiki/bases.md';   expect = 'published from a Shelf Book';  label = 'a Shelf-published Book is refused BY NAME, not as corruption' },
         @{ value = 'shelf/another-book/wiki/bases.md';   expect = 'published from a Shelf Book';  label = 'a Shelf page under a different slug names the class too' },
+        @{ value = 'shelf/obsidian-app/wiki/bases.md';   expect = 'deskpost shelf recall obsidian-app'; label = 'a Shelf-published Book names the recall route (S70)' },
         @{ value = 'books/obsidian-app/wiki/bases.md';   expect = 'does not resolve below';       label = 'a shared page still gets the generic refusal' },
         @{ value = 'notebook\obsidian-app\bases.md';     expect = 'forward slashes';              label = 'a backslash path is refused' },
         @{ value = 'C:/notebook/obsidian-app/bases.md';  expect = 'workspace-relative';           label = 'an absolute Windows path is refused' },
@@ -5649,7 +5665,7 @@ Invoke-Check 'release.fixtures-all-run' {
 
 # --- Offline self-test suites ---------------------------------------------------------------------
 if ($Fast) {
-    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.migration', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'collection-ownership.selftest', 'acceptance.harness-selftest')) {
+    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.migration', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'workspace-init.ignores-a-seated-session', 'collection-ownership.selftest', 'acceptance.harness-selftest')) {
         # This roster is the -Fast summary's only record that these suites exist. A check absent from
         # it does not run in -Fast AND is not reported skipped, so the pre-commit hook's line silently
         # counts one fewer -- the same shape as a suite nothing runs, one step quieter. The three
@@ -6254,6 +6270,25 @@ Invoke-Check 'workspace-init.selftest' {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Initialize-LibraryWorkspace.ps1') -SelfTest 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     (@($out) | Select-Object -Last 1)
+}
+
+# THE SAME SUITE, RUN AS IF FROM A SEAT (S69). Its subject is workspace resolution, so an inherited
+# LIBRARY_WORKSPACE -- even one naming a folder that does not exist -- turns it red: measured, "a cwd inside
+# resolved 'resolved'/'environment'". The seated session's variables are set here on purpose and cleared the way
+# the gate clears them at startup, so a gate that stopped clearing them fails this check.
+Invoke-Check 'workspace-init.ignores-a-seated-session' {
+    $decoys = @{
+        LIBRARY_WORKSPACE = (Join-Path ([IO.Path]::GetTempPath()) "library-checks-seated-$PID"); LIBRARY_SEAT = 'decoy'
+        LIBRARY_SEAT_CLAIM = 'decoy-claim'; DESKPOST_ASSISTANT = 'claude'; DESKPOST_LAUNCHER_PID = '0'; ORCA_TERMINAL_HANDLE = 'decoy-handle'
+    }
+    try {
+        foreach ($name in $decoys.Keys) { [Environment]::SetEnvironmentVariable($name, [string]$decoys[$name], 'Process') }
+        Clear-SeatedSessionEnvironment
+        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Initialize-LibraryWorkspace.ps1') -SelfTest 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ('with a seated session''s variables set: ' + (($out | Select-Object -Last 5) -join ' | ')) }
+    }
+    finally { Clear-SeatedSessionEnvironment }
+    "passed with a seated session's $($decoys.Count) variables set before the gate cleared them"
 }
 
 # --- One writable workspace per collection (PLAN-public-release.md step 21) -----------------------

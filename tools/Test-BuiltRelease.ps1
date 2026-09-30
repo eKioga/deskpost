@@ -41,7 +41,10 @@ $script:Fixtures = @(
     @{ file = 'Test-KernelUpgrade.ps1';     args = @('-Release', '{release}', '-WorkRoot', '{work}') },
     @{ file = 'Test-InstallOnboarding.ps1'; args = @('-Release', '{release}', '-Work', '{work}') },
     @{ file = 'Test-InstallProof.ps1';      args = @('-Release', '{release}', '-Work', '{work}') },
-    @{ file = 'Test-InstallLifecycle.ps1';  args = @('-ReleaseA', '{previous}', '-ReleaseB', '{release}', '-Work', '{work}'); needs_previous = $true }
+    # THE RELEASE'S OWN INSTALLER (S74 row 2, a defect fix for the Report "with -InstallRoot on an existing install, the
+    # installer asks the new-install Library question"): without -Installer the fixture ran the checkout's install.ps1,
+    # so the installer a release ships was never the one tested.
+    @{ file = 'Test-InstallLifecycle.ps1';  args = @('-ReleaseA', '{previous}', '-ReleaseB', '{release}', '-Work', '{work}', '-Installer', '{release}\install.ps1'); needs_previous = $true }
 )
 
 $Release = [IO.Path]::GetFullPath($Release)

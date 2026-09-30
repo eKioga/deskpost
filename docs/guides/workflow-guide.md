@@ -132,8 +132,10 @@ flowchart TD
 
 ## Capture and triage on the Holding Shelf
 
-"Save this for later" needs no open Book and cannot lose anything, because it only ever adds a
-page. Reading or sorting what landed there does need the Book open, like any Shelf Book. A note's
+"Save this for later" first looks for the note's home (the Project Hub, a Book, the Notebook). The
+Holding Shelf takes it only when none fits. Capturing there needs no open Book and cannot lose
+anything, because it only ever adds a page. Reading or sorting what landed there does need the Book
+open, like any Shelf Book. Once a note has moved to its home, it is marked reviewed. A note's
 file name carries the date as your own clock reads it.
 
 ```mermaid

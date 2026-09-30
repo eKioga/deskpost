@@ -222,7 +222,18 @@ else {
 
 # The local calendar date, as a capture names its note (S50).
 if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::Now.ToString('yyyy-MM-dd') }
-$actions = @(Resolve-TriagePlanActions -Actions $requested -Workspace $workspace -CaptureDate $CaptureDate)
+
+# THE ACTING SEAT, RESOLVED ONCE AND NEVER THROWING HERE. Two gates below need the name and only one
+# of them is entitled to refuse for its absence: the Notebook route's claim assertion further down,
+# because Triage's other destinations write the Shelf or the shared collection and need no seat at
+# all. So this classifies and stores, and a `$null` here means "no seat named" rather than an error.
+# PARITY (S73 row 4): resolved ABOVE the note sources, and threaded into their resolution, so the Desk
+# gate and the seat rule read this seat, as the kernel's runBatch threads its one resolved seat.
+$script:TriageSeatName = $null
+$script:TriageSeatState = Resolve-SeatName -Seat $Seat -StateDirectory (Join-Path $workspace '.claude')
+if ($script:TriageSeatState.status -ceq 'named') { $script:TriageSeatName = [string]$script:TriageSeatState.seat }
+
+$actions = @(Resolve-TriagePlanActions -Actions $requested -Workspace $workspace -CaptureDate $CaptureDate -Seat ([string]$script:TriageSeatName))
 
 # A stored plan is evidence about what was approved. Checking the re-resolved digests against it is
 # what turns "the file says so" into "the file and the disk agree".
@@ -248,14 +259,6 @@ $publisher = Join-Path $PSScriptRoot 'Publish-BookCopy.ps1'
 $projectCopy = Join-Path $PSScriptRoot 'Copy-LocalPagesToProject.ps1'
 $shelfNote = Join-Path $PSScriptRoot 'Add-ShelfNote.ps1'
 $shelfPage = Join-Path $PSScriptRoot 'Add-ShelfBookPage.ps1'
-
-# THE ACTING SEAT, RESOLVED ONCE AND NEVER THROWING HERE. Two gates below need the name and only one
-# of them is entitled to refuse for its absence: the Notebook route's claim assertion further down,
-# because Triage's other destinations write the Shelf or the shared collection and need no seat at
-# all. So this classifies and stores, and a `$null` here means "no seat named" rather than an error.
-$script:TriageSeatName = $null
-$script:TriageSeatState = Resolve-SeatName -Seat $Seat -StateDirectory (Join-Path $workspace '.claude')
-if ($script:TriageSeatState.status -ceq 'named') { $script:TriageSeatName = [string]$script:TriageSeatState.seat }
 
 # --- Gates ------------------------------------------------------------------------------------
 
@@ -307,7 +310,9 @@ function Assert-WriteSetWritable($Action) {
         if (Test-TriageDerivedWritePath $Action $relative) { continue }
         $full = Join-Path $workspace ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
         if (Test-Path -LiteralPath $full) {
-            throw "The approved write set is no longer writable: '$relative' already exists. Nothing was written for this action."
+            # PARITY (S73 row 2a): a filed page whose close failed names the review that finishes it.
+            $filing = if ($Action.source -ceq 'holding' -and $Action.kind -cin $script:TriageFilingKinds) { " If an earlier run filed $($Action.source_note) there and could not close it, close the note with a review action instead of filing it again." } else { '' }
+            throw "The approved write set is no longer writable: '$relative' already exists. Nothing was written for this action.$filing"
         }
     }
 }
@@ -342,7 +347,7 @@ function Assert-DeskState($Action) {
         if ([string]$required -cmatch '^shelf-book-open:(.+)$') {
             $slug = $Matches[1]
             $why = if ($slug -ceq $Action.source_slug -and $Action.source -ceq 'holding') { 'triaging its notes' } else { 'graduating a page into it' }
-            Assert-ShelfBookOpen -Workspace $workspace -Slug $slug -Action $why
+            Assert-ShelfBookOpen -Workspace $workspace -Slug $slug -Action $why -Seat ([string]$script:TriageSeatName)
             continue
         }
         throw "Unknown required Desk state '$required'."
@@ -467,19 +472,26 @@ function Invoke-NoteAction($Action) {
             'review' {
                 $newState = [string](Get-TriageValue $Action.metadata 'new_review')
                 $result.new_review = $newState
+                # PARITY (S73 row 1, triage.batch-confirmed-lands-every-action-and-journals-it): a
+                # close is stamped `reviewed:` at execution and a reopen unstamps, as the kernel
+                # does. A `done` note with no stamp is stamped and reported `stamped`.
+                $stamped = -not [string]::IsNullOrWhiteSpace([string]$note.reviewed)
                 # Nothing is written, so nothing may be marked dirty: a marker with no mutation
                 # behind it is a Book that reads unavailable with nothing left to repair.
-                if ($note.review -ceq $newState) {
+                if ($note.review -ceq $newState -and $stamped -eq ($newState -ceq 'done')) {
                     $result.status = 'unchanged'
                     return [pscustomobject]$result
                 }
                 $content = [IO.File]::ReadAllText($note.full_path)
+                if (-not [regex]::IsMatch($content, '(?m)^review:')) { throw "This note has no review field to update: $($note.page)" }
                 $updated = [regex]::Replace($content, '(?m)^review:\s*.*$', "review: $newState", 1)
-                if ($updated -ceq $content) { throw "This note has no review field to update: $($note.page)" }
+                $stamp = if ($newState -ceq 'done') { [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }
+                $updated = Set-NoteFrontmatterField $updated 'reviewed' $stamp
+                if ($updated -ceq $content) { throw "This note has no frontmatter to update: $($note.page)" }
                 $mutation = Enter-BookMutation -Workspace $workspace -Slug $book.slug -BookRoot $book.book_root -Reason "Review $($note.page) as $newState" -Lock $lock
                 Write-Utf8 $note.full_path $updated
                 $counts = Update-ShelfNoteIndex -Book $book
-                $result.status = 'updated'
+                $result.status = if ($note.review -ceq $newState -and $newState -ceq 'done') { 'stamped' } else { 'updated' }
                 $result.pending_count = $counts.pending_count
             }
             'notebook' {
@@ -551,7 +563,8 @@ function Invoke-NoteAction($Action) {
                 # note's own frontmatter is the first thing this kind changes inside the Book.
                 $content = [IO.File]::ReadAllText($note.full_path)
                 $mutation = Enter-BookMutation -Workspace $workspace -Slug $book.slug -BookRoot $book.book_root -Reason "Copy $($note.page) to notebook/$topicSlug" -Lock $lock
-                Write-Utf8 $note.full_path ([regex]::Replace($content, '(?m)^review:\s*.*$', 'review: done', 1))
+                $closed = [regex]::Replace($content, '(?m)^review:\s*.*$', 'review: done', 1)
+                Write-Utf8 $note.full_path (Set-NoteFrontmatterField $closed 'reviewed' ([DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')))
                 $counts = Update-ShelfNoteIndex -Book $book
                 $result.status = 'copied'
                 $result.new_review = 'done'
@@ -576,6 +589,38 @@ function Invoke-NoteAction($Action) {
     [pscustomobject]$result
 }
 
+# PARITY (S73 row 2a, the Holding-sourced shelf-book differential row): filing a note closes it,
+# after the page has landed and under the source Book's lock -- review: done, the reviewed: stamp and
+# filed_to: -- as the kernel's closeFiledNote does. A note already done reports its close unchanged.
+# A failed close leaves the landed page and says so, since filed_to is then never written.
+function Close-TriageFiledNote($Action) {
+    $filedTo = [string](Get-TriageValue $Action.metadata 'filed_to')
+    try {
+        $book = Get-CaptureBook -Workspace $workspace -Slug $Action.source_slug
+        $note = @(Get-ShelfNotes -Book $book | Where-Object { "$($book.book_root)/wiki/$($_.page).md" -ceq $Action.source_note })[0]
+        if ($null -eq $note) { throw 'the note is gone' }
+        if ($note.review -ceq 'done') { return [pscustomobject][ordered]@{ status = 'unchanged'; note_page = $Action.source_note; filed_to = $filedTo } }
+        $lock = Enter-BookLock -Workspace $workspace -BookRoot $book.book_root -TimeoutSeconds $LockTimeoutSeconds
+        try {
+            $content = [IO.File]::ReadAllText($note.full_path)
+            $closed = [regex]::Replace($content, '(?m)^review:\s*.*$', 'review: done', 1)
+            $closed = Set-NoteFrontmatterField (Set-NoteFrontmatterField $closed 'reviewed' ([DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))) 'filed_to' $filedTo
+            if ($closed -ceq $content -or $closed -cnotmatch '(?m)^review: done') { throw 'the note has no review field to close' }
+            $mutation = Enter-BookMutation -Workspace $workspace -Slug $book.slug -BookRoot $book.book_root -Reason "Close $($note.page), filed to $filedTo" -Lock $lock
+            Write-Utf8 $note.full_path $closed
+            $counts = Update-ShelfNoteIndex -Book $book
+            return [pscustomobject][ordered]@{
+                status = 'closed'; note_page = $Action.source_note; filed_to = $filedTo
+                pending_count = $counts.pending_count; manifest = (Complete-BookMutation -Mutation $mutation).summary
+            }
+        }
+        finally { Exit-BookLock -Lock $lock }
+    }
+    catch {
+        throw "The page landed at $filedTo, but $($Action.source_note) could not be closed: $($_.Exception.Message). Close the note with a review action; filing it again is refused because the page now exists."
+    }
+}
+
 function Invoke-ChildAction($Action, [string]$ChildPlanId) {
     $request = $Action.raw
     if ($Action.kind -cin $script:TriageInlineKinds) { return Invoke-NoteAction $Action }
@@ -584,11 +629,17 @@ function Invoke-ChildAction($Action, [string]$ChildPlanId) {
             # The approved file name is pinned, not chosen again: an approval naming one path must
             # never write another, and a name taken since is a refusal rather than a relocation.
             $noteFile = [IO.Path]::GetFileName(@($Action.write_set)[0])
-            return & $shelfNote -Title $Action.title -ContentPath $Action.source_path -BookSlug $Action.slug -SourcePaths $Action.source_path -RequireNoteFile $noteFile -WorkspacePath $workspace
+            # PARITY (S73 row 3): the action's why, passed through as the kernel passes it.
+            $whyArgs = @{}
+            $why = [string](Get-TriageValue $Action.metadata 'why')
+            if ($why) { $whyArgs.Why = $why }
+            return & $shelfNote -Title $Action.title -ContentPath $Action.source_path -BookSlug $Action.slug -SourcePaths $Action.source_path -RequireNoteFile $noteFile -WorkspacePath $workspace @whyArgs
         }
         'shelf-book' {
             $pageArgs = Get-ShelfPageArgs $Action
-            return & $shelfPage @pageArgs
+            $child = & $shelfPage @pageArgs
+            if ($Action.source -ceq 'holding') { $child | Add-Member -NotePropertyName note_close -NotePropertyValue (Close-TriageFiledNote $Action) -Force }
+            return $child
         }
         'project' {
             $childArgs = @{
@@ -804,7 +855,15 @@ function Get-PreflightReport() {
 }
 
 if ($Preflight) {
-    Write-LibraryResult -Result (Get-PreflightReport) -Json:$Json
+    $report = Get-PreflightReport
+    # PARITY (S73 row 4): another seat's notes are listed apart, only when there are any, as the kernel lists them.
+    $otherSeatEntries = @($entries | Where-Object { $null -ne (Get-TriageValue $_.action.metadata 'other_seat') })
+    if ($otherSeatEntries.Count) {
+        $report | Add-Member -NotePropertyName other_seat_actions -NotePropertyValue @($otherSeatEntries | ForEach-Object {
+            [pscustomobject][ordered]@{ action_id = $_.action_id; kind = $_.kind; note = $_.action.source_note; other_seat = [string](Get-TriageValue $_.action.metadata 'other_seat') }
+        })
+    }
+    Write-LibraryResult -Result $report -Json:$Json
     return
 }
 

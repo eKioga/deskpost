@@ -74,6 +74,11 @@ function readerTool(options: { readerToolPrefix?: string | undefined }): string 
   return `${options.readerToolPrefix || DEFAULT_READER_PREFIX}read_open_book_page`;
 }
 
+/** The same for a closed Project Hub. */
+function projectReaderTool(options: { readerToolPrefix?: string | undefined }): string {
+  return `${options.readerToolPrefix || DEFAULT_READER_PREFIX}read_open_project_page`;
+}
+
 // --- output ---------------------------------------------------------------------------------------
 
 function denyDocument(reason: string): string {
@@ -326,6 +331,93 @@ function seatDeskDirectory(stateDirectory: string, seat: string | undefined): st
   return deskStateDirectory(stateDirectory, resolved.seat!);
 }
 
+// --- the Local collection (S70) ----------------------------------------------------------------------
+
+/**
+ * THE LOCAL COLLECTION IS BEHIND THE DESK TOO (S70 row 1). Since 1.2.3 a local Library's `collection/` holds Books
+ * and Project Hubs on this disk, and the guards judged only `shelf/`, so a Read of a closed Hub page went round the
+ * central rule. A path inside one of the four roots below is judged against this seat's Desk, spelled as the Desk
+ * spells it; the containers above them span roots and are judged as a span; anything else under `collection/` -- the
+ * catalog READMEs, `.library/`, `imports.md` -- is a browse surface and passes, as `shelf/_catalog.md` does.
+ *
+ *   collection/books/<slug>/...              books/<slug>
+ *   collection/archive/<slug>/...            archive/<slug>          (`projects` is not a Book: see the next)
+ *   collection/projects/<slug>/...           projects/<slug>
+ *   collection/archive/projects/<slug>/...   archive/projects/<slug>
+ *
+ * NOT THE ORACLE'S: the PowerShell guards judge only `shelf/`, and no acceptance-matrix row puts a `collection/`
+ * path to both arms. Self-test section 69 is this rule's judge.
+ */
+export type CollectionPlacement = { kind: 'none' } | { kind: 'span' } | { kind: 'root'; root: string; desk: 'books' | 'projects' };
+
+const COLLECTION_CONTAINERS = ['collection', 'collection/books', 'collection/projects', 'collection/archive', 'collection/archive/projects'];
+
+export function collectionRootForPath(relative: string): CollectionPlacement {
+  const text = relative.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!/^collection(?:\/|$)/i.test(text)) return { kind: 'none' };
+  let match = /^collection\/archive\/projects\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i.exec(text);
+  if (match) return { kind: 'root', root: `archive/projects/${match[1]!.toLowerCase()}`, desk: 'projects' };
+  match = /^collection\/projects\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i.exec(text);
+  if (match) return { kind: 'root', root: `projects/${match[1]!.toLowerCase()}`, desk: 'projects' };
+  match = /^collection\/archive\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i.exec(text);
+  if (match && match[1]!.toLowerCase() !== 'projects') return { kind: 'root', root: `archive/${match[1]!.toLowerCase()}`, desk: 'books' };
+  match = /^collection\/books\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i.exec(text);
+  if (match) return { kind: 'root', root: `books/${match[1]!.toLowerCase()}`, desk: 'books' };
+  if (COLLECTION_CONTAINERS.includes(text.toLowerCase())) return { kind: 'span' };
+  return { kind: 'none' };
+}
+
+/** A pattern's reach into the collection: a root it names, `span` when a wildcard stands where a root would, or none. */
+export function collectionPatternPlacement(pattern: string): CollectionPlacement {
+  const normalised = trimStartDotsAndSlashes(pattern.replace(/\\/g, '/'));
+  const placed = collectionRootForPath(normalised);
+  if (placed.kind === 'root') return placed;
+  if (/^collection(?:\/|$)/i.test(normalised) && /[*?[{]/.test(normalised)) return { kind: 'span' };
+  return placed;
+}
+
+/** This seat's open collection roots: its `books/` and `archive/` Books and its Project Hubs, as the Desk spells them. */
+export function openCollectionRoots(deskDirectory: string): string[] {
+  const booksFile = path.join(deskDirectory, deskFileName('books'));
+  if (!fs.existsSync(booksFile) || !fs.statSync(booksFile).isFile()) throw new Error('Virtual Desk configuration is missing .open-books.');
+  const roots: string[] = [];
+  for (const item of deskFileEntries(booksFile)) {
+    if (!BOOK_ROOT_ACCEPT_PATTERN.test(item)) throw new Error('Virtual Desk open-book state is malformed.');
+    const parts = splitBookRoot(convertToBookRoot(item));
+    if (parts.form === 'books') roots.push(parts.root);
+  }
+  // A Desk with no Project file has no Hub open: read as empty, and never written from a guard.
+  const projectsFile = path.join(deskDirectory, deskFileName('projects'));
+  if (fs.existsSync(projectsFile) && fs.statSync(projectsFile).isFile()) {
+    for (const item of deskFileEntries(projectsFile)) {
+      if (!/^(projects|archive\/projects)\/[a-z0-9][a-z0-9-]*$/.test(item)) throw new Error('Virtual Desk open-project state is malformed.');
+      roots.push(item);
+    }
+  }
+  return roots;
+}
+
+function collectionOpenCommand(root: string): string {
+  const archived = root.startsWith('archive/');
+  const slug = root.substring(root.lastIndexOf('/') + 1);
+  if (root.includes('projects/')) return `deskpost desk open project ${slug}${archived ? ' --shelf archive' : ''}`;
+  return `deskpost desk open book ${slug} --location collection${archived ? ' --shelf archive' : ''}`;
+}
+
+const COLLECTION_SPAN_DENIAL =
+  'spans collection Books or Project Hubs, some of which may be closed. Narrow it to one open root, or open the one you need ' +
+  'with deskpost desk open book <slug> --location collection, or deskpost desk open project <slug>.';
+
+function closedCollectionDenial(root: string, openRoots: string[], options: { readerToolPrefix?: string | undefined }): string | null {
+  if (openRoots.includes(root)) return null;
+  const archived = root.startsWith('archive/');
+  const slug = root.substring(root.lastIndexOf('/') + 1);
+  const project = root.includes('projects/');
+  const kind = project ? (archived ? 'Archived Project Hub' : 'Project Hub') : archived ? 'Archived collection Book' : 'Collection Book';
+  const tool = project ? projectReaderTool(options) : readerTool(options);
+  return `${kind} '${slug}' is closed. Open it with ${collectionOpenCommand(root)}, then read its pages with ${tool}.`;
+}
+
 function closedBookDenial(root: string, openRoots: string[], tool: string): string | null {
   if (openRoots.includes(root)) return null;
   const parts = splitBookRoot(root);
@@ -438,6 +530,7 @@ interface GuardContext {
   seat: string | undefined;
   call: unknown;
   readerTool: string;
+  readerToolPrefix: string | undefined;
 }
 
 function guardContext(options: GuardOptions, stdinText: string, deny: (reason: string) => never): GuardContext {
@@ -449,27 +542,36 @@ function guardContext(options: GuardOptions, stdinText: string, deny: (reason: s
   const stateDirectory = options.stateDirectory ?? (workspace ? path.join(workspace, '.claude') : '');
   const raw = stdinText.replace(/^﻿/, '');
   const call = raw.trim() ? (JSON.parse(raw) as unknown) : null;
-  return { workspace, stateDirectory, seat: options.seat, call, readerTool: readerTool(options) };
+  return { workspace, stateDirectory, seat: options.seat, call, readerTool: readerTool(options), readerToolPrefix: options.readerToolPrefix };
 }
 
-function shelfTargetRoot(target: string, base: string): { root: string | null; denial: string | null } {
+/** A workspace-relative target's collection verdict: a denial, or null. The Desk is read only for a root. */
+function collectionTargetDenial(relative: string, target: string, openRoots: () => string[], context: GuardContext): string | null {
+  const placed = collectionRootForPath(relative);
+  if (placed.kind === 'none') return null;
+  if (placed.kind === 'span') return `'${target}' ${COLLECTION_SPAN_DENIAL}`;
+  return closedCollectionDenial(placed.root, openRoots(), context);
+}
+
+function shelfTargetRoot(target: string, base: string): { root: string | null; denial: string | null; relative: string | null } {
   const placed = workspaceRelative(target, base);
-  if (placed.kind === 'outside') return { root: null, denial: null };
+  if (placed.kind === 'outside') return { root: null, denial: null, relative: null };
   if (placed.kind === 'invalid') {
     return {
       root: null,
       denial:
         `Virtual Desk cannot establish where '${target}' points: ${placed.reason}. Name it as a path ` +
         `relative to the workspace, or as ${rootFormName()}.`,
+      relative: null,
     };
   }
   const relative = placed.relative ?? '';
-  if (!relative) return { root: null, denial: null };
-  if (!/^shelf\//i.test(relative)) return { root: null, denial: null };
-  if (isShelfBrowseSurface(relative)) return { root: null, denial: null };
+  if (!relative) return { root: null, denial: null, relative };
+  if (!/^shelf\//i.test(relative)) return { root: null, denial: null, relative };
+  if (isShelfBrowseSurface(relative)) return { root: null, denial: null, relative };
   const root = shelfRootForPath(relative);
-  if (!root) return { root: null, denial: 'Virtual Desk requires a canonical Shelf path.' };
-  return { root, denial: null };
+  if (!root) return { root: null, denial: 'Virtual Desk requires a canonical Shelf path.', relative };
+  return { root, denial: null, relative };
 }
 
 /** `Guard-ShelfBookRead.ps1`: Read, Grep, Glob, Write, Edit and apply_patch. */
@@ -483,6 +585,11 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
     if (openRootsCache === null) openRootsCache = openShelfRoots(seatDeskDirectory(stateDirectory, seat));
     return openRootsCache;
   };
+  let collectionRootsCache: string[] | null = null;
+  const collectionRoots = (): string[] => {
+    if (collectionRootsCache === null) collectionRootsCache = openCollectionRoots(seatDeskDirectory(stateDirectory, seat));
+    return collectionRootsCache;
+  };
 
   const patterns: string[] = [];
   if (workspace) {
@@ -494,6 +601,12 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
     }
   }
   for (const pattern of patterns) {
+    const reach = collectionPatternPlacement(pattern);
+    if (reach.kind === 'span') deny(`That pattern ${COLLECTION_SPAN_DENIAL}`);
+    if (reach.kind === 'root') {
+      const closed = closedCollectionDenial(reach.root, collectionRoots(), context);
+      if (closed) deny(closed);
+    }
     if (!/^shelf\//i.test(trimStartDotsAndSlashes(pattern.replace(/\\/g, '/')))) continue;
     const target = shelfPatternTarget(pattern, openRoots());
     if (target === '*') {
@@ -519,6 +632,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
           const judged = shelfTargetRoot(reading, workspace);
           denial = judged.denial;
           if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
+          if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, named, collectionRoots, context);
           if (!denial) denial = notebookWriteDenial({ target: reading, workspace, toolName, seat, stateDirectory });
         }
         if (denial) deny(`This patch writes '${named}'. ${denial}`);
@@ -539,6 +653,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
   const judged = shelfTargetRoot(target, workspace);
   let denial = judged.denial;
   if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
+  if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, target, collectionRoots, context);
   if (!denial) denial = notebookWriteDenial({ target, workspace, toolName, seat, stateDirectory });
   if (denial) deny(denial);
 }
@@ -591,6 +706,24 @@ export function shelfTokens(command: string): { token: string; text: string }[] 
     const canonical = match[0].replace(/^(shelf)\*+\//i, '$1/').replace(/\/{2,}/g, '/').replace(/\/+$/, '');
     if (canonical.toLowerCase() === 'shelf') continue;
     if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    const from = normalised.map[match.index!]!;
+    const to = normalised.map[match.index! + match[0].length - 1]!;
+    hits.push({ token: canonical, text: stripped.substring(from, to + 1) });
+  }
+  return hits;
+}
+
+/** Every `collection/<something>` the command names, as `shelfTokens` finds the Shelf's (S70 row 1). A bare `collection/` lists only the three containers. */
+export function collectionTokens(command: string): { token: string; text: string }[] {
+  if (!command || !command.trim()) return [];
+  const stripped = removeHeredocBodies(command);
+  const normalised = convertToPathSeparators(stripped);
+  const seen = new Set<string>();
+  const hits: { token: string; text: string }[] = [];
+  for (const match of normalised.text.matchAll(/(?<![A-Za-z0-9_.-])collection\/[A-Za-z0-9_*?.[\]/-]+/gi)) {
+    const canonical = match[0].replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+    if (canonical.toLowerCase() === 'collection' || seen.has(canonical)) continue;
     seen.add(canonical);
     const from = normalised.map[match.index!]!;
     const to = normalised.map[match.index! + match[0].length - 1]!;
@@ -664,6 +797,18 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
 
   const notebookDenial = shellNotebookWriteDenial(command, workspace, seat, stateDirectory);
   if (notebookDenial) deny(notebookDenial);
+
+  let collectionRoots: string[] | null = null;
+  for (const hit of collectionTokens(command)) {
+    const reach = collectionPatternPlacement(hit.token);
+    if (reach.kind === 'none') continue;
+    const quoted = formatMatchedText(hit.text);
+    if (reach.kind === 'span') deny(`This command's text ${quoted} ${COLLECTION_SPAN_DENIAL} ${PATTERN_REMEDY}`);
+    if (reach.kind !== 'root') continue;
+    if (collectionRoots === null) collectionRoots = openCollectionRoots(seatDeskDirectory(stateDirectory, seat));
+    const closed = closedCollectionDenial(reach.root, collectionRoots, context);
+    if (closed) deny(`${closed} A shell command cannot read around that; this command names it as ${quoted}. ${PATTERN_REMEDY}`);
+  }
 
   const hits = shelfTokens(command);
   if (hits.length === 0) return;

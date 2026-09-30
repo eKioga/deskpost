@@ -66,6 +66,7 @@ import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
 import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
+import { addedDirArguments, addedDirsPath, addedDirsStatus, seatDirsResult } from './seatdirs.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -1153,7 +1154,21 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   }
   // A CLAUDE CODE CONVERSATION IS MINTED HERE when nothing else chose one, so every launch is resumable from the menu.
   if (!resumeId && !sessionId && assistant === 'claude' && !choosesConversation(passthrough)) sessionId = newConversationId();
-  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...passthrough];
+  // THE SEAT'S ADDED FOLDERS, ON EVERY LAUNCH AND IN ONE PLACE (1.2.5, ADR-0061): the menu's resume, new and restart all
+  // come here. After the conversation arguments and before the reader's own passthrough, so explicit arguments still come
+  // last; Claude Code and Codex both take `--add-dir`, Codex's `resume <id>` included (`codex resume --help`, 0.159.2). A
+  // folder gone from disk is skipped and named, never a refusal: the reader must still be able to sit down. A seat with
+  // no record launches exactly as before and its result says nothing about folders.
+  let recordedDirs: { path: string; exists: boolean }[] = [];
+  let unreadableDirs = '';
+  try {
+    recordedDirs = addedDirsStatus(stateDirectory, seat);
+  } catch (error) {
+    unreadableDirs = (error as Error).message;
+  }
+  const missingDirs = recordedDirs.filter((dir) => !dir.exists).map((dir) => dir.path);
+  const appliedDirs = assistant === null ? [] : recordedDirs.filter((dir) => dir.exists).map((dir) => dir.path);
+  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...addedDirArguments(appliedDirs), ...passthrough];
   const conversationId = resumeId || sessionId;
   // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
@@ -1310,9 +1325,26 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       conversation_recorded: !noLaunch && conversationId !== '',
       command: command,
       command_args: agentArguments,
+      ...(recordedDirs.length
+        ? {
+            added_dirs: appliedDirs,
+            added_dirs_applied: appliedDirs.length > 0,
+            ...(assistant === null ? { added_dirs_reason: `'${command}' is neither Claude Code nor Codex, so the seat's added folders were not passed to it` } : {}),
+            ...(missingDirs.length ? { added_dirs_missing: missingDirs } : {}),
+          }
+        : unreadableDirs
+          ? { added_dirs: [], added_dirs_applied: false, added_dirs_reason: unreadableDirs }
+          : {}),
       shared_library_write: false,
     };
     if (noLaunch) return { result, exitCode: 0 };
+    if (unreadableDirs) process.stderr.write(`Seat '${seat}' was started without its added folders: ${unreadableDirs}\n`);
+    if (missingDirs.length) {
+      process.stderr.write(
+        `Seat '${seat}' was started without ${missingDirs.length === 1 ? 'its added folder' : 'these added folders'} ${missingDirs.join(', ')}, which no longer ` +
+          `exist${missingDirs.length === 1 ? 's' : ''}. Remove one with deskpost seat dirs ${seat} --remove <folder>.\n`,
+      );
+    }
     // A FRESH NOTEBOOK IS ACTIVATED BEFORE THE SESSION STARTS (S67, PLAN-local-collection-writers.md E.1), so nothing
     // the session writes around the kernel can turn it legacy. Only on a real launch; never refuses one.
     try {
@@ -1455,6 +1487,8 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
       { kind: 'conversations', file: seatConversationsPath(stateDirectory, seat) },
       { kind: 'binding', file: seatBindingPath(stateDirectory, seat) },
       { kind: 'holder-attempt', file: seatHolderAttemptPath(stateDirectory, seat) },
+      // THE SEAT'S ADDED FOLDERS (1.2.5): its own launch setting, archived like its conversations and not in the plan id.
+      { kind: 'added-dirs', file: addedDirsPath(stateDirectory, seat) },
     ];
     const recordsPresent = records.filter((record) => isFile(record.file)).map((record) => record.kind);
 
@@ -1668,8 +1702,15 @@ export async function runSeatVerb(
       case 'status':
         emitResult(seatStatus(rest));
         return 0;
+      case 'dirs': {
+        // UNGATED (ruling 2): the seat's own launch setting, additive, reversible, and applied only from its next launch.
+        const parsed = parseArguments(rest, ['workspace', 'add', 'remove']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        emitResult(seatDirsResult(workspace, parsed.positional[0] ?? '', { add: parsed.options.get('add'), remove: parsed.options.get('remove') }));
+        return 0;
+      }
       default:
-        onRefusal(`library seat has no action '${action}'. It has: enter, retire, start, status.`);
+        onRefusal(`library seat has no action '${action}'. It has: dirs, enter, retire, start, status.`);
     }
   } catch (error) {
     onRefusal((error as Error).message);

@@ -60,6 +60,17 @@ import { writeAtomicText } from './fsx.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
 import {
+  collectionPageManifest,
+  driftRefusal,
+  hasDrift,
+  readRecallRecord,
+  recallDrift,
+  recallRecordDigest,
+  recallRecordLabel,
+  writeRecallRecord,
+  type RecallRecord,
+} from './recallrecord.ts';
+import {
   composeFrontmatter,
   ensureHeading,
   insertUnderHeading,
@@ -153,6 +164,8 @@ interface CandidateInput {
   expectedLeftBehindDigest?: string;
   /** Whether the collection Book was there when the approval was read, rechecked with the digest (inspection). */
   expectedDestinationPresent?: boolean;
+  /** The recall record's digest the approval covered ('' for none), rechecked with the drift under the Book lock (S70). */
+  expectedRecallDigest?: string;
 }
 
 /** `--lock-timeout <seconds>`, twenty when absent or unreadable, as `library hub edit` reads it. */
@@ -181,6 +194,34 @@ interface CandidatePlan {
   records: CandidateRecord[];
   /** Local only: pages already in the collection Book that no planned record names. Empty for Basic Memory. */
   leftBehind: LeftBehind;
+  /** Local only: the Shelf Book's recall record and its digest, when it was recalled (S70). */
+  recall: { record: RecallRecord; digest: string } | null;
+}
+
+/**
+ * THE WAY BACK FOR A RECALLED BOOK (S70, PLAN-shelf-recall.md): a Shelf Book with a recall record returns only to the
+ * Book it came from, and only while that Book's pages are as the recall found them. Checked at every preview and
+ * again under the Book lock; `_book` and `_index` are regenerated, so a change to either is reported, never refused.
+ */
+function recallCheck(workspace: string, shelfSlug: string, bookSlug: string): { record: RecallRecord; digest: string; regenerated: string[] } | null {
+  const record = readRecallRecord(workspace, shelfSlug);
+  if (record === null) return null;
+  if (record.book_slug !== bookSlug) {
+    refuse(
+      `shelf/${shelfSlug} was recalled from collection/books/${record.book_slug} (${recallRecordLabel(shelfSlug)}), so it returns there ` +
+        `and nowhere else; --book-slug ${bookSlug} names another Book. Leave --book-slug out, or pass --book-slug ${record.book_slug}. ` +
+        'Nothing was written.',
+    );
+  }
+  const wiki = path.join(workspace, 'collection', 'books', bookSlug, 'wiki');
+  const now = fs.existsSync(wiki) ? collectionPageManifest(wiki) : { pages: [], book_sha256: '', index_sha256: '' };
+  const drift = recallDrift(record, now);
+  if (hasDrift(drift)) refuse(driftRefusal(bookSlug, shelfSlug, drift));
+  const regenerated = [
+    ...(now.book_sha256 !== record.book_sha256 ? [`collection/books/${bookSlug}/wiki/_book.md`] : []),
+    ...(now.index_sha256 !== record.index_sha256 ? [`collection/books/${bookSlug}/wiki/_index.md`] : []),
+  ];
+  return { record, digest: recallRecordDigest(record), regenerated };
 }
 
 interface LeftBehind {
@@ -262,6 +303,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     .sort(psSortCompare);
   if (files.length === 0) refuse('The selected Shelf Book contains no publishable Markdown pages.');
   if (local) assertNotArchivedAway(workspace, input.bookSlug);
+  const recall = local ? recallCheck(workspace, shelfSlug, input.bookSlug) : null;
 
   const bookRoot = `books/${input.bookSlug}/wiki`;
   const sources = files.map((file) => {
@@ -307,8 +349,20 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     sourceBoundary,
     records,
     leftBehind,
+    recall: recall === null ? null : { record: recall.record, digest: recall.digest },
     plan: {
       ...(local ? { pages_left_behind: leftBehind.pages as unknown as PsJsonValue } : {}),
+      ...(recall !== null
+        ? {
+            recall_record: recallRecordLabel(shelfSlug),
+            recalled_from: `collection/books/${recall.record.book_slug}`,
+            recall_digest: recall.digest,
+            recall_regenerates: recall.regenerated,
+            ...(recall.regenerated.length
+              ? { recall_note: `${recall.regenerated.join(' and ')} changed after the recall; the return regenerates them, so that change will not survive.` }
+              : {}),
+          }
+        : {}),
       operation: 'Publish a Copy',
       destination: local ? 'collection' : 'shared',
       ...(local ? { collection_id: projectId } : { project_id: projectId }),
@@ -777,8 +831,22 @@ async function localCandidateConfirmed(
   };
   const rootMatches = (text: string): boolean => normalizeBody(splitLocalFrontmatter(text).body) === normalizeBody(rootRecord.body);
 
+  // A FIXTURE SWITCH, for kernel self-test section 68 and nothing else, as import's is: the run held after its
+  // outside-lock re-run and BEFORE the locks, so an `add-page` can land in the one window only the in-lock recheck sees.
+  const pause = Number((process.env['LIBRARY_PUBLISH_PAUSE_BEFORE_WRITES_MS'] ?? '').trim() || 0);
+  if (pause > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(pause, 60000));
+
   return withBookLocks(workspace, [candidate.bookRoot.replace(/\/wiki$/, ''), 'collection/books'], input.lockTimeoutSeconds ?? 20, (locks) => {
     const bookLock = locks.find((lock) => lock.bookRoot === candidate.bookRoot.replace(/\/wiki$/, ''))!;
+    // THE RECALL, AGAIN, UNDER THE LOCK (S70): the record the approval covered, and no drift since. An `add-page`
+    // between the preview and the yes waits on this lock, so it is either seen here or lands after the return. First,
+    // because a page added to a recalled Book is drift, and the drift refusal names it and the routes.
+    if (input.expectedRecallDigest !== undefined) {
+      const recall = recallCheck(workspace, input.shelfSlug, input.bookSlug);
+      if ((recall?.digest ?? '') !== input.expectedRecallDigest) {
+        refuse(`The recall record for shelf/${input.shelfSlug} changed after the preview, so the approval no longer describes this return. Rerun --preflight. Nothing was written.`);
+      }
+    }
     // THE PAGES LEFT BEHIND, AGAIN, UNDER THE LOCK (S67): the approval covered a list read with nobody excluded.
     if (input.expectedLeftBehindDigest !== undefined) {
       const now = localPagesLeftBehind(workspace, input.bookSlug, candidate.records);
@@ -899,6 +967,21 @@ async function localCandidateConfirmed(
         refuse(`Book Catalog readback filed this Book's entry under '${catalogEntryHeading ?? 'no collection heading'}' rather than the requested '${targetHeading}'.`);
       }
 
+      // THE RECALL RECORD FOLLOWS A VERIFIED RETURN (S70, Q8): rebuilt FROM DISK, after the root's `complete` rewrite and
+      // the catalog readback, so the Shelf copy's next return checks drift against what is now there -- left-behind pages
+      // included, which no planned record names. Never thrown: the return has landed, and a stale record only refuses.
+      let recallRecord: string | null = null;
+      const recalled = readRecallRecord(workspace, input.shelfSlug);
+      if (recalled !== null) {
+        try {
+          const now = collectionPageManifest(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
+          writeRecallRecord(workspace, { ...recalled, ...now, title: input.title, summary: input.summary, refreshed_utc: new Date().toISOString() });
+          recallRecord = `${recallRecordLabel(input.shelfSlug)} rewritten with the collection Book as this return left it`;
+        } catch (error) {
+          recallRecord = `${recallRecordLabel(input.shelfSlug)} NOT rewritten (${(error as Error).message}); the next return will refuse on drift until it is recalled again`;
+        }
+      }
+
       const manifest = completeBookMutation(mutation, newBookManifestForCollectionBook(workspace, 'active', input.bookSlug));
       mutation = null;
       saveJournal('complete', '');
@@ -917,6 +1000,7 @@ async function localCandidateConfirmed(
         created_records: created,
         reused_records: reused,
         discovery_manifest: manifest.summary,
+        ...(recallRecord !== null ? { recall_record: recallRecord } : {}),
         pages_left_behind: candidate.leftBehind.pages as unknown as PsJsonValue,
         ...(candidate.leftBehind.pages.length
           ? {
@@ -993,6 +1077,8 @@ function publishPlan(workspace: string, input: PublishInput): Record<string, PsJ
     `delete_plan=${String(deletePlan['plan_id'])}`,
     // Only when something would be left behind, so an approval with nothing to report keeps its id (S67).
     ...(publication.leftBehind.digest ? [`left_behind=${publication.leftBehind.digest}`] : []),
+    // The recall record, likewise (S70): bound into the composite id, never into the candidate id, the resume key.
+    ...(publication.recall ? [`recall=${publication.recall.digest}`] : []),
   ];
   if (local) {
     return {
@@ -1031,15 +1117,44 @@ function publishPlan(workspace: string, input: PublishInput): Record<string, PsJ
   };
 }
 
+/**
+ * A RECALLED SHELF BOOK'S DEFAULTS (S70, Q6): `--book-slug` from its recall record, which it may not contradict, and
+ * `--title` and `--summary` from its Shelf catalog entry -- which `shelf rename --new-title` keeps current -- falling
+ * back to the record's. Without a record the three are what they were: the Shelf slug, and required.
+ */
+function returnDefaults(workspace: string, shelfSlug: string, parsed: { options: Map<string, string> }, usage: string): { bookSlug: string; title: string; summary: string } {
+  const record = isLocalBackend(workspace) ? readRecallRecord(workspace, shelfSlug) : null;
+  if (record === null) {
+    return {
+      bookSlug: parsed.options.get('book-slug') ?? shelfSlug,
+      title: required(parsed.options.get('title'), '--title', usage),
+      summary: required(parsed.options.get('summary'), '--summary', usage),
+    };
+  }
+  let entry: { title: string; summary: string } | null = null;
+  try {
+    const book = getShelfBook(workspace, shelfSlug);
+    entry = { title: book.title.trim(), summary: book.summary.trim() };
+  } catch {
+    entry = null;
+  }
+  return {
+    bookSlug: parsed.options.get('book-slug') ?? record.book_slug,
+    title: parsed.options.get('title') || entry?.title || record.title,
+    summary: parsed.options.get('summary') || entry?.summary || record.summary,
+  };
+}
+
 async function publishVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, VALUED);
   const usage = 'publish <shelf-slug> --title <t> --summary <s>';
   const shelfSlug = required(parsed.positional[0], 'the Shelf Book slug', usage);
+  const defaults = returnDefaults(workspace, shelfSlug, parsed, usage);
   const input: PublishInput = {
     shelfSlug,
-    bookSlug: parsed.options.get('book-slug') ?? shelfSlug,
-    title: required(parsed.options.get('title'), '--title', usage),
-    summary: required(parsed.options.get('summary'), '--summary', usage),
+    bookSlug: defaults.bookSlug,
+    title: defaults.title,
+    summary: defaults.summary,
     collection: collectionOption(parsed.options.get('collection')),
     topics: parsed.options.get('topics') ?? 'local-notes',
     bookVersion: parsed.options.get('book-version') ?? '0.1.0',
@@ -1049,7 +1164,7 @@ async function publishVerb(argv: string[], workspace: string): Promise<Record<st
   };
   const plan = publishPlan(workspace, input);
   if (parsed.flags.has('preflight')) return { schema: 1, ...plan };
-  if (!parsed.flags.has('user-confirmed')) refuse('The Shelf Book was not published or deleted: review the preflight and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('The Shelf Book was not published or deleted: review the preflight and rerun with --user-confirmed.');
   return publishWorkflow(workspace, input, plan, parsed.options.get('plan-id') ?? '', {
     publicationJournal: parsed.options.get('publication-journal-path') ?? '',
     workflowJournal: parsed.options.get('workflow-journal-path') ?? '',
@@ -1070,7 +1185,7 @@ async function publishWorkflow(
 ): Promise<Record<string, PsJsonValue>> {
   const shelfSlug = input.shelfSlug;
   if (approvedPlanId !== plan['plan_id']) {
-    refuse('The Shelf Book was not published or deleted: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.');
+    refuse('The Shelf Book was not published or deleted: rerun the current preflight and pass its exact plan_id as --plan-id.');
   }
 
   // THE CONFIRMED HALF (S39): the publication, verified, and only then the local delete -- each state
@@ -1111,6 +1226,7 @@ async function publishWorkflow(
       const approved = ((publicationPlan['pages_left_behind'] as unknown as { path: string; sha256: string }[] | undefined) ?? []);
       input.expectedLeftBehindDigest = approved.length ? sha256OfText(approved.map((page) => `${page.path}|${page.sha256}`).join('\n')) : '';
       input.expectedDestinationPresent = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
+      input.expectedRecallDigest = String(publicationPlan['recall_digest'] ?? '');
     }
     const publicationResult = await candidateConfirmed(workspace, input, candidate, input.replaceExisting, publicationJournalPath);
     if (publicationResult['publication_complete'] !== true || publicationResult['catalog_entry_verified'] !== true) {
@@ -1157,45 +1273,48 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
   const parsed = parseArguments(argv, VALUED);
   const usage = 'publish refresh <slug> --title <t> --summary <s>';
   const shelfSlug = required(parsed.positional[0], 'the Shelf Book slug', usage);
+  const defaults = returnDefaults(workspace, shelfSlug, parsed, usage);
   const input: CandidateInput = {
     shelfSlug,
-    bookSlug: parsed.options.get('book-slug') ?? shelfSlug,
-    title: required(parsed.options.get('title'), '--title', usage),
-    summary: required(parsed.options.get('summary'), '--summary', usage),
+    bookSlug: defaults.bookSlug,
+    title: defaults.title,
+    summary: defaults.summary,
     collection: collectionOption(parsed.options.get('collection')),
     lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
   };
   const candidate = candidatePreflight(workspace, input);
   // A LOCAL REFRESH THAT LEAVES PAGES BEHIND HAS AN APPROVAL OF ITS OWN (S67, Eric's Q4): the candidate plan_id stays the
   // resume key, and `refresh_plan_id` covers it and the list. With nothing left behind the two are the same.
-  const refreshPlanId = candidate.leftBehind.digest
-    ? 'refresh-' + sha256OfText(`${candidate.planId}\n${candidate.leftBehind.digest}`)
-    : candidate.planId;
+  // A RECALLED BOOK'S RETURN IS BOUND TO ITS RECALL RECORD THE SAME WAY (S70): the record's digest joins the id.
+  const bound = [...(candidate.leftBehind.digest ? [candidate.leftBehind.digest] : []), ...(candidate.recall ? [`recall=${candidate.recall.digest}`] : [])];
+  const refreshPlanId = bound.length ? 'refresh-' + sha256OfText([candidate.planId, ...bound].join('\n')) : candidate.planId;
   if (parsed.flags.has('preflight')) {
+    const covers = [
+      ...(candidate.leftBehind.digest
+        ? [`the ${candidate.leftBehind.pages.length} page(s) listed in pages_left_behind, which the refresh leaves on disk and does not remove`]
+        : []),
+      ...(candidate.recall ? [`the recall record ${recallRecordLabel(shelfSlug)}, which the refresh checks for drift again under the Book lock`] : []),
+    ];
     return {
       schema: 1,
       ...candidate.plan,
-      ...(candidate.leftBehind.digest
-        ? {
-            refresh_plan_id: refreshPlanId,
-            approve_with:
-              `--user-confirmed --plan-id ${refreshPlanId}: this id covers the ${candidate.leftBehind.pages.length} page(s) listed in ` +
-              'pages_left_behind, which the refresh leaves on disk and does not remove.',
-          }
-        : {}),
+      ...(bound.length ? { refresh_plan_id: refreshPlanId, approve_with: `--user-confirmed --plan-id ${refreshPlanId}: this id covers ${covers.join(', and ')}.` } : {}),
     };
   }
-  if (!parsed.flags.has('user-confirmed')) refuse('Shared publication is not yet performed: review the manifest and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Shared publication is not yet performed: review the manifest and rerun with --user-confirmed.');
   if ((parsed.options.get('plan-id') ?? '') !== refreshPlanId) {
     refuse(
       candidate.leftBehind.digest
         ? 'The refresh is not yet performed: it leaves pages behind, so its approval is refresh_plan_id, not plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
-        : 'Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.',
+        : candidate.recall
+          ? 'The refresh is not yet performed: it returns a recalled Book, so its approval is refresh_plan_id, not plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
+          : 'Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.',
     );
   }
   if (isLocalBackend(workspace)) {
     input.expectedLeftBehindDigest = candidate.leftBehind.digest;
     input.expectedDestinationPresent = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));
+    input.expectedRecallDigest = candidate.recall?.digest ?? '';
   }
   // THE CONFIRMED HALF (S39): the candidate with -ReplaceExisting, its result under Publish-BookCopy's `schema`.
   return { schema: 1, ...(await candidateConfirmed(workspace, input, candidate, true, parsed.options.get('journal-path') ?? '')) };
@@ -1276,6 +1395,15 @@ async function batchVerb(argv: string[], workspace: string): Promise<Record<stri
         replaceExisting: false,
         deleteReason: DEFAULT_DELETE_REASON,
       };
+      // A RECALLED SHELF BOOK IS NOT A BATCH ITEM (S70): its return replaces a collection Book, and a batch never
+      // replaces, so without this the item would fail only in its confirmed half, naming no route.
+      if (isLocalBackend(workspace) && readRecallRecord(workspace, shelfSlug) !== null) {
+        refuse(
+          `Shelf Book '${shelfSlug}' was recalled from the collection (${recallRecordLabel(shelfSlug)}), and a batch never replaces a Book, ` +
+            `so it cannot return it. Return it on its own: deskpost publish refresh ${shelfSlug} keeps the Shelf copy, and deskpost publish ` +
+            `${shelfSlug} deletes it after. Nothing was changed.`,
+        );
+      }
       const child = publishPlan(workspace, input);
       actions.push({ action: 'publish', shelf_book: `shelf/${shelfSlug}`, shared_book: `books/${bookSlug}`, child_plan: child, input: raw as PsJsonValue });
       children.push({ kind: 'publish', input });
@@ -1311,9 +1439,9 @@ async function batchVerb(argv: string[], workspace: string): Promise<Record<stri
     shared_library_write: false,
   };
   if (parsed.flags.has('preflight')) return plan;
-  if (!parsed.flags.has('user-confirmed')) refuse('The Shelf batch was not changed: review the preflight and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('The Shelf batch was not changed: review the preflight and rerun with --user-confirmed.');
   if ((parsed.options.get('plan-id') ?? '') !== planId) {
-    refuse('The Shelf batch was not changed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.');
+    refuse('The Shelf batch was not changed: rerun the current preflight and pass its exact plan_id as --plan-id.');
   }
 
   // THE CONFIRMED RUN (S40), each oracle case run by hand in disposable projects first. Every item is

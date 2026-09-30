@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
 import { getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN } from './shelfbook.ts';
-import { shelfNotes } from './manifest.ts';
+import { shelfNotes, WHY_CATEGORIES } from './shelfnote.ts';
 import {
   deskFileEntries,
   deskFilePath,
@@ -49,6 +49,7 @@ import { openCollection } from './collection.ts';
 import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookPlace, type BookRootParts } from './places.ts';
 import { markerConnection } from './basicmemory.ts';
+import { addedDirsStatus } from './seatdirs.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -232,6 +233,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       pending_count: pending.length,
       reviewed_count: notes.length - pending.length,
       oldest_pending: oldestPending ? oldestPending.captured : null,
+      // WHY THE PENDING NOTES ARE THERE (S73 row 3b), a count per closed category and one for the rest. No value a
+      // writer typed is ever said here: a `why:` outside the category counts as missing.
+      pending_by_why: Object.fromEntries(WHY_CATEGORIES.map((category) => [category, pending.filter((note) => note.why === category).length])),
+      pending_why_missing: pending.filter((note) => !(WHY_CATEGORIES as readonly string[]).includes(note.why ?? '')).length,
     };
   });
 
@@ -304,6 +309,15 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     title_note: conversation.title_note,
     entry_action: conversation.entry_action,
     entry_note: conversation.entry_note,
+    // THE FOLDERS THIS SEAT IS STARTED WITH (1.2.5, ADR-0061), each with whether it is there now. A record that cannot be
+    // read is an empty list here; `seat dirs` and `seat start` say why.
+    added_dirs: (() => {
+      try {
+        return addedDirsStatus(stateDirectory, seat) as unknown as PsJsonValue;
+      } catch {
+        return [];
+      }
+    })(),
   };
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.

@@ -100,6 +100,10 @@ function ConvertFrom-ShelfCatalogEntry {
     # up to the next bullet or the end of the entry.
     $summaryMatch = [regex]::Match($Body, '(?ms)^\s*-\s+\*\*Summary:\*\*\s+(.*?)(?=^\s*-\s+\*\*|\z)')
     $topicsMatch = [regex]::Match($Body, '(?ms)^\s*-\s+\*\*Topics:\*\*\s+(.*?)(?=^\s*-\s+\*\*|\z)')
+    # PARITY (S73 row 4): the seat rule, as the kernel's convertFromShelfCatalogEntry reads it. Absent
+    # is 'any', as every Book was before the line; an unrecognised value is 'writer' and never refuses.
+    $closedByMatch = [regex]::Match($Body, '(?m)^[ \t]*-[ \t]+\*\*Closed by:\*\*[ \t]*(.*?)[ \t]*\r?$')
+    $closedByDeclared = if ($closedByMatch.Success) { $closedByMatch.Groups[1].Value } else { $null }
     [pscustomobject]@{
         slug       = $Slug
         title      = $Title.Trim()
@@ -109,6 +113,7 @@ function ConvertFrom-ShelfCatalogEntry {
         is_capture = [regex]::IsMatch($Body, '(?m)^\s*-\s+\*\*Kind:\*\*\s+capture\s*$')
         summary    = if ($summaryMatch.Success) { ($summaryMatch.Groups[1].Value -replace '\s+', ' ').Trim() } else { '' }
         topics     = @(if ($topicsMatch.Success) { ($topicsMatch.Groups[1].Value -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ } })
+        closed_by  = if ($null -eq $closedByDeclared -or $closedByDeclared -ceq 'any') { 'any' } else { 'writer' }
     }
 }
 
@@ -431,15 +436,60 @@ function Get-ShelfNotes($Book) {
             title          = if ($titleMatch.Success) { $titleMatch.Groups[1].Value.Trim() } else { [IO.Path]::GetFileNameWithoutExtension($_.Name) }
             captured       = Get-FrontmatterValue -Fields $fields -Key 'captured' -Default 'unknown'
             review         = Get-FrontmatterValue -Fields $fields -Key 'review' -Default 'pending'
-            tags           = Get-FrontmatterValue -Fields $fields -Key 'tags'
+            # Empty for a note closed before closes were stamped (S73), which is what lets a review stamp it.
+            reviewed       = Get-FrontmatterValue -Fields $fields -Key 'reviewed'
+            # One closed category (S73 row 3); empty when the capture recorded none.
+            why            = Get-FrontmatterValue -Fields $fields -Key 'why'
+            tags          = Get-FrontmatterValue -Fields $fields -Key 'tags'
             source_project = Get-FrontmatterValue -Fields $fields -Key 'source_project'
             source_paths   = Get-FrontmatterValue -Fields $fields -Key 'source_paths'
             # Empty for every note captured before these existed, and for every seatless capture.
             # Both are the same fact -- nothing recorded one -- and neither is backfilled.
             from_seat      = Get-FrontmatterValue -Fields $fields -Key 'from_seat'
+            # The seat a message is for (S73 row 4's seat rule reads it; S74's --for writes it).
+            for_seat       = Get-FrontmatterValue -Fields $fields -Key 'for_seat'
             session_id     = Get-FrontmatterValue -Fields $fields -Key 'session_id'
         }
     })
+}
+
+# THE SEAT RULE (S73 row 4, PARITY with the kernel's assertSeatMayClose in kernel/src/shelfnote.ts),
+# stated once for both live writers: triage's resolution and Add-ShelfNote.ps1 -Supersedes. In a
+# 'writer' Book a seat closes, reopens or deletes only a note it wrote, a seatless note, or a message
+# whose for_seat names it; an 'any' Book lets any seat. other_seat is the reader's named override: a
+# wrong one is refused, and a correct but unneeded one is accepted, so a script has one shape.
+function Assert-SeatMayCloseNote($Note, $Book, [string]$Seat, [string]$OtherSeat) {
+    $fromSeat = [string]$Note.from_seat
+    if ($OtherSeat -and $OtherSeat -cne $fromSeat) {
+        $writer = if ($fromSeat) { "seat '$fromSeat'" } else { 'no seat (a seatless capture)' }
+        throw "other_seat '$OtherSeat' does not name the writer of $($Note.page) in Book '$($Book.slug)', which was written by $writer. Remove other_seat, or name the writing seat."
+    }
+    if ($Book.closed_by -ceq 'any') { return }
+    if (-not $fromSeat) { return }
+    if ($Seat -and ($fromSeat -ceq $Seat -or [string]$Note.for_seat -ceq $Seat)) { return }
+    if ($OtherSeat -ceq $fromSeat) { return }
+    throw "$($Note.page) in Book '$($Book.slug)' was written by seat '$fromSeat', and in this Book a seat closes only its own notes. To sort it at the reader's ask, add `"other_seat`": `"$fromSeat`" to the action."
+}
+
+# Sets, replaces or (with $null) removes one `key:` line inside a note's leading frontmatter block,
+# and touches nothing else. PARITY (S73 row 1): the kernel's twin is setNoteField in
+# kernel/src/shelfnote.ts, and both put a new line just before the closing ---, in the block's own
+# line ending, so a note both arms close hashes the same. Text with no block comes back unchanged.
+function Set-NoteFrontmatterField([string]$Content, [string]$Key, $Value) {
+    $opening = [regex]::Match($Content, '\A---[ \t]*(\r?\n)')
+    if (-not $opening.Success) { return $Content }
+    $cr = if ($opening.Groups[1].Value -ceq "`r`n") { "`r" } else { '' }
+    $lines = [Collections.Generic.List[string]]::new([string[]]$Content.Split("`n"))
+    $close = -1
+    for ($i = 1; $i -lt $lines.Count; $i++) { if ($lines[$i].TrimEnd("`r").Trim() -ceq '---') { $close = $i; break } }
+    if ($close -lt 0) { return $Content }
+    $at = -1
+    for ($i = 1; $i -lt $close; $i++) { if ($lines[$i].StartsWith("${Key}:", [StringComparison]::Ordinal)) { $at = $i; break } }
+    if ($at -ge 0) {
+        if ($null -eq $Value) { $lines.RemoveAt($at) } else { $lines[$at] = "${Key}: $Value$cr" }
+    }
+    elseif ($null -ne $Value) { $lines.Insert($close, "${Key}: $Value$cr") }
+    $lines -join "`n"
 }
 
 # The reader map is regenerated from the notes on disk rather than appended to, so it can never

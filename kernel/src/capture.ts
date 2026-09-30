@@ -35,6 +35,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { inlineCutWarning } from './inlinecut.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import {
@@ -44,13 +45,21 @@ import {
   type BookMutation,
 } from './mutation.ts';
 import { sha256OfText } from './sha.ts';
+import { writeAtomicText } from './fsx.ts';
 import { getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
+import { assertSeatMayClose, setNoteField, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
+
+/** Said by a capture that records no why (S73 row 3), word for word as Add-ShelfNote.ps1 says it. */
+const WHY_MISSING_NEXT =
+  " This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, " +
+  'or the Notebook, and record a why category when none of them fits.';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { seatConversationRecord } from './desk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedPage } from './pagepath.ts';
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend } from './basicmemory.ts';
+import { localDate } from './localdate.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -89,11 +98,6 @@ function utcStamp(): string {
  * `yyyy-MM-dd` on this machine's own calendar: the note file name's stamp, as a reader would say the day
  * (S50, the reader's ruling). `captured:` stays the UTC instant; only the name is local.
  */
-function localDate(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
 // --- shared page grammar ---------------------------------------------------------------------------
 
 // The page grammar and the body rule live in pagepath.ts, which every page writer imports (S67).
@@ -119,11 +123,16 @@ function convertToNoteSlug(title: string): string {
  * The Desk gate. An ARCHIVED Book is read-only rather than closed, and saying so is the difference
  * between sending the reader to `Restore` and sending them to re-open something already open.
  */
-function assertShelfBookOpen(workspace: string, slug: string, action: string): void {
+function assertShelfBookOpen(workspace: string, slug: string, action: string, resolvedSeat?: string): void {
   const desks = stateDirectory(workspace);
-  const resolved = resolveSeatName({ stateDirectory: desks });
-  if (resolved.status !== 'named') refuse(resolved.message);
-  const seat = resolved.seat!;
+  let seat: string;
+  if (resolvedSeat) {
+    seat = resolvedSeat;
+  } else {
+    const resolved = resolveSeatName({ stateDirectory: desks });
+    if (resolved.status !== 'named') refuse(resolved.message);
+    seat = resolved.seat!;
+  }
   if (!fs.existsSync(deskFilePath(desks, seat, 'books'))) refuse('Virtual Desk configuration is missing .open-books.');
   const openBooks = deskEntriesForSeat(desks, seat, 'books');
   if (openBooks.includes(`shelf/${slug}`)) return;
@@ -230,39 +239,18 @@ function addShelfBookIndexLink(book: ShelfBook, page: string, label: string): vo
   writeUtf8(mapPath, content + separator + link + lineEnding);
 }
 
-interface ShelfNoteSummary {
-  page: string;
-  title: string;
-  captured: string;
-  review: string;
-}
-
-function shelfNoteSummaries(book: ShelfBook): ShelfNoteSummary[] {
-  if (!fs.existsSync(book.notesPath)) return [];
-  return fs
-    .readdirSync(book.notesPath, { withFileTypes: true })
-    .filter((item) => item.isFile() && item.name.toLowerCase().endsWith('.md'))
-    .map((item) => item.name)
-    .sort()
-    .map((name) => {
-      const content = readUtf8(path.join(book.notesPath, name));
-      const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
-      const base = name.replace(/\.md$/i, '');
-      const captured = /^captured:[ \t]*(.*)$/m.exec(content);
-      const review = /^review:[ \t]*(.*)$/m.exec(content);
-      return {
-        page: `notes/${base}`,
-        title: heading ? heading[1]!.trim() : base,
-        captured: captured && captured[1]!.trim() ? captured[1]!.trim() : 'unknown',
-        review: review && review[1]!.trim() ? review[1]!.trim() : 'pending',
-      };
-    });
+/** The note `--supersedes` names, which must exist and which the seat rule must let this seat close (row 4). */
+function supersededNote(book: ShelfBook, page: string, seat: string): ShelfNoteRow {
+  const note = shelfNotes(book).find((row) => row.page === page);
+  if (!note) refuse(`--supersedes names ${page}, and Book '${book.slug}' has no such note. Nothing was captured.`);
+  assertSeatMayClose(note, { slug: book.slug, closedBy: book.closedBy ?? 'any' }, seat, null, refuse);
+  return note;
 }
 
 /** A capture Book's map is REGENERATED from the notes on disk, so it can never drift. */
 export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } {
-  const notes = shelfNoteSummaries(book);
-  const byCapturedDescending = (left: ShelfNoteSummary, right: ShelfNoteSummary): number =>
+  const notes = shelfNotes(book);
+  const byCapturedDescending = (left: ShelfNoteRow, right: ShelfNoteRow): number =>
     left.captured < right.captured ? 1 : left.captured > right.captured ? -1 : 0;
   const pending = notes.filter((note) => note.review !== 'done').sort(byCapturedDescending);
   const reviewed = notes.filter((note) => note.review === 'done').sort(byCapturedDescending);
@@ -297,23 +285,10 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
   return { body: readUtf8(full), source: contentPath! };
 }
 
-/**
- * A `--body` THE WINDOWS SHIM MAY HAVE CUT SHORT (S66, the S64 Report). `deskpost.cmd` runs through
- * cmd.exe, which ends the whole command line at the first line break: a 33-line body arrived as its
- * first 80 characters, anything after it on the line was never passed, and the writer said
- * "captured". Nothing on this side of the shim can see what was dropped, so this cannot refuse. What
- * it can see is the only shape a cut leaves: an inline body that is the LAST argument and holds no
- * line break. A `--body` followed by anything else, or holding a newline, was not cut, and says
- * nothing; `--content-path` never goes through the command line at all.
- */
-function inlineBodyWarning(argv: string[], source: string, body: string, platform: string = process.platform): string | null {
-  if (platform !== 'win32' || source !== '(inline)' || /[\r\n]/.test(body)) return null;
-  if (argv.length < 2 || argv[argv.length - 2] !== '--body') return null;
-  return (
-    'On Windows the deskpost shim ends the command line at the first line break, so an inline --body keeps only ' +
-    'its first line and nothing after it arrives. If this body had more lines, they were not saved: pass it with ' +
-    '--content-path <file>.'
-  );
+/** A `--body` the Windows shim may have cut short (S66, the S64 Report): `inlinecut.ts` says how it is seen. */
+function inlineBodyWarning(argv: string[], source: string, body: string): string | null {
+  if (source !== '(inline)') return null;
+  return inlineCutWarning(argv, 'body', body, 'pass it with --content-path <file>.');
 }
 
 function settle(mutation: BookMutation | null, rollback: string): void {
@@ -355,6 +330,8 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     'capture-date',
     'workspace',
     'seat',
+    'why',
+    'supersedes',
   ]);
   try {
     const slug = parsed.positional[0] ?? 'holding';
@@ -385,6 +362,15 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       }
     }
 
+    // WHY THE NOTE IS HERE (S73 row 3): one closed category, recorded and never required. A capture without one still
+    // lands; its result says so and names the homes to try first. A malformed one is refused, since that is the
+    // option's grammar rather than a gate on saving.
+    const why = (parsed.options.get('why') ?? '').trim();
+    if (parsed.options.has('why')) {
+      const malformed = whyRefusal(why);
+      if (malformed !== null) refuse(malformed);
+    }
+
     const capturedAt = utcStamp();
 
     // WHICH SEAT WROTE THIS, RESOLVED AND NEVER ACCEPTED -- and it never blocks a capture. A
@@ -402,6 +388,19 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       } catch {
         sessionId = '';
       }
+    }
+
+    // A NEWER NOTE CLOSES AN OLDER ONE (S73 row 4): `--supersedes notes/<page>` names a note of this Book, so it needs
+    // the Book open and a seat, where a capture without it stays seatless-capable. The note must exist, and the seat
+    // rule must let this seat close it; both are checked again under the lock, with the note still pending.
+    let supersedes = (parsed.options.get('supersedes') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
+    if (parsed.options.has('supersedes')) {
+      if (!/^notes\/[^/]+$/.test(supersedes)) refuse('--supersedes must name a note of this Book as notes/<page>, for example notes/2026-09-29-a-draft.');
+      if (!fromSeat) refuse(`--supersedes names a note, so it needs a seat. ${seatState.message ?? ''}`.trim());
+      assertShelfBookOpen(workspace, slug, 'closing one of its notes with --supersedes', fromSeat);
+      supersededNote(book, supersedes, fromSeat);
+    } else {
+      supersedes = '';
     }
 
     // A body that already leads with its own H1 keeps it, so that heading -- not --title -- is what
@@ -463,12 +462,17 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       from_seat: fromSeat,
       seat_source: seatSource,
       session_id: sessionId,
+      ...(why ? { why } : { why_missing: true }),
+      ...(supersedes ? { supersedes } : {}),
       confirmation_required: false,
       survives_reset: true,
       shared_library_write: false,
       scope:
         'Creates one new page under this capture Book, regenerates its reader map, and commits a new Discovery ' +
-        'manifest generation in the same locked window. No existing page is read, changed, or removed.',
+        'manifest generation in the same locked window. ' +
+        (supersedes
+          ? `It also closes ${supersedes} (review: done, reviewed:, superseded_by:), journalled with the new note. Nothing is removed.`
+          : 'No existing page is read, changed, or removed.'),
     };
     if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -481,6 +485,9 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     if (sourceProject) frontmatter.push(`source_project: ${sourceProject}`);
     if (sourcePaths) frontmatter.push(`source_paths: ${sourcePaths}`);
     if (tags) frontmatter.push(`tags: ${tags}`);
+    if (why) frontmatter.push(`why: ${why}`);
+    // ALWAYS WRITTEN WHEN GIVEN, so the relation is recorded even when the older note was already closed.
+    if (supersedes) frontmatter.push(`supersedes: ${supersedes}`);
     frontmatter.push('---');
 
     const page = keepsOwnHeading
@@ -500,6 +507,9 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       // nobody excluded, so another session may have taken it since.
       selected = selectNoteFile();
       plan['note_page'] = `${book.bookRoot}/wiki/${selected.page}`;
+      // THE OLDER NOTE, AGAIN UNDER THE LOCK: it exists, and this seat may close it. Its prior bytes are journalled
+      // with the new note's, so a failure restores both.
+      const older = supersedes ? supersededNote(book, supersedes, fromSeat) : null;
 
       mutation = enterBookMutation({
         workspace,
@@ -512,7 +522,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
         workspace,
         bookRoot: book.bookRoot,
         operation: `Capture note ${selected.name}`,
-        paths: [selected.full, mapPath],
+        paths: older ? [selected.full, mapPath, older.fullPath] : [selected.full, mapPath],
       }).journalPath;
 
       // `wx` is CreateNew: a collision fails rather than overwrites, which is what makes the name
@@ -520,6 +530,19 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       fs.writeFileSync(selected.full, page, { encoding: 'utf8', flag: 'wx' });
       if (readUtf8(selected.full) !== page) {
         refuse(`The note was written but did not read back identically: ${book.bookRoot}/wiki/${selected.page}`);
+      }
+      // CLOSED BY THE NEWER NOTE: `review: done`, the stamp, and `superseded_by:`. An older note already done is left
+      // as it is and said `unchanged`, as a review of it would be.
+      if (older) {
+        if (older.review === 'done') {
+          plan['superseded'] = { page: older.page, status: 'unchanged' };
+        } else {
+          const text = readUtf8(older.fullPath);
+          const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'superseded_by', selected.page);
+          if (!/^review: done/m.test(closed)) refuse(`${older.page} has no review field to close.`);
+          writeAtomicText(older.fullPath, closed);
+          plan['superseded'] = { page: older.page, status: 'closed' };
+        }
       }
       // Regenerated inside the same lock. An unlocked rewrite works from a listing that may already
       // be stale, dropping another session's note from the map while leaving its file on disk.
@@ -544,7 +567,8 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     plan['manifest'] = manifestSummary;
     plan['next'] =
       `This Book is closed by default. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} ` +
-      'when you are ready to review.';
+      'when you are ready to review.' +
+      (why ? '' : WHY_MISSING_NEXT);
     return { refusal: null, value: plan };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

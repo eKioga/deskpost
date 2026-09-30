@@ -163,8 +163,20 @@ of:
 defaulting to a Book the catalog does not list, now fails the commit. A rename touch list is
 remembered once and rots afterwards; the invariant underneath it does not.
 
+### Revised: the Holding Shelf is the last resort, 2026-09-29
+
+*"Capture stops being a decision"* (under Reader benefit above) is revised by
+[ADR-0060](adr/0060-the-holding-shelf-is-the-last-resort-and-its-growth-is-a-library-signal.md).
+By 2026-09-29 the Holding Shelf held 37 notes, and almost none of them fitted nowhere else: roadmap
+ideas, session kickoffs, messages between seats, know-how and superseded drafts. "Save this for later"
+now finds the note's home first (the seat's Hub, a Book, the Notebook) and captures to the Holding
+Shelf only when none can take it. Capture itself is unchanged: still ungated, still reset-immune, so
+the revision adds a choice and no gate. The kernel half (filing closes a note, a recorded `--why`,
+`--supersedes`, `shelf tidy`, a threshold signal) is `PLAN-holding-discipline.md`.
+
 ## Key Takeaways
 
+- The Holding Shelf is the last resort: a note goes to its Hub, Book or Notebook first (ADR-0060).
 - A capture Book is an ordinary Shelf Book marked `- **Kind:** capture` in the Shelf catalog; the
   catalog is the only authority, and nothing hard-codes `holding`.
 - Capture is ungated and works on a closed Book because it can only add a page. Reading and triaging

@@ -185,6 +185,17 @@ function Test-InsideList([string[]]$Lines) {
     $false
 }
 
+# The index just past the section's last list item and its continuation lines, or -1 when it has no
+# list. Line 0 is the heading. The kernel's `lastListEnd`.
+function Get-LastListEnd([string[]]$Lines) {
+    $last = -1
+    for ($i = 1; $i -lt $Lines.Count; $i++) { if (Test-ListLine $Lines[$i]) { $last = $i } }
+    if ($last -lt 0) { return -1 }
+    $end = $last + 1
+    while ($end -lt $Lines.Count -and $Lines[$end] -match '^[ \t]+\S') { $end++ }
+    $end
+}
+
 # One list item is its marker line plus the indented lines that wrap it.
 function Get-ItemBlocks([string[]]$Lines, [int]$Start, [int]$End) {
     $blocks = [Collections.Generic.List[object]]::new()
@@ -310,12 +321,24 @@ function New-ProjectBodyRaw([string]$CurrentBody, [string]$Mode, [string]$Sectio
     $result = @()
     $result += $before
     if ($Mode -eq 'AppendSection') {
-        $result += $sectionLines
         # A bullet added to a list continues that list; prose gets its own paragraph break.
         # The section's last line is often a wrapped item's continuation, not the marker line.
         $continuesList = (Test-InsideList $sectionLines) -and (Test-ListLine $addition[0])
-        if (-not $continuesList) { $result += '' }
-        $result += $addition
+        # A BULLET ADDED TO A SECTION WHOSE LIST IS FOLLOWED BY PROSE joins that list, before the prose
+        # (Report 2026-09-29; the kernel's rule since e89b167, ported S70): after the prose, it read as the
+        # prose's own item.
+        $listEnd = -1
+        if (-not $continuesList -and (Test-ListLine $addition[0])) { $listEnd = Get-LastListEnd $sectionLines }
+        if ($listEnd -gt 0) {
+            $result += @($sectionLines[0..($listEnd - 1)])
+            $result += $addition
+            if ($listEnd -lt $sectionLines.Count) { $result += @($sectionLines[$listEnd..($sectionLines.Count - 1)]) }
+        }
+        else {
+            $result += $sectionLines
+            if (-not $continuesList) { $result += '' }
+            $result += $addition
+        }
     }
     else {
         $result += $sectionLines[0]
@@ -789,6 +812,13 @@ if ($SelfTest) {
     $wrappedProse = New-ProjectBody $wrapped 'AppendSection' 'Next' 'Closing prose.'
     Assert-True 'Prose appended after a wrapped item keeps a blank line' ($wrappedProse -match "(?m)^  which means.*bullet\.`n`nClosing prose\.$")
 
+    # A LIST FOLLOWED BY PROSE (Report 2026-09-29, ported S70): the bullet joins the list, after its
+    # continuation lines, before the prose. The kernel's section 13 holds the same three answers.
+    $closed = "# P`n`n## Now`n`n- [ ] One`n- [ ] **Two.** This wraps,`n  onto a continuation line.`n`nClosing prose.`n`n## Next`n`n- [ ] Later`n"
+    Assert-True 'A bullet appended to a list followed by prose joins the list before the prose' ((New-ProjectBody $closed 'AppendSection' 'Now' '- [ ] Three') -ceq "# P`n`n## Now`n`n- [ ] One`n- [ ] **Two.** This wraps,`n  onto a continuation line.`n- [ ] Three`n`nClosing prose.`n`n## Next`n`n- [ ] Later`n")
+    Assert-True 'Prose appended after a list and prose gets its own paragraph at the end' ((New-ProjectBody $closed 'AppendSection' 'Now' 'More prose.') -ceq "# P`n`n## Now`n`n- [ ] One`n- [ ] **Two.** This wraps,`n  onto a continuation line.`n`nClosing prose.`n`nMore prose.`n`n## Next`n`n- [ ] Later`n")
+    Assert-True 'A bullet appended to a prose-only section starts its own paragraph at the end' ((New-ProjectBody "# Q`n`n## Notes`n`nOnly prose here.`n" 'AppendSection' 'Notes' '- A first bullet') -ceq "# Q`n`n## Notes`n`nOnly prose here.`n`n- A first bullet`n")
+
     $checked = New-ProjectBody $wrapped 'CheckItem' 'Next' '' 'A long action' $false
     Assert-True 'CheckItem ticks the matched item' ($checked -match '(?m)^- \[x\] \*\*A long action\.\*\*')
     Assert-True 'CheckItem leaves the wrapped continuation untouched' ($checked -match '(?m)^  which means the section ends on indented continuation prose rather than a bullet\.$')
@@ -1235,7 +1265,7 @@ if ($Preflight) {
     return
 }
 if ($plan.unchanged) {
-    Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Edit Project Hub'; project_slug = $ProjectSlug; page_path = $pagePath; mode = $Mode; unchanged = $true; written = $false; shared_library_write = $false })
+    Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{ operation = 'Edit Project Hub'; project_slug = $ProjectSlug; page_path = $pagePath; mode = $Mode; unchanged = $true; written = $false; status = 'unchanged'; journal = $null; shared_library_write = $false })
     return
 }
 if ($isReplacing) {
@@ -1352,6 +1382,10 @@ Write-LibraryResult -Json:$Json -Result ([pscustomobject]@{
     # being what the plan described.
     precondition_verified = $true
     written = $true
+    # THE TWO FIELDS THE KERNEL'S LOCAL WRITERS SAY (S72 row 5): `status`, and the journal relative to the workspace with
+    # forward slashes. Additive; `written` and `journal_path` stay.
+    status = 'written'
+    journal = if ($JournalPath.StartsWith($workspace.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { $JournalPath.Substring($workspace.TrimEnd('\', '/').Length + 1).Replace('\', '/') } else { $JournalPath.Replace('\', '/') }
     advice = $sectionAdvice
     shared_library_write = $true
 })

@@ -797,6 +797,8 @@ $script:StandardShelfBooks = @(
         summary = 'Findings set aside during a session for later review, one page per note. Survives a Notebook reset; closed by default so unreviewed material never crowds a new session.'
         topics  = 'capture, holding, unreviewed'
         origin  = "created by library init as the Library's capture surface"
+        # PARITY (S73 row 4): init.ts's closedBy, the seat rule written as the entry's Closed by: line.
+        closed_by = 'writer'
     }
     [ordered]@{
         slug    = 'reports'
@@ -804,6 +806,7 @@ $script:StandardShelfBooks = @(
         summary = 'Bugs and tooling gaps an agent found in the Library itself, kept for triage. A page here is one agent''s claim about the Library, written while the context was live -- verify it against the code before acting on it.'
         topics  = 'capture, reports'
         origin  = "created by library init as the Library's report channel"
+        closed_by = 'any'
     }
 )
 
@@ -1113,7 +1116,7 @@ function Invoke-LibraryWorkspaceInit {
             $book = $bookPlan.book
             if ($bookPlan.action -ceq 'created') {
                 [void](& (Join-Path $PSScriptRoot 'New-ShelfBook.ps1') -Slug $book.slug -Title $book.title -Summary $book.summary `
-                    -Topics $book.topics -Capture -Origin $book.origin -WorkspacePath $workspace)
+                    -Topics $book.topics -Capture -ClosedBy $book.closed_by -Origin $book.origin -WorkspacePath $workspace)
             }
             [void]$written.Add([pscustomobject]@{ file = "shelf/$($book.slug)"; action = $bookPlan.action })
         }

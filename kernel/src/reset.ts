@@ -298,7 +298,7 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
     if (currentPlanId !== approvedPlanId) {
       throw new Error(
         `Reset aborted and nothing was moved: the seat, the scope switches, the topics selected, their owners, or the loose files under ${scope.relative}/ are not what that plan described. ` +
-          'Rerun the current preflight and pass its exact plan_id as -ApprovedPlanId.',
+          'Rerun the current preflight and pass its exact plan_id as --plan-id.',
       );
     }
     prepareNotebookScopeForWrite(scope, 'Reset');
@@ -648,7 +648,7 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
     if (currentPlanId !== approvedPlanId) {
       throw new Error(
         'Restore aborted and nothing was moved: the seat, the quarantine, the topics selected, their owners, their dispositions, or the loose files are not what that plan described. ' +
-          'Rerun the current preflight and pass its exact plan_id as -ApprovedPlanId.',
+          'Rerun the current preflight and pass its exact plan_id as --plan-id.',
       );
     }
     if (currentBlocked.length) {

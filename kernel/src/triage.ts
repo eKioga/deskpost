@@ -34,11 +34,14 @@ import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { sha256OfText } from './sha.ts';
 import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
+import { assertSeatMayClose, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
+import { isLocalBackend } from './basicmemory.ts';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { triageInventory } from './triageinventory.ts';
 import { triageBatch } from './triagebatch.ts';
 import { convertToBookPagePath } from './pagepath.ts';
+import { localDate } from './localdate.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 const ARCHIVE_FOLDER = '_archive';
@@ -47,12 +50,12 @@ const ARCHIVE_FOLDER = '_archive';
  * Cheapest and most reversible first, so a late failure never strands local material: a review
  * costs nothing to redo, a shared Book cannot be un-created, and a discard cannot be undone at all.
  */
-const EXECUTION_ORDER = ['review', 'holding', 'notebook', 'shelf-book', 'project', 'book', 'discard'];
+const EXECUTION_ORDER = ['review', 'holding', 'notebook', 'shelf-book', 'collection-book', 'project', 'book', 'discard'];
 
 /** Which kinds each source can reach. Data rather than scattered guards, so every cell has a message. */
 const SOURCE_KINDS: Record<string, string[]> = {
-  notebook: ['holding', 'shelf-book', 'project', 'book'],
-  holding: ['notebook', 'shelf-book', 'project', 'book', 'review', 'discard'],
+  notebook: ['holding', 'shelf-book', 'collection-book', 'project', 'book'],
+  holding: ['notebook', 'shelf-book', 'collection-book', 'project', 'book', 'review', 'discard'],
 };
 
 const REFUSAL_REASON: Record<string, string> = {
@@ -69,8 +72,23 @@ const REFUSAL_REASON: Record<string, string> = {
   'holding|holding': 'This note is already on the Holding Shelf. Use shelf-book, project, book, or notebook to move it on.',
 };
 
-/** The kinds that rewrite the SOURCE note's own frontmatter. */
-const NOTE_MUTATING_KINDS = ['notebook', 'review'];
+/**
+ * The kinds that rewrite the SOURCE note's own frontmatter. Since S73 (plan row 2a) that includes the filing kinds:
+ * filing a Holding note closes it, so a filing action is note-mutating when its source is a capture Book, and a
+ * Notebook-sourced one names no note and so mutates none.
+ */
+export const FILING_KINDS = ['shelf-book', 'collection-book'];
+const NOTE_MUTATING_KINDS = ['notebook', 'review', ...FILING_KINDS];
+
+/** A filing kind, or a `project` that is a local Hub page (row 2b); a Basic Memory `project` files nothing. */
+function isFilingKind(kind: string, destination: string): boolean {
+  return FILING_KINDS.includes(kind) || (kind === 'project' && destination === 'local-hub');
+}
+
+/** An action that files a Holding note, and so closes it: its metadata names where the note went. */
+export function isFilingAction(action: TriageAction): boolean {
+  return action.source === 'holding' && typeof action.metadata['filed_to'] === 'string';
+}
 
 class Refusal extends Error {}
 
@@ -136,20 +154,21 @@ interface ResolvedSource {
   files: SourceFile[];
 }
 
-export interface ShelfNoteRow {
-  file: string;
-  page: string;
-  fullPath: string;
-  title: string;
-  review: string;
-  captured: string;
-}
-
-export function assertShelfBookOpen(workspace: string, slug: string, action: string): void {
+/**
+ * The Desk gate for a capture Book. A caller that has already resolved THE seat (S73 row 4: triage resolves it once
+ * with --seat, so the Desk gate, the Notebook scope and the seat rule agree) passes it; every other caller passes none
+ * and keeps the resolution from `.claude/` it always had.
+ */
+export function assertShelfBookOpen(workspace: string, slug: string, action: string, resolvedSeat?: string | null): void {
   const desks = path.join(workspace, '.claude');
-  const resolved = resolveSeatName({ stateDirectory: desks });
-  if (resolved.status !== 'named') refuse(resolved.message);
-  const seat = resolved.seat!;
+  let seat: string;
+  if (resolvedSeat) {
+    seat = resolvedSeat;
+  } else {
+    const resolved = resolveSeatName({ stateDirectory: desks });
+    if (resolved.status !== 'named') refuse(resolved.message);
+    seat = resolved.seat!;
+  }
   if (!fs.existsSync(deskFilePath(desks, seat, 'books'))) refuse('Virtual Desk configuration is missing .open-books.');
   const openBooks = deskEntriesForSeat(desks, seat, 'books');
   if (openBooks.includes(`shelf/${slug}`)) return;
@@ -172,31 +191,6 @@ export function getCaptureBook(workspace: string, slug: string): ShelfBook {
   }
   if (!fs.existsSync(book.wikiPath)) refuse(`Capture Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
   return book;
-}
-
-export function shelfNotes(book: ShelfBook): ShelfNoteRow[] {
-  if (!fs.existsSync(book.notesPath)) return [];
-  return fs
-    .readdirSync(book.notesPath, { withFileTypes: true })
-    .filter((item) => item.isFile() && item.name.toLowerCase().endsWith('.md'))
-    .map((item) => item.name)
-    .sort()
-    .map((name) => {
-      const full = path.join(book.notesPath, name);
-      const content = readUtf8(full);
-      const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
-      const base = name.replace(/\.md$/i, '');
-      const captured = /^captured:[ \t]*(.*)$/m.exec(content);
-      const review = /^review:[ \t]*(.*)$/m.exec(content);
-      return {
-        file: name,
-        page: `notes/${base}`,
-        fullPath: full,
-        title: heading ? heading[1]!.trim() : base,
-        review: review && review[1]!.trim() ? review[1]!.trim() : 'pending',
-        captured: captured && captured[1]!.trim() ? captured[1]!.trim() : 'unknown',
-      };
-    });
 }
 
 function resolveNotebookSource(
@@ -272,10 +266,22 @@ function resolveNotebookSource(
   };
 }
 
-function resolveNoteSource(workspace: string, slug: string, page: string, matchText: string): ResolvedSource {
+/**
+ * WHO IS SORTING, AND WHETHER THIS ACTION CLOSES THE NOTE (S73 row 4). `closes` is true for every kind that closes,
+ * reopens or deletes a note -- `review`, `notebook`, the filing kinds, `discard` -- and the seat rule is stated here,
+ * once, for all of them. `seat` is the one resolved seat; `otherSeat` is the action's `other_seat`, the reader's
+ * named override.
+ */
+export interface SeatRuleContext {
+  seat: string | null;
+  otherSeat: string | null;
+  closes: boolean;
+}
+
+function resolveNoteSource(workspace: string, slug: string, page: string, matchText: string, rule: SeatRuleContext): ResolvedSource {
   const bookSlug = slug.trim() ? slug : 'holding';
   const book = getCaptureBook(workspace, bookSlug);
-  assertShelfBookOpen(workspace, bookSlug, 'triaging its notes');
+  assertShelfBookOpen(workspace, bookSlug, 'triaging its notes', rule.seat);
   const notes = shelfNotes(book);
   if (!notes.length) refuse(`Capture Book '${bookSlug}' holds no notes.`);
 
@@ -303,6 +309,10 @@ function resolveNoteSource(workspace: string, slug: string, page: string, matchT
     }
   }
   const note = targets[0]!;
+  // THE SEAT RULE, per Book from its catalog entry (S73 row 4, Q4). A wrong other_seat is refused whatever the kind.
+  if (rule.closes || rule.otherSeat !== null) {
+    assertSeatMayClose(note, { slug: book.slug, closedBy: book.closedBy ?? 'any' }, rule.seat, rule.otherSeat, refuse);
+  }
   const content = readUtf8(note.fullPath);
   const relative = `${book.bookRoot}/wiki/${note.page}.md`;
   return {
@@ -391,6 +401,7 @@ export function convertToTriageAction(
   workspace: string,
   captureDate: string,
   notebookRelative = 'notebook',
+  seat: string | null = null,
 ): TriageAction {
   const kind = triageString(action, 'kind');
   let sourceKind = triageString(action, 'source');
@@ -417,10 +428,14 @@ export function convertToTriageAction(
     refuse(`Action kind '${kind}' from source '${sourceKind}' takes a single article and does not accept include_pages.`);
   }
 
+  // THE SEAT RULE'S INPUTS (row 4): the kinds that close, reopen or delete a note, and the reader's named override.
+  const otherSeat = triageString(action, 'other_seat').trim() || null;
+  const closes = ['review', 'notebook', 'discard', ...FILING_KINDS].includes(kind) || (kind === 'project' && isLocalBackend(workspace));
+
   // Resolved once, before any kind branch, so every kind hashes its source the same way.
   const source =
     sourceKind === 'holding'
-      ? resolveNoteSource(workspace, sourceSlug, triageString(action, 'source_page'), triageString(action, 'source_match'))
+      ? resolveNoteSource(workspace, sourceSlug, triageString(action, 'source_page'), triageString(action, 'source_match'), { seat, otherSeat, closes })
       : resolveNotebookSource(workspace, sourcePath, ['project', 'book'].includes(kind), includePages, notebookRelative);
 
   let writeSet: string[] = [];
@@ -448,6 +463,14 @@ export function convertToTriageAction(
       metadata.set('book_root', book.bookRoot);
       metadata.set('note_title', title);
       metadata.set('capture_date', captureDate);
+      // AN OPTIONAL `why` (S73 row 3), passed to the capture. Only when given, so a plan without one keeps its id, and
+      // none is invented: a Notebook page set aside is as often `reset-imminent` as `no-home`.
+      const why = triageString(action, 'why').trim();
+      if (why) {
+        const malformed = whyRefusal(why);
+        if (malformed !== null) refuse(`A holding action's why is recorded as the capture's: ${malformed}`);
+        metadata.set('why', why);
+      }
       destination = 'shelf';
       operation = 'capture-note';
       break;
@@ -507,9 +530,49 @@ export function convertToTriageAction(
       operation = 'add-page';
       break;
     }
+    // A PAGE OF AN EXISTING, OPEN COLLECTION BOOK (S73 row 2c), through `collection add-page`. Named for its
+    // destination like `shelf-book`; `book` keeps its meaning, a new shared Book. Local collections only.
+    case 'collection-book': {
+      if (!isLocalBackend(workspace)) {
+        refuse(
+          "A collection-book action adds a page to a local Library's own collection, and this workspace is attached to Basic Memory: " +
+            'a shared Book changes through its Shelf Book and library publish refresh. Nothing was changed.',
+        );
+      }
+      if (!slug.trim()) refuse('A collection-book action needs the collection Book slug.');
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) refuse('A collection-book action slug must use lowercase letters, digits, and hyphens.');
+      if (source.isContainer || includePages.length) refuse(`A collection-book action adds one page, and '${source.relative}' is a folder. Name one page per action.`);
+      const pagePath = triageString(action, 'page_path');
+      if (!pagePath.trim()) refuse('A collection-book action needs page_path.');
+      const page = convertToBookPagePath(pagePath);
+      writeSet = [`collection/books/${slug}/wiki/${page}.md`];
+      touchSet = [`collection/books/${slug}/wiki/_index.md`];
+      metadata.set('page_path', page);
+      metadata.set('page_title', title);
+      requiredDesk.push(`collection-book-open:${slug}`);
+      destination = 'collection';
+      operation = 'add-collection-page';
+      break;
+    }
     case 'project': {
       if (!slug.trim()) refuse('A project action needs the Project slug.');
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) refuse('A project action slug must use lowercase letters, digits, and single hyphens.');
+      // ON A LOCAL COLLECTION IT IS ONE HUB PAGE (S73 row 2b, Q2): the slug and the Hub open at this seat, and the
+      // page is `notes/<the source's file stem>`, made by `hub edit --mode new-page`'s writer. Its write set is
+      // under `collection/`, so the runner's collision check covers it. Basic Memory keeps the shape below.
+      if (isLocalBackend(workspace)) {
+        if (source.isContainer || includePages.length) {
+          refuse(`A project action on a local collection makes one Hub page, and '${source.relative}' is a folder. Name one page per action.`);
+        }
+        const page = `notes/${source.name}`;
+        writeSet = [`collection/projects/${slug}/${page}.md`];
+        metadata.set('page_path', page);
+        if (title.trim()) metadata.set('page_title', title);
+        requiredDesk.push(`project-open:${slug}`);
+        destination = 'local-hub';
+        operation = 'new-hub-page';
+        break;
+      }
       if (!title.trim()) refuse('A project action needs a title.');
       if (!triageString(action, 'purpose').trim()) refuse(`Project action '${slug}' needs purpose.`);
       writeSet = source.files.map((file) =>
@@ -549,12 +612,22 @@ export function convertToTriageAction(
   if (includePages.length) metadata.set('include_pages', sortedCopy(includePages));
   if (sourceKind === 'holding') {
     metadata.set('source_note_title', source.note!.title);
+    // THE READER'S OVERRIDE ENTERS THE DIGEST (row 4), so a yes to sorting another seat's note is a yes to it by name.
+    if (otherSeat !== null) metadata.set('other_seat', otherSeat);
     // Every destination outside the Holding Shelf itself receives the note's BODY, with the
     // frontmatter separated off. Only `notebook` copies the file verbatim, because there the
     // frontmatter IS the provenance the working copy should keep.
-    if (['shelf-book', 'project', 'book'].includes(kind)) {
+    if (['shelf-book', 'collection-book', 'project', 'book'].includes(kind)) {
       metadata.set('frontmatter', noteBody!.hasFrontmatter ? 'separated' : 'none');
       deliveredSha = triageHash(noteBody!.body);
+    }
+    // FILING CLOSES THE NOTE (S73 row 2a). The note and its Book's map join the touch set, and the close's
+    // `new_review` and `filed_to` (a path already in the write set) enter the digest. The `reviewed:` stamp does
+    // not: the runner writes it at execution (row 1).
+    if (isFilingKind(kind, destination)) {
+      touchSet.push(source.relative, `${source.bookRoot}/wiki/_index.md`);
+      metadata.set('new_review', 'done');
+      metadata.set('filed_to', writeSet[0]!);
     }
   }
 
@@ -662,7 +735,7 @@ export function assertWriteSetsDisjoint(actions: TriageAction[]): void {
   // hash to what the approval covered. Knowable here, so refused here.
   const mutated = new Map<string, string>();
   for (const action of actions) {
-    if (!NOTE_MUTATING_KINDS.includes(action.kind)) continue;
+    if (!NOTE_MUTATING_KINDS.includes(action.kind) && !isFilingAction(action)) continue;
     if (!action.source_note.trim()) continue;
     mutated.set(action.source_note.toLowerCase(), action.action_id);
   }
@@ -689,7 +762,8 @@ export function assertWriteSetsDisjoint(actions: TriageAction[]): void {
   // matches. The conflict is real, invisible in the write sets, and knowable here.
   const projectSlugs = new Set<string>();
   for (const action of actions) {
-    if (action.kind !== 'project') continue;
+    // A LOCAL HUB PAGE (row 2b) issues no child plan and creates no Hub, so two pages for one Hub are two creates.
+    if (action.kind !== 'project' || action.destination === 'local-hub') continue;
     if (projectSlugs.has(action.slug)) {
       refuse(
         `Two Project actions both target '${action.slug}'. The first would create or claim the Hub and invalidate the ` +
@@ -697,6 +771,20 @@ export function assertWriteSetsDisjoint(actions: TriageAction[]): void {
       );
     }
     projectSlugs.add(action.slug);
+  }
+
+  // TWO PAGES FOR ONE COLLECTION BOOK (row 2c): the child's plan_id binds the Book's reader map, and the first
+  // page's link changes it, so the second child's id would be stale by the time it ran.
+  const collectionSlugs = new Set<string>();
+  for (const action of actions) {
+    if (action.kind !== 'collection-book') continue;
+    if (collectionSlugs.has(action.slug)) {
+      refuse(
+        `Two collection-book actions both target '${action.slug}'. The first page's reader-map line would invalidate the ` +
+          "second's approval; run them as separate batches.",
+      );
+    }
+    collectionSlugs.add(action.slug);
   }
 }
 
@@ -713,8 +801,9 @@ export function resolveTriagePlanActions(
   workspace: string,
   captureDate: string,
   notebookRelative = 'notebook',
+  seat: string | null = null,
 ): TriageAction[] {
-  const resolved = requested.map((action) => convertToTriageAction(action, workspace, captureDate, notebookRelative));
+  const resolved = requested.map((action) => convertToTriageAction(action, workspace, captureDate, notebookRelative, seat));
   if (!resolved.length) refuse('A Library Triage plan needs at least one action.');
   assertWriteSetsDisjoint(resolved);
   return executionOrder(resolved);
@@ -726,11 +815,6 @@ export interface TriageResult {
 }
 
 /** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
-function localDate(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
 export function runTriageVerb(argv: string[], workspace: string): TriageResult {
   const action = argv[0] ?? '';
   const parsed = parseArguments(argv.slice(1), ['actions', 'capture-date', 'seat', 'workspace']);
@@ -756,12 +840,13 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
         const source = String(item['source'] ?? '').trim() || 'notebook';
         return source === 'notebook' || String(item['kind'] ?? '') === 'notebook';
       });
+      // ONE SEAT FOR EVERY ACTION (S73 row 4), resolved once with --seat: the Notebook scope, the Desk gate and the
+      // seat rule all read it, where the Desk gate used to resolve its own from `.claude/` and ignore --seat.
+      const seatState = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
+      const seat = seatState.status === 'named' ? seatState.seat! : null;
       let notebookRelative = 'notebook';
-      if (touchesNotebook) {
-        const seatState = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
-        notebookRelative = notebookScope(workspace, seatState.status === 'named' ? seatState.seat! : null, 'read', 'Validating a triage plan').relative;
-      }
-      const resolved = resolveTriagePlanActions(requested, workspace, captureDate, notebookRelative);
+      if (touchesNotebook) notebookRelative = notebookScope(workspace, seat, 'read', 'Validating a triage plan').relative;
+      const resolved = resolveTriagePlanActions(requested, workspace, captureDate, notebookRelative, seat);
       return {
         refusal: null,
         value: {

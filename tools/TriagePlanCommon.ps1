@@ -98,7 +98,10 @@ $script:TriageRefusalReason = @{
 $script:TriageNoteKinds = @('notebook', 'review', 'discard')
 # The kinds that rewrite the SOURCE note's own frontmatter. A discard of the same note in the same
 # batch would then find bytes its approval never covered, so the two are refused together.
-$script:TriageNoteMutatingKinds = @('notebook', 'review')
+# PARITY (S73 row 2a): filing a Holding note closes it, so shelf-book is note-mutating for a Holding
+# source, as the kernel's NOTE_MUTATING_KINDS says. A Notebook-sourced one names no note.
+$script:TriageFilingKinds = @('shelf-book')
+$script:TriageNoteMutatingKinds = @('notebook', 'review') + $script:TriageFilingKinds
 
 # Read a property that may be absent. $Object.Name throws under Set-StrictMode when it is, and a
 # triage action legitimately omits most fields for most kinds.
@@ -228,7 +231,7 @@ function Resolve-TriageNotebookSource([string]$Workspace, [string]$SourcePath, [
 # what the digest binds -- never the match string. A note captured between the approval and the run
 # could otherwise change what an approved -MatchText meant, and capture is ungated, so that is not a
 # hypothetical race. Ambiguity is refused with the list of hits, as Move-ShelfNote always did.
-function Resolve-TriageNoteSource([string]$Workspace, [string]$Slug, [string]$Page, [string]$MatchText) {
+function Resolve-TriageNoteSource([string]$Workspace, [string]$Slug, [string]$Page, [string]$MatchText, [string]$Seat = '', [string]$OtherSeat = '', [bool]$Closes = $false) {
     if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = 'holding' }
     $book = Get-CaptureBook -Workspace $Workspace -Slug $Slug
     # THE GATE FIRES HERE, BEFORE THE NOTES ARE LISTED, and the placement is the point. Resolution
@@ -238,7 +241,7 @@ function Resolve-TriageNoteSource([string]$Workspace, [string]$Slug, [string]$Pa
     # READING it, so it is asserted by the function that reads. required_desk_state still carries
     # the same requirement, because the runner re-checks it immediately before the write: a Book can
     # be closed between the approval and the run.
-    Assert-ShelfBookOpen -Workspace $Workspace -Slug $Slug -Action 'triaging its notes'
+    Assert-ShelfBookOpen -Workspace $Workspace -Slug $Slug -Action 'triaging its notes' -Seat $Seat
     $notes = @(Get-ShelfNotes -Book $book)
     if ($notes.Count -eq 0) { throw "Capture Book '$Slug' holds no notes." }
 
@@ -264,6 +267,8 @@ function Resolve-TriageNoteSource([string]$Workspace, [string]$Slug, [string]$Pa
         }
     }
     $note = $targets[0]
+    # THE SEAT RULE (S73 row 4), where the kernel's resolveNoteSource states it. A wrong other_seat is refused whatever the kind.
+    if ($Closes -or $OtherSeat) { Assert-SeatMayCloseNote -Note $note -Book $book -Seat $Seat -OtherSeat $OtherSeat }
     $content = [IO.File]::ReadAllText($note.full_path, [Text.UTF8Encoding]::new($false, $true))
     $relative = "$($book.book_root)/wiki/$($note.page).md"
     [pscustomobject]@{
@@ -311,7 +316,7 @@ function Assert-TriageKindReachable([string]$Kind, [string]$SourceKind) {
     throw "Action kind '$Kind' is not reachable from source '$SourceKind'. $reason"
 }
 
-function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDate) {
+function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDate, [string]$Seat = '') {
     $kind = [string](Get-TriageValue $Action 'kind')
     $sourceKind = [string](Get-TriageValue $Action 'source')
     if ([string]::IsNullOrWhiteSpace($sourceKind)) { $sourceKind = 'notebook' }
@@ -333,11 +338,17 @@ function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDat
         throw "Action kind '$kind' from source '$sourceKind' takes a single article and does not accept include_pages."
     }
 
+    # PARITY (S73 row 4): the seat rule's inputs, as the kernel reads them. This oracle has no local
+    # collection, so its closing kinds are review, notebook, discard and the filing kinds.
+    $otherSeat = ([string](Get-TriageValue $Action 'other_seat')).Trim()
+    $closes = $kind -cin (@('review', 'notebook', 'discard') + $script:TriageFilingKinds)
+
     # Resolved once, before any kind branch, so every kind hashes its source the same way.
     $source = if ($sourceKind -ceq 'holding') {
         Resolve-TriageNoteSource -Workspace $Workspace -Slug $sourceSlug `
             -Page ([string](Get-TriageValue $Action 'source_page')) `
-            -MatchText ([string](Get-TriageValue $Action 'source_match'))
+            -MatchText ([string](Get-TriageValue $Action 'source_match')) `
+            -Seat $Seat -OtherSeat $otherSeat -Closes $closes
     }
     else {
         Resolve-TriageNotebookSource -Workspace $Workspace -SourcePath $sourcePath `
@@ -371,6 +382,12 @@ function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDat
             $metadata['book_root'] = $book.book_root
             $metadata['note_title'] = $title
             $metadata['capture_date'] = $CaptureDate
+            # PARITY (S73 row 3): an optional why, in the digest only when given, as the kernel plans it.
+            $why = ([string](Get-TriageValue $Action 'why')).Trim()
+            if ($why) {
+                if ($why -cnotin @('no-seat', 'no-home', 'needs-yes', 'reset-imminent', 'for-seat')) { throw "A holding action's why is recorded as the capture's: --why must be one of: no-seat, no-home, needs-yes, reset-imminent, for-seat; '$why' is not one." }
+                $metadata['why'] = $why
+            }
             $destination = 'shelf'
             $operation = 'capture-note'
             # No Desk requirement is added here, and that is the ungated half of the gate rule.
@@ -472,6 +489,8 @@ function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDat
     if ($includePages.Count) { $metadata['include_pages'] = @($includePages | Sort-Object) }
     if ($sourceKind -ceq 'holding') {
         $metadata['source_note_title'] = $source.note.title
+        # PARITY (S73 row 4): the reader's override enters the digest, beside source_note_title.
+        if ($otherSeat) { $metadata['other_seat'] = $otherSeat }
         # Every destination outside the Holding Shelf itself receives the note's BODY, with the
         # frontmatter separated off: Add-ShelfBookPage composes a page and needs a leading H1;
         # Publish-SharedBookCandidate has always split frontmatter from every page it publishes; and
@@ -481,6 +500,13 @@ function ConvertTo-TriageAction($Action, [string]$Workspace, [string]$CaptureDat
         if ($kind -cin @('shelf-book', 'project', 'book')) {
             $metadata['frontmatter'] = if ($noteBody.has_frontmatter) { 'separated' } else { 'none' }
             $deliveredSha = Get-TriageHash $noteBody.body
+        }
+        # PARITY (S73 row 2a): the note and its Book's map join the touch set, and the close's
+        # new_review and filed_to enter the digest, as in the kernel. The reviewed: stamp does not.
+        if ($kind -cin $script:TriageFilingKinds) {
+            $touchSet = @($touchSet) + @($source.relative, "$($source.book_root)/wiki/_index.md")
+            $metadata['new_review'] = 'done'
+            $metadata['filed_to'] = @($writeSet)[0]
         }
     }
 
@@ -633,9 +659,10 @@ function Get-TriageExecutionOrder($Actions) {
     @($ordered)
 }
 
-function Resolve-TriagePlanActions($Actions, [string]$Workspace, [string]$CaptureDate) {
+# PARITY (S73 row 4): the one resolved seat is threaded in, as the kernel's resolveTriagePlanActions takes it.
+function Resolve-TriagePlanActions($Actions, [string]$Workspace, [string]$CaptureDate, [string]$Seat = '') {
     if ([string]::IsNullOrWhiteSpace($CaptureDate)) { $CaptureDate = [DateTime]::Now.ToString('yyyy-MM-dd') }
-    $resolved = @(@($Actions) | ForEach-Object { ConvertTo-TriageAction -Action $_ -Workspace $Workspace -CaptureDate $CaptureDate })
+    $resolved = @(@($Actions) | ForEach-Object { ConvertTo-TriageAction -Action $_ -Workspace $Workspace -CaptureDate $CaptureDate -Seat $Seat })
     if ($resolved.Count -eq 0) { throw 'A Library Triage plan needs at least one action.' }
     Assert-TriageWriteSetsDisjoint $resolved
     @(Get-TriageExecutionOrder $resolved)

@@ -38,17 +38,22 @@ import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { completeBookMutation, enterBookMutation, type BookMutation } from './mutation.ts';
 import { captureVerb, runBookVerb, updateShelfNoteIndex } from './capture.ts';
-import { resolveSeatName } from './seatdesk.ts';
+import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
+import { hubNewPage } from './hubnewpage.ts';
+import { collectionAddPage } from './collectionpage.ts';
+import { parseBookRoot } from './places.ts';
 import { assertSeatClaimHeld } from './seatclaim.ts';
 import { notebookScope, prepareNotebookScopeForWrite } from './notebooklayout.ts';
 import { invokeNotebookRender, notebookTopicLockRoot, scopeIndexDrift } from './notebook.ts';
+import { localDate } from './localdate.ts';
+import { setNoteField, shelfNotes } from './shelfnote.ts';
 import {
   assertShelfBookOpen,
   assertWriteSetsDisjoint,
   convertToTriageAction,
   executionOrder,
+  isFilingAction,
   getCaptureBook,
-  shelfNotes,
   splitNoteFrontmatter,
   triageHash,
   type TriageAction,
@@ -74,11 +79,6 @@ function utcSeconds(): string {
 }
 
 /** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
-function localDate(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
 interface Resolved {
   action: TriageAction;
   raw: Record<string, unknown>;
@@ -89,6 +89,10 @@ interface Entry {
   recordedState: string;
   gateError: string;
   childPlan: PsJsonValue | null;
+  /** A filing action whose note is already closed and filed to this destination, which still exists (row 2a). */
+  alreadyFiled: boolean;
+  /** A confirming child's plan_id, from its own preview while the batch is planned (row 2c's collection-book). */
+  childPlanId: string | null;
 }
 
 interface JournalRecord {
@@ -158,7 +162,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
 
   // Resolved one by one so each action keeps the reader's own request beside it -- the plan record stores
   // it, and the children are called with its words -- then checked as a set and put in execution order.
-  const pairs: Resolved[] = requested.map((raw) => ({ action: convertToTriageAction(raw, workspace, captureDate, notebookRelative), raw }));
+  // THE SEAT RESOLVED ABOVE IS THE ONE EVERY GATE READS (S73 row 4): the Desk, the Notebook scope and the seat rule.
+  const pairs: Resolved[] = requested.map((raw) => ({ action: convertToTriageAction(raw, workspace, captureDate, notebookRelative, seat), raw }));
   assertWriteSetsDisjoint(pairs.map((pair) => pair.action));
   const ordered = executionOrder(pairs.map((pair) => pair.action)).map((action) => pairs.find((pair) => pair.action === action)!);
 
@@ -190,10 +195,29 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   // --- gates ---------------------------------------------------------------------------------------
   const assertDeskState = (action: TriageAction) => {
     for (const required of action.required_desk_state) {
+      // A LOCAL HUB PAGE NEEDS THE HUB OPEN AT THIS SEAT (row 2b), as `hub edit --mode new-page` does.
+      // A COLLECTION BOOK OPEN AT THIS SEAT (row 2c), read the way `collection add-page` reads it.
+      const collectionBook = /^collection-book-open:(.+)$/.exec(required);
+      if (collectionBook) {
+        if (seat === null) refuse(seatState.message);
+        const slug = collectionBook[1]!;
+        if (!deskEntriesForSeat(stateDirectory, seat, 'books').some((entry) => parseBookRoot(entry.trim())?.root === `books/${slug}`)) {
+          refuse(`Book '${slug}' is not open at seat '${seat}'. Open it first: deskpost desk open book ${slug} --location collection`);
+        }
+        continue;
+      }
+      const project = /^project-open:(.+)$/.exec(required);
+      if (project) {
+        if (seat === null) refuse(seatState.message);
+        if (!deskEntriesForSeat(stateDirectory, seat, 'projects').includes(`projects/${project[1]!}`)) {
+          refuse(`Project '${project[1]!}' is not open. Open it first: deskpost desk open project ${project[1]!}`);
+        }
+        continue;
+      }
       const match = /^shelf-book-open:(.+)$/.exec(required);
       if (!match) refuse(`Unknown required Desk state '${required}'.`);
       const slug = match[1]!;
-      assertShelfBookOpen(workspace, slug, slug === action.source_slug && action.source === 'holding' ? 'triaging its notes' : 'graduating a page into it');
+      assertShelfBookOpen(workspace, slug, slug === action.source_slug && action.source === 'holding' ? 'triaging its notes' : 'graduating a page into it', seat);
     }
   };
   // A NOTEBOOK ACTION'S WRITE SET NAMES TWO FILES IT DOES NOT CREATE: the seat's index, re-rendered under the
@@ -211,8 +235,53 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     for (const relative of action.write_set.filter((item) => !/^(books|projects)\//.test(item))) {
       if (isDerivedWritePath(action, relative)) continue;
       if (fs.existsSync(path.join(workspace, ...relative.split('/')))) {
-        refuse(`The approved write set is no longer writable: '${relative}' already exists. Nothing was written for this action.`);
+        // A PAGE THAT LANDED WHOSE CLOSE DID NOT (row 2a): `filed_to` was never written, so this is not the
+        // already-filed skip, and the reader is told the one step left.
+        const filing = isFilingAction(action);
+        refuse(
+          `The approved write set is no longer writable: '${relative}' already exists. Nothing was written for this action.` +
+            (filing ? ` If an earlier run filed ${action.source_note} there and could not close it, close the note with a review action instead of filing it again.` : ''),
+        );
       }
+    }
+  };
+  const sourceNoteOf = (action: TriageAction) => {
+    const book = getCaptureBook(workspace, action.source_slug);
+    return { book, note: shelfNotes(book).find((row) => action.source_note === `${book.bookRoot}/wiki/${row.page}.md`) ?? null };
+  };
+  const isAlreadyFiled = (action: TriageAction): boolean => {
+    if (!isFilingAction(action)) return false;
+    const { note } = sourceNoteOf(action);
+    const filedTo = String(action.metadata['filed_to'] ?? '');
+    return note !== null && note.review === 'done' && note.filedTo === filedTo && fs.existsSync(path.join(workspace, ...filedTo.split('/')));
+  };
+  // FILING CLOSES THE NOTE (row 2a): `review: done`, the `reviewed:` stamp and `filed_to:`, under the source Book's
+  // lock, after the page has landed. A note already `done` is filed and its close half reports `unchanged`. If the
+  // close fails, the page stays where it landed and the refusal says so, since `filed_to` is then never written.
+  const closeFiledNote = (action: TriageAction): PsJsonValue => {
+    const filedTo = String(action.metadata['filed_to'] ?? '');
+    try {
+      if ((process.env['LIBRARY_TRIAGE_CLOSE_FAULT'] ?? '').trim() === 'after-page') refuse('LIBRARY_TRIAGE_CLOSE_FAULT=after-page: the close was made to fail after the page landed');
+      const { book, note } = sourceNoteOf(action);
+      if (!note) refuse(`the note is gone`);
+      if (note.review === 'done') return { status: 'unchanged', note_page: action.source_note, filed_to: filedTo };
+      const lock: BookLock = enterBookLock(workspace, book.bookRoot, lockTimeout);
+      try {
+        const content = fs.readFileSync(note.fullPath, 'utf8');
+        const closed = setNoteField(setNoteField(content.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcSeconds()), 'filed_to', filedTo);
+        if (closed === content || !/^review: done/m.test(closed)) refuse(`the note has no review field to close`);
+        const mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Close ${note.page}, filed to ${filedTo}`, lock });
+        writeAtomicText(note.fullPath, closed);
+        const pendingCount = updateShelfNoteIndex(book).pendingCount;
+        return { status: 'closed', note_page: action.source_note, filed_to: filedTo, pending_count: pendingCount, manifest: completeBookMutation(mutation).summary };
+      } finally {
+        exitBookLock(lock);
+      }
+    } catch (error) {
+      refuse(
+        `The page landed at ${filedTo}, but ${action.source_note} could not be closed: ${(error as Error).message}. ` +
+          'Close the note with a review action; filing it again is refused because the page now exists.',
+      );
     }
   };
   const assertSourceUnchanged = (action: TriageAction) => {
@@ -249,11 +318,57 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     if (!confirmed) pageArgs.push('--preflight');
     return pageArgs;
   };
+  // A LOCAL HUB PAGE (row 2b) through `hub edit --mode new-page`'s own writer: a Holding note's body with its
+  // frontmatter separated, as every other destination receives it, or the Notebook page itself.
+  const hubPage = (pair: Resolved, confirmed: boolean): Record<string, PsJsonValue> => {
+    const action = pair.action;
+    let content = '';
+    let contentPath = '';
+    if (action.source === 'holding') {
+      const { note } = sourceNoteOf(action);
+      if (!note) refuse(`The approved source '${action.source_note}' is gone. Nothing was written for this action.`);
+      content = splitNoteFrontmatter(fs.readFileSync(note.fullPath, 'utf8')).body;
+    } else {
+      contentPath = action.source_path;
+    }
+    try {
+      return hubNewPage(
+        { slug: action.slug, page: String(action.metadata['page_path'] ?? ''), content, contentPath, title: String(action.metadata['page_title'] ?? ''), seat: seat ?? undefined, preflight: !confirmed, lockTimeout },
+        workspace,
+      );
+    } catch (error) {
+      refuse((error as Error).message);
+    }
+  };
+  // A COLLECTION BOOK PAGE (row 2c) through `collection add-page`, which confirms: previewed while the batch is planned,
+  // and run with that preview's plan_id.
+  const collectionPage = (pair: Resolved, childPlanId: string | null): Record<string, PsJsonValue> => {
+    const action = pair.action;
+    const args = [action.slug, String(action.metadata['page_path'] ?? ''), '--lock-timeout', String(lockTimeout)];
+    if (seat !== null) args.push('--seat', seat);
+    const pageTitle = String(action.metadata['page_title'] ?? '');
+    if (pageTitle.trim()) args.push('--title', pageTitle);
+    if (action.source === 'holding') {
+      const { note } = sourceNoteOf(action);
+      if (!note) refuse(`The approved source '${action.source_note}' is gone. Nothing was written for this action.`);
+      args.push('--body', splitNoteFrontmatter(fs.readFileSync(note.fullPath, 'utf8')).body);
+    } else {
+      args.push('--content-path', action.source_path);
+    }
+    args.push(...(childPlanId === null ? ['--preflight'] : ['--user-confirmed', '--plan-id', childPlanId]));
+    try {
+      return collectionAddPage(args, workspace);
+    } catch (error) {
+      refuse((error as Error).message);
+    }
+  };
   const holdingArguments = (action: TriageAction, confirmed: boolean) => {
     const args = [action.slug, '--title', action.title, '--content-path', action.source_path, '--source-paths', action.source_path, '--workspace', workspace];
     // The plan's capture date names the note, so the child plans the name the approval binds (S44).
     const captureDate = String(action.metadata['capture_date'] ?? '');
     if (captureDate) args.push('--capture-date', captureDate);
+    const why = String(action.metadata['why'] ?? '');
+    if (why) args.push('--why', why);
     // The approved file name is pinned, not chosen again: an approval naming one path never writes another.
     if (confirmed) args.push('--require-note-file', path.basename(action.write_set[0]!));
     else args.push('--preflight');
@@ -284,6 +399,16 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       assertChildWriteSetMatches(action, [String((child.value as Record<string, PsJsonValue>)['page'])]);
       return stripSchema(child.value)!;
     }
+    if (action.kind === 'collection-book') {
+      const plan = collectionPage(pair, null);
+      assertChildWriteSetMatches(action, [String(plan['page'])]);
+      return stripSchema(plan)!;
+    }
+    if (action.destination === 'local-hub') {
+      const plan = hubPage(pair, false);
+      assertChildWriteSetMatches(action, [`collection/${String(plan['page_path'])}`]);
+      return stripSchema(plan)!;
+    }
     if (SHARED_KINDS.includes(action.kind)) {
       refuse(
         `Triage to ${action.kind === 'project' ? 'a Project Hub' : 'a new shared Book'} is not ported yet: the kernel's confirmed ` +
@@ -300,7 +425,12 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     const recorded = recordedState(pair.action.action_id);
     let childPlan: PsJsonValue | null = null;
     let gateError = '';
-    if (recorded !== 'succeeded') {
+    // ALREADY FILED IS NOT A COLLISION (S73 row 2a). Once a filing action closes its note, the batch it belonged
+    // to no longer resolves to the same id, so the retry of a batch whose later action failed is a new plan, and
+    // in it the landed action's destination exists. It is skipped, never refused, while the destination is there;
+    // if the page has since gone, filing it again is legitimate.
+    const alreadyFiled = recorded !== 'succeeded' && isAlreadyFiled(pair.action);
+    if (recorded !== 'succeeded' && !alreadyFiled) {
       // Before approval a gate failure refuses the batch; after it, the action fails and the rest run.
       try {
         assertDeskState(pair.action);
@@ -311,7 +441,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         gateError = (error as Error).message;
       }
     }
-    entries.push({ resolved: pair, recordedState: recorded, gateError, childPlan });
+    const childPlanId = pair.action.kind === 'collection-book' && childPlan !== null ? String((childPlan as Record<string, PsJsonValue>)['plan_id'] ?? '') || null : null;
+    entries.push({ resolved: pair, recordedState: recorded, gateError, childPlan, alreadyFiled, childPlanId });
   }
   const pending = entries.filter((entry) => entry.recordedState !== 'succeeded');
   const done = entries.filter((entry) => entry.recordedState === 'succeeded');
@@ -343,12 +474,25 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
           touch_set: action.touch_set,
           delete_set: action.delete_set,
           action_digest: action.action_digest,
-          child_plan_id: null,
-          recorded_state: entry.recordedState,
+          child_plan_id: entry.childPlanId,
+          recorded_state: entry.alreadyFiled ? 'already-filed' : entry.recordedState,
           plan: entry.childPlan,
         };
       }),
       journal_path: journalPath,
+      // ANOTHER SEAT'S NOTES, LISTED APART (S73 row 4), so the reader's yes is to them by name. Only when there are any.
+      ...(entries.some((entry) => entry.resolved.action.metadata['other_seat'] !== undefined)
+        ? {
+            other_seat_actions: entries
+              .filter((entry) => entry.resolved.action.metadata['other_seat'] !== undefined)
+              .map((entry) => ({
+                action_id: entry.resolved.action.action_id,
+                kind: entry.resolved.action.kind,
+                note: entry.resolved.action.source_note,
+                other_seat: String(entry.resolved.action.metadata['other_seat']),
+              })),
+          }
+        : {}),
       resume: existingJournal !== null,
       pending_count: pending.length,
       already_succeeded: done.length,
@@ -363,9 +507,9 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     if (seat === null) refuse(seatState.message);
     assertSeatClaimHeld({ workspace, stateDirectory, seat });
   }
-  if (!parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
   if (parsed.options.get('plan-id') !== batchId) {
-    refuse('Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId. A different plan_id means the material changed since you approved it.');
+    refuse('Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the material changed since you approved it.');
   }
 
   // THE PLAN RECORD, written at the first confirmed run and only if absent, named by the batch id.
@@ -394,6 +538,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         delete_set: action.delete_set,
         action_digest: action.action_digest,
         request: pair.raw as unknown as PsJsonValue,
+        // Only a confirming child's (row 2c): every other kind's record keeps the shape the oracle writes.
+        ...(entries.find((entry) => entry.resolved === pair)?.childPlanId ? { child_plan_id: entries.find((entry) => entry.resolved === pair)!.childPlanId! } : {}),
       };
     });
     fs.writeFileSync(
@@ -464,6 +610,14 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         outcomes.push(outcome(action, 'succeeded', true, null, '', 'Already recorded as succeeded in the batch journal; re-running it would be a no-op.'));
         continue;
       }
+      if (entry.alreadyFiled) {
+        record.state = 'succeeded';
+        record.completed_utc = utcSeconds();
+        const filedTo = String(action.metadata['filed_to'] ?? '');
+        outcomes.push(outcome(action, 'succeeded', true, { status: 'already-filed', filed_to: filedTo }, '', `Already filed: ${action.source_note} is closed and filed to ${filedTo}, which exists.`));
+        saveJournal('in-progress');
+        continue;
+      }
       // A PREVIOUS RUN DIED BETWEEN STARTING THIS ACTION AND RECORDING ITS OUTCOME. Whether its output landed
       // is unknown, so it is reported and left alone: retrying could do it twice, and succeeding it would be
       // a claim nothing checked.
@@ -485,7 +639,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         assertDeskState(action);
         assertWriteSetWritable(action);
         assertSourceUnchanged(action);
-        const result = invokeChildAction(entry.resolved);
+        const result = invokeChildAction(entry.resolved, entry.childPlanId);
         record.state = 'succeeded';
         record.completed_utc = utcSeconds();
         record.error = '';
@@ -518,10 +672,12 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       interrupted_count: interrupted.length,
       outcomes,
       journal_path: journalPath,
-      shelf_write: succeededKinds.some((kind) => SHELF_KINDS.includes(kind)),
-      shared_collection_write: succeededKinds.some((kind) => SHARED_KINDS.includes(kind)),
+      // A LOCAL HUB PAGE (row 2b) and a collection Book page (2c) write no shared collection, and close a Shelf note
+      // when they file one.
+      shelf_write: succeededKinds.some((kind) => SHELF_KINDS.includes(kind)) || succeeded.some((row) => ['local-hub', 'collection'].includes(String(row['destination'])) && row['source'] === 'holding'),
+      shared_collection_write: succeeded.some((row) => row['destination'] === 'shared-collection'),
       notebook_write: succeededKinds.includes('notebook'),
-      shared_library_write: succeededKinds.some((kind) => SHARED_KINDS.includes(kind)),
+      shared_library_write: succeeded.some((row) => row['destination'] === 'shared-collection'),
       next:
         failed.length === 0
           ? 'Every action succeeded. Nothing was removed that the plan did not name.'
@@ -533,7 +689,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     exitBookLock(batchLock);
   }
 
-  function invokeChildAction(pair: Resolved): PsJsonValue {
+  function invokeChildAction(pair: Resolved, childPlanId: string | null): PsJsonValue {
     const action = pair.action;
     if (INLINE_KINDS.includes(action.kind)) return invokeNoteAction(action);
     if (action.kind === 'holding') {
@@ -544,7 +700,20 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     if (action.kind === 'shelf-book') {
       const child = runBookVerb(shelfPageArguments(pair, true), workspace);
       if (child.refusal !== null) refuse(child.refusal);
-      return stripSchema(child.value)!;
+      const result = stripSchema(child.value)! as Record<string, PsJsonValue>;
+      if (action.source === 'holding') result['note_close'] = closeFiledNote(action);
+      return result;
+    }
+    if (action.kind === 'collection-book') {
+      if (childPlanId === null) refuse('The collection-book action has no plan_id from its own preview, so nothing was written; rerun the batch preflight.');
+      const result = stripSchema(collectionPage(pair, childPlanId))! as Record<string, PsJsonValue>;
+      if (action.source === 'holding') result['note_close'] = closeFiledNote(action);
+      return result;
+    }
+    if (action.destination === 'local-hub') {
+      const result = stripSchema(hubPage(pair, true))! as Record<string, PsJsonValue>;
+      if (action.source === 'holding') result['note_close'] = closeFiledNote(action);
+      return result;
     }
     refuse(`Triage action kind '${action.kind}' is not ported; run this batch with tools/Invoke-LibraryTriage.ps1.`);
   }
@@ -568,24 +737,32 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     };
     // .NET's `.` is everything but LF, so `review:\s*.*$` there takes a CR with it; `[^\n]*` here does too.
     const setReview = (content: string, state: string) => content.replace(/^review:\s*[^\n]*/m, `review: ${state}`);
+    // EVERY CLOSE IS STAMPED, AND A REOPEN UNSTAMPS (S73 row 1). The stamp is the runner's, written here at
+    // execution like `completed_utc`, and never enters the action's metadata: a clock in the digest would make
+    // every batch refuse its own plan id. `shelf tidy` ages a closed note from it.
+    const closeState = (content: string, state: string) => setNoteField(setReview(content, state), 'reviewed', state === 'done' ? utcSeconds() : null);
     const lock: BookLock = enterBookLock(workspace, book.bookRoot, lockTimeout);
     let mutation: BookMutation | null = null;
     try {
       if (action.kind === 'review') {
         const newState = String(action.metadata['new_review'] ?? '');
         result['new_review'] = newState;
+        // A note closed before the stamp existed is `done` with no `reviewed:`. Reviewing it again writes the stamp
+        // and says `stamped`, which is the only route that lets it age.
+        const stamped = note.reviewed !== null;
         // Nothing written, so nothing marked dirty.
-        if (note.review === newState) {
+        if (note.review === newState && stamped === (newState === 'done')) {
           result['status'] = 'unchanged';
           result['reader_map'] = `${book.bookRoot}/wiki/_index.md`;
           return result;
         }
         const content = fs.readFileSync(note.fullPath, 'utf8');
-        const updated = setReview(content, newState);
-        if (updated === content) refuse(`This note has no review field to update: ${note.page}`);
+        if (!/^review:/m.test(content)) refuse(`This note has no review field to update: ${note.page}`);
+        const updated = closeState(content, newState);
+        if (updated === content) refuse(`This note has no frontmatter to update: ${note.page}`);
         mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Review ${note.page} as ${newState}`, lock });
         writeAtomicText(note.fullPath, updated);
-        result['status'] = 'updated';
+        result['status'] = note.review === newState && newState === 'done' ? 'stamped' : 'updated';
         result['pending_count'] = updateShelfNoteIndex(book).pendingCount;
       } else if (action.kind === 'notebook') {
         const topic = String(action.metadata['topic'] ?? '');
@@ -639,7 +816,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         // The Notebook copy is not a Book write, so the window opens here, at the Shelf note's frontmatter.
         const content = fs.readFileSync(note.fullPath, 'utf8');
         mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Copy ${note.page} to ${scope.relative}/${topic}`, lock });
-        writeAtomicText(note.fullPath, setReview(content, 'done'));
+        writeAtomicText(note.fullPath, closeState(content, 'done'));
         result['status'] = 'copied';
         result['new_review'] = 'done';
         result['pending_count'] = updateShelfNoteIndex(book).pendingCount;

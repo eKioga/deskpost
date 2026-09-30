@@ -567,7 +567,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
             incarnation_next: record.next_incarnation,
             confirmed: false,
             advice:
-              `Re-run with -Force -UserConfirmed only if workspace ${record.workspace_id} ` +
+              `Re-run with --force --user-confirmed only if workspace ${record.workspace_id} ` +
               `on ${record.machine} is gone for good. If it is merely idle, run ` +
               'tools/Set-CollectionOwner.ps1 -Release there instead: a forced takeover is ' +
               "recorded permanently and the displaced workspace's next shared write is refused " +

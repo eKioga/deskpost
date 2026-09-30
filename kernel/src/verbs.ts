@@ -53,7 +53,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   book: {
     summary: 'Add a page to an open curated Book, or graduate a Notebook topic into one.',
-    usage: 'library book <add-page|graduate> <slug> [arguments]',
+    // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `book <action> --help` shows it.
+    usage:
+      'library book add-page <slug> <page> (--content-path <f> | --body <text>) [--title <t>] [--seat <s>] [--preflight]; ' +
+      'library book graduate <slug> [--topic <t> | --source-path <p>] [--page-prefix <p>] [--recurse] [--seat <s>] [--preflight]',
     actions: ['add-page', 'graduate'],
     positional: false,
     // `add-page` is ported whole; `graduate` answers --preflight and refuses the apply half by
@@ -64,7 +67,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
   capture: {
     summary: 'Capture a note into a capture-enabled Book. Saving is ungated and needs no open Book; reading the note back needs its Book open.',
     // --content-path beside --body (S66): on Windows the shim keeps only an inline body's first line.
-    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>)',
+    // --why (S73 row 3): one closed category, recorded and never required.
+    // --supersedes (S73 row 4): closes the named older note in the same Book, and needs the Book open and a seat.
+    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] [--supersedes notes/<page>]',
     actions: [],
     positional: true,
     ported: true,
@@ -229,11 +234,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
     usage:
-      'library seat <enter|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
-      '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]',
-    // All four answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
-    // `enter` spawns, never run by hand.
-    actions: ['enter', 'hold', 'retire', 'start', 'status'],
+      'library seat <dirs|enter|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
+      'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]',
+    // All five answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
+    // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), applied by `start`.
+    actions: ['dirs', 'enter', 'hold', 'retire', 'start', 'status'],
     positional: false,
     ported: true,
     row: 'S14',
@@ -280,9 +286,22 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S16',
   },
   shelf: {
-    summary: "The local Shelf: render, new, rename, remove, archive, restore, stub, and carry another workspace's capture notes in.",
-    usage: 'library shelf <action> [arguments] [--workspace <path>] [--json]; library shelf carry <old-workspace> --book <capture-book> (--preflight | --user-confirmed --plan-id <id>)',
-    actions: ['archive', 'carry', 'duplicates', 'new', 'remove', 'rename', 'render', 'restore', 'stub'],
+    summary:
+      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, and recall a collection Book to the Shelf.",
+    usage:
+      // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `shelf <action> --help` shows it.
+      'library shelf <action> [arguments] [--workspace <path>] [--json]; ' +
+      'library shelf render; ' +
+      'library shelf new <slug> --title <t> --summary <s> [--topics <t>] [--origin <o>] [--capture [--closed-by writer|any]] [--preflight]; ' +
+      'library shelf rename <slug> <new-slug> [--new-title <t>] (--preflight | --plan-id <id>); ' +
+      'library shelf remove <slug> [--reason <r>] [--seat <s>] (--preflight | --plan-id <id>); ' +
+      'library shelf archive <slug> [--reason <r>] (--preflight | --plan-id <id>); ' +
+      'library shelf restore <slug> (--preflight | --plan-id <id>); ' +
+      'library shelf stub <slug> <page> --canonical <book>/<page> [--reason <r>] [--superseded-on <yyyy-MM-dd>] (--preflight | --plan-id <id>); ' +
+      'library shelf duplicates [--embedding-url <u>] [--embedding-model <m>] [--api-key <k>] [--similarity-threshold <n>] [--batch-size <n>]; ' +
+      'library shelf carry <old-workspace> --book <capture-book> (--preflight | --user-confirmed --plan-id <id>); ' +
+      'library shelf recall <book-slug> [--shelf-slug <s>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]',
+    actions: ['archive', 'carry', 'duplicates', 'new', 'recall', 'remove', 'rename', 'render', 'restore', 'stub'],
     positional: false,
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.

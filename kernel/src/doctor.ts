@@ -30,7 +30,9 @@ import { parseArguments } from './argv.ts';
 import { homeDirectory, resolveWorkspace } from './workspace.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
+import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
+import { getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections } from './shelfbook.ts';
 import {
   masterIndexDrift,
   scopeIndexDrift,
@@ -857,6 +859,76 @@ function assistantPresent(): string {
   return [claude !== null ? `Claude Code at ${claude}` : null, codex !== null ? `Codex at ${codex}` : null].filter((part) => part !== null).join('; ');
 }
 
+/**
+ * WHERE A SEAT'S FOLDERS COME FROM, AND WHETHER THEY ARE STILL THERE (1.2.5, ADR-0061). Two things WARN, never FAIL:
+ * a folder a seat's record names that is gone, which `seat start` skips; and an `additionalDirectories` entry in the
+ * workspace's own Claude settings that points outside the Library, which every seat reads -- what `/add-dir` with
+ * "remember" writes (Report 2026-09-29). Doctor never edits either file.
+ */
+function seatAddedFolders(workspace: string): string {
+  const stateDirectory = path.join(workspace, '.claude');
+  const problems: string[] = [];
+  let recorded = 0;
+  for (const row of readSeatRegistry(stateDirectory)) {
+    let dirs: { path: string; exists: boolean }[] = [];
+    try {
+      dirs = addedDirsStatus(stateDirectory, row.seat);
+    } catch (error) {
+      problems.push((error as Error).message);
+      continue;
+    }
+    recorded += dirs.length;
+    for (const dir of dirs.filter((candidate) => !candidate.exists)) {
+      problems.push(`seat '${row.seat}' records the added folder ${dir.path}, which no longer exists; remove it with deskpost seat dirs ${row.seat} --remove "${dir.path}"`);
+    }
+  }
+  for (const name of ['settings.json', 'settings.local.json']) {
+    const file = path.join(stateDirectory, name);
+    if (!fs.existsSync(file)) continue;
+    let entries: unknown;
+    try {
+      entries = (JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as { permissions?: { additionalDirectories?: unknown } })?.permissions?.additionalDirectories;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries.filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '')) {
+      const resolved = path.resolve(workspace, entry);
+      if (isAtOrInside(resolved, workspace)) continue;
+      problems.push(
+        `${entry} in .claude/${name} is outside this Library, and every seat can read this folder; record it for one seat with ` +
+          `deskpost seat dirs <seat> --add "${resolved}", then remove it from .claude/${name}`,
+      );
+    }
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  return recorded ? `${recorded} added folder${recorded === 1 ? '' : 's'} recorded across the seats, all present; no workspace setting adds a folder outside the Library` : 'no seat records an added folder, and no workspace setting adds a folder outside the Library';
+}
+
+/**
+ * EVERY CAPTURE BOOK SAYS WHO CLOSES ITS NOTES (S73 row 4). Keyed on the capture Kind, never on a slug. An entry with
+ * no `- **Closed by:**` line is any-seat at runtime, as every Book was before the line, and an unrecognised value reads
+ * as `writer`; both WARN with the one-line edit. Doctor never edits an entry: the reader does, then renders.
+ */
+function captureBooksSayWhoCloses(workspace: string): string {
+  const catalogFile = shelfCatalogPath(workspace);
+  if (!fs.existsSync(catalogFile)) return 'SKIP: this Library has no Shelf catalog, so no capture Book to check';
+  const problems: string[] = [];
+  let checked = 0;
+  for (const section of shelfCatalogSections(readUtf8(catalogFile))) {
+    if (!/^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(section.body)) continue;
+    const slug = /^[ \t]*-[ \t]+\*\*Path:\*\*[ \t]+shelf\/([a-z0-9][a-z0-9-]*)[ \t]*$/m.exec(section.body)?.[1];
+    if (!slug) continue;
+    checked += 1;
+    const declared = getShelfBook(workspace, slug).closedByDeclared ?? null;
+    const edit = `add the line '- **Closed by:** writer' (or 'any', as the Report Inbox's is) to shelf/${slug}/_catalog-entry.md, then run deskpost shelf render`;
+    if (declared === null) problems.push(`capture Book '${slug}' does not say who closes its notes, so any seat may; ${edit}`);
+    else if (!['writer', 'any'].includes(declared)) problems.push(`capture Book '${slug}' says '- **Closed by:** ${declared}', which reads as writer; ${edit.replace('add the line', 'make the line')}`);
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  return checked ? `${checked} capture Book${checked === 1 ? '' : 's'}, each saying who closes its notes` : 'no capture Book on the Shelf';
+}
+
 function runCheck(check: string, body: () => string): CheckResult {
   try {
     const detail = body();
@@ -902,6 +974,11 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
   const programChecks: CheckResult[] = [
     runCheck('program.command-resolves', () => commandResolves(program)),
     runCheck('program.assistant-present', assistantPresent),
+    // KEPT IN THIS LIST, NOT `checks` (1.2.5): the PowerShell runner has no added folders to check, and `checks` is
+    // compared with it row for row. Skipped with no Library, as a workspace check is.
+    workspace ? runCheck('seats.added-folders', () => seatAddedFolders(workspace)) : { check: 'seats.added-folders', status: 'skipped', detail: 'no Library here, so no seats whose folders to check' },
+    // HERE FOR THE SAME REASON (S73 row 4): the PowerShell runner has no seat rule to check.
+    workspace ? runCheck('shelf.capture-books-say-who-closes', () => captureBooksSayWhoCloses(workspace)) : { check: 'shelf.capture-books-say-who-closes', status: 'skipped', detail: 'no Library here, so no capture Books to check' },
   ];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;

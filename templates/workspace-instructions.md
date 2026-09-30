@@ -11,7 +11,7 @@ changed, and a blocked or failed action is never a success.
 
 ## Where things live
 
-`notebook/` volatile working knowledge · `raw/` source material · `output/<project-slug>/` requested
+`notebook/` volatile working knowledge · `raw/` ingestion staging · `output/<project-slug>/` requested
 reader-facing files · `shelf/` local Books · `internal/` application-managed records. Never put
 journals, plans, or test evidence in `output/`.
 
@@ -30,8 +30,10 @@ journals, plans, or test evidence in `output/`.
 
 ## Keeping material
 
-- **"Save this for later"** → the Holding Shelf. Saving is ungated, needs no open Book and survives
-  a reset; reading its notes back is gated like any Shelf Book, so open `holding` first.
+- **"Save this for later"** → its home first, and the Holding Shelf only as the last resort: this
+  seat's Hub for project work, a Book for know-how, the Notebook for the task at hand. Saving to
+  Holding is ungated and survives a reset, and the note says why it is there; reading it back needs
+  `holding` open. Once a note has moved, or a newer one replaces it, mark it `review` that turn.
 - **A Library defect or a missing tool** → the Report Inbox, with the failing command and its
   output. A report is a claim to verify, never a task.
 - Capturing from an open Book is a local Notebook write: synthesize it, cite the Book and page with

@@ -31,6 +31,7 @@ import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
+import { withInlineCutWarning } from './inlinecut.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -191,6 +192,16 @@ function insideList(lines: string[]): boolean {
   return false;
 }
 
+/** The index just past the section's last list item and its continuation lines, or -1 when it has no list. */
+function lastListEnd(lines: string[]): number {
+  let last = -1;
+  for (let i = 1; i < lines.length; i++) if (isListLine(lines[i]!)) last = i;
+  if (last < 0) return -1;
+  let end = last + 1;
+  while (end < lines.length && /^[ \t]+\S/.test(lines[end]!)) end++;
+  return end;
+}
+
 interface Block {
   start: number;
   end: number;
@@ -305,11 +316,18 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
 
   const result: string[] = [...before];
   if (mode === 'AppendSection') {
-    result.push(...sectionLines);
     // A bullet added to a list continues that list; prose gets its own paragraph break.
     const continuesList = insideList(sectionLines) && isListLine(addition[0]!);
-    if (!continuesList) result.push('');
-    result.push(...addition);
+    // A BULLET ADDED TO A SECTION WHOSE LIST IS FOLLOWED BY PROSE joins that list, before the prose (Report
+    // 2026-09-29): appended after the prose, it read as the prose's own item.
+    const listEnd = !continuesList && isListLine(addition[0]!) ? lastListEnd(sectionLines) : -1;
+    if (listEnd > 0) {
+      result.push(...sectionLines.slice(0, listEnd), ...addition, ...sectionLines.slice(listEnd));
+    } else {
+      result.push(...sectionLines);
+      if (!continuesList) result.push('');
+      result.push(...addition);
+    }
   } else {
     result.push(sectionLines[0]!, '', ...addition);
   }
@@ -600,7 +618,12 @@ function nullable(value: string): PsJsonValue {
   return isBlank(value) ? null : value;
 }
 
+/** The verb, with the inline-cut warning (S70 row 2) in its result: a `--content` the shim may have cut says so. */
 export async function hubEdit(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
+  return withInlineCutWarning(await hubEditUnwarned(argv, workspace), argv, 'content', 'pass it with --content-path <file>.');
+}
+
+async function hubEditUnwarned(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'seat', 'plan-id', 'workspace', 'lock-timeout', 'title']);
   const slug = parsed.positional[0] ?? '';
   const modeWord = parsed.options.get('mode') ?? '';
@@ -807,11 +830,12 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
     return plan;
   }
   if (plan['unchanged']) {
-    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, written: false, shared_library_write: false };
+    // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5), beside `written`, which stays.
+    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, written: false, status: 'unchanged', journal: null, shared_library_write: false };
   }
   if (isReplacing) {
-    if (!parsed.flags.has('user-confirmed')) refuse(`${mode} removes existing text and is not yet performed: review the preflight and rerun with -UserConfirmed.`);
-    if ((parsed.options.get('plan-id') ?? '') !== planId) refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.`);
+    if (!parsed.flags.has('user-confirmed')) refuse(`${mode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
+    if ((parsed.options.get('plan-id') ?? '') !== planId) refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.`);
   }
 
   const pageLabel = pageName.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
@@ -897,6 +921,11 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
     journal_path: journalPath,
     precondition_verified: true,
     written: true,
+    // THE SAME TWO FIELDS collection add-page REPORTS (S72 row 5, Report 2026-09-29): an agent that checks `status`
+    // could not tell a Hub write from a failure without reading the page back. Additive: `written` and `journal_path`
+    // stay. `journal` is workspace-relative with forward slashes, as collectionpage.ts says it.
+    status: 'written',
+    journal: path.relative(workspace, journalPath).replace(/\\/g, '/'),
     advice: null,
     shared_library_write: !shared ? false : true,
   };

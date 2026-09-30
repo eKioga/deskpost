@@ -21,8 +21,9 @@
  * WHY THE REFUSALS ARE WORDED IN POWERSHELL'S PARAMETER NAMES. The matrix compares `stderr` sentence
  * for sentence on eleven failure rows, so the two arms must say the same thing; a kernel that
  * improved the wording would report a difference about vocabulary as a difference about behaviour.
- * Where this kernel's own flag differs (`--plan-id` for `-ApprovedPlanId`), the sentence still names
- * the PowerShell one, because that is what the oracle says and the oracle is the contract.
+ * THE ONE EXCEPTION IS THE PLAN-ID FLAG (S71 row 6, B's ruling): a refusal names the flag the reader types,
+ * `--plan-id`, and the matrix says the oracle's `ApprovedPlanId` as `--plan-id` before comparing
+ * (`ConvertTo-AcceptanceKernelPlanIdFlag`, tools/AcceptanceMatrix.ps1).
  */
 
 import * as fs from 'node:fs';
@@ -33,6 +34,7 @@ import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { newBookManifestForShelfBook } from './manifest.ts';
+import { shelfNotes } from './shelfnote.ts';
 import { removeBookManifestStore } from './manifeststore.ts';
 import {
   completeBookMutation,
@@ -74,6 +76,14 @@ import {
 } from './seatdesk.ts';
 import { psConvertToJson } from './psjson.ts';
 import { convertToBookPagePath } from './pagepath.ts';
+// `yyyy-MM-dd` in LOCAL time, which is what `(Get-Date).ToString('yyyy-MM-dd')` gives.
+import { localDate as today } from './localdate.ts';
+import { deleteRecallRecord, readRecallRecord, recallRecordLabel, recallRecordPath, recallRecordTakenRefusal, writeRecallRecord } from './recallrecord.ts';
+
+/** Whether a Shelf slug has a recall record (S70). Unreadable counts as present: the writer says so rather than skip it. */
+function recallRecordExists(workspace: string, slug: string): boolean {
+  return fs.existsSync(recallRecordPath(workspace, slug));
+}
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -106,12 +116,6 @@ function stateDirectory(workspace: string): string {
   return path.join(workspace, '.claude');
 }
 
-/** `yyyy-MM-dd` in LOCAL time, which is what `(Get-Date).ToString('yyyy-MM-dd')` gives. */
-function today(): string {
-  const now = new Date();
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
 
 /**
  * Tracked text naming this Book by path, split into the two lists the reader actually needs.
@@ -252,6 +256,10 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
     if (findShelfCatalogEntry(catalogText, newSlug, `shelf/_catalog.md lists 'shelf/${newSlug}' more than once.`)) {
       refuse(`shelf/_catalog.md already lists a Book at shelf/${newSlug}.`);
     }
+    // A TARGET WITH A RECALL RECORD IS TAKEN (S71 row 1), as it is for `shelf new`: a Book with no record would adopt
+    // that record's defaults and digest, and a recalled Book's own record would overwrite it. Refused either way.
+    const targetRecord = readRecallRecord(workspace, newSlug);
+    if (targetRecord !== null) refuse(recallRecordTakenRefusal(newSlug, targetRecord, 'a Book renamed', 'Nothing was renamed.'));
   }
 
   // EVERY SEAT THAT HOLDS THIS BOOK, not just this one, and UNDER THE REGISTRY LOCK even in the
@@ -299,13 +307,16 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
 
   const references = sourceReferences(workspace, slug);
   const referenceRows = referenceHits(workspace, slug, currentTitle);
+  // A RECALLED BOOK'S RECORD MOVES WITH IT (S70), so its return still finds the Book it came from.
+  const movesRecall = newSlug !== slug && recallRecordExists(workspace, slug);
 
   const digestSource = [
     `slug=${slug}`,
     `new_slug=${newSlug}`,
     `old_title=${currentTitle}`,
     `new_title=${newTitle}`,
-    `catalog=${sha256OfText(catalogText)}`,
+    // This Book's entry only (S71 row 7). The target slug being free is rechecked on every run, not bound here.
+    `catalog_entry=${sha256OfText(entry.text)}`,
     `desk_open=${deskHasBook ? 'True' : 'False'}`,
     ...manifest.map((page) => `page=${page.relative}:${page.sha256}`),
   ];
@@ -328,6 +339,7 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       ? `rewrite shelf/${slug} to shelf/${newSlug} on ${seatsHolding.length} seat(s): ${seatsHolding.join(', ')}`
       : 'no change (the Book is not open at any seat)',
     source_references: referenceRows,
+    ...(movesRecall ? { recall_record_action: `move ${recallRecordLabel(slug)} to ${recallRecordLabel(newSlug)}` } : {}),
     plan_id: planId,
     confirmation_required: true,
     recoverable: true,
@@ -345,7 +357,7 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
   if (!approved) refuse('The Book was not renamed: review the preflight and rerun with its exact --plan-id.');
   if (approved !== planId) {
     refuse(
-      'The Book was not renamed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId. ' +
+      'The Book was not renamed: rerun the current preflight and pass its exact plan_id as --plan-id. ' +
         'A different plan_id means the Book, its catalog entry, or the Desk changed since you approved it.',
     );
   }
@@ -383,6 +395,11 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       );
     }
     deskHasBook = seatsHolding.length > 0;
+    // Rechecked under shelf/<NewSlug>'s lock, which `shelf recall` also takes, so no record can land on the target after this.
+    if (newSlug !== slug) {
+      const lateRecord = readRecallRecord(workspace, newSlug);
+      if (lateRecord !== null) refuse(recallRecordTakenRefusal(newSlug, lateRecord, 'a Book renamed', 'Nothing was renamed.'));
+    }
 
     // The window opens on the Book's CURRENT identity, before the directory moves -- that identity
     // is the one the stored manifest describes, and it is the one that stops being true.
@@ -403,6 +420,8 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       path.join(oldWiki, '_book.md'),
       path.join(oldWiki, '_index.md'),
       shelfCatalogEntryPath(workspace, slug),
+      // Both record paths, the old present and the new absent, so a rollback restores the one and removes the other.
+      ...(movesRecall ? [recallRecordPath(workspace, slug), recallRecordPath(workspace, newSlug)] : []),
     ];
     journalPath = writeBookJournal({
       workspace,
@@ -455,6 +474,12 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       }
     }
 
+    if (movesRecall) {
+      const record = readRecallRecord(workspace, slug)!;
+      writeRecallRecord(workspace, { ...record, shelf_slug: newSlug });
+      deleteRecallRecord(workspace, slug);
+    }
+
     if (deskHasBook && newSlug !== slug) {
       updateDeskEntryAcrossSeats({
         workspace,
@@ -502,6 +527,9 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       if (stragglers.length) problems.push(`these seats still name the old Book root: ${stragglers.join(', ')}`);
     }
 
+    if (movesRecall && (!fs.existsSync(recallRecordPath(workspace, newSlug)) || fs.existsSync(recallRecordPath(workspace, slug)))) {
+      problems.push(`the recall record did not move from ${recallRecordLabel(slug)} to ${recallRecordLabel(newSlug)}`);
+    }
     if (problems.length) refuse(problems.join('; '));
 
     // Only now, with the move verified. A slug change moves the Book's IDENTITY, so the old slug's
@@ -611,27 +639,7 @@ function writeUtf8(file: string, text: string): void {
 
 /** The reader map of a capture Book, regenerated from the notes on disk rather than appended to. */
 function updateShelfNoteIndex(book: ShelfBook): void {
-  const notesRoot = book.notesPath;
-  const notes = fs.existsSync(notesRoot)
-    ? fs
-        .readdirSync(notesRoot, { withFileTypes: true })
-        .filter((item) => item.isFile() && item.name.toLowerCase().endsWith('.md'))
-        .map((item) => item.name)
-        .sort()
-        .map((name) => {
-          const content = readUtf8(path.join(notesRoot, name));
-          const titleMatch = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
-          const base = name.replace(/\.md$/i, '');
-          const captured = /^captured:\s*(.*)$/m.exec(content);
-          const review = /^review:\s*(.*)$/m.exec(content);
-          return {
-            page: `notes/${base}`,
-            title: titleMatch ? titleMatch[1]!.trim() : base,
-            captured: captured && captured[1]!.trim() ? captured[1]!.trim() : 'unknown',
-            review: review && review[1]!.trim() ? review[1]!.trim() : 'pending',
-          };
-        })
-    : [];
+  const notes = shelfNotes(book);
   const byCapturedDescending = (left: { captured: string }, right: { captured: string }): number =>
     left.captured < right.captured ? 1 : left.captured > right.captured ? -1 : 0;
   const pending = notes.filter((note) => note.review !== 'done').sort(byCapturedDescending);
@@ -676,7 +684,7 @@ export function removeVerb(argv: string[], programRoot: string, workspace: strin
   const approved = parsed.options.get('plan-id') ?? '';
   if (!approved) refuse('The Shelf Book was not deleted: review the preflight and rerun with its exact --plan-id.');
   if (approved !== preview.planId) {
-    refuse('The Shelf Book was not deleted: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.');
+    refuse('The Shelf Book was not deleted: rerun the current preflight and pass its exact plan_id as --plan-id.');
   }
 
   const activeRoot = path.join(workspace, 'shelf', slug);
@@ -760,6 +768,9 @@ export function removeVerb(argv: string[], programRoot: string, workspace: strin
     fs.rmSync(stagingRoot, { recursive: true, force: true });
     if (fs.existsSync(stagingRoot)) refuse('the staged Book still exists after permanent deletion');
     moved = false;
+    // THE RECALL RECORD GOES WITH ITS SHELF BOOK (S70, Q9): here, past the point of no return, and nowhere else on an
+    // exit path. The collection is not touched.
+    if (deleteRecallRecord(workspace, slug)) document['recall_record_deleted'] = recallRecordLabel(slug);
 
     let manifestResult = 'not present';
     try {
@@ -897,6 +908,13 @@ function deletePlan(workspace: string, slug: string, reason: string, actingSeat:
         : 'none (the Book is already closed)',
       blocking_references: references.blocking,
       other_references: references.other,
+      ...(recallRecordExists(workspace, slug)
+        ? {
+            recall_record_action:
+              `delete ${recallRecordLabel(slug)} after the Book is deleted. Nothing in the collection changes: ` +
+              'the Book this was recalled from stays as it is.',
+          }
+        : {}),
       plan_id: planId,
       confirmation_required: true,
       destructive: true,
@@ -995,7 +1013,9 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
     'action=archive',
     `slug=${slug}`,
     `title=${book.title}`,
-    `catalog=${sha256OfText(catalogText)}`,
+    // THIS BOOK'S ENTRY, NOT THE WHOLE CATALOG (S71 row 7), as the delete already binds: archiving Book A changed
+    // Book B's approved plan, and B then refused with an identical plan. Other Books' entries are not this plan's.
+    `catalog_entry=${sha256OfText(entry.text)}`,
     ...manifest.map((page) => `page=${page.relative}:${page.sha256}`),
   ];
   const planId = 'archive-shelf-book-' + sha256OfText(digestSource.join('\n'));
@@ -1014,6 +1034,10 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
     desk_action: 'none (the Book must already be closed)',
     blocking_references: references.blocking,
     other_references: references.other,
+    // AN ARCHIVED SHELF BOOK IS NOT A PENDING RETURN (S70): its recall record goes, journalled with the move.
+    ...(recallRecordExists(workspace, slug)
+      ? { recall_record_action: `delete ${recallRecordLabel(slug)}: an archived Shelf Book is not a pending return. The collection is not touched.` }
+      : {}),
     plan_id: planId,
     confirmation_required: true,
     recoverable: true,
@@ -1034,7 +1058,7 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
   if (!approved) refuse('The Book was not archived: review the preflight and rerun with its exact --plan-id.');
   if (approved !== planId) {
     refuse(
-      'The Book was not archived: rerun the current preflight and pass its exact plan_id as ApprovedPlanId. ' +
+      'The Book was not archived: rerun the current preflight and pass its exact plan_id as --plan-id. ' +
         'A different plan_id means the Book or the catalog changed since you approved it.',
     );
   }
@@ -1063,17 +1087,22 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
       reason: `Archive shelf/${slug}`,
       lock,
     });
+    const archivesRecall = recallRecordExists(workspace, slug);
     journalPath = writeBookJournal({
       workspace,
       bookRoot: `shelf/${slug}`,
       operation: `Archive shelf/${slug}`,
-      paths: [],
+      paths: archivesRecall ? [recallRecordPath(workspace, slug)] : [],
       operationDigest: planId,
     }).journalPath;
 
     ensureDirectory(archiveRoot);
     fs.renameSync(activeRoot, archivedRoot);
     moved = true;
+    if (archivesRecall) {
+      deleteRecallRecord(workspace, slug);
+      plan['recall_record_deleted'] = recallRecordLabel(slug);
+    }
 
     // The catalog entry, VERBATIM. A restore puts back what the reader wrote rather than a
     // regenerated approximation of it -- summary lines, Kind markers and annotations included.
@@ -1216,7 +1245,9 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
   const digestSource = [
     'action=restore',
     `slug=${slug}`,
-    `catalog=${sha256OfText(catalogText)}`,
+    // This Book's entry only (S71 row 7): the one the record carries back, and that the active catalog lists no
+    // Book at this slug, which every run refuses above. Other Books' entries are not this plan's.
+    'catalog_lists_slug=false',
     `entry=${sha256OfText(entryText)}`,
     ...restoreManifest.map((page) => `page=${page.relative}:${page.sha256}`),
   ];
@@ -1248,7 +1279,7 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
   if (!approved) refuse('The Book was not restored: review the preflight and rerun with its exact --plan-id.');
   if (approved !== planId) {
     refuse(
-      'The Book was not restored: rerun the current preflight and pass its exact plan_id as ApprovedPlanId. ' +
+      'The Book was not restored: rerun the current preflight and pass its exact plan_id as --plan-id. ' +
         'A different plan_id means the archived Book or the catalog changed since you approved it.',
     );
   }
@@ -1477,7 +1508,7 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
       'body journaled first and a rollback verified by readback. A new Discovery manifest generation is committed in ' +
       'the same window. No other page, the reader map, and the Book Catalog are not changed.',
     next:
-      'Read the page first if you have not. Then rerun with -UserConfirmed and this exact -ApprovedPlanId. The prior ' +
+      'Read the page first if you have not. Then rerun with this exact --plan-id. The prior ' +
       'body is recoverable from the journal until the next write to this Book.',
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
@@ -1486,7 +1517,7 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
   if (!approved) refuse('The page was not stubbed: review the preflight and rerun with its exact --plan-id.');
   if (approved !== planId) {
     refuse(
-      'The page was not stubbed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId. ' +
+      'The page was not stubbed: rerun the current preflight and pass its exact plan_id as --plan-id. ' +
         'A different plan_id means the page, or the stub that would replace it, changed since you approved it.',
     );
   }

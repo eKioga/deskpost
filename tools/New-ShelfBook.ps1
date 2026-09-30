@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Summary,
     [string]$Topics = '',
     [switch]$Capture,
+    # PARITY (S73 row 4, shelf.new-capture-book-gets-a-capture-reader-map): the kernel's --closed-by.
+    [string]$ClosedBy = '',
     [string]$Origin = '',
     [string]$WorkspacePath,
     [int]$LockTimeoutSeconds = 20,
@@ -94,7 +96,13 @@ if (Test-Path -LiteralPath $bookRoot) {
 }
 
 $kindLine = if ($Capture) { '- **Kind:** capture' } else { '' }
-$originLine = if ([string]::IsNullOrWhiteSpace($Origin)) { "created $([DateTimeOffset]::UtcNow.ToString('yyyy-MM-dd'))" } else { $Origin.Trim() }
+if ($PSBoundParameters.ContainsKey('ClosedBy')) {
+    if (-not $Capture) { throw "--closed-by names who closes a capture Book's notes, so it needs --capture." }
+    if ($ClosedBy.Trim() -cnotin @('writer', 'any')) { throw "--closed-by must be writer or any; '$ClosedBy' is neither." }
+}
+$closedByLine = if ($Capture) { "- **Closed by:** $(if ($ClosedBy.Trim() -ceq 'any') { 'any' } else { 'writer' })" } else { '' }
+# THE LOCAL CALENDAR DATE (S71 row 8, as ADR-0048 settled for capture notes): the reader's own day, not UTC's.
+$originLine = if ([string]::IsNullOrWhiteSpace($Origin)) { "created $((Get-Date).ToString('yyyy-MM-dd'))" } else { $Origin.Trim() }
 
 $plan = [ordered]@{
     operation      = 'Create a Shelf Book'
@@ -158,6 +166,7 @@ try {
         "- **Summary:** $($Summary.Trim())"
         $(if (-not [string]::IsNullOrWhiteSpace($Topics)) { "- **Topics:** $($Topics.Trim())" })
         $kindLine
+        $closedByLine
         "- **Origin:** $originLine"
     )
     $render = Invoke-ShelfCatalogRender -Workspace $workspace -WriteEntry @(

@@ -473,7 +473,10 @@ only copy of what was written. This rebuilds the source from the Book.
   read by `path` and written to `source`.
 - **A Book published from a Shelf Book has no restore route at all, and the refusal says so.** Its
   journal `source` paths sit under `shelf/<slug>/wiki/`, never `notebook/<slug>/`, so there is no
-  Notebook source to rebuild — `library-development-design-history` is the standing example. Until
+  Notebook source to rebuild — `library-development-design-history` is the standing example. Its
+  pages are not "already on local disk" either: the ordinary exit deletes the Shelf Book. Since S70
+  the refusal names the route that does exist for a local collection Book, `deskpost shelf recall
+  <slug>`, which brings it back to the Shelf to be changed and returned. Until
   2026-09-05 it was refused only as *"does not resolve below `notebook/<slug>/`"*, which is true and
   reads like a corrupt journal: it sent the reader hunting for damage in an intact file instead of
   telling them the whole class is out of scope. Held by

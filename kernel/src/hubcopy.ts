@@ -253,9 +253,9 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
     shared_library_write: false,
   };
   if (parsed.flags.has('preflight')) return plan;
-  if (!parsed.flags.has('user-confirmed')) refuse('Project copy is not yet performed: review the plan and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Project copy is not yet performed: review the plan and rerun with --user-confirmed.');
   if ((parsed.options.get('plan-id') ?? '') !== planId) {
-    refuse('Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as ApprovedPlanId.');
+    refuse('Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.');
   }
 
   // THE CONFIRMED HALF (S39), in the oracle's order. KEYED ON THE MANIFEST DIGEST, as the oracle keys it.

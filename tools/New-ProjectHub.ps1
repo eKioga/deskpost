@@ -81,7 +81,7 @@ function New-ProjectRootBody([string]$RootTitle, [string]$RootPurpose, [string[]
     # correctly routed away the whole time -- shipping a feature closes a Next item and adds a Now
     # limit. The fix is the same move that worked in 2026-08-18: name the destination, do not set a
     # number.
-    $nowSeed = "Where this project stands, and anything still open or unproven. Replace this line.`n`nOrientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated ``notes/`` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to the ``limits`` page with a disposition, a settled question goes to ``## Decisions`` and the record it names, and a standing practice goes to the subject's own rules or docs."
+    $nowSeed = "Where this project stands, and anything still open or unproven. Replace this line.`n`nOrientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated ``notes/`` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a ``limits`` page (make it with ``hub edit --mode new-page`` when the first one arrives) with a disposition, a settled question goes to ``## Decisions`` and the record it names, and a standing practice goes to the subject's own rules or docs."
     # The non-dev body is pinned to a fixed literal in the self-test so it cannot drift by accident;
     # a deliberate change moves that literal with its reason, as ADR-0013 did.
     $dev = if ($DevTemplate) { "`n" + (New-ProjectDevSections) } else { '' }
@@ -154,7 +154,7 @@ if ($SelfTest) {
         'Exercise the seed.', '',
         '## Now', '',
         'Where this project stands, and anything still open or unproven. Replace this line.', '',
-        'Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to the `limits` page with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject''s own rules or docs.', '',
+        'Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a `limits` page (make it with `hub edit --mode new-page` when the first one arrives) with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject''s own rules or docs.', '',
         '## Next', '',
         '- [ ] Take the next step.'
     ) -join "`n") + "`n"

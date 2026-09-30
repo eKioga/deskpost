@@ -858,6 +858,8 @@ interface StandardShelfBook {
   summary: string;
   topics: string;
   origin: string;
+  /** The seat rule (S73 row 4): the Holding Shelf's notes are closed by their writer, a Report by any seat. */
+  closedBy: 'writer' | 'any';
 }
 
 const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
@@ -868,6 +870,7 @@ const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
       'Findings set aside during a session for later review, one page per note. Survives a Notebook reset; closed by default so unreviewed material never crowds a new session.',
     topics: 'capture, holding, unreviewed',
     origin: "created by library init as the Library's capture surface",
+    closedBy: 'writer',
   },
   {
     slug: 'reports',
@@ -876,6 +879,7 @@ const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
       "Bugs and tooling gaps an agent found in the Library itself, kept for triage. A page here is one agent's claim about the Library, written while the context was live -- verify it against the code before acting on it.",
     topics: 'capture, reports',
     origin: "created by library init as the Library's report channel",
+    closedBy: 'any',
   },
 ];
 
@@ -1236,7 +1240,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     if (creating.length || catalogMissing) {
       const shelfWrites = scratchShelfWrites(workspace, programRoot, (scratch) => {
         for (const { book } of creating) {
-          createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, origin: book.origin });
+          createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, closedBy: book.closedBy, origin: book.origin });
         }
         if (!creating.length) invokeShelfCatalogRender({ workspace: scratch, programRoot });
       });

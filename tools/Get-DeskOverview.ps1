@@ -254,6 +254,7 @@ $quarantine = [pscustomobject]@{
 # happened to remember them. Only counts and the oldest pending date are reported: note titles and
 # bodies still require opening the Book, exactly as any other Shelf Book's pages do.
 $openShelfSlugs = @($openBooks | Where-Object { $_.location -ceq 'shelf' } | ForEach-Object { $_.slug })
+$whyCategories = @('no-seat', 'no-home', 'needs-yes', 'reset-imminent', 'for-seat')
 $captureBooks = @(Get-CaptureBooks -Workspace $workspace | ForEach-Object {
     $notes = @(Get-ShelfNotes -Book $_)
     $pending = @($notes | Where-Object { $_.review -cne 'done' })
@@ -265,6 +266,14 @@ $captureBooks = @(Get-CaptureBooks -Workspace $workspace | ForEach-Object {
         pending_count = $pending.Count
         reviewed_count = $notes.Count - $pending.Count
         oldest_pending = if ($oldestPending.Count) { $oldestPending[0].captured } else { $null }
+        # PARITY (S73 row 3b, desk.overview-names-what-is-open-at-this-seat): a count per closed why
+        # category and one for the rest, as the kernel's Desk says them. No typed value is said.
+        pending_by_why = & {
+            $counts = [ordered]@{}
+            foreach ($category in $whyCategories) { $counts[$category] = @($pending | Where-Object { $_.why -ceq $category }).Count }
+            [pscustomobject]$counts
+        }
+        pending_why_missing = @($pending | Where-Object { $_.why -cnotin $whyCategories }).Count
     }
 })
 

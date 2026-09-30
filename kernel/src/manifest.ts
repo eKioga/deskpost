@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
+import { shelfNotes } from './shelfnote.ts';
 
 const BOOK_MANIFEST_SCHEMA = 2;
 
@@ -418,56 +419,3 @@ export function newBookManifestForShelfBook(book: ShelfBook): Record<string, PsJ
   });
 }
 
-export interface ShelfNote {
-  file: string;
-  page: string;
-  fullPath: string;
-  title: string;
-  captured: string;
-  review: string;
-}
-
-/** Every note's frontmatter and title. Bodies are never returned. */
-export function shelfNotes(book: ShelfBook): ShelfNote[] {
-  if (!fs.existsSync(book.notesPath) || !fs.statSync(book.notesPath).isDirectory()) return [];
-  return fs
-    .readdirSync(book.notesPath, { withFileTypes: true })
-    .filter((item) => item.isFile() && item.name.toLowerCase().endsWith('.md'))
-    .map((item) => item.name)
-    .sort()
-    .map((name) => {
-      const fullPath = path.join(book.notesPath, name);
-      const content = readUtf8(fullPath);
-      const fields = noteFrontmatter(content);
-      const titleMatch = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
-      const base = name.replace(/\.md$/i, '');
-      return {
-        file: name,
-        page: `notes/${base}`,
-        fullPath,
-        title: titleMatch ? titleMatch[1]!.trim() : base,
-        // A BLANK VALUE IS AN ABSENT ONE, which is what Get-FrontmatterValue decides: a note whose
-        // `review:` line was written empty is pending, not reviewed under the name ''.
-        captured: frontmatterValue(fields, 'captured', 'unknown'),
-        review: frontmatterValue(fields, 'review', 'pending'),
-      };
-    });
-}
-
-function frontmatterValue(fields: Map<string, string>, key: string, fallback: string): string {
-  const value = fields.get(key);
-  return value !== undefined && value.trim() !== '' ? value : fallback;
-}
-
-/** The flat `key: value` pairs of a leading frontmatter block, or an empty map when there is none. */
-function noteFrontmatter(content: string): Map<string, string> {
-  const fields = new Map<string, string>();
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  if (lines.length < 2 || lines[0]!.trim() !== '---') return fields;
-  for (let index = 1; index < lines.length; index += 1) {
-    if (lines[index]!.trim() === '---') return fields;
-    const match = /^([a-z_]+):\s*(.*)$/.exec(lines[index]!);
-    if (match) fields.set(match[1]!, match[2]!.trim());
-  }
-  return new Map();
-}

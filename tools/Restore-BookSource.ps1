@@ -194,7 +194,7 @@ function Test-CanonicalNotebookSource {
     # library-development-design-history is the standing example, recorded in
     # docs/book-currency-anchoring.md and on the library-dev Hub.
     if ($Value.StartsWith('shelf/', [StringComparison]::Ordinal)) {
-        return "'$Value' is a Shelf page, so this Book was published from a Shelf Book rather than from notebook/$Slug/. A Book published from the Shelf has no Notebook source to rebuild and no restore route here at all -- its pages are already on local disk under the Shelf Book that published them, and the journal is not at fault"
+        return "'$Value' is a Shelf page, so this Book was published from a Shelf Book rather than from notebook/$Slug/. A Book published from the Shelf has no Notebook source to rebuild and no restore route here at all, and the journal is not at fault. To change its pages, bring it back to the Shelf with deskpost shelf recall $Slug, which copies the collection Book there and returns it through deskpost publish refresh"
     }
     if (-not $Value.StartsWith("notebook/$Slug/", [StringComparison]::Ordinal)) { return "'$Value' does not resolve below notebook/$Slug/" }
     if (-not $Value.EndsWith('.md', [StringComparison]::Ordinal)) { return "'$Value' is not a Markdown page" }

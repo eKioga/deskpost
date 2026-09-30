@@ -95,5 +95,6 @@ Check ($mcp -notmatch 'validated-book-reader') 'the reader registration is gone 
 }
 $results
 $passed = @($results | Where-Object { $_ -like 'PASS*' }).Count
-"$passed of $($results.Count) passed"
+# THE LAST LINE NAMES THE INSTALLER RUN (S74 row 2): Test-BuiltRelease shows each fixture's last line.
+"$passed of $($results.Count) passed (installer: $installer)"
 if ($passed -ne $results.Count) { throw "$($results.Count - $passed) install lifecycle case(s) failed." }

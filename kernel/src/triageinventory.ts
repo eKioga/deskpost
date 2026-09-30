@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
 import { listFilesRecursive, readUtf8, shelfCatalogSections, type ShelfBook } from './shelfbook.ts';
+import { shelfNotes } from './shelfnote.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -205,41 +206,6 @@ function captureBooks(workspace: string): ShelfBook[] {
   return books.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
 }
 
-interface NoteRow {
-  file: string;
-  page: string;
-  fullPath: string;
-  title: string;
-  review: string;
-  captured: string;
-}
-
-/** Frontmatter, title and a hash. Bodies are never read into the report. */
-function bookNotes(book: ShelfBook): NoteRow[] {
-  if (!fs.existsSync(book.notesPath)) return [];
-  return fs
-    .readdirSync(book.notesPath, { withFileTypes: true })
-    .filter((item) => item.isFile() && item.name.toLowerCase().endsWith('.md'))
-    .map((item) => item.name)
-    .sort()
-    .map((name) => {
-      const full = path.join(book.notesPath, name);
-      const content = readUtf8(full);
-      const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
-      const base = name.replace(/\.md$/i, '');
-      const captured = /^captured:[ \t]*(.*)$/m.exec(content);
-      const review = /^review:[ \t]*(.*)$/m.exec(content);
-      return {
-        file: name,
-        page: `notes/${base}`,
-        fullPath: full,
-        title: heading ? heading[1]!.trim() : base,
-        review: review && review[1]!.trim() ? review[1]!.trim() : 'pending',
-        captured: captured && captured[1]!.trim() ? captured[1]!.trim() : 'unknown',
-      };
-    });
-}
-
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values.filter((item) => item))].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
@@ -361,7 +327,7 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
   // --- Source two: the capture Books, which a Reset does NOT touch -------------------------------
   const books = captureBooks(root);
   const holdingNotes = books.flatMap((book) =>
-    bookNotes(book).map((note) => {
+    shelfNotes(book).map((note) => {
       const relative = `${book.bookRoot}/wiki/${note.page}.md`;
       const hash = utf8Hash(note.fullPath);
       const records = resolveCopyRecords(relative, hash);

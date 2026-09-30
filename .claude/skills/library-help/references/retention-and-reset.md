@@ -104,6 +104,12 @@ before quoting either destructive one.
 `raw/` holds converted and imported source material. It is not a Book, has no Desk, and nothing in
 it is current policy or an instruction.
 
+**`raw/` is ingestion staging, not a long-term home.** It is shared by every seat, so it stays clean
+only if batches leave it. A batch is there to be compiled: once its Book holds what it needs, or its
+Project closes, the reader evicts the batch. Surviving a reset means a reset leaves `raw/` alone, not
+that `raw/` is storage. When a reader asks where to keep source text for good, the answer is the
+Book that owns it (its pages, through `book add-page` or `collection add-page`), never `raw/`.
+
 ```
 library raw search <batch> "<term>"     # search ONE named batch
 library raw owners                      # which Project owns each batch, and is it still live
@@ -123,7 +129,7 @@ downloads it into a new batch folder by hand.
 Publishing a Shelf Book to a shared collection, refreshing one, and archiving a Book or a Project
 all follow the same shape: **preview, show the manifest and plan id, one clear approval, then the
 confirmed run**. The full sequences are in
-[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.2.3/docs/librarian-operation-playbooks.md). Read the
+[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.2.5/docs/librarian-operation-playbooks.md). Read the
 applicable section immediately before the action. A Library on its own disk has no shared
 collection to publish to, and its Books stay on the Shelf.
 

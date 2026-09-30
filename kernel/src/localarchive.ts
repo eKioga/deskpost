@@ -26,6 +26,7 @@ import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
 import { readUtf8 } from './shelfbook.ts';
+import { localDate } from './localdate.ts';
 import {
   ensureHeading,
   insertUnderHeading,
@@ -51,11 +52,6 @@ function escapeRegExp(value: string): string {
 }
 
 /** `Get-Date -Format 'yyyy-MM-dd'`: the local date, as the shared archiver stamps an entry. */
-function localDate(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
 function firstHeading(text: string): string | null {
   const match = /^#\s+(.+?)\s*$/m.exec(splitLocalFrontmatter(text).body);
   return match ? match[1]!.trim() : null;
@@ -106,7 +102,7 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
     shared_library_write: false,
   };
   if (parsed.flags.has('preflight')) return plan;
-  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with -UserConfirmed.');
+  if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with --user-confirmed.');
 
   return withBookLocks(workspace, [activeDirectory, archiveDirectory, 'collection/books', 'collection/archive'], 20, (locks) => {
     const activeLock = locks.find((lock) => lock.bookRoot === activeDirectory)!;

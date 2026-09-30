@@ -328,6 +328,9 @@ function New-AcceptanceFixtureShelf {
     Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/_book.md') "# Fixture Holding Shelf`n`n- **Type:** Local copy`n"
     Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/_index.md') "# Fixture Holding Shelf - Reader Map`n"
     Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/notes/2026-09-22-kept.md') "---`ncaptured: 2026-09-22T00:00:00Z`nreview: pending`n---`n`n# Kept note`n`nA capture that predates the row under test.`n"
+    # PARITY FIXTURE (S73 row 4): a note another seat wrote, so the seat rule's refusal can fire in both
+    # arms. Its seat is one no fixture seats, and nothing else matches its title or file name.
+    Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/notes/2026-09-21-elsewhere.md') "---`ncaptured: 2026-09-21T00:00:00Z`nreview: pending`nfrom_seat: elsewhere`n---`n`n# Written elsewhere`n`nA note another seat set aside.`n"
 
     Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/_catalog.md') @"
 # Local Shelf
@@ -340,6 +343,7 @@ function New-AcceptanceFixtureShelf {
 ## Fixture Holding Shelf
 - **Summary:** Capture-enabled fixture Book.
 - **Kind:** capture
+- **Closed by:** writer
 - **Path:** shelf/holding
 "@
 

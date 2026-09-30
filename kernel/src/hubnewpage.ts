@@ -262,6 +262,9 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     journal_path: journalPath,
     written_sha256: proposedSha,
     written: true,
+    // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5); `written` and `journal_path` stay.
+    status: 'written',
+    journal: path.relative(workspace, journalPath).replace(/\\/g, '/'),
     next:
       `Read it with mcp__validated-book-reader__read_open_project_page (${options.slug}, ${page}). To link it from the Hub, ` +
       `add a line under Next: deskpost hub edit ${options.slug} --mode append-section --section Next --content "- [[${pagePath.replace(/\.md$/, '')}]]"`,

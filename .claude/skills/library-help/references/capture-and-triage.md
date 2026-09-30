@@ -10,6 +10,13 @@ material can be set aside without being reviewed first and without blocking a re
 It is closed by default like every other Shelf Book, so unreviewed material never crowds a new
 session.
 
+**It is the last resort, not the default** (ADR-0060). A decision, a next step or a session record
+belongs on the seat's Hub. Know-how belongs in a Book, and working material in the Notebook. The
+Holding Shelf takes what none of those can: a session with no seat, a note no Hub or Book fits, a
+Book page the reader has not yet said yes to, or a note that must survive a reset about to happen.
+When many notes land here, the Library is missing a home for something, and that is worth saying to
+the reader.
+
 ## What needs a seat here, and what does not
 
 The two halves of this page sit on opposite sides of the seat boundary:
@@ -30,8 +37,11 @@ library capture holding --title "<short title>" --content-path <local-markdown-f
 library capture holding --title "<short title>" --body "<short body>"
 ```
 
-Optional: `--tags "godot, rendering"`, `--source-paths "raw/x/a.md; raw/x/b.md"`,
-`--source-project <slug>`, `--preflight`. Prefer `--content-path` for anything longer than a line:
+Optional: `--why <category>`, `--tags "godot, rendering"`, `--source-paths "raw/x/a.md; raw/x/b.md"`,
+`--source-project <slug>`, `--preflight`. `--why` records why the note is on the Holding Shelf as one
+of `no-seat`, `no-home`, `needs-yes`, `reset-imminent` or `for-seat`. It is never required. A capture
+without it still lands, and its result says `why_missing` and names the homes to try first. Any other
+value is refused. Prefer `--content-path` for anything longer than a line:
 it keeps punctuation and prose off the command line. On Windows it is required for more than one
 line, because the `deskpost` shim ends the command line at the first line break: an inline `--body`
 keeps only its first line, and the result then carries a `body_warning` saying so.
@@ -46,8 +56,10 @@ file and the reader-map entry, and `--title` is not used. The returned `title_so
 won, so tell the reader the title the note was actually filed under.
 
 Capture is the one write that does not need the reader to ask for it in advance. When the reader
-says "save this", "keep this for later" or "I don't want to lose this", capture it and say where it
-went.
+says "save this", "keep this for later" or "I don't want to lose this", first ask where it belongs:
+the seat's Hub, a Book, or the Notebook. File it there if one can take it. Otherwise capture it here
+with `--why` naming the reason (a line in the body can say more), and tell the reader where it went. Never let
+the choice lose a note: when the home is unclear or needs a yes that has not been given, capture it.
 
 ## What a note looks like
 
@@ -60,6 +72,7 @@ session_id: 4ff20ab2-5388-4254-919c-2c25f8288c0b
 source_project: my-project
 source_paths: raw/godot/render.md
 tags: godot, rendering
+why: no-home
 ---
 
 # Rendering finding
@@ -70,17 +83,51 @@ tags: godot, rendering
 `captured:` is the exact UTC instant, for ordering. The file name's date is the local one.
 
 `review: pending` is what makes a note countable. `library desk` reports the pending count and the
-oldest pending date so nothing rots unseen, but it reports only counts. Titles and bodies require
+oldest pending date so nothing rots unseen, and counts the pending notes per `why` category, plus
+those with none (`pending_by_why`, `pending_why_missing`). It reports only counts. Titles and bodies require
 opening the Book, exactly as with any Shelf Book.
 
 **`review` has two values and only two**: `pending` and `done`. When a note has been dealt with, the
 verdict lives where that kind of thing already lives (a Project Hub's `Next`, or a Book) and the
 note is marked `done`.
 
+**`reviewed:` is when a note was closed**, in UTC. Triage writes it together with `review: done`, on a
+`review` and on `notebook`'s Shelf copy, and a `review` with `"reopen": true` removes it. A note
+closed before closes were stamped has none, and a `review` of it adds one and reports `stamped`. A
+closed note ages from its stamp, so an unstamped one never counts as old.
+
 **`from_seat` and `session_id` say which seat wrote the note, and out of which conversation.** The
 writer fills both in, and there is no switch to set them, because a seat a caller could type would
 let one agent file under another's name. Both are simply **absent** when a session with no seat
 captures. `session_id` is a pointer to follow deliberately, not a licence to read that conversation.
+
+**The closing fields.** `filed_to:` names the page a triage filing sent the note to.
+`superseded_by:` names the newer note that closed it, and that newer note says `supersedes:`.
+
+## Who may close a note: the seat rule
+
+Each capture Book's catalog entry says who closes its notes with `- **Closed by:**`. `init` writes
+`writer` for the Holding Shelf and `any` for the Report Inbox.
+
+In a `writer` Book, a seat may close, reopen or delete only three kinds of note:
+- a note it wrote itself;
+- a seatless note (one with no `from_seat`);
+- a message whose `for_seat` names it.
+
+Any other note is refused, and the refusal names the seat that wrote it. The rule covers every route
+that closes, reopens or deletes a note: `review`, `notebook`, the filing kinds, `discard` and
+`capture --supersedes`. An `any` Book, the Report Inbox, lets any seat close a note, because a Report
+is filed for another seat to close.
+
+**The reader's override.** When the reader asks for another seat's notes to be sorted, add
+`"other_seat": "<the writing seat>"` to that action:
+- it enters the plan id;
+- the preflight lists such actions apart under `other_seat_actions`, so the reader's yes is to them
+  by name;
+- an `other_seat` that does not name the note's writer is refused;
+- one that is correct but not needed is accepted.
+
+Add it only when the reader has asked for this.
 
 ## Triaging
 
@@ -103,9 +150,11 @@ library triage batch --actions '<json>' --user-confirmed --plan-id <id>
 | --- | --- | --- |
 | `notebook` | copies the note into this seat's Notebook and marks the Shelf copy reviewed | the Book open |
 | `review` | marks the note reviewed | the Book open |
-| `shelf-book` | graduates the note into a curated Shelf Book | **both** Books open |
+| `shelf-book` | graduates the note into a curated Shelf Book, and closes it (`filed_to:` names the page) | **both** Books open |
 | `discard` | deletes one note permanently | the preview's plan id and the reader's yes |
-| `project`, `book` | a Project Hub, a new shared Book | **not ported**: refused by name |
+| `collection-book` | adds the note as a page (`page_path`) of an existing collection Book, and closes it. One action per Book in a batch | the Book open at this seat |
+| `project` | on a local collection: one Hub page, `notes/<the note's file stem>`, and closes the note. Needs only `slug` | the Hub open at this seat |
+| `book`, and `project` on Basic Memory | a new shared Book, a shared Project Hub | **not ported**: refused by name |
 
 Name the note with `source_match` (case-sensitive, matched against the note's H1 title and its
 filename; an ambiguous match is refused and lists what it hit) or `source_page` for an exact target.
@@ -113,7 +162,31 @@ The match is resolved when the plan is made, so a note captured afterwards canno
 approval meant. A batch that is interrupted resumes when the same actions are run again.
 
 `notebook` copies rather than moves: the Shelf note stays as the durable record, and the Notebook
-copy is the working version. The other destinations leave the note where it is.
+copy is the working version. The other destinations leave the note where it is. Filing it into a
+Shelf Book also closes it, so a graduated note cannot be discarded in the same batch. Rerunning a
+batch that filed a note skips that action as `already-filed` while its page still exists.
+
+## Keeping the Holding Shelf small
+
+A note left `pending` after its content has moved is the most common way the Shelf grows. Filing
+it with triage (`shelf-book`, `collection-book`, or `project` into a local Hub) closes it. Closing a
+note filed any other way is a second step. Take it in the same turn:
+
+- **Filed elsewhere** with `hub edit`, `book add-page` or `collection add-page`: mark the Holding
+  note `review`.
+- **Replaced by a newer note** (a revised plan, a final draft): capture the newer one with
+  `--supersedes notes/<the older page>`. That closes the older note in the same step and records the
+  relation both ways. It needs the Book open and a seat. An older note already closed is left as it
+  is, and the newer one still says what it supersedes.
+- **Sort what this seat wrote.** When `library desk` shows pending Holding notes, offer to triage
+  those whose `from_seat` is this seat. The seat rule refuses another seat's Holding note unless the
+  action carries `other_seat`, which only the reader's ask justifies. (Reports are different: the
+  seat that receives one closes it.)
+- **A message for another seat** may wait here, because no seat writes another's Hub. Tag it
+  `for-seat` and name the seat in its title. The seat it names marks it `review` once it has acted on
+  it.
+
+A `review` note stays on disk as the record. Deleting one is `discard`, with its preview and one yes.
 
 There is deliberately **no discard from the Notebook**. A reset quarantines the Notebook rather than
 deleting it, so discarding there would be strictly worse than waiting for the reset. For a Holding
@@ -150,7 +223,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.3/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.5/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 
@@ -163,4 +236,9 @@ library shelf new <slug> --title "<title>" --summary "<one line>" --capture
 ```
 
 Drop `--capture` for an ordinary curated Book, which `library book add-page` then fills. It refuses
-a slug that already exists, and applies directly, because it can only ever create.
+a slug that already exists, and applies directly, because it can only ever create. A capture Book
+gets `- **Closed by:** writer`. Pass `--closed-by any` for one that any seat may close, like the
+Report Inbox. For a Library made before the line existed, `library doctor` warns on each capture
+Book whose entry lacks it and gives the one-line edit. Add the line to
+`shelf/<slug>/_catalog-entry.md`, then run `library shelf render`. Until then, that Book lets any
+seat close its notes.

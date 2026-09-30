@@ -391,7 +391,7 @@ function compileVerb(workspace: string, argv: string[]): PsJsonValue {
   const seat = namedSeat.seat!;
   assertSeatClaimHeld({ workspace, stateDirectory, seat });
   if (preview.public['confirmation_required'] === true && !approvedPlanId) {
-    throw new Error('Replacement requires -Preflight, one approval, then -UserConfirmed with the exact -ApprovedPlanId.');
+    throw new Error('Replacement requires --preflight, one approval, then a rerun with the exact --plan-id it issued.');
   }
 
   let journalPath: string | null = null;

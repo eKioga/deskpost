@@ -116,10 +116,14 @@ The **source** decides which destinations are reachable. `notebook` is the defau
 | `holding` | the Holding Shelf | yes | — | `source_path`, `title` |
 | `notebook` | `notebook/<topic>/` | — | yes | `topic`, and the note |
 | `shelf-book` | an open curated Shelf Book | yes | yes | `slug`, `page_path` |
-| `project` | an active Project Hub | yes | yes | `slug`, `title`, `purpose` |
+| `collection-book` | a new page in an existing, open collection Book | yes | yes | `slug`, `page_path`; one action per Book in a batch |
+| `project` | on a local collection, one Hub page `notes/<the source's file stem>`; on Basic Memory, an active shared Project Hub | yes | yes | local: `slug`, the Hub open. Basic Memory: `slug`, `title`, `purpose` |
 | `book` | a **new** shared Book | yes | yes | `slug`, `title`, `summary` |
 | `review` | in place — marks a note reviewed | — | yes | `reopen` to put it back to pending |
 | `discard` | in place — deletes one note | — | yes | its own approval |
+
+From `holding`, filing a note with `shelf-book`, `collection-book` or a local `project` also closes
+it: the note is marked done and stamped, and `filed_to:` names where it went.
 
 A `notebook` source is a file or folder inside `notebook/`. A `holding` source is one note in a
 capture Book, named by `source_page` (exact) or `source_match`, with `source_slug` defaulting to
@@ -179,6 +183,20 @@ Discovery, drop out of the reader map, and are never removed. When the list is n
 its `refresh_plan_id`, not its `plan_id`. **To add one page to a collection Book, do not rebuild it**:
 `deskpost collection add-page <slug> <page> --content-path <file> --preflight`, then
 `--user-confirmed --plan-id <id>` after one yes -- it only ever adds, and the reader map gains one line.
+
+**To change pages already in a collection Book (S70), recall it.** Open it on the Desk
+(`deskpost desk open book <slug> --location collection`), then run `deskpost shelf recall <slug> --preflight`. Show
+the reader the Shelf slug it will use, the pages it copies and the `plan_id`. After one yes, rerun with
+`--user-confirmed --plan-id <id>`. This copies every page byte for byte into a new Shelf Book and opens that Book on
+this seat. The collection Book is not written. Edit the Shelf copy, then return it with `deskpost publish refresh
+<shelf-slug> --preflight`, approved by its `refresh_plan_id`, which keeps the Shelf copy. `deskpost publish
+<shelf-slug>` returns it and then deletes it. Both take `--book-slug`, `--title` and `--summary` from the recall
+record and the Shelf catalog. Both refuse, naming the pages, if the collection Book changed after the recall, for
+example through an `add-page`. The two routes then are a fresh recall into another slug (`--shelf-slug`) with the
+pages merged by hand, or discarding the recall with `deskpost shelf remove <shelf-slug>`. `_book` and `_index` are
+regenerated on the return. A recalled Book cannot go through `publish batch`. The route covers this Library's own
+collection only: an archived collection Book, and a Book reached through a Basic Memory connection, are refused by
+name.
 
 Before publishing a Book, run
 `tools/Publish-BookCopy.ps1 -Destination Shared ... -Preflight`. Show the source, Book name,

@@ -67,9 +67,11 @@ Librarian does **not** do: work around its own guard.
 
 > "Save this for later: *…whatever you just worked out.*"
 
-**What it proves.** Capture is the cheapest path in the Library, on purpose. There is no open Book,
-no confirmation and nothing to decide. It can only ever add a page, which is exactly why it needs no
-approval, and it survives a reset.
+**What it proves.** Nothing worth keeping is ever lost. The Librarian first looks for the note's
+home (your Project Hub, a Book, the Notebook), and when none fits, it captures it to the Holding
+Shelf. That is the last resort, and the cheapest path in the Library on purpose: no open Book and no
+confirmation. It can only ever add a page, which is exactly why it needs no approval, and it survives
+a reset.
 
 **Look at afterwards.** Ask what's on your desk again. The Holding Shelf's pending count went up.
 Then try to read the note back. That **does** need the Book open, so say "open the Holding Shelf"

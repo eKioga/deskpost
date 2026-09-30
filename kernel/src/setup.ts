@@ -29,7 +29,7 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { applyLibraryInit, planLibraryInit, registerWorkspace, type LibraryInitPlan } from './init.ts';
 import { findWorkspaceByMarker, markerField, readMarker, registryPath, toWorkspaceRoot } from './workspace.ts';
 import { COMMAND_NAME, findAssistant, ownedRegistration } from './machine.ts';
-import { discoverInstalls, missingProgramRoot, sameFolder } from './installs.ts';
+import { discoverInstalls, installRootByShape, libraryKernelBinaries, missingProgramRoot, registeredLibraryFolders, sameFolder } from './installs.ts';
 import { sha256OfText } from './sha.ts';
 import { deskpostScripts } from './doctor.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
@@ -62,6 +62,8 @@ export interface SetupAnswers {
   run_as_file?: boolean;
   /** Repairs the plan leaves out unless asked: `repair` for an existing, guarded Library used as it is. */
   offered?: string[];
+  /** An upgrade or repair with no -Library: the Libraries this install serves, kept as they are (S74 row 1). */
+  kept_libraries?: string[];
 }
 
 // --- the terminal -----------------------------------------------------------------------------------------
@@ -246,12 +248,37 @@ function libraryState(folder: string): { folder: string; state: 'new' | 'existin
  * changed PATH is already on the user PATH. Refusing on registrations blocked side-by-side installs the fixtures (and a
  * developer) rely on, for no hazard the PATH check misses. Registrations are read for the missing-program refusal only.
  */
-function otherInstall(root: string, userPath: string | undefined): { root: string; via: string } | null {
+function otherInstalls(root: string, userPath: string | undefined): { root: string; via: string }[] {
   const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
   const searchPaths = [{ text: process.env[pathKey] ?? '', via: "this shell's PATH" }];
   if (userPath) searchPaths.push({ text: userPath, via: 'the user PATH' });
   const found = discoverInstalls({ searchPaths, libraries: [] });
-  return found.find((install) => !sameFolder(install.root, root)) ?? null;
+  return found.filter((install) => !sameFolder(install.root, root));
+}
+
+/** Where an install goes when the reader names no folder: install.ps1's and this verb's default, one rule. */
+export function defaultInstallRoot(): string {
+  return process.platform === 'win32' ? path.join(process.env['LOCALAPPDATA'] ?? os.homedir(), 'deskpost') : path.join(os.homedir(), '.local', 'share', 'deskpost');
+}
+
+/** The exact line that upgrades the install at `root` in place, as README "Upgrading" gives it. */
+export function upgradeLine(root: string): string {
+  return process.platform === 'win32'
+    ? `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1))) -InstallRoot ${root}`
+    : `curl -fsSL https://github.com/eKioga/deskpost/releases/latest/download/install.sh | DESKPOST_INSTALL_ROOT=${root} sh`;
+}
+
+/**
+ * THE LIBRARIES AN INSTALL SERVES: every registered Library whose own registrations run this install's kernel, through
+ * `current` or a `versions/<v>` folder. An upgrade keeps them as they are; their hooks name `current`, which it switches.
+ */
+export function librariesServedBy(root: string, registryRoot?: string): string[] {
+  return registeredLibraryFolders(registryRoot).filter((library) =>
+    libraryKernelBinaries(library).some((binary) => {
+      const served = installRootByShape(binary);
+      return served !== null && sameFolder(served, root);
+    }),
+  );
 }
 
 // --- setup --ask ------------------------------------------------------------------------------------------
@@ -295,16 +322,44 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   const version = String(releaseTuple()['plugin_version'] ?? 'unknown');
   let installRoot = path.resolve(options.installRoot);
 
+  const findOthers = (root: string) => {
+    try {
+      return otherInstalls(root, options.userPath);
+    } catch (error) {
+      refuseWith((error as Error).message);
+    }
+  };
+
+  // THE BARE ONE-LINER UPGRADES THE ONE INSTALL IT FINDS (S74 row 1, the Report "the bare install one-liner refuses to
+  // upgrade an install outside the default folder"). install.ps1 always passes a root, so "no -InstallRoot" is read as
+  // the default root holding nothing. With exactly one install elsewhere on PATH, a person is offered that install, and
+  // nobody-to-ask is refused with the exact line; two or more keep the refusal below.
+  if (sameFolder(installRoot, defaultInstallRoot()) && programFolderState(installRoot).state === 'new') {
+    const others = findOthers(installRoot);
+    if (others.length === 1) {
+      const other = others[0]!;
+      const otherVersion = programFolderState(other.root).version ?? '?';
+      if (!talk.interactive) {
+        refuseWith(`Deskpost ${otherVersion} is already installed at ${other.root} (found on ${other.via}), not in the default folder. To upgrade it in place, run:\n  ${upgradeLine(other.root)}\nNothing was installed.`);
+      }
+      talk.say(`Deskpost ${otherVersion} is installed at ${other.root} (found on ${other.via}).`);
+      for (;;) {
+        const key = (await talk.ask(`[Enter] upgrade it in place to ${version}   [q] quit › `)).toLowerCase();
+        if (key === 'q') {
+          talk.say('Nothing was installed.');
+          return SETUP_QUIT;
+        }
+        if (key === '') break;
+      }
+      installRoot = path.resolve(other.root);
+    }
+  }
+
   // THE PROGRAM FOLDER: new, empty, or an install; never someone else's files (#1).
   const judgeRoot = (root: string) => {
     const characters = programFolderCharacterRefusal(root);
     if (characters) refuseWith(characters);
-    let other: { root: string; via: string } | null;
-    try {
-      other = otherInstall(root, options.userPath);
-    } catch (error) {
-      refuseWith((error as Error).message);
-    }
+    const other = findOthers(root)[0] ?? null;
     if (other) {
       refuseWith(
         `Deskpost is already installed at ${other.root} (found on ${other.via}). Two installs would race for the ` +
@@ -318,20 +373,45 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   let folderState = judgeRoot(installRoot);
   const installState: SetupAnswers['install_state'] =
     folderState.state === 'new' ? 'new' : folderState.version === version ? 'repair' : 'upgrade';
-  if (installState === 'repair' && !options.repair && !talk.interactive) {
-    refuseWith(`Deskpost ${version} is already installed at ${installRoot}. Pass -Repair to reinstall it over itself; nothing was changed.`);
+  // THE SAME VERSION IS SAID AS SUCH, to a person as to a script (S74 row 1): a repair is only ever asked for.
+  if (installState === 'repair' && !options.repair) {
+    refuseWith(`Deskpost is already at ${version} at ${installRoot}; -Repair reinstalls it. Nothing was changed.`);
   }
 
-  // THE ONE QUESTION (Q2).
-  talk.say(
-    'Deskpost gives your assistant a Library to work in. Claude Code or Codex becomes its Librarian,\n' +
-      'and it reads only what you open.\n',
-  );
+  const given = options.library?.trim();
+  // AN UPGRADE OR REPAIR ASKS NO NEW-INSTALL QUESTION (S74 row 1, the Report "with -InstallRoot on an existing install,
+  // the installer asks the new-install Library question"). Measured cause: the question's default is the folder run
+  // from, and the registry's default Library stands in only from a system folder (defaultLibraryAnswer). Run from
+  // the reader's home folder, which holds files and is no Library, it offered <home>\Library, a second, empty Library,
+  // while the registry marked the real one default. With no -Library, the Libraries this install serves are kept as
+  // they are: their hooks name `current`, which the upgrade switches, so nothing inside them is written.
+  let kept: string[] = [];
+  if (installState !== 'new' && !given) {
+    try {
+      kept = librariesServedBy(installRoot, options.registryRoot);
+    } catch (error) {
+      refuseWith((error as Error).message);
+    }
+    talk.say(
+      installState === 'upgrade'
+        ? `Upgrading Deskpost ${folderState.version ?? '?'} to ${version} at ${installRoot}.`
+        : `Repairing Deskpost ${version} at ${installRoot}.`,
+    );
+    talk.say(kept.length ? `The Libraries it serves are kept as they are: ${kept.join(', ')}.` : 'No registered Library runs this install; none is made.');
+  } else {
+    // THE ONE QUESTION (Q2).
+    talk.say(
+      'Deskpost gives your assistant a Library to work in. Claude Code or Codex becomes its Librarian,\n' +
+        'and it reads only what you open.\n',
+    );
+  }
   const suggested = defaultLibraryAnswer(options.cwd, options.registryRoot);
   let library: string | null;
   let state: 'new' | 'existing' | 'none';
-  const given = options.library?.trim();
-  if (given && given.toLowerCase() === 'none') {
+  if (installState !== 'new' && !given) {
+    library = null;
+    state = 'none';
+  } else if (given && given.toLowerCase() === 'none') {
     library = null;
     state = 'none';
   } else if (given) {
@@ -415,7 +495,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
 
   // THE ONE SCREEN, AND THE ONE KEYPRESS.
   for (;;) {
-    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: options.pathChange, overlapAccepted, runAsFile: options.runAsFile === true }));
+    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: options.pathChange, overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: kept }));
     if (!talk.interactive) break;
     const keys = ['[Enter] install'];
     if (installState === 'new') keys.push('[p] other program folder');
@@ -477,6 +557,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     unguarded,
     both_assistants: claude !== null && codex !== null,
     run_as_file: options.runAsFile === true,
+    kept_libraries: kept,
     offered: state === 'existing' && !(repairLibrary && state === 'existing') ? ['repair'] : [],
   };
   fs.mkdirSync(path.dirname(path.resolve(options.answersFile)), { recursive: true });
@@ -501,13 +582,18 @@ export interface ScreenView {
   overlapAccepted: boolean;
   /** install.ps1 ran as a file (an assistant's route): no "this window" is made ready. */
   runAsFile?: boolean;
+  /** The Libraries an upgrade or repair keeps as they are. */
+  keptLibraries?: string[];
 }
 
 /** The screen as a title and rows, the one source for the terminal screen and an assistant's table (step 2). */
 export function screenRows(view: ScreenView): { title: string; rows: [string, string, string][] } {
   const rows: [string, string, string][] = [];
+  const kept = view.state === 'none' && view.installState !== 'new' ? (view.keptLibraries ?? []) : [];
   const libraryNote =
-    view.state === 'none'
+    kept.length
+      ? `kept as ${kept.length === 1 ? 'it is' : 'they are'}: ${kept.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
+      : view.state === 'none'
       ? `none; later: ${COMMAND_NAME} setup <folder>`
       : view.state === 'new'
         ? 'your Books, Notebook and seats (new folder)'
@@ -516,7 +602,7 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
           : view.repairLibrary
           ? 'existing Library, repaired (its managed files brought up to date)'
           : 'existing Library, used as it is';
-  rows.push(['Library', view.library ?? '-', libraryNote]);
+  rows.push(['Library', view.library ?? (kept.length ? kept.join(', ') : '-'), libraryNote]);
   const programNote =
     view.installState === 'new'
       ? 'a new folder; updates and undo touch only this'
@@ -573,6 +659,7 @@ export function viewOfAnswers(answers: SetupAnswers): ScreenView {
     pathChange: answers.path_change,
     overlapAccepted: answers.overlap_accepted,
     runAsFile: answers.run_as_file === true,
+    keptLibraries: answers.kept_libraries ?? [],
   };
 }
 
@@ -722,11 +809,18 @@ export function setupApply(plan: SetupPlan): Record<string, unknown> {
     const registration = registerWorkspace(plan.register.workspace, plan.register.id, undefined, plan.answers.make_default);
     return { library: { status: 'used_as_it_is', workspace: plan.register.workspace, id: plan.register.id, registry: registration.path, registration: registration.action, files: [] } };
   }
-  return { library: null };
+  const kept = plan.answers.kept_libraries ?? [];
+  return kept.length ? { library: null, kept_libraries: kept } : { library: null };
+}
+
+/** An upgrade's kept Libraries, said as such rather than as "no Library" (S74 row 1). */
+function keptText(kept: string[]): string {
+  return `${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept as ${kept.length === 1 ? 'it is' : 'they are'}: nothing inside ${kept.length === 1 ? 'it' : 'them'} is written.`;
 }
 
 function planText(plan: SetupPlan): string {
-  if (plan.library === null && plan.register === null) return 'No Library is set up: the program only.';
+  const kept = plan.answers.kept_libraries ?? [];
+  if (plan.library === null && plan.register === null) return kept.length ? keptText(kept) : 'No Library is set up: the program only.';
   if (plan.register !== null) return `The Library at ${plan.register.workspace} is used as it is: nothing inside it is written.`;
   const library = plan.library!;
   const lines = [`The Library at ${library.workspace}: ${library.writes.length} file(s) to write, ${library.directories.length} folder(s) to create.`];
@@ -760,10 +854,9 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
     if (parsed.flags.has('ask')) {
       const answersFile = parsed.options.get('answers');
       if (!answersFile) return { refusal: 'setup --ask needs --answers <file>.', exitCode: 1, value: null, asJson: json };
-      const defaultRoot = process.platform === 'win32' ? path.join(process.env['LOCALAPPDATA'] ?? os.homedir(), 'deskpost') : path.join(os.homedir(), '.local', 'share', 'deskpost');
       const code = await setupAsk({
         answersFile,
-        installRoot: parsed.options.get('install-root') ?? defaultRoot,
+        installRoot: parsed.options.get('install-root') ?? defaultInstallRoot(),
         installRootGiven: parsed.options.has('install-root'),
         library: parsed.options.get('library'),
         cwd: parsed.options.get('cwd') ?? process.cwd(),
@@ -817,7 +910,10 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
 
 function applyText(result: Record<string, unknown>): string {
   const library = result['library'] as Record<string, unknown> | null;
-  if (library === null) return 'No Library was set up.';
+  if (library === null) {
+    const kept = Array.isArray(result['kept_libraries']) ? (result['kept_libraries'] as unknown[]).map(String) : [];
+    return kept.length ? keptText(kept) : 'No Library was set up.';
+  }
   if (library['status'] === 'used_as_it_is') return `The Library at ${String(library['workspace'])} is registered, and was left as it is.`;
   return `The Library at ${String(library['workspace'])} is ready (${String(library['status']).replace('_', ' ')}).`;
 }

@@ -30,6 +30,7 @@ import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { getShelfBook, type ShelfBook } from './shelfbook.ts';
+import { parseShelfNote } from './shelfnote.ts';
 import { updateShelfNoteIndex } from './capture.ts';
 import { findWorkspaceByMarker } from './workspace.ts';
 
@@ -49,8 +50,7 @@ interface CarryRow {
 }
 
 function reviewOf(bytes: Buffer): string {
-  const match = /^review:[ \t]*(.*?)[ \t]*$/m.exec(bytes.toString('utf8').replace(/\r/g, ''));
-  return match && match[1] ? match[1] : 'pending';
+  return parseShelfNote('', '', bytes.toString('utf8')).review;
 }
 
 function captureBook(workspace: string, slug: string, which: string): ShelfBook {

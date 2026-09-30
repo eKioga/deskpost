@@ -144,6 +144,53 @@
       "approved_on": "2026-09-28",
       "applies_to": ["desk.a-bare-slug-on-the-desk-is-a-shared-book"],
       "match": { "field_pattern": "^result\\.open_books\\[\\d+\\]\\.location$", "value_pattern": "^(shared|collection)$" }
+    },
+    "a-local-librarys-desk-context-names-its-collection": {
+      "reason": "The Desk context hook's half of the 1.1 place model (PLAN-basic-memory.md step 1, S65): in a local Library a bare slug on the Desk is a Book in its collection, and a bare archive is that collection's archive, so the kernel labels them (collection) and (collection, archived) where the PowerShell hook, which predates local collections, says (shared) and (archived). Dated S72: the installed 1.2.0 and 1.2.3 kernels say the same. Only those two labels, for this row's two slugs, are paired; every other word of the context is compared.",
+      "approved_by": "the S72 kickoff (kickoffs/s72-r2, row 0), B's ruling that a difference both arms get right is an approved delta naming its commit",
+      "approved_on": "2026-09-30",
+      "applies_to": ["guards.desk-context-labels-every-kind-of-open-book"],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.additionalContext$",
+        "phrases": [
+          { "kernel": "basic-memory (collection)", "powershell": "basic-memory (shared)" },
+          { "kernel": "retired (collection, archived)", "powershell": "retired (archived)" }
+        ]
+      }
+    },
+    "kernel-records-which-assistant-bound": {
+      "reason": "ADR-0059 (d81f222, S55): a seat's binding and each conversation it records name the assistant that owns them, so the menu resumes a conversation in the assistant it belongs to. The kernel reads that from CLAUDE_PID or, failing it, from the agent process it walks up to, so a run under Claude Code or Codex records it; the PowerShell arm records no assistant. Dated S72: the installed 1.2.0 and 1.2.3 kernels write it too. Only the one key is paired away, at the indent each file writes it at; every other field of both files is compared, and a run under no agent writes no key and needs no pairing.",
+      "approved_by": "the S72 kickoff (kickoffs/s72-r2, row 0), B's ruling that a difference both arms get right is an approved delta naming its commit",
+      "approved_on": "2026-09-30",
+      "applies_to": ["area:seat"],
+      "match": {
+        "field_pattern": "^effect\\.\\.claude/seats/[a-z0-9][a-z0-9-]*/(binding|conversations)\\.json$",
+        "phrases": [
+          { "kernel": ",\n    \"assistant\":  \"claude\"", "powershell": "" },
+          { "kernel": ",\n    \"assistant\":  \"codex\"", "powershell": "" },
+          { "kernel": ",\n                              \"assistant\":  \"claude\"", "powershell": "" },
+          { "kernel": ",\n                              \"assistant\":  \"codex\"", "powershell": "" }
+        ]
+      }
+    },
+    "kernel-desk-names-a-seats-added-folders": {
+      "reason": "1.2.5 (S72 row 4, ADR-0061): a seat's added folders are a kernel feature, and the Desk overview's this_seat names them, each with whether it is there now. The PowerShell overview has no such record, so it has no field. Only this_seat.added_dirs is the kernel's; every other field of the overview is compared.",
+      "approved_by": "the S72 kickoff (kickoffs/s72-r2, ruling 8): a kernel-only feature takes a kernel_only delta with the reason",
+      "approved_on": "2026-09-30",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.this_seat\\.added_dirs(\\[|\\.|$)" }
+    },
+    "the-desk-context-says-a-notebook-is-in-the-shared-layout": {
+      "reason": "5417b1f (2026-09-28, released in 1.2.3): the kernel's Desk context warns when a Library's Notebook is still in the retired shared layout, where Notebook writes refuse until migrate runs. The PowerShell arm has only that layout, so it never warns. This row's two-seat fixture is laid out by the oracle, so the kernel reads it as legacy. Dated S72: the installed 1.2.3 kernel adds the sentence and 1.2.0 does not. Only the one sentence is paired away; the rest of the context is compared.",
+      "approved_by": "the S72 kickoff (kickoffs/s72-r2, row 0), B's ruling that a difference both arms get right is an approved delta naming its commit",
+      "approved_on": "2026-09-30",
+      "applies_to": ["seat.desk-context-records-the-conversation-at-a-bound-seat"],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.additionalContext$",
+        "phrases": [
+          { "kernel": " This Library's Notebook is in the retired shared layout, so Notebook writes refuse until 'deskpost migrate' runs; save to the Holding Shelf meanwhile.", "powershell": "" }
+        ]
+      }
     }
   },
   "excluded_helpers": {
@@ -1603,6 +1650,70 @@
       "kernel": { "steps": [ { "command": ["triage", "batch", "--actions", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"kept\"}]", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
     },
     {
+      "id": "triage.batch-files-a-holding-note-and-closes-it",
+      "area": "triage",
+      "class": "success",
+      "oracle": "differential",
+      "operation": "A Holding Shelf note graduated into the open curated Book by a confirmed shelf-book action lands as a page, and the note is closed in the same action: review: done, a reviewed: stamp and filed_to naming the page, with the note and the Holding map in the touch set and the close in the digest (S73, PLAN-holding-discipline.md row 2a).",
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Set-VirtualDesk.ps1", "args": ["-Action", "Open", "-Kind", "Book", "-Location", "Shelf", "-Slug", "holding", "-WorkspacePath", "{workspace}", "-Seat", "{seat}", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"shelf-book\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"curated\",\"page_path\":\"kept\",\"title\":\"Kept\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"shelf-book\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"curated\",\"page_path\":\"kept\",\"title\":\"Kept\"}]", "-WorkspacePath", "{workspace}", "-UserConfirmed", "-ApprovedPlanId", "{plan_id}", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["desk", "open", "book", "holding", "--location", "shelf", "--workspace", "{workspace}", "--seat", "{seat}", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"shelf-book\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"curated\",\"page_path\":\"kept\",\"title\":\"Kept\"}]", "--workspace", "{workspace}", "--preflight", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"shelf-book\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"curated\",\"page_path\":\"kept\",\"title\":\"Kept\"}]", "--workspace", "{workspace}", "--user-confirmed", "--plan-id", "{plan_id}", "--json"]} ] }
+    },
+    {
+      "id": "triage.batch-refuses-another-seats-holding-note",
+      "area": "triage",
+      "class": "failure",
+      "oracle": "differential",
+      "operation": "A triage review of a Holding Shelf note another seat wrote is refused at resolution, naming the writing seat and the other_seat override, because the fixture's Holding Shelf says - **Closed by:** writer (S73, PLAN-holding-discipline.md row 4).",
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Set-VirtualDesk.ps1", "args": ["-Action", "Open", "-Kind", "Book", "-Location", "Shelf", "-Slug", "holding", "-WorkspacePath", "{workspace}", "-Seat", "{seat}", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["desk", "open", "book", "holding", "--location", "shelf", "--workspace", "{workspace}", "--seat", "{seat}", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\"}]", "--workspace", "{workspace}", "--preflight", "--json"]} ] }
+    },
+    {
+      "id": "triage.batch-sorts-another-seats-note-at-the-readers-ask",
+      "area": "triage",
+      "class": "success",
+      "oracle": "differential",
+      "operation": "The same review carrying other_seat naming the note's writer is listed apart in the preflight, binds other_seat into its digest, and closes the note once confirmed (S73, PLAN-holding-discipline.md row 4).",
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Set-VirtualDesk.ps1", "args": ["-Action", "Open", "-Kind", "Book", "-Location", "Shelf", "-Slug", "holding", "-WorkspacePath", "{workspace}", "-Seat", "{seat}", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "-WorkspacePath", "{workspace}", "-UserConfirmed", "-ApprovedPlanId", "{plan_id}", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["desk", "open", "book", "holding", "--location", "shelf", "--workspace", "{workspace}", "--seat", "{seat}", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "--workspace", "{workspace}", "--preflight", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "--workspace", "{workspace}", "--user-confirmed", "--plan-id", "{plan_id}", "--json"]} ] }
+    },
+    {
+      "id": "triage.batch-sorts-another-seats-preflight-lists-it-apart",
+      "area": "triage",
+      "class": "success",
+      "oracle": "differential",
+      "operation": "The preflight of a review carrying other_seat lists that action apart, under other_seat_actions, so the reader's yes is to it by name, and writes nothing (S73, PLAN-holding-discipline.md row 4).",
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Set-VirtualDesk.ps1", "args": ["-Action", "Open", "-Kind", "Book", "-Location", "Shelf", "-Slug", "holding", "-WorkspacePath", "{workspace}", "-Seat", "{seat}", "-Json"]}, {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["desk", "open", "book", "holding", "--location", "shelf", "--workspace", "{workspace}", "--seat", "{seat}", "--json"]}, {"command": ["triage", "batch", "--actions", "[{\"kind\":\"review\",\"source\":\"holding\",\"source_match\":\"Written elsewhere\",\"other_seat\":\"elsewhere\"}]", "--workspace", "{workspace}", "--preflight", "--json"]} ] }
+    },
+    {
+      "id": "triage.batch-files-a-holding-note-into-a-local-hub",
+      "area": "triage",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "On a local collection a triage project action needs only the Hub's slug and the Hub open at this seat: it makes one Hub page, notes/<the note's file stem>, through hub edit --mode new-page's writer, and closes the Holding note with filed_to naming the page. A closed Hub and a Notebook folder are refused before any write; a page left on disk by a failed new-page leaves the note pending and its retry is refused naming the review that finishes it; a Basic Memory workspace keeps the shared shape (S73, PLAN-holding-discipline.md row 2b).",
+      "reason": "The PowerShell oracle has no local-collection writers: Invoke-LibraryTriage.ps1 sends a project action to tools/Copy-LocalPagesToProject.ps1, which needs Basic Memory, so no fixture is a state both arms accept. Judged by section 85 of kernel/test/selftest.ts (S73) against the kernel under test, through the front door: the Hub page and the note's close, the project-open Desk state, the folder refusal, LIBRARY_HUB_NEW_PAGE_FAULT=remove and LIBRARY_TRIAGE_CLOSE_FAULT=after-page, and the Basic Memory shape.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "85" } },
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"project\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"acceptance\",\"title\":\"Kept\",\"purpose\":\"The oracle's shared shape.\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["triage", "batch", "--actions", "[{\"kind\":\"project\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"acceptance\"}]", "--workspace", "{workspace}", "--preflight", "--json"]} ] }
+    },
+    {
+      "id": "triage.batch-files-a-holding-note-into-a-collection-book",
+      "area": "triage",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A triage collection-book action adds a Holding note as a page of an existing collection Book open at this seat, through collection add-page: the child's plan_id is taken from its own preview when the batch is planned, shown in the preflight, kept in the plan record and passed to the child at the run; the note is closed with filed_to naming the page. Two actions to one Book, a Book not open at this seat and a Basic Memory workspace are refused by name (S73, PLAN-holding-discipline.md row 2c).",
+      "reason": "The PowerShell oracle has no local-collection writers and no collection-book kind, so no fixture is a state both arms accept. Judged by section 86 of kernel/test/selftest.ts (S73) against the kernel under test, through the front door: the child plan_id in the preflight and the plan record, the page and its map line, the note's close, the three refusals, and LIBRARY_TRIAGE_CLOSE_FAULT=after-page.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "86" } },
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ {"script": "tools/Invoke-LibraryTriage.ps1", "args": ["-ActionJson", "[{\"kind\":\"shelf-book\",\"source\":\"notebook\",\"source_path\":\"notebook/portability/line-endings.md\",\"slug\":\"curated\",\"page_path\":\"line-endings\",\"title\":\"Line endings\"}]", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"]} ] },
+      "kernel": { "steps": [ {"command": ["triage", "batch", "--actions", "[{\"kind\":\"collection-book\",\"source\":\"holding\",\"source_match\":\"Kept note\",\"slug\":\"acceptance\",\"page_path\":\"kept\",\"title\":\"Kept\"}]", "--workspace", "{workspace}", "--preflight", "--json"]} ] }
+    },
+    {
       "id": "hub.new-project-hub-is-orientation-not-a-log",
       "area": "hub",
       "class": "success",
@@ -2183,6 +2294,18 @@
       "fixture": "workspace-seated",
       "powershell": { "steps": [ { "script": "tools/Add-ShelfBookPage.ps1", "args": ["-BookSlug", "holding", "-PagePath", "acceptance-page", "-Content", "# Acceptance", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"] } ] },
       "kernel": { "steps": [ { "command": ["collection", "add-page", "acceptance", "acceptance-page", "--body", "# Acceptance", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
+    },
+    {
+      "id": "publication.shelf-recall-round-trip",
+      "area": "publication",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A Book in a local Library's own collection is recalled to the Shelf (library shelf recall): previewed with a plan_id, then copied page for page, byte for byte, into a new Shelf Book opened on the seat, with a recall record of what it copied; the collection is never written. Edited there, it returns through publish refresh or publish, which take their Book from the record, change only the edited page, and rewrite the record from disk. A return is refused after the collection Book changed (at the preview, and under the Book lock), with another --book-slug, and through publish batch. A closed, archived or Basic Memory Book, a taken Shelf slug, a page carrying a BOM or frontmatter with no body, and shelf new over a record are each refused naming their route, with nothing written; a recall that fails after its copy is rolled back to nothing; rename moves the record and remove deletes it (S70, PLAN-shelf-recall.md).",
+      "reason": "The PowerShell oracle has no local half: no helper reads or writes a local collection, and none recalls a Book. Judged by section 68 of kernel/test/selftest.ts (S70) against the kernel under test, entirely through the front door; it fails against 1.2.3, which has no recall.",
+      "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "68" } },
+      "fixture": "workspace-seated",
+      "powershell": { "steps": [ { "script": "tools/Add-ShelfBookPage.ps1", "args": ["-BookSlug", "holding", "-PagePath", "acceptance-page", "-Content", "# Acceptance", "-WorkspacePath", "{workspace}", "-Preflight", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["shelf", "recall", "acceptance", "--preflight", "--workspace", "{workspace}", "--json"] } ] }
     },
     {
       "id": "hub.new-page-makes-a-page-and-never-replaces-one",

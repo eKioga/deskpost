@@ -19,6 +19,9 @@ export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const ARCHIVE_FOLDER = '_archive';
 export const ARCHIVE_RECORD_NAME = '_archived.json';
 
+/** Who may close a capture Book's notes (S73 row 4): the entry's `- **Closed by:**` line. */
+export type ClosedBy = 'writer' | 'any';
+
 export interface ShelfBook {
   slug: string;
   title: string;
@@ -28,6 +31,14 @@ export interface ShelfBook {
   isCapture: boolean;
   summary: string;
   topics: string[];
+  /**
+   * The seat rule this Book applies. An absent line is `any`, as every Book was before the line existed; an
+   * unrecognised value reads as `writer`, the safer side, and never refuses, because capture resolves the Book
+   * first and a refusal there would gate saving on a catalog typo. Doctor WARNs on both.
+   */
+  closedBy?: ClosedBy;
+  /** The line's value exactly as the entry carries it, or null when the entry has none. For doctor. */
+  closedByDeclared?: string | null;
 }
 
 export interface CatalogSection {
@@ -101,6 +112,8 @@ export function convertFromShelfCatalogEntry(options: {
   const wikiPath = path.resolve(path.join(options.workspace, ...options.bookRoot.split('/'), 'wiki'));
   const summaryMatch = /^[ \t]*-[ \t]+\*\*Summary:\*\*[ \t]+([\s\S]*?)(?=^[ \t]*-[ \t]+\*\*|$)/m.exec(options.body);
   const topicsMatch = /^[ \t]*-[ \t]+\*\*Topics:\*\*[ \t]+([\s\S]*?)(?=^[ \t]*-[ \t]+\*\*|$)/m.exec(options.body);
+  const closedByMatch = /^[ \t]*-[ \t]+\*\*Closed by:\*\*[ \t]*(.*?)[ \t]*$/m.exec(options.body);
+  const closedByDeclared = closedByMatch ? closedByMatch[1]! : null;
   return {
     slug: options.slug,
     title: options.title.trim(),
@@ -115,6 +128,8 @@ export function convertFromShelfCatalogEntry(options: {
           .map((topic) => topic.trim())
           .filter((topic) => topic.length > 0)
       : [],
+    closedBy: closedByDeclared === null || closedByDeclared === 'any' ? 'any' : 'writer',
+    closedByDeclared,
   };
 }
 

@@ -30,8 +30,9 @@ make anchoring worth its cost, or a bounded shared-Book editor exists for other 
 
 A Book compiled from a live codebase is a point-in-time copy that reads as verified long after its
 source has moved on. The Library's existing `Source check` cannot help: it compares a Book's claims
-against a `raw/` batch, and `raw/` batches are deliberately deleted as projects close. A **repo,
-unlike a raw batch, is not deleted** — so a versioned source enables a durable check that raw
+against a `raw/` batch, and `raw/` is ingestion staging: the reader evicts a batch once its Book
+is compiled or its Project closes (the Library offers eviction and never performs it). A **repo,
+unlike a raw batch, is not evicted** — so a versioned source enables a durable check that raw
 batches never could.
 
 ## Vocabulary (settled, and it constrains the design)

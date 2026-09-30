@@ -192,6 +192,31 @@ if (Test-Path -LiteralPath (Join-Path $SourceRoot '.git')) {
     $dirty = @(& git -C $SourceRoot status --porcelain -- @($files))
 }
 
+# A RELEASE'S BYTES ARE ITS COMMIT'S BLOBS (S74 row 0, a defect fix for the 2026-09-30 Report "the published 1.2.3
+# Linux install.sh and launcher carry CRLF"). The files are copied from the working tree, and a checkout made with
+# core.autocrlf=true holds CRLF its blobs do not, so every file the release carries, the installers included, must hash
+# to HEAD's blob before anything is staged, and the finished archives are audited against the same blobs below. The
+# logic is kernel/src/releaseaudit.ts (self-test section 89), run from this tool's own checkout.
+$byteAudit = Join-Path (Split-Path -Parent $PSScriptRoot) 'kernel/src/releaseaudit.ts'
+function Invoke-ByteAudit([string[]]$Arguments, [string]$What, [string]$Then) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $output = & $Bun $byteAudit @Arguments 2>&1 | ForEach-Object { "$_" }
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = $previous
+    if ($exit -ne 0) { throw "$What does not equal the commit's blobs. $Then (releaseaudit exit $exit): $(($output | Out-String).Trim())" }
+}
+if ($commit) {
+    $carried = @($files) + @('install.ps1', 'install.sh', 'llms-install.md' | Where-Object { Test-Path -LiteralPath (Join-Path $SourceRoot $_) })
+    $list = [IO.Path]::GetTempFileName()
+    try {
+        Write-LfFile $list (($carried -join "`n") + "`n")
+        Invoke-ByteAudit @('--tree', $SourceRoot, '--files', $list, '--source', $SourceRoot, '--commit', $commit) "The build's input at $SourceRoot" 'Build from a clone made with -c core.autocrlf=false and no line-ending attributes. Nothing was built'
+    } finally {
+        Remove-Item -LiteralPath $list -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- build -------------------------------------------------------------------------------------
 
 New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -326,6 +351,13 @@ if (Test-Path -LiteralPath $page) {
 $sums = ($built | ForEach-Object { "$($_.sha256)  $($_.archive)" }) -join "`n"
 Write-LfFile (Join-Path $Destination 'SHA256SUMS') ($sums + "`n")
 
+# THE ARCHIVE AUDIT: every entry and every loose file against the blobs at the commit release.json names.
+$audited = 'not run: the source is not a git checkout'
+if ($commit) {
+    Invoke-ByteAudit @('--release', $Destination, '--source', $SourceRoot) "The release at $Destination" 'Do not publish it'
+    $audited = "every archive entry and installer equals $commit"
+}
+
 $result = [pscustomobject]@{
     destination      = $Destination
     plugin_version   = $pluginVersion
@@ -333,6 +365,7 @@ $result = [pscustomobject]@{
     workspace_schema = $workspaceSchema
     source_commit    = $commit
     uncommitted      = if ($null -eq $commit) { $null } else { $dirty.Count }
+    byte_audit       = $audited
     file_count       = $files.Count
     archives         = @($built)
 }

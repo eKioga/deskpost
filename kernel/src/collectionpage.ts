@@ -34,6 +34,7 @@ import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { parseBookRoot } from './places.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
+import { withInlineCutWarning } from './inlinecut.ts';
 
 /** The valued options `collection add-page` takes, which the CLI's `collection` parser must know too. */
 export const COLLECTION_ADD_PAGE_OPTIONS = ['body', 'content-path', 'title', 'plan-id', 'lock-timeout', 'seat', 'workspace'];
@@ -281,7 +282,12 @@ function writeEvidence(workspace: string, plan: AddPagePlan, claim: (relative: s
   return path.relative(workspace, file).replace(/\\/g, '/');
 }
 
+/** The verb, with the inline-cut warning (S70 row 2) in its result: a `--body` the shim may have cut says so. */
 export function collectionAddPage(argv: string[], workspace: string): Record<string, PsJsonValue> {
+  return withInlineCutWarning(collectionAddPageUnwarned(argv, workspace), argv, 'body', 'pass it with --content-path <file>.');
+}
+
+function collectionAddPageUnwarned(argv: string[], workspace: string): Record<string, PsJsonValue> {
   const parsed = parseArguments(argv, COLLECTION_ADD_PAGE_OPTIONS);
   const plan = planAddPage(argv, workspace);
   if (parsed.flags.has('preflight')) return plan.value;

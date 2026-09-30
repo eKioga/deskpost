@@ -44,6 +44,22 @@ A Shelf Book has two reader-chosen exits:
 In both cases deletion is the reader's decision. The Librarian may offer it and execute an approved
 bounded plan; it never decides unilaterally that the reader's material should disappear.
 
+## A way back in: recall (S70)
+
+A Shelf that drains had no route back. The ordinary exit deletes the Shelf Book once its pages are
+published, and `publish refresh` needs a Shelf Book to publish from. So an existing page of a
+published Book could be changed only by rebuilding a Shelf Book by hand. `deskpost shelf recall
+<slug>` is that route for a Book in this Library's own collection (`collection/books/<slug>/`). It
+makes a new Shelf Book with the same pages, byte for byte, and opens it on the recalling seat. The
+collection Book stays where it is.
+
+The recalled Book then leaves by the existing exits. `publish refresh` returns it and keeps the Shelf
+copy, and `publish` returns it and then deletes the copy. Each reads the recall record in
+`internal/shelf-recalls/`, returns only to the Book it came from, and refuses if that Book's pages
+changed after the recall. A recalled Book is a temporary visitor, not a new resident: the steady
+state is still a near-empty Shelf. `shelf remove` discards a recall without touching the collection.
+The route does not cover an archived collection Book or a Book of a Basic Memory connection.
+
 ## Archive compatibility
 
 Archiving is a shared-collection concept. `Archive-ShelfBook.ps1` and `shelf/_archive/` remain in

@@ -9,6 +9,11 @@ param(
     [string]$SourceProject = '',
     [string]$RequireNoteFile = '',
     [string]$CaptureDate = '',
+    # PARITY (S73 row 3, capture.note-lands-in-a-capture-enabled-book): the kernel's --why, one
+    # closed category, recorded and never required.
+    [string]$Why = '',
+    # PARITY (S73 row 4): the kernel's --supersedes, which closes the named older note in this Book.
+    [string]$Supersedes = '',
     [string]$WorkspacePath,
     [int]$LockTimeoutSeconds = 20,
     [switch]$Preflight,
@@ -64,6 +69,10 @@ $body = if ($hasPath) {
 } else { $Content }
 if ([string]::IsNullOrWhiteSpace($body)) { throw 'The note body is empty; nothing was captured.' }
 
+$whyCategories = @('no-seat', 'no-home', 'needs-yes', 'reset-imminent', 'for-seat')
+$Why = $Why.Trim()
+if ($PSBoundParameters.ContainsKey('Why') -and $Why -cnotin $whyCategories) { throw "--why must be one of: $($whyCategories -join ', '); '$Why' is not one." }
+
 $capturedAt = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
 # WHICH SEAT WROTE THIS, AND OUT OF WHICH CONVERSATION. Both are RESOLVED, never accepted: there is
@@ -92,6 +101,24 @@ if (-not [string]::IsNullOrWhiteSpace($fromSeat)) {
     }
     catch { $sessionId = '' }
 }
+
+# A NEWER NOTE CLOSES AN OLDER ONE (S73 row 4), as the kernel's capture --supersedes does: it names a
+# note, so it needs the Book open and a seat; the note must exist and the seat rule must let this seat
+# close it. Both are checked again under the lock.
+$Supersedes = ($Supersedes.Trim() -replace '\\', '/') -replace '(?i)\.md$', ''
+function Get-SupersededNote {
+    $older = @(Get-ShelfNotes -Book $book | Where-Object { $_.page -ceq $Supersedes })[0]
+    if ($null -eq $older) { throw "--supersedes names $Supersedes, and Book '$($book.slug)' has no such note. Nothing was captured." }
+    Assert-SeatMayCloseNote -Note $older -Book $book -Seat $fromSeat -OtherSeat ''
+    $older
+}
+if ($PSBoundParameters.ContainsKey('Supersedes')) {
+    if ($Supersedes -cnotmatch '^notes/[^/]+$') { throw '--supersedes must name a note of this Book as notes/<page>, for example notes/2026-09-29-a-draft.' }
+    if (-not $fromSeat) { throw "--supersedes names a note, so it needs a seat. $([string]$seatState.message)".Trim() }
+    Assert-ShelfBookOpen -Workspace $workspace -Slug $BookSlug -Action 'closing one of its notes with --supersedes' -Seat $fromSeat
+    [void](Get-SupersededNote)
+}
+else { $Supersedes = '' }
 
 # A body that already leads with its own H1 keeps it, so that heading -- not -Title -- is what the
 # page, the reader map, the validated reader, and triage's -MatchText all call this note.
@@ -159,6 +186,12 @@ $plan = [ordered]@{
     shared_library_write = $false
     scope                = 'Creates one new page under this capture Book, regenerates its reader map, and commits a new Discovery manifest generation in the same locked window. No existing page is read, changed, or removed.'
 }
+# After session_id, where the kernel's plan says it.
+if ($Why) { $plan.Insert(11, 'why', $Why) } else { $plan.Insert(11, 'why_missing', $true) }
+if ($Supersedes) {
+    $plan.Insert(12, 'supersedes', $Supersedes)
+    $plan.scope = "Creates one new page under this capture Book, regenerates its reader map, and commits a new Discovery manifest generation in the same locked window. It also closes $Supersedes (review: done, reviewed:, superseded_by:), journalled with the new note. Nothing is removed."
+}
 if ($Preflight) { [pscustomobject]$plan; return }
 
 $frontmatter = @('---', "captured: $capturedAt", 'review: pending')
@@ -167,6 +200,9 @@ if (-not [string]::IsNullOrWhiteSpace($sessionId)) { $frontmatter += "session_id
 if (-not [string]::IsNullOrWhiteSpace($SourceProject)) { $frontmatter += "source_project: $($SourceProject.Trim())" }
 if (-not [string]::IsNullOrWhiteSpace($SourcePaths)) { $frontmatter += "source_paths: $($SourcePaths.Trim())" }
 if (-not [string]::IsNullOrWhiteSpace($Tags)) { $frontmatter += "tags: $($Tags.Trim())" }
+if ($Why) { $frontmatter += "why: $Why" }
+# Always written when given, so the relation is recorded even when the older note was already closed.
+if ($Supersedes) { $frontmatter += "supersedes: $Supersedes" }
 $frontmatter += '---'
 
 $page = if ($keepsOwnHeading) {
@@ -187,13 +223,16 @@ try {
     $candidate = $selected.path
     $notePage = $selected.page
     $plan.note_page = "$($book.book_root)/wiki/$notePage"
+    # The older note, again under the lock; its prior bytes are journalled with the new note's.
+    $older = if ($Supersedes) { Get-SupersededNote } else { $null }
 
     # 2.2 rung 4. Opened before the first write, on the lock this helper already holds. A capture
     # Book's manifest carries counts and no note metadata, but the counts are what a closed capture
     # Book discloses, so they go stale exactly as a curated Book's page list would.
     $mutation = Enter-BookMutation -Workspace $workspace -Slug $book.slug -BookRoot $book.book_root -Reason "Capture note $($selected.name)" -Lock $lock
 
-    $journal = Write-BookJournal -Workspace $workspace -BookRoot $book.book_root -Operation "Capture note $($selected.name)" -Paths @($candidate, $mapPath)
+    $journalPaths = if ($null -ne $older) { @($candidate, $mapPath, $older.full_path) } else { @($candidate, $mapPath) }
+    $journal = Write-BookJournal -Workspace $workspace -BookRoot $book.book_root -Operation "Capture note $($selected.name)" -Paths $journalPaths
     $journalPath = $journal.journal_path
 
     $stream = [IO.File]::Open($candidate, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -205,6 +244,18 @@ try {
 
     $readback = [IO.File]::ReadAllText($candidate)
     if ($readback -cne $page) { throw "The note was written but did not read back identically: $($book.book_root)/wiki/$notePage" }
+    # Closed by the newer note; an older note already done is left as it is and said unchanged.
+    if ($null -ne $older) {
+        if ($older.review -ceq 'done') { $plan.superseded = [pscustomobject][ordered]@{ page = $older.page; status = 'unchanged' } }
+        else {
+            $olderText = [IO.File]::ReadAllText($older.full_path)
+            $closed = [regex]::Replace($olderText, '(?m)^review:\s*.*$', 'review: done', 1)
+            $closed = Set-NoteFrontmatterField (Set-NoteFrontmatterField $closed 'reviewed' ([DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))) 'superseded_by' $notePage
+            if ($closed -cnotmatch '(?m)^review: done') { throw "$($older.page) has no review field to close." }
+            Write-Utf8 $older.full_path $closed
+            $plan.superseded = [pscustomobject][ordered]@{ page = $older.page; status = 'closed' }
+        }
+    }
     # Regenerated inside the same lock. An unlocked rewrite works from a listing that may already be
     # stale, dropping another session's note from the map while leaving its file on disk.
     $counts = Update-ShelfNoteIndex -Book $book
@@ -235,4 +286,5 @@ $plan.pending_count = $counts.pending_count
 $plan.reader_map = "$($book.book_root)/wiki/_index.md"
 $plan.manifest = $manifestSummary
 $plan.next = "This Book is closed by default. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug $BookSlug when you are ready to review."
+if (-not $Why) { $plan.next += " This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, or the Notebook, and record a why category when none of them fits." }
 Write-LibraryResult -Result ([pscustomobject]$plan) -Json:$Json

@@ -30,6 +30,10 @@ import {
 import { archiveVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './shelfwriters.ts';
 import { updateShelfNoteIndex } from './capture.ts';
 import { shelfCarryVerb } from './shelfcarry.ts';
+import { shelfRecallVerb, SHELF_RECALL_OPTIONS } from './shelfrecall.ts';
+import { readRecallRecord, recallRecordTakenRefusal } from './recallrecord.ts';
+import { localDate } from './localdate.ts';
+import { verbUsageText } from './verbs.ts';
 
 export interface VerbResult {
   refusal: string | null;
@@ -38,7 +42,7 @@ export interface VerbResult {
   humanText?: string;
 }
 
-const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry'];
+const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall'];
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -59,8 +63,15 @@ function renderVerb(argv: string[], programRoot: string): VerbResult {
 }
 
 function newBookVerb(argv: string[], programRoot: string): VerbResult {
-  const parsed = parseArguments(argv, ['title', 'summary', 'topics', 'origin', 'workspace']);
+  const parsed = parseArguments(argv, ['title', 'summary', 'topics', 'origin', 'workspace', 'closed-by']);
   const slug = parsed.positional[0] ?? '';
+  // WHO CLOSES ITS NOTES (S73 row 4): a capture Book's `- **Closed by:**` line, `writer` unless the reader says
+  // `any`, as the Report Inbox does. It means nothing on a curated Book, so it is refused there.
+  const closedByOption = parsed.options.get('closed-by');
+  if (closedByOption !== undefined) {
+    if (!parsed.flags.has('capture')) refuse('--closed-by names who closes a capture Book\'s notes, so it needs --capture.');
+    if (!['writer', 'any'].includes(closedByOption.trim())) refuse(`--closed-by must be writer or any; '${closedByOption}' is neither.`);
+  }
   if (!SLUG_PATTERN.test(slug)) {
     refuse(`Book slug '${slug}' is malformed. A slug is lowercase letters, digits and hyphens, starting with a letter or a digit.`);
   }
@@ -71,6 +82,10 @@ function newBookVerb(argv: string[], programRoot: string): VerbResult {
     refuse('Summary is required: it is what the catalog shows a reader deciding whether to open this Book.');
   }
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+  // A SLUG WITH A RECALL RECORD IS NOT A NEW BOOK (S70): its defaults and its drift digest would be adopted by
+  // whatever Book landed on it. `shelf recall` overwrites a record whose Book is gone, so it is the route.
+  const record = readRecallRecord(workspace, slug);
+  if (record !== null) refuse(recallRecordTakenRefusal(slug, record, 'a new Book', 'Nothing was created.'));
   const plan = createShelfBook({
     workspace,
     programRoot,
@@ -79,6 +94,7 @@ function newBookVerb(argv: string[], programRoot: string): VerbResult {
     summary,
     topics: parsed.options.get('topics'),
     capture: parsed.flags.has('capture'),
+    closedBy: closedByOption?.trim() === 'any' ? 'any' : 'writer',
     origin: parsed.options.get('origin'),
     preflight: parsed.flags.has('preflight'),
   });
@@ -98,6 +114,8 @@ export function createShelfBook(options: {
   summary: string;
   topics?: string | undefined;
   capture: boolean;
+  /** A capture Book's seat rule, written as its entry's `- **Closed by:**` line (S73 row 4). `writer` by default. */
+  closedBy?: 'writer' | 'any';
   origin?: string | undefined;
   preflight?: boolean;
 }): Record<string, PsJsonValue> {
@@ -121,7 +139,7 @@ export function createShelfBook(options: {
   }
 
   const origin = options.origin;
-  const originLine = origin && origin.trim() ? origin.trim() : `created ${new Date().toISOString().substring(0, 10)}`;
+  const originLine = origin && origin.trim() ? origin.trim() : `created ${localDate()}`;
   const kind = capture ? 'capture' : 'curated';
   const plannedPaths: string[] = [`shelf/${slug}/wiki/_book.md`, `shelf/${slug}/wiki/_index.md`];
   if (capture) plannedPaths.push(`shelf/${slug}/wiki/notes/`);
@@ -183,6 +201,7 @@ export function createShelfBook(options: {
       `- **Summary:** ${summary.trim()}`,
       topics && topics.trim() ? `- **Topics:** ${topics.trim()}` : '',
       capture ? '- **Kind:** capture' : '',
+      capture ? `- **Closed by:** ${options.closedBy ?? 'writer'}` : '',
       `- **Origin:** ${originLine}`,
     ]);
     entryCount = invokeShelfCatalogRender({
@@ -219,12 +238,27 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
   if (!ACTIONS.includes(action)) {
     return { refusal: `library shelf has no action '${action}'. It has: ${ACTIONS.join(', ')}.`, value: null, asJson: false };
   }
+  // A MISSING SLUG IS USAGE (S71 row 10), once for every action that takes one: its own usage, not the slug-format
+  // refusal a writer gives an empty string. Every action's valued options, so a value is never read as the slug.
+  if (!['render', 'duplicates'].includes(action)) {
+    const valued = [...new Set([...SHELF_RECALL_OPTIONS, 'workspace', 'plan-id', 'new-title', 'reason', 'seat', 'canonical', 'superseded-on', 'title', 'summary', 'topics', 'origin', 'book', 'closed-by'])];
+    if (!(parseArguments(argv.slice(1), valued).positional[0] ?? '').trim()) {
+      return { refusal: verbUsageText('shelf', action).trimEnd(), value: null, asJson: false };
+    }
+  }
   try {
     switch (action) {
       case 'render':
         return renderVerb(argv.slice(1), programRoot);
       case 'new':
         return newBookVerb(argv.slice(1), programRoot);
+      case 'recall': {
+        // S70, PLAN-shelf-recall.md: a collection Book back to the Shelf, and `--shelf-slug` a valued option.
+        const parsed = parseArguments(argv.slice(1), SHELF_RECALL_OPTIONS);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        const recalled = shelfRecallVerb(argv.slice(1), programRoot, workspace);
+        return { refusal: recalled.refusal, value: recalled.value, asJson: true };
+      }
       case 'carry': {
         // PLAN-basic-memory.md step 4b: another workspace's capture notes, carried byte for byte into this Library's Shelf.
         const parsed = parseArguments(argv.slice(1), ['workspace', 'book', 'plan-id']);

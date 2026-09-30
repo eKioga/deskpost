@@ -5,6 +5,10 @@ new decisions that are hard to reverse, surprising without context, and the resu
 trade-off are recorded as short ADRs in [`docs/adr/`](adr/); the narrative records below remain as
 they are.
 
+## Roadmap
+
+* [Deskpost Roadmap](roadmap.md) - what is being built next, as milestones counted in development sessions, from Now through Next to Exploring
+
 ## Decision records
 
 Read these for *why*, and the narrative records below for *how*. As of 2026-08-31 the Library's own
@@ -70,6 +74,8 @@ that decides where any given decision belongs.
 * [ADR-0057](adr/0057-setup-asks-plans-and-applies-and-the-installer-only-fetches.md) - `deskpost setup --ask` is the one question and screen and writes only an answers file; `setup --plan` is init with its writes split off, reading the staged release and naming the future `current`, creating nothing; `setup --apply --plan-file` writes the plan under the three-state rule and finishes when re-run; `init` is plan then apply; `setup <folder>` makes a Library later on one yes (S54)
 * [ADR-0058](adr/0058-uninstall-reaches-only-what-deskpost-wrote-and-sessions-close-first.md) - Upgrade, repair, rollback and uninstall refuse while a seat in a Library this install runs, or a `library.exe` under its root, is live; `deskpost uninstall` previews from each version's inventory (1.0 adopted from its kept archive), freezes the list in `pending`, removes only this install's entries from the Libraries, then hands PATH and the program files to a WMI-started finisher over a two-way handshake; `install.ps1 -Resume finish` completes it with no program; `deskpost rollback` switches back under the same rules and ADR-0054's preflight (S54)
 * [ADR-0059](adr/0059-bare-deskpost-is-the-main-menu-and-seat-start-is-its-one-launcher.md) - Bare `deskpost` opens the main menu where a person can answer, and usage anywhere else; the Library shown is the one holding this folder, else the default, else the only one, else chosen once; the roster is SeatPicker.ps1's at parity, with `b` reserved; the first seat is a wizard bound to its plan_id; `seat start` is the one launcher, records the conversation with its assistant, resumes per assistant and starts npm's `.cmd` agents; an install ends on a fork: show me around (the deskpost-help seat) or the menu (S55)
+* [ADR-0060](adr/0060-the-holding-shelf-is-the-last-resort-and-its-growth-is-a-library-signal.md) - "Save this for later" climbs a ladder first (the seat's Hub, a Book, the Notebook, the Report Inbox) and the Holding Shelf takes a note only when none can, saying why; a moved or superseded note is closed in the same turn, a seat sorts only its own notes, and capture stays ungated so nothing is lost; the kernel half is `PLAN-holding-discipline.md` (B, 2026-09-29)
+* [ADR-0061](adr/0061-a-seats-added-folders-are-the-seats-own.md) - A seat's added folders are its own record, `.claude/seats/<seat>/added-dirs.json`, kept by `seat dirs` and the menu's `f<number>` and passed as `--add-dir` on every `seat start`; ungated, never written to workspace settings, where `doctor` warns on a folder outside the Library; retire archives it; in Codex a writable root (S72)
 
 ## Guides
 
@@ -100,6 +106,7 @@ freeze. The `library-help` Skill offers the same five.
 * [Graduating a Page into a Shelf Book](shelf-book-graduation.md) - the additive open-Book write, the reader-map rule that keeps it additive, and the two capture races it closed
 * [Capture Books and the Library Help Skill](capture-book-model.md) - the Holding Shelf, ungated capture into a closed Book, pending-count resurfacing, gated triage, and help as a Skill
 * [Real-Session Verdicts in Windows Sandbox](real-session-verdicts-in-windows-sandbox.md) - how the four `recorded_verdict` rows are judged against a release in a fresh Sandbox: the job-runner kit, sign-ins opened for the reader, the plain-ask method with its labelled hook-level fallback, Codex's hook review, and the traps measured there (S49)
+* [The Dev Session Loop](dev-session-loop.md) - two seats on one dev Hub: the Kickoff and its one-yes gate, the per-attempt page, Open/Work/Close, park-don't-rule, what "gate green" means for commits and the chartered private push, and the stall log
 * [Cross-Seat Agent Reports](cross-seat-reports.md) - the Report Inbox as the channel from any seat to `library-dev`, the two provenance fields that make a report better than a paste, why a report is a claim and never a task, why the transcript it names is deliberately not read, and the Shelf/Book naming collision folded in
 * [Book Archive Model](book-archive-model.md) - how working files and NAS Books fit together
 * [Library Organization Model](library-organization.md) - Books, Projects, active/archive shelves, and collection-aware catalog grouping

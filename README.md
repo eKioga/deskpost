@@ -103,8 +103,16 @@ Options go after the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1
 | `-Json` | Prints one JSON result on stdout; everything else goes to stderr. |
 
 **Upgrading** is the same one line: it upgrades in place, and refuses while a session is open at a
-seat of a Library it serves, naming it (close it and press Enter to look again). `deskpost rollback`
-switches back. **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
+seat of a Library it serves, naming it (close it and press Enter to look again). It asks no Library
+question: the Libraries the install serves are kept as they are. If Deskpost is installed somewhere
+other than the default folder, the bare line offers to upgrade that install, and when nobody can be
+asked it prints this line instead, naming that folder:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1))) -InstallRoot D:\path\to\Deskpost
+```
+
+The same version is not reinstalled unless you add `-Repair`. `deskpost rollback` switches back. **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
 -- its entries in your Libraries, its PATH entry and its program files -- and never your Libraries.
 
 The checkout of this repository is the program, not a Library: cloning it gives you the source, and

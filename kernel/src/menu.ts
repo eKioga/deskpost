@@ -37,6 +37,7 @@ import { runHubVerb } from './collection.ts';
 import { markerConnection } from './basicmemory.ts';
 import { psSortCompare } from './notebook.ts';
 import { askAtTerminal, Interrupted } from './prompt.ts';
+import { changeSeatDirs, launchLine, planSeatDirs, readAddedDirs, seatDirsSentence } from './seatdirs.ts';
 
 // --- the conversation with the reader -------------------------------------------------------------------------------
 
@@ -166,6 +167,13 @@ export interface MenuRow {
   agent_pid: number;
   last_active_utc: string;
   view: ConversationView;
+  /** How many added folders the seat is started with (1.2.5); 0 when it has none or its record cannot be read. */
+  folders: number;
+}
+
+/** The short "+N folders" mark a seat with added folders carries on its row; nothing when it has none. */
+export function foldersMark(row: MenuRow): string {
+  return row.folders > 0 ? ` +${row.folders} folder${row.folders === 1 ? '' : 's'}` : '';
 }
 
 /** One row per registered seat, sorted by name, numbered from 1. One unreadable seat does not take the roster down. */
@@ -182,6 +190,7 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       state_note: '',
       agent_pid: 0,
       last_active_utc: '',
+      folders: 0,
       view: {
         session_id: '', conversation_source: 'none', recorded_utc: '', assistant: 'claude', title: '', title_status: 'no-conversation',
         title_note: 'nothing has recorded a conversation at this seat', entry_action: 'none', entry_note: '',
@@ -195,6 +204,12 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       const activity = readSeatActivity(stateDirectory, seat);
       if (activity && typeof activity['last_seen_utc'] === 'string') row.last_active_utc = activity['last_seen_utc'];
       row.view = seatConversationView(stateDirectory, seat, { transcriptRoot: options.transcriptRoot, skipTitle: options.skipTitles });
+      // A RECORD THAT CANNOT BE READ MARKS NOTHING HERE: `f<N>` and `seat start` say why, and the roster stays up.
+      try {
+        row.folders = readAddedDirs(stateDirectory, seat).length;
+      } catch {
+        row.folders = 0;
+      }
     } catch (error) {
       row.state = 'unreadable';
       row.state_note = (error as Error).message;
@@ -303,7 +318,7 @@ function conversationText(row: MenuRow, glyphs: Glyphs): string {
 
 /** The numbered table lines. THE CELLS ARE BUILT BEFORE THE WIDTHS ARE MEASURED, so a state note cannot misalign them. */
 export function tableLines(rows: MenuRow[], glyphs: Glyphs): string[] {
-  const cells = rows.map((row) => ({ index: row.index, seat: row.seat, project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
+  const cells = rows.map((row) => ({ index: row.index, seat: row.seat + foldersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
   const width = (key: 'seat' | 'project' | 'state' | 'last') => Math.max(0, ...cells.map((cell) => cell[key].length));
   const widths = { seat: width('seat'), project: width('project'), state: width('state'), last: width('last') };
   return cells.map(
@@ -322,7 +337,7 @@ export function cardLines(rows: MenuRow[], width: number, glyphs: Glyphs, palett
     const marker = stateMark(row.state, glyphs, palette);
     // THE PLAIN HEAD IS MEASURED, NOT THE COLOURED ONE: an escape has no visible width.
     const prefix = `  ${String(row.index).padStart(2)} ${marker.mark} `;
-    const seat = fit(row.seat, width - prefix.length - row.state.length - 2, glyphs);
+    const seat = fit(row.seat + foldersMark(row), width - prefix.length - row.state.length - 2, glyphs);
     const gap = Math.max(1, width - prefix.length - seat.length - row.state.length - 1);
     lines.push(`  ${String(row.index).padStart(2)} ${marker.color}${marker.mark}${palette.reset} ${palette.bold}${seat}${palette.reset}${' '.repeat(gap)}${marker.color}${row.state}${palette.reset}`);
     const fields: [string, string][] = [];
@@ -365,7 +380,7 @@ export function footerLines(both: boolean, assistant: Assistant | null): string[
   // `h` IS PERMANENT (PLAN-assistant-onboarding.md step 5; Codex #13): no state decides whether it is offered, so an
   // aborted first start -- trust refused, a launch that failed, an empty conversation -- never loses it.
   const lines = ['  +  new seat     h  Show me around     b  Basic Memory     q  quit'];
-  const second = ['  n<number>  new conversation', '   r<number>  retire'];
+  const second = ['  n<number>  new conversation', '   r<number>  retire', '   f<number>  folders'];
   if (both && assistant) second.push(`   a  new conversations use ${ASSISTANT_LABEL[assistant]}; a switches to ${ASSISTANT_LABEL[assistant === 'claude' ? 'codex' : 'claude']}`);
   lines.push(second.join(''));
   return lines;
@@ -376,7 +391,7 @@ export const FIRST_HINT = 'Pick a seat to continue its last session, or n<number
 // --- the choice grammar ---------------------------------------------------------------------------------------------
 
 export interface Choice {
-  action: 'resume' | 'new' | 'retire' | 'create' | 'basic-memory' | 'help' | 'switch' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
+  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'switch' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
   index: number;
   reason: string;
 }
@@ -401,8 +416,11 @@ export function resolveChoice(typed: string, rowCount: number): Choice {
   } else if (/^r\s*\d+$/i.test(text)) {
     action = 'retire';
     digits = text.substring(1).trim();
+  } else if (/^f\s*\d+$/i.test(text)) {
+    action = 'folders';
+    digits = text.substring(1).trim();
   } else if (!/^\d+$/.test(text)) {
-    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, +, h, b or q` };
+    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, b or q` };
   }
   const number = Number(digits);
   if (rowCount <= 0) return { action: 'invalid', index: 0, reason: 'no seat exists in this Library yet, so no number applies; type + to create one' };
@@ -548,6 +566,9 @@ async function menuLoop(state: MenuState): Promise<number> {
       }
       case 'retire':
         await retire(state, target!);
+        break;
+      case 'folders':
+        await folders(state, target!);
         break;
       case 'basic-memory':
         await basicMemory(state);
@@ -808,6 +829,57 @@ async function retire(state: MenuState, row: MenuRow): Promise<void> {
     talk.say(`Seat '${row.seat}' retired. Its Desk is at ${String(done['archive_directory'])}.`);
   } catch (error) {
     talk.say(`Seat '${row.seat}' was not retired: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * `f<number>`: the seat's added folders (1.2.5, ADR-0061). Lists them, and offers add, remove or back. A change is
+ * validated and its launch line shown BEFORE anything is saved, and saved only on a y. The same code as `seat dirs`
+ * (`planSeatDirs` to preview, `changeSeatDirs` to save), never a second implementation; a refusal is said and the
+ * menu goes on.
+ */
+async function folders(state: MenuState, row: MenuRow): Promise<void> {
+  const { talk, workspace } = state;
+  const stateDirectory = path.join(workspace, '.claude');
+  for (;;) {
+    let current: string[];
+    try {
+      current = planSeatDirs({ workspace, seat: row.seat }).dirs;
+    } catch (error) {
+      talk.say(`Seat '${row.seat}''s folders could not be read: ${(error as Error).message}`);
+      return;
+    }
+    talk.say('');
+    talk.say(`Seat '${row.seat}' is started with ${current.length ? 'these added folders:' : 'no added folders.'}`);
+    current.forEach((dir, position) => talk.say(`  ${String(position + 1).padStart(2)}  ${dir}`));
+    const key = (await talk.ask('[a] add a folder   [r] remove one   [Enter] back › ')).toLowerCase();
+    if (!key) return;
+    if (key !== 'a' && key !== 'r') {
+      talk.say(`'${key}' is not one of the keys above.`);
+      continue;
+    }
+    const typed = await talk.ask(key === 'a' ? 'Folder to add, in full (empty to go back) › ' : 'Folder to remove, by number or in full (empty to go back) › ');
+    if (!typed) continue;
+    const change = key === 'a' ? { add: typed } : { remove: /^\d+$/.test(typed) && current[Number(typed) - 1] !== undefined ? current[Number(typed) - 1]! : typed };
+    let plan: ReturnType<typeof planSeatDirs>;
+    try {
+      plan = planSeatDirs({ workspace, seat: row.seat, ...change });
+    } catch (error) {
+      talk.say((error as Error).message);
+      continue;
+    }
+    talk.say(`  Launch line  ${launchLine(stateDirectory, row.seat, plan.dirs)}`);
+    const answer = (await talk.ask('Save this? [y/N] › ')).toLowerCase();
+    if (answer !== 'y') {
+      talk.say(`Nothing was saved: the answer was '${answer}' rather than y.`);
+      continue;
+    }
+    try {
+      talk.say(seatDirsSentence(changeSeatDirs({ workspace, seat: row.seat, ...change })));
+      row.folders = plan.dirs.length;
+    } catch (error) {
+      talk.say((error as Error).message);
+    }
   }
 }
 

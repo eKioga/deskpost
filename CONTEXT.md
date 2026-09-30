@@ -114,6 +114,21 @@ task: it names a decision and where its record lives, and is removed when that d
 superseded.
 _Avoid_: project note, board, tracker
 
+**Kickoff**:
+A write-once page, `kickoffs/sNN`, on a dev Hub that scopes one build session: why it comes first,
+what it stays out of, its rows, and the CLOSE it owes. Its **CHARTER** section names the commits and
+the one private push the session may make; the reader's yes at the session's gate, bound to the
+page's path and content hash, makes it the reader's explicit request for them. A Charter is a
+section of a Kickoff, not a kind of Approval: every previewed action still takes its own. A revision
+is a new page, never an edit.
+_Avoid_: ticket, brief, task list, standing approval
+
+**Handback**:
+The `## Handback` section a build session adds to its attempt page at close: what shipped, what
+parked, the Reports filed, the merge state, the stall log, and a draft scope for the next Kickoff. It
+is what the support seat writes the next Kickoff from.
+_Avoid_: report, summary, status update
+
 **Catalog**:
 The browsable list of a collection's Books or Projects. Reading a catalog is browsing, not reading a
 Book, so it stays available while every Book is closed. Both collections have one, so a Catalog is
@@ -263,6 +278,14 @@ _Avoid_: sync, push, upload, back up
 **Refresh**:
 Replacing an existing Book's reader pages from current evidence.
 _Avoid_: update, re-sync, rebuild
+
+**Recall**:
+Bringing a Book in this Library's Local collection back to the Shelf as a new Shelf Book, page for
+page, so its existing pages can be changed there and returned by a Refresh or a Publish. The
+collection Book stays where it is and stays readable. A recall record remembers what was copied, so
+the return is refused if the collection Book changed in the meantime. Recalling is a copy, not a
+Desk act: the collection Book is not opened, closed or locked by it.
+_Avoid_: check out, checkout, borrow, pull
 
 **Reset**:
 Moving the acting seat's Notebook — `notebook/<seat>/` — into a recoverable quarantine, and nothing

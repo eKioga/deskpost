@@ -126,8 +126,9 @@ async function main(argv: string[]): Promise<number> {
   }
 
   // `--help` ON ANY VERB OR ACTION PRINTS ITS USAGE AND EXITS 0, before any parser can take it for a slug or a flag
-  // to act on (S67: `hub edit --help` failed, `book add-page --help` was read as a Book slug).
-  if (rest.includes('--help') || rest[0] === '-h' || (rest[1] === '-h' && VERBS[verb]!.actions.includes(rest[0]!))) {
+  // to act on (S67: `hub edit --help` failed, `book add-page --help` was read as a Book slug). `-h` counts wherever
+  // `--help` does (S69): after a verb's other arguments it was a stray positional, and `hub new x ... -h` made the Hub.
+  if (rest.includes('--help') || rest.includes('-h')) {
     writeStdout(verbUsageText(verb, VERBS[verb]!.actions.includes(rest[0] ?? '') ? rest[0] : undefined));
     return 0;
   }

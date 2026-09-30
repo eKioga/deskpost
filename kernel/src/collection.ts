@@ -35,6 +35,12 @@ import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
 import { hubRename } from './hubrename.ts';
 import { localSharedArchive } from './localarchive.ts';
+import { withInlineCutWarning } from './inlinecut.ts';
+
+/** `--purpose` has no file form: a longer Purpose goes in afterwards through the Hub edit's file route (S70 row 2). */
+const PURPOSE_REMEDY =
+  'keep --purpose to one line, and set the full Purpose afterwards with deskpost hub edit <slug> --mode replace-section ' +
+  '--section Purpose --content-path <file>.';
 
 const PROJECT_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ACTIVE_CATALOG = ['projects', 'README.md'];
@@ -170,7 +176,7 @@ export function projectRootBody(title: string, purpose: string, nextActions: str
   const purposeText = purpose.trim() ? purpose.trim() : 'Describe what this project is for.';
   const nowSeed =
     'Where this project stands, and anything still open or unproven. Replace this line.\n\n' +
-    "Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to the `limits` page with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject's own rules or docs.";
+    "Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a `limits` page (make it with `hub edit --mode new-page` when the first one arrives) with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject's own rules or docs.";
   const devText = dev ? '\n' + devSections() : '';
   return `# ${title}\n\n## Purpose\n\n${purposeText}\n\n## Now\n\n${nowSeed}\n\n## Next\n\n${next}\n${devText}`;
 }
@@ -405,7 +411,7 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
   try {
     switch (action) {
       case 'new':
-        return { refusal: null, value: await hubNew(argv.slice(1), workspace) };
+        return { refusal: null, value: withInlineCutWarning(await hubNew(argv.slice(1), workspace), argv, 'purpose', PURPOSE_REMEDY) };
       case 'edit':
         return { refusal: null, value: await hubEdit(argv.slice(1), workspace) };
       case 'archive': {
@@ -425,8 +431,13 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
         // The Hub-creation preflight is handed in, so hubcopy.ts does not import this file back.
         return {
           refusal: null,
-          value: await hubCopyPages(argv.slice(1), workspace, async (slug, title, purpose, nextActions, preflight = true) =>
-            String((await hubNewShared(slug, title, purpose, nextActions, false, preflight, workspace))['action']),
+          value: withInlineCutWarning(
+            await hubCopyPages(argv.slice(1), workspace, async (slug, title, purpose, nextActions, preflight = true) =>
+              String((await hubNewShared(slug, title, purpose, nextActions, false, preflight, workspace))['action']),
+            ),
+            argv,
+            'purpose',
+            PURPOSE_REMEDY,
           ),
         };
       default:
