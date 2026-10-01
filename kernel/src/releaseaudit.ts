@@ -26,6 +26,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
+import { repositoryNeutralEnv } from './gitenv.ts';
 
 export interface ByteEntry {
   path: string;
@@ -45,7 +46,7 @@ export function gitBlobId(bytes: Uint8Array): string {
 }
 
 function git(gitDir: string, args: string[]): Buffer {
-  const result = spawnSync('git', ['-C', gitDir, ...args], { maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync('git', ['-C', gitDir, ...args], { maxBuffer: 256 * 1024 * 1024, env: repositoryNeutralEnv() });
   if (result.error) throw new Error(`git ${args.join(' ')} could not start: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} in ${gitDir} exited ${result.status}: ${result.stderr.toString().trim()}`);
   return result.stdout;

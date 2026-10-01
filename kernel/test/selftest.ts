@@ -28,7 +28,8 @@ import { toWorkspaceRoot, findWorkspaceByMarker } from '../src/workspace.ts';
 import { VERBS, READER_TOOLS } from '../src/verbs.ts';
 import { discoverInstalls } from '../src/installs.ts';
 import { isCompiled, locateProgramRoot } from '../src/programroot.ts';
-import { auditRelease, gitBlobId, readZipEntries } from '../src/releaseaudit.ts';
+import { auditRelease, gitBlobId, readCommitBlobIds, readZipEntries } from '../src/releaseaudit.ts';
+import { isRepositoryLocalGitVariable, repositoryNeutralEnv } from '../src/gitenv.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'src', 'cli.ts');
@@ -5130,7 +5131,7 @@ if (selected(55)) {
     const library = path.join(root, 'lib');
     const first = init(library);
     const skill = path.join(library, '.claude', 'skills', 'library-help');
-    for (const relative of ['SKILL.md', 'references/books-and-projects.md', 'references/capture-and-triage.md', 'references/retention-and-reset.md']) {
+    for (const relative of ['SKILL.md', 'references/books-and-projects.md', 'references/capture-and-triage.md', 'references/retention-and-reset.md', 'references/messages-between-seats.md']) {
       const copied = path.join(skill, ...relative.split('/'));
       check(fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(source, ...relative.split('/')), 'utf8'), `init did not copy ${relative} byte for byte`);
     }
@@ -7830,7 +7831,7 @@ if (selected(89)) {
   try {
     const AUDIT = path.join(HERE, '..', 'src', 'releaseaudit.ts');
     const runGit = (args: string[]) => {
-      const result = spawnSync('git', ['-C', repo, '-c', 'core.autocrlf=false', ...args], { encoding: 'utf8' });
+      const result = spawnSync('git', ['-C', repo, '-c', 'core.autocrlf=false', ...args], { encoding: 'utf8', env: repositoryNeutralEnv() });
       if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
       return result.stdout.trim();
     };
@@ -8087,6 +8088,237 @@ if (selected(91)) {
   const lines = fixture.split(/\r?\n/).filter((line) => line.trim().length > 0);
   const summary = lines.find((line) => /^"\$passed of \$\(\$results\.Count\) passed/.test(line.trim())) ?? '';
   check(summary.includes('(installer: $installer)'), `Test-InstallLifecycle's summary line does not name the installer it ran: ${summary.trim()}`);
+}
+
+// --- 92. A GIT CHILD SEES ONLY THE REPOSITORY IT IS POINTED AT (2026-09-30, section 89 in a worktree) -------------
+// A hook exports GIT_DIR and GIT_INDEX_FILE, absolute in a linked worktree, and `git -C` does not override them. So
+// section 89's fixture git, run by B's pre-commit gate, re-initialised the real repository (core.bare = true) and
+// committed onto its branch. This runs with a decoy repository in those variables, as a worktree hook would set them,
+// and checks that the kernel's git reads the repository it was given and that the decoy is untouched. Then every git
+// child in the kernel and in this file must pass a repository-neutral env, so a new call cannot bring the defect back.
+if (selected(92)) {
+  check(isRepositoryLocalGitVariable('GIT_DIR') && isRepositoryLocalGitVariable('git_index_file') && isRepositoryLocalGitVariable('GIT_CONFIG_KEY_0'), 'a repository-local git variable is not recognised (case, or a numbered config pair)');
+  check(!isRepositoryLocalGitVariable('GIT_SSH') && !isRepositoryLocalGitVariable('GIT_ASKPASS') && !isRepositoryLocalGitVariable('PATH'), 'a variable that does not locate a repository is dropped');
+  const neutral = repositoryNeutralEnv({ GIT_DIR: 'x', Git_Work_Tree: 'y', GIT_SSH: 'ssh', PATH: 'p' });
+  check(neutral['GIT_DIR'] === undefined && neutral['Git_Work_Tree'] === undefined && neutral['GIT_SSH'] === 'ssh' && neutral['PATH'] === 'p', `repositoryNeutralEnv kept or dropped the wrong names: ${JSON.stringify(neutral)}`);
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-gitenv-')));
+  const hookNames = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+  const saved = hookNames.map((name) => [name, process.env[name]] as const);
+  try {
+    const git = (repo: string, args: string[]) => {
+      const result = spawnSync('git', ['-C', repo, '-c', 'core.autocrlf=false', ...args], { encoding: 'utf8', env: repositoryNeutralEnv() });
+      if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
+      return result.stdout.trim();
+    };
+    const makeRepo = (name: string, file: string) => {
+      const repo = path.join(root, name);
+      fs.mkdirSync(repo, { recursive: true });
+      fs.writeFileSync(path.join(repo, file), `${name}\n`);
+      git(repo, ['init', '-q']);
+      git(repo, ['add', '-A']);
+      git(repo, ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', name]);
+      return repo;
+    };
+    const decoy = makeRepo('decoy', 'decoy.txt');
+    const target = makeRepo('target', 'target.txt');
+    const decoyGit = path.join(decoy, '.git');
+    const snapshot = () => ['HEAD', 'config', 'index'].map((file) => fs.readFileSync(path.join(decoyGit, file)).toString('base64')).join('|') + `|${git(decoy, ['rev-parse', 'HEAD'])}`;
+    const before = snapshot();
+
+    // As a worktree hook sets them: absolute, and naming another repository.
+    process.env['GIT_DIR'] = decoyGit;
+    process.env['GIT_INDEX_FILE'] = path.join(decoyGit, 'index');
+    process.env['GIT_WORK_TREE'] = decoy;
+    const blobs = readCommitBlobIds(target, 'HEAD');
+    check(blobs.has('target.txt') && !blobs.has('decoy.txt'), `releaseaudit read the hook's repository instead of the one it was given: ${[...blobs.keys()].join(', ')}`);
+    const fresh = makeRepo('fresh', 'fresh.txt');
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    check(git(fresh, ['log', '--format=%s', '-1']) === 'fresh', 'a fixture commit made under the hook variables did not land in its own repository');
+    check(snapshot() === before, "the hook's repository changed while the fixtures ran under its variables");
+    check(!/bare\s*=\s*true/i.test(fs.readFileSync(path.join(decoyGit, 'config'), 'utf8')), "the hook's repository was re-initialised as bare");
+  } catch (error) {
+    failures.push(`section 92 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // Every git child, here and in the kernel, passes a repository-neutral env. Read from the sources, so a new call
+  // without it fails this check rather than waiting for the next worktree gate to find it.
+  const gitCallSites: string[] = [];
+  const sources = [path.join(HERE, 'selftest.ts'), ...fs.readdirSync(path.join(HERE, '..', 'src')).filter((name) => name.endsWith('.ts')).map((name) => path.join(HERE, '..', 'src', name))];
+  for (const file of sources) {
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
+      if (/(spawnSync|execFileSync|spawn|execFile)\(\s*'git'/.test(line) && !line.includes('repositoryNeutralEnv(')) gitCallSites.push(`${path.basename(file)}:${index + 1}`);
+    });
+  }
+  check(gitCallSites.length === 0, `a git child process inherits the hook's repository variables: ${gitCallSites.join(', ')}`);
+}
+
+// --- 93: the menu keeps a title for a named session (1.2.6, PLAN-seat-messaging.md Phase 2 item 1) ----------------
+if (selected(93)) {
+  const { conversationTitle, seatConversationView, conversationCell } = await import('../src/conversation.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-titles-')));
+  try {
+    const transcripts = path.join(root, 'projects');
+    const stateDirectory = path.join(root, 'state');
+    fs.mkdirSync(path.join(transcripts, 'some-project'), { recursive: true });
+    // As Claude Code writes them: a session named at launch has a `custom-title` after its first prompt and no
+    // `ai-title`; one renamed later, or by the Desk hook, has both.
+    const launchNamed = '93000000-0000-4000-8000-000000000001';
+    const seatNamed = '93000000-0000-4000-8000-000000000002';
+    const generated = '93000000-0000-4000-8000-000000000003';
+    const write = (id: string, lines: object[]) => fs.writeFileSync(path.join(transcripts, 'some-project', `${id}.jsonl`), lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    write(launchNamed, [{ type: 'user' }, { type: 'last-prompt' }, { type: 'custom-title', customTitle: 'Wiring the NAS', sessionId: launchNamed }, { type: 'assistant' }]);
+    write(seatNamed, [{ type: 'user' }, { type: 'last-prompt' }, { type: 'custom-title', customTitle: 'home-lab', sessionId: seatNamed }, { type: 'assistant' }]);
+    write(generated, [{ type: 'ai-title', aiTitle: 'Planning the cutover', sessionId: generated }, { type: 'user' }, { type: 'custom-title', customTitle: 'home-lab', sessionId: generated }]);
+
+    const view = (seat: string, id: string) => {
+      fs.mkdirSync(path.join(stateDirectory, 'seats', seat), { recursive: true });
+      fs.writeFileSync(path.join(stateDirectory, 'seats', seat, 'activity.json'), JSON.stringify({ seat, last_seen_utc: '2026-09-30T00:00:00Z', session_id: id, conversation_recorded_utc: '2026-09-30T00:00:00Z' }));
+      return seatConversationView(stateDirectory, seat, { transcriptRoot: transcripts });
+    };
+
+    const named = view('home-lab', launchNamed);
+    const namedCell = conversationCell(named);
+    check(named.title_status === 'titled' && namedCell.startsWith('"Wiring the NAS"'), `a launch-named transcript did not render its own title: ${namedCell}`);
+    check(!namedCell.includes('records no title'), `a launch-named transcript still said it records no title: ${namedCell}`);
+    equal(conversationTitle(transcripts, launchNamed).source, 'custom-title', 'a custom-title fallback was not said as one');
+
+    const onlySeat = view('home-lab', seatNamed);
+    check(onlySeat.title_status === 'no-title' && onlySeat.title === '' && conversationCell(onlySeat).includes("seat's own name"), `a title equal to the seat's name was shown: ${conversationCell(onlySeat)}`);
+    const otherSeat = view('garden', seatNamed);
+    check(otherSeat.title_status === 'titled' && otherSeat.title === 'home-lab', `a title equal to ANOTHER seat's name was hidden: ${conversationCell(otherSeat)}`);
+
+    const kept = view('home-lab', generated);
+    check(kept.title_status === 'titled' && kept.title === 'Planning the cutover', `an ai-title at line 1 lost to a later custom-title: ${conversationCell(kept)}`);
+    equal(conversationTitle(transcripts, generated).source, 'ai-title', 'a generated title was not said as one');
+  } catch (error) {
+    failures.push(`section 93 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 94: the Desk hook names a session after its seat, once its generated title exists (kickoffs/s75-r2 row 1) -------
+if (selected(94)) {
+  const w = await seatClaimWorkspace('session-name');
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    const config = path.join(w.root, 'claude-config');
+    fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
+    const titled = '94000000-0000-4000-8000-000000000001';
+    const untitled = '94000000-0000-4000-8000-000000000002';
+    fs.writeFileSync(path.join(config, 'projects', 'ws', `${titled}.jsonl`), '{"type":"user"}\n{"type":"ai-title","aiTitle":"Planning the cutover","sessionId":"x"}\n');
+    fs.writeFileSync(path.join(config, 'projects', 'ws', `${untitled}.jsonl`), '{"type":"user"}\n');
+    const activityFile = path.join(w.workspace, '.claude', 'seats', 'first', 'activity.json');
+    const activity = () => (fs.existsSync(activityFile) ? (JSON.parse(fs.readFileSync(activityFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>) : {});
+    // As the fixture's `as` would run it, plus the prompt's payload on stdin, which `as` does not carry.
+    const hookEnv = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_ASSISTANT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const prompt = (from: number, input: Record<string, unknown>, extra: Record<string, string> = {}) => {
+      const ran = runCli(['hook', 'desk-context', '--workspace', w.workspace, '--agent-pid', String(from)], { cwd: w.root, env: { ...hookEnv, CLAUDE_PID: String(from), CLAUDE_CONFIG_DIR: config, ...extra }, input: JSON.stringify(input) });
+      try {
+        return (JSON.parse(ran.stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput;
+      } catch {
+        return { unparsed: ran.stdout + ran.stderr } as Record<string, unknown>;
+      }
+    };
+    const payload = (sessionId: string, more: Record<string, unknown> = {}) => ({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, prompt: 'hello', ...more });
+
+    // THE FIRST PROMPT: no generated title yet, so no name.
+    const first = prompt(agent, payload(untitled));
+    check(String(first['additionalContext'] ?? '').includes('seat first, bound to this conversation'), `the fixture seat was not bound: ${JSON.stringify(first)}`);
+    check(!('sessionTitle' in first), `a session with no generated title was named: ${JSON.stringify(first)}`);
+    // A LATER PROMPT, ONCE THE TITLE EXISTS: named after the seat, and recorded beside its conversation.
+    const named = prompt(agent, payload(titled));
+    equal(named['sessionTitle'], 'first', 'an unnamed session with a generated title was not named after its seat');
+    equal(activity()['message_name'], 'first', 'the name was not recorded');
+    equal(activity()['message_session_id'], titled, 'the name was not recorded beside the session it names');
+    // THE READER'S OWN NAME WINS.
+    const own = prompt(agent, payload(titled, { session_title: 'my-own-name' }));
+    check(!('sessionTitle' in own), `a session the reader named was renamed: ${JSON.stringify(own)}`);
+    // A CODEX SEAT IS NEVER NAMED.
+    const codex = prompt(agent, payload(titled), { DESKPOST_ASSISTANT: 'codex' });
+    check(!('sessionTitle' in codex), `a Codex session was named: ${JSON.stringify(codex)}`);
+    // THE CONTEXT IS BYTE-IDENTICAL whether or not the session is named.
+    equal(named['additionalContext'], first['additionalContext'], 'naming the session changed the Desk context');
+    equal(own['additionalContext'], first['additionalContext'], 'a reader-named session got a different Desk context');
+    // A SEATLESS SESSION: no name.
+    const stranger = w.startAgent();
+    const seatless = prompt(stranger, payload(titled));
+    check(String(seatless['additionalContext'] ?? '').includes('no seat') && !('sessionTitle' in seatless), `a seatless session was named: ${JSON.stringify(seatless)}`);
+    // THE RECORD SURVIVES A DESK CHANGE, which rebuilds activity.json.
+    equal(w.as(agent, ['desk', 'open', 'project', 'beta', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'the fixture Desk change failed');
+    equal(activity()['message_name'], 'first', 'the name did not survive a desk open');
+    equal(activity()['message_session_id'], titled, 'the named session did not survive a desk open');
+  } catch (error) {
+    failures.push(`section 94 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 95: `seat status` and the Desk name the address a held seat answers to (kickoffs/s75-r2 row 2) -----------------
+if (selected(95)) {
+  const w = await seatClaimWorkspace('seat-address');
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the held seat could not be created');
+    const gone = w.startAgent();
+    equal(w.createSeat('second', 'beta', gone).exit, 0, 'the second seat could not be created');
+    process.kill(gone);
+    check(w.untilFree('second'), 'the second seat did not come free when its agent died');
+    const conversation = '95000000-0000-4000-8000-000000000001';
+    const activityFile = path.join(w.workspace, '.claude', 'seats', 'first', 'activity.json');
+    const setActivity = (more: Record<string, unknown>) =>
+      fs.writeFileSync(activityFile, JSON.stringify({ seat: 'first', last_seen_utc: '2999-01-01T00:00:00Z', note: 'fixture', session_id: conversation, conversation_recorded_utc: '2999-01-01T00:00:00Z', ...more }));
+    const status = () => {
+      const ran = w.as(agent, ['seat', 'status', '--workspace', w.workspace]);
+      const seats = (JSON.parse(ran.stdout) as { seats: Record<string, unknown>[] }).seats;
+      return { first: seats.find((row) => row['seat'] === 'first')!, second: seats.find((row) => row['seat'] === 'second')! };
+    };
+    const desk = () => (JSON.parse(w.as(agent, ['desk', '--seat', 'first', '--workspace', w.workspace, '--json']).stdout) as { this_seat: Record<string, unknown> }).this_seat;
+    const context = () => {
+      const ran = runCli(['hook', 'desk-context', '--workspace', w.workspace, '--seat', 'first', '--agent-pid', '0'], { cwd: w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_CONFIG_DIR: path.join(w.root, 'no-config') }, input: JSON.stringify({ session_id: conversation }) });
+      return String((JSON.parse(ran.stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext']);
+    };
+
+    // UNNAMED: held, and null until its session names itself.
+    setActivity({});
+    const unnamedContext = context();
+    const unnamed = status();
+    check('message_name' in unnamed.first && unnamed.first['message_name'] === null, `a held, unnamed seat did not say message_name null: ${JSON.stringify(unnamed.first)}`);
+    check('message_name' in desk() && desk()['message_name'] === null, `the Desk did not say message_name null for a held, unnamed seat: ${JSON.stringify(desk())}`);
+    // A FREE SEAT SAYS NOTHING.
+    check(!('message_name' in unnamed.second) && !('messaging' in unnamed.second), `a free seat named an address: ${JSON.stringify(unnamed.second)}`);
+    // NAMED: the record for its current conversation.
+    setActivity({ message_name: 'first', message_session_id: conversation });
+    equal(status().first['message_name'], 'first', 'a held seat with the record did not name its address');
+    equal(desk()['message_name'], 'first', 'the Desk did not name a held seat\'s address');
+    // A RECORD FOR AN EARLIER CONVERSATION IS NOT THIS ONE'S NAME.
+    setActivity({ message_name: 'first', message_session_id: '95000000-0000-4000-8000-000000000009' });
+    equal(status().first['message_name'], null, 'a name recorded for another conversation was offered as this one\'s');
+    // CODEX: no inbox.
+    setActivity({ assistant: 'codex' });
+    const codex = status().first;
+    check(codex['messaging'] === 'unavailable (Codex)' && !('message_name' in codex), `a Codex seat did not say messaging is unavailable: ${JSON.stringify(codex)}`);
+    // THE DESK HOOK'S CONTEXT does not carry the address.
+    setActivity({ message_name: 'first', message_session_id: conversation });
+    equal(context(), unnamedContext, 'the Desk hook\'s context changed with the address');
+    check(!unnamedContext.includes('message_name'), 'the Desk hook\'s context carries the address');
+  } catch (error) {
+    failures.push(`section 95 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
 }
 
 // --- the verdict ----------------------------------------------------------------------------------------

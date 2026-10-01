@@ -663,6 +663,8 @@ export function writeSeatActivity(options: {
   conversation?: string;
   /** Which assistant owns that conversation (ADR-0059); absent means Claude Code, as every pre-1.1 record is. */
   assistant?: 'claude' | 'codex';
+  /** The name the Desk hook gave a session (1.2.6), with the session it names. Advisory, never identity. */
+  messageName?: { name: string; sessionId: string };
 }): string | null {
   const deskDirectory = deskStateDirectory(options.stateDirectory, options.seat);
   if (!fs.existsSync(deskDirectory)) return null;
@@ -686,6 +688,20 @@ export function writeSeatActivity(options: {
       // last.
       record['conversation_recorded_utc'] = String(previous['conversation_recorded_utc']);
       if (previous['assistant'] === 'codex' || previous['assistant'] === 'claude') record['assistant'] = previous['assistant'];
+    }
+  }
+  // A SESSION'S NAME TRAVELS WITH THE SESSION IT NAMES (1.2.6): through every write that starts no conversation, and
+  // through a resume of the same one, which Claude Code keeps the name of. A new conversation has none until it names
+  // itself, so its entry drops the old one.
+  if (options.messageName) {
+    record['message_name'] = options.messageName.name;
+    record['message_session_id'] = options.messageName.sessionId;
+  } else {
+    const previous = readSeatActivity(options.stateDirectory, options.seat);
+    const named = previous && typeof previous['message_name'] === 'string' && typeof previous['message_session_id'] === 'string' ? previous : null;
+    if (named && (options.conversation ? options.conversation === named['message_session_id'] : options.keepConversation)) {
+      record['message_name'] = String(named['message_name']);
+      record['message_session_id'] = String(named['message_session_id']);
     }
   }
   const file = seatActivityPath(options.stateDirectory, options.seat);

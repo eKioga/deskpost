@@ -31,6 +31,7 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { repositoryNeutralEnv } from './gitenv.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
 import { listFilesRecursive, readUtf8, shelfCatalogSections, type ShelfBook } from './shelfbook.ts';
@@ -65,7 +66,7 @@ function utf8Hash(file: string): string {
 function trackedPathSet(workspace: string): Set<string> | null {
   let output: string;
   try {
-    output = execFileSync('git', ['-C', workspace, 'ls-files'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    output = execFileSync('git', ['-C', workspace, 'ls-files'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: repositoryNeutralEnv() });
   } catch {
     return null;
   }

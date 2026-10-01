@@ -94,13 +94,20 @@ export interface TitleAnswer {
   status: TitleStatus;
   title: string;
   reason: string;
+  /**
+   * WHICH RECORD NAMED IT (1.2.6): Claude Code's generated `ai-title`, or the reader's `custom-title` when there is no
+   * generated one -- a session named at launch gets none. Empty when untitled. The Desk hook names a session only once
+   * its GENERATED title exists, so it needs to tell the two apart.
+   */
+  source: 'ai-title' | 'custom-title' | '';
 }
 
 /** The title of one Claude Code conversation, with a DISTINCT status for every way it can be absent. */
 export function conversationTitle(root: string, sessionId: string): TitleAnswer {
-  if (!sessionId.trim()) return { status: 'no-conversation', title: '', reason: 'nothing has recorded a conversation at this seat' };
+  const untitled = (status: TitleStatus, reason: string): TitleAnswer => ({ status, title: '', reason, source: '' });
+  if (!sessionId.trim()) return untitled('no-conversation', 'nothing has recorded a conversation at this seat');
   if (!isConversationId(sessionId)) {
-    return { status: 'malformed-conversation', title: '', reason: 'the recorded conversation id is not a uuid, so no transcript was looked for' };
+    return untitled('malformed-conversation', 'the recorded conversation id is not a uuid, so no transcript was looked for');
   }
   let rootIsFolder = false;
   try {
@@ -108,14 +115,20 @@ export function conversationTitle(root: string, sessionId: string): TitleAnswer 
   } catch {
     rootIsFolder = false;
   }
-  if (!rootIsFolder) return { status: 'no-transcript-root', title: '', reason: `no transcript directory at ${root}` };
+  if (!rootIsFolder) return untitled('no-transcript-root', `no transcript directory at ${root}`);
   const file = transcriptPath(root, sessionId);
   // A TRANSCRIPT NOT FOUND IS NOT A DELETED TRANSCRIPT: another CLAUDE_CONFIG_DIR, machine or a pruned history.
-  if (file === null) return { status: 'no-transcript', title: '', reason: 'no transcript for it under this configuration' };
+  if (file === null) return untitled('no-transcript', 'no transcript for it under this configuration');
   let lines = 0;
   let bytes = 0;
   let reachedEnd = false;
-  let title = '';
+  // THE LAST OF EACH KIND WINS, and a generated title wins over the reader's own: a session renamed after its first
+  // prompt carries both, and the generated one is the descriptive one the menu has always shown.
+  const titles = { 'ai-title': '', 'custom-title': '' };
+  const take = (line: string) => {
+    const found = titleFromLine(line);
+    if (found) titles[found.kind] = found.text;
+  };
   try {
     // SHARED FOR WRITING, in effect: the newest row may be the reader's own live conversation.
     const descriptor = fs.openSync(file, 'r');
@@ -129,7 +142,7 @@ export function conversationTitle(root: string, sessionId: string): TitleAnswer 
           if (carry.length) {
             lines += 1;
             bytes += carry.length;
-            title = titleFromLine(carry) || title;
+            take(carry);
           }
           reachedEnd = true;
           break;
@@ -141,8 +154,7 @@ export function conversationTitle(root: string, sessionId: string): TitleAnswer 
           carry = carry.substring(newline + 1);
           lines += 1;
           bytes += line.length;
-          const found = titleFromLine(line);
-          if (found) title = found;
+          take(line);
           if (lines >= TRANSCRIPT_LINE_BUDGET || bytes >= TRANSCRIPT_BYTE_BUDGET) break outer;
           newline = carry.indexOf('\n');
         }
@@ -151,22 +163,29 @@ export function conversationTitle(root: string, sessionId: string): TitleAnswer 
       fs.closeSync(descriptor);
     }
   } catch (error) {
-    return { status: 'unreadable', title: '', reason: `its transcript could not be read: ${(error as Error).message}` };
+    return untitled('unreadable', `its transcript could not be read: ${(error as Error).message}`);
   }
-  if (title) return { status: 'titled', title, reason: '' };
-  if (!reachedEnd) return { status: 'budget-exhausted', title: '', reason: `no title in its first ${lines} lines` };
-  return { status: 'no-title', title: '', reason: 'its transcript records no title' };
+  if (titles['ai-title']) return { status: 'titled', title: titles['ai-title'], reason: '', source: 'ai-title' };
+  if (titles['custom-title']) return { status: 'titled', title: titles['custom-title'], reason: '', source: 'custom-title' };
+  if (!reachedEnd) return untitled('budget-exhausted', `no title in its first ${lines} lines`);
+  return untitled('no-title', 'its transcript records no title');
 }
 
-/** THE MARKER TEST BEFORE THE PARSE: a transcript line is a whole turn, and parsing every one would cost seconds. */
-function titleFromLine(line: string): string {
-  if (!line.includes('"ai-title"')) return '';
+/**
+ * THE MARKER TEST BEFORE THE PARSE: a transcript line is a whole turn, and parsing every one would cost seconds. The two
+ * records, as Claude Code writes them: `{"type":"ai-title","aiTitle":…}` and `{"type":"custom-title","customTitle":…}`.
+ */
+function titleFromLine(line: string): { kind: 'ai-title' | 'custom-title'; text: string } | null {
+  const kind = line.includes('"ai-title"') ? 'ai-title' : line.includes('"custom-title"') ? 'custom-title' : null;
+  if (kind === null) return null;
+  const key = kind === 'ai-title' ? 'aiTitle' : 'customTitle';
   try {
     const record = JSON.parse(line) as Record<string, unknown>;
-    if (record['type'] !== 'ai-title' || typeof record['aiTitle'] !== 'string') return '';
-    return record['aiTitle'].trim();
+    if (record['type'] !== kind || typeof record[key] !== 'string') return null;
+    const text = record[key].trim();
+    return text ? { kind, text } : null;
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -215,6 +234,21 @@ export function seatConversationRecord(stateDirectory: string, seat: string): Co
   }
   if (record.source === 'none' && malformed) return { session_id: '', source: 'malformed', recorded_utc: '', assistant: 'claude' };
   return record;
+}
+
+/**
+ * THE NAME A HELD SEAT'S SESSION ANSWERS TO (1.2.6, kickoffs/s75-r2 row 2, rulings 4 and 5): what `ListAgents` lists it
+ * as, for `seat status` and the Desk's `this_seat`. Nothing at all for a seat that is not held. A Codex seat has no
+ * inbox, and says so. Otherwise `message_name` is the name the Desk hook recorded for the seat's CURRENT conversation,
+ * or null before that session has named itself. A name only; no socket path or token is ever read or kept.
+ */
+export function seatMessageAddress(stateDirectory: string, seat: string, claimState: string): { message_name?: string | null; messaging?: string } {
+  if (claimState !== 'held') return {};
+  const record = seatConversationRecord(stateDirectory, seat);
+  if (record.assistant === 'codex') return { messaging: 'unavailable (Codex)' };
+  const activity = readSeatActivity(stateDirectory, seat);
+  const named = activity !== null && typeof activity['message_name'] === 'string' && record.session_id !== '' && activity['message_session_id'] === record.session_id;
+  return { message_name: named ? String(activity!['message_name']) : null };
 }
 
 /** Whether this Library's own launcher minted this id at this seat. False for anything it cannot prove. */
@@ -287,6 +321,13 @@ export function seatConversationView(stateDirectory: string, seat: string, optio
   view.title = answer.title;
   view.title_status = answer.status;
   view.title_note = answer.reason;
+  // A TITLE THAT IS ONLY THE SEAT'S OWN NAME SAYS NOTHING the seat column does not (a session named after its seat at
+  // launch has no generated title), so it is shown as untitled, in words that say why.
+  if (answer.status === 'titled' && answer.title === seat) {
+    view.title = '';
+    view.title_status = 'no-title';
+    view.title_note = "its only title is the seat's own name";
+  }
   if (answer.status === 'no-transcript' && mintedHere(stateDirectory, seat, record.session_id)) {
     view.entry_action = 'restart';
     view.entry_note = 'it was started at this seat and recorded nothing, so a number starts it rather than resuming it';

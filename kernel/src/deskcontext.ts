@@ -20,7 +20,8 @@ import { splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
-import { getSeatClaimState, launcherHoldsSeatForThisAgent } from './seatclaim.ts';
+import { getSeatClaimState, launcherHoldsSeatForThisAgent, readSeatActivity, writeSeatActivity } from './seatclaim.ts';
+import { conversationTitle, isConversationId, transcriptRoot } from './conversation.ts';
 import { deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { recordLauncherConversation, updateSeatConversationRecord } from './seat.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
@@ -51,8 +52,32 @@ export interface DeskContextOptions {
   readerToolPrefix?: string | undefined;
 }
 
-function contextDocument(text: string): string {
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT, additionalContext: text } });
+function contextDocument(text: string, sessionTitle?: string): string {
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT, additionalContext: text, ...(sessionTitle ? { sessionTitle } : {}) } });
+}
+
+/**
+ * THE NAME A SEAT'S SESSION ANSWERS TO (1.2.6, PLAN-seat-messaging.md Phase 2, kickoffs/s75-r2 row 1): `ListAgents` and
+ * `/resume` show a session's name, and an unnamed one is named after the Library folder, so no seat could be found.
+ *
+ * ONLY ONCE THE GENERATED TITLE EXISTS. A session named before Claude Code titles it never gets a title, and the menu
+ * shows that title, so the first prompt never names: the second or a later one does. THE READER'S OWN NAME WINS: an
+ * input carrying any `session_title` (`--name`, `/rename`, an earlier answer here) is never renamed. A Codex seat has no
+ * inbox and is never named. Only a seat this session is PROVEN to hold (bound, or held by its launcher) names it.
+ *
+ * The record goes into `activity.json` beside the conversation it names, written only when it is not there yet. Every
+ * failure answers "no name": a prompt must not wait on it, and the context it carries is the same either way.
+ */
+function seatSessionName(stateDirectory: string, seat: string, sessionId: string, call: unknown, proven: boolean): string {
+  if (!proven || !isConversationId(sessionId) || asText(field(call, 'session_title')).trim()) return '';
+  if ((process.env['DESKPOST_ASSISTANT'] ?? '') === 'codex') return '';
+  const answer = conversationTitle(transcriptRoot(), sessionId);
+  if (answer.status !== 'titled' || answer.source !== 'ai-title') return '';
+  const activity = readSeatActivity(stateDirectory, seat);
+  if (!activity || activity['message_name'] !== seat || activity['message_session_id'] !== sessionId) {
+    writeSeatActivity({ stateDirectory, seat, note: 'session named', keepConversation: true, messageName: { name: seat, sessionId } });
+  }
+  return seat;
 }
 
 /** `Get-BookRootLabel`: how one open Book is named to the reader, the two archives told apart. */
@@ -75,6 +100,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
   let stateDirectory = options.stateDirectory ?? '';
   let seatState: ReturnType<typeof resolveSeatName>;
   let sessionId: string;
+  let call: unknown;
   let agentPid: number;
   let deskDirectory: string | null;
   let deskPresent: boolean;
@@ -101,7 +127,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
       if (!stateDirectory) stateDirectory = path.join(resolved.workspace!, '.claude');
     }
     const raw = stdinText.replace(/^﻿/, '');
-    const call = raw.trim() ? (JSON.parse(raw) as unknown) : null;
+    call = raw.trim() ? (JSON.parse(raw) as unknown) : null;
     sessionId = asText(field(call, 'session_id'));
     agentPid = options.agentPid !== undefined && options.agentPid >= 0 ? options.agentPid : currentAgentProcessId();
     seatState = resolveSeatName({ seat: options.seat, stateDirectory, agentPid });
@@ -128,9 +154,12 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     }
     let seatNote = '';
     let seatWarning = '';
+    let proven = false;
     if (seatState.source === 'binding') {
       seatNote = ', bound to this conversation';
+      proven = true;
       if (getSeatClaimState(stateDirectory, seat, agentPid).state === 'orphaned') {
+        proven = false;
         seatNote = ', holder lost';
         seatWarning =
           " This seat's claim holder is gone while this conversation is still bound to it, so every write will refuse." +
@@ -149,10 +178,10 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     } else {
       // A LAUNCHER-HELD SEAT IS SAID AS ONE (the S60 report, #1): "not bound" sent a new user, seconds after `deskpost`
       // started the seat, off to bind it. Only when the claim's token and the process tree both prove it.
-      seatNote =
-        seatState.source === 'environment' && launcherHoldsSeatForThisAgent(stateDirectory, seat)
-          ? ', held for this session by the deskpost launcher that started it'
-          : `, ${seatState.source === 'environment' ? 'named by LIBRARY_SEAT' : 'named explicitly'} and not bound to this conversation`;
+      proven = seatState.source === 'environment' && launcherHoldsSeatForThisAgent(stateDirectory, seat);
+      seatNote = proven
+        ? ', held for this session by the deskpost launcher that started it'
+        : `, ${seatState.source === 'environment' ? 'named by LIBRARY_SEAT' : 'named explicitly'} and not bound to this conversation`;
       // A LAUNCHER-HELD SESSION REPORTS ITS CONVERSATION (ADR-0059): Codex takes no id at launch, so `seat start` could
       // not record one, and this is the first moment the id is known. The token proves the seat; THE PROCESS TREE PROVES
       // THE SESSION (inspection #1): the environment is inherited by anything run under the agent, a nested Codex
@@ -199,8 +228,15 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     } catch {
       // a layout that cannot be read is the migration verb's to report, not a prompt's to wait on
     }
+    let sessionTitle = '';
+    try {
+      sessionTitle = seatSessionName(stateDirectory, seat, sessionId, call, proven);
+    } catch {
+      // swallowed: a name, and a prompt must not wait on it
+    }
     return contextDocument(
       `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}${notebookWarning}`,
+      sessionTitle,
     );
   } catch {
     return contextDocument(INVALID);

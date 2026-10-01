@@ -50,6 +50,7 @@ import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookPlace, type BookRootParts } from './places.ts';
 import { markerConnection } from './basicmemory.ts';
 import { addedDirsStatus } from './seatdirs.ts';
+import { seatMessageAddress } from './conversation.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -319,6 +320,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       }
     })(),
   };
+  // THE NAME THIS SEAT'S SESSION ANSWERS TO (1.2.6), only while held, as `seat status` says it. A Codex seat has no
+  // inbox, so it has no `message_name` here; `seat status` says why.
+  const address = seatMessageAddress(stateDirectory, seat, thisClaim.state);
+  if ('message_name' in address) thisSeat['message_name'] = address.message_name ?? null;
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.
   thisSeat['conversation_line'] = formatSeatConversationCell(conversation);

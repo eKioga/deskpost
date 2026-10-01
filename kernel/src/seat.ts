@@ -64,7 +64,7 @@ import {
 } from './seatclaim.ts';
 import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
 import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
-import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, type Assistant } from './conversation.ts';
+import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 import { addedDirArguments, addedDirsPath, addedDirsStatus, seatDirsResult } from './seatdirs.ts';
 
@@ -1414,6 +1414,8 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
         agent_pid: state.state === 'free' ? null : state.agentPid || null,
         last_seen_utc: activity && typeof activity['last_seen_utc'] === 'string' ? activity['last_seen_utc'] : null,
         this_seat: named.status === 'named' && named.seat === seat,
+        // THE ADDRESS, ONLY WHILE HELD (1.2.6): the name its session answers to, null until it names itself.
+        ...seatMessageAddress(stateDirectory, seat, state.state),
       } as Record<string, PsJsonValue>;
     });
   return {

@@ -180,6 +180,20 @@
       "applies_to": ["area:desk"],
       "match": { "field_pattern": "^result\\.this_seat\\.added_dirs(\\[|\\.|$)" }
     },
+    "kernel-desk-names-the-address-its-session-answers-to": {
+      "reason": "1.2.6 (S75 row 2, PLAN-seat-messaging.md Phase 2 item 3): while a seat is held, the kernel's Desk overview names the name its session answers to in ListAgents, this_seat.message_name, or null until the session has named itself. The name is recorded by the kernel's Desk hook, and the PowerShell overview has no such record, so it has no field. Only this_seat.message_name is the kernel's; every other field of the overview is compared.",
+      "approved_by": "the S75 kickoff (kickoffs/s75-r2, row 2): a kernel_only delta on this_seat.message_name beside added_dirs's",
+      "approved_on": "2026-09-30",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.this_seat\\.message_name$" }
+    },
+    "kernel-desk-context-names-the-session-after-its-seat": {
+      "reason": "1.2.6 (S75 row 1, PLAN-seat-messaging.md Phase 2): the kernel's Desk context hook adds sessionTitle, the seat's name, so ListAgents and /resume show the seat. Only for a seat this session is proven to hold, a session id that is a uuid with no session_title, and a transcript that already has its generated ai-title. The PowerShell hook names no session. No guards.desk-context-* row moves: each uses a session id that is not a uuid, at a seat no launcher holds. Only hookSpecificOutput.sessionTitle is the kernel's; additionalContext is compared as before.",
+      "approved_by": "the S75 kickoff (kickoffs/s75-r2, row 1): parity kernel_only, the delta recorded with this reason",
+      "approved_on": "2026-09-30",
+      "applies_to": ["area:guards", "seat.desk-context-records-the-conversation-at-a-bound-seat"],
+      "match": { "field_pattern": "^result\\.hookSpecificOutput\\.sessionTitle$" }
+    },
     "the-desk-context-says-a-notebook-is-in-the-shared-layout": {
       "reason": "5417b1f (2026-09-28, released in 1.2.3): the kernel's Desk context warns when a Library's Notebook is still in the retired shared layout, where Notebook writes refuse until migrate runs. The PowerShell arm has only that layout, so it never warns. This row's two-seat fixture is laid out by the oracle, so the kernel reads it as legacy. Dated S72: the installed 1.2.3 kernel adds the sentence and 1.2.0 does not. Only the one sentence is paired away; the rest of the context is compared.",
       "approved_by": "the S72 kickoff (kickoffs/s72-r2, row 0), B's ruling that a difference both arms get right is an approved delta naming its commit",
