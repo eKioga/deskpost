@@ -53,7 +53,8 @@ import { assertSeatMayClose, setNoteField, shelfNotes, whyRefusal, type ShelfNot
 const WHY_MISSING_NEXT =
   " This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, " +
   'or the Notebook, and record a why category when none of them fits.';
-import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
+import { deskEntriesForSeat, deskFilePath, resolveSeatName, seatDirectoryNames } from './seatdesk.ts';
+import { launcherHoldsSeatForThisAgent } from './seatclaim.ts';
 import { seatConversationRecord } from './desk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedPage } from './pagepath.ts';
@@ -247,6 +248,17 @@ function supersededNote(book: ShelfBook, page: string, seat: string): ShelfNoteR
   return note;
 }
 
+/** The `wiki/reviewed/<yyyy-mm>` folders that hold a month map, oldest first. */
+export function reviewedMonths(book: ShelfBook): string[] {
+  const root = path.join(book.wikiPath, 'reviewed');
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
+  return fs
+    .readdirSync(root, { withFileTypes: true })
+    .filter((item) => item.isDirectory() && /^\d{4}-\d{2}$/.test(item.name) && fs.existsSync(path.join(root, item.name, '_index.md')))
+    .map((item) => item.name)
+    .sort();
+}
+
 /** A capture Book's map is REGENERATED from the notes on disk, so it can never drift. */
 export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } {
   const notes = shelfNotes(book);
@@ -255,11 +267,28 @@ export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } 
   const pending = notes.filter((note) => note.review !== 'done').sort(byCapturedDescending);
   const reviewed = notes.filter((note) => note.review === 'done').sort(byCapturedDescending);
   const lines = [`# ${book.title} - Reader Map`, '', '- [[_book|Book metadata and limits]]', '', '## Pending review', ''];
-  if (pending.length) for (const note of pending) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
-  else lines.push('- Nothing is waiting for review.');
+  if (!pending.length) lines.push('- Nothing is waiting for review.');
+  else if (!book.takesLetters) for (const note of pending) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
+  else {
+    // A BOOK THAT TAKES LETTERS GROUPS THEM BY RECIPIENT (S77 row 3, ADR-0062), seats in name order and then any note
+    // addressed to no seat, so a recipient finds its own at once. `Update-ShelfNoteIndex` writes the same lines.
+    const recipients = [...new Set(pending.map((note) => note.forSeat ?? ''))].sort((left, right) => (left === '' ? 1 : right === '' ? -1 : left < right ? -1 : left > right ? 1 : 0));
+    recipients.forEach((recipient, index) => {
+      if (index) lines.push('');
+      lines.push(recipient ? `### For ${recipient}` : '### For no seat', '');
+      for (const note of pending.filter((row) => (row.forSeat ?? '') === recipient)) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
+    });
+  }
   lines.push('', '## Reviewed', '');
   if (reviewed.length) for (const note of reviewed) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
   else lines.push('- No note has been reviewed yet.');
+  // THE MONTHS `shelf tidy` MOVED CLOSED NOTES INTO (S77 row 1), newest first, and only when there is one, so a Book
+  // never tidied keeps its map byte for byte. `Update-ShelfNoteIndex` writes the same lines.
+  const months = reviewedMonths(book).reverse();
+  if (months.length) {
+    lines.push('', '## Tidied', '');
+    for (const month of months) lines.push(`- [[reviewed/${month}/_index|Notes reviewed in ${month}]]`);
+  }
   writeUtf8(path.join(book.wikiPath, '_index.md'), lines.join('\n') + '\n');
   return { pendingCount: pending.length };
 }
@@ -329,11 +358,19 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     'require-note-file',
     'capture-date',
     'workspace',
+    // KEPT VALUED SO IT CAN BE REFUSED (S77 row 3, the capture --seat Report): unlisted, `--seat x` would parse as a
+    // flag and a stray positional, and `x` would become the Book slug (argv.ts).
     'seat',
     'why',
     'supersedes',
+    'for',
   ]);
   try {
+    // THE AUTHOR IS RESOLVED, NEVER TYPED (ADR-0062): a seat a caller could type would let any shell file under
+    // another seat's name. Refused for every Book, before anything is read.
+    if (parsed.options.has('seat') || parsed.flags.has('seat')) {
+      refuse("library capture does not take --seat: the writing seat is resolved from this session's binding or launcher, never typed, so no shell can file under another seat's name. Nothing was captured.");
+    }
     const slug = parsed.positional[0] ?? 'holding';
     const title = (parsed.options.get('title') ?? '').trim();
     // --title IS NEEDED ONLY WHEN THE BODY HAS NO H1 (S67, game-admin's Report): the H1 names the note either way.
@@ -365,20 +402,53 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     // WHY THE NOTE IS HERE (S73 row 3): one closed category, recorded and never required. A capture without one still
     // lands; its result says so and names the homes to try first. A malformed one is refused, since that is the
     // option's grammar rather than a gate on saving.
-    const why = (parsed.options.get('why') ?? '').trim();
+    let why = (parsed.options.get('why') ?? '').trim();
     if (parsed.options.has('why')) {
       const malformed = whyRefusal(why);
       if (malformed !== null) refuse(malformed);
     }
+
+    // A LETTER (S77 row 3, ADR-0062): `--for <seat>` addresses the note, writing `for_seat:`, and implies
+    // `why: for-seat` unless an explicit --why says otherwise. Only a Book whose entry says `Letters: yes` takes it.
+    const forSeat = (parsed.options.get('for') ?? '').trim();
+    if (parsed.options.has('for') || parsed.flags.has('for')) {
+      if (!book.takesLetters) {
+        refuse(
+          `Shelf Book '${slug}' does not take letters (its catalog entry has no '- **Letters:** yes'), so it refuses --for. ` +
+            `A note for another seat is a letter: library capture letters --for <seat> --title <t> --content-path <file>. Nothing was captured.`,
+        );
+      }
+      if (!forSeat) refuse('--for names the seat a letter is for: --for <seat>. Nothing was captured.');
+      const seats = seatDirectoryNames(stateDirectory(workspace));
+      if (!seats.includes(forSeat)) {
+        refuse(`--for '${forSeat}' names no seat in this Library. Seats: ${seats.length ? seats.join(', ') : '(none)'}. Nothing was captured.`);
+      }
+      if (!why) why = 'for-seat';
+    }
+
+    // WHY_MISSING ONLY WHERE IT HELPS (S77 row 4, S73 parked item 2, kickoffs/s77 ruling 3): the "try a better home
+    // first" advice is for a Book whose notes their writer closes. The Report Inbox (`Closed by: any`) is the right
+    // home for what lands there, so it stays quiet. A Book with no line keeps saying it, as before the rule.
+    const whyMissingSaid = book.closedByDeclared !== 'any';
 
     const capturedAt = utcStamp();
 
     // WHICH SEAT WROTE THIS, RESOLVED AND NEVER ACCEPTED -- and it never blocks a capture. A
     // seatless capture records no seat rather than the string 'unknown': empty is the real
     // pre-identity value, and a placeholder would be a claim nobody made.
-    const seatState = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: stateDirectory(workspace) });
+    const seatState = resolveSeatName({ stateDirectory: stateDirectory(workspace) });
     const fromSeat = seatState.status === 'named' ? seatState.seat! : '';
     const seatSource = fromSeat ? seatState.source! : seatState.status;
+    // HOW THE AUTHOR WAS RESOLVED (S77 row 3, ADR-0062), in the resolver's own words and never as a proof: `binding`
+    // from a committed binding, with no process walk; `launcher` from the environment while the launcher's claim token
+    // and process check hold; `environment` from the environment alone. Nothing with no seat.
+    const fromSeatSource = !fromSeat
+      ? ''
+      : seatState.source === 'binding'
+        ? 'binding'
+        : launcherHoldsSeatForThisAgent(stateDirectory(workspace), fromSeat)
+          ? 'launcher'
+          : 'environment';
     // THE CONVERSATION READ NEVER BLOCKS A CAPTURE: a damaged record is carried as no id rather than
     // a wrong one, as the oracle carries it.
     let sessionId = '';
@@ -460,9 +530,11 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),
       source,
       from_seat: fromSeat,
+      ...(fromSeatSource ? { from_seat_source: fromSeatSource } : {}),
       seat_source: seatSource,
+      ...(forSeat ? { for_seat: forSeat } : {}),
       session_id: sessionId,
-      ...(why ? { why } : { why_missing: true }),
+      ...(why ? { why } : whyMissingSaid ? { why_missing: true } : {}),
       ...(supersedes ? { supersedes } : {}),
       confirmation_required: false,
       survives_reset: true,
@@ -478,7 +550,9 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
 
     const frontmatter = ['---', `captured: ${capturedAt}`, 'review: pending'];
     if (fromSeat) frontmatter.push(`from_seat: ${fromSeat}`);
+    if (fromSeatSource) frontmatter.push(`from_seat_source: ${fromSeatSource}`);
     if (sessionId) frontmatter.push(`session_id: ${sessionId}`);
+    if (forSeat) frontmatter.push(`for_seat: ${forSeat}`);
     const sourceProject = (parsed.options.get('source-project') ?? '').trim();
     const sourcePaths = (parsed.options.get('source-paths') ?? '').trim();
     const tags = (parsed.options.get('tags') ?? '').trim();
@@ -568,7 +642,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     plan['next'] =
       `This Book is closed by default. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} ` +
       'when you are ready to review.' +
-      (why ? '' : WHY_MISSING_NEXT);
+      (why || !whyMissingSaid ? '' : WHY_MISSING_NEXT);
     return { refusal: null, value: plan };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

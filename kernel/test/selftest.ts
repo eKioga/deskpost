@@ -8321,6 +8321,498 @@ if (selected(95)) {
   }
 }
 
+// --- 96: the Desk reminder is sent once per session, where the ledger clear reaches it (kickoffs/s77 row 0) -----------
+if (selected(96)) {
+  const w = await seatClaimWorkspace('desk-once');
+  try {
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    const config = path.join(w.root, 'claude-config');
+    fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
+    const stateDirectory = path.join(w.workspace, '.claude');
+    // A clear hook outside the workspace, as an installed program's is: whether it reaches this ledger is its arguments'.
+    const clearScript = path.join(w.root, 'program', '.claude', 'hooks', 'Restore-CompactedGuidance.ps1');
+    fs.mkdirSync(path.dirname(clearScript), { recursive: true });
+    fs.writeFileSync(clearScript, '# fixture\n');
+    const localFile = path.join(stateDirectory, 'settings.local.json');
+    const original = fs.existsSync(localFile) ? fs.readFileSync(localFile, 'utf8') : null;
+    const register = (args: string[] | null) => {
+      const local = (original !== null ? JSON.parse(original.replace(/^﻿/, '')) : {}) as Record<string, unknown>;
+      const hooks = { ...((local['hooks'] as Record<string, unknown> | undefined) ?? {}) };
+      delete hooks['PostCompact'];
+      delete hooks['SessionStart'];
+      if (args !== null) {
+        const block = [{ hooks: [{ type: 'command', command: 'powershell.exe', args: ['-NoProfile', '-File', clearScript, ...args] }] }];
+        hooks['PostCompact'] = block;
+        hooks['SessionStart'] = block;
+      }
+      fs.writeFileSync(localFile, JSON.stringify({ ...local, hooks }, null, 2));
+    };
+    const hookEnv = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_ASSISTANT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const prompt = (input: Record<string, unknown>, extra: Record<string, string> = {}): string =>
+      runCli(['hook', 'desk-context', '--workspace', w.workspace, '--agent-pid', String(agent)], { cwd: w.root, env: { ...hookEnv, CLAUDE_PID: String(agent), CLAUDE_CONFIG_DIR: config, ...extra }, input: JSON.stringify(input) }).stdout.trim();
+    const context = (stdout: string): string => {
+      try {
+        return String((JSON.parse(stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext'] ?? '');
+      } catch {
+        return '';
+      }
+    };
+    const session = (n: number) => `96000000-0000-4000-8000-00000000000${n}`;
+    const payload = (sessionId: string) => ({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, prompt: 'hello' });
+    const sends = (stdout: string, what: string) => check(context(stdout).includes('Virtual Desk (seat first'), `${what}: the Desk block was not sent: ${stdout}`);
+
+    // REGISTERED, AND REACHING THIS LEDGER: three prompts against an unchanged Desk send once.
+    register(['-StateDirectory', stateDirectory]);
+    const one = prompt(payload(session(1)));
+    sends(one, 'the first prompt');
+    equal(prompt(payload(session(1))), '', 'the second prompt against an unchanged Desk sent the block again');
+    equal(prompt(payload(session(1))), '', 'the third prompt against an unchanged Desk sent the block again');
+    // A DESK CHANGE IS A DIFFERENT TEXT, SO IT IS SENT, and then withheld again.
+    equal(w.as(agent, ['desk', 'open', 'project', 'beta', '--seat', 'first', '--workspace', w.workspace]).exit, 0, 'the fixture Desk change failed');
+    const changed = prompt(payload(session(1)));
+    sends(changed, 'the prompt after a Desk change');
+    check(context(changed) !== context(one), 'the Desk change did not change the block');
+    equal(prompt(payload(session(1))), '', 'the changed Desk was sent twice');
+    // A CLEARED LEDGER (what the clear hook does on a compaction or a resume) SENDS AGAIN.
+    const ledgerFile = path.join(stateDirectory, '.hook-served.json');
+    const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    delete ledger[session(1)];
+    fs.writeFileSync(ledgerFile, JSON.stringify(ledger));
+    sends(prompt(payload(session(1))), 'the prompt after the ledger was cleared');
+    // NO SESSION ID: sent every time.
+    sends(prompt({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }), 'the first prompt with no session id');
+    sends(prompt({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }), 'the second prompt with no session id');
+    // A CODEX SESSION RUNS NO CLEAR: sent every time.
+    sends(prompt(payload(session(2)), { DESKPOST_ASSISTANT: 'codex' }), 'the first Codex prompt');
+    sends(prompt(payload(session(2)), { DESKPOST_ASSISTANT: 'codex' }), 'the second Codex prompt');
+    // A NAMING PROMPT WITH A WITHHELD BLOCK STILL CARRIES THE NAME, and only the name.
+    const transcript = path.join(config, 'projects', 'ws', `${session(3)}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"user"}\n');
+    sends(prompt(payload(session(3))), 'the first prompt of the session to be named');
+    fs.writeFileSync(transcript, '{"type":"user"}\n{"type":"ai-title","aiTitle":"Planning the cutover","sessionId":"x"}\n');
+    const naming = JSON.parse(prompt(payload(session(3))) || '{}') as { hookSpecificOutput?: Record<string, unknown> };
+    equal(naming.hookSpecificOutput?.['sessionTitle'], 'first', 'a withheld block lost the session name');
+    check(naming.hookSpecificOutput !== undefined && !('additionalContext' in naming.hookSpecificOutput), `the naming prompt re-sent the unchanged block: ${JSON.stringify(naming)}`);
+    // THE INSTALLED LAYOUT: the clear registered with no -StateDirectory empties its own program's ledger, not this one.
+    register([]);
+    sends(prompt(payload(session(4))), 'the first prompt where the clear empties another ledger');
+    sends(prompt(payload(session(4))), 'the second prompt where the clear empties another ledger');
+    // NOT REGISTERED AT ALL: sent every time.
+    register(null);
+    sends(prompt(payload(session(5))), 'the first prompt with no clear registered');
+    sends(prompt(payload(session(5))), 'the second prompt with no clear registered');
+    // A REGISTERED SCRIPT THAT IS NOT THERE CLEARS NOTHING.
+    register(['-StateDirectory', stateDirectory]);
+    fs.rmSync(clearScript);
+    sends(prompt(payload(session(6))), 'the first prompt with the clear script missing');
+    sends(prompt(payload(session(6))), 'the second prompt with the clear script missing');
+  } catch (error) {
+    failures.push(`section 96 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 97. `shelf tidy` MOVES CLOSED NOTES OUT OF THE WAY, AND `--restore` BRINGS ONE BACK (S77 row 1) --------------------
+// PLAN-holding-discipline.md row 5: a done note whose reviewed: stamp is more than --days old (14 by default) moves to
+// wiki/reviewed/<yyyy-mm>/ byte for byte, every seat's alike; an unstamped done note is counted and never moved; the
+// plan id binds each note's path, hash and destination and is checked again under the lock; the reader map links each
+// month's own map; --restore moves one back and refuses a name already in notes/; both need the Book open here.
+if (selected(97)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-tidy-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const parsed = (result: { stdout: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const wiki = path.join(lib, 'shelf', 'holding', 'wiki');
+    const notesDir = path.join(wiki, 'notes');
+    fs.mkdirSync(notesDir, { recursive: true });
+    const stamp = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const note = (name: string, fields: string, title: string) => fs.writeFileSync(path.join(notesDir, `${name}.md`), `---\ncaptured: 2026-01-01T00:00:00Z\n${fields}---\n\n# ${title}\n\nThe body of ${title}.\n`);
+    note('2026-01-01-old-mine', 'review: done\nfrom_seat: first\nreviewed: 2026-01-15T10:00:00Z\nfiled_to: projects/work/notes/x\n', 'Old mine');
+    note('2026-01-02-old-theirs', 'review: done\nfrom_seat: second\nreviewed: 2026-02-03T10:00:00Z\n', 'Old theirs');
+    note('2026-01-03-recent', `review: done\nfrom_seat: first\nreviewed: ${stamp(3)}\n`, 'Recent');
+    note('2026-01-04-unstamped', 'review: done\nfrom_seat: first\n', 'Unstamped');
+    note('2026-01-05-pending', 'review: pending\nfrom_seat: first\n', 'Pending');
+    const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const oldMineHash = hash(path.join(notesDir, '2026-01-01-old-mine.md'));
+    const tidy = (extra: string[]) => cli(['shelf', 'tidy', 'holding', ...extra, '--json']);
+
+    // 1. The Desk gate: naming notes is reading.
+    check(/is closed/.test(said(tidy(['--preflight']))), 'tidy of a closed Book was not refused');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/holding\n');
+
+    // 2. The preview: what moves, what waits, what is never moved, and the route for it.
+    const preview = parsed(tidy(['--preflight']));
+    equal(JSON.stringify(preview['counts']), JSON.stringify({ move: 2, conflicts: 0, done_not_yet_due: 1, done_unstamped: 1 }), 'the tidy preview counted the wrong notes');
+    const moves = (preview['move'] as { page: string; to: string; closed_by: string | null }[] | undefined) ?? [];
+    check(moves.some((row) => row.page === 'notes/2026-01-01-old-mine' && row.to === 'reviewed/2026-01/2026-01-01-old-mine' && row.closed_by === 'projects/work/notes/x'), `the preview did not name the move and its filing: ${JSON.stringify(moves)}`);
+    check(moves.some((row) => row.page === 'notes/2026-01-02-old-theirs' && row.to === 'reviewed/2026-02/2026-01-02-old-theirs'), "another seat's closed note was not tidied");
+    check(/review of it writes the stamp/.test(String(preview['unstamped_route'] ?? '')), 'the preview did not name the route for unstamped notes');
+    check(preview['confirmation_required'] === true && String(preview['plan_id'] ?? '').length === 64, 'the preview gave no plan id');
+    const longer = parsed(tidy(['--preflight', '--days', '400']));
+    check(JSON.stringify((longer['counts'] as Record<string, unknown>)?.['move']) === '0' && longer['plan_id'] !== preview['plan_id'], '--days did not change what moves');
+
+    // 3. No yes, or a stale one, moves nothing.
+    check(/Nothing was moved/.test(said(tidy([]))) && fs.existsSync(path.join(notesDir, '2026-01-01-old-mine.md')), 'tidy without a plan id moved something');
+    fs.appendFileSync(path.join(notesDir, '2026-01-02-old-theirs.md'), 'Edited after the preview.\n');
+    check(/plan changed/.test(said(tidy(['--user-confirmed', '--plan-id', String(preview['plan_id'])]))) && fs.existsSync(path.join(notesDir, '2026-01-02-old-theirs.md')), 'a note edited after the preview did not invalidate the plan');
+
+    // 4. The run: byte for byte, inside wiki/, with the month maps and the reader map's links.
+    const fresh = parsed(tidy(['--preflight']));
+    const ran = tidy(['--user-confirmed', '--plan-id', String(fresh['plan_id'])]);
+    check(ran.exit === 0 && parsed(ran)['status'] === 'tidied', `the tidy did not run: ${said(ran).slice(0, 400)}`);
+    const moved = path.join(wiki, 'reviewed', '2026-01', '2026-01-01-old-mine.md');
+    check(fs.existsSync(moved) && !fs.existsSync(path.join(notesDir, '2026-01-01-old-mine.md')), 'the note was not moved to its month');
+    equal(hash(moved), oldMineHash, 'the moved note is not byte for byte the note');
+    check(fs.existsSync(path.join(wiki, 'reviewed', '2026-02', '2026-01-02-old-theirs.md')), "another seat's note was not moved to its month");
+    for (const kept of ['2026-01-03-recent', '2026-01-04-unstamped', '2026-01-05-pending']) check(fs.existsSync(path.join(notesDir, `${kept}.md`)), `${kept} was moved`);
+    const monthMap = fs.readFileSync(path.join(wiki, 'reviewed', '2026-01', '_index.md'), 'utf8');
+    check(monthMap.includes('[[reviewed/2026-01/2026-01-01-old-mine|Old mine]]') && monthMap.includes('[[_index|Reader Map]]'), `the month map does not list its note: ${monthMap}`);
+    const readerMap = () => fs.readFileSync(path.join(wiki, '_index.md'), 'utf8');
+    check(/## Tidied\n\n- \[\[reviewed\/2026-02\/_index\|Notes reviewed in 2026-02\]\]\n- \[\[reviewed\/2026-01\/_index\|Notes reviewed in 2026-01\]\]\n/.test(readerMap()), `the reader map does not link the months, newest first: ${readerMap()}`);
+    check(readerMap().includes('[[notes/2026-01-05-pending|Pending]]') && !readerMap().includes('notes/2026-01-01-old-mine'), 'the reader map lost a pending note or still lists a tidied one');
+    // A capture regenerates the map and keeps the links.
+    equal(cli(['capture', 'holding', '--title', 'After the tidy', '--body', 'Still linked.', '--why', 'no-home', '--json']).exit, 0, 'a capture after the tidy failed');
+    check(readerMap().includes('[[reviewed/2026-01/_index|Notes reviewed in 2026-01]]'), 'a capture dropped the tidied months from the reader map');
+    // A tidied note is not a triage source.
+    check(cli(['triage', 'validate', '--actions', JSON.stringify([{ kind: 'review', source: 'holding', source_page: 'reviewed/2026-01/2026-01-01-old-mine', reopen: true }]), '--json']).exit !== 0, 'a tidied note was accepted as a triage source');
+
+    // 5. --restore: previewed, bound, back to notes/, and never over a name already there.
+    check(/is not one/.test(said(tidy(['--restore', 'notes/2026-01-01-old-mine', '--preflight']))), 'a --restore page outside reviewed/ was not refused');
+    check(/means nothing with --restore/.test(said(tidy(['--restore', 'reviewed/2026-01/2026-01-01-old-mine', '--days', '3', '--preflight']))), '--days with --restore was not refused');
+    const back = parsed(tidy(['--restore', 'reviewed/2026-01/2026-01-01-old-mine', '--preflight']));
+    check(back['to'] === 'notes/2026-01-01-old-mine' && String(back['plan_id'] ?? '').length === 64, `the restore preview did not name its move: ${JSON.stringify(back)}`);
+    const restored = tidy(['--restore', 'reviewed/2026-01/2026-01-01-old-mine', '--user-confirmed', '--plan-id', String(back['plan_id'])]);
+    check(restored.exit === 0 && parsed(restored)['status'] === 'restored' && fs.existsSync(path.join(notesDir, '2026-01-01-old-mine.md')), `the restore did not run: ${said(restored).slice(0, 400)}`);
+    equal(hash(path.join(notesDir, '2026-01-01-old-mine.md')), oldMineHash, 'the restored note is not byte for byte the note');
+    check(!fs.existsSync(path.join(wiki, 'reviewed', '2026-01')) && !readerMap().includes('reviewed/2026-01/_index'), 'an emptied month kept its folder or its link');
+    check(readerMap().includes('[[reviewed/2026-02/_index|'), 'the other month lost its link');
+    fs.writeFileSync(path.join(notesDir, '2026-01-02-old-theirs.md'), '---\nreview: pending\n---\n\n# A new note by the same name\n');
+    check(/already exists/.test(said(tidy(['--restore', 'reviewed/2026-02/2026-01-02-old-theirs', '--preflight']))), '--restore over a name already in notes/ was not refused');
+    check(fs.existsSync(path.join(wiki, 'reviewed', '2026-02', '2026-01-02-old-theirs.md')), 'a refused restore moved the note');
+  } catch (error) {
+    failures.push(`section 97 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 98. THE DESK AND DOCTOR SAY WHEN A CAPTURE BOOK IS GROWING (S77 row 2) -------------------------------------------
+// PLAN-holding-discipline.md row 6: a capture Book row on the Desk says growing once its pending notes pass a count
+// (5 by default) or its oldest pending note an age (7 days), with the triage route and how many of them this seat may
+// close; the thresholds come from the Book's own `- **Growing at:** <n> pending or <d> days` line; doctor WARNs on a
+// growing Book and on a line it cannot read, and never FAILs. Six notes for five, and eight days for seven.
+if (selected(98)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-growing-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const parsed = (result: { stdout: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const notesDir = path.join(lib, 'shelf', 'holding', 'wiki', 'notes');
+    fs.mkdirSync(notesDir, { recursive: true });
+    const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const note = (name: string, daysAgo: number, more = '') => fs.writeFileSync(path.join(notesDir, `${name}.md`), `---\ncaptured: ${ago(daysAgo)}\nreview: pending\n${more}---\n\n# ${name}\n\nBody.\n`);
+    const row = (slug: string) => ((parsed(cli(['desk', '--json']))['capture_books'] as Record<string, unknown>[] | undefined) ?? []).find((book) => book['slug'] === slug) ?? {};
+    const doctor = () => ((parsed(runCli(['doctor', '--workspace', lib, '--json'], { cwd: root, env }))['program_checks'] as { check: string; status: string; detail: string }[] | undefined) ?? []).find((check) => check.check === 'shelf.capture-books-growing');
+
+    // 1. Five recent notes: not growing, and the row says only that.
+    note('n1', 1, 'from_seat: first\n');
+    note('n2', 1, 'from_seat: second\n');
+    note('n3', 1);
+    note('n4', 1, 'from_seat: second\nfor_seat: first\n');
+    note('n5', 6, 'from_seat: second\n');
+    const quiet = row('holding');
+    check(quiet['growing'] === false && !('growing_route' in quiet) && !('pending_this_seat_may_close' in quiet), `five recent notes read as growing: ${JSON.stringify(quiet)}`);
+    equal(doctor()?.status, 'pass', 'doctor did not pass a Library with no growing capture Book');
+    // 2. Six notes for a default of five: growing, with the route and this seat's count (its own, the seatless one,
+    // and the one addressed to it; not the two another seat wrote).
+    note('n6', 1, 'from_seat: first\n');
+    const counted = row('holding');
+    check(counted['growing'] === true && /library desk open book holding --location shelf, then library triage batch/.test(String(counted['growing_route'])), `six notes did not read as growing: ${JSON.stringify(counted)}`);
+    equal(counted['pending_this_seat_may_close'], 4, 'the count this seat may close was wrong');
+    const warned = doctor();
+    check(warned?.status === 'warn' && /capture Book 'holding' is growing: 6 pending/.test(warned.detail), `doctor did not WARN on a growing Book: ${JSON.stringify(warned)}`);
+    // The Report Inbox closes by any seat, so every pending Report counts as one this seat may close.
+    for (let index = 0; index < 6; index += 1) equal(cli(['capture', 'reports', '--title', `Report ${index}`, '--body', 'x', '--json']).exit, 0, 'a Report could not be filed');
+    equal(row('reports')['pending_this_seat_may_close'], 6, 'an any Book did not count every pending note');
+    // 3. Age: eight days for seven grows, six does not.
+    fs.rmSync(path.join(notesDir, 'n6.md'));
+    fs.rmSync(path.join(notesDir, 'n5.md'));
+    note('n5', 8);
+    check(row('holding')['growing'] === true, 'a pending note eight days old did not read as growing');
+    // 4. The Book's own line moves the thresholds, and a line doctor cannot read is said, with the defaults applied.
+    const entryFile = path.join(lib, 'shelf', 'holding', '_catalog-entry.md');
+    const entryText = fs.readFileSync(entryFile, 'utf8');
+    const withLine = (line: string) => {
+      fs.writeFileSync(entryFile, entryText.replace(/^(- \*\*Path:\*\*.*)$/m, `- **Growing at:** ${line}\n$1`));
+      equal(cli(['shelf', 'render']).exit, 0, 'the Shelf would not render');
+    };
+    withLine('10 pending or 30 days');
+    check(row('holding')['growing'] === false, 'a Book with its own higher thresholds still read as growing');
+    withLine('3 pending or 30 days');
+    check(row('holding')['growing'] === true, 'a Book with its own lower count did not read as growing');
+    withLine('lots');
+    const unread = doctor();
+    check(unread?.status === 'warn' && /'- \*\*Growing at:\*\* lots', which is not '<n> pending or <d> days'/.test(unread.detail), `doctor did not say it could not read the line: ${JSON.stringify(unread)}`);
+    check(row('holding')['growing'] === true, 'an unreadable line did not fall back to the defaults');
+    fs.writeFileSync(entryFile, entryText);
+    equal(cli(['shelf', 'render']).exit, 0, 'the Shelf would not render');
+  } catch (error) {
+    failures.push(`section 98 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 99. WRITING LETTERS: `letters`, `--for`, no `--seat`, and how the author was resolved (S77 row 3, ADR-0062) -------
+// init lays out `letters` with `Letters: yes` and its own `Growing at:`; a re-run init adds it to an older Library, and
+// doctor WARNs while it is missing. `capture` refuses `--seat` for every Book, and it never becomes a slug. Every
+// capture with a seat writes `from_seat_source`: binding (no process walk), launcher (Claude and Codex), environment,
+// and nothing seatless; `shelf carry` keeps it. `--for` is checked against the seats, implies `why: for-seat`, and a
+// Book without `Letters: yes` refuses it. A letters Book's map groups pending letters by recipient. The Desk hook's
+// context does not change.
+if (selected(99)) {
+  const w = await seatClaimWorkspace('letters');
+  try {
+    const first = w.startAgent();
+    equal(w.createSeat('first', 'alpha', first).exit, 0, 'the seat first could not be created');
+    const second = w.startAgent();
+    equal(w.createSeat('second', 'beta', second).exit, 0, 'the seat second could not be created');
+    const ws = w.workspace;
+    const parsed = (result: { stdout: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    const notes = (slug: string) => {
+      const directory = path.join(ws, 'shelf', slug, 'wiki', 'notes');
+      return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
+    };
+    const noteText = (slug: string, match: string) => fs.readFileSync(path.join(ws, 'shelf', slug, 'wiki', 'notes', notes(slug).find((name) => name.includes(match))!), 'utf8');
+    const deskContext = () => String((JSON.parse(runCli(['hook', 'desk-context', '--workspace', ws, '--seat', 'first', '--agent-pid', '0'], { cwd: w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_CONFIG_DIR: path.join(w.root, 'no-config') }, input: '{}' }).stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext']);
+    const contextBefore = deskContext();
+
+    // 1. init lays out `letters`, with both catalog lines.
+    const entry = fs.readFileSync(path.join(ws, 'shelf', 'letters', '_catalog-entry.md'), 'utf8');
+    check(/^- \*\*Kind:\*\* capture$/m.test(entry) && /^- \*\*Closed by:\*\* writer$/m.test(entry) && /^- \*\*Letters:\*\* yes$/m.test(entry) && /^- \*\*Growing at:\*\* 5 pending or 7 days$/m.test(entry), `init did not lay out letters with its lines: ${entry}`);
+
+    // 2. `--seat` is refused for every Book, and never becomes a slug.
+    const before = ['holding', 'reports', 'letters'].map((slug) => notes(slug).length).join(',');
+    for (const slug of ['holding', 'reports', 'letters']) {
+      const forged = w.as(first, ['capture', slug, '--seat', 'second', '--title', 'Forged', '--body', 'x', '--workspace', ws]);
+      check(forged.exit !== 0 && /does not take --seat/.test(said(forged)), `capture ${slug} --seat was not refused: ${said(forged).slice(0, 300)}`);
+    }
+    const asSlug = w.as(first, ['capture', '--seat', 'reports', '--title', 'Forged', '--body', 'x', '--workspace', ws]);
+    check(asSlug.exit !== 0 && /does not take --seat/.test(said(asSlug)), `--seat before the slug was not refused: ${said(asSlug).slice(0, 300)}`);
+    equal(['holding', 'reports', 'letters'].map((slug) => notes(slug).length).join(','), before, 'a refused --seat capture wrote a note');
+
+    // 3. from_seat_source, per route.
+    const bound = w.as(first, ['capture', 'holding', '--title', 'Bound', '--body', 'x', '--why', 'no-home', '--workspace', ws, '--json'], { LIBRARY_SEAT_CLAIM: '0123456789abcdef0123456789abcdef', DESKPOST_LAUNCHER_PID: String(process.pid) });
+    check(parsed(bound)['from_seat_source'] === 'binding' && /^from_seat_source: binding$/m.test(noteText('holding', 'bound')), `a bound seat did not say binding: ${said(bound).slice(0, 300)}`);
+    const named = w.as(process.pid, ['capture', 'holding', '--title', 'Named', '--body', 'x', '--why', 'no-home', '--workspace', ws, '--json'], { LIBRARY_SEAT: 'first' });
+    check(parsed(named)['from_seat_source'] === 'environment' && /^from_seat_source: environment$/m.test(noteText('holding', 'named')), `a seat named by the environment did not say environment: ${said(named).slice(0, 300)}`);
+    const seatless = w.as(process.pid, ['capture', 'holding', '--title', 'Seatless', '--body', 'x', '--why', 'no-seat', '--workspace', ws, '--json']);
+    check(seatless.exit === 0 && !('from_seat_source' in parsed(seatless)) && !/from_seat/.test(noteText('holding', 'seatless')), `a seatless capture said a seat source: ${said(seatless).slice(0, 300)}`);
+    // The launcher's direct agent: the capture runs as a copy of node named claude.exe, then codex.exe, under this
+    // judge's pid as the launcher, with the seat's live claim token -- both proofs launcherHoldsSeatForThisAgent asks for.
+    if (KERNEL_COMMAND.length === 0) {
+      const token = w.claimToken('first');
+      check(token !== '', 'the seat first holds no claim token');
+      for (const assistant of ['claude', 'codex'] as const) {
+        const image = path.join(w.root, `${assistant}-image`, process.platform === 'win32' ? `${assistant}.exe` : assistant);
+        fs.mkdirSync(path.dirname(image), { recursive: true });
+        try {
+          fs.linkSync(process.execPath, image);
+        } catch {
+          fs.copyFileSync(process.execPath, image);
+        }
+        const ran = spawnSync(image, [CLI, 'capture', 'holding', '--title', `From ${assistant}`, '--body', 'x', '--why', 'no-home', '--workspace', ws, '--json'], {
+          cwd: w.root,
+          encoding: 'utf8',
+          env: { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: token, DESKPOST_LAUNCHER_PID: String(process.pid), CLAUDE_PID: '', DESKPOST_ASSISTANT: assistant },
+        });
+        check(parsed({ stdout: ran.stdout ?? '' })['from_seat_source'] === 'launcher' && /^from_seat_source: launcher$/m.test(noteText('holding', `from-${assistant}`)), `a ${assistant} session the launcher started did not say launcher: ${(ran.stdout ?? '') + (ran.stderr ?? '')}`.slice(0, 500));
+      }
+    }
+    // shelf carry keeps it, byte for byte.
+    const old = path.join(w.root, 'old');
+    equal(runCli(['init', old], { cwd: w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg-old'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' } }).exit, 0, 'the old workspace did not initialise');
+    const carriedText = '---\ncaptured: 2026-09-01T00:00:00Z\nreview: pending\nfrom_seat: elsewhere\nfrom_seat_source: launcher\nsession_id: 99000000-0000-4000-8000-000000000001\n---\n\n# Carried\n\nFrom the old workspace.\n';
+    fs.mkdirSync(path.join(old, 'shelf', 'holding', 'wiki', 'notes'), { recursive: true });
+    fs.writeFileSync(path.join(old, 'shelf', 'holding', 'wiki', 'notes', '2026-09-01-carried.md'), carriedText);
+    const carryPlan = String(parsed(w.as(process.pid, ['shelf', 'carry', old, '--book', 'holding', '--preflight', '--workspace', ws]))['plan_id'] ?? '');
+    equal(w.as(process.pid, ['shelf', 'carry', old, '--book', 'holding', '--user-confirmed', '--plan-id', carryPlan, '--workspace', ws]).exit, 0, 'the carry did not run');
+    equal(noteText('holding', '2026-09-01-carried'), carriedText, 'shelf carry did not keep from_seat_source byte for byte');
+
+    // 4. --for: checked, implying why: for-seat, and refused by a Book without Letters: yes.
+    const letter = w.as(first, ['capture', 'letters', '--for', 'second', '--title', 'Your turn', '--body', 'The draft is ready.', '--workspace', ws, '--json']);
+    const letterText = noteText('letters', 'your-turn');
+    check(letter.exit === 0 && parsed(letter)['for_seat'] === 'second' && /^for_seat: second$/m.test(letterText) && /^why: for-seat$/m.test(letterText) && /^from_seat: first$/m.test(letterText), `a letter was not addressed: ${said(letter).slice(0, 300)} ${letterText}`);
+    const typo = w.as(first, ['capture', 'letters', '--for', 'secnod', '--title', 'Typo', '--body', 'x', '--workspace', ws]);
+    check(typo.exit !== 0 && /names no seat in this Library. Seats: first, second/.test(said(typo)), `--for a seat that does not exist was not refused: ${said(typo).slice(0, 300)}`);
+    const intoHolding = w.as(first, ['capture', 'holding', '--for', 'second', '--title', 'Wrong Book', '--body', 'x', '--workspace', ws]);
+    check(intoHolding.exit !== 0 && /does not take letters/.test(said(intoHolding)) && /library capture letters --for <seat>/.test(said(intoHolding)), `capture holding --for was not refused naming letters: ${said(intoHolding).slice(0, 300)}`);
+    check(!notes('letters').some((name) => name.includes('typo')) && !notes('holding').some((name) => name.includes('wrong-book')), 'a refused --for wrote a note');
+    equal(w.as(first, ['capture', 'letters', '--for', 'first', '--why', 'needs-yes', '--title', 'To myself', '--body', 'x', '--workspace', ws]).exit, 0, 'a letter with an explicit --why was refused');
+    check(/^why: needs-yes$/m.test(noteText('letters', 'to-myself')), 'an explicit --why did not win over --for');
+    const map = fs.readFileSync(path.join(ws, 'shelf', 'letters', 'wiki', '_index.md'), 'utf8');
+    check(/## Pending review\n\n### For first\n\n- \[\[notes\/[^|]+-to-myself\|To myself\]\][^\n]*\n\n### For second\n\n- \[\[notes\/[^|]+-your-turn\|Your turn\]\]/.test(map), `the letters map does not group by recipient: ${map}`);
+
+    // 5. An older Library gets letters from one init, and doctor WARNs until then.
+    const doctor = () => ((parsed(w.as(process.pid, ['doctor', '--workspace', ws, '--json']))['program_checks'] as { check: string; status: string; detail: string }[] | undefined) ?? []).find((row) => row.check === 'shelf.standard-books-present');
+    equal(doctor()?.status, 'pass', 'doctor did not pass a Library with every standard Book');
+    fs.renameSync(path.join(ws, 'shelf', 'letters'), path.join(w.root, 'letters-aside'));
+    equal(w.as(process.pid, ['shelf', 'render', '--workspace', ws]).exit, 0, 'the Shelf would not render without letters');
+    const missing = doctor();
+    check(missing?.status === 'warn' && /no 'letters' Book/.test(missing.detail) && /library init /.test(missing.detail), `doctor did not WARN on a missing standard Book: ${JSON.stringify(missing)}`);
+    const rerun = w.as(process.pid, ['init', ws, '--json']);
+    check(rerun.exit === 0 && fs.existsSync(path.join(ws, 'shelf', 'letters', '_catalog-entry.md')) && /^- \*\*Letters:\*\* yes$/m.test(fs.readFileSync(path.join(ws, 'shelf', 'letters', '_catalog-entry.md'), 'utf8')), `a re-run init did not add letters: ${said(rerun).slice(0, 300)}`);
+    equal(doctor()?.status, 'pass', 'doctor still warned once init had added letters');
+
+    // 6. The Desk hook's context is unchanged by all of it.
+    equal(deskContext(), contextBefore, "the Desk hook's context changed with letters");
+  } catch (error) {
+    failures.push(`section 99 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 100. why_missing ONLY WHERE IT HELPS (S77 row 4, S73 parked item 2, kickoffs/s77 ruling 3) ---------------------
+// A capture without --why into a Book its writer closes (`Closed by: writer`) says why_missing and the homes to try
+// first. Into the Report Inbox (`Closed by: any`) it says neither, since that is the right home. Into a Book with no
+// Closed by: line it says both, as before the rule. A letter always has why: for-seat, so it never says it.
+if (selected(100)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-whymissing-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const parsed = (result: { stdout: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const capture = (slug: string, title: string, extra: string[] = []) => parsed(cli(['capture', slug, '--title', title, '--body', 'x', ...extra, '--json']));
+    const says = (result: Record<string, unknown>) => result['why_missing'] === true && String(result['next'] ?? '').includes('records no why');
+    const silent = (result: Record<string, unknown>) => !('why_missing' in result) && !String(result['next'] ?? '').includes('records no why') && result['status'] === 'captured';
+    check(says(capture('holding', 'Writer Book')), 'a capture without --why into a writer Book did not say why_missing');
+    check(silent(capture('reports', 'Any Book')), 'a capture without --why into the Report Inbox still said why_missing');
+    equal(cli(['shelf', 'new', 'loose', '--title', 'Loose', '--summary', 'A capture Book with no Closed by line.', '--capture', '--json']).exit, 0, 'the fixture capture Book was not made');
+    const entryFile = path.join(lib, 'shelf', 'loose', '_catalog-entry.md');
+    fs.writeFileSync(entryFile, fs.readFileSync(entryFile, 'utf8').replace(/^- \*\*Closed by:\*\* writer\n/m, ''));
+    equal(cli(['shelf', 'render']).exit, 0, 'the Shelf would not render');
+    check(says(capture('loose', 'No line')), 'a capture without --why into a Book with no Closed by line stopped saying why_missing');
+    check(silent(capture('letters', 'A letter', ['--for', 'first'])), 'a letter said why_missing');
+  } catch (error) {
+    failures.push(`section 100 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 101. A CONTEXT BUDGET: WHAT DESKPOST PUTS INTO A SESSION, IN CHARACTERS (S77 row 5) -----------------------------
+// The context-budget Report's gate half (kickoffs/s77 ruling 4): measured here so it runs with the self-test, against
+// the budgets committed in kernel/test/context-budget.json. Past a budget fails; below 90% of one also fails, naming the
+// new number, so a saving is written down and cannot creep back. It includes row 0's repeat: three prompts against an
+// unchanged Desk cost one block. The four PowerShell hooks join when 1.3.2 ports them (the JSON file's comment).
+if (selected(101)) {
+  const w = await seatClaimWorkspace('budget');
+  try {
+    const budgetFile = path.join(PROGRAM_ROOT, 'kernel', 'test', 'context-budget.json');
+    const budgets = (JSON.parse(fs.readFileSync(budgetFile, 'utf8').replace(/^﻿/, '')) as { budgets: Record<string, number> }).budgets;
+    const measured: Record<string, number> = {};
+
+    // The Desk hook, at a bound seat with a Project open, the ledger clear registered as it reaches this ledger.
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    const stateDirectory = path.join(w.workspace, '.claude');
+    const clearScript = path.join(w.root, 'program', '.claude', 'hooks', 'Restore-CompactedGuidance.ps1');
+    fs.mkdirSync(path.dirname(clearScript), { recursive: true });
+    fs.writeFileSync(clearScript, '# fixture\n');
+    const localFile = path.join(stateDirectory, 'settings.local.json');
+    const local = (fs.existsSync(localFile) ? JSON.parse(fs.readFileSync(localFile, 'utf8').replace(/^﻿/, '')) : {}) as Record<string, unknown>;
+    const block = [{ hooks: [{ type: 'command', command: 'powershell.exe', args: ['-NoProfile', '-File', clearScript, '-StateDirectory', stateDirectory] }] }];
+    fs.writeFileSync(localFile, JSON.stringify({ ...local, hooks: { ...((local['hooks'] as Record<string, unknown> | undefined) ?? {}), PostCompact: block, SessionStart: block } }, null, 2));
+    const prompt = (): string => {
+      const ran = runCli(['hook', 'desk-context', '--workspace', w.workspace, '--agent-pid', String(agent)], {
+        cwd: w.root,
+        env: { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_ASSISTANT: '', CLAUDE_PID: String(agent), CLAUDE_CONFIG_DIR: path.join(w.root, 'no-config') },
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: '10100000-0000-4000-8000-000000000001', prompt: 'hello' }),
+      });
+      try {
+        return String((JSON.parse(ran.stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext'] ?? '');
+      } catch {
+        return '';
+      }
+    };
+    const firstPrompt = prompt();
+    check(firstPrompt.includes('Virtual Desk (seat first'), `the budget fixture's Desk block was not sent: ${firstPrompt}`);
+    measured['desk-context.first-prompt'] = firstPrompt.length;
+    measured['desk-context.three-unchanged-prompts'] = firstPrompt.length + prompt().length + prompt().length;
+    equal(measured['desk-context.three-unchanged-prompts'], measured['desk-context.first-prompt'], 'three prompts against an unchanged Desk cost more than one block');
+
+    // The workspace instruction files init writes.
+    for (const name of ['CLAUDE.md', 'AGENTS.md']) measured[`workspace.${name}`] = fs.readFileSync(path.join(w.workspace, name), 'utf8').length;
+
+    // The validated reader, through its own front door: the initialize answer and tools/list, as a client loads them.
+    const served = spawnSync(KERNEL_COMMAND.length ? KERNEL_COMMAND[0]! : process.execPath, [...(KERNEL_COMMAND.length ? KERNEL_COMMAND.slice(1) : [CLI]), 'mcp', 'serve', '--workspace', w.workspace], {
+      cwd: w.root,
+      encoding: 'utf8',
+      env: { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' },
+      input: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n',
+    });
+    const answers = (served.stdout ?? '').split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line) as { id: number; result: unknown });
+    const answer = (id: number) => JSON.stringify(answers.find((line) => line.id === id)?.result ?? null);
+    check(answer(2).includes('read_open_book_page'), `the reader's tools/list was not read: ${(served.stdout ?? '') + (served.stderr ?? '')}`.slice(0, 400));
+    measured['reader.initialize'] = answer(1).length;
+    measured['reader.tools-list'] = answer(2).length;
+
+    // The verdict, one line per measure.
+    equal(Object.keys(measured).sort().join(','), Object.keys(budgets).sort().join(','), 'the budget file and the measures name different things');
+    for (const [name, value] of Object.entries(measured)) {
+      const budget = budgets[name] ?? 0;
+      check(value <= budget, `context budget: ${name} is ${value} characters, past its budget of ${budget}; cut it, or raise the budget in kernel/test/context-budget.json with the reason in the commit`);
+      check(value >= budget * 0.9, `context budget: ${name} is ${value} characters, below 90% of its budget of ${budget}; lower the budget in kernel/test/context-budget.json to ${value}`);
+    }
+  } catch (error) {
+    failures.push(`section 101 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
 // --- the verdict ----------------------------------------------------------------------------------------
 
 // A selection that ran nothing -- a section number that does not exist -- is not a pass.

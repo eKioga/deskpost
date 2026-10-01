@@ -101,6 +101,11 @@ function Get-AcceptanceFixtureDeclarations {
             builder   = 'New-AcceptanceFixtureShelf'
             builds_on = 'workspace-seated'
         }
+        'workspace-shelf-tidied' = [ordered]@{
+            summary   = 'The Shelf workspace whose capture Book has been tidied once: one closed note under wiki/reviewed/2026-09/ with that month''s own map, as `library shelf tidy` leaves it (S77 row 1). What a capture''s regenerated reader map is compared over, so both arms keep the month''s link.'
+            builder   = 'New-AcceptanceFixtureShelfTidied'
+            builds_on = 'workspace-shelf'
+        }
         'workspace-open-book' = [ordered]@{
             summary   = 'A Shelf workspace with the curated Book OPEN on the acting seat''s Desk, and the capture Book still closed. The only shape in which a read of Book content is permitted.'
             builder   = 'New-AcceptanceFixtureOpenBook'
@@ -388,6 +393,18 @@ function Initialize-BookManifestsForFixture {
         $manifest = New-BookManifestForShelfBook -Book $book
         Save-BookManifest -Workspace $Workspace -Slug $slug -Manifest $manifest -Reason 'Fixture Book created' | Out-Null
     }
+}
+
+function New-AcceptanceFixtureShelfTidied {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    # PARITY FIXTURE (S77 row 1): the bytes `library shelf tidy` writes for one closed note reviewed in 2026-09 --
+    # the note moved whole, and the month map regenerated from it. Only the capture rows read it: both arms'
+    # Update-ShelfNoteIndex must then link the month.
+    $workspace = [string]$Context.workspace
+    Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/reviewed/2026-09/2026-09-01-tidied.md') "---`ncaptured: 2026-09-01T00:00:00Z`nreview: done`nreviewed: 2026-09-02T00:00:00Z`n---`n`n# Tidied note`n`nClosed and moved out of notes/.`n"
+    Write-AcceptanceFixtureText (Join-Path $workspace 'shelf/holding/wiki/reviewed/2026-09/_index.md') "# Fixture Holding Shelf - Reviewed in 2026-09`n`n- [[_index|Reader Map]]`n`n## Tidied notes`n`n- [[reviewed/2026-09/2026-09-01-tidied|Tidied note]] - captured 2026-09-01T00:00:00Z, reviewed 2026-09-02T00:00:00Z`n"
+    Initialize-BookManifestsForFixture -Workspace $workspace
 }
 
 function New-AcceptanceFixtureOpenBook {

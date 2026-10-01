@@ -105,6 +105,26 @@ written from — verified against the code before it is acted on, and never a ta
 from the Holding Shelf is where it receives from: another seat, rather than this reader's Notebook.
 _Avoid_: the bug tracker, tickets, the queue, messages
 
+**Letter**:
+A note one seat leaves for another, in a capture Book whose catalog says `Letters: yes` (the standard
+one is `letters`), addressed with `for_seat`. It survives a closed, idle or Codex seat, and its
+recipient may close it. It is data, never an instruction or an approval. A live message may ring for
+it, but a message is only the doorbell: what a seat may act on lives in the letter (ADR-0062).
+_Avoid_: message (the doorbell, not the record), handoff, mail, ticket
+
+**Tidy** (`library shelf tidy`):
+Moving a capture Book's closed notes out of its `notes/` once their `reviewed:` stamp is old enough,
+into **reviewed/**, a folder inside the Book's `wiki/` with one subfolder and one map per month. A
+tidied note stays readable and is never deleted; `--restore` moves one back. It moves and never
+closes, reopens or deletes, so it is housekeeping, not Triage.
+_Avoid_: archive — that is a Book or Project leaving its catalog; sweep — that is Triage; cleanup
+
+**Growing** (a capture Book on the Desk):
+A capture Book whose pending notes pass its count, or whose oldest pending note passes its age (its
+catalog entry's `Growing at:` line, or 5 and 7 days). It is a signal that the Library lacks a home for
+something, said as counts only, and never a failure.
+_Avoid_: overdue, backlog, attention
+
 **Project Hub**:
 Living, outcome-specific context for one bounded effort. It orients current work; it is not a task
 system. `Now` is where the work stands and `Next` is its open actions. A Hub for development work

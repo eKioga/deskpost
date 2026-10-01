@@ -17,7 +17,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { readUtf8, type ClosedBy, type ShelfBook } from './shelfbook.ts';
+import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, readUtf8, type ClosedBy, type ShelfBook } from './shelfbook.ts';
 
 export type { ClosedBy };
 
@@ -141,6 +141,25 @@ export function setNoteField(content: string, key: string, value: string | null)
   return lines.join('\n');
 }
 
+
+/**
+ * WHETHER A CAPTURE BOOK IS GROWING (S77 row 2, plan row 6): more pending notes than its threshold, or an oldest
+ * pending note older than its age, from the Book's own `Growing at:` line or the defaults. `mayClose` counts the pending
+ * notes this seat may close under the seat rule: every one in an `any` Book, else its own, the seatless ones, and those
+ * addressed to it. Counts only, as everything a closed Book says on the Desk.
+ */
+export function growingState(book: ShelfBook, notes: ShelfNoteRow[], seat: string | null, now: number = Date.now()): { growing: boolean; mayClose: number } {
+  const pending = notes.filter((note) => note.review !== 'done');
+  const threshold = book.growingPending ?? DEFAULT_GROWING_PENDING;
+  const days = book.growingDays ?? DEFAULT_GROWING_DAYS;
+  const ages = pending.map((note) => Date.parse(note.captured)).filter((time) => Number.isFinite(time));
+  const oldest = ages.length ? Math.min(...ages) : null;
+  const growing = pending.length > threshold || (oldest !== null && now - oldest > days * 86_400_000);
+  const mayClose = (book.closedBy ?? 'any') === 'any'
+    ? pending.length
+    : pending.filter((note) => !note.fromSeat || (seat !== null && (note.fromSeat === seat || note.forSeat === seat))).length;
+  return { growing, mayClose };
+}
 
 /**
  * THE SEAT RULE, stated once (plan row 4). In a `writer` Book a seat may close, reopen or delete only a

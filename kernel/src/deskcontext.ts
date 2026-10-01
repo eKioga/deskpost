@@ -3,6 +3,9 @@
  * (S36). On every prompt it tells the session which seat it is at, what is open there, and the exact
  * reader tool to call -- or, in one sentence, why it can tell nothing.
  *
+ * SAID ONCE PER SESSION WHERE THAT IS SAFE (S77): an unchanged block already served into this conversation is not
+ * sent again, and the stdout is then empty, or carries only `sessionTitle`. See `ledgerClearReaches`.
+ *
  * IT ORIENTS; IT NEVER BLOCKS. Every answer is `additionalContext` for UserPromptSubmit, and every
  * failure is a SENTENCE: "in no workspace" and "two answers disagree" are different states from "the
  * Desk could not be read", and the last one advertises no reader at all, because a session that cannot
@@ -29,6 +32,8 @@ import { resolveWorkspace } from './workspace.ts';
 import { placeOfRoot } from './places.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { readNotebookLayout } from './notebooklayout.ts';
+import { sha256OfText } from './sha.ts';
+import { asList, hookEntryText, isObject } from './hookregistry.ts';
 
 const EVENT = 'UserPromptSubmit';
 /**
@@ -78,6 +83,65 @@ function seatSessionName(stateDirectory: string, seat: string, sessionId: string
     writeSeatActivity({ stateDirectory, seat, note: 'session named', keepConversation: true, messageName: { name: seat, sessionId } });
   }
   return seat;
+}
+
+const CLEAR_HOOK = 'restore-compactedguidance.ps1';
+const CLEAR_EVENTS = ['PostCompact', 'SessionStart'];
+
+/** A registration's words, quoted ones kept whole: its `command` and `args`, whichever shape it is in. */
+function entryTokens(entry: unknown): string[] {
+  if (!isObject(entry)) return [];
+  if (Array.isArray(entry['args'])) return [String(entry['command'] ?? ''), ...entry['args'].map((arg) => String(arg))];
+  const tokens: string[] = [];
+  for (const match of hookEntryText(entry).matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) tokens.push(match[1] ?? match[2] ?? match[3] ?? '');
+  return tokens;
+}
+
+function samePath(left: string, right: string): boolean {
+  const normal = (value: string) => {
+    const resolved = path.resolve(value).replace(/[\\/]+$/, '');
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return normal(left) === normal(right);
+}
+
+/**
+ * WHETHER THE SERVE-LEDGER CLEAR REACHES THIS LEDGER (kickoffs/s77 row 0). The Desk block is withheld only when a
+ * compaction or a resume is certain to empty the ledger it is recorded in, or a session would lose its Desk with its
+ * context. The clear is `Restore-CompactedGuidance.ps1`, which is optional, and it empties the ledger in its
+ * `-StateDirectory`, or by default the `.claude` its own script sits in. So it reaches this one only when this
+ * workspace's settings register it on BOTH events, its script exists, and its state directory is this one.
+ *
+ * MEASURED, NOT ASSUMED (S77): an installed Library registers `<program>/.claude/hooks/Restore-CompactedGuidance.ps1`
+ * with no `-StateDirectory`, so its clear empties the PROGRAM's `.claude/.hook-served.json`, never the workspace's this
+ * hook writes, and this answers false there. The file the harness reads is the one judged: when `settings.local.json`
+ * declares its own `hooks` block only it counts (`launchSettingsFaults`' rule), and the plugin registers no clear.
+ */
+export function ledgerClearReaches(workspace: string, stateDirectory: string): boolean {
+  const trees = new Map<string, unknown>();
+  for (const name of ['settings.json', 'settings.local.json']) {
+    const file = path.join(stateDirectory, name);
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).isFile()) trees.set(name, JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as unknown);
+    } catch {
+      return false;
+    }
+  }
+  const local = trees.get('settings.local.json');
+  const tree = isObject(local) && 'hooks' in local ? local : trees.get('settings.json');
+  if (!isObject(tree) || !isObject(tree['hooks'])) return false;
+  const events = tree['hooks'] as Record<string, unknown>;
+  const clears = (entry: unknown): boolean => {
+    const tokens = entryTokens(entry);
+    const at = tokens.findIndex((token) => path.basename(token.replace(/\\/g, '/')).toLowerCase() === CLEAR_HOOK);
+    if (at < 0) return false;
+    const script = path.isAbsolute(tokens[at]!) ? tokens[at]! : path.join(workspace, tokens[at]!);
+    if (!fs.existsSync(script)) return false;
+    const flag = tokens.findIndex((token) => token.toLowerCase() === '-statedirectory');
+    const target = flag >= 0 ? tokens[flag + 1] ?? '' : path.dirname(path.dirname(script));
+    return target.trim() !== '' && samePath(path.isAbsolute(target) ? target : path.join(workspace, target), stateDirectory);
+  };
+  return CLEAR_EVENTS.every((event) => asList(events[event]).some((block) => isObject(block) && asList(block['hooks']).some(clears)));
 }
 
 /** `Get-BookRootLabel`: how one open Book is named to the reader, the two archives told apart. */
@@ -234,10 +298,25 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     } catch {
       // swallowed: a name, and a prompt must not wait on it
     }
-    return contextDocument(
-      `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}${notebookWarning}`,
-      sessionTitle,
-    );
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}${notebookWarning}`;
+    // ONCE PER SESSION, KEYED ON THE TEXT ITSELF (kickoffs/s77 row 0, the desk-context Report): an identical block
+    // already served into this conversation is still in it, so it is not sent again. A changed Desk, seat or warning
+    // is a different text and is sent. Only where the ledger clear is proven to reach this ledger (above), only for
+    // Claude Code's own reader prefix -- a Codex or plugin session runs no clear of its own -- and never without a
+    // session id. A withheld block still carries the session's name: naming is its own once-only record.
+    try {
+      const claudeCode = prefix === DEFAULT_READER_PREFIX && (process.env['DESKPOST_ASSISTANT'] ?? '') !== 'codex';
+      if (claudeCode && sessionId.trim() && ledgerClearReaches(workspace, stateDirectory)) {
+        const ledgerKey = `desk-context:${seat}:${sha256OfText(text)}`;
+        if (testHookServed(stateDirectory, sessionId, ledgerKey)) {
+          return sessionTitle ? JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT, sessionTitle } }) : '';
+        }
+        setHookServed(stateDirectory, sessionId, ledgerKey);
+      }
+    } catch {
+      // a ledger that cannot be read or written sends the block: repetition, never a withheld Desk
+    }
+    return contextDocument(text, sessionTitle);
   } catch {
     return contextDocument(INVALID);
   }

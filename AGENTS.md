@@ -122,7 +122,7 @@ command into a POSIX equivalent: there is one gate, and a substitute for it is n
 
 ## No new PowerShell
 
-Deskpost is going PowerShell-free (the reader's goal, 2026-09-30; `docs/roadmap.md`, 1.3.1 and
+Deskpost is going PowerShell-free (the reader's goal, 2026-09-30; `docs/roadmap.md`, 1.3.2 and
 after). [ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md) already froze
 the PowerShell. Since then, **no new PowerShell file, tool, check or test is written**. New work is
 TypeScript. An existing `.ps1` changes only when:

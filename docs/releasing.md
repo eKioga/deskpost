@@ -9,6 +9,10 @@ How a release goes from `master` to the public download, and the exact commands 
    `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` (two lines), `llms-install.md` (its release base
    and every `download/v<version>` URL), and the `blob/v<version>` links in `.claude/skills/library-help/SKILL.md`
    and its reference files. There is no CHANGELOG.
+   The same commit brings the roadmap up to the release (`docs/roadmap.md`, "Keeping it current"): the
+   milestones it carries move to **Released** with its date, and the README's **Roadmap** section names it as the
+   current release, with the next milestones. The public README is copied from this commit, so it is true on the
+   day the release ships.
 2. **Prepare, locally, in a publish folder** outside the checkout (`<publish>`). It holds the publish script, its
    archive audit, `pub-commit.txt` (the release notes, which become the public commit's text) and `pub-tag.txt`. The
    script:
@@ -46,6 +50,6 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
 
 ## After the publish
 
-- The roadmap moves the released milestones out of **Now**.
+- If the publish slipped a day, correct the release date in `docs/roadmap.md` on `master`.
 - Only once `releases/latest` names the new version, and it is newer than the installed one, is anyone given an
   upgrade line.

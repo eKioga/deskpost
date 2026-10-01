@@ -31,6 +31,7 @@ import { archiveVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './sh
 import { updateShelfNoteIndex } from './capture.ts';
 import { shelfCarryVerb } from './shelfcarry.ts';
 import { shelfRecallVerb, SHELF_RECALL_OPTIONS } from './shelfrecall.ts';
+import { shelfTidyVerb, SHELF_TIDY_OPTIONS } from './shelftidy.ts';
 import { readRecallRecord, recallRecordTakenRefusal } from './recallrecord.ts';
 import { localDate } from './localdate.ts';
 import { verbUsageText } from './verbs.ts';
@@ -42,7 +43,7 @@ export interface VerbResult {
   humanText?: string;
 }
 
-const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall'];
+const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall', 'tidy'];
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -72,6 +73,8 @@ function newBookVerb(argv: string[], programRoot: string): VerbResult {
     if (!parsed.flags.has('capture')) refuse('--closed-by names who closes a capture Book\'s notes, so it needs --capture.');
     if (!['writer', 'any'].includes(closedByOption.trim())) refuse(`--closed-by must be writer or any; '${closedByOption}' is neither.`);
   }
+  // A BOOK THAT TAKES LETTERS (S77 row 3, ADR-0062): `- **Letters:** yes`, so `capture --for <seat>` is accepted there.
+  if (parsed.flags.has('letters') && !parsed.flags.has('capture')) refuse('--letters makes a capture Book that takes letters, so it needs --capture.');
   if (!SLUG_PATTERN.test(slug)) {
     refuse(`Book slug '${slug}' is malformed. A slug is lowercase letters, digits and hyphens, starting with a letter or a digit.`);
   }
@@ -95,6 +98,7 @@ function newBookVerb(argv: string[], programRoot: string): VerbResult {
     topics: parsed.options.get('topics'),
     capture: parsed.flags.has('capture'),
     closedBy: closedByOption?.trim() === 'any' ? 'any' : 'writer',
+    letters: parsed.flags.has('letters'),
     origin: parsed.options.get('origin'),
     preflight: parsed.flags.has('preflight'),
   });
@@ -116,6 +120,10 @@ export function createShelfBook(options: {
   capture: boolean;
   /** A capture Book's seat rule, written as its entry's `- **Closed by:**` line (S73 row 4). `writer` by default. */
   closedBy?: 'writer' | 'any';
+  /** A capture Book that takes letters (S77 row 3, ADR-0062): its entry's `- **Letters:** yes` line. */
+  letters?: boolean | undefined;
+  /** A capture Book's own growing thresholds (S77 row 3, ruling 6): its entry's `- **Growing at:**` line. */
+  growingAt?: string | undefined;
   origin?: string | undefined;
   preflight?: boolean;
 }): Record<string, PsJsonValue> {
@@ -202,6 +210,8 @@ export function createShelfBook(options: {
       topics && topics.trim() ? `- **Topics:** ${topics.trim()}` : '',
       capture ? '- **Kind:** capture' : '',
       capture ? `- **Closed by:** ${options.closedBy ?? 'writer'}` : '',
+      capture && options.letters ? '- **Letters:** yes' : '',
+      capture && options.growingAt ? `- **Growing at:** ${options.growingAt}` : '',
       `- **Origin:** ${originLine}`,
     ]);
     entryCount = invokeShelfCatalogRender({
@@ -241,7 +251,7 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
   // A MISSING SLUG IS USAGE (S71 row 10), once for every action that takes one: its own usage, not the slug-format
   // refusal a writer gives an empty string. Every action's valued options, so a value is never read as the slug.
   if (!['render', 'duplicates'].includes(action)) {
-    const valued = [...new Set([...SHELF_RECALL_OPTIONS, 'workspace', 'plan-id', 'new-title', 'reason', 'seat', 'canonical', 'superseded-on', 'title', 'summary', 'topics', 'origin', 'book', 'closed-by'])];
+    const valued = [...new Set([...SHELF_RECALL_OPTIONS, ...SHELF_TIDY_OPTIONS, 'workspace', 'plan-id', 'new-title', 'reason', 'seat', 'canonical', 'superseded-on', 'title', 'summary', 'topics', 'origin', 'book', 'closed-by'])];
     if (!(parseArguments(argv.slice(1), valued).positional[0] ?? '').trim()) {
       return { refusal: verbUsageText('shelf', action).trimEnd(), value: null, asJson: false };
     }
@@ -258,6 +268,12 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         const recalled = shelfRecallVerb(argv.slice(1), programRoot, workspace);
         return { refusal: recalled.refusal, value: recalled.value, asJson: true };
+      }
+      case 'tidy': {
+        // S77 row 1, PLAN-holding-discipline.md row 5: closed notes out of notes/, and one back with --restore.
+        const parsed = parseArguments(argv.slice(1), SHELF_TIDY_OPTIONS);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        return { refusal: null, value: shelfTidyVerb(argv.slice(1), workspace), asJson: true };
       }
       case 'carry': {
         // PLAN-basic-memory.md step 4b: another workspace's capture notes, carried byte for byte into this Library's Shelf.

@@ -104,6 +104,15 @@ function ConvertFrom-ShelfCatalogEntry {
     # is 'any', as every Book was before the line; an unrecognised value is 'writer' and never refuses.
     $closedByMatch = [regex]::Match($Body, '(?m)^[ \t]*-[ \t]+\*\*Closed by:\*\*[ \t]*(.*?)[ \t]*\r?$')
     $closedByDeclared = if ($closedByMatch.Success) { $closedByMatch.Groups[1].Value } else { $null }
+    # PARITY (S77 row 2): when a capture Book is growing, as the kernel's convertFromShelfCatalogEntry reads it. The
+    # line '- **Growing at:** <n> pending or <d> days', or 5 and 7; a line that does not parse reads as the defaults.
+    $growingPending = 5
+    $growingDays = 7
+    $growingMatch = [regex]::Match($Body, '(?m)^[ \t]*-[ \t]+\*\*Growing at:\*\*[ \t]*(\d+) pending or (\d+) days?[ \t]*\r?$')
+    if ($growingMatch.Success) {
+        $growingPending = [int]$growingMatch.Groups[1].Value
+        $growingDays = [int]$growingMatch.Groups[2].Value
+    }
     [pscustomobject]@{
         slug       = $Slug
         title      = $Title.Trim()
@@ -114,6 +123,13 @@ function ConvertFrom-ShelfCatalogEntry {
         summary    = if ($summaryMatch.Success) { ($summaryMatch.Groups[1].Value -replace '\s+', ' ').Trim() } else { '' }
         topics     = @(if ($topicsMatch.Success) { ($topicsMatch.Groups[1].Value -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ } })
         closed_by  = if ($null -eq $closedByDeclared -or $closedByDeclared -ceq 'any') { 'any' } else { 'writer' }
+        # PARITY (S77 row 4): the line as written, so Add-ShelfNote.ps1 tells an 'any' Book from one with no line.
+        closed_by_declared = $closedByDeclared
+        growing_pending = $growingPending
+        growing_days    = $growingDays
+        # PARITY (S77 row 3, ADR-0062): '- **Letters:** yes', as the kernel reads it, so this side tolerates the line
+        # and its reader map groups a letters Book's pending notes by for_seat as the kernel's does.
+        takes_letters   = [regex]::IsMatch($Body, '(?m)^[ \t]*-[ \t]+\*\*Letters:\*\*[ \t]+yes[ \t]*\r?$')
     }
 }
 
@@ -410,13 +426,9 @@ function Get-CaptureBooks([string]$Workspace) {
         $slug = $pathMatch.Groups[1].Value
         $wikiPath = Join-Path $Workspace (Join-Path 'shelf' (Join-Path $slug 'wiki'))
         if (-not (Test-Path -LiteralPath $wikiPath -PathType Container)) { continue }
-        $books += [pscustomobject]@{
-            slug       = $slug
-            title      = $section.Groups[1].Value.Trim()
-            book_root  = "shelf/$slug"
-            wiki_path  = $wikiPath
-            notes_path = Join-Path $wikiPath 'notes'
-        }
+        # BY THE ONE ENTRY GRAMMAR (S77 row 2, parity with the kernel's captureBookRows), so the Desk reads each
+        # Book's seat rule and Growing at: thresholds as the kernel does.
+        $books += ConvertFrom-ShelfCatalogEntry -Workspace $Workspace -Slug $slug -Title $section.Groups[1].Value -Body $body -BookRoot "shelf/$slug"
     }
     @($books | Sort-Object slug)
 }
@@ -499,11 +511,46 @@ function Update-ShelfNoteIndex($Book) {
     $pending = @($notes | Where-Object { $_.review -cne 'done' } | Sort-Object captured -Descending)
     $reviewed = @($notes | Where-Object { $_.review -ceq 'done' } | Sort-Object captured -Descending)
     $lines = @("# $($Book.title) - Reader Map", '', '- [[_book|Book metadata and limits]]', '', '## Pending review', '')
-    if ($pending.Count) { foreach ($note in $pending) { $lines += "- [[$($note.page)|$($note.title)]] - captured $($note.captured)" } }
-    else { $lines += '- Nothing is waiting for review.' }
+    if (-not $pending.Count) { $lines += '- Nothing is waiting for review.' }
+    elseif (-not ($Book.PSObject.Properties.Name -contains 'takes_letters' -and $Book.takes_letters)) {
+        foreach ($note in $pending) { $lines += "- [[$($note.page)|$($note.title)]] - captured $($note.captured)" }
+    }
+    else {
+        # PARITY (S77 row 3): a Book that takes letters groups them by recipient, seats in ordinal name order and then
+        # any note addressed to no seat, as the kernel's updateShelfNoteIndex does.
+        $named = [Collections.Generic.List[string]]::new()
+        foreach ($note in $pending) { $recipient = [string]$note.for_seat; if ($recipient -and -not $named.Contains($recipient)) { $named.Add($recipient) } }
+        $named.Sort([StringComparer]::Ordinal)
+        $recipients = @($named) + @(if (@($pending | Where-Object { -not [string]$_.for_seat }).Count) { '' })
+        $first = $true
+        foreach ($recipient in $recipients) {
+            if (-not $first) { $lines += '' }
+            $first = $false
+            $lines += @($(if ($recipient) { "### For $recipient" } else { '### For no seat' }), '')
+            foreach ($note in @($pending | Where-Object { [string]$_.for_seat -ceq $recipient })) { $lines += "- [[$($note.page)|$($note.title)]] - captured $($note.captured)" }
+        }
+    }
     $lines += @('', '## Reviewed', '')
     if ($reviewed.Count) { foreach ($note in $reviewed) { $lines += "- [[$($note.page)|$($note.title)]] - captured $($note.captured)" } }
     else { $lines += '- No note has been reviewed yet.' }
+    # THE MONTHS `library shelf tidy` MOVED CLOSED NOTES INTO (S77 row 1, parity with the kernel's
+    # updateShelfNoteIndex): each wiki/reviewed/<yyyy-mm> folder holding a month map, newest first, and only when
+    # there is one, so a Book never tidied keeps its map byte for byte. Without these lines the first capture here
+    # after a tidy would rewrite the map without them.
+    $reviewedRoot = Join-Path $Book.wiki_path 'reviewed'
+    $months = @()
+    if (Test-Path -LiteralPath $reviewedRoot -PathType Container) {
+        $months = @(Get-ChildItem -LiteralPath $reviewedRoot -Directory |
+            Where-Object { $_.Name -cmatch '^\d{4}-\d{2}$' -and (Test-Path -LiteralPath (Join-Path $_.FullName '_index.md') -PathType Leaf) } |
+            ForEach-Object { $_.Name } | Sort-Object -Descending)
+    }
+    if ($months.Count) {
+        $lines += @('', '## Tidied', '')
+        foreach ($month in $months) {
+            $monthTitle = "Notes reviewed in $month"
+            $lines += "- [[reviewed/$month/_index|$monthTitle]]"
+        }
+    }
     Write-Utf8 (Join-Path $Book.wiki_path '_index.md') (($lines -join "`n") + "`n")
     [pscustomobject]@{ pending_count = $pending.Count; reviewed_count = $reviewed.Count; total_count = $notes.Count }
 }

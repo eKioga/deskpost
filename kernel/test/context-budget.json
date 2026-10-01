@@ -1,0 +1,11 @@
+{
+  "comment": "What Deskpost puts into a session, in characters, measured by kernel self-test section 101 (S77 row 5, the context-budget Report's gate half). Past a budget is a FAIL. Measured below 90% of its budget is also a FAIL naming the new number: lower the budget to it, so a saving cannot creep back. Set at S77 about 5% above what was measured then: 368, 368, 3274, 3274, 154 and 5321. Measured: the kernel Desk hook's additionalContext (the only kernel hook that emits context; the guards emit refusals only), once and over three prompts against an unchanged Desk; the workspace CLAUDE.md and AGENTS.md that init writes; and the validated-book-reader's initialize answer and tools/list. The four PowerShell hooks (Get-PlaybookContext, Restore-CompactedGuidance, Get-SeatStartContext, Add-SearchHitReminder) join this budget when 1.3.2 ports them. tools/Invoke-LibraryChecks.ps1's context.always-on-budget stays as it is until the PowerShell-free development work retires it.",
+  "budgets": {
+    "desk-context.first-prompt": 390,
+    "desk-context.three-unchanged-prompts": 390,
+    "workspace.CLAUDE.md": 3440,
+    "workspace.AGENTS.md": 3440,
+    "reader.initialize": 165,
+    "reader.tools-list": 5590
+  }
+}

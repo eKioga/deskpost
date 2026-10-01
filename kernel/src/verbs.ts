@@ -69,7 +69,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // --content-path beside --body (S66): on Windows the shim keeps only an inline body's first line.
     // --why (S73 row 3): one closed category, recorded and never required.
     // --supersedes (S73 row 4): closes the named older note in the same Book, and needs the Book open and a seat.
-    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] [--supersedes notes/<page>]',
+    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] [--supersedes notes/<page>] [--for <seat>]',
     actions: [],
     positional: true,
     ported: true,
@@ -287,12 +287,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   shelf: {
     summary:
-      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, and recall a collection Book to the Shelf.",
+      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, recall a collection Book to the Shelf, and tidy a capture Book's closed notes.",
     usage:
       // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `shelf <action> --help` shows it.
       'library shelf <action> [arguments] [--workspace <path>] [--json]; ' +
       'library shelf render; ' +
-      'library shelf new <slug> --title <t> --summary <s> [--topics <t>] [--origin <o>] [--capture [--closed-by writer|any]] [--preflight]; ' +
+      'library shelf new <slug> --title <t> --summary <s> [--topics <t>] [--origin <o>] [--capture [--closed-by writer|any] [--letters]] [--preflight]; ' +
       'library shelf rename <slug> <new-slug> [--new-title <t>] (--preflight | --plan-id <id>); ' +
       'library shelf remove <slug> [--reason <r>] [--seat <s>] (--preflight | --plan-id <id>); ' +
       'library shelf archive <slug> [--reason <r>] (--preflight | --plan-id <id>); ' +
@@ -300,8 +300,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library shelf stub <slug> <page> --canonical <book>/<page> [--reason <r>] [--superseded-on <yyyy-MM-dd>] (--preflight | --plan-id <id>); ' +
       'library shelf duplicates [--embedding-url <u>] [--embedding-model <m>] [--api-key <k>] [--similarity-threshold <n>] [--batch-size <n>]; ' +
       'library shelf carry <old-workspace> --book <capture-book> (--preflight | --user-confirmed --plan-id <id>); ' +
-      'library shelf recall <book-slug> [--shelf-slug <s>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]',
-    actions: ['archive', 'carry', 'duplicates', 'new', 'recall', 'remove', 'rename', 'render', 'restore', 'stub'],
+      'library shelf recall <book-slug> [--shelf-slug <s>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]; ' +
+      'library shelf tidy <capture-book> [--days <n>] [--restore reviewed/<yyyy-mm>/<name>] (--preflight | --user-confirmed --plan-id <id>)',
+    actions: ['archive', 'carry', 'duplicates', 'new', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
     positional: false,
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.

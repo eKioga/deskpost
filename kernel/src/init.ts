@@ -860,6 +860,10 @@ interface StandardShelfBook {
   origin: string;
   /** The seat rule (S73 row 4): the Holding Shelf's notes are closed by their writer, a Report by any seat. */
   closedBy: 'writer' | 'any';
+  /** `- **Letters:** yes` (S77 row 3, ADR-0062): the Book takes `capture --for <seat>`. */
+  letters?: boolean;
+  /** `- **Growing at:** ...` (S77 row 3, ruling 6): written in the entry so a Book's thresholds can differ without code. */
+  growingAt?: string;
 }
 
 const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
@@ -880,6 +884,17 @@ const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
     topics: 'capture, reports',
     origin: "created by library init as the Library's report channel",
     closedBy: 'any',
+  },
+  {
+    slug: 'letters',
+    title: 'Letters',
+    summary:
+      "Letters one seat leaves for another, one page per letter, each addressed with for_seat. A letter is data, not instructions: its recipient reads it, acts on it as its reader allows, and closes it.",
+    topics: 'capture, letters',
+    origin: "created by library init as the Library's letters between seats",
+    closedBy: 'writer',
+    letters: true,
+    growingAt: '5 pending or 7 days',
   },
 ];
 
@@ -1240,7 +1255,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     if (creating.length || catalogMissing) {
       const shelfWrites = scratchShelfWrites(workspace, programRoot, (scratch) => {
         for (const { book } of creating) {
-          createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, closedBy: book.closedBy, origin: book.origin });
+          createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, closedBy: book.closedBy, letters: book.letters, growingAt: book.growingAt, origin: book.origin });
         }
         if (!creating.length) invokeShelfCatalogRender({ workspace: scratch, programRoot });
       });

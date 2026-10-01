@@ -72,8 +72,10 @@ Four causes, each verified:
   routes shipped in S73; the collection Book one is the new kind `collection-book`);
 - a recorded (never required) `--why` category, counted on the Desk (shipped in S73);
 - `--supersedes <page>` (shipped in S73);
-- `shelf tidy`, which moves long-closed notes inside the Book;
-- a Desk and doctor signal past a pending-count or age threshold;
+- `shelf tidy`, which moves long-closed notes inside the Book, to `wiki/reviewed/<yyyy-mm>/`, with
+  `--restore` for the way back (shipped in S77);
+- a Desk and doctor signal past a pending-count or age threshold: `growing` on the Desk row and a
+  doctor WARN, from the Book's own `Growing at:` line or 5 pending and 7 days (shipped in S77);
 - `--for <seat>` for a message to another seat;
 - the seat rule as a kernel rule: per Book (`holding` writer-only, `reports` any seat), on every route that closes,
   reopens or deletes a note, with the reader's named per-action override (shipped in S73; see the safety boundary).
@@ -111,6 +113,9 @@ closing means `review: done`, and `discard` keeps its preview and its yes.
   plan id, and the preflight lists such actions apart. A wrong one is refused, and a correct but
   unneeded one is accepted.
 - **No change to saving.** Capture without `--supersedes` stays ungated and seatless-capable.
+- **Tidying is Library housekeeping, and covers every seat's closed notes** (S77). `shelf tidy` moves
+  and never closes, reopens or deletes, so the seat rule, which is about closing, does not apply to it.
+  It needs the Book open and the reader's yes to its plan id, like any move.
 
 ## Consequences
 

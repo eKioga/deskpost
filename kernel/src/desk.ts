@@ -22,8 +22,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
-import { getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN } from './shelfbook.ts';
-import { shelfNotes, WHY_CATEGORIES } from './shelfnote.ts';
+import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
+import { growingState, shelfNotes, WHY_CATEGORIES } from './shelfnote.ts';
 import {
   deskFileEntries,
   deskFilePath,
@@ -238,6 +238,14 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       // writer typed is ever said here: a `why:` outside the category counts as missing.
       pending_by_why: Object.fromEntries(WHY_CATEGORIES.map((category) => [category, pending.filter((note) => note.why === category).length])),
       pending_why_missing: pending.filter((note) => !(WHY_CATEGORIES as readonly string[]).includes(note.why ?? '')).length,
+      // GROWING (S77 row 2): past the Book's pending count or age, from its own `Growing at:` line or 5 and 7. Then
+      // the route, and how many of the pending notes this seat may close. Counts only.
+      ...((): Record<string, PsJsonValue> => {
+        const state = growingState(book, notes, seat);
+        return state.growing
+          ? { growing: true, growing_route: `library desk open book ${book.slug} --location shelf, then library triage batch`, pending_this_seat_may_close: state.mayClose }
+          : { growing: false };
+      })(),
     };
   });
 
@@ -457,18 +465,12 @@ function readNotebookTopicOwners(workspace: string): Map<string, Record<string, 
   return owners;
 }
 
-interface CaptureBookRow {
-  slug: string;
-  title: string;
-  bookRoot: string;
-  wikiPath: string;
-  notesPath: string;
-  isCapture: boolean;
-  summary: string;
-  topics: string[];
-}
+type CaptureBookRow = ShelfBook;
 
-/** Every capture-enabled Book the catalog names, whose pages directory exists. */
+/**
+ * Every capture-enabled Book the catalog names, whose pages directory exists. Read by the one entry grammar
+ * (`convertFromShelfCatalogEntry`, S77 row 2), so its seat rule and `Growing at:` thresholds come with it.
+ */
 function captureBookRows(workspace: string): CaptureBookRow[] {
   const catalogFile = shelfCatalogPath(workspace);
   if (!fs.existsSync(catalogFile)) return [];
@@ -480,16 +482,7 @@ function captureBookRows(workspace: string): CaptureBookRow[] {
     const slug = pathMatch[1]!;
     const wikiPath = path.join(workspace, 'shelf', slug, 'wiki');
     if (!fs.existsSync(wikiPath)) continue;
-    books.push({
-      slug,
-      title: section.title.trim(),
-      bookRoot: `shelf/${slug}`,
-      wikiPath,
-      notesPath: path.join(wikiPath, 'notes'),
-      isCapture: true,
-      summary: '',
-      topics: [],
-    });
+    books.push(convertFromShelfCatalogEntry({ workspace, slug, title: section.title, body: section.body, bookRoot: `shelf/${slug}` }));
   }
   return books.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
 }

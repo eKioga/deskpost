@@ -187,7 +187,10 @@ $plan = [ordered]@{
     scope                = 'Creates one new page under this capture Book, regenerates its reader map, and commits a new Discovery manifest generation in the same locked window. No existing page is read, changed, or removed.'
 }
 # After session_id, where the kernel's plan says it.
-if ($Why) { $plan.Insert(11, 'why', $Why) } else { $plan.Insert(11, 'why_missing', $true) }
+# PARITY (S77 row 4, kickoffs/s77 ruling 3): why_missing only where it helps, as the kernel's capture says it -- never
+# for an 'any' Book such as the Report Inbox, and still for a Book with no Closed by: line.
+$whyMissingSaid = ([string]$book.closed_by_declared) -cne 'any'
+if ($Why) { $plan.Insert(11, 'why', $Why) } elseif ($whyMissingSaid) { $plan.Insert(11, 'why_missing', $true) }
 if ($Supersedes) {
     $plan.Insert(12, 'supersedes', $Supersedes)
     $plan.scope = "Creates one new page under this capture Book, regenerates its reader map, and commits a new Discovery manifest generation in the same locked window. It also closes $Supersedes (review: done, reviewed:, superseded_by:), journalled with the new note. Nothing is removed."
@@ -286,5 +289,5 @@ $plan.pending_count = $counts.pending_count
 $plan.reader_map = "$($book.book_root)/wiki/_index.md"
 $plan.manifest = $manifestSummary
 $plan.next = "This Book is closed by default. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug $BookSlug when you are ready to review."
-if (-not $Why) { $plan.next += " This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, or the Notebook, and record a why category when none of them fits." }
+if (-not $Why -and $whyMissingSaid) { $plan.next +=" This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, or the Notebook, and record a why category when none of them fits." }
 Write-LibraryResult -Result ([pscustomobject]$plan) -Json:$Json

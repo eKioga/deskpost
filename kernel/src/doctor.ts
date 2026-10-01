@@ -32,7 +32,8 @@ import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
-import { getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections } from './shelfbook.ts';
+import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
+import { growingState, shelfNotes } from './shelfnote.ts';
 import {
   masterIndexDrift,
   scopeIndexDrift,
@@ -929,6 +930,55 @@ function captureBooksSayWhoCloses(workspace: string): string {
   return checked ? `${checked} capture Book${checked === 1 ? '' : 's'}, each saying who closes its notes` : 'no capture Book on the Shelf';
 }
 
+/**
+ * WHETHER A CAPTURE BOOK IS GROWING (S77 row 2, PLAN-holding-discipline.md row 6): past its pending count or the age
+ * of its oldest pending note, from its own `Growing at:` line or 5 and 7. A WARN and never a FAIL, since a growing
+ * Shelf is a signal that the Library lacks a home, not a defect; and counts only, since the Book may be closed.
+ */
+function captureBooksGrowing(workspace: string): string {
+  const catalogFile = shelfCatalogPath(workspace);
+  if (!fs.existsSync(catalogFile)) return 'SKIP: this Library has no Shelf catalog, so no capture Book to check';
+  const growing: string[] = [];
+  const unread: string[] = [];
+  let checked = 0;
+  for (const section of shelfCatalogSections(readUtf8(catalogFile))) {
+    if (!/^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(section.body)) continue;
+    const slug = /^[ \t]*-[ \t]+\*\*Path:\*\*[ \t]+shelf\/([a-z0-9][a-z0-9-]*)[ \t]*$/m.exec(section.body)?.[1];
+    if (!slug) continue;
+    checked += 1;
+    const book = getShelfBook(workspace, slug);
+    if (book.growingDeclared !== null && book.growingDeclared !== undefined && parseGrowingAt(book.growingDeclared) === null) {
+      unread.push(`capture Book '${slug}' says '- **Growing at:** ${book.growingDeclared}', which is not '<n> pending or <d> days', so the defaults (${DEFAULT_GROWING_PENDING} pending or ${DEFAULT_GROWING_DAYS} days) apply`);
+    }
+    const notes = shelfNotes(book);
+    if (!growingState(book, notes, null).growing) continue;
+    const pending = notes.filter((note) => note.review !== 'done').length;
+    growing.push(
+      `capture Book '${slug}' is growing: ${pending} pending, past ${book.growingPending} pending or ${book.growingDays} days; ` +
+        `open it with deskpost desk open book ${slug} --location shelf and triage its notes`,
+    );
+  }
+  if (growing.length || unread.length) return `WARN: ${[...growing, ...unread].join('; ')}`;
+  return checked ? `${checked} capture Book${checked === 1 ? '' : 's'}, none growing` : 'no capture Book on the Shelf';
+}
+
+/**
+ * EVERY STANDARD CAPTURE BOOK IS THERE (S77 row 3, ADR-0062): `setup` never re-runs `init` on a Library it keeps, so
+ * a Library made before `letters` existed lacks it until one `library init`. A WARN naming that route.
+ */
+function standardBooksPresent(workspace: string): string {
+  const catalogFile = shelfCatalogPath(workspace);
+  if (!fs.existsSync(catalogFile)) return 'SKIP: this Library has no Shelf catalog, so no standard Book to check';
+  const text = readUtf8(catalogFile);
+  const missing = STANDARD_SHELF_BOOK_SLUGS.filter(
+    (slug) => !shelfCatalogSections(text).some((section) => new RegExp(`^[ \\t]*-[ \\t]+\\*\\*Path:\\*\\*[ \\t]+shelf/${slug}[ \\t]*$`, 'm').test(section.body)),
+  );
+  if (missing.length) {
+    return `WARN: this Library has no ${missing.map((slug) => `'${slug}'`).join(', ')} Book, which every library init lays out; run library init ${workspace} to add ${missing.length === 1 ? 'it' : 'them'} (it adds only what is missing)`;
+  }
+  return `all ${STANDARD_SHELF_BOOK_SLUGS.length} standard capture Books are on the Shelf`;
+}
+
 function runCheck(check: string, body: () => string): CheckResult {
   try {
     const detail = body();
@@ -979,6 +1029,10 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
     workspace ? runCheck('seats.added-folders', () => seatAddedFolders(workspace)) : { check: 'seats.added-folders', status: 'skipped', detail: 'no Library here, so no seats whose folders to check' },
     // HERE FOR THE SAME REASON (S73 row 4): the PowerShell runner has no seat rule to check.
     workspace ? runCheck('shelf.capture-books-say-who-closes', () => captureBooksSayWhoCloses(workspace)) : { check: 'shelf.capture-books-say-who-closes', status: 'skipped', detail: 'no Library here, so no capture Books to check' },
+    // AND THIS ONE (S77 row 2): the PowerShell runner has no growing signal. A WARN, never a FAIL.
+    workspace ? runCheck('shelf.capture-books-growing', () => captureBooksGrowing(workspace)) : { check: 'shelf.capture-books-growing', status: 'skipped', detail: 'no Library here, so no capture Books to check' },
+    // AND THIS ONE (S77 row 3): the PowerShell runner has no standard-Book check.
+    workspace ? runCheck('shelf.standard-books-present', () => standardBooksPresent(workspace)) : { check: 'shelf.standard-books-present', status: 'skipped', detail: 'no Library here, so no standard Books to check' },
   ];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;

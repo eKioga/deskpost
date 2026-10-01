@@ -13,7 +13,9 @@ and where it stops.
    not acted on. A name is not identity: any process of the same user can send one.
 2. **Substance goes on a page, and the message is a notice.** Its first line stands alone: the seat,
    and what this is. It gives the page path and, for a write, whether the readback matched and the
-   written hash. The other seat reads the page through its own Desk.
+   written hash. The other seat reads the page through its own Desk. When the page is for a seat with
+   no Hub of yours to write to, or one that is closed, idle or Codex, it is a **letter**:
+   `library capture letters --for <seat>`, and the message only rings for it (ADR-0062).
 3. **Reply to the `from` address**, at most one message per open question, and one batched notice per
    session otherwise. Each delivered message costs the receiver a turn.
 4. **After a session's last notice, the other side sends it nothing.** A message that arrives later is

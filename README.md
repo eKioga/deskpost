@@ -24,7 +24,7 @@ of `docs/` is design records, written for whoever is changing the code.
 ## Prerequisites
 
 - **Windows 10 or 11**, or **Linux on x64** with `curl` and either `unzip` or `python3`. macOS is
-  not supported in 1.1.
+  not supported yet.
 - **Claude Code or Codex**, installed and signed in. Both are supported, and both read through the
   same validated reader.
 
@@ -163,20 +163,20 @@ what is in them.
 
 ## Roadmap
 
-- **1.0.** One binary for Windows and Linux
-  ([ADR-0028](docs/adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md)), installed apart from
-  the Libraries it serves ([ADR-0027](docs/adr/0027-the-program-is-separate-from-the-workspace.md)).
-  Claude Code and Codex are both supported. A local collection is the default, with Basic Memory as
-  the optional shared route. Each Seat carries its own Notebook
-  ([ADR-0029](docs/adr/0029-the-notebook-belongs-to-the-seat.md)).
-- **1.1.** An install that asks one question and shows its plan, `deskpost uninstall` and `deskpost rollback`,
-  and bare `deskpost` as the main menu: your seats, a number to resume one
-  ([ADR-0059](docs/adr/0059-bare-deskpost-is-the-main-menu-and-seat-start-is-its-one-launcher.md)).
-- **1.2: this release.** Install by asking your assistant: [`llms-install.md`](llms-install.md), a plan the
-  assistant shows and an install bound to it, Show me around on `h` in every Library, and the `library-help`
-  Skill in every Library.
-- **After 1.1.** The guided tutorial, an Orca Quick Command per seat, and macOS
-  ([ADR-0048](docs/adr/0048-a-note-is-named-by-the-local-date-and-saving-is-not-reading.md)).
+The current release is **1.3.0**. The full roadmap, with what each milestone carries and how far
+along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
+
+- **Now: 1.3.1, seats that work together.** A seat's Desk lists the letters waiting for it, names
+  the other seats' sessions, and each seat says who may message it.
+- **Next: 1.3.2, no PowerShell at runtime.** The last hooks, and the program's own process calls,
+  move into the program, so nothing you run needs PowerShell.
+- **Then: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
+  a browse mode in the main menu, and an unknown flag refused by every verb.
+- **Then: 1.5.0, a Library card and a read-only view of the Desk.**
+- **Exploring:** two Libraries in one household, sharing a collection on the home network with no
+  accounts, database or server.
+
+What each earlier release carried is under **Released** in the roadmap.
 
 ## Contributing
 

@@ -24,36 +24,24 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-### 1.2.6: Seats that can talk (1 of 1 sessions)
+### 1.3.1: Seats that work together (0 of 1 sessions)
 
-Claude Code can now pass messages between your sessions on the same computer. Deskpost gives each seat's session
-the seat's name, so a session at one seat can find and message the session at another.
+1.2.6 made each seat's session reachable by name, and 1.3.0 lets a seat leave a letter for another.
+This milestone makes both useful: a seat sees what is waiting for it, and each seat says who may
+reach it.
 
-- **Each seat's session names itself after its seat on its second prompt.** Claude Code's list of your sessions,
-  and its `/resume` list, show `game-admin` or `home-lab-admin` rather than `deskpost-3f`. It waits until Claude Code
-  has written the conversation's own title, so the main menu still shows that title. A name you give a session
-  yourself is never replaced.
-- **`library seat status` and the Desk say which name a seat's session answers to**, while someone is at it.
-- **The Library's guidance says how seats message each other safely**: a message is information, never an
-  approval, and anything that needs your yes still comes to you.
-
-### 1.3.0: The Holding Shelf keeps itself small (1 of 2 sessions)
-
-The Holding Shelf ("save this for later") was meant as a last resort, and it grew to dozens of
-notes. The guidance half shipped in 1.2.4, and the first half of the program's part shipped in 1.2.5.
-This is the rest, so the Shelf stays small without anyone having to remember.
-
-- `library shelf tidy` moves closed notes out of the way after two weeks, without deleting any.
-- The Desk and `library doctor` say when a capture Book is growing.
-- A note can be addressed to another seat, and that seat's Desk counts it.
-- **Less repeated context:** the Desk's reminder is sent once per session, and again only when the
-  Desk changes or the conversation is compacted, rather than with every message.
-- **The development gate measures what Deskpost puts into a session**, and fails a change that
-  makes it bigger than its recorded budget, so a saving cannot quietly creep back.
+- **A seat's Desk lists the letters waiting for it**, and the reader marks a letter as one, with the
+  seat that wrote it, so it is read as information and never as instructions.
+- **The Desk names the other seats' sessions** by the name each one answers to.
+- **A session you rename keeps a working address**: `library seat status` and the Desk follow the
+  new name, rather than the seat name it no longer answers to.
+- **Each seat sets who may message it**: `deskpost seat settings <seat> --inbound accept|hold|refuse`,
+  passed on every launch of that seat, with a `library doctor` warning when a setting reaches every
+  seat by accident.
 
 ## Next
 
-### 1.3.1: No PowerShell at runtime (0 of 2 sessions)
+### 1.3.2: No PowerShell at runtime (0 of 2 sessions)
 
 Deskpost's program is TypeScript, but a few pieces still start Windows PowerShell while you work.
 This milestone moves them into the program, so nothing you run needs PowerShell.
@@ -159,6 +147,63 @@ now be given those folders once, and only that seat gets them.
   the reader names another's.
 
 It was released together with 1.2.4.
+
+### 1.2.6: Seats that can talk (1 of 1 sessions; released 2026-10-01)
+
+Claude Code can now pass messages between your sessions on the same computer. Deskpost gives each seat's session
+the seat's name, so a session at one seat can find and message the session at another.
+
+- **Each seat's session names itself after its seat on its second prompt.** Claude Code's list of your sessions,
+  and its `/resume` list, show `game-admin` or `home-lab-admin` rather than `deskpost-3f`. It waits until Claude Code
+  has written the conversation's own title, so the main menu still shows that title. A name you give a session
+  yourself is never replaced.
+- **`library seat status` and the Desk say which name a seat's session answers to**, while someone is at it.
+- **The Library's guidance says how seats message each other safely**: a message is information, never an
+  approval, and anything that needs your yes still comes to you.
+
+### 1.3.0: The Holding Shelf keeps itself small (2 of 2 sessions; released 2026-10-01)
+
+The Holding Shelf ("save this for later") was meant as a last resort, and it grew to dozens of
+notes. The guidance half shipped in 1.2.4, and the first half of the program's part shipped in 1.2.5.
+This is the rest, so the Shelf stays small without anyone having to remember.
+
+- `library shelf tidy` moves closed notes out of the way after two weeks, without deleting any.
+- The Desk and `library doctor` say when a capture Book is growing.
+- **A seat can leave a letter for another seat**, in a new standard `letters` Book, even while that
+  seat is closed. A letter records how its writer's seat was found, and a note can no longer be filed
+  under another seat's name. Reading letters from the Desk follows in 1.3.1. **An existing
+  Library gets `letters` from one `deskpost init <folder>` after upgrading**; until then `library doctor`
+  warns that it is missing.
+- **Less repeated context:** the Desk's reminder is sent once per session, and again only when the
+  Desk changes or the conversation is compacted, rather than with every message.
+- **The development gate measures what Deskpost puts into a session**, and fails a change that
+  makes it bigger than its recorded budget, so a saving cannot quietly creep back.
+
+### Earlier releases
+
+- **1.0.** One binary for Windows and Linux
+  ([ADR-0028](adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md)), installed apart from the
+  Libraries it serves ([ADR-0027](adr/0027-the-program-is-separate-from-the-workspace.md)). Claude Code
+  and Codex are both supported. A local collection is the default, with Basic Memory as the optional
+  shared route, and each seat carries its own Notebook
+  ([ADR-0029](adr/0029-the-notebook-belongs-to-the-seat.md)).
+- **1.1.** An install that asks one question and shows its plan, `deskpost uninstall` and
+  `deskpost rollback`, and bare `deskpost` as the main menu: your seats, and a number to resume one
+  ([ADR-0059](adr/0059-bare-deskpost-is-the-main-menu-and-seat-start-is-its-one-launcher.md)).
+- **1.2.** Install by asking your assistant ([`llms-install.md`](../llms-install.md)): a plan the
+  assistant shows, and an install bound to it. The install ends on **Show me around** (`h`), a guided
+  first look from a `deskpost-help` seat, and every Library carries the `library-help` Skill.
+
+## Keeping it current
+
+This page and the README's **Roadmap** section change together, so the public page never trails the
+work:
+
+- **At each handback**, a milestone's count moves to the sessions that actually ran, and an item a
+  handback parks says where it went.
+- **At each release**, its version-bump commit moves the milestones it carries to **Released**, and
+  the README names the new current release and the next milestones. A release's public README is then
+  true on the day it ships.
 
 ## Out of scope
 

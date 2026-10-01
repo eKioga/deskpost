@@ -259,7 +259,22 @@ $captureBooks = @(Get-CaptureBooks -Workspace $workspace | ForEach-Object {
     $notes = @(Get-ShelfNotes -Book $_)
     $pending = @($notes | Where-Object { $_.review -cne 'done' })
     $oldestPending = @($pending | Where-Object { $_.captured -cne 'unknown' } | Sort-Object captured | Select-Object -First 1)
-    [pscustomobject]@{
+    # PARITY (S77 row 2, desk.overview-names-what-is-open-at-this-seat): GROWING past the Book's own Growing at:
+    # thresholds, as the kernel's growingState decides it, with the route and the count this seat may close.
+    $pendingTimes = @($pending | ForEach-Object {
+        $parsedTime = [DateTime]::MinValue
+        if ([DateTime]::TryParse([string]$_.captured, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsedTime)) { $parsedTime }
+    })
+    $oldestTime = @($pendingTimes | Sort-Object | Select-Object -First 1)
+    $isGrowing = ($pending.Count -gt $_.growing_pending) -or ($oldestTime.Count -and (([DateTime]::UtcNow - $oldestTime[0]).TotalMilliseconds -gt ($_.growing_days * 86400000)))
+    $seatName = [string]$seatState.seat
+    $mayClose = if ($_.closed_by -ceq 'any') { $pending.Count } else {
+        @($pending | Where-Object { -not $_.from_seat -or ([string]$_.from_seat -ceq $seatName) -or ([string]$_.for_seat -ceq $seatName) }).Count
+    }
+    $growingFields = if ($isGrowing) {
+        [ordered]@{ growing = $true; growing_route = "library desk open book $($_.slug) --location shelf, then library triage batch"; pending_this_seat_may_close = $mayClose }
+    } else { [ordered]@{ growing = $false } }
+    $row = [pscustomobject]@{
         slug = $_.slug
         book_root = $_.book_root
         is_open = ($_.slug -cin $openShelfSlugs)
@@ -275,6 +290,8 @@ $captureBooks = @(Get-CaptureBooks -Workspace $workspace | ForEach-Object {
         }
         pending_why_missing = @($pending | Where-Object { $_.why -cnotin $whyCategories }).Count
     }
+    foreach ($field in $growingFields.GetEnumerator()) { $row | Add-Member -NotePropertyName $field.Key -NotePropertyValue $field.Value }
+    $row
 })
 
 # THIS SEAT IN FULL, ONE LINE PER OTHER SEAT (the cosmetic tier, locked 2026-09-07). Enough to know

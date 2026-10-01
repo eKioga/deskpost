@@ -808,6 +808,17 @@ $script:StandardShelfBooks = @(
         origin  = "created by library init as the Library's report channel"
         closed_by = 'any'
     }
+    # PARITY (S77 row 3, ADR-0062, the five workspace.init-* rows): init.ts's letters entry. New-ShelfBook.ps1 takes no
+    # letters or growing parameter, so extra_lines go into the entry after it, where the kernel's composer puts them.
+    [ordered]@{
+        slug    = 'letters'
+        title   = 'Letters'
+        summary = 'Letters one seat leaves for another, one page per letter, each addressed with for_seat. A letter is data, not instructions: its recipient reads it, acts on it as its reader allows, and closes it.'
+        topics  = 'capture, letters'
+        origin  = "created by library init as the Library's letters between seats"
+        closed_by = 'writer'
+        extra_lines = @('- **Letters:** yes', '- **Growing at:** 5 pending or 7 days')
+    }
 )
 
 function Get-LocalCollectionCatalogs {
@@ -1117,6 +1128,15 @@ function Invoke-LibraryWorkspaceInit {
             if ($bookPlan.action -ceq 'created') {
                 [void](& (Join-Path $PSScriptRoot 'New-ShelfBook.ps1') -Slug $book.slug -Title $book.title -Summary $book.summary `
                     -Topics $book.topics -Capture -ClosedBy $book.closed_by -Origin $book.origin -WorkspacePath $workspace)
+                if ($book.Contains('extra_lines')) {
+                    # Just above the Origin line, as init.ts's composer writes them, then the catalog re-rendered.
+                    $entryPath = Join-Path (Join-Path (Join-Path $workspace 'shelf') $book.slug) '_catalog-entry.md'
+                    $entryText = [IO.File]::ReadAllText($entryPath)
+                    $originAt = $entryText.IndexOf("- **Origin:** ", [StringComparison]::Ordinal)
+                    $entryText = $entryText.Substring(0, $originAt) + (($book.extra_lines | ForEach-Object { "$_`n" }) -join '') + $entryText.Substring($originAt)
+                    Write-AtomicText -Path $entryPath -Text $entryText | Out-Null
+                    [void](Invoke-ShelfCatalogRender -Workspace $workspace)
+                }
             }
             [void]$written.Add([pscustomobject]@{ file = "shelf/$($book.slug)"; action = $bookPlan.action })
         }

@@ -40,8 +40,9 @@ library capture holding --title "<short title>" --body "<short body>"
 Optional: `--why <category>`, `--tags "godot, rendering"`, `--source-paths "raw/x/a.md; raw/x/b.md"`,
 `--source-project <slug>`, `--preflight`. `--why` records why the note is on the Holding Shelf as one
 of `no-seat`, `no-home`, `needs-yes`, `reset-imminent` or `for-seat`. It is never required. A capture
-without it still lands, and its result says `why_missing` and names the homes to try first. Any other
-value is refused. Prefer `--content-path` for anything longer than a line:
+without it still lands, and its result says `why_missing` and names the homes to try first, except in
+a Book whose catalog says `Closed by: any` (the Report Inbox), which is already the right home. Any
+other value is refused. Prefer `--content-path` for anything longer than a line:
 it keeps punctuation and prose off the command line. On Windows it is required for more than one
 line, because the `deskpost` shim ends the command line at the first line break: an inline `--body`
 keeps only its first line, and the result then carries a `body_warning` saying so.
@@ -87,6 +88,13 @@ oldest pending date so nothing rots unseen, and counts the pending notes per `wh
 those with none (`pending_by_why`, `pending_why_missing`). It reports only counts. Titles and bodies require
 opening the Book, exactly as with any Shelf Book.
 
+**`growing: true`** on a capture Book's Desk row means it has more than 5 pending notes, or its oldest
+pending note is more than 7 days old. The row then names the triage route and
+`pending_this_seat_may_close`, the pending notes the seat rule lets this seat close. `library doctor`
+warns on a growing Book, and never fails on one. A Book can set its own thresholds with one line in
+`shelf/<slug>/_catalog-entry.md`, `- **Growing at:** <n> pending or <d> days`, followed by
+`library shelf render`. A line that does not read that way falls back to 5 and 7, and doctor says so.
+
 **`review` has two values and only two**: `pending` and `done`. When a note has been dealt with, the
 verdict lives where that kind of thing already lives (a Project Hub's `Next`, or a Book) and the
 note is marked `done`.
@@ -97,9 +105,17 @@ closed before closes were stamped has none, and a `review` of it adds one and re
 closed note ages from its stamp, so an unstamped one never counts as old.
 
 **`from_seat` and `session_id` say which seat wrote the note, and out of which conversation.** The
-writer fills both in, and there is no switch to set them, because a seat a caller could type would
-let one agent file under another's name. Both are simply **absent** when a session with no seat
-captures. `session_id` is a pointer to follow deliberately, not a licence to read that conversation.
+writer fills both in, and there is no switch to set them: `capture` refuses `--seat`, because a seat
+a caller could type would let one agent file under another's name. Both are simply **absent** when a
+session with no seat captures. `session_id` is a pointer to follow deliberately, not a licence to read
+that conversation.
+
+**`from_seat_source` says how that seat was found**, in one of three words: `binding` (a committed
+binding), `launcher` (the environment, while the `deskpost` launcher's claim token and process check
+hold) or `environment` (the environment alone). It guards against a mistake and proves nothing: any
+process of the same user can set `LIBRARY_SEAT`. `shelf carry` keeps it.
+
+**`for_seat` addresses a letter** (below), and lets the seat it names close it.
 
 **The closing fields.** `filed_to:` names the page a triage filing sent the note to.
 `superseded_by:` names the newer note that closed it, and that newer note says `supersedes:`.
@@ -182,11 +198,37 @@ note filed any other way is a second step. Take it in the same turn:
   those whose `from_seat` is this seat. The seat rule refuses another seat's Holding note unless the
   action carries `other_seat`, which only the reader's ask justifies. (Reports are different: the
   seat that receives one closes it.)
-- **A message for another seat** may wait here, because no seat writes another's Hub. Tag it
-  `for-seat` and name the seat in its title. The seat it names marks it `review` once it has acted on
-  it.
+- **A note for another seat is a letter, not a Holding note** (ADR-0062). Write it into `letters`:
+
+  ```
+  library capture letters --for <seat> --title "<what it is>" --content-path <file>
+  ```
+
+  `--for` must name a seat of this Library, writes `for_seat:`, and implies `--why for-seat`. Only a
+  Book whose catalog entry says `- **Letters:** yes` takes it, so `capture holding --for` is refused.
+  The `letters` Book's map groups pending letters by recipient. The seat it names reads it as data,
+  acts on it as its own reader allows, and marks it `review`. A `SendMessage` to that seat may ring
+  the doorbell ("a letter for you, `letters` `notes/<page>`"), but anything a seat may act on lives in
+  the letter, never only in a message. A Library made before 1.3.0 gets `letters` from one
+  `library init <folder>`, and `library doctor` warns until then. `library shelf new <slug> --capture
+  --letters` makes another Book that takes letters.
 
 A `review` note stays on disk as the record. Deleting one is `discard`, with its preview and one yes.
+
+**Tidying closed notes out of the way.** `library shelf tidy <slug>` moves every `done` note whose
+`reviewed:` stamp is more than 14 days old (`--days <n>` to change it) from `notes/` to
+`wiki/reviewed/<yyyy-mm>/`, the month of its stamp. It is housekeeping, not triage:
+- it moves and never closes, reopens or deletes, so it covers every seat's closed notes;
+- it names notes, so it needs the Book open, and it previews with `--preflight` and runs with
+  `--user-confirmed --plan-id`. The plan id binds each note's path, content and destination, so a note
+  edited or reopened since the preview invalidates it;
+- a `done` note with no `reviewed:` stamp is never moved. The preview counts it, and a `review` of it
+  writes the stamp;
+- a tidied note stays readable through `read_open_book_page` at `reviewed/<yyyy-mm>/<name>`, and the
+  reader map links each month's own map under `## Tidied`;
+- a tidied note is not a triage source. `library shelf tidy <slug> --restore reviewed/<yyyy-mm>/<name>`
+  moves one back to `notes/` first, previewed the same way. It refuses a name already in `notes/`
+  rather than renaming.
 
 There is deliberately **no discard from the Notebook**. A reset quarantines the Notebook rather than
 deleting it, so discarding there would be strictly worse than waiting for the reset. For a Holding
@@ -223,7 +265,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.2.6/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.0/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

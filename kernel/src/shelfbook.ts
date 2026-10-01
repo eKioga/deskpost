@@ -39,6 +39,32 @@ export interface ShelfBook {
   closedBy?: ClosedBy;
   /** The line's value exactly as the entry carries it, or null when the entry has none. For doctor. */
   closedByDeclared?: string | null;
+  /**
+   * WHEN A CAPTURE BOOK IS GROWING (S77 row 2, PLAN-holding-discipline.md row 6): more than `growingPending` pending
+   * notes, or an oldest pending note more than `growingDays` days old. The entry's `- **Growing at:** <n> pending or
+   * <d> days` line, or the defaults, 5 and 7. A line that does not parse reads as the defaults and never refuses.
+   */
+  growingPending?: number;
+  growingDays?: number;
+  /** The `Growing at:` line's value exactly as the entry carries it, or null when the entry has none. */
+  growingDeclared?: string | null;
+  /**
+   * WHETHER THE BOOK TAKES LETTERS (S77 row 3, ADR-0062): the entry's `- **Letters:** yes` line. Only such a Book
+   * accepts `capture --for <seat>`, and its reader map groups pending notes by `for_seat`. Nothing hard-codes a slug.
+   */
+  takesLetters?: boolean;
+}
+
+/** The capture Books every `library init` lays out (`init.ts`'s table), which doctor WARNs on when one is missing. */
+export const STANDARD_SHELF_BOOK_SLUGS = ['holding', 'reports', 'letters'] as const;
+
+export const DEFAULT_GROWING_PENDING = 5;
+export const DEFAULT_GROWING_DAYS = 7;
+
+/** `<n> pending or <d> days`, or null for any other text. */
+export function parseGrowingAt(value: string): { pending: number; days: number } | null {
+  const match = /^(\d+) pending or (\d+) days?$/.exec(value.trim());
+  return match ? { pending: Number(match[1]), days: Number(match[2]) } : null;
 }
 
 export interface CatalogSection {
@@ -114,6 +140,9 @@ export function convertFromShelfCatalogEntry(options: {
   const topicsMatch = /^[ \t]*-[ \t]+\*\*Topics:\*\*[ \t]+([\s\S]*?)(?=^[ \t]*-[ \t]+\*\*|$)/m.exec(options.body);
   const closedByMatch = /^[ \t]*-[ \t]+\*\*Closed by:\*\*[ \t]*(.*?)[ \t]*$/m.exec(options.body);
   const closedByDeclared = closedByMatch ? closedByMatch[1]! : null;
+  const growingMatch = /^[ \t]*-[ \t]+\*\*Growing at:\*\*[ \t]*(.*?)[ \t]*$/m.exec(options.body);
+  const growingDeclared = growingMatch ? growingMatch[1]! : null;
+  const growing = growingDeclared === null ? null : parseGrowingAt(growingDeclared);
   return {
     slug: options.slug,
     title: options.title.trim(),
@@ -130,6 +159,10 @@ export function convertFromShelfCatalogEntry(options: {
       : [],
     closedBy: closedByDeclared === null || closedByDeclared === 'any' ? 'any' : 'writer',
     closedByDeclared,
+    growingPending: growing ? growing.pending : DEFAULT_GROWING_PENDING,
+    growingDays: growing ? growing.days : DEFAULT_GROWING_DAYS,
+    growingDeclared,
+    takesLetters: /^[ \t]*-[ \t]+\*\*Letters:\*\*[ \t]+yes[ \t]*$/m.test(options.body),
   };
 }
 
