@@ -181,7 +181,7 @@ Set on the `ops` repository, never in any repository's files:
 | `TARGET_REPO` | the public mirror's clone URL. Not sensitive, but kept beside `SOURCE_REPO` so neither is a literal in a file that ships. |
 | `IDENTITY_DENYLIST` | the maintainer's denylist, one term per line — the same content as `%USERPROFILE%\.library\identity-denylist.txt`. **This file is the leak it prevents**, which is why it is a secret and not a file. |
 | `IDENTITY_ALLOWLIST` | approved attribution, one term per line. A denied term is excused only when an allowlisted string covers the whole match at that position. |
-| `FORGEJO_TOKEN` | reads the private product repository and opens an issue on it. |
+| `MIRROR_SOURCE_TOKEN` | reads the private product repository and opens an issue on it. **Never name it `FORGEJO_TOKEN`**: see the env block below. |
 | `MIRROR_GITHUB_PAT` | a **fine-grained** GitHub PAT scoped to the one public repository, Contents: Read and write, and nothing else. Metadata read is added by GitHub and cannot be removed. |
 
 ## The workflow
@@ -247,7 +247,13 @@ jobs:
           # said nothing about the env block, which is the half that was broken.
           SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
           TARGET_REPO: ${{ secrets.TARGET_REPO }}
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          # NOT `FORGEJO_TOKEN`, ON EITHER SIDE. Since Forgejo 15.0 a task's secrets are loaded
+          # user-first and THEN GITHUB_TOKEN / GITEA_TOKEN / FORGEJO_TOKEN are set to the task's
+          # automatic token, so `secrets.FORGEJO_TOKEN` silently became that token -- which cannot
+          # read the product repository. Every run from #1554 (after the 14 -> 16 upgrade) died on
+          # the clone with "User permission denied". 15.0 also rejects new secret names matching
+          # ^(FORGEJO_|GITEA_|GITHUB_|[0-9]), so that prefix is reserved either way.
+          MIRROR_SOURCE_TOKEN: ${{ secrets.MIRROR_SOURCE_TOKEN }}
           MIRROR_GITHUB_PAT: ${{ secrets.MIRROR_GITHUB_PAT }}
           IDENTITY_DENYLIST: ${{ secrets.IDENTITY_DENYLIST }}
           IDENTITY_ALLOWLIST: ${{ secrets.IDENTITY_ALLOWLIST }}
@@ -335,7 +341,7 @@ publish_attestation() {
 # --- the snapshot -------------------------------------------------------------------------------
 # A bare mirror clone taken once. Everything below reads THIS, never the live repository, so a ref
 # that moves mid-run belongs to the next run rather than to this one's push.
-git clone --mirror "$(echo "$SOURCE_REPO" | sed "s#https://#https://$FORGEJO_TOKEN@#")" "$WORK/src"
+git clone --mirror "$(echo "$SOURCE_REPO" | sed "s#https://#https://$MIRROR_SOURCE_TOKEN@#")" "$WORK/src"
 cd "$WORK/src"
 git for-each-ref --format='%(objectname) %(refname)' > "$WORK/snapshot"
 SNAPSHOT_ID="$(sha256sum "$WORK/snapshot" | cut -c1-16)"
@@ -457,7 +463,7 @@ if [ "$HITS" -gt 0 ]; then
   # one message that says WHAT was caught went to a host that does not resolve -- and the public
   # attestation deliberately says almost nothing, so a refusal was very nearly undiagnosable.
   ISSUE_API="$(printf '%s' "$SOURCE_REPO" | sed -e 's#\.git$##' -e 's#^\(https://[^/]*\)/\(.*\)$#\1/api/v1/repos/\2/issues#')"
-  curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' \
+  curl -sf -X POST -H "Authorization: token $MIRROR_SOURCE_TOKEN" -H 'Content-Type: application/json' \
     "$ISSUE_API" \
     -d "$(printf '{"title":"Mirror refused snapshot %s","body":%s}' "$SNAPSHOT_ID" \
           "$(printf '%s' "$MATCHED" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")" \

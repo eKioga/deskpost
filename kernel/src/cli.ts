@@ -484,7 +484,7 @@ async function main(argv: string[]): Promise<number> {
     case 'seat': {
       // `seat hold` is the claim holder `seat enter` spawns: it prints nothing and its exit code is
       // the whole of what it says, so it is returned rather than emitted.
-      return await runSeatVerb(rest, (value) => emit(value, true), refuse);
+      return await runSeatVerb(rest, (value, humanText) => emit(value, humanText === undefined, humanText), refuse);
     }
 
     case 'hook': {

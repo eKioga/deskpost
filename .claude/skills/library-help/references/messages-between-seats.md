@@ -31,7 +31,38 @@ the seat's name. `library seat status` and `library desk --json` show `message_n
 which is `null` until the session has named itself.
 
 **The reader's own name always wins.** A session started with `--name`, or renamed with `/rename`,
-keeps that name, and the hook never overwrites it.
+keeps that name, and the hook never overwrites it. From 1.3.1, `message_name` follows it: it is the
+name the session answers to, and a peer's Desk shows it under `other_seats`.
+
+## The doorbell
+
+A message that rings for a letter or a page says so in its first line, and nothing a seat may act on
+is only in the message:
+
+```
+From deskpost-desk: a letter for you, `letters` `notes/<page>`
+```
+
+The recipient opens `letters` on its own Desk and reads the letter there. `library desk` counts the
+letters waiting for a held seat as `letters_for_this_seat`, so a seat that missed the doorbell, or
+was closed, idle or Codex, still finds them.
+
+## Who may ring a seat
+
+Each seat says it for itself: `library seat settings <seat> --inbound accept|hold|refuse` writes
+the seat's own one-key file, `.claude/seats/<seat>/settings.json`, after a preview and a yes, and
+`--inbound unset` deletes it. The launcher checks the file on every new, resumed or restarted launch
+and passes only the value to that seat's Claude Code. A file holding anything else is never passed:
+the launch says so, `seat status` and the Desk show `inbound_policy: invalid (not passed)`, and
+`doctor` warns. `inbound_policy` is what the seat's file says (`seat file: hold`, or `unset`), never
+the effective value, which managed and user settings and both sessions' permission modes also
+decide. A session started outside the launcher gets no per-seat policy, and while the value is set
+this way Claude Code's `/config` hides its row.
+
+**`unset` means Claude Code's own default**: the two sessions' permission modes decide. A seat whose
+session bypasses permissions then holds every message from a prompting one behind an approval
+dialog, which drops it after five minutes. Set that seat `accept` if it should take messages, or
+leave it and write it letters.
 
 If another live session already holds the seat's name, Claude Code gives the newcomer a variant
 (`<seat>-graceful-unicorn`) and says so. `ListAgents` then shows the variant.
@@ -50,5 +81,6 @@ conversation a seat has had carries the same name. The menu resumes by the conve
 - **A name is not identity.** Any process of the same user can send as anyone.
 - **Permission modes decide delivery.** A prompting session (default, auto, acceptEdits, dontAsk)
   accepts a message from another prompting one. A session that bypasses permissions holds each
-  message behind an approval dialog and drops it after five minutes. Nothing in the Library sets
-  `crossSessionInbound`, because a user- or workspace-wide `accept` would apply to every seat.
+  message behind an approval dialog and drops it after five minutes. The Library sets
+  `crossSessionInbound` only per seat, with `library seat settings <seat> --inbound`, never in user or
+  workspace settings, where an `accept` would apply to every seat; `doctor` warns on a user-level one.

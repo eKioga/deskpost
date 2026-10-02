@@ -691,8 +691,10 @@ export function writeSeatActivity(options: {
     }
   }
   // A SESSION'S NAME TRAVELS WITH THE SESSION IT NAMES (1.2.6): through every write that starts no conversation, and
-  // through a resume of the same one, which Claude Code keeps the name of. A new conversation has none until it names
-  // itself, so its entry drops the old one.
+  // through a resume of the same one. The record is the name the session last answered to on a prompt: the Desk hook
+  // rewrites it whenever the session's own `session_title` says otherwise (a rename, before or after a resume), so this
+  // only carries it until the next prompt (kickoffs/s79 row 0). A new conversation's entry drops the old one, and its
+  // first prompt records its own name.
   if (options.messageName) {
     record['message_name'] = options.messageName.name;
     record['message_session_id'] = options.messageName.sessionId;

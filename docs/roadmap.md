@@ -24,41 +24,31 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-### 1.3.1: Seats that work together (0 of 1 sessions)
-
-1.2.6 made each seat's session reachable by name, and 1.3.0 lets a seat leave a letter for another.
-This milestone makes both useful: a seat sees what is waiting for it, and each seat says who may
-reach it.
-
-- **A seat's Desk lists the letters waiting for it**, and the reader marks a letter as one, with the
-  seat that wrote it, so it is read as information and never as instructions.
-- **The Desk names the other seats' sessions** by the name each one answers to.
-- **A session you rename keeps a working address**: `library seat status` and the Desk follow the
-  new name, rather than the seat name it no longer answers to.
-- **Each seat sets who may message it**: `deskpost seat settings <seat> --inbound accept|hold|refuse`,
-  passed on every launch of that seat, with a `library doctor` warning when a setting reaches every
-  seat by accident.
-
-## Next
-
-### 1.3.2: No PowerShell at runtime (0 of 2 sessions)
+### 1.3.2: No PowerShell at runtime (0 of 3 sessions)
 
 Deskpost's program is TypeScript, but a few pieces still start Windows PowerShell while you work.
 This milestone moves them into the program, so nothing you run needs PowerShell.
 
-- **The last four hooks become part of the program**, and running `deskpost init` again updates an
-  existing Library's hook settings.
+- **The last hooks become part of the program**, and one upgrade moves an existing Library's hook
+  settings onto them.
 - **The program stops calling PowerShell itself** to look up or wait for a process, or to finish an
   uninstall or upgrade. Anything that cannot move yet keeps working as it does today.
 - **A release no longer ships the PowerShell scripts** that nothing runs any more.
+- **One upgrade finishes the job.** Upgrading also brings each Library it serves up to date, in the
+  same plan and on the same yes: a new standard Book, a missing `Closed by:` line, the Library's own
+  help. Its closing check runs against those Libraries too, so a Library left behind is named before
+  the upgrade says it is done. Today that takes a separate `deskpost init <folder>` afterwards.
 
 After it: installing without PowerShell (about 1 session, planned first), and then, once 1.4.0's
 plans are done, the development tools themselves.
 
+## Next
+
 ### 1.4.0: Correct and find (0 of 3 sessions, planning first)
 
-- **Correct a page in a Shelf Book** without archiving and rebuilding the whole Book: a gated page
-  replace that previews old against new and keeps the previous text in a journal.
+- **Correct a page in a Shelf Book or a collection Book** without archiving and rebuilding the whole
+  Book: a gated page replace that previews old against new and keeps the previous text in a journal.
+  A topic index can gain the line for a page added under it.
 - **`library doctor --report`** files what doctor finds to the Report Inbox, failures only by
   default, and never the same failure twice.
 - **A browse mode in the main menu**: one key from bare `deskpost` lists the Books and Projects the
@@ -79,6 +69,34 @@ plans are done, the development tools themselves.
   implementation, and it is exactly as honest as the program: a closed Book looks closed.
 
 ## Exploring
+
+### Seats on more than one computer (the first to be shaped)
+
+Your seats spread across the computers you already have, so one machine's memory and processor stop
+being the limit. One computer might hold the IT seats and another the development seats, and they
+still work as one reservoir of seats that talk to each other. It is the step after seats that work
+together, and it is shaped first among these ideas. It shares its first questions with **Two
+Libraries, one household** below.
+
+- **One program, not a satellite.** Every computer runs the same Deskpost, including the Linux build
+  inside a desktop-in-a-browser container such as [webtop](https://github.com/linuxserver/docker-webtop).
+  A separate remote client is considered only if one program cannot do the job.
+- **Each computer is a Library in its own right**, with its own seats, its own Notebook and its own
+  sign-in to its assistant. Nothing about one computer's seats is decided on another.
+- **Letters between computers.** A seat leaves a letter for a seat on another computer, and it waits
+  there as a letter waits for a closed seat today. Checked first: whether Claude Code's own messaging
+  can reach a session on another computer. If it cannot, the carrier is Deskpost's own: files on the
+  home network (the **Postbox** below), or a mail service on the home network, weighed against
+  **Out of scope**.
+- **Heavy work goes where there is room**: a development gate or a long build runs on the computer
+  with memory to spare, and its result comes back as a letter.
+- **A Desk that names the other computers' seats**, and whether each is free. Starting or steering a
+  seat on another computer from the main menu comes later, if at all.
+- **Provenance everywhere**, as below: a letter from another computer says where it came from, it is
+  data and never instructions, and a message is never an approval.
+
+It builds on 1.3.1 (reading letters) and on 1.5.0's Library card, which names the Library a letter
+came from.
 
 ### Two Libraries, one household
 
@@ -175,9 +193,25 @@ This is the rest, so the Shelf stays small without anyone having to remember.
   Library gets `letters` from one `deskpost init <folder>` after upgrading**; until then `library doctor`
   warns that it is missing.
 - **Less repeated context:** the Desk's reminder is sent once per session, and again only when the
-  Desk changes or the conversation is compacted, rather than with every message.
+  Desk changes or the conversation is compacted, rather than with every message. An installed
+  Library still gets it with every message until 1.3.2 moves the last hooks into the program.
 - **The development gate measures what Deskpost puts into a session**, and fails a change that
   makes it bigger than its recorded budget, so a saving cannot quietly creep back.
+
+### 1.3.1: Seats that work together (1 of 1 sessions; released 2026-10-02)
+
+1.2.6 made each seat's session reachable by name, and 1.3.0 lets a seat leave a letter for another.
+This milestone makes both useful: a seat sees what is waiting for it, and each seat says who may
+reach it.
+
+- **A seat's Desk counts the letters waiting for it**, Book by Book, and a letter, when read, opens
+  with a line naming the seat that wrote it, so it is read as information and never as instructions.
+- **The Desk names the other seats' sessions** by the name each one answers to.
+- **A session you rename keeps a working address**: `library seat status` and the Desk follow the
+  new name, rather than the seat name it no longer answers to.
+- **Each seat sets who may message it**: `deskpost seat settings <seat> --inbound accept|hold|refuse`,
+  passed on every launch of that seat, with a `library doctor` warning when a setting reaches every
+  seat by accident.
 
 ### Earlier releases
 

@@ -70,12 +70,26 @@ function contextDocument(text: string, sessionTitle?: string): string {
  * input carrying any `session_title` (`--name`, `/rename`, an earlier answer here) is never renamed. A Codex seat has no
  * inbox and is never named. Only a seat this session is PROVEN to hold (bound, or held by its launcher) names it.
  *
+ * THE RECORD FOLLOWS THE NAME THE SESSION ANSWERS TO (kickoffs/s79 row 0, the 1.2.6 proof's step 8): a session the
+ * reader named or renamed carries that name as its `session_title`, and the record is rewritten to it whenever it
+ * differs, with no `sessionTitle` sent back. So `message_name` is "the name it answers to", never "the seat's name", and
+ * a peer is never handed a dead address. It needs no earlier record: a session renamed before it ever named itself, or
+ * a new conversation renamed while the record names an earlier one, is recorded on its first prompt.
+ *
  * The record goes into `activity.json` beside the conversation it names, written only when it is not there yet. Every
  * failure answers "no name": a prompt must not wait on it, and the context it carries is the same either way.
  */
 function seatSessionName(stateDirectory: string, seat: string, sessionId: string, call: unknown, proven: boolean): string {
-  if (!proven || !isConversationId(sessionId) || asText(field(call, 'session_title')).trim()) return '';
+  if (!proven || !isConversationId(sessionId)) return '';
   if ((process.env['DESKPOST_ASSISTANT'] ?? '') === 'codex') return '';
+  const given = asText(field(call, 'session_title')).trim();
+  if (given) {
+    const recorded = readSeatActivity(stateDirectory, seat);
+    if (!recorded || recorded['message_name'] !== given || recorded['message_session_id'] !== sessionId) {
+      writeSeatActivity({ stateDirectory, seat, note: 'session renamed', keepConversation: true, messageName: { name: given, sessionId } });
+    }
+    return '';
+  }
   const answer = conversationTitle(transcriptRoot(), sessionId);
   if (answer.status !== 'titled' || answer.source !== 'ai-title') return '';
   const activity = readSeatActivity(stateDirectory, seat);

@@ -40,6 +40,8 @@ const CHECK_LABELS: Record<string, string> = {
   'notebook.master-index-renders': 'Notebook index',
   'shelf.catalog-renders-from-entries': 'Shelf catalog',
   'output.namespaced-by-project': 'output/ folders',
+  'seats.inbound-policy': 'Seat inbound files',
+  'settings.user-inbound': 'User inbound setting',
 };
 
 interface Row {
@@ -120,5 +122,31 @@ export function initText(result: Record<string, unknown>, written: readonly stri
   lines.push(`  Registered in ${String(result['registry'] ?? '')} (${String(result['registration'] ?? '')})`);
   // THE ONE COMMAND TO COME BACK TO IS THE PRODUCT'S NAME (ADR-0059): inside a Library, `deskpost` opens its menu.
   lines.push(`Next: ${COMMAND_NAME}, from inside the Library, opens its main menu.`);
+  return lines.join('\n');
+}
+
+/**
+ * `seat status --text`: the roster as lines (kickoffs/s79 row 4, S75 parked item 1), from the JSON that already ships
+ * and nothing else. One line per seat: its claim, its Project, and for a held seat the name it answers to and its
+ * inbound policy, in the JSON's own words. A held seat with no name yet says when it gets one, so "null" is never left
+ * for a person to decode.
+ */
+export function seatStatusText(report: Record<string, unknown>): string {
+  const seats = (report['seats'] as Record<string, unknown>[] | undefined) ?? [];
+  const width = Math.max(...seats.map((row) => String(row['seat'] ?? '').length), 4);
+  const lines = [`Deskpost seats  ${String(report['workspace'] ?? '')}`, ''];
+  if (!seats.length) lines.push('  No seats yet.');
+  for (const row of seats) {
+    const parts = [`Project ${String(row['project'] ?? '')}`];
+    if (row['claim'] === 'held') {
+      if (row['messaging'] !== undefined) parts.push(`${row['assistant'] === 'codex' ? 'Codex, ' : ''}messaging ${String(row['messaging'])}`);
+      else if (typeof row['message_name'] === 'string') parts.push(`answers to ${row['message_name']}`);
+      else if ('message_name' in row) parts.push('not yet named (it names itself on its second prompt)');
+      if (row['inbound_policy'] !== undefined) parts.push(`inbound ${String(row['inbound_policy'])}`);
+    }
+    lines.push(`  ${String(row['seat'] ?? '').padEnd(width)}  ${String(row['claim'] ?? '').padEnd(8)}  ${parts.join(', ')}${row['this_seat'] === true ? '  (this seat)' : ''}`);
+  }
+  lines.push('');
+  lines.push(String(report['advisory'] ?? ''));
   return lines.join('\n');
 }

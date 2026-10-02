@@ -234,12 +234,15 @@ export const VERBS: Record<string, VerbDeclaration> = {
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
     usage:
-      'library seat <dirs|enter|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      'library seat <dirs|enter|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
       '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
-      'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]',
-    // All five answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
-    // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), applied by `start`.
-    actions: ['dirs', 'enter', 'hold', 'retire', 'start', 'status'],
+      'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
+      'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
+      'library seat status [--seat <name>] [--text] [--workspace <path>]',
+    // All six answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
+    // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), and `settings` its
+    // inbound policy (1.3.1, ADR-0062), both applied by `start`.
+    actions: ['dirs', 'enter', 'hold', 'retire', 'settings', 'start', 'status'],
     positional: false,
     ported: true,
     row: 'S14',

@@ -51,6 +51,7 @@ import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot
 import { markerConnection } from './basicmemory.ts';
 import { addedDirsStatus } from './seatdirs.ts';
 import { seatMessageAddress } from './conversation.ts';
+import { seatInboundPolicy } from './seatinbound.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -278,6 +279,12 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         claim_state: claim.state,
         claimed: claim.state !== 'free',
         last_activity_advisory: activity && 'last_seen_utc' in activity ? String(activity['last_seen_utc']) : null,
+        // THE NAME A PEER ANSWERS TO (kickoffs/s79 row 2, plan section 2), only while it is held, from the same claim
+        // read: a seat finds its peers here rather than by guessing from ListAgents. A Codex peer has no inbox, and
+        // says so instead.
+        ...(seatMessageAddress(stateDirectory, other, claim.state) as Record<string, PsJsonValue>),
+        // ITS INBOUND POLICY, while held (1.3.1, kickoffs/s79 row 3), in its own file's words.
+        ...(claim.state === 'held' ? { inbound_policy: seatInboundPolicy(stateDirectory, other) } : {}),
       };
     });
 
@@ -332,6 +339,29 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // inbox, so it has no `message_name` here; `seat status` says why.
   const address = seatMessageAddress(stateDirectory, seat, thisClaim.state);
   if ('message_name' in address) thisSeat['message_name'] = address.message_name ?? null;
+  if (address.assistant) thisSeat['assistant'] = address.assistant;
+  // ITS INBOUND POLICY, only while held (1.3.1, kickoffs/s79 row 3, ruling 3): what the seat's own file says, never the
+  // effective value, which managed and user settings and both sessions' permission modes also decide.
+  if (thisClaim.state === 'held') thisSeat['inbound_policy'] = seatInboundPolicy(stateDirectory, seat);
+  // THE LETTERS WAITING FOR THIS SEAT (kickoffs/s79 row 2, ADR-0062), only while it is held: its pending notes whose
+  // `for_seat` names it, in any capture Book, and no other seat's. Counts and the oldest date only, as the capture
+  // Books above are said: a letter's title and text still need its Book opened.
+  const lettersForThisSeat: PsJsonValue | null = (() => {
+    if (thisClaim.state !== 'held') return null;
+    const books: Record<string, PsJsonValue> = {};
+    let count = 0;
+    let oldest: string | null = null;
+    for (const book of captureBookRows(workspace)) {
+      const mine = shelfNotes(book).filter((note) => note.review !== 'done' && note.forSeat === seat);
+      if (!mine.length) continue;
+      books[book.slug] = mine.length;
+      count += mine.length;
+      for (const note of mine) if (note.captured !== 'unknown' && (oldest === null || note.captured < oldest)) oldest = note.captured;
+    }
+    return count
+      ? { count, by_book: books, oldest_pending: oldest, route: `library desk open book ${Object.keys(books)[0]} --location shelf, then read its letters` }
+      : { count: 0 };
+  })();
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.
   thisSeat['conversation_line'] = formatSeatConversationCell(conversation);
@@ -345,6 +375,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     workspace,
     seat,
     this_seat: thisSeat,
+    ...(lettersForThisSeat !== null ? { letters_for_this_seat: lettersForThisSeat } : {}),
     other_seats: otherSeats,
     seat_consistency: seatRegistryConsistency(workspace, stateDirectory),
     open_books: openBooks,

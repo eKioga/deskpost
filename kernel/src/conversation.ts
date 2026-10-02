@@ -241,11 +241,14 @@ export function seatConversationRecord(stateDirectory: string, seat: string): Co
  * as, for `seat status` and the Desk's `this_seat`. Nothing at all for a seat that is not held. A Codex seat has no
  * inbox, and says so. Otherwise `message_name` is the name the Desk hook recorded for the seat's CURRENT conversation,
  * or null before that session has named itself. A name only; no socket path or token is ever read or kept.
+ *
+ * `assistant: codex` beside it (kickoffs/s79 row 2, ADR-0062's Codex section), only while held, as the address is: the
+ * Desk says which assistant a held seat runs, so a peer knows it can write that seat a letter and cannot ring it.
  */
-export function seatMessageAddress(stateDirectory: string, seat: string, claimState: string): { message_name?: string | null; messaging?: string } {
+export function seatMessageAddress(stateDirectory: string, seat: string, claimState: string): { message_name?: string | null; assistant?: 'codex'; messaging?: string } {
   if (claimState !== 'held') return {};
   const record = seatConversationRecord(stateDirectory, seat);
-  if (record.assistant === 'codex') return { messaging: 'unavailable (Codex)' };
+  if (record.assistant === 'codex') return { assistant: 'codex', messaging: 'unavailable (Codex)' };
   const activity = readSeatActivity(stateDirectory, seat);
   const named = activity !== null && typeof activity['message_name'] === 'string' && record.session_id !== '' && activity['message_session_id'] === record.session_id;
   return { message_name: named ? String(activity!['message_name']) : null };

@@ -31,6 +31,7 @@ import { homeDirectory, resolveWorkspace } from './workspace.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
+import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
 import { growingState, shelfNotes } from './shelfnote.ts';
@@ -907,6 +908,46 @@ function seatAddedFolders(workspace: string): string {
 }
 
 /**
+ * EACH SEAT'S INBOUND FILE, VALIDATED AS THE LAUNCHER VALIDATES IT (1.3.1, kickoffs/s79 row 3, ADR-0062): one that
+ * fails is never passed, so the seat starts without the policy it was given. A WARN naming the seat and the fix.
+ */
+function seatInboundFiles(workspace: string): string {
+  const stateDirectory = path.join(workspace, '.claude');
+  const problems: string[] = [];
+  let set = 0;
+  for (const row of readSeatRegistry(stateDirectory)) {
+    const read = readInboundSettings(stateDirectory, row.seat);
+    if (read.state === 'valid') set += 1;
+    if (read.state === 'invalid') {
+      problems.push(`seat '${row.seat}''s inbound file is invalid and is never passed: ${read.reason}; set it again with deskpost seat settings ${row.seat} --inbound accept|hold|refuse|unset`);
+    }
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  return set ? `${set} seat${set === 1 ? ' sets' : 's set'} an inbound policy, each file valid` : 'no seat sets an inbound policy';
+}
+
+/**
+ * A USER-LEVEL `crossSessionInbound` (ADR-0062): Claude Code reads it for every session this user runs, every seat's
+ * included, so it is the one place the Library never writes the value. A WARN naming the per-seat route. Read only.
+ */
+function userInboundSetting(): string {
+  const file = userSettingsPath();
+  if (!fs.existsSync(file)) return `no user settings file at ${file}, so no user-level crossSessionInbound`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+  } catch {
+    return `SKIP: ${file} is not valid JSON, so whether it sets crossSessionInbound cannot be read`;
+  }
+  if (parsed === null || typeof parsed !== 'object' || !(INBOUND_KEY in parsed)) return `${file} sets no crossSessionInbound`;
+  const value = JSON.stringify((parsed as Record<string, unknown>)[INBOUND_KEY]);
+  return (
+    `WARN: ${file} sets crossSessionInbound to ${value}, which applies to every session you run, every seat's included. ` +
+    'Remove it there and set each seat its own with deskpost seat settings <seat> --inbound accept|hold|refuse'
+  );
+}
+
+/**
  * EVERY CAPTURE BOOK SAYS WHO CLOSES ITS NOTES (S73 row 4). Keyed on the capture Kind, never on a slug. An entry with
  * no `- **Closed by:**` line is any-seat at runtime, as every Book was before the line, and an unrecognised value reads
  * as `writer`; both WARN with the one-line edit. Doctor never edits an entry: the reader does, then renders.
@@ -1033,6 +1074,9 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
     workspace ? runCheck('shelf.capture-books-growing', () => captureBooksGrowing(workspace)) : { check: 'shelf.capture-books-growing', status: 'skipped', detail: 'no Library here, so no capture Books to check' },
     // AND THIS ONE (S77 row 3): the PowerShell runner has no standard-Book check.
     workspace ? runCheck('shelf.standard-books-present', () => standardBooksPresent(workspace)) : { check: 'shelf.standard-books-present', status: 'skipped', detail: 'no Library here, so no standard Books to check' },
+    // AND THESE TWO (S79 row 3): the PowerShell runner has no inbound policy. WARNs, never FAILs.
+    workspace ? runCheck('seats.inbound-policy', () => seatInboundFiles(workspace)) : { check: 'seats.inbound-policy', status: 'skipped', detail: 'no Library here, so no seats whose inbound files to check' },
+    runCheck('settings.user-inbound', userInboundSetting),
   ];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;

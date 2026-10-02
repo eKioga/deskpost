@@ -107,9 +107,15 @@ instruction: the reader still decides whether to interrupt A.
 4. Ask **one batched question** for every deferred yes: `triage batch` for named Reports, replace-mode
    Hub edits, `collection add-page`, a parked push.
 5. Message the support seat that the Handback is written, as "Messages between the seats" says, if it
-   is listed by name. Then end the reply with the handback summary and one line for the reader to paste into the support
-   seat's session. The line names the Desk step as well as the task, because a Hub closed on the
-   support seat's Desk makes it stop and ask, and A cannot open it there while B has no live session:
+   is listed by name. Then end the reply with, in this order:
+   - the handback summary;
+   - **what A sent the support seat**: the message's exact text, quoted, and whether the send went through, or that
+     nothing was sent and why (not listed, or the send failed). The reader must never learn of a message only from
+     the support seat;
+   - one line for the reader to paste into the support seat's session, **said to be needed whether or not the
+     message went through**: the message only tells B the Handback exists, and B starts the Kickoff on the reader's
+     word, never on a message. The line names the Desk step as well as the task, because a Hub closed on the
+     support seat's Desk makes it stop and ask, and A cannot open it there while B has no live session:
 
    ```
    Open projects/<build hub> on your Desk, read the SNN handback there, and write kickoffs/s<NN+1>.
@@ -173,8 +179,9 @@ messaged.
 **The message points.**
 
 - **A → B at close.** After the Handback is read back, A messages B: "S<NN> handback written:
-  `projects/<build hub>/notes/<page>`, readback matched." The paste line stays at the end of A's reply as the
-  fallback, for a held message or a B that is not running.
+  `projects/<build hub>/notes/<page>`, readback matched." A's reply quotes that message to the reader, and its paste
+  line stays as the reader's go-ahead (Close, step 5). On the notice, B reads the Handback and tells the reader what
+  arrived; it writes the next Kickoff only on the reader's word.
 - **A → B, a spec question.** A parks as the loop always has, and messages B the attempt page and the question. B
   answers on a page of its own Hub, `projects/<support hub>/notes/<date>-s<NN>-answer-<n>`, and messages A the
   path. A applies the answer only if all of these hold:

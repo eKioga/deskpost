@@ -187,6 +187,34 @@
       "applies_to": ["area:desk"],
       "match": { "field_pattern": "^result\\.this_seat\\.message_name$" }
     },
+    "kernel-desk-counts-the-letters-for-this-seat": {
+      "reason": "1.3.1 (S79 row 2, ADR-0062, PLAN-seat-network.md section 2): while this seat is held, the kernel's Desk overview counts the pending notes in any capture Book whose for_seat names it, letters_for_this_seat, with a count per Book and the oldest pending date, never a title. Letters are a kernel feature (the writing half shipped in 1.3.0 as kernel_only), and the PowerShell overview has no such field. Only letters_for_this_seat is the kernel's; every other field of the overview is compared.",
+      "approved_by": "the S79 kickoff (kickoffs/s79, row 2): each new Desk key is a kernel_only delta on the Desk row",
+      "approved_on": "2026-10-02",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.letters_for_this_seat(\\.|$)" }
+    },
+    "kernel-desk-names-each-peers-address": {
+      "reason": "1.3.1 (S79 row 2, PLAN-seat-network.md section 2): while a peer seat is held, its other_seats row carries the name its session answers to, message_name (null until it names itself), or for a Codex peer assistant: codex and messaging: unavailable (Codex), as seat status says them. The names are recorded by the kernel's Desk hook, and the PowerShell overview has no such record, so it has no fields. Only those three keys of an other_seats row are the kernel's; every other field is compared.",
+      "approved_by": "the S79 kickoff (kickoffs/s79, row 2): each new Desk key is a kernel_only delta on the Desk row",
+      "approved_on": "2026-10-02",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.other_seats\\[\\d+\\]\\.(message_name|assistant|messaging)$" }
+    },
+    "kernel-desk-says-a-held-seat-runs-codex": {
+      "reason": "1.3.1 (S79 row 2, ADR-0062's Codex section): while this seat is held by a Codex conversation, the kernel's Desk overview says this_seat.assistant: codex, in place of a message_name it cannot have. The PowerShell overview records no assistant. Only this_seat.assistant is the kernel's; every other field of the overview is compared.",
+      "approved_by": "the S79 kickoff (kickoffs/s79, row 2): each new Desk key is a kernel_only delta on the Desk row",
+      "approved_on": "2026-10-02",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.this_seat\\.assistant$" }
+    },
+    "kernel-desk-says-each-held-seats-inbound-policy": {
+      "reason": "1.3.1 (S79 row 3, ADR-0062, PLAN-seat-network.md section 3): while a seat is held, the kernel's Desk overview says its inbound policy, inbound_policy, worded as its own one-key file says it (seat file: accept, hold or refuse; unset; or invalid (not passed)), never as the effective value, on this_seat and on each held other_seats row. Per-seat inbound policy is a kernel feature the launcher applies, and the PowerShell overview has no such file or field. Only inbound_policy is the kernel's; every other field of the overview is compared.",
+      "approved_by": "the S79 kickoff (kickoffs/s79, rows 2 and 3): each new Desk key is a kernel_only delta on the Desk row",
+      "approved_on": "2026-10-02",
+      "applies_to": ["area:desk"],
+      "match": { "field_pattern": "^result\\.(this_seat|other_seats\\[\\d+\\])\\.inbound_policy$" }
+    },
     "kernel-desk-context-names-the-session-after-its-seat": {
       "reason": "1.2.6 (S75 row 1, PLAN-seat-messaging.md Phase 2): the kernel's Desk context hook adds sessionTitle, the seat's name, so ListAgents and /resume show the seat. Only for a seat this session is proven to hold, a session id that is a uuid with no session_title, and a transcript that already has its generated ai-title. The PowerShell hook names no session. No guards.desk-context-* row moves: each uses a session id that is not a uuid, at a seat no launcher holds. Only hookSpecificOutput.sessionTitle is the kernel's; additionalContext is compared as before.",
       "approved_by": "the S75 kickoff (kickoffs/s75-r2, row 1): parity kernel_only, the delta recorded with this reason",

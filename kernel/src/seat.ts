@@ -67,6 +67,8 @@ import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 import { addedDirArguments, addedDirsPath, addedDirsStatus, seatDirsResult } from './seatdirs.ts';
+import { seatStatusText } from './human.ts';
+import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -1168,7 +1170,27 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   }
   const missingDirs = recordedDirs.filter((dir) => !dir.exists).map((dir) => dir.path);
   const appliedDirs = assistant === null ? [] : recordedDirs.filter((dir) => dir.exists).map((dir) => dir.path);
-  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...addedDirArguments(appliedDirs), ...passthrough];
+  // THE SEAT'S INBOUND POLICY, ON EVERY LAUNCH AND IN THE SAME PLACE (1.3.1, kickoffs/s79 row 3, ADR-0062): read and
+  // validated here, and only the VALUE passed, after the added folders and before the reader's passthrough. Claude Code
+  // only: Codex has no inbox. A file that fails validation is never passed, and the launch says so; the seat still
+  // starts. On the `claude.cmd` route, which refuses `"`, the value goes in a fresh file the launcher writes at launch.
+  let inbound: InboundRead;
+  try {
+    inbound = readInboundSettings(stateDirectory, seat);
+  } catch (error) {
+    inbound = { state: 'invalid', reason: (error as Error).message };
+  }
+  const inboundCommandScript = (() => {
+    if (process.platform !== 'win32') return false;
+    const searchPath = process.env[Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'] ?? '';
+    const file = agentExecutable(command, searchPath).file;
+    return /\.(cmd|bat)$/i.test(/[\\/]/.test(file) ? file : resolveOnPath(file, searchPath) ?? file);
+  })();
+  const inboundArguments =
+    assistant === 'claude' && inbound.state === 'valid'
+      ? inboundSettingsArguments({ stateDirectory, seat, value: inbound.value, commandScript: inboundCommandScript, write: false })
+      : [];
+  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...addedDirArguments(appliedDirs), ...inboundArguments, ...passthrough];
   const conversationId = resumeId || sessionId;
   // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
@@ -1335,10 +1357,35 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         : unreadableDirs
           ? { added_dirs: [], added_dirs_applied: false, added_dirs_reason: unreadableDirs }
           : {}),
+      // A SEAT WITH NO INBOUND FILE SAYS NOTHING, and launches exactly as before.
+      ...(inbound.state === 'unset'
+        ? {}
+        : {
+            inbound_policy: inboundPolicyLabel(inbound),
+            inbound_passed: inboundArguments.length > 0,
+            ...(inboundArguments.length
+              ? {}
+              : {
+                  inbound_reason:
+                    inbound.state === 'invalid'
+                      ? `${inbound.reason}, so it was not passed`
+                      : assistant === 'codex'
+                        ? 'Codex has no inbox, so an inbound policy is never passed to it'
+                        : `'${command}' is not Claude Code, so the seat's inbound policy was not passed to it`,
+                }),
+          }),
       shared_library_write: false,
     };
     if (noLaunch) return { result, exitCode: 0 };
     if (unreadableDirs) process.stderr.write(`Seat '${seat}' was started without its added folders: ${unreadableDirs}\n`);
+    if (inbound.state === 'invalid') {
+      process.stderr.write(`Seat '${seat}' was started without its inbound policy: ${inbound.reason}, so nothing in that file was passed. Set it again with deskpost seat settings ${seat} --inbound accept|hold|refuse|unset.\n`);
+    }
+    // THE LAUNCHER'S OWN FILE, WRITTEN NOW FROM THE VALIDATED VALUE, so nothing written to the seat's file after the
+    // check reaches the agent.
+    if (inboundArguments.length && inbound.state === 'valid' && inboundCommandScript) {
+      inboundSettingsArguments({ stateDirectory, seat, value: inbound.value, commandScript: true, write: true });
+    }
     if (missingDirs.length) {
       process.stderr.write(
         `Seat '${seat}' was started without ${missingDirs.length === 1 ? 'its added folder' : 'these added folders'} ${missingDirs.join(', ')}, which no longer ` +
@@ -1416,6 +1463,8 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
         this_seat: named.status === 'named' && named.seat === seat,
         // THE ADDRESS, ONLY WHILE HELD (1.2.6): the name its session answers to, null until it names itself.
         ...seatMessageAddress(stateDirectory, seat, state.state),
+        // AND ITS INBOUND POLICY, ONLY WHILE HELD (1.3.1, ruling 3), worded as its own file's, never as the effective value.
+        ...(state.state === 'held' ? { inbound_policy: seatInboundPolicy(stateDirectory, seat) } : {}),
       } as Record<string, PsJsonValue>;
     });
   return {
@@ -1491,6 +1540,8 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
       { kind: 'holder-attempt', file: seatHolderAttemptPath(stateDirectory, seat) },
       // THE SEAT'S ADDED FOLDERS (1.2.5): its own launch setting, archived like its conversations and not in the plan id.
       { kind: 'added-dirs', file: addedDirsPath(stateDirectory, seat) },
+      // AND ITS INBOUND POLICY (1.3.1), the same kind of launch setting.
+      { kind: 'inbound-settings', file: inboundSettingsPath(stateDirectory, seat) },
     ];
     const recordsPresent = records.filter((record) => isFile(record.file)).map((record) => record.kind);
 
@@ -1681,7 +1732,7 @@ export function recordLauncherConversation(options: { workspace: string; seat: s
  */
 export async function runSeatVerb(
   argv: string[],
-  emitResult: (value: PsJsonValue) => void,
+  emitResult: (value: PsJsonValue, humanText?: string) => void,
   onRefusal: (message: string) => never,
 ): Promise<number> {
   const action = argv[0] ?? '';
@@ -1701,9 +1752,12 @@ export async function runSeatVerb(
         if (outcome.result !== null) emitResult(outcome.result);
         return outcome.exitCode;
       }
-      case 'status':
-        emitResult(seatStatus(rest));
+      case 'status': {
+        // JSON BY DEFAULT, as every caller reads it; `--text` is the same roster as lines for a person (S79 row 4).
+        const value = seatStatus(rest);
+        emitResult(value, rest.includes('--text') ? seatStatusText(value) : undefined);
         return 0;
+      }
       case 'dirs': {
         // UNGATED (ruling 2): the seat's own launch setting, additive, reversible, and applied only from its next launch.
         const parsed = parseArguments(rest, ['workspace', 'add', 'remove']);
@@ -1711,8 +1765,23 @@ export async function runSeatVerb(
         emitResult(seatDirsResult(workspace, parsed.positional[0] ?? '', { add: parsed.options.get('add'), remove: parsed.options.get('remove') }));
         return 0;
       }
+      case 'settings': {
+        // GATED (kickoffs/s79 row 3): it changes what reaches a seat, so a change previews and takes the plan id.
+        const parsed = parseArguments(rest, ['workspace', 'inbound', 'plan-id']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        emitResult(
+          seatSettingsResult({
+            workspace,
+            seat: parsed.positional[0] ?? '',
+            inbound: parsed.options.get('inbound'),
+            preflight: parsed.flags.has('preflight'),
+            planId: parsed.options.get('plan-id') ?? '',
+          }),
+        );
+        return 0;
+      }
       default:
-        onRefusal(`library seat has no action '${action}'. It has: dirs, enter, retire, start, status.`);
+        onRefusal(`library seat has no action '${action}'. It has: dirs, enter, retire, settings, start, status.`);
     }
   } catch (error) {
     onRefusal((error as Error).message);
