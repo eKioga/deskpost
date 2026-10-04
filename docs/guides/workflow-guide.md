@@ -34,7 +34,7 @@ joined.
 
 ```mermaid
 flowchart TD
-    T["You, in a terminal:\nlibrary seat start ‹seat›"] --> F["Seated: your Desk, your claim,\nyour Project open"]
+    T["You, in a terminal:\ndeskpost seat start ‹seat›"] --> F["Seated: your Desk, your claim,\nyour Project open"]
     A["A session opened\nwith no seat"] --> B["It says so,\nand asks which seat"]
     B --> C["Claude Code: answer in\nthe conversation"]
     B --> T
@@ -43,7 +43,7 @@ flowchart TD
 
 `deskpost seat start` is the way in that works everywhere, for Claude Code and for Codex
 (`--command codex`). A seatless Claude Code session can also bind a seat when you answer its
-question. On Windows, that session lists the seats that exist, and a resumed conversation is put
+question. That session lists the seats that exist, and a resumed conversation is put
 back at the seat it last held when nobody else is sitting there.
 
 **One session per seat.** A second session at a seat someone is working at is refused.
@@ -153,9 +153,20 @@ Copying to the Notebook **copies rather than moves**, so the Shelf record surviv
 even after you have worked on the copy. Discarding is previewed and waits for your yes, because it
 is the one move here that can lose something.
 
+**Tidying** keeps the Shelf small: "tidy the Holding Shelf" moves notes that were closed more than
+two weeks ago into a dated folder beside the others, after a preview. They stay readable there, and
+a tidied note can be brought back. Nothing is deleted. The Desk and `deskpost doctor` say when a
+capture Book is growing.
+
 **The Report Inbox** is the same kind of Book, for a different kind of note: a defect in the Library
 itself, filed with the command that failed and what it printed. A report is a claim to check later,
 never an order.
+
+**Letters** are the same kind of Book again, for a note addressed to another seat: "leave a letter
+for *that seat*". It waits even while that seat is closed, its Desk counts it, and the seat reads it
+as information from the seat that wrote it, never as instructions. In Claude Code, a seat's session
+can also message another's by name; a message only says that something is waiting, and the letter
+or page holds the substance.
 
 ## The preview-and-approve pattern
 

@@ -25,10 +25,12 @@ import { readRegistry } from './workspace.ts';
 import { readSeatRegistry } from './desk.ts';
 import { getSeatClaimState, openShareNothing, type ExclusiveHandle } from './seatclaim.ts';
 import { agentProcessIdentity, UNREADABLE_IDENTITY } from './procstart.ts';
+import { nativeProcessCalls, nativeProcessImagePath, nativeProcessTable, nativeStartDetached } from './win32proc.ts';
 import { COMMAND_NAME, entryInvocation, installRootOf, isKernelBinary, powerShellScript } from './machine.ts';
-import { programRoot } from './programroot.ts';
+import { isCompiled, programRoot } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { basicMemoryRollbackCheck } from './bmopen.ts';
+import { librariesServedByRoot } from './installs.ts';
 
 // --- the receipt and the lock -----------------------------------------------------------------------------
 
@@ -152,7 +154,15 @@ interface ProcessRow {
   ExecutablePath: string | null;
 }
 
-function windowsProcesses(): ProcessRow[] {
+/**
+ * Every process with its parent and image path, the rows Win32_Process gives. A compiled kernel reads them from one
+ * Toolhelp32 snapshot and `QueryFullProcessImageNameW` (S83, ruling 3 of kickoffs/s83), with a null path where a
+ * process cannot be opened, as the CIM row has; under Node the CIM query stays as the fallback.
+ */
+export function windowsProcesses(): ProcessRow[] {
+  if (nativeProcessCalls() !== null) {
+    return nativeProcessTable().map((row) => ({ ProcessId: row.pid, ParentProcessId: row.parentPid, ExecutablePath: nativeProcessImagePath(row.pid) }));
+  }
   const text = execFileSync(
     'powershell.exe',
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, ExecutablePath | ConvertTo-Json -Compress'],
@@ -562,7 +572,7 @@ function uninstallPreview(root: string, removal: RemovalList, edits: LibraryEdit
 /**
  * `deskpost uninstall [--dry-run] [--yes]`, in the order step 8 sets: resolve and preview; record `pending: uninstall`
  * with the frozen list; edit the Libraries; then hand the PATH entry and the program files to the finisher, a copy of
- * tools/Finish-Uninstall.ps1 in %TEMP%, which waits for this process to exit. Ownership passes to the finisher, live,
+ * this program in %TEMP% running `finish-uninstall` (finisher.ts, S83), which waits for this process to exit. Ownership passes to the finisher, live,
  * before this process exits (round 4, #1).
  */
 export async function uninstallVerb(argv: string[]): Promise<LifecycleResult> {
@@ -577,6 +587,9 @@ export async function uninstallVerb(argv: string[]): Promise<LifecycleResult> {
     if (parsed.flags.has('dry-run')) {
       return { refusal: null, exitCode: 0, value: { operation: 'Uninstall Deskpost (dry run)', root, removal: removal as unknown as PsJsonValue, library_edits: edits.map((edit) => ({ file: edit.file, removed: edit.removed })), skipped }, humanText: preview + '\n\nDry run: nothing was changed.', asJson: json };
     }
+    // THE FINISHER IS A COPY OF THIS PROGRAM (S83, D8), so a kernel run from source has none to hand over to. Refused
+    // before anything is changed; a checkout never reaches here, since it is not an installed release.
+    if (!isCompiled()) throw new Error(`${COMMAND_NAME} uninstall runs from the installed program, whose own copy finishes it; this kernel is run from source. Run the installed \`${COMMAND_NAME}\`. Nothing was changed.`);
     await requireSessionsClosed(root, `${COMMAND_NAME} uninstall`, interactive);
     if (interactive) {
       process.stdout.write(preview + '\n');
@@ -612,31 +625,32 @@ export async function uninstallVerb(argv: string[]): Promise<LifecycleResult> {
 }
 
 /**
- * THE TWO-WAY HANDSHAKE (round 4, #1). The script writes `started <pid>` and waits; this process, on seeing it within
- * 10 s, rewrites the pending owner to the script's pid and start time, then writes `go`. With no `started` in time it
- * writes `cancel` and keeps ownership until it exits; a late script that finds `cancel`, or no `go` in 30 s, deletes nothing.
+ * THE TWO-WAY HANDSHAKE (round 4, #1). The finisher writes `started <pid>` and waits; this process, on seeing it within
+ * 10 s, rewrites the pending owner to the finisher's pid and start time, then writes `go`. With no `started` in time it
+ * writes `cancel` and keeps ownership until it exits; a late finisher that finds `cancel`, or no `go` in 30 s, deletes nothing.
  */
 function handToFinisher(root: string, id: string): { started: boolean; result: string } {
-  const script = path.join(root, 'current', 'tools', 'Finish-Uninstall.ps1');
   const tag = randomUUID().replace(/-/g, '');
-  const copy = path.join(os.tmpdir(), `deskpost-finish-${tag}.ps1`);
+  const copy = path.join(os.tmpdir(), `deskpost-finish-${tag}.exe`);
   const handshake = path.join(os.tmpdir(), `deskpost-finish-${tag}.handshake`);
   const result = path.join(os.tmpdir(), 'deskpost-uninstall-result.json');
-  fs.copyFileSync(script, copy);
-  // STARTED THROUGH WMI, NOT AS A CHILD (measured S54): a detached powershell.exe exits at once without running its
-  // command, and an attached one is in this process's job object and dies with it. Win32_Process.Create starts it
-  // outside both, hidden. Its command line is handed over in an environment variable, each argument quoted by the
-  // CommandLineToArgvW rules, never spliced into the PowerShell that makes the call (#11).
-  const commandLine = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', copy, '-ParentProcessId', String(process.pid), '-Root', root, '-Handshake', handshake, '-Transaction', id, '-Result', result]
-    .map(argvQuote)
-    .join(' ');
   // FAULT INJECTION FOR THE PROOF FIXTURE (step 7): no finisher starts, so the handshake times out and writes `cancel`,
-  // as a machine that refuses the WMI start would leave it. tools/Test-InstallProof.ps1 sets it; nothing else does.
-  if (process.env['DESKPOST_UNINSTALL_FAULT'] !== 'no-finisher') spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', '$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; [void](Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$env:DESKPOST_FINISH_COMMAND; ProcessStartupInformation=$si})'],
-    { encoding: 'utf8', windowsHide: true, env: { ...process.env, DESKPOST_FINISH_COMMAND: commandLine } },
-  );
+  // as a machine that refuses the start would leave it. tools/Test-InstallProof.ps1 and self-test section 116 set it.
+  if (process.env['DESKPOST_UNINSTALL_FAULT'] !== 'no-finisher') {
+    // A COPY OF THIS PROGRAM, STARTED OUTSIDE THIS PROCESS'S JOB (S83, D8 from S82's spike): `library finish-uninstall`
+    // run from %TEMP%, so it outlives this process and never deletes itself mid-run. CreateProcessW with breakaway, then
+    // without it; never the runtime's attached spawn, which Bun's kill-on-close job ends with this process. Its arguments
+    // are quoted by the CommandLineToArgvW rules. A start that fails lands on the `cancel` below, and the remedy.
+    try {
+      fs.copyFileSync(process.execPath, copy);
+      const commandLine = [copy, 'finish-uninstall', '--parent-pid', String(process.pid), '--root', root, '--handshake', handshake, '--transaction', id, '--result', result]
+        .map(argvQuote)
+        .join(' ');
+      nativeStartDetached(copy, commandLine, os.tmpdir());
+    } catch {
+      fs.rmSync(copy, { force: true });
+    }
+  }
   const deadline = Date.now() + 10000;
   let started: number | null = null;
   while (Date.now() < deadline) {
@@ -760,14 +774,61 @@ function rollbackSwitch(root: string, id: string, record: Record<string, unknown
       throw new Error(`${previous} did not answer through current after the switch (exit ${ran.status}), so current points at ${String(record['version'])} again.`);
     }
     clearPending(root, id);
+    const libraries = rollbackLibraryLines(root, previous);
     return {
       refusal: null,
       exitCode: 0,
-      value: { status: 'rolled-back', version: previous, from: record['version'], install_root: root },
-      humanText: `Rolled back to ${previous} (from ${String(record['version'])}). The plugin, if you installed one, is not rolled back by this switch.`,
+      value: { status: 'rolled-back', version: previous, from: record['version'], install_root: root, libraries: libraries.libraries as unknown as PsJsonValue, unreached: libraries.unreached },
+      humanText: `Rolled back to ${previous} (from ${String(record['version'])}). The plugin, if you installed one, is not rolled back by this switch.` + (libraries.text ? `\n${libraries.text}` : ''),
       asJson: json,
     };
   }
+}
+
+/**
+ * WHAT A PROGRAM-ONLY ROLLBACK LEAVES EACH LIBRARY THE INSTALL SERVES (ADR-0063 decision 9; PLAN-one-upgrade.md r8, the
+ * reader's ruling, and r9 amendment 4). Rollback never writes in a Library: each keeps the newer program's registrations,
+ * whose guards the older program still runs, and a hook verb it does not know is a non-blocking error. So each is named
+ * with its two lines: `deskpost init <folder>`, run with the older program, returns its managed files and hooks to that
+ * program's form; and `deskpost seat enter <seat>`, because a conversation already open there is not bound to its seat
+ * again until one of them runs. It only reads, and a Library it cannot reach is named rather than dropped.
+ */
+export function rollbackLibraryLines(root: string, previous: string, registryRoot?: string): {
+  libraries: { workspace: string; init: string; seats: string[]; seat_enter: string[] }[];
+  unreached: string[];
+  text: string;
+} {
+  let found: { served: string[]; unreached: string[] };
+  try {
+    found = librariesServedByRoot(root, registryRoot);
+  } catch (error) {
+    return { libraries: [], unreached: [], text: `The Libraries this install serves could not be listed (${(error as Error).message}); none was changed. In each, run ${COMMAND_NAME} init <folder>, and ${COMMAND_NAME} seat enter <seat> in a conversation already open there.` };
+  }
+  const libraries = found.served.map((workspace) => {
+    let seats: string[] = [];
+    try {
+      seats = readSeatRegistry(path.join(workspace, '.claude')).map((row) => row.seat);
+    } catch {
+      seats = [];
+    }
+    return {
+      workspace,
+      init: `${COMMAND_NAME} init ${workspace}`,
+      seats,
+      seat_enter: seats.length ? seats.map((seat) => `${COMMAND_NAME} seat enter ${seat}`) : [`${COMMAND_NAME} seat enter <seat>`],
+    };
+  });
+  if (!libraries.length && !found.unreached.length) return { libraries, unreached: [], text: '' };
+  const lines = [
+    `Your Libraries were not changed: a rollback switches the program only. Each keeps the newer registrations, whose guards ${previous} still runs; a hook it does not know shows an error and blocks nothing.`,
+  ];
+  for (const library of libraries) {
+    lines.push(`  ${library.workspace}`);
+    lines.push(`    ${library.init}   returns its managed files and hooks to ${previous}'s form`);
+    lines.push(`    ${library.seat_enter.join(', ')}   in a conversation already open there, which is not bound to its seat until then`);
+  }
+  for (const folder of found.unreached) lines.push(`  Could not reach the registered Library ${folder}; if this install serves it, run the same two lines there.`);
+  return { libraries, unreached: found.unreached, text: lines.join('\n') };
 }
 
 /**

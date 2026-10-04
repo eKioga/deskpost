@@ -28,12 +28,16 @@ import { parseArguments } from './argv.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { applyLibraryInit, planLibraryInit, registerWorkspace, type LibraryInitPlan } from './init.ts';
 import { findWorkspaceByMarker, markerField, readMarker, registryPath, toWorkspaceRoot } from './workspace.ts';
-import { COMMAND_NAME, findAssistant, ownedRegistration } from './machine.ts';
-import { discoverInstalls, installRootByShape, libraryKernelBinaries, missingProgramRoot, registeredLibraryFolders, sameFolder } from './installs.ts';
+import { COMMAND_NAME, findAssistant, ownedRegistration, readInstallReceipt } from './machine.ts';
+import { discoverInstalls, librariesServedByRoot, missingProgramRoot, sameFolder } from './installs.ts';
 import { sha256OfText } from './sha.ts';
 import { deskpostScripts } from './doctor.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
-import { sessionsVerb } from './lifecycle.ts';
+import { liveSessions, readReceipt, sessionsText, sessionsVerb, withLifecycleLock, writeReceipt } from './lifecycle.ts';
+import { runDoctor } from './doctor.ts';
+import { doctorText } from './human.ts';
+import { ensureDirectory, writeAtomicText } from './fsx.ts';
+import { createHash } from 'node:crypto';
 import { askAtTerminal, Interrupted } from './prompt.ts';
 
 export const SETUP_QUIT = 3;
@@ -62,8 +66,74 @@ export interface SetupAnswers {
   run_as_file?: boolean;
   /** Repairs the plan leaves out unless asked: `repair` for an existing, guarded Library used as it is. */
   offered?: string[];
-  /** An upgrade or repair with no -Library: the Libraries this install serves, kept as they are (S74 row 1). */
+  /** An upgrade or repair: the served Libraries kept as they are, by `--keep-libraries` or `[k]` (S74 row 1, ADR-0063 D4). */
   kept_libraries?: string[];
+  /**
+   * AN UPGRADE OR REPAIR BRINGS THE LIBRARIES IT SERVES UP TO DATE (ADR-0063, PLAN-one-upgrade.md r7 R1): every served
+   * Library but one the transaction itself writes (`-Library <new>`, `-Library <L> -Repair`; R1a), refreshed by
+   * `setup --refresh-served` once the program transaction commits. Unattended runs refresh by default (D5).
+   */
+  refresh_libraries?: string[];
+  /** `--keep-libraries` or `[k]` (D4): the served Libraries lag the program until `deskpost init <folder>`. */
+  keep_libraries?: boolean;
+  /**
+   * A SAME-VERSION RUN WHILE AN APPROVED REFRESH IS UNFINISHED (R2b): refresh only. The installer runs
+   * `setup --refresh-served <root>` and no program transaction; this is the kernel's decision, read off the receipt.
+   */
+  refresh_only?: boolean;
+}
+
+/** The approved refresh an install's receipt still carries (`refresh_pending`, r9 amendment 2), parsed, or null. */
+export function refreshPendingOf(root: string): RefreshApproval | null {
+  const receipt = readInstallReceipt(root);
+  const raw = receipt?.['refresh_pending'];
+  if (raw === undefined || raw === null || raw === '') return null;
+  try {
+    const parsed = (typeof raw === 'string' ? JSON.parse(raw) : raw) as RefreshApproval;
+    return parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.libraries) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One served Library's refresh as the plan has it: the writes init would make, or why it is kept as it is. */
+export interface RefreshEntry {
+  workspace: string;
+  decision: 'refresh' | 'refused';
+  reason: string | null;
+  plan: LibraryInitPlan | null;
+}
+
+/**
+ * THE APPROVAL IS THE WRITE SET ITSELF (r9 amendment 1): per Library, each relative path, its old SHA-256 or null, and
+ * its new content byte-exact, plus the folders to create. `setup --apply` writes it as `.pending\refresh-approval.json`;
+ * the installer copies its text into the receipt as `refresh_pending` in the write that commits the transaction.
+ */
+export interface RefreshApproval {
+  schema: 1;
+  version: string;
+  install_root: string;
+  libraries: {
+    workspace: string;
+    decision: 'refresh' | 'refused';
+    reason: string | null;
+    writes: { relative: string; path: string; old_sha256: string | null; new_sha256: string; content: string }[];
+    directories: string[];
+  }[];
+  /** Libraries kept as they are by `--keep-libraries` or `[k]`: never written, and doctor's WARNs only. */
+  kept: string[];
+}
+
+/** Each served Library's refresh, planned: what `setup --ask` previews and `setup --plan` binds into the plan id (D9). */
+export function planRefreshes(libraries: string[], resources: string, registerAs: string | undefined, registryRoot: string | undefined): RefreshEntry[] {
+  return libraries.map((workspace) => {
+    try {
+      return { workspace, decision: 'refresh' as const, reason: null, plan: planLibraryInit({ workspacePath: workspace, programRoot: resources, registerAs, registryRoot }) };
+    } catch (error) {
+      // EACH LIBRARY STANDS ALONE (D2): one whose refresh refuses is kept as it is and named, and the rest go on.
+      return { workspace, decision: 'refused' as const, reason: (error as Error).message.replace(/^library init refused and wrote nothing: /, ''), plan: null };
+    }
+  });
 }
 
 // --- the terminal -----------------------------------------------------------------------------------------
@@ -273,12 +343,7 @@ export function upgradeLine(root: string): string {
  * `current` or a `versions/<v>` folder. An upgrade keeps them as they are; their hooks name `current`, which it switches.
  */
 export function librariesServedBy(root: string, registryRoot?: string): string[] {
-  return registeredLibraryFolders(registryRoot).filter((library) =>
-    libraryKernelBinaries(library).some((binary) => {
-      const served = installRootByShape(binary);
-      return served !== null && sameFolder(served, root);
-    }),
-  );
+  return librariesServedByRoot(root, registryRoot).served;
 }
 
 // --- setup --ask ------------------------------------------------------------------------------------------
@@ -301,6 +366,8 @@ export interface AskOptions {
   /** `-Librarian`: the assistant named, not the one found first. */
   assistant?: 'claude' | 'codex';
   runAsFile?: boolean;
+  /** `--keep-libraries` (`install.ps1 -KeepLibraries`): the served Libraries are kept as they are (D4). */
+  keepLibraries?: boolean;
 }
 
 class Refusal extends Error {}
@@ -373,6 +440,27 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   let folderState = judgeRoot(installRoot);
   const installState: SetupAnswers['install_state'] =
     folderState.state === 'new' ? 'new' : folderState.version === version ? 'repair' : 'upgrade';
+  // A REFRESH THAT DID NOT FINISH IS FINISHED, AND NOTHING ELSE (R2b): the same version, with the receipt still carrying
+  // an approved refresh, is offered refresh only, no program reinstall, as its default. `deskpost init <folder>` stays
+  // the per-Library route. -Repair still asks for the whole repair.
+  const unfinished = installState === 'repair' && !options.repair ? refreshPendingOf(installRoot) : null;
+  if (unfinished !== null) {
+    const libraries = unfinished.libraries.filter((library) => library.decision === 'refresh').map((library) => library.workspace);
+    talk.say(`Deskpost ${version} at ${installRoot} has a refresh of its Libraries that did not finish: ${libraries.join(', ') || 'none left to write'}.`);
+    talk.say('This run finishes it and changes nothing else. Or run deskpost init <folder> in each Library.');
+    if (talk.interactive && (await talk.ask('[Enter] finish the refresh   [q] quit › ')).toLowerCase() === 'q') {
+      talk.say('Nothing was changed.');
+      return SETUP_QUIT;
+    }
+    const answers: SetupAnswers = {
+      schema: 1, version, install_root: installRoot, install_state: 'repair', from_version: folderState.version, library: null, library_state: 'none',
+      repair: false, make_default: false, overlap_accepted: false, assistant: null, path_change: options.pathChange, checksum_note: options.checksumNote,
+      run_as_file: options.runAsFile === true, refresh_only: true, refresh_libraries: libraries, kept_libraries: unfinished.kept ?? [],
+    };
+    fs.mkdirSync(path.dirname(path.resolve(options.answersFile)), { recursive: true });
+    fs.writeFileSync(options.answersFile, psConvertToJson(answers as unknown as PsJsonValue) + '\n');
+    return 0;
+  }
   // THE SAME VERSION IS SAID AS SUCH, to a person as to a script (S74 row 1): a repair is only ever asked for.
   if (installState === 'repair' && !options.repair) {
     refuseWith(`Deskpost is already at ${version} at ${installRoot}; -Repair reinstalls it. Nothing was changed.`);
@@ -385,19 +473,23 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   // the reader's home folder, which holds files and is no Library, it offered <home>\Library, a second, empty Library,
   // while the registry marked the real one default. With no -Library, the Libraries this install serves are kept as
   // they are: their hooks name `current`, which the upgrade switches, so nothing inside them is written.
-  let kept: string[] = [];
-  if (installState !== 'new' && !given) {
+  // THE LIBRARIES IT SERVES ARE BROUGHT UP TO DATE IN THE SAME RUN (ADR-0063, r7 R1), unless the reader keeps them (D4).
+  let served: string[] = [];
+  let keepLibraries = options.keepLibraries === true;
+  if (installState !== 'new') {
     try {
-      kept = librariesServedBy(installRoot, options.registryRoot);
+      served = librariesServedBy(installRoot, options.registryRoot);
     } catch (error) {
       refuseWith((error as Error).message);
     }
+  }
+  if (installState !== 'new' && !given) {
     talk.say(
       installState === 'upgrade'
         ? `Upgrading Deskpost ${folderState.version ?? '?'} to ${version} at ${installRoot}.`
         : `Repairing Deskpost ${version} at ${installRoot}.`,
     );
-    talk.say(kept.length ? `The Libraries it serves are kept as they are: ${kept.join(', ')}.` : 'No registered Library runs this install; none is made.');
+    if (!served.length) talk.say('No registered Library runs this install; none is made.');
   } else {
     // THE ONE QUESTION (Q2).
     talk.say(
@@ -493,13 +585,31 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   }
   let repairLibrary = (options.repair || unguarded) && state === 'existing';
 
+  // R1a: a Library this transaction writes itself (`-Library <new>`, `-Library <L> -Repair`) is not refreshed again.
+  const refreshTargets = () => served.filter((folder) => !(library !== null && sameFolder(folder, library) && (state === 'new' || repairLibrary)));
+  const previews = new Map<string, RefreshPreview[]>();
+  const preview = (): RefreshPreview[] => {
+    const targets = refreshTargets();
+    const key = targets.join('|');
+    if (!previews.has(key)) {
+      previews.set(key, planRefreshes(targets, programRoot(), path.join(installRoot, 'current'), options.registryRoot).map((entry) => ({
+        workspace: entry.workspace,
+        writes: entry.plan?.writes.length ?? 0,
+        refused: entry.reason,
+        codex: (entry.plan?.writes ?? []).some((write) => write.relative === '.codex/hooks.json'),
+      })));
+    }
+    return previews.get(key)!;
+  };
+
   // THE ONE SCREEN, AND THE ONE KEYPRESS.
   for (;;) {
-    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: options.pathChange, overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: kept }));
+    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: options.pathChange, overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview() }));
     if (!talk.interactive) break;
     const keys = ['[Enter] install'];
     if (installState === 'new') keys.push('[p] other program folder');
     if (state === 'existing') keys.push(repairLibrary ? (unguarded ? '[r] leave it unguarded' : '[r] leave the Library as it is') : '[r] repair this Library');
+    if (refreshTargets().length) keys.push(keepLibraries ? '[k] bring the Libraries up to date' : '[k] keep the Libraries as they are');
     if (claude !== null && codex !== null) keys.push(`[a] use ${assistant === 'claude' ? 'Codex' : 'Claude Code'}`);
     keys.push('[q] quit');
     const key = (await talk.ask('\n' + keys.join('   ') + ' › ')).toLowerCase();
@@ -508,7 +618,8 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
       talk.say('Nothing was installed.');
       return SETUP_QUIT;
     }
-    if (key === 'a' && claude !== null && codex !== null) assistant = assistant === 'claude' ? 'codex' : 'claude';
+    if (key === 'k' && refreshTargets().length) keepLibraries = !keepLibraries;
+    else if (key === 'a' && claude !== null && codex !== null) assistant = assistant === 'claude' ? 'codex' : 'claude';
     else if (key === 'r' && state === 'existing') repairLibrary = !repairLibrary;
     else if (key === 'p' && installState === 'new') {
       const typed = await talk.ask('  Program folder › ');
@@ -557,7 +668,9 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     unguarded,
     both_assistants: claude !== null && codex !== null,
     run_as_file: options.runAsFile === true,
-    kept_libraries: kept,
+    kept_libraries: keepLibraries ? refreshTargets() : [],
+    refresh_libraries: keepLibraries ? [] : refreshTargets(),
+    keep_libraries: keepLibraries,
     offered: state === 'existing' && !(repairLibrary && state === 'existing') ? ['repair'] : [],
   };
   fs.mkdirSync(path.dirname(path.resolve(options.answersFile)), { recursive: true });
@@ -582,17 +695,32 @@ export interface ScreenView {
   overlapAccepted: boolean;
   /** install.ps1 ran as a file (an assistant's route): no "this window" is made ready. */
   runAsFile?: boolean;
-  /** The Libraries an upgrade or repair keeps as they are. */
+  /** The Libraries an upgrade or repair keeps as they are (`--keep-libraries`, `[k]`). */
   keptLibraries?: string[];
+  /** Each served Library's refresh, beside the program plan (ADR-0063 decision 1). */
+  refresh?: RefreshPreview[];
+}
+
+/** One served Library's refresh as the screen says it: how many files, or why it is kept as it is. */
+export interface RefreshPreview {
+  workspace: string;
+  writes: number;
+  refused: string | null;
+  /** Its `.codex/hooks.json` is rewritten, so Codex asks to review its hooks again (D10). */
+  codex: boolean;
 }
 
 /** The screen as a title and rows, the one source for the terminal screen and an assistant's table (step 2). */
 export function screenRows(view: ScreenView): { title: string; rows: [string, string, string][] } {
   const rows: [string, string, string][] = [];
-  const kept = view.state === 'none' && view.installState !== 'new' ? (view.keptLibraries ?? []) : [];
+  const kept = view.installState !== 'new' ? (view.keptLibraries ?? []) : [];
+  const refresh = view.installState !== 'new' ? (view.refresh ?? []) : [];
+  const servedOnly = view.state === 'none' && (kept.length > 0 || refresh.length > 0);
   const libraryNote =
-    kept.length
-      ? `kept as ${kept.length === 1 ? 'it is' : 'they are'}: ${kept.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
+    servedOnly && refresh.length
+      ? `brought up to date in this run: ${refresh.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
+      : servedOnly
+      ? `kept as ${kept.length === 1 ? 'it is' : 'they are'}, behind the program until ${COMMAND_NAME} init <folder>`
       : view.state === 'none'
       ? `none; later: ${COMMAND_NAME} setup <folder>`
       : view.state === 'new'
@@ -602,7 +730,15 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
           : view.repairLibrary
           ? 'existing Library, repaired (its managed files brought up to date)'
           : 'existing Library, used as it is';
-  rows.push(['Library', view.library ?? (kept.length ? kept.join(', ') : '-'), libraryNote]);
+  rows.push(['Library', view.library ?? (servedOnly ? (refresh.length ? refresh.map((entry) => entry.workspace) : kept).join(', ') : '-'), libraryNote]);
+  // EACH SERVED LIBRARY'S REFRESH, BESIDE THE PROGRAM PLAN (ADR-0063 decisions 1 and 4): a count, or the reason it is kept.
+  for (const entry of refresh) {
+    if (view.state !== 'none' || refresh.length > 1 || entry.refused !== null) {
+      rows.push(['', entry.workspace, entry.refused !== null ? `kept as it is: ${entry.refused}` : `brought up to date: ${entry.writes} file(s)`]);
+    } else rows.push(['', '', `${entry.writes} file(s) brought up to date after the program switches`]);
+    if (entry.refused === null && entry.codex) rows.push(['', '', 'Codex will ask you to review this Library\'s hooks again on its next start.']);
+  }
+  if (view.state !== 'none') for (const folder of kept) rows.push(['', folder, `kept as it is, behind the program until ${COMMAND_NAME} init <folder>`]);
   const programNote =
     view.installState === 'new'
       ? 'a new folder; updates and undo touch only this'
@@ -673,6 +809,8 @@ export interface SetupPlan {
   library: LibraryInitPlan | null;
   /** An existing Library used as it is: only registered (outside it), never written. */
   register: { workspace: string; id: string } | null;
+  /** The served Libraries' refresh (ADR-0063), applied by `setup --refresh-served` once the transaction commits. */
+  refresh?: RefreshEntry[];
   /** The hash of the canonical plan (step 2), when the release and script hashes were given; else null. */
   plan_id?: string | null;
   /** What an assistant shows: the screen's rows and what the plan does and does not do (step 2). */
@@ -719,6 +857,17 @@ export function canonicalPlan(plan: SetupPlan, release: { archiveSha256: string;
     .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   const workspace = plan.library?.workspace ?? '';
   const directories = (plan.library?.directories ?? []).map((folder) => path.relative(workspace, folder).replace(/\\/g, '/')).sort();
+  // THE PLAN ID BINDS THE REFRESH (D9): each served Library's writes and folders as the Library's own are bound above,
+  // its refusal, and the keep flag. Content is left out for the same reason, and the archive hash pins it.
+  const refresh = (plan.refresh ?? []).map((entry) => ({
+    workspace: entry.workspace.toLowerCase(),
+    decision: entry.decision,
+    reason: entry.reason,
+    writes: (entry.plan?.writes ?? [])
+      .map((write) => [write.relative, write.old_sha256 === null ? 'create' : 'update', write.old_sha256 ?? ''] as [string, string, string])
+      .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
+    directories: (entry.plan?.directories ?? []).map((folder) => path.relative(entry.workspace, folder).replace(/\\/g, '/')).sort(),
+  }));
   return {
     archive_sha256: release.archiveSha256.toLowerCase(),
     version: a.version,
@@ -739,6 +888,9 @@ export function canonicalPlan(plan: SetupPlan, release: { archiveSha256: string;
     register: plan.register === null ? null : { workspace: plan.register.workspace.toLowerCase(), id: plan.register.id },
     directories,
     writes,
+    keep_libraries: a.keep_libraries === true,
+    kept_libraries: (a.kept_libraries ?? []).map((folder) => folder.toLowerCase()).sort(),
+    refresh,
   } as PsJsonValue;
 }
 
@@ -749,7 +901,13 @@ export function planId(plan: SetupPlan, release: { archiveSha256: string; script
 /** The view an assistant shows, built from the answers and the plan (the same rows as the screen). */
 export function planView(plan: SetupPlan, registryRoot?: string): PlanView {
   const answers = plan.answers;
-  const { title, rows } = screenRows(viewOfAnswers(answers));
+  const refresh: RefreshPreview[] = (plan.refresh ?? []).map((entry) => ({
+    workspace: entry.workspace,
+    writes: entry.plan?.writes.length ?? 0,
+    refused: entry.reason,
+    codex: (entry.plan?.writes ?? []).some((write) => write.relative === '.codex/hooks.json'),
+  }));
+  const { title, rows } = screenRows({ ...viewOfAnswers(answers), refresh });
   const state: PlanView['state'] =
     answers.library_state === 'none'
       ? 'program-only'
@@ -791,6 +949,15 @@ function readAnswers(file: string): SetupAnswers {
 
 /** The read-only planner (step 2, pass 4). Reads the program from `resources`, names `registerAs`, and writes nothing. */
 export function setupPlan(options: { answers: SetupAnswers; resources: string; registerAs?: string; registryRoot?: string }): SetupPlan {
+  const plan = setupLibraryPlan(options);
+  // THE SERVED LIBRARIES' REFRESH, IN THE SAME PLAN (ADR-0063 decision 1): planned with the staged program and named by
+  // `register-as`, as the Library's own writes are; one that refuses is kept as it is and named (D2).
+  const targets = options.answers.refresh_libraries ?? [];
+  if (targets.length) plan.refresh = planRefreshes(targets, options.resources, options.registerAs, options.registryRoot);
+  return plan;
+}
+
+function setupLibraryPlan(options: { answers: SetupAnswers; resources: string; registerAs?: string; registryRoot?: string }): SetupPlan {
   const { answers } = options;
   if (answers.library === null || answers.library_state === 'none') return { schema: 1, operation: 'Plan a Deskpost setup', answers, library: null, register: null };
   if (answers.library_state === 'existing' && !answers.repair) {
@@ -803,7 +970,163 @@ export function setupPlan(options: { answers: SetupAnswers; resources: string; r
   return { schema: 1, operation: 'Plan a Deskpost setup', answers, library, register: null };
 }
 
-export function setupApply(plan: SetupPlan): Record<string, unknown> {
+/**
+ * `setup --apply`: the Library half the transaction writes, as before, and THE APPROVED REFRESH WRITTEN BESIDE THE PLAN
+ * (r9 amendment 2): `<plan folder>\refresh-approval.json`, which is `.pending` in a transaction, so an Undo before the
+ * commit discards it with `.pending`. Nothing in a served Library is written here: that is `setup --refresh-served`,
+ * after the commit. A Library whose refresh refused is reported, and the apply still exits 0 (D2).
+ */
+export function setupApply(plan: SetupPlan, approvalFolder?: string): Record<string, unknown> {
+  const result = setupLibraryApply(plan);
+  const refresh = plan.refresh ?? [];
+  const kept = plan.answers.kept_libraries ?? [];
+  if ((refresh.length || kept.length) && approvalFolder) {
+    const approval: RefreshApproval = {
+      schema: 1,
+      version: plan.answers.version,
+      install_root: plan.answers.install_root,
+      libraries: refresh.map((entry) => ({
+        workspace: entry.workspace,
+        decision: entry.decision,
+        reason: entry.reason,
+        writes: (entry.plan?.writes ?? []).map((write) => ({ relative: write.relative, path: write.path, old_sha256: write.old_sha256, new_sha256: write.new_sha256, content: write.content })),
+        directories: entry.plan?.directories ?? [],
+      })),
+      kept,
+    };
+    fs.mkdirSync(approvalFolder, { recursive: true });
+    writeAtomicText(path.join(approvalFolder, REFRESH_APPROVAL), JSON.stringify(approval) + '\n');
+  }
+  if (refresh.length) {
+    result['refresh_libraries'] = refresh.filter((entry) => entry.decision === 'refresh').map((entry) => entry.workspace);
+    result['refused_libraries'] = refresh.filter((entry) => entry.decision === 'refused').map((entry) => ({ workspace: entry.workspace, reason: entry.reason }));
+  }
+  return result;
+}
+
+/** The approval's file name beside the frozen plan. */
+export const REFRESH_APPROVAL = 'refresh-approval.json';
+
+/** What the refresh did to one served Library. */
+interface RefreshOutcome {
+  workspace: string;
+  status: 'refreshed' | 'kept' | 'refused' | 'partly-refreshed';
+  detail: string;
+  /** The line that finishes it by hand, when it is not refreshed. */
+  finish: string | null;
+  written: number;
+  /** Its `.codex/hooks.json` was rewritten, so Codex asks to review its hooks again (D10). */
+  codex: boolean;
+}
+
+function fileSha(file: string): string | null {
+  try {
+    return fs.statSync(file).isFile() ? createHash('sha256').update(fs.readFileSync(file)).digest('hex') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `setup --refresh-served <root>` (ADR-0063 decisions 2-4, r8 R1b, r9 amendments 1-2): the approved refresh the receipt
+ * carries, replayed under the lifecycle lock, then `doctor --served-by <root>`, whose report and exit are this verb's.
+ *
+ * It REFUSES, writing nothing, while a transaction is pending or `current` is not the approved version, and while a live
+ * session would meet the rewrite; the approval is then kept, and the one-liner run again finishes it (R2b). Each Library
+ * is replayed by the THREE-STATE RULE, judged whole before it is written: a file still at its old state is written, one
+ * at its new state is done, and anything else is a conflict, so that Library is left as it is and reported partly
+ * refreshed, with `deskpost init <folder>` as the way to finish. Nothing is re-planned. `refresh_pending` is cleared once
+ * every Library is done or reported, so nothing of the refresh stays under the root. With no approval it is doctor alone,
+ * which is how the installer's closing check is one call whatever it installed.
+ */
+export function refreshServed(rootGiven: string, program: string, registryRoot: string | undefined): { value: Record<string, unknown>; exitCode: number; humanText: string } {
+  const root = path.resolve(rootGiven);
+  const outcomes: RefreshOutcome[] = [];
+  let kept: string[] = [];
+  const approval = withLifecycleLock(root, () => {
+    const receipt = readReceipt(root) as unknown as Record<string, unknown> & { pending: Record<string, unknown> | null };
+    const raw = receipt['refresh_pending'];
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (receipt.pending !== null) {
+      throw new Error(`a Deskpost ${String(receipt.pending['operation'])} is recorded at ${root} and not finished, so the approved refresh waits; nothing was written. Run the installer to finish or undo it first.`);
+    }
+    let parsed: RefreshApproval;
+    try {
+      parsed = (typeof raw === 'string' ? JSON.parse(raw) : raw) as RefreshApproval;
+    } catch {
+      throw new Error(`the approved refresh recorded at ${root} cannot be read; nothing was written. Run ${COMMAND_NAME} init <folder> in each Library it serves.`);
+    }
+    let currentVersion: string | null = null;
+    try {
+      currentVersion = String((JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['version'] ?? '') || null;
+    } catch {
+      currentVersion = null;
+    }
+    if (currentVersion !== parsed.version) {
+      throw new Error(`the approved refresh is for Deskpost ${parsed.version}, and ${root} runs ${currentVersion ?? 'no readable version'}; nothing was written. Run the installer for ${parsed.version} again, or ${COMMAND_NAME} init <folder> in each Library.`);
+    }
+    // TIME HAS PASSED SINCE THE INSTALLER'S CHECK (r7 R1): the sessions are looked at again just before anything is written.
+    const live = liveSessions(root);
+    if (live.seats.length || live.processes.length) {
+      throw new Error(`Close your sessions first: bringing the Libraries up to date rewrites the guards they run under.\n${sessionsText(live)}\nNothing was written, and the approved refresh is kept: run the installer again to finish it.`);
+    }
+    for (const library of parsed.libraries) {
+      const finish = `${COMMAND_NAME} init ${library.workspace}`;
+      if (library.decision === 'refused') {
+        outcomes.push({ workspace: library.workspace, status: 'refused', detail: library.reason ?? 'its refresh refused', finish, written: 0, codex: false });
+        continue;
+      }
+      const states = library.writes.map((write) => {
+        const now = fileSha(write.path);
+        return now === write.new_sha256 ? 'done' : now === write.old_sha256 ? 'write' : 'conflict';
+      });
+      const conflicts = library.writes.filter((_, index) => states[index] === 'conflict').map((write) => write.relative);
+      if (conflicts.length) {
+        const done = states.filter((state) => state === 'done').length;
+        outcomes.push({
+          workspace: library.workspace,
+          status: 'partly-refreshed',
+          detail: `${conflicts.join(', ')} changed since the plan was shown, so ${done ? `${done} of its ${library.writes.length} files are new and the rest were left` : 'nothing in it was written'}`,
+          finish,
+          written: 0,
+          codex: false,
+        });
+        continue;
+      }
+      for (const directory of library.directories) ensureDirectory(directory);
+      let written = 0;
+      library.writes.forEach((write, index) => {
+        if (states[index] !== 'write') return;
+        ensureDirectory(path.dirname(write.path));
+        writeAtomicText(write.path, write.content);
+        written += 1;
+      });
+      outcomes.push({ workspace: library.workspace, status: 'refreshed', detail: `${written} file(s) written`, finish: null, written, codex: library.writes.some((write) => write.relative === '.codex/hooks.json') });
+    }
+    kept = parsed.kept ?? [];
+    for (const folder of kept) outcomes.push({ workspace: folder, status: 'kept', detail: 'kept as it is (--keep-libraries)', finish: `${COMMAND_NAME} init ${folder}`, written: 0, codex: false });
+    delete receipt['refresh_pending'];
+    writeReceipt(root, receipt as unknown as Parameters<typeof writeReceipt>[1]);
+    return parsed;
+  });
+  // DOCTOR OVER EVERY SERVED LIBRARY (D8), a Library not brought up to date reporting WARNs, never a failure.
+  const notRefreshed = outcomes.filter((outcome) => outcome.status !== 'refreshed').map((outcome) => outcome.workspace);
+  const doctor = runDoctor(['--served-by', root, ...(registryRoot ? ['--registry-root', registryRoot] : []), ...notRefreshed.flatMap((folder) => ['--kept', folder])], program);
+  if (doctor.refusal !== null) throw new Error(doctor.refusal);
+  const report = doctor.value as Record<string, unknown>;
+  const value: Record<string, unknown> = { ...report, refresh: { approved: approval !== null, libraries: outcomes } };
+  const lines: string[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.status === 'refreshed') lines.push(`Brought up to date: ${outcome.workspace} (${outcome.detail}).`);
+    else if (outcome.status === 'kept') lines.push(`Kept as it is: ${outcome.workspace}. Run ${outcome.finish} to bring it up to date.`);
+    else if (outcome.status === 'refused') lines.push(`Kept as it is: ${outcome.workspace}, because ${outcome.detail} Run ${outcome.finish} once that is fixed.`);
+    else lines.push(`Partly refreshed: ${outcome.workspace}: ${outcome.detail}. Run ${outcome.finish} to finish it.`);
+    if (outcome.codex) lines.push(`  Codex will ask you to review ${outcome.workspace}'s hooks again on its next start.`);
+  }
+  return { value, exitCode: doctor.exitCode, humanText: [...lines, ...(lines.length ? [''] : []), doctorText(report)].join('\n') };
+}
+
+function setupLibraryApply(plan: SetupPlan): Record<string, unknown> {
   if (plan.library !== null) return { library: applyLibraryInit(plan.library, { makeDefault: plan.answers.make_default }) };
   if (plan.register !== null) {
     const registration = registerWorkspace(plan.register.workspace, plan.register.id, undefined, plan.answers.make_default);
@@ -815,17 +1138,28 @@ export function setupApply(plan: SetupPlan): Record<string, unknown> {
 
 /** An upgrade's kept Libraries, said as such rather than as "no Library" (S74 row 1). */
 function keptText(kept: string[]): string {
-  return `${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept as ${kept.length === 1 ? 'it is' : 'they are'}: nothing inside ${kept.length === 1 ? 'it' : 'them'} is written.`;
+  return `${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept as ${kept.length === 1 ? 'it is' : 'they are'}: nothing inside ${kept.length === 1 ? 'it' : 'them'} is written. Run ${COMMAND_NAME} init <folder> to bring ${kept.length === 1 ? 'it' : 'each'} up to date.`;
 }
 
 function planText(plan: SetupPlan): string {
   const kept = plan.answers.kept_libraries ?? [];
-  if (plan.library === null && plan.register === null) return kept.length ? keptText(kept) : 'No Library is set up: the program only.';
-  if (plan.register !== null) return `The Library at ${plan.register.workspace} is used as it is: nothing inside it is written.`;
+  const refresh = refreshPlanLines(plan.refresh ?? []);
+  if (plan.library === null && plan.register === null) return [...(refresh.length ? refresh : []), ...(kept.length ? [keptText(kept)] : []), ...(!refresh.length && !kept.length ? ['No Library is set up: the program only.'] : [])].join('\n');
+  if (plan.register !== null) return [`The Library at ${plan.register.workspace} is used as it is: nothing inside it is written.`, ...refresh].join('\n');
   const library = plan.library!;
   const lines = [`The Library at ${library.workspace}: ${library.writes.length} file(s) to write, ${library.directories.length} folder(s) to create.`];
   for (const write of library.writes) lines.push(`  ${write.old_sha256 === null ? 'create ' : 'update '} ${write.relative}`);
-  return lines.join('\n');
+  return [...lines, ...refresh].join('\n');
+}
+
+/** The served Libraries' refresh as plan lines: each brought up to date after the switch, or kept with its reason. */
+function refreshPlanLines(refresh: RefreshEntry[]): string[] {
+  const lines: string[] = [];
+  for (const entry of refresh) {
+    if (entry.decision === 'refused') lines.push(`${entry.workspace} is kept as it is: ${entry.reason}`);
+    else lines.push(`${entry.workspace}: ${entry.plan?.writes.length ?? 0} file(s) brought up to date once the program switches.`);
+  }
+  return lines;
 }
 
 // --- the verb -------------------------------------------------------------------------------------------------------
@@ -838,7 +1172,7 @@ export interface SetupVerbResult {
   asJson: boolean;
 }
 
-const VALUED = ['answers', 'install-root', 'library', 'cwd', 'resources', 'register-as', 'out', 'plan-file', 'checksum-note', 'registry-root', 'workspace', 'release-sha', 'script-sha', 'user-path', 'assistant'];
+const VALUED = ['answers', 'install-root', 'library', 'cwd', 'resources', 'register-as', 'out', 'plan-file', 'checksum-note', 'registry-root', 'workspace', 'release-sha', 'script-sha', 'user-path', 'assistant', 'refresh-served'];
 
 function assistantOption(value: string | undefined): 'claude' | 'codex' | undefined {
   if (value === undefined) return undefined;
@@ -870,8 +1204,14 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
         userPath: parsed.options.get('user-path'),
         assistant: assistantOption(parsed.options.get('assistant')),
         runAsFile: parsed.flags.has('run-as-file'),
+        keepLibraries: parsed.flags.has('keep-libraries'),
       });
       return { refusal: null, exitCode: code, value: null, asJson: json };
+    }
+    if (parsed.options.has('refresh-served')) {
+      // AFTER THE PROGRAM TRANSACTION COMMITS (ADR-0063 decision 1): the approved refresh, then doctor over every served Library.
+      const done = refreshServed(parsed.options.get('refresh-served')!, programRoot(), parsed.options.get('registry-root'));
+      return { refusal: null, exitCode: done.exitCode, value: done.value as PsJsonValue, humanText: done.humanText, asJson: json };
     }
     if (parsed.flags.has('sessions')) {
       const root = parsed.options.get('install-root');
@@ -899,7 +1239,7 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
       const planFile = parsed.options.get('plan-file');
       if (!planFile) return { refusal: 'setup --apply needs --plan-file <file>.', exitCode: 1, value: null, asJson: json };
       const plan = JSON.parse(fs.readFileSync(planFile, 'utf8').replace(/^\uFEFF/, '')) as SetupPlan;
-      const result = setupApply(plan);
+      const result = setupApply(plan, path.dirname(path.resolve(planFile)));
       return { refusal: null, exitCode: 0, value: result as PsJsonValue, humanText: applyText(result), asJson: json };
     }
     return await setupHere(parsed.positional[0] ?? parsed.options.get('workspace') ?? process.cwd(), { yes: parsed.flags.has('yes'), json, registryRoot: parsed.options.get('registry-root'), repair: parsed.flags.has('repair') });
@@ -910,12 +1250,19 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
 
 function applyText(result: Record<string, unknown>): string {
   const library = result['library'] as Record<string, unknown> | null;
+  const refreshing = Array.isArray(result['refresh_libraries']) ? (result['refresh_libraries'] as unknown[]).map(String) : [];
+  const refused = Array.isArray(result['refused_libraries']) ? (result['refused_libraries'] as { workspace: string; reason: string }[]) : [];
+  // THE REFUSED LIST REACHES THE APPLY'S TEXT (D2): under -PlanId an outcome was approved, and this one is part of it.
+  const tail = [
+    ...(refreshing.length ? [`Brought up to date once the program switches: ${refreshing.join(', ')}.`] : []),
+    ...refused.map((entry) => `Kept as it is: ${entry.workspace}, because ${entry.reason} Run ${COMMAND_NAME} init ${entry.workspace} once that is fixed.`),
+  ];
   if (library === null) {
     const kept = Array.isArray(result['kept_libraries']) ? (result['kept_libraries'] as unknown[]).map(String) : [];
-    return kept.length ? keptText(kept) : 'No Library was set up.';
+    return [...(kept.length ? [keptText(kept)] : []), ...tail, ...(!kept.length && !tail.length ? ['No Library was set up.'] : [])].join('\n');
   }
-  if (library['status'] === 'used_as_it_is') return `The Library at ${String(library['workspace'])} is registered, and was left as it is.`;
-  return `The Library at ${String(library['workspace'])} is ready (${String(library['status']).replace('_', ' ')}).`;
+  if (library['status'] === 'used_as_it_is') return [`The Library at ${String(library['workspace'])} is registered, and was left as it is.`, ...tail].join('\n');
+  return [`The Library at ${String(library['workspace'])} is ready (${String(library['status']).replace('_', ' ')}).`, ...tail].join('\n');
 }
 
 /** `deskpost setup [<folder>]`: plan a Library against this installed program, show it, and apply it on one yes. */

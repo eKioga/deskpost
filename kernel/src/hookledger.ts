@@ -55,6 +55,15 @@ export function testHookServed(stateDirectory: string, sessionId: string, key: s
   return (readHookLedger(stateDirectory).get(sessionId) ?? []).includes(key);
 }
 
+/** `Clear-HookServed` (`HookContext.ps1`): this session's keys removed, every other session's left as they were. */
+export function clearHookServed(stateDirectory: string, sessionId: string): void {
+  if (!sessionId.trim()) return;
+  const ledger = readHookLedger(stateDirectory);
+  if (!ledger.has(sessionId)) return;
+  ledger.delete(sessionId);
+  saveHookLedger(stateDirectory, ledger);
+}
+
 export function setHookServed(stateDirectory: string, sessionId: string, key: string): void {
   if (!sessionId.trim()) return;
   const ledger = readHookLedger(stateDirectory);

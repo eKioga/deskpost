@@ -64,6 +64,10 @@
 .PARAMETER Repair
     Reinstall the same version over itself, and bring an existing Library's managed files up to date.
 
+.PARAMETER KeepLibraries
+    On an upgrade or repair, keep the Libraries this install serves as they are, rather than bringing them up to date in
+    the same run. Each lags the program until `deskpost init <folder>` is run there.
+
 .PARAMETER Resume
     `finish` or `undo` an interrupted install without a prompt.
 
@@ -100,6 +104,7 @@ param(
     [switch]$DryRun,
     [switch]$AllowOverlap,
     [switch]$Repair,
+    [switch]$KeepLibraries,
     [ValidateSet('', 'finish', 'undo')][string]$Resume = '',
     [switch]$NoPathChange,
     [switch]$Plugin,
@@ -511,9 +516,12 @@ function Invoke-Apply([string]$Root, $Pending) {
         $receipt.owned = @($owned)
         $receipt.pending = $null
         $receipt.path_change = [bool]$Pending.path_change
+        # THE APPROVED REFRESH IS DURABLE FROM THE INSTANT THE TRANSACTION IS (PLAN-one-upgrade.md r9 amendment 2): its text, in this same write.
+        if (Test-Path -LiteralPath (Join-Path $Root '.pending\refresh-approval.json')) { $receipt | Add-Member -Force -NotePropertyName refresh_pending -NotePropertyValue ([IO.File]::ReadAllText((Join-Path $Root '.pending\refresh-approval.json'))) }
         Write-Receipt $Root $receipt
+        # .pending GOES BEFORE THE LOCK IS RELEASED (the Report of 2026-10-02): removed after it, a second run that claimed the root in the gap lost its files.
+        Remove-Item -LiteralPath (Join-Path $Root '.pending') -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -LiteralPath (Join-Path $Root '.pending') -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Invoke-Undo([string]$Root, $Pending) {
@@ -572,62 +580,17 @@ function Invoke-Undo([string]$Root, $Pending) {
     $left
 }
 
-# --- rollback (kept as 1.0 had it; `deskpost rollback` is step 4) --------------------------------------------------
-
-function Invoke-Rollback([string]$Root) {
-    $versions = Join-Path $Root 'versions'
-    $file = Join-Path $Root 'current.json'
-    if (-not (Test-Path -LiteralPath $file)) { throw "nothing to roll back to: $file does not exist." }
-    $current = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
-    if (-not $current.previous) { throw "nothing to roll back to: $file names no previous version." }
-    # NOT DURING ANOTHER CHANGE (post-build inspection #7): a pending transaction, live or interrupted, owns the root.
-    if (Test-Path -LiteralPath (Join-Path $Root 'install-receipt.json')) {
-        Invoke-UnderLock $Root {
-            $pending = (Read-Receipt $Root).pending
-            if ($null -ne $pending) {
-                if (Test-OwnerAlive $pending.owner) { throw "a Deskpost $($pending.operation) is running on $Root (process $($pending.owner.pid)); let it finish, then roll back." }
-                throw "an interrupted Deskpost $($pending.operation) is recorded at $Root; run the installer to finish or undo it before rolling back."
-            }
-        }
-    }
-    $target = Join-Path $versions $current.previous
-    if (-not (Test-Path -LiteralPath (Join-Path $target 'bin\library.exe'))) { throw "the previous version $($current.previous) is no longer under $versions." }
-    $expected = Get-Content -LiteralPath (Join-Path $target 'release.json') -Raw | ConvertFrom-Json
-    # A SHARED BOOK OPEN ON ANY DESK (PLAN-basic-memory.md step 5, ADR-0054): 1.0's reader refuses a whole Desk that
-    # holds a shared/ entry, so the version being LEFT is asked first. A version without the check (1.0 has no
-    # shared/ form), or one that cannot answer, never blocks the way back: rollback is the fallback for a broken one.
-    $leaving = Join-Path $versions "$($current.version)\bin\library.exe"
-    if (Test-Path -LiteralPath $leaving) {
-        $check = Invoke-Library $leaving @('basic-memory', 'rollback-check', '--json')
-        $answer = $null
-        if ($check.exit -eq 0) { try { $answer = $check.stdout | ConvertFrom-Json } catch { $answer = $null } }
-        if ($null -ne $answer -and @($answer.blocking).Count -gt 0) {
-            $lines = @($answer.blocking | ForEach-Object { @($_.close) | ForEach-Object { "  $_" } })
-            throw ("Not rolled back: $(@($answer.blocking).Count) seat(s) hold a shared Book on their Desk, and $($current.previous)'s reader would refuse " +
-                "those Desks whole. Close them first, then run -Rollback again:`n" + ($lines -join "`n"))
-        }
-        if ($null -ne $answer -and @($answer.unreadable).Count -gt 0) { Write-Step "The shared-Desk check could not read everything: $(@($answer.unreadable) -join '; ')" }
-    }
-    $sha = if (Test-Path -LiteralPath (Join-Path $target '.archive-sha256')) { (Get-Content -LiteralPath (Join-Path $target '.archive-sha256') -Raw).Trim() } else { $null }
-    $before = Get-Content -LiteralPath $file -Raw
-    Set-CurrentLink $Root $target ('rollback' + [guid]::NewGuid().ToString('N'))
-    Write-CurrentRecord $Root $current.previous $current.version $sha
-    Set-Shims $Root
-    try { [void](Assert-Tuple (Join-Path $Root 'current') $expected (Join-Path $Root 'current')) }
-    catch {
-        Set-CurrentLink $Root (Join-Path $versions $current.version) ('rollback' + [guid]::NewGuid().ToString('N'))
-        Write-TextAtomically $file $before
-        throw "$($_.Exception.Message) (current points at $($current.version) again)"
-    }
-    $result = [pscustomobject]@{ status = 'rolled-back'; version = $current.previous; from = $current.version; install_root = $Root
-        plugin = 'The plugin is not rolled back by this switch. Reinstall it from the version above if it was upgraded with the binary.' }
-    if ($Json) { $result | ConvertTo-Json -Compress } else { Write-Host "Rolled back to $($current.previous) (from $($current.version)). $($result.plugin)" }
-}
-
 # --- the run -------------------------------------------------------------------------------------------------------
 
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
-if ($Rollback) { Invoke-Rollback $InstallRoot; return }
+# ONE ROLLBACK, THE KERNEL'S (ADR-0063 decision 9): program-only, through the program current runs, which names each served Library's lines.
+if ($Rollback) {
+    $exe = Join-Path $InstallRoot 'current\bin\library.exe'
+    if (-not (Test-Path -LiteralPath $exe)) { throw "nothing to roll back: $exe is not there." }
+    if ($Json) { $ran = Invoke-Library $exe @('rollback', '--yes', '--json'); if ($ran.exit -ne 0) { throw "deskpost rollback refused (exit $($ran.exit)): $(([string]$ran.stderr).Trim())" }; ([string]$ran.stdout).Trim() }
+    else { $code = Invoke-LibraryShown $exe @('rollback', '--yes'); if ($code -ne 0) { throw "deskpost rollback refused (exit $code); what it said is above." } }
+    return
+}
 
 if (-not $Platform) { $Platform = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'win-arm64' } else { 'win-x64' } }
 if ($Platform -notin 'win-x64', 'win-arm64') { throw "install.ps1 installs a Windows release; '$Platform' is not one. Use install.sh on macOS and Linux." }
@@ -795,7 +758,9 @@ try {
             Invoke-Apply $InstallRoot $recovering
             $script:OwnsPending = $false
             $status = 'finished'
-            Write-Step "Finished. Run: deskpost doctor"
+            # THE REFRESH, ONLY WHEN THE RECEIPT CARRIES ONE (ADR-0063; R1d): a legacy candidate never writes it, and finishes as before.
+            if ((Read-Receipt $InstallRoot).PSObject.Properties['refresh_pending']) { $refreshed = Invoke-LibraryShown (Join-Path $InstallRoot 'current\bin\library.exe') @('setup', '--refresh-served', $InstallRoot); if ($refreshed -ne 0) { throw "Finished the program, but bringing its Libraries up to date or its doctor is not green (exit $refreshed); what it said is above. Run the installer again to finish the refresh." } }
+            Write-Step "Finished. Run: deskpost doctor, and deskpost init <folder> in any Library it serves that is behind."
             if ($Json) { [pscustomobject]@{ status = $status; transaction = $recovering.id; version = $recovering.version; install_root = $InstallRoot } | ConvertTo-Json -Compress }
             return
         }
@@ -816,6 +781,7 @@ try {
     if ($Json) { $askArguments += '--json' }
     if ($AllowOverlap) { $askArguments += '--allow-overlap' }
     if ($Repair) { $askArguments += '--repair' }
+    if ($KeepLibraries) { $askArguments += '--keep-libraries' }
     if ($NoPathChange) { $askArguments += '--no-path-change' }
     if ($Librarian) { $askArguments += @('--assistant', $Librarian) }
     if ($script:ScriptPath) { $askArguments += '--run-as-file' }
@@ -830,6 +796,22 @@ try {
     if ($asked -ne 0) { throw "setup stopped (exit $asked); what it said is above. Nothing was installed." }
     $answers = Get-Content -LiteralPath $answersFile -Raw | ConvertFrom-Json
     $root = [IO.Path]::GetFullPath([string]$answers.install_root).TrimEnd('\')
+    # REFRESH ONLY, WHEN THE KERNEL SAYS SO (PLAN-one-upgrade.md r8 R2b): an approved refresh did not finish; no program transaction runs.
+    if ($answers.PSObject.Properties['refresh_only'] -and $answers.refresh_only -eq $true) {
+        if ($DryRun) { $status = 'dry-run'; Write-Step 'Dry run: this would finish the refresh of the Libraries, and change nothing else. Nothing was changed.'; return }
+        $exe = Join-Path $root 'current\bin\library.exe'
+        $status = 'refreshed'
+        if ($Json) {
+            $ran = Invoke-Library $exe @('setup', '--refresh-served', $root, '--json')
+            $report = $null; try { $report = $ran.stdout | ConvertFrom-Json } catch { $report = $null }
+            [pscustomobject]@{ status = $status; version = $version; install_root = $root; doctor_exit = $ran.exit; doctor = $report } | ConvertTo-Json -Depth 8 -Compress
+            if ($ran.exit -ne 0) { throw "Finishing the refresh, or its doctor, is not green (exit $($ran.exit)): $(([string]$ran.stderr).Trim())" }
+        } else {
+            $code = Invoke-LibraryShown $exe @('setup', '--refresh-served', $root)
+            if ($code -ne 0) { throw "Finishing the refresh, or its doctor, is not green (exit $code); what it said is above." }
+        }
+        return
+    }
 
     # CLOSE YOUR SESSIONS FIRST (#7, #10): an upgrade or repair switches the program they are running. Best effort.
     # A REPAIRED LIBRARY COUNTS WHATEVER ITS PROGRAM (S58 post-build inspection #2): a new root that repairs an existing
@@ -1002,8 +984,9 @@ try {
     }
 
     # --- doctor: its result is the install's result ------------------------------------------------------------------
-    $doctorArguments = @('doctor')
-    if ($answers.library) { $doctorArguments += @('--workspace', [string]$answers.library) }
+    # THE APPROVED REFRESH, THEN DOCTOR OVER EVERY LIBRARY THIS INSTALL SERVES (ADR-0063 decisions 1 and 8), in one kernel call, when the
+    # receipt carries one, as at -Resume finish: only a program that knows the refresh writes it, so an older release this script installs closes as before.
+    $doctorArguments = @(if ((Read-Receipt $root).PSObject.Properties['refresh_pending']) { 'setup', '--refresh-served', $root } else { 'doctor'; if ($answers.library) { '--workspace', [string]$answers.library } })
     $exe = Join-Path $currentLink 'bin\library.exe'
     if ($Json) {
         $doctor = Invoke-Library $exe ($doctorArguments + '--json')
@@ -1020,8 +1003,8 @@ try {
         $done = if ($status -eq 'upgraded') { "Deskpost is upgraded to $version." } else { "Deskpost $version is installed." }
         # AN UPGRADE KEEPS THE LIBRARIES IT SERVES (S74 row 1, a defect fix for the Report "with -InstallRoot on an existing
         # install, the installer asks the new-install Library question"): it names them, not "No Library was set up".
-        $kept = @(if ($answers.PSObject.Properties['kept_libraries']) { $answers.kept_libraries | Where-Object { $_ } })
-        Write-Host $(if ($answers.library) { "$done Your Library is at $($answers.library)." } elseif ($kept.Count) { "$done Kept as they are: $($kept -join ', ')." } else { "$done No Library was set up." })
+        $kept = @(foreach ($name in 'kept_libraries', 'refresh_libraries') { if ($answers.PSObject.Properties[$name]) { $answers.$name | Where-Object { $_ } } })
+        Write-Host $(if ($answers.library) { "$done Your Library is at $($answers.library)." } elseif ($kept.Count) { "$done Its Libraries: $($kept -join ', ')." } else { "$done No Library was set up." })
         Write-Host "  Command  deskpost: $command"
         if ($Plugin) { Write-Host "  Plugin   $pluginResult" }
         # THE FORK, OR ONE LINE (step 5). A person is offered the tutorial or the main menu once this script has let

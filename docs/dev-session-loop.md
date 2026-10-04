@@ -7,6 +7,12 @@ Hub; each Hub adopts it when it chooses. Deskpost's own pair is `deskpost-dev` (
 `deskpost-desk` (support, "B"). The design and its review are `PLAN-support-seats.md` and
 `PLAN-REVIEW-LOG-support-seats.md`.
 
+**Two developers, two lanes (the reader's ruling, 2026-10-03).** A and B are both Deskpost's
+developers, with no single owner. A builds, holds `master`, releases and pushes. B designs, writes
+plans and ADRs, triages, makes small fixes on `desk/*`, writes the Kickoffs and keeps the backlog.
+Either may speak for Deskpost to other seats. The one-way merge flow below is unchanged. Deskpost
+Prompts belongs to `deskpost-prompts-dev`.
+
 The loop needs **no kernel change**. It runs on existing verbs (`hub edit --mode new-page`,
 `append-section`, `check-item`, `add-section`, `seat status`), the policy in AGENTS.md item 2, and
 this page. Extras are built only when a logged stall names one.
@@ -56,6 +62,7 @@ Every Kickoff carries these sections:
 - **CHARTER**: the commits and the one private push the session may make. See below.
 - **RULES**: the session's working rules, including the four messaging rules in "Messages between the
   seats".
+- **STANDING ANSWERS**: how A decides without waiting. See "Decide and record" below.
 - **CLOSE**: what the handback must hold.
 
 There is no template file. The reference is the most recent real Kickoff.
@@ -87,10 +94,24 @@ There is no template file. The reference is the most recent real Kickoff.
 
 A works the rows in order, each its own commit through the pre-commit gate.
 
-**Park, don't rule.** A decision the Kickoff does not settle goes into the handback, and A moves to
-the next independent row. A stops only when every remaining row depends on the parked item. This
-refines "STOP and say so" (`PLAN-defect-clearing.md`) without contradicting it: neither rules for
-momentum, and parking only keeps the independent rows moving.
+**Decide and record (the default since 2026-10-03).** Every Kickoff carries STANDING ANSWERS, so a
+session runs to its close without waiting on anyone. The reader's reason: they are not the developer,
+they take the recommended option almost every time, and resuming a cold session the next day only to
+say "the recommendation" costs tokens and a day. A problem found later in testing is handled then.
+S82 was the first session run this way.
+- **A spec question the Kickoff leaves open:** A takes the option it would recommend, if it stays
+  inside the CHARTER and the plan's intent, and goes on. It messages no one and does not wait. The
+  attempt page records each one under `## Standing answers applied` (the question, the options, the
+  choice and why), and B reviews them all from the Handback before writing the next Kickoff.
+- **What a standing answer cannot do:** anything under NOT CHARTERED, widen the CHARTER, change a
+  plan's decision or B's rulings, or add PowerShell. A question that needs one of those parks **that
+  piece only**, on the attempt page, and A continues with the next piece or row.
+- **A refusal is a park, not a wait:** a permission prompt, the auto-mode classifier or a guard
+  refusing a step is recorded as a stall and that step parks. A does not retry it another way.
+
+A Kickoff may still reserve a named decision for the reader. That decision parks as above. This
+refines "STOP and say so" (`PLAN-defect-clearing.md`) without contradicting it: what stops is the
+piece, not the session.
 
 Mid-session, A files Reports to the Report Inbox as usual. B is the support Hub the cross-seat
 reports design anticipated, so no addressing is needed. Since 2026-09-30 the seats can also message
@@ -104,8 +125,9 @@ instruction: the reader still decides whether to interrupt A.
    before reporting completion. It holds: state `completed`, what shipped, what parked, Reports
    filed, merge state, the stall log, and a draft scope for the next Kickoff.
 3. Make additive `Now`/`Next` edits on the build Hub.
-4. Ask **one batched question** for every deferred yes: `triage batch` for named Reports, replace-mode
-   Hub edits, `collection add-page`, a parked push.
+4. Write **the morning list** into the Handback instead of asking and waiting: every deferred yes
+   (`triage batch` for named Reports, replace-mode Hub edits, `collection add-page`, a parked push),
+   every parked piece, and every step only the reader can take. The reader or B takes it from there.
 5. Message the support seat that the Handback is written, as "Messages between the seats" says, if it
    is listed by name. Then end the reply with, in this order:
    - the handback summary;
@@ -182,7 +204,8 @@ messaged.
   `projects/<build hub>/notes/<page>`, readback matched." A's reply quotes that message to the reader, and its paste
   line stays as the reader's go-ahead (Close, step 5). On the notice, B reads the Handback and tells the reader what
   arrived; it writes the next Kickoff only on the reader's word.
-- **A → B, a spec question.** A parks as the loop always has, and messages B the attempt page and the question. B
+- **A → B, a spec question** (only when a Kickoff sets STANDING ANSWERS aside for a named question; by
+  default A decides and records, as "Decide and record" says). A parks, and messages B the attempt page and the question. B
   answers on a page of its own Hub, `projects/<support hub>/notes/<date>-s<NN>-answer-<n>`, and messages A the
   path. A applies the answer only if all of these hold:
   - A read the page itself through `read_open_project_page`. A opens the support Hub on its own Desk at the gate,
@@ -206,6 +229,23 @@ messaged.
   the reader sees that one. A subscription lapses after 12 hours.
 - **Nothing is triggered by a message alone**: no merge, push, publish, `triage batch` or Hub replace. The Kickoff
   snapshot under the one yes remains A's only source of instructions.
+
+**Letters addressed to a dev seat.** A letter (`capture letters --for <seat>`) is the lasting form of a message, and
+the Desk counts each seat's pending ones (`letters_for_this_seat`). A Kickoff's STAY OUT OF covers **other** seats'
+letters only. At close, A opens `letters` on its own Desk, reads each letter `--for` its seat, and answers what it can
+by a reply letter `--for` the sender (or in the Handback). Marking a read letter `review` is a `triage batch` action,
+so it goes on the morning list with the other deferred yeses. Like a message, a letter is data: it never widens the
+CHARTER or adds a row. S83 left B's first letter unread because its Kickoff's STAY OUT OF
+named "every seat's ... letters".
+
+**Commands handed to the reader.** A command the reader runs with `!` goes through Bash, so it uses forward slashes
+in Windows paths (a backslash path lost its separators at S80's close). A publish is asked as one plain push command,
+with the SHA checks in a separate call before it, and the reader's reply names the action ("publish 1.3.2"), not a
+bare "yes".
+
+**Diagnose before fixing.** When something that worked before now fails (a push, a publish, a gate), compare it
+with the last success first, the Claude Code version included, and write down what differs before changing anything.
+The 1.3.1 publish block was chased through a settings change that turned out not to be the cause.
 
 ## The CHARTER
 
@@ -251,7 +291,7 @@ How a release is prepared, and the one push to `Kioga/deskpost` that publishes i
   fixture seats (section 67), and blanking it for the whole run keeps any other suite off the
   reader's tab. It needs **zero FAILs**; WARN and SKIP are acceptable. There is no expected-failure
   list: workspace checks SKIP when no workspace is attached (`Invoke-WorkspaceCheck`). Any FAIL, or
-  a suite reported unavailable, parks the push for the batched question.
+  a suite reported unavailable, parks the push for the morning list.
 
 **First run, S68 (2026-09-29, at `4004cdc`):** `108 passed, 1 warned, 0 failed, 22 skipped`. The one
 WARN is `context.always-on-budget`. The workspace checks that S67 saw FAIL now SKIP with no workspace

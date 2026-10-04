@@ -93,26 +93,93 @@ export function libraryKernelBinaries(library: string): string[] {
     }
     walk(tree);
   }
+  // A CODEX-ONLY LIBRARY IS STILL SERVED (PLAN-one-upgrade.md r6 amendment 10): its only surviving binding can be the
+  // reader in `.codex/config.toml`, which is TOML, so its servers' `command` and `args` are read line by line.
+  found.push(...codexConfigKernelBinaries(path.join(library, '.codex', 'config.toml')));
   return found;
 }
 
-/** The registered Libraries' folders, as the registry holds them. A registry that exists and cannot be read refuses. */
-export function registeredLibraryFolders(registryRoot?: string): string[] {
+/** A TOML basic string's value, or null when the text is not one. Only the escapes a rendered path can hold. */
+function tomlBasicString(text: string): string | null {
+  const match = /^"((?:[^"\\]|\\.)*)"$/.exec(text.trim());
+  return match ? match[1]!.replace(/\\(["\\])/g, '$1') : null;
+}
+
+/** The kernel binaries a Codex config's MCP servers run with `mcp` as their first argument. */
+function codexConfigKernelBinaries(file: string): string[] {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+  } catch {
+    return [];
+  }
+  const found: string[] = [];
+  const servers: { command: string | null; firstArg: string | null }[] = [];
+  let current: { command: string | null; firstArg: string | null } | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^\[\s*([^\]]+?)\s*\]$/.exec(line);
+    if (header) {
+      current = header[1]!.startsWith('mcp_servers.') ? { command: null, firstArg: null } : null;
+      if (current) servers.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const command = /^command\s*=\s*(.+)$/.exec(line);
+    if (command) current.command = tomlBasicString(command[1]!);
+    const args = /^args\s*=\s*\[\s*("(?:[^"\\]|\\.)*")/.exec(line);
+    if (args) current.firstArg = tomlBasicString(args[1]!);
+  }
+  for (const server of servers) {
+    if (server.command !== null && isKernelBinary(server.command) && (server.firstArg ?? '').toLowerCase() === 'mcp') found.push(server.command);
+  }
+  return found;
+}
+
+/**
+ * The registry's Libraries: the ones whose folders are there, and the ones it names that cannot be reached -- a folder
+ * gone or on a drive not attached. A registry that exists and cannot be read refuses.
+ */
+export function registeredLibraries(registryRoot?: string): { reached: string[]; unreached: string[] } {
   const file = registryPath(registryRoot);
-  if (!fs.existsSync(file)) return [];
+  if (!fs.existsSync(file)) return { reached: [], unreached: [] };
   let rows: unknown;
   try {
     rows = (JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as { workspaces?: unknown }).workspaces;
   } catch {
     throw new DiscoveryRefusal(`${file}, the registry of this machine's Libraries, cannot be read, so the installs it points to cannot be checked. Repair or move it aside; nothing was changed.`);
   }
-  const out: string[] = [];
+  const reached: string[] = [];
+  const unreached: string[] = [];
   for (const row of Array.isArray(rows) ? rows : []) {
     if (!row || typeof row !== 'object') continue;
-    const root = toWorkspaceRoot(String((row as Record<string, unknown>)['path'] ?? ''));
-    if (root && fs.existsSync(root)) out.push(root);
+    const written = String((row as Record<string, unknown>)['path'] ?? '');
+    const root = toWorkspaceRoot(written);
+    if (root && fs.existsSync(root)) reached.push(root);
+    else if (written.trim()) unreached.push(root ?? written);
   }
-  return out;
+  return { reached, unreached };
+}
+
+/** The registered Libraries' folders that are there, as the registry holds them. */
+export function registeredLibraryFolders(registryRoot?: string): string[] {
+  return registeredLibraries(registryRoot).reached;
+}
+
+/**
+ * THE LIBRARIES AN INSTALL SERVES (D8): every registered Library whose own registrations run this install's kernel,
+ * through `current` or a `versions/<v>` folder, and every registered Library that could not be reached, so whether it
+ * is served cannot be told. The second list is never dropped in silence (Fable round 1, 9).
+ */
+export function librariesServedByRoot(root: string, registryRoot?: string): { served: string[]; unreached: string[] } {
+  const { reached, unreached } = registeredLibraries(registryRoot);
+  const served = reached.filter((library) =>
+    libraryKernelBinaries(library).some((binary) => {
+      const by = installRootByShape(binary);
+      return by !== null && sameFolder(by, root);
+    }),
+  );
+  return { served, unreached };
 }
 
 export interface FoundInstall {

@@ -172,7 +172,7 @@ $binaryVersion = Read-ManifestVersion (Join-Path $SourceRoot 'kernel/package.jso
 if ($binaryVersion -notmatch '^[0-9A-Za-z.+-]+$') { throw "kernel/package.json's version '$binaryVersion' is not one a build can define." }
 $workspaceSchema = 1
 
-$files = @(Get-PublicTreeFiles -Workspace $SourceRoot)
+$files = @(Get-PublicTreeFiles -Workspace $SourceRoot | & $Bun (Join-Path (Split-Path -Parent $PSScriptRoot) 'kernel/src/releasefiles.ts') --tree $SourceRoot)
 if (-not $files.Count) { throw "the public allowlist admits no file under $SourceRoot." }
 if (@($files | Where-Object { $_ -like 'bin/*' -or $_ -eq 'release.json' }).Count) {
     throw 'the public tree already holds bin/ or release.json, which a release writes; the two would collide.'

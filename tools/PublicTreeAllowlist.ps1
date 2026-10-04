@@ -114,14 +114,13 @@ $script:PublicTreeIncludeFiles = @(
     # THE PAGE AN ASSISTANT INSTALLS FROM (PLAN-assistant-onboarding.md step 1, S57). A release ships it beside the
     # installers, copied from here, and the README's one sentence points an assistant at the release's copy.
     'llms-install.md',
-    # THE ENTRY POINT, and it is product before anything else here is. library desk is what the
-    # workspace instructions this tree ships tell a reader to type, so a published program without
-    # it is one whose own first instruction refuses. The .cmd shim travels with the .ps1 it names:
-    # %~dp0 is what keeps the pair together, and one without the other is a command that resolves
-    # and then cannot run.
-    # Three names for one command, and each is the only one its shell will resolve: library.cmd"
-  
-    # for the dispatcher both of them exec.
+    # THE SOURCE CHECKOUT'S ENTRY POINT: three names for one command, each the only one its shell
+    # resolves -- library.cmd for cmd.exe and PowerShell, the extensionless library for a POSIX
+    # shell, and library.ps1, the dispatcher both of them exec. They travel together in the public
+    # tree. A RELEASE DROPS library.cmd AND library.ps1 (PLAN-no-powershell-runtime.md D9, S83): an
+    # install's shims call current\bin\library.exe, and kernel/src/releasefiles.ts filters them, with
+    # every .ps1 outside the installer and the reader adapter's closure, out of the archive only. The
+    # extensionless library stays, because install.sh chmods it in the extracted tree.
     'library',
     'library.cmd',
     'library.ps1',

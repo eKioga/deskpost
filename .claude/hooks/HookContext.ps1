@@ -14,7 +14,7 @@
     boundary here is deliberately narrow: payload in, JSON out, and the serve ledger.
 
     THE SERVE LEDGER is what makes just-in-time instruction injection affordable. A hook that
-    re-injects a playbook section on every call charges the reader for it every time; a hook that
+    re-injects a block on every call charges the reader for it every time; a hook that
     injects it once per session charges once and then rots along with everything else. The ledger
     splits the difference -- once per session per key, and `Clear-HookServed` empties the session's
     keys when the context that held them is summarised away, which is exactly what

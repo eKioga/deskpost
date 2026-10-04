@@ -13,6 +13,9 @@ How a release goes from `master` to the public download, and the exact commands 
    milestones it carries move to **Released** with its date, and the README's **Roadmap** section names it as the
    current release, with the next milestones. The public README is copied from this commit, so it is true on the
    day the release ships.
+   The same commit checks `docs/guides/` against the milestones the release carries: a guide that is wrong or
+   silent about one is fixed before the bump. It also moves the README's `Status:` line to the release's minor
+   version.
 2. **Prepare, locally, in a publish folder** outside the checkout (`<publish>`). It holds the publish script, its
    archive audit, `pub-commit.txt` (the release notes, which become the public commit's text) and `pub-tag.txt`. The
    script:

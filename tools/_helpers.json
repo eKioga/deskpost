@@ -7,10 +7,6 @@
     "test": "A test runner, invoked by Invoke-LibraryChecks.ps1 rather than by the Librarian. Must NOT be allowlisted."
   },
   "helpers": {
-    "Finish-Uninstall.ps1": {
-      "role": "internal",
-      "summary": "The uninstall finisher (PLAN-install-onboarding.md step 8, S54): started by `deskpost uninstall` as a copy in %TEMP%, it hands ownership over through a two-way handshake, waits for the program to exit, then removes the PATH entry and the frozen list of program files -- links as links, files only while they still match -- and clears the receipt only on completion. install.ps1 carries its removal block byte for byte for -Resume finish."
-    },
     "AcceptanceFixtures.ps1": {
       "role": "internal",
       "summary": "The eight fixture workspace shapes the supported-operation matrix runs over (PLAN-public-release.md step 23), built through the real writers rather than composed by hand. Dot-sourced by AcceptanceMatrix.ps1."

@@ -578,12 +578,12 @@ plain sentence, and wait.** Do not guess it from the repository, and do not star
 
 Then bind it from a tool call **in this conversation**, so the seat binds to this agent process:
 
-    tools/Enter-LibrarySeat.ps1 -Seat <name>
+    deskpost seat enter <name>
 
-A seat that does not exist yet takes one confirmation of both slugs: run `-Create -Preflight` with
-that name, show the reader the seat and the Project it would be bound to, and rerun with
-`-UserConfirmed` and the exact `-ApprovedPlanId` after one clear yes. A reader already at a terminal
-starts one instead with `tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>`.
+A seat that does not exist yet takes one confirmation of both slugs: run it with `--create
+--project <project-slug> --preflight`, show the reader the seat and the Project it would be bound
+to, and rerun with the exact `--plan-id` after one clear yes. A reader already at a terminal
+starts one instead with `deskpost seat start <name> --project <project-slug>`.
 
 ## Writing into `notebook/`
 
@@ -930,7 +930,7 @@ already records: a fixture that spells the layout itself keeps passing against a
 has stopped using — it defends the stale shape rather than catching the drift.
 
 **The workspace-from-Desk-directory derivation existed in four places, not the two the plan named.**
-`Guard-ShelfBookRead` and `Get-PlaybookContext` were the two it named. The reader adapter had two more
+`Guard-ShelfBookRead` and `Get-PlaybookContext` (retired in 1.3.2) were the two it named. The reader adapter had two more
 (`Read-ShelfBookPage`, `Read-ShelfCatalog`) and Discovery and open-Book search had one each, all
 spelled `Split-Path -Parent $DeskStateDirectory`. Each was correct only while the Desk directory and
 the state directory were the same directory; with seats they yield `.claude/seats`, so Discovery

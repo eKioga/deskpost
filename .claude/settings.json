@@ -120,17 +120,6 @@
                             "-File",
                             "${CLAUDE_PROJECT_DIR}/.claude/hooks/Guard-ShellShelfRead.ps1"
                         ]
-                    },
-                    {
-                        "type": "command",
-                        "command": "powershell.exe",
-                        "args": [
-                            "-NoProfile",
-                            "-ExecutionPolicy",
-                            "Bypass",
-                            "-File",
-                            "${CLAUDE_PROJECT_DIR}/.claude/hooks/Get-PlaybookContext.ps1"
-                        ]
                     }
                 ]
             }

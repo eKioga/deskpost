@@ -74,7 +74,7 @@ $hashes = @{}; foreach ($f in '.claude\settings.local.json', '.codex\hooks.json'
 try { & $installer -Release $Release -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "upgrade: $($_.Exception.Message)" }
 $record = Get-Content "$R\current.json" -Raw | ConvertFrom-Json
 Check ($ok -and $record.version -eq $version -and $record.previous -eq '1.0.0') "the upgrade from the real 1.0.0 is in place ($($record.version), previous $($record.previous))"
-Check (@('.claude\settings.local.json', '.codex\hooks.json', '.mcp.json' | Where-Object { (Get-FileHash "$L\$_").Hash -ne $hashes[$_] }).Count -eq 0) 'the upgrade left the 1.0 Library''s registrations byte for byte'
+Check ((Get-FileHash "$L\.codex\hooks.json").Hash -ne $hashes['.codex\hooks.json'] -and @(([IO.File]::ReadAllText("$L\.codex\hooks.json") | ConvertFrom-Json).hooks.PSObject.Properties | ForEach-Object { $_.Value } | ForEach-Object { $_.hooks } | ForEach-Object { [string]$_.command } | Where-Object { $_.StartsWith('& "') }).Count -eq 0) 'the upgrade brought the 1.0 Library''s registrations up to date (its Codex hooks no longer the double-quoted render)'
 $doctor = & "$R\bin\deskpost.cmd" doctor --workspace $L --json | ConvertFrom-Json
 $codexRow = @($doctor.checks | Where-Object { $_.check -eq 'workspace.codex-guards-registered' })
 Check ($doctor.failed -eq 0 -and $codexRow.Count -eq 1 -and $codexRow[0].status -ne 'fail') "1.1's doctor is green on 1.0's registrations, the double-quoted Codex render included ($($doctor.failed) failed; codex $($codexRow[0].status))"
@@ -148,9 +148,8 @@ $env:DESKPOST_UNINSTALL_FAULT = ''
 $handshake = Get-ChildItem $env:TEMP -Filter 'deskpost-finish-*.handshake' | Where-Object { $_.LastWriteTime -ge $started } | Sort-Object LastWriteTime | Select-Object -Last 1
 $receipt = Receipt $R6
 Check ($ok -and $LASTEXITCODE -ne 0 -and $out -match 'finisher did not start' -and $null -ne $handshake -and (Get-Content $handshake.FullName -Raw) -match 'cancel' -and $receipt.pending.operation -eq 'uninstall') "with no finisher, the handshake writes cancel and pending stays ($(($out.Trim() -split "`n")[-1]))"
-$copy = $handshake.FullName -replace '\.handshake$', '.ps1'
 $lateResult = Join-Path $Work 'late-result.json'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $copy -ParentProcessId 999999 -Root $R6 -Handshake $handshake.FullName -Transaction ([string]$receipt.pending.id) -Result $lateResult | Out-Null
+& "$R6\current\bin\library.exe" finish-uninstall --parent-pid 999999 --root $R6 --handshake $handshake.FullName --transaction ([string]$receipt.pending.id) --result $lateResult | Out-Null
 $late = if (Test-Path $lateResult) { Get-Content $lateResult -Raw | ConvertFrom-Json } else { $null }
 Check ($null -ne $late -and $late.status -eq 'cancelled' -and @(Get-ChildItem $R6 -Recurse -Force).Count -eq $before) "a late finisher that finds cancel deletes nothing ($($late.status))"
 try { & $installer -Release $Release -InstallRoot $R6 -Yes -NoPathChange -Resume finish | Out-Null; $ok = $true } catch { $ok = $false; "resume 6: $($_.Exception.Message)" }

@@ -34,6 +34,10 @@ machine runs set-up again to name its own.
 `library basic-memory disconnect` removes the connection. Neither your Library's Books nor the server's
 are touched.
 
+On Windows, a Library connected to Basic Memory still uses PowerShell for the reader that opens its
+shared Books, so PowerShell must stay installed there. Everything else the program does runs without
+it from 1.3.2.
+
 ## Seeing how the two differ
 
 > Ask: **"How does my Library compare with Basic Memory?"** (`library basic-memory status`)

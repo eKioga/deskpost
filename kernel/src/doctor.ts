@@ -50,6 +50,7 @@ import {
   type OwnerRow,
 } from './notebook.ts';
 import { readNotebookLayout, seatNotebookRoots } from './notebooklayout.ts';
+import { librariesServedByRoot, sameFolder } from './installs.ts';
 import { asList, codexHookShapeFaults, enabledClaudePluginHooks, codexRegistrationProblems, claudeHookShapeFaults, hookRegistrationProblems, isObject, REQUIRED_HOOKS, type Json } from './hookregistry.ts';
 import { COMMAND_NAME, findAssistant, installRootOf, installShim, ownedRegistration, programOfBinary, programRelation, readInstallReceipt, resolveOnPath } from './machine.ts';
 
@@ -1040,11 +1041,86 @@ export interface DoctorResult {
 }
 
 export function runDoctor(argv: string[], program: string): DoctorResult {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, ['workspace', 'served-by', 'kept', 'registry-root']);
+  if (parsed.options.has('served-by')) return runServedBy(argv, parsed.options.get('served-by')!, program, parsed.options.get('registry-root'));
   const resolved = resolveWorkspace({ explicit: parsed.options.get('workspace') });
   if (resolved.kind === 'conflict') return { refusal: resolved.reason ?? 'the workspace selection is contradictory', value: null, exitCode: 1 };
   const workspace = resolved.kind === 'resolved' ? path.resolve(resolved.workspace!) : '';
+  const { results, programChecks } = doctorChecks(workspace, program);
 
+  const count = (status: string): number => results.filter((row) => row.status === status).length;
+  const failed = count('fail');
+  const programFailed = programChecks.filter((row) => row.status === 'fail').length;
+  return {
+    refusal: null,
+    value: {
+      operation: 'Library Checks',
+      program,
+      workspace,
+      total: results.length,
+      passed: count('pass'),
+      warned: count('warn'),
+      failed,
+      skipped: count('skipped'),
+      checks: results as unknown as PsJsonValue,
+      program_checks: programChecks as unknown as PsJsonValue,
+      shared_library_write: false,
+    },
+    exitCode: failed || programFailed ? 1 : 0,
+  };
+}
+
+/** The checks that need no Library: the program's own, run once whatever the Libraries are. */
+const PROGRAM_WIDE_CHECKS = new Set(['program.command-resolves', 'program.assistant-present', 'settings.user-inbound', 'program.refresh-finished']);
+
+/**
+ * `doctor --served-by <root>` (D8, PLAN-one-upgrade.md r6 amendment 10): every Library the install at <root> serves,
+ * each with its own checks, and the registered Libraries that could not be reached, named rather than dropped. A
+ * Library named with `--kept <folder>` (kept as it is, or refused by the refresh) reports a failing check as a WARN, so
+ * the Library the reader chose to keep never turns the install red; any other failing check does. `--workspace` keeps
+ * its one-Library shape, which the acceptance matrix compares row for row.
+ */
+function runServedBy(argv: string[], root: string, program: string, registryRoot: string | undefined): DoctorResult {
+  // `--kept` MAY BE GIVEN MORE THAN ONCE, one folder each, so it is read off the arguments rather than the one-value map.
+  const kept = argv.flatMap((item, index) => (item === '--kept' && index + 1 < argv.length ? [path.resolve(argv[index + 1]!)] : []));
+  let found: { served: string[]; unreached: string[] };
+  try {
+    found = librariesServedByRoot(path.resolve(root), registryRoot);
+  } catch (error) {
+    return { refusal: (error as Error).message, value: null, exitCode: 1 };
+  }
+  let programChecks: CheckResult[] | null = null;
+  let failed = 0;
+  const libraries = found.served.map((workspace) => {
+    const { results, programChecks: own } = doctorChecks(workspace, program);
+    if (programChecks === null) programChecks = own.filter((row) => PROGRAM_WIDE_CHECKS.has(row.check));
+    const isKept = kept.some((folder) => sameFolder(folder, workspace));
+    const checks = [...results, ...own.filter((row) => !PROGRAM_WIDE_CHECKS.has(row.check))].map((row) =>
+      isKept && row.status === 'fail' ? { ...row, status: 'warn', detail: `kept as it is, not brought up to date: ${row.detail}` } : row,
+    );
+    failed += checks.filter((row) => row.status === 'fail').length;
+    return { workspace, kept: isKept, checks };
+  });
+  const wide = programChecks ?? doctorChecks('', program).programChecks.filter((row) => PROGRAM_WIDE_CHECKS.has(row.check));
+  const programFailed = wide.filter((row) => row.status === 'fail').length;
+  return {
+    refusal: null,
+    value: {
+      operation: 'Library Checks',
+      program,
+      served_by: path.resolve(root),
+      libraries: libraries as unknown as PsJsonValue,
+      unreached: found.unreached,
+      failed: failed + programFailed,
+      program_checks: wide as unknown as PsJsonValue,
+      shared_library_write: false,
+    },
+    exitCode: failed || programFailed ? 1 : 0,
+  };
+}
+
+/** One Library's checks, and the program's: `results` the workspace rows the PowerShell runner compares row for row. */
+function doctorChecks(workspace: string, program: string): { results: CheckResult[]; programChecks: CheckResult[] } {
   const checks: [string, () => string][] = [
     ['workspace.guards-registered', () => guardsRegistered(workspace, program)],
     ['workspace.codex-guards-registered', () => codexGuardsRegistered(workspace, program)],
@@ -1077,26 +1153,25 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
     // AND THESE TWO (S79 row 3): the PowerShell runner has no inbound policy. WARNs, never FAILs.
     workspace ? runCheck('seats.inbound-policy', () => seatInboundFiles(workspace)) : { check: 'seats.inbound-policy', status: 'skipped', detail: 'no Library here, so no seats whose inbound files to check' },
     runCheck('settings.user-inbound', userInboundSetting),
+    ...refreshUnfinished(program),
   ];
+  return { results, programChecks };
+}
 
-  const count = (status: string): number => results.filter((row) => row.status === status).length;
-  const failed = count('fail');
-  const programFailed = programChecks.filter((row) => row.status === 'fail').length;
-  return {
-    refusal: null,
-    value: {
-      operation: 'Library Checks',
-      program,
-      workspace,
-      total: results.length,
-      passed: count('pass'),
-      warned: count('warn'),
-      failed,
-      skipped: count('skipped'),
-      checks: results as unknown as PsJsonValue,
-      program_checks: programChecks as unknown as PsJsonValue,
-      shared_library_write: false,
-    },
-    exitCode: failed || programFailed ? 1 : 0,
-  };
+/**
+ * AN APPROVED REFRESH THAT DID NOT FINISH IS NAMED (PLAN-one-upgrade.md r8 R2b): the install's receipt still carries
+ * `refresh_pending`, so a Library it serves may be behind the program. A WARN, with both routes; no row otherwise, so a
+ * finished install's report is as it was.
+ */
+function refreshUnfinished(program: string): CheckResult[] {
+  const root = installRootOf(program);
+  if (root === null) return [];
+  const receipt = readInstallReceipt(root);
+  const raw = receipt?.['refresh_pending'];
+  if (raw === undefined || raw === null || raw === '') return [];
+  return [{
+    check: 'program.refresh-finished',
+    status: 'warn',
+    detail: `an approved refresh of the Libraries this install serves did not finish. Run the install one-liner again (it finishes the refresh and changes nothing else), or ${COMMAND_NAME} init <folder> in each Library.`,
+  }];
 }

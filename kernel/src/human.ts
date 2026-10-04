@@ -71,6 +71,7 @@ function tally(rows: Row[]): string {
 
 /** doctor's report as lines. With no Library it says so, rather than listing nine skips as if they were answers (F4). */
 export function doctorText(report: Record<string, unknown>, glyphs: Marks = marks()): string {
+  if (Array.isArray(report['libraries'])) return servedByText(report, glyphs);
   const checks = (report['checks'] as Row[] | undefined) ?? [];
   const program = (report['program_checks'] as Row[] | undefined) ?? [];
   const workspace = String(report['workspace'] ?? '');
@@ -90,6 +91,29 @@ export function doctorText(report: Record<string, unknown>, glyphs: Marks = mark
         ? 'Nothing failed.'
         : `Nothing failed. To check a Library, run ${COMMAND_NAME} doctor inside it, or pass --workspace <folder>.`,
   );
+  return lines.join('\n');
+}
+
+/**
+ * `doctor --served-by <root>` as lines (D8): the program's own checks once, then each Library the install serves under
+ * its folder, then any registered Library that could not be reached. A kept Library says so beside its folder.
+ */
+function servedByText(report: Record<string, unknown>, glyphs: Marks): string {
+  const program = (report['program_checks'] as Row[] | undefined) ?? [];
+  const libraries = report['libraries'] as { workspace: string; kept: boolean; checks: Row[] }[];
+  const unreached = (report['unreached'] as string[] | undefined) ?? [];
+  const lines = ['Deskpost doctor', `  Program  ${String(report['program'] ?? '')}`, `  Serves   ${libraries.length} Librar${libraries.length === 1 ? 'y' : 'ies'} of the install at ${String(report['served_by'] ?? '')}`, ''];
+  const shown = [...program, ...libraries.flatMap((library) => library.checks)];
+  lines.push(...rowLines(program, glyphs, shown));
+  for (const library of libraries) {
+    lines.push('', `  Library  ${library.workspace}${library.kept ? '  (kept as it is)' : ''}`);
+    lines.push(...rowLines(library.checks, glyphs, shown));
+  }
+  for (const folder of unreached) lines.push('', `${glyphs.warn} Could not reach the registered Library ${folder}, so whether this install serves it is not known.`);
+  lines.push('');
+  lines.push(`Program: ${tally(program)}.` + libraries.map((library) => ` ${library.workspace}: ${tally(library.checks)}.`).join(''));
+  const failed = Number(report['failed'] ?? 0);
+  lines.push(failed ? `${failed} check${failed === 1 ? '' : 's'} failed; each line above says how to fix it.` : 'Nothing failed.');
   return lines.join('\n');
 }
 

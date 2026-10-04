@@ -782,6 +782,21 @@ function ConvertTo-AcceptanceInstalledRemedy {
                     'Add-ShelfBookPage' { "library book add-page $(& $named 'bookslug' '<slug>') $(& $named 'pagepath' '<page>') --content-path <file>" }
                     'Edit-ProjectHub' { "library hub edit $(& $named 'projectslug' '<slug>') --mode $(& $named 'mode' '<mode>')" }
                     'New-ProjectHub' { "library hub new $(& $named 'projectslug' '<slug>') --title <title>" }
+                    'Set-CollectionOwner' {
+                        $command = if ($given.ContainsKey('acquire')) { 'library collection owner --acquire' + $(if ($given.ContainsKey('force')) { ' --force' } else { '' }) }
+                        elseif ($given.ContainsKey('release')) { 'library collection owner --release' }
+                        else { 'library collection owner --status' }
+                        # All switches: a word taken as the last one's value is the sentence's own, put back (remedy.ts).
+                        $last = @([regex]::Matches($rest, "-([A-Za-z]+)(?:\s+($($script:RemedyValue)))?")) | Select-Object -Last 1
+                        if ($null -ne $last -and $last.Groups[2].Success) { "$command $($last.Groups[2].Value)" } else { $command }
+                    }
+                    'Archive-ShelfBook' {
+                        $action = (& $named 'action' '').ToLowerInvariant()
+                        if (@('restore', 'archive') -contains $action) { "library shelf $action $(& $named 'bookslug' '<slug>')" } else { $null }
+                    }
+                    'Copy-LocalPagesToProject' { "library hub copy-pages $(& $named 'projectslug' '<slug>')" }
+                    'Initialize-LibraryWorkspace' { 'library init' }
+                    'Invoke-LibraryTriage' { if ($rest.Trim()) { $null } else { 'library triage' } }
                     'Restore-NotebookQuarantine' {
                         if ($given.ContainsKey('list')) { 'library reset restore --list' }
                         elseif ($given.ContainsKey('quarantine')) {
@@ -798,7 +813,8 @@ function ConvertTo-AcceptanceInstalledRemedy {
                     default { $null }
                 }
                 if ($null -ne $replaced) { return [string]$replaced }
-                "powershell -ExecutionPolicy Bypass -File `"$ProgramRoot\tools\$helper.ps1`"$rest"
+                # kernel/src/remedy.ts NOT_SHIPPED (S83, D4): a release ships no tools/*.ps1, so no path and no PowerShell.
+                "$helper$rest (a helper in the Deskpost source checkout; this installed program does not ship it)"
             })
     }
     $out = [regex]::Replace($out, '\bpass -WorkspacePath\b', 'pass --workspace')

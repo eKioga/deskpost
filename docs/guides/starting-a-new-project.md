@@ -17,7 +17,7 @@ flowchart TD
     A["You: “I want to start a project on X”"] --> B["Librarian: proposes a slug,\nshows what it will create"]
     B --> C["You: one clear yes"]
     C --> D["The Hub now exists"]
-    D --> E["You, in a terminal:\nlibrary seat start ‹seat› --project ‹slug›"]
+    D --> E["You, in a terminal:\ndeskpost seat start ‹seat› --project ‹slug›"]
     E --> G["Your seat, your Desk,\nthe Hub open on it"]
     G --> H["You: put source files in\nraw/‹slug›/‹batch›/"]
     H --> I["You: “compile that batch”\nLibrarian previews, you say yes"]
@@ -86,7 +86,7 @@ there. Add `--command codex` for Codex. Next time, `deskpost seat start fallout`
 - **The seat's name does not have to match the slug**, though life is easier when it does.
 
 **A session that starts without a seat tells you so and asks.** In Claude Code you can answer in the
-conversation and it binds that seat there. On Windows it also lists the seats that exist and puts a
+conversation and it binds that seat there. It also lists the seats that exist and puts a
 resumed conversation back at the seat it last held. In Codex, leave and use `deskpost seat start`.
 
 ## Step 3: what is on your Desk

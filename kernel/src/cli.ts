@@ -50,6 +50,8 @@ import { BASIC_MEMORY_ACTIONS } from './bmactions.ts';
 import { doctorText, initText } from './human.ts';
 import { runSetupVerb } from './setup.ts';
 import { rollbackVerb, uninstallVerb } from './lifecycle.ts';
+import { runProcessVerb } from './processverb.ts';
+import { runFinishUninstall } from './finisher.ts';
 import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
 
 
@@ -424,6 +426,20 @@ async function main(argv: string[]): Promise<number> {
       if (result.value !== null) emit(result.value, result.asJson, result.humanText);
       else if (result.humanText) writeStdout(result.humanText);
       return result.exitCode;
+    }
+
+    case 'finish-uninstall': {
+      if (process.platform !== 'win32') refuse('library finish-uninstall finishes a Windows uninstall; it is started by `deskpost uninstall` and never run by hand.');
+      const result = runFinishUninstall(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      return result.exitCode;
+    }
+
+    case 'process': {
+      const result = await runProcessVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, true);
+      return 0;
     }
 
     // AN INSTALL'S LIFE AFTER IT IS MADE (PLAN-install-onboarding.md step 8, ADR-0058).

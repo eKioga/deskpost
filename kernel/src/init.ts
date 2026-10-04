@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 import { psConvertToJson, psJsonString, type PsJsonValue } from './psjson.ts';
 import { ensureDirectory, readTextIfPresent, writeAtomicText } from './fsx.ts';
 import { createShelfBook } from './shelf.ts';
-import { invokeShelfCatalogRender, shelfCatalogText } from './shelfcatalog.ts';
+import { ENTRY_NAME as SHELF_ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogText } from './shelfcatalog.ts';
 import { emptyMasterIndexText } from './notebook.ts';
 import {
   markerField,
@@ -43,7 +43,7 @@ import {
 } from './workspace.ts';
 import { HOOK_VERB_FOR_SCRIPT } from './hookregistry.ts';
 import { entryInvocation } from './machine.ts';
-import { skillPlans } from './skillcopy.ts';
+import { SKILL_MANIFEST, skillPlans } from './skillcopy.ts';
 
 const SECTION_BEGIN = '<!-- library:begin -->';
 const SECTION_END = '<!-- library:end -->';
@@ -444,9 +444,10 @@ function claudeKernelHook(programRoot: string, verb: string): Record<string, unk
 }
 
 /**
- * The program's own registrations, each hook the kernel has ported re-spelled as its verb. Each it has not -- the
- * playbook, the search-hit reminder, the compaction and seat-start hooks, all optional -- is left out on POSIX rather
- * than registered as a command that cannot start, and kept on Windows, which has the PowerShell to run it (S48).
+ * The program's own registrations, each hook the kernel has ported re-spelled as its verb (the compaction clear, the
+ * search-hit reminder and seat start since S82, when the playbook hook was retired: ADR-0064, so every hook the program
+ * registers has a verb). One with no verb would be left out on POSIX rather than registered as a command that cannot
+ * start, and kept on Windows, which has the PowerShell to run it (S48).
  * Matchers, timeouts and messages are kept.
  */
 function kernelHookRegistration(hooks: unknown, programRoot: string): Record<string, unknown> | null {
@@ -797,7 +798,49 @@ function codexConfigPlan(filePath: string, desired: string): PlanResult {
         'aside and re-run; nothing has been written.',
     };
   }
+  // THE MARKER SAYS WHO WROTE THE FILE, NOT THAT NOTHING WAS ADDED SINCE (PLAN-one-upgrade.md r6 amendment 2). The whole
+  // file is replaced, so a server or setting the reader added below the marker was silently dropped. Now anything the
+  // managed render does not carry -- a table, a key, a line -- refuses, and the file is left byte for byte.
+  const added = codexConfigAdditions(text, desired);
+  if (added.length) {
+    return {
+      action: 'refuse',
+      content: null,
+      reason:
+        `${filePath}: your Codex config has entries Deskpost did not write (${added.join('; ')}), so it cannot be ` +
+        'brought up to date without discarding them. Move them into $CODEX_HOME/config.toml, which Codex loads ' +
+        'alongside this file, or remove them, and re-run; nothing has been written.',
+    };
+  }
   return { action: 'merge', content: desired, reason: null };
+}
+
+/**
+ * Each table, key and other line in a Codex config, by table: `[table]` for a header, `table.key` for a setting, and
+ * the trimmed text of anything else. Comments and blank lines say nothing to Codex and are not entries.
+ */
+function codexConfigEntries(text: string): Set<string> {
+  const entries = new Set<string>();
+  let table = '';
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const header = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line);
+    if (header) {
+      table = header[1]!;
+      entries.add(`[${table}]`);
+      continue;
+    }
+    const key = /^("[^"]*"|[A-Za-z0-9_.-]+)\s*=/.exec(line);
+    entries.add(key ? `${table}.${key[1]}` : line);
+  }
+  return entries;
+}
+
+/** What an existing managed Codex config carries that the managed render does not: the reader's own entries. */
+function codexConfigAdditions(existing: string, desired: string): string[] {
+  const managed = codexConfigEntries(desired);
+  return [...codexConfigEntries(existing)].filter((entry) => !managed.has(entry));
 }
 
 // --- the registry ----------------------------------------------------------------------------------
@@ -897,6 +940,79 @@ const STANDARD_SHELF_BOOKS: StandardShelfBook[] = [
     growingAt: '5 pending or 7 days',
   },
 ];
+
+/** How init leaves one standard Book: made, finished from a cut-short apply, its entry brought up to date, or as it is. */
+interface StandardBookPlan {
+  book: StandardShelfBook;
+  action: 'created' | 'completed' | 'amended' | 'unchanged';
+  /** The entry's new text, when `amended`. */
+  entry?: string;
+  /** A capture Book whose `wiki/notes` folder is missing. */
+  notesMissing?: boolean;
+}
+
+/** Every file below a folder, relative and forward-slashed, sorted. */
+function filesBelow(root: string): string[] {
+  const out: string[] = [];
+  const walk = (relative: string): void => {
+    for (const item of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
+      const child = relative ? `${relative}/${item.name}` : item.name;
+      if (item.isDirectory()) walk(child);
+      else out.push(child);
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+/**
+ * EVERY FILE THE STANDARD RENDER WRITES FOR ONE BOOK, byte for byte, Book-relative: the same writer `init` plans with,
+ * run on an empty scratch Shelf. What a partly created Book is compared against.
+ */
+function standardBookFiles(programRoot: string, book: StandardShelfBook): Map<string, Buffer> {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-standard-'));
+  try {
+    fs.mkdirSync(path.join(scratch, 'shelf'));
+    createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, closedBy: book.closedBy, letters: book.letters, growingAt: book.growingAt, origin: book.origin });
+    const root = path.join(scratch, 'shelf', book.slug);
+    return new Map(filesBelow(root).map((relative) => [relative, fs.readFileSync(path.join(root, ...relative.split('/')))]));
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** The bullet keys of a Shelf catalog entry, in the order `createShelfBook` writes them. */
+const ENTRY_KEY_ORDER = ['Summary', 'Topics', 'Kind', 'Closed by', 'Letters', 'Growing at', 'Origin', 'Path'];
+
+function entryKey(line: string): string | null {
+  return /^[ \t]*-[ \t]+\*\*([^*]+?):\*\*/.exec(line)?.[1] ?? null;
+}
+
+/**
+ * A STANDARD CAPTURE BOOK'S ENTRY, UP TO DATE (D7, PLAN-one-upgrade.md r6 row checks). Only a capture entry is touched.
+ * A missing `Closed by:` is written `any`, which is what no line has always meant at runtime; a missing `Letters:` or
+ * `Growing at:` line is the standard's, for a Book that has one. Each goes where `createShelfBook` puts it. A line that
+ * is there is never changed, whatever it says. Returns the text unchanged when nothing is missing.
+ */
+function amendedCaptureEntry(text: string, book: StandardShelfBook): string {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => /^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]*capture[ \t]*$/.test(line))) return text;
+  const wanted: [string, string][] = [['Closed by', '- **Closed by:** any']];
+  if (book.letters) wanted.push(['Letters', '- **Letters:** yes']);
+  if (book.growingAt) wanted.push(['Growing at', `- **Growing at:** ${book.growingAt}`]);
+  for (const [key, line] of wanted) {
+    if (lines.some((candidate) => entryKey(candidate) === key)) continue;
+    const rank = ENTRY_KEY_ORDER.indexOf(key);
+    let at = lines.findIndex((candidate) => candidate.startsWith('## '));
+    lines.forEach((candidate, index) => {
+      const order = ENTRY_KEY_ORDER.indexOf(entryKey(candidate) ?? '');
+      if (order !== -1 && order < rank) at = index;
+    });
+    lines.splice(at + 1, 0, line);
+  }
+  return lines.join(eol);
+}
 
 // `## Open a Book` IS THE ONE HEADING A FRESH CATALOG CARRIES (PLAN-basic-memory.md step 1, Fable #3): the heading
 // a publish with no --collection files under. Every other heading is inserted the first time a line needs it.
@@ -1197,7 +1313,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
 
   // The standard Books are judged with every other file, so a husk -- or a Shelf that cannot be rendered,
   // which would throw halfway through the writes below -- refuses the whole run.
-  const bookPlans: { book: StandardShelfBook; action: 'created' | 'unchanged' }[] = [];
+  const bookPlans: StandardBookPlan[] = [];
   if (!isProgramRoot) {
     for (const book of STANDARD_SHELF_BOOKS) {
       const bookRoot = path.join(workspace, 'shelf', book.slug);
@@ -1205,9 +1321,35 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
         bookPlans.push({ book, action: 'created' });
         continue;
       }
+      // A PARTLY CREATED STANDARD BOOK IS FINISHED, NOT ADOPTED OR REFUSED (PLAN-one-upgrade.md r8 R2a). An apply cut
+      // short leaves `shelf/<slug>` holding some of what the standard render writes -- its folders, made first, and a
+      // prefix of its files. When every file there is byte for byte one the render writes, init completes it.
+      const standard = standardBookFiles(programRoot, book);
+      const present = filesBelow(bookRoot);
+      const prefix = present.every((relative) => {
+        const expected = standard.get(relative);
+        return expected !== undefined && expected.equals(fs.readFileSync(path.join(bookRoot, ...relative.split('/'))));
+      });
+      if (prefix && present.length < standard.size) {
+        bookPlans.push({ book, action: 'completed' });
+        continue;
+      }
       const wiki = path.join(bookRoot, 'wiki');
       if (fs.existsSync(wiki) && fs.statSync(wiki).isDirectory()) {
-        bookPlans.push({ book, action: 'unchanged' });
+        // AN EXISTING BOOK'S ENTRY IS BROUGHT UP TO DATE (D7, Eric's Q6): a missing `Closed by:` is `any`, today's
+        // runtime meaning, and a missing `Letters:` or `Growing at:` line is the standard's. A line that says
+        // something is never changed.
+        const entryPath = path.join(bookRoot, SHELF_ENTRY_NAME);
+        const entryText = readTextIfPresent(entryPath);
+        const amended = entryText === null ? null : amendedCaptureEntry(entryText, book);
+        const isCapture = entryText !== null && /^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]*capture[ \t]*$/m.test(entryText);
+        const notesMissing = isCapture && !fs.existsSync(path.join(wiki, 'notes'));
+        bookPlans.push({
+          book,
+          action: amended !== null && amended !== entryText ? 'amended' : 'unchanged',
+          ...(amended !== null && amended !== entryText ? { entry: amended } : {}),
+          notesMissing,
+        });
         continue;
       }
       refusals.push(
@@ -1215,11 +1357,17 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
           `Remove shelf/${book.slug} if nothing needs it and re-run; nothing has been written.`,
       );
     }
-    const needsRender = bookPlans.some((plan) => plan.action === 'created') || !fs.existsSync(path.join(workspace, 'shelf', '_catalog.md'));
+    const needsRender = bookPlans.some((plan) => plan.action !== 'unchanged') || !fs.existsSync(path.join(workspace, 'shelf', '_catalog.md'));
     const shelfDirectory = path.join(workspace, 'shelf');
     if (needsRender && fs.existsSync(shelfDirectory) && fs.statSync(shelfDirectory).isDirectory()) {
       try {
-        shelfCatalogText(workspace, programRoot);
+        // A Book being completed has no entry yet, which the render would refuse; it is judged without them.
+        const completing = bookPlans.filter((plan) => plan.action === 'completed').map((plan) => plan.book.slug);
+        if (completing.length) scratchShelfWrites(workspace, programRoot, (scratch) => {
+          for (const slug of completing) fs.rmSync(path.join(scratch, 'shelf', slug), { recursive: true, force: true });
+          shelfCatalogText(scratch, programRoot);
+        });
+        else shelfCatalogText(workspace, programRoot);
       } catch (error) {
         refusals.push(`the Shelf cannot be rendered, so init cannot add its Books to the catalog: ${(error as Error).message} Nothing has been written.`);
       }
@@ -1240,7 +1388,12 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     if (plan.action === 'unchanged' || plan.action === 'skipped-program-file') continue;
     writes.push(plannedWrite(workspace, plan.path, plan.content ?? ''));
   }
-  for (const plan of skillFiles) if (plan.action === 'created' || plan.action === 'updated') writes.push(plannedWrite(workspace, plan.path, plan.content ?? ''));
+  // THE SKILL'S OWNERSHIP FILE IS WRITTEN FIRST (PLAN-one-upgrade.md r9 amendment 3). A non-empty library-help folder
+  // with no manifest is the reader's (skillcopy.ts), so a first copy cut short before a manifest written last was never
+  // finished. Written first, it already lists every file about to be written, and the next init completes the copy.
+  const skillWrites = skillFiles.filter((plan) => plan.action === 'created' || plan.action === 'updated');
+  const isManifest = (plan: { name: string }) => plan.name.endsWith('/' + SKILL_MANIFEST);
+  for (const plan of [...skillWrites.filter(isManifest), ...skillWrites.filter((plan) => !isManifest(plan))]) writes.push(plannedWrite(workspace, plan.path, plan.content ?? ''));
 
   // THE FOLDERS THE WORKSPACE INSTRUCTIONS NAME (S30), as Initialize-LibraryWorkspace.ps1 now makes
   // them: without notebook/, "what's on my desk?" refused in a freshly initialised workspace.
@@ -1251,19 +1404,34 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     // PLANNED BY RUNNING THAT WRITER ON A SCRATCH COPY OF THE SHELF and reading back what it wrote, so a planned Book
     // is byte for byte what `library shelf new` makes, and the Library itself is only read.
     const catalogMissing = !fs.existsSync(path.join(workspace, 'shelf', '_catalog.md'));
-    const creating = bookPlans.filter((plan) => plan.action === 'created');
-    if (creating.length || catalogMissing) {
+    const creating = bookPlans.filter((plan) => plan.action === 'created' || plan.action === 'completed');
+    const amending = bookPlans.filter((plan) => plan.entry !== undefined);
+    const notesMissing = bookPlans.filter((plan) => plan.notesMissing === true);
+    const rendering = creating.length > 0 || amending.length > 0 || catalogMissing;
+    if (rendering || notesMissing.length) {
       const shelfWrites = scratchShelfWrites(workspace, programRoot, (scratch) => {
+        // What a cut-short apply left is set aside in the scratch copy, every such Book before any is made (each creation
+        // renders the catalog, which an entry-less folder refuses), and the Book made whole; the walk then plans only the
+        // files the Library does not already hold byte for byte.
+        for (const { book, action } of creating) if (action === 'completed') fs.rmSync(path.join(scratch, 'shelf', book.slug), { recursive: true, force: true });
         for (const { book } of creating) {
           createShelfBook({ workspace: scratch, programRoot, slug: book.slug, title: book.title, summary: book.summary, topics: book.topics, capture: true, closedBy: book.closedBy, letters: book.letters, growingAt: book.growingAt, origin: book.origin });
         }
-        if (!creating.length) invokeShelfCatalogRender({ workspace: scratch, programRoot });
+        // A capture Book's required empty folder is made explicitly: no file in it would bring it.
+        for (const { book } of notesMissing) fs.mkdirSync(path.join(scratch, 'shelf', book.slug, 'wiki', 'notes'), { recursive: true });
+        if (amending.length) {
+          invokeShelfCatalogRender({
+            workspace: scratch,
+            programRoot,
+            writeEntry: amending.map((plan) => ({ path: path.join(scratch, 'shelf', plan.book.slug, SHELF_ENTRY_NAME), text: plan.entry! })),
+          });
+        } else if (!creating.length && catalogMissing) invokeShelfCatalogRender({ workspace: scratch, programRoot });
       });
       writes.push(...shelfWrites.writes);
       directories.push(...shelfWrites.directories);
     }
     for (const plan of bookPlans) files.push({ file: `shelf/${plan.book.slug}`, action: plan.action });
-    files.push({ file: 'shelf/_catalog.md', action: creating.length || catalogMissing ? 'rendered' : 'unchanged' });
+    files.push({ file: 'shelf/_catalog.md', action: rendering ? 'rendered' : 'unchanged' });
 
     // AN EMPTY MASTER INDEX ONLY OVER AN EMPTY NOTEBOOK: its text is the one the layout reader counts as
     // no material, so a fresh workspace stays fresh; a Notebook with anything in it keeps its own renderer.
@@ -1319,6 +1487,11 @@ export interface PlannedWrite {
   old_sha256: string | null;
   /** The previous text, kept so an undo can restore it (step 2's recovery); null for a file the plan creates. */
   old_text: string | null;
+  /**
+   * THE PREVIOUS BYTES, when they are not text (PLAN-one-upgrade.md r6 amendment 1): `old_text` decodes as UTF-8, which
+   * cannot hold a PNG, so a file whose bytes do not survive that round trip keeps them here, base64, byte for byte.
+   */
+  old_base64?: string;
   new_sha256: string;
   content: string;
 }
@@ -1347,16 +1520,32 @@ function currentSha(file: string): string | null {
   }
 }
 
+/** Whether these bytes are text: they decode as UTF-8 and encode back to themselves. */
+function isUtf8Text(bytes: Buffer): boolean {
+  return Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes);
+}
+
 function plannedWrite(workspace: string, file: string, content: string): PlannedWrite {
   const old = currentSha(file);
+  const oldBytes = old === null ? null : fs.readFileSync(file);
   return {
     relative: path.relative(workspace, file).replace(/\\/g, '/'),
     path: file,
     old_sha256: old,
-    old_text: old === null ? null : fs.readFileSync(file, 'utf8'),
+    old_text: oldBytes === null ? null : oldBytes.toString('utf8'),
+    ...(oldBytes !== null && !isUtf8Text(oldBytes) ? { old_base64: oldBytes.toString('base64') } : {}),
     new_sha256: sha256Of(Buffer.from(content, 'utf8')),
     content,
   };
+}
+
+/** A file's bytes, or null when there is no file. */
+function fileBytesIfPresent(file: string): Buffer | null {
+  try {
+    return fs.statSync(file).isFile() ? fs.readFileSync(file) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1382,9 +1571,16 @@ function scratchShelfWrites(workspace: string, programRoot: string, run: (scratc
           walk(child);
           continue;
         }
-        const content = fs.readFileSync(path.join(scratch, child), 'utf8');
-        const planned = plannedWrite(workspace, real, content);
-        if (planned.old_sha256 !== planned.new_sha256) writes.push(planned);
+        // COMPARED AS BYTES (PLAN-one-upgrade.md r6 amendment 1). Read as UTF-8, a PNG the writers never touched came
+        // back as different bytes and was planned as a change, overwriting it with the decoded text. Only a file the
+        // writers actually changed is planned, and a writer writes text.
+        const bytes = fs.readFileSync(path.join(scratch, child));
+        const realBytes = fileBytesIfPresent(real);
+        if (realBytes !== null && realBytes.equals(bytes)) continue;
+        if (!isUtf8Text(bytes)) {
+          throw new Error(`the Shelf writers left ${child.replace(/\\/g, '/')} as bytes that are not text, so init cannot plan it; nothing has been written.`);
+        }
+        writes.push(plannedWrite(workspace, real, bytes.toString('utf8')));
       }
     };
     walk('shelf');
@@ -1420,9 +1616,13 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
   }
   ensureDirectory(plan.workspace);
   for (const directory of plan.directories) ensureDirectory(directory);
+  // A FIXTURE SWITCH, for kernel self-test section 107 and nothing else, as LIBRARY_IMPORT_FAULT_AFTER is for section 43:
+  // the apply stops before its (n+1)th write, as a crash would, so every write boundary can be proved finishable.
+  const fault = Number((process.env['LIBRARY_INIT_FAULT_AFTER'] ?? '').trim() || NaN);
   let written = 0;
   for (const write of plan.writes) {
     if (currentSha(write.path) === write.new_sha256) continue;
+    if (written === fault) throw new Error(`FAULT INJECTED after ${written} write(s) (a real run never reaches this).`);
     ensureDirectory(path.dirname(write.path));
     writeAtomicText(write.path, write.content);
     written += 1;

@@ -117,13 +117,25 @@ export const VERBS: Record<string, VerbDeclaration> = {
     ported: true,
     row: 'S17',
   },
+  'finish-uninstall': {
+    summary: "Finish an uninstall: the copy of this program `uninstall` starts in %TEMP%. Internal, never run by hand.",
+    usage: 'library finish-uninstall --parent-pid <n> --root <dir> --handshake <file> --transaction <id> --result <file>',
+    actions: [],
+    positional: false,
+    // PLAN-no-powershell-runtime.md D8 (S83): the port of tools/Finish-Uninstall.ps1, started outside the uninstall's
+    // job by CreateProcessW. Not in the menu; self-test section 116 judges it through a fixture install.
+    ported: true,
+    row: 'S83',
+  },
   hook: {
     summary: "The Library's hooks: a harness payload on stdin, a decision or context on stdout.",
-    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
-    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context'],
+    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
+    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'],
     positional: false,
     // The two Shelf guards (S31, the first half of S20's port), the Basic Memory guard (S32) and the
-    // ConfigChange settings guard and the UserPromptSubmit Desk context hook (S36).
+    // ConfigChange settings guard and the UserPromptSubmit Desk context hook (S36). The PostCompact and
+    // SessionStart serve-ledger clear, the PostToolUse search reminder and the SessionStart seat roster
+    // (S82, ADR-0064). A verb this binary lacks fails safe (S82, D3).
     ported: true,
     row: 'S20',
   },
@@ -199,6 +211,16 @@ export const VERBS: Record<string, VerbDeclaration> = {
     positional: false,
     ported: true,
     row: 'S17',
+  },
+  process: {
+    summary: 'What the kernel reads about a process: its start time, its parents, its exit and the process list. Internal: the self-test drives these through it.',
+    usage: 'library process <start|ancestry|wait> <pid> [--start-utc <s>] [--poll-ms <n>]; library process list [--name <image>]',
+    actions: ['ancestry', 'list', 'start', 'wait'],
+    positional: false,
+    // PLAN-no-powershell-runtime.md D7 (S83): the calls a seat and a lifecycle switch make, on `bun:ffi` in a compiled
+    // kernel. Not in the menu; self-test section 115 judges a compiled kernel through it with no PowerShell on PATH.
+    ported: true,
+    row: 'S83',
   },
   publish: {
     summary: "Publish, batch-publish or refresh a Shelf Book into the Library's collection: collection/ on a local Library, Basic Memory on one attached to it.",

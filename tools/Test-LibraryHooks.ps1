@@ -12,14 +12,10 @@
     standard to the rest: every assertion below spawns the actual hook file, feeds it an actual
     payload on the actual parameter the harness uses, and reads the actual JSON that comes back.
 
-    The fixture is a throwaway workspace, with two exceptions that are deliberately real:
-
-        docs/librarian-operation-playbooks.md   copied in, so heading routes are checked against the
-        docs/session-invariants.md              tracked documents rather than against a stub that
-                                                would keep passing after the real headings changed
-
-    and one assertion that reads the live .claude/settings.json, because "the guards are registered"
-    is a claim about this checkout and cannot be made against a fixture.
+    The fixture is a throwaway workspace, with one exception that is deliberately real: one
+    assertion reads the live .claude/settings.json, because "the guards are registered" is a claim
+    about this checkout and cannot be made against a fixture. (Until 1.3.2 the playbook document was
+    copied in for the playbook hook's heading routes; that hook is retired, ADR-0064.)
 #>
 [CmdletBinding()]
 param()
@@ -88,7 +84,6 @@ try {
     [IO.File]::WriteAllText((Join-Path $fixture 'shelf/demo/wiki/_index.md'), "# Demo`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $stateDir '.library-project'), "00000000-0000-0000-0000-000000000000`n", $utf8)
     [IO.File]::WriteAllText((Get-DeskFilePath -StateDirectory $stateDir -Seat 'fixture' -Kind 'projects'), '', $utf8)
-    Copy-Item -LiteralPath (Join-Path $repo 'docs/librarian-operation-playbooks.md') -Destination (Join-Path $fixture 'docs') -Force
 
     function Set-OpenBooks([string[]]$Roots) {
         $text = if ($Roots.Count) { ($Roots -join "`n") + "`n" } else { '' }
@@ -276,47 +271,11 @@ wc -c shelf/demo/wiki/_index.md
     Assert (-not (Test-Denied (Invoke-ReadGuard 'Read' @{ file_path = 'shelf/demo/wiki/_index.md' }))) 'Read of an OPEN Shelf Book was denied'
     Set-OpenBooks @()
 
-    # === 3. Just-in-time playbook injection =======================================================
+    # === 3. The section cutter =====================================================================
+    # The playbook hook and its routed-heading gate were retired in 1.3.2 (ADR-0064). The cutter it
+    # used stays: Restore-CompactedGuidance.ps1 and Get-SeatStartContext.ps1 serve sections with it.
     . (Join-Path $hooks 'HookContext.ps1')
     $realPlaybook = Join-Path $repo 'docs/librarian-operation-playbooks.md'
-
-    # EVERY ROUTE RESOLVES IN THE TRACKED DOCUMENT. This is the assertion that makes the routing
-    # table safe to maintain: reword a heading in the playbook and the gate fails here, rather than
-    # the hook silently serving nothing at the moment it was written for.
-    $routes = @(
-        '## Publish or refresh a shared Book copy',
-        '## Import an external workspace wiki to the Shelf',
-        '## Archive a Book or Project',
-        '## Reset the local Notebook',
-        '## Recover from a reset or a retirement',
-        '## Edit an open Project Hub page',
-        '## Copy local pages into a Project Hub',
-        '## Work at a seat',
-        '## Repair a derived index',
-        '## Capture and triage a Shelf note',
-        '### Compile a named raw batch into the Notebook',
-        '## Move a Library folder under the cutover protocol',
-        '## Mirror the collection into the vault'
-    )
-    foreach ($heading in $routes) {
-        $section = Get-MarkdownSection -Path $realPlaybook -Heading $heading
-        Assert (-not [string]::IsNullOrWhiteSpace($section)) "the playbook has no section '$heading'; a route in Get-PlaybookContext.ps1 points at nothing"
-    }
-    # The routing table itself, read out of the hook rather than retyped here -- a copy of the table
-    # in the test would pass while the hook pointed somewhere else entirely.
-    $hookText = [IO.File]::ReadAllText((Join-Path $hooks 'Get-PlaybookContext.ps1'))
-    foreach ($heading in $routes) {
-        Assert ($hookText.Contains("heading = '$heading'")) "Get-PlaybookContext.ps1 does not route to '$heading'"
-    }
-
-    # AND BOTH WAYS. The list above is a COPY of the routing table, so until 2026-09-08 a route
-    # added to the hook and not to it was asserted by nothing -- the same shape as a spawned suite
-    # missing from the -Fast roster, which shipped twice. Derive the hook's own headings and
-    # compare, so the copy cannot fall behind the table it stands for.
-    $hookHeadings = @([regex]::Matches($hookText, "heading\s*=\s*'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
-    Assert ($hookHeadings.Count -gt 0) 'no heading route was found in Get-PlaybookContext.ps1; this assertion read nothing rather than proving anything'
-    $unlisted = @($hookHeadings | Where-Object { $routes -notcontains $_ })
-    Assert ($unlisted.Count -eq 0) "Get-PlaybookContext.ps1 routes to $($unlisted -join ', '), which this suite does not check"
 
     # THE CUT IS BOUNDED. An end-marker cut in this repository once swallowed four unrelated
     # sections; the archive section must stop before the next ## rather than running to end of file.
@@ -329,31 +288,9 @@ wc -c shelf/demo/wiki/_index.md
     $compile = Get-MarkdownSection -Path $realPlaybook -Heading '### Compile a named raw batch into the Notebook'
     Assert (-not $compile.Contains('## Publish or refresh')) 'a subsection cut ran into the next top-level section'
 
-    function Invoke-Playbook([string]$Command, [string]$SessionId) {
-        Invoke-Hook 'Get-PlaybookContext.ps1' @{ session_id = $SessionId; tool_name = 'PowerShell'; tool_input = @{ command = $Command } } $stateDir
-    }
-    $archiveCommand = 'powershell.exe -File "tools/Archive-SharedBook.ps1" -BookSlug demo -Preflight'
-    $first = Invoke-Playbook $archiveCommand 'session-a'
-    $served = Get-HookField-FromOutput $first 'additionalContext'
-    Assert ($null -ne $served -and $served.Contains('Archive-SharedBook.ps1')) 'the playbook hook served nothing for an archive preflight'
-    Assert ($null -ne $served -and $served.Contains('source_tree_removed')) 'the served section was not the archive playbook'
-
-    # Once per session per section. The second call is silent; a DIFFERENT section in the same
-    # session is not.
-    $second = Invoke-Playbook $archiveCommand 'session-a'
-    Assert ([string]::IsNullOrWhiteSpace($second)) 'the playbook hook served the same section twice in one session'
-    $resetOut = Invoke-Playbook 'powershell.exe -File "tools/Reset-LocalNotebook.ps1" -Preflight' 'session-a'
-    $resetServed = Get-HookField-FromOutput $resetOut 'additionalContext'
-    Assert ($null -ne $resetServed -and $resetServed.Contains('Reset the local Notebook')) 'a second, different section was suppressed by the first'
-    # A different session starts clean.
-    $otherSession = Invoke-Playbook $archiveCommand 'session-b'
-    Assert ($null -ne (Get-HookField-FromOutput $otherSession 'additionalContext')) 'a new session inherited another session''s serve ledger'
-
-    Assert ([string]::IsNullOrWhiteSpace((Invoke-Playbook 'ls -la' 'session-c'))) 'the playbook hook spoke for an unrelated command'
-    Assert ([string]::IsNullOrWhiteSpace((Invoke-Playbook 'powershell.exe -File "tools/Add-ShelfNote.ps1" -Title x' 'session-c'))) 'the playbook hook ceremonialised ordinary capture'
-    # IT MUST NEVER DECIDE. The helpers own their own approval gates; a second authority over them
-    # would be a hook overruling a preflight the reader already understands.
-    Assert (-not $first.Contains('permissionDecision')) 'the playbook hook returned a permission decision'
+    # The serve ledger's writer for section 4's clear tests. Until 1.3.2 it was the playbook hook;
+    # it is HookContext.ps1's own Set-HookServed now, under a key the Desk hook would use.
+    $servedKey = 'desk-context:fixture'
 
     # === 4. What a compaction actually drops ======================================================
     # The fixture needs the path-scoped rule, because that is what this hook serves. Copied from the
@@ -401,6 +338,8 @@ wc -c shelf/demo/wiki/_index.md
     # This is the trap the verification rules name in as many words: a fixture that SUPPLIES the
     # input proves the code works when given it, never that what it produces ARRIVES. Every
     # assertion below passed for as long as this hook emitted a shape no session ever received.
+    Set-HookServed $stateDir 'session-a' $servedKey
+    Assert (Test-HookServed $stateDir 'session-a' $servedKey) 'the fixture did not record a served key for PostCompact to clear'
     $compacted = Invoke-Compacted @{ hook_event_name = 'PostCompact'; session_id = 'session-a'; compact_reason = 'auto' }
     Assert ([string]::IsNullOrWhiteSpace($compacted)) 'PostCompact emitted output, and the harness rejects every hookSpecificOutput shape for that event'
     Assert ($compacted -cnotmatch 'PostCompact') 'PostCompact named itself as a hookEventName, which makes the harness discard the whole object'
@@ -426,10 +365,9 @@ wc -c shelf/demo/wiki/_index.md
         Assert ($null -eq $message -or -not $message.Contains($phrase)) "the post-compact hook restated '$phrase', which CLAUDE.md re-injects on its own"
     }
 
-    # THE LEDGER IS CLEARED, which is what makes the once-per-session cap in section 3 affordable:
-    # a compaction is exactly the event that summarises the first injection away.
-    $afterCompact = Invoke-Playbook $archiveCommand 'session-a'
-    Assert ($null -ne (Get-HookField-FromOutput $afterCompact 'additionalContext')) 'PostCompact did not clear the serve ledger, so a summarised-away playbook is never re-served'
+    # THE LEDGER IS CLEARED, which is what makes a once-per-session block affordable: a compaction is
+    # exactly the event that summarises the first injection away.
+    Assert (-not (Test-HookServed $stateDir 'session-a' $servedKey)) 'PostCompact did not clear the serve ledger, so a summarised-away block is never sent again'
 
     # THE FIELD IS `source`, AND READING `startup_reason` MADE THIS HOOK EXIT 0 ON EVERY SESSION
     # START IT HAD EVER SEEN. The old form of these three assertions passed a `startup_reason` the
@@ -454,23 +392,23 @@ wc -c shelf/demo/wiki/_index.md
 
     # THE LEDGER IS CLEARED ON EVERY SOURCE VALUE, INCLUDING THE ONES SERVED NOTHING. A `clear` may
     # keep its session id -- 0c could not capture that event -- and if it does, a ledger left in
-    # place withholds every playbook from a context that has just been thrown away. Each value gets
-    # its own session id so one value's clear cannot be mistaken for another's.
+    # place withholds the once-per-session block from a context that has just been thrown away. Each
+    # value gets its own session id so one value's clear cannot be mistaken for another's.
     foreach ($source in @('startup', 'clear', 'fork', 'compact', 'resume')) {
         $ledgerSession = "session-clear-$source"
-        Invoke-Playbook $archiveCommand $ledgerSession | Out-Null
-        Assert (Test-HookServed $stateDir $ledgerSession 'playbook:archive') "the fixture did not record a served playbook to clear for '$source'"
+        Set-HookServed $stateDir $ledgerSession $servedKey
+        Assert (Test-HookServed $stateDir $ledgerSession $servedKey) "the fixture did not record a served key to clear for '$source'"
         Invoke-Compacted (New-SessionStartPayload $source $ledgerSession) | Out-Null
-        Assert (-not (Test-HookServed $stateDir $ledgerSession 'playbook:archive')) "a '$source' SessionStart left the serve ledger in place"
+        Assert (-not (Test-HookServed $stateDir $ledgerSession $servedKey)) "a '$source' SessionStart left the serve ledger in place"
     }
 
-    # THE LEDGER CLEAR MUST NOT DEPEND ON THE RULE FILE. It is this hook's contract with
-    # Get-PlaybookContext.ps1, and a checkout without the rule must still get its playbooks back.
-    Invoke-Playbook $archiveCommand 'session-e' | Out-Null
-    Assert (Test-HookServed $stateDir 'session-e' 'playbook:archive') 'the fixture did not record a served playbook to clear'
+    # THE LEDGER CLEAR MUST NOT DEPEND ON THE RULE FILE: a checkout without the rule must still have
+    # its once-per-session blocks sent again after a compaction.
+    Set-HookServed $stateDir 'session-e' $servedKey
+    Assert (Test-HookServed $stateDir 'session-e' $servedKey) 'the fixture did not record a served key to clear'
     Remove-Item -LiteralPath (Join-Path $stateDir 'rules/library-development.md') -Force
     Invoke-Compacted @{ hook_event_name = 'PostCompact'; session_id = 'session-e'; compact_reason = 'manual' } | Out-Null
-    Assert (-not (Test-HookServed $stateDir 'session-e' 'playbook:archive')) 'a missing rule file cost the session its serve-ledger clear'
+    Assert (-not (Test-HookServed $stateDir 'session-e' $servedKey)) 'a missing rule file cost the session its serve-ledger clear'
     Copy-Item -LiteralPath (Join-Path $repo '.claude/rules/library-development.md') -Destination (Join-Path $stateDir 'rules') -Force
 
     # === 4b. AN EMPTY PAYLOAD IS A FIRST-CLASS INPUT ==============================================
@@ -483,7 +421,7 @@ wc -c shelf/demo/wiki/_index.md
     #
     # DRIVEN AT EVERY HOOK THAT PARSES A PAYLOAD, not at one standing for the rest: the fault was in
     # shared plumbing, so a single subject would have proved the plumbing works for that subject.
-    foreach ($subject in @('Restore-CompactedGuidance.ps1', 'Get-VirtualDeskContext.ps1', 'Get-SeatStartContext.ps1', 'Get-PlaybookContext.ps1')) {
+    foreach ($subject in @('Restore-CompactedGuidance.ps1', 'Get-VirtualDeskContext.ps1', 'Get-SeatStartContext.ps1')) {
         $empty = Invoke-Hook $subject @{} $stateDir
         Assert (-not $empty.Contains('cannot be found on this object')) "$subject threw on an empty payload: $empty"
         Assert (-not $empty.Contains('state is invalid')) "$subject failed closed on an empty payload rather than reading no fields from it: $empty"
@@ -661,8 +599,6 @@ wc -c shelf/demo/wiki/_index.md
     # A ledger that cannot be parsed reports "not served", so guidance repeats rather than vanishing.
     [IO.File]::WriteAllText($ledgerPath, 'not json at all', $utf8)
     Assert (-not (Test-HookServed $stateDir 'session-a' 'playbook:archive')) 'a corrupt ledger was read as authoritative'
-    $recovered = Invoke-Playbook $archiveCommand 'session-a'
-    Assert ($null -ne (Get-HookField-FromOutput $recovered 'additionalContext')) 'a corrupt ledger silenced the playbook hook instead of repeating it'
 
     # === 8. Two clients, two payload shapes =======================================================
     # Claude Code's Bash tool sends `command` as a string. Codex's shell tool is `exec` and its
@@ -778,13 +714,6 @@ wc -c shelf/demo/wiki/_index.md
     Assert ($capKeys[0] -ceq 'cap-session-02') "the oldest surviving session is '$($capKeys[0])', not cap-session-02; the ledger's order is not its age"
     Assert ($capKeys[-1] -ceq 'cap-session-21') "the newest session is '$($capKeys[-1])', not cap-session-21"
 
-    # THE HOOK ITSELF, AT THE CAP. Everything above is about the ledger; this is about the reader,
-    # and it is the assertion the live defect would have failed.
-    for ($i = 1; $i -le 20; $i++) { Set-HookServed $stateDir ('fill-{0:d2}' -f $i) 'playbook:archive' }
-    $atCap = Invoke-Playbook $archiveCommand 'session-at-cap'
-    Assert ($null -ne (Get-HookField-FromOutput $atCap 'additionalContext')) 'the playbook hook served nothing on a first call with the ledger at its cap'
-    Assert ([string]::IsNullOrWhiteSpace((Invoke-Playbook $archiveCommand 'session-at-cap'))) 'with the ledger at its cap the playbook hook re-served the same section into one session'
-
     # === 12. A CAPTURED payload, not a composed one ===============================================
     #
     # Section 3 supplies `session_id` itself and section 5 supplied `config_source` itself, and both
@@ -816,14 +745,8 @@ wc -c shelf/demo/wiki/_index.md
     Assert ($null -ne $preToolUse) 'payload-contract.json carries no captured PreToolUse envelope, so nothing here is driven by a real payload'
     if ($null -ne $preToolUse) {
         Assert (@($preToolUse.Keys) -ccontains 'session_id') 'the captured PreToolUse payload carries no session_id, so the serve ledger cannot work at all'
-        $preToolUse['session_id'] = 'captured-session-1'
-        $preToolUse['tool_input'] = @{ command = $archiveCommand; description = 'payload probe' }
-        $capturedFirst = Invoke-Hook 'Get-PlaybookContext.ps1' $preToolUse $stateDir
-        Assert ($null -ne (Get-HookField-FromOutput $capturedFirst 'additionalContext')) 'the playbook hook served nothing for a CAPTURED PreToolUse payload'
-        # THE ASSERTION A COMPOSED FIXTURE CANNOT MAKE. The id in the captured envelope reached the
-        # ledger under the name the hook reads, so the second serving is silent.
-        Assert (Test-HookServed $stateDir 'captured-session-1' 'playbook:archive') 'a CAPTURED payload never reached the serve ledger; the session id is not arriving under the name the hook reads'
-        Assert ([string]::IsNullOrWhiteSpace((Invoke-Hook 'Get-PlaybookContext.ps1' $preToolUse $stateDir))) 'a CAPTURED payload re-served the same section into one session'
+        # The playbook hook this envelope drove into the serve ledger was retired in 1.3.2 (ADR-0064);
+        # the envelope's session_id is what the kernel's own hooks read, and its presence is asserted above.
     }
 
     # THE SETTINGS GUARD, WHICH IS THE ONE THIS CAUGHT. It read `config_source` from 2026-09-06 to
@@ -973,7 +896,6 @@ wc -c shelf/demo/wiki/_index.md
     if (-not $capturePreExisting) { New-Item -ItemType Directory -Path $captureDir -Force | Out-Null }
     try {
         $captureBefore = @(Get-ChildItem -LiteralPath $captureDir -File -ErrorAction SilentlyContinue).Count
-        Invoke-Playbook $archiveCommand 'capture-scope-session' | Out-Null
         Invoke-Compacted @{ hook_event_name = 'PostCompact'; session_id = 'capture-scope-session'; compact_reason = 'auto' } | Out-Null
         Invoke-Shell 'ls -la' | Out-Null
         $captureAfter = @(Get-ChildItem -LiteralPath $captureDir -File -ErrorAction SilentlyContinue).Count

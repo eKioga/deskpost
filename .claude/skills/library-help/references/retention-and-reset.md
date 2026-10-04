@@ -94,9 +94,9 @@ that too. A topic the quarantine records as **another live seat's** is blocked: 
 own. `--adopt` takes over a topic whose recorded seat is retired or unknown.
 
 **Not in the `library` program:** destroying a quarantine, and restoring or destroying a retired
-seat's archived Desk. On Windows those are the PowerShell helpers
-`Remove-NotebookQuarantine.ps1`, `Start-LibrarySeat.ps1 -RestoreDeskFromArchive` and
-`Remove-SeatArchive.ps1`, and the playbook's *Recover from a reset or a retirement* must be read
+seat's archived Desk. An installed Deskpost does not ship them: they are helpers in the Deskpost
+source checkout (`Remove-NotebookQuarantine`, `Start-LibrarySeat -RestoreDeskFromArchive` and
+`Remove-SeatArchive`), and the playbook's *Recover from a reset or a retirement* must be read
 before quoting either destructive one.
 
 ## Source material under `raw/`
@@ -129,7 +129,7 @@ downloads it into a new batch folder by hand.
 Publishing a Shelf Book to a shared collection, refreshing one, and archiving a Book or a Project
 all follow the same shape: **preview, show the manifest and plan id, one clear approval, then the
 confirmed run**. The full sequences are in
-[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.3.1/docs/librarian-operation-playbooks.md). Read the
+[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.3.2/docs/librarian-operation-playbooks.md). Read the
 applicable section immediately before the action. A Library on its own disk has no shared
 collection to publish to, and its Books stay on the Shelf.
 

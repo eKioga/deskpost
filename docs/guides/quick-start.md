@@ -73,7 +73,8 @@ In the session that just opened, say:
 
 > **"What's on my desk?"**
 
-You get your seat, what is open on it, your Notebook, and anything waiting on the Holding Shelf.
+You get your seat, what is open on it, your Notebook, anything waiting on the Holding Shelf, and
+the letters other seats have left for you.
 Whenever something surprises you, ask this again. It answers most questions about why something
 happened.
 
@@ -111,7 +112,11 @@ as your own clock reads it.
 
 If something in the Library itself misbehaves, say **"report this to the Report Inbox"** instead. It
 is the same kind of note, filed where a defect belongs, with the command that failed and what it
-printed.
+printed. And a note meant for **another seat** is a letter: say "leave a letter for *that seat*", and
+it waits in the `letters` Book until that seat reads it.
+
+Closed notes do not pile up: "tidy the Holding Shelf" moves notes closed more than two weeks ago out
+of the way, after a preview, and deletes none of them.
 
 ## 6. See a preview, and stop there
 

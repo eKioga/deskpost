@@ -49,8 +49,11 @@ import {
   type PathFlavor,
 } from './workspace.ts';
 import { claudeHookShapeFaults, hookRegistrationProblems, isObject } from './hookregistry.ts';
-import { programRoot } from './programroot.ts';
+import { programRoot, releaseTuple } from './programroot.ts';
 import { runDeskContextVerb } from './deskcontext.ts';
+import { runCompactClearVerb } from './hookclear.ts';
+import { runSearchHitVerb } from './hooksearchhit.ts';
+import { runSeatStartVerb } from './hookseatstart.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
 import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, BOOK_SLUG_PATTERN } from './places.ts';
 
@@ -1161,7 +1164,7 @@ function settingsIntegrityGuard(options: GuardOptions, stdinText: string): strin
 
 // --- the verb ----------------------------------------------------------------------------------------
 
-export const HOOK_ACTIONS = ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context'] as const;
+export const HOOK_ACTIONS = ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'] as const;
 
 /**
  * Run one guard over one payload and return what goes on stdout: a deny document, or '' to allow.
@@ -1203,10 +1206,35 @@ export function runGuard(action: string, options: GuardOptions, stdinText: strin
   return decision;
 }
 
+/**
+ * A HOOK VERB THIS BINARY DOES NOT KNOW FAILS SAFE (PLAN-no-powershell-runtime.md D3, ADR-0064). A Library's
+ * registrations can name a verb from another release: written by a newer program and run by an older one after a
+ * rollback, or the reverse. Under PreToolUse the call is denied, naming the verb, this binary's version and the
+ * remedy, so a guard this binary lacks fails closed rather than letting the tool through unguarded. Under any other
+ * event, or for a registration marked `--advisory` (a PreToolUse hook that only informs), it exits 0 and prints
+ * nothing, so an unknown hook never dead-ends a session.
+ */
+function unknownHookVerb(action: string, rest: string[], stdinText: string): string {
+  let event: unknown;
+  try {
+    event = field(JSON.parse(stdinText) as unknown, 'hook_event_name');
+  } catch {
+    event = undefined;
+  }
+  if (event !== EVENT || rest.includes('--advisory')) return '';
+  const version = releaseTuple()['binary_version'] ?? 'unknown';
+  return denyDocument(
+    `This Library registers the hook 'library hook ${action}', which Deskpost ${version} does not have, so the call is denied ` +
+      'rather than let through unguarded. The hooks were written by another Deskpost release. Run deskpost init <this Library\'s folder> ' +
+      'with the installed program to register its own hooks again, or upgrade Deskpost to the release that wrote them.',
+  );
+}
+
 /** `library hook <guard> [--workspace <p>] [--seat <s>] [--state-directory <d>] [--reader-tool-prefix <p>]`, payload on stdin. */
 export function runHookVerb(argv: string[]): { stdout: string; refusal: string | null } {
   const action = argv[0] ?? '';
-  if (!(HOOK_ACTIONS as readonly string[]).includes(action)) {
+  // Only a call that names no verb at all is a refusal: it is a person at a prompt, not a registration.
+  if (action === '' || action.startsWith('-')) {
     return { stdout: '', refusal: `library hook needs a guard: ${HOOK_ACTIONS.join(' or ')}. Its payload is read from stdin.` };
   }
   let stdinText = '';
@@ -1215,8 +1243,13 @@ export function runHookVerb(argv: string[]): { stdout: string; refusal: string |
   } catch {
     stdinText = '';
   }
+  if (!(HOOK_ACTIONS as readonly string[]).includes(action)) return { stdout: unknownHookVerb(action, argv.slice(1), stdinText), refusal: null };
   // The Desk context hook is not a guard: it orients, never denies, and takes its own arguments.
   if (action === 'desk-context') return { stdout: runDeskContextVerb(argv.slice(1), stdinText), refusal: null };
+  // Nor are the ledger clear, the search reminder and the seat-start roster: none ever denies (ADR-0064).
+  if (action === 'compact-clear') return { stdout: runCompactClearVerb(argv.slice(1), stdinText), refusal: null };
+  if (action === 'search-hit') return { stdout: runSearchHitVerb(argv.slice(1), stdinText), refusal: null };
+  if (action === 'seat-start') return { stdout: runSeatStartVerb(argv.slice(1), stdinText), refusal: null };
   const parsed = parseArguments(argv.slice(1), ['workspace', 'seat', 'state-directory', 'reader-tool-prefix']);
   return {
     stdout: runGuard(

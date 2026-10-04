@@ -28,7 +28,6 @@ export const REQUIRED_HOOKS = [
   { file: 'Guard-ShelfBookRead.ps1', events: ['PreToolUse'], optional: false, purpose: 'a closed Shelf Book is unreadable by Read, Grep, Glob, Write and Edit' },
   { file: 'Guard-ShellShelfRead.ps1', events: ['PreToolUse'], optional: false, purpose: 'a closed Shelf Book is unreadable by shell command' },
   { file: 'Get-VirtualDeskContext.ps1', events: ['UserPromptSubmit'], optional: false, purpose: 'what is open, on every prompt' },
-  { file: 'Get-PlaybookContext.ps1', events: ['PreToolUse'], optional: true, purpose: 'the playbook section for the helper about to run' },
   { file: 'Restore-CompactedGuidance.ps1', events: ['PostCompact', 'SessionStart'], optional: true, purpose: 'the path-scoped rule a compaction unloads, and the serve-ledger clear' },
   { file: 'Get-SeatStartContext.ps1', events: ['SessionStart'], optional: true, purpose: 'the seat roster and the ask, and the re-bind of a resumed conversation' },
   { file: 'Guard-SettingsIntegrity.ps1', events: ['ConfigChange'], optional: true, purpose: 'a settings edit cannot disable the guards' },
@@ -73,6 +72,9 @@ export const HOOK_VERB_FOR_SCRIPT: Readonly<Record<string, string>> = {
   'Guard-ShellShelfRead.ps1': 'shell-shelf-read',
   'Get-VirtualDeskContext.ps1': 'desk-context',
   'Guard-SettingsIntegrity.ps1': 'settings-integrity',
+  'Restore-CompactedGuidance.ps1': 'compact-clear',
+  'Add-SearchHitReminder.ps1': 'search-hit',
+  'Get-SeatStartContext.ps1': 'seat-start',
 };
 
 export const RECOGNISES_HOOK_VERBS = true;

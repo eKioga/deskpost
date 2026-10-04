@@ -7,17 +7,20 @@
  * TIME, and a seat binding is verified by pid AND start time so that a REUSED pid is a different
  * process rather than an heir to the seat.
  *
- * THE READER CHOSE SPAWN-OR-PROCFS OVER A NATIVE CALL (2026-09-22), and the reason is the matrix:
- * `bun:ffi` would survive `bun build --compile`, but `node kernel/src/cli.ts` -- the invocation every
- * row runs -- cannot execute it, so the fast path would be the one path nothing measures. One code
- * path under Node and under the compiled binary instead, one spelling per platform:
+ * THE "ONE CODE PATH" RULE IS REVOKED (S83, PLAN-no-powershell-runtime.md D7 and Q2). On 2026-09-22 the
+ * reader chose spawn-or-procfs over a native call, because `node kernel/src/cli.ts` -- then the invocation
+ * every row ran -- could not execute `bun:ffi`, so a fast path would have been the one path nothing
+ * measured. That no longer holds: the matrix runs against the compiled binary (`-Kernel <exe>`), and a
+ * reader's machine must not start PowerShell for a seat. So there are two paths on Windows, by runtime:
  *
- *   Windows  spawn `powershell.exe` with THE ORACLE'S OWN EXPRESSION, `StartTime.ToUniversalTime()
- *            .ToString('o')`. The binding is compared with exact string equality, so a Windows
- *            spelling has to reproduce the FILETIME to 100 ns; running the same expression is the
- *            only spelling that is identical by construction rather than by care. Measured
- *            191-209 ms per read on the development machine, which is why a gone pid is answered
- *            by `process.kill(pid, 0)` first and costs no spawn at all.
+ *   Windows, compiled (Bun)  kernel32 through `bun:ffi` (win32proc.ts): `GetProcessTimes`' creation
+ *            FILETIME for the start time, and Toolhelp32 for the parents. The same FILETIME the
+ *            oracle's expression formats, to 100 ns, so a binding either writer made compares equal.
+ *            Self-test section 115 judges it against a compiled kernel with no PowerShell on PATH.
+ *   Windows, source (Node)   spawn `powershell.exe` with THE ORACLE'S OWN EXPRESSION, `StartTime
+ *            .ToUniversalTime().ToString('o')`, kept as the fallback because Node has no FFI.
+ *            Measured 191-209 ms per read, which is why a gone pid is answered by
+ *            `process.kill(pid, 0)` first and costs no spawn at all.
  *   Linux    `/proc/<pid>/stat` field 22 (clock ticks since boot) plus `btime` from `/proc/stat`.
  *            A file read; 10 ms precision at the usual 100 Hz.
  *   macOS    `/bin/ps -o lstart=`, one second of precision. There is no PowerShell writer on a Mac
@@ -29,6 +32,7 @@
 
 import * as fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { nativeProcessCalls, nativeProcessStartUtc, nativeProcessTable } from './win32proc.ts';
 
 /** The sentinel for a process that exists and whose start time cannot be read. Alive, never gone. */
 export const UNREADABLE_IDENTITY = 'unreadable';
@@ -104,7 +108,8 @@ function runPowerShell(script: string): string {
 }
 
 function readWindowsIdentity(pid: number): string | null {
-  // THE ORACLE'S EXPRESSION, VERBATIM, and its two exits: a process Get-Process cannot find is gone,
+  if (nativeProcessCalls() !== null) return nativeProcessStartUtc(pid, UNREADABLE_IDENTITY);
+  // UNDER NODE, THE ORACLE'S EXPRESSION, VERBATIM, and its two exits: a process Get-Process cannot find is gone,
   // and one whose StartTime throws (another user's elevated process) is the unreadable sentinel.
   const answer = runPowerShell(
     `$p = $null; try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'gone'; exit 0 }; ` +
@@ -187,8 +192,9 @@ export function isAgentClientProcessName(name: string): boolean {
 export function readProcessAncestry(pid: number, depth = AGENT_ANCESTRY_MAX_DEPTH): AncestryRecord[] {
   if (pid <= 0) return [];
   try {
+    if (process.platform === 'win32' && nativeProcessCalls() !== null) return readNativeAncestry(pid, depth);
     if (process.platform === 'win32') {
-      // Win32_Process, as Get-ProcessAncestryRecord reads it: .NET exposes no parent at all.
+      // UNDER NODE, Win32_Process, as Get-ProcessAncestryRecord reads it: .NET exposes no parent at all.
       const text = runPowerShell(
         `$id = ${pid}; $rows = @(); for ($i = 0; $i -le ${depth}; $i++) { ` +
           `$r = @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue); ` +
@@ -222,6 +228,25 @@ export function readProcessAncestry(pid: number, depth = AGENT_ANCESTRY_MAX_DEPT
     // seatless refusal that already exists.
     return [];
   }
+}
+
+/**
+ * The same records from ONE Toolhelp32 snapshot, plus one `GetProcessTimes` per record for the `parent-reused` rule.
+ * A start time that cannot be read is null, as the oracle's CreationDate is when it throws.
+ */
+function readNativeAncestry(pid: number, depth: number): AncestryRecord[] {
+  const byPid = new Map(nativeProcessTable().map((row) => [row.pid, row]));
+  const records: AncestryRecord[] = [];
+  let current = pid;
+  for (let index = 0; index <= depth; index += 1) {
+    const row = byPid.get(current);
+    if (!row) break;
+    const start = nativeProcessStartUtc(row.pid, UNREADABLE_IDENTITY);
+    records.push({ pid: row.pid, parentPid: row.parentPid, name: row.name, createdUtc: start === UNREADABLE_IDENTITY ? null : start });
+    if (row.parentPid <= 0 || row.parentPid === row.pid) break;
+    current = row.parentPid;
+  }
+  return records;
 }
 
 function readPosixRecord(pid: number): AncestryRecord | null {

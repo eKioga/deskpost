@@ -32,10 +32,11 @@ $ErrorActionPreference = 'Stop'
     -- and the dangerous window is a session that resumes by WRITING one. Its `## The standing rules`
     section is re-served here, from the rule file itself rather than from a copy.
 
-    TWO: the serve ledger. Get-PlaybookContext.ps1 injects each playbook section once per session, on
-    the argument that a session remembers what it was handed. A compaction is exactly the event that
-    voids that argument, so the ledger is emptied and the next consequential helper re-serves its
-    procedure. This is the side effect that makes the once-per-session cap affordable at all, and it
+    TWO: the serve ledger. The Desk context hook sends an unchanged Desk block once per session (S77),
+    as the playbook hook served its sections until it was retired in 1.3.2 (ADR-0064), on the
+    argument that a session remembers what it was handed. A compaction is exactly the event that
+    voids that argument, so the ledger is emptied and the next prompt sends the block again. This is
+    the side effect that makes the once-per-session cap affordable at all, and it
     is the reason this hook must run even when it has nothing to say.
 
     THE TRADEOFF IT ACCEPTS. It cannot tell a development session from an ordinary reading one, so a
@@ -52,7 +53,7 @@ $ErrorActionPreference = 'Stop'
     unaffected -- a different `hook_event_name` skips the early exit -- so compaction still cleared
     the ledger, and the half that never ran was the RESUMED one: the ledger is keyed by session id, a
     resumed session keeps the same id, and nothing emptied it, so a resumed session whose context was
-    gone got no playbook re-served.
+    gone got nothing served again (then, the playbook hook's sections; that hook is retired).
 
     TWO: `systemMessage` DOES NOT REACH THE MODEL AND `additionalContext` DOES. Measured on
     SessionStart by emitting both with distinct tokens and asking the model to echo what it had been
@@ -81,7 +82,8 @@ try {
     $source = [string](Get-HookField $call 'source')
 
     # FIRST, and outside anything that can fail below: the ledger clear is this hook's contract with
-    # Get-PlaybookContext.ps1, and a missing rule file must not cost a session its re-served playbooks.
+    # the Desk context hook's once-per-session block, and a missing rule file must not cost a session
+    # its Desk being sent again.
     # It runs for EVERY source value, because the cheapest wrong answer here is a redundant clear.
     $sessionId = [string](Get-HookField $call 'session_id')
     Clear-HookServed $StateDirectory $sessionId

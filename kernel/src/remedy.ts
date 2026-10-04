@@ -10,8 +10,9 @@
  *
  * A COMPILED KERNEL ON WINDOWS REWRITES TOO (S47, the reader's ruling). Measured in S7's Windows Sandbox: the
  * plugin's Read guard told a reader who installed the kernel to run `tools/Set-VirtualDesk.ps1`, a path relative
- * to a workspace that has no `tools/`. So a compiled kernel says the ported verb there as well, and a helper with
- * no port is named by its full path in the installed program, in the form a default execution policy runs. A
+ * to a workspace that has no `tools/`. So a compiled kernel says the ported verb there as well. A helper with no
+ * port was named by its full path in the installed program until 1.3.2; a release ships no `tools/*.ps1` since
+ * (D9), so it is now named as a source-checkout helper the install does not ship, with no PowerShell (D4). A
  * kernel run from source on Windows keeps the oracle's sentences; the acceptance matrix, judging a compiled
  * kernel, passes the oracle's sentence through this same rewrite before it compares (ADR-0045).
  *
@@ -19,8 +20,7 @@
  * note that quotes a helper is a note.
  */
 
-import * as path from 'node:path';
-import { isCompiled, programRoot } from './programroot.ts';
+import { isCompiled } from './programroot.ts';
 import { COMMAND_NAME } from './machine.ts';
 import { VERBS } from './verbs.ts';
 
@@ -87,6 +87,33 @@ const REWRITES: { helper: string; to: (parameterText: string) => string | null }
   },
   { helper: 'Edit-ProjectHub', to: (text) => `library hub edit ${parameters(text).get('projectslug') ?? '<slug>'} --mode ${parameters(text).get('mode') ?? '<mode>'}` },
   { helper: 'New-ProjectHub', to: (text) => `library hub new ${parameters(text).get('projectslug') ?? '<slug>'} --title <title>` },
+  // EVERY OTHER HELPER A SENTENCE NAMES THAT HAS A VERB (S83, PLAN-no-powershell-runtime.md D4): a release ships no
+  // tools/*.ps1 but the reader adapter's closure (D9), so on an installed kernel these would otherwise be dead ends.
+  {
+    helper: 'Set-CollectionOwner',
+    to: (text) => {
+      const given = parameters(text);
+      const command = given.has('acquire')
+        ? `library collection owner --acquire${given.has('force') ? ' --force' : ''}`
+        : `library collection owner ${given.has('release') ? '--release' : '--status'}`;
+      // ITS PARAMETERS ARE ALL SWITCHES, so a word the pattern took as the last one's value is the sentence's own
+      // (`-Acquire -Force if that workspace is gone`, `-Status to confirm it`), and it is put back.
+      const last = [...text.matchAll(new RegExp(String.raw`-([A-Za-z]+)(?:\s+(${VALUE}))?`, 'g'))].pop();
+      return last?.[2] ? `${command} ${last[2]}` : command;
+    },
+  },
+  {
+    helper: 'Archive-ShelfBook',
+    to: (text) => {
+      const given = parameters(text);
+      const action = (given.get('action') ?? '').toLowerCase();
+      return action === 'restore' || action === 'archive' ? `library shelf ${action} ${given.get('bookslug') ?? '<slug>'}` : null;
+    },
+  },
+  { helper: 'Copy-LocalPagesToProject', to: (text) => `library hub copy-pages ${parameters(text).get('projectslug') ?? '<slug>'}` },
+  { helper: 'Initialize-LibraryWorkspace', to: () => 'library init' },
+  // Only bare: `-PlanPath` names a route the kernel's `triage batch` refuses by name.
+  { helper: 'Invoke-LibraryTriage', to: (text) => (text.trim() ? null : 'library triage') },
   {
     helper: 'Restore-NotebookQuarantine',
     to: (text) => {
@@ -106,13 +133,22 @@ const REWRITES: { helper: string; to: (parameterText: string) => string | null }
 
 const POWERSHELL_ONLY = ' (a PowerShell helper; this machine has no PowerShell to run it)';
 
-/** An unported helper on an installed Windows kernel: its full path in the program, runnable as it stands. */
-function installedHelper(helper: string, rest: string, root: string): string {
-  return `powershell -ExecutionPolicy Bypass -File "${path.win32.join(root, 'tools', `${helper}.ps1`)}"${rest}`;
+/**
+ * AN UNPORTED HELPER ON AN INSTALLED WINDOWS KERNEL (S83, D4): named, with no PowerShell and no path. Until 1.3.2 this
+ * was the helper's full path under the program, runnable with `powershell -File`; a release no longer ships
+ * `tools/*.ps1` (D9), so that path would be a dead end.
+ */
+export const NOT_SHIPPED = ' (a helper in the Deskpost source checkout; this installed program does not ship it)';
+
+function installedHelper(helper: string, rest: string): string {
+  return `${helper}${rest}${NOT_SHIPPED}`;
 }
 
-/** One sentence as this host should say it. Pure, and the identity for the oracle's own host. */
-export function hostRemedies(text: string, flavor: RemedyHost = HOST, root: string | null = null): string {
+/**
+ * One sentence as this host should say it. Pure, and the identity for the oracle's own host. `_root` is kept for the
+ * callers that pass the program root: since S83 an unported helper is named without a path, so it is not read.
+ */
+export function hostRemedies(text: string, flavor: RemedyHost = HOST, _root: string | null = null): string {
   if (flavor === 'win32') return text;
   let out = text;
   if (out.includes('.ps1')) {
@@ -120,7 +156,7 @@ export function hostRemedies(text: string, flavor: RemedyHost = HOST, root: stri
       const rewrite = REWRITES.find((entry) => entry.helper === helper);
       const replaced = rewrite ? rewrite.to(rest) : null;
       if (replaced !== null) return replaced;
-      return flavor === 'win32-compiled' ? installedHelper(helper, rest, root ?? programRoot()) : whole + POWERSHELL_ONLY;
+      return flavor === 'win32-compiled' ? installedHelper(helper, rest) : whole + POWERSHELL_ONLY;
     });
   }
   // The resolvers' own refusals name the PowerShell parameters; the kernel's are `--workspace` and `--seat`.

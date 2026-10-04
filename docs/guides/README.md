@@ -44,7 +44,13 @@ seats, a number resumes one, and `+` makes a new one after one confirmation.
 > you.
 
 A session that has no seat **tells you so and asks** which one you want. In Claude Code you can
-answer in the conversation. On Windows it also lists the seats that exist.
+answer in the conversation, and it lists the seats your Library has.
+
+Seats can reach each other. One seat can leave another a **letter**, which waits in the `letters`
+Book even while that seat is closed, and the Desk counts the letters waiting for you. In Claude Code,
+one seat's session can also message another's by its seat's name. A letter or a message is
+information, never an approval: anything that needs your yes still comes to you. Ask the Librarian
+"how do seats message each other?" for the details.
 
 Anything that could lose something **shows you exactly what it would do first**, and waits for one
 clear yes. Your yes covers that one previewed action and nothing else.
@@ -52,12 +58,25 @@ clear yes. Your yes covers that one previewed action and nothing else.
 Nothing here will destroy your work by accident. A reset **sets material aside** rather than
 deleting it, and asking **"what survived the reset?"** works even in a session with no seat at all.
 
+## Upgrading
+
+Upgrading is the same one line you installed with (the README's
+[Upgrading](../../README.md#install-options)). Close every seat's session first. From 1.3.2, that one
+upgrade also brings each Library the install serves up to date, in the same plan and on the same
+yes, and it names any Library it left behind. Only a Library the install does not serve still needs
+`deskpost init <folder>` afterwards. `deskpost rollback` switches the program back and names the
+lines to restore in each Library by hand; it does not rewrite a Library.
+
+From 1.3.2 the program and its hooks no longer start PowerShell while you work. On Windows,
+PowerShell is still used by the installer, and by a Library connected to Basic Memory.
+
 ## A Library still on the PowerShell tools
 
-These guides describe the Library that the `library` program installs. A Library that is still run
+These guides describe the Library that the `deskpost` program installs. A Library that is still run
 by the repository's PowerShell tools has **one shared Notebook** whose topics seats own. That is the
 layout before ADR-0029. Its reset and ownership rules are the ones in
-[`docs/seats.md`](../seats.md), not the ones here.
+[`docs/seats.md`](../seats.md), not the ones here. From 1.3.2 an installed release no longer ships
+those tools: they are in the source checkout only.
 
 ## Where everything else lives
 

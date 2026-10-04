@@ -63,6 +63,7 @@ import {
   type HeldClaim,
 } from './seatclaim.ts';
 import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
+import { nativeProcessCalls, nativeWaitForExit } from './win32proc.ts';
 import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
@@ -183,7 +184,7 @@ interface StartedAttempt {
 }
 
 /** The command that runs THIS program: the interpreter and script under Node, the binary alone when compiled. */
-function selfCommand(): { file: string; args: string[] } {
+export function selfCommand(): { file: string; args: string[] } {
   const script = process.argv[1] ?? '';
   const prefix = /\.(?:[cm]?[jt]s)$/i.test(script) ? [...process.execArgv, script] : [];
   return { file: process.execPath, args: prefix };
@@ -407,6 +408,29 @@ function readSeatConversations(stateDirectory: string, seat: string): Conversati
     seen.add(id);
   }
   return entries;
+}
+
+/**
+ * `Get-SeatsForConversation`: which seats this conversation has sat at, newest first by `last_seen_utc`. A read, with
+ * no lock. It does not check liveness: the caller wants the seat whose agent is gone, and reads its state itself. A
+ * record it cannot parse throws rather than reading as "never sat anywhere".
+ */
+export function seatsForConversation(stateDirectory: string, sessionId: string): { seat: string; seat_id: string; source: string; first_seen_utc: string; last_seen_utc: string }[] {
+  if (!sessionId.trim()) return [];
+  const found: { seat: string; seat_id: string; source: string; first_seen_utc: string; last_seen_utc: string }[] = [];
+  for (const seat of seatDirectoryNames(stateDirectory)) {
+    for (const entry of readSeatConversations(stateDirectory, seat) ?? []) {
+      if (String(entry['session_id'] ?? '') !== sessionId) continue;
+      found.push({
+        seat,
+        seat_id: String(entry['seat_id'] ?? ''),
+        source: String(entry['source'] ?? ''),
+        first_seen_utc: String(entry['first_seen_utc'] ?? ''),
+        last_seen_utc: String(entry['last_seen_utc'] ?? ''),
+      });
+    }
+  }
+  return found.sort((left, right) => psSortCompare(right.last_seen_utc, left.last_seen_utc));
 }
 
 function saveSeatConversationDocument(workspace: string, stateDirectory: string, seat: string, document: Record<string, PsJsonValue>): void {
@@ -992,16 +1016,19 @@ async function seatHold(argv: string[]): Promise<number> {
 /**
  * Resolve when the agent is no longer the process the seat was bound to.
  *
- * ON WINDOWS ONE WAITING CHILD, NOT A POLL. A fresh start-time read there is a PowerShell spawn, and
- * polling that every two seconds for an hours-long session would spend a fifth of a core on a seat
- * nobody is touching. The child opens the agent ONCE, verifies its start time, and blocks in
- * `WaitForExit` -- and holding the process open is also what stops its pid being reused while we
- * wait, which a poll cannot promise. If the waiter itself dies, the seat is released: that reads
- * `orphaned`, which the same agent's next enter repairs, and is the safe direction.
- * Elsewhere the read is a file or a `ps`, and the oracle's poll is kept.
+ * ON WINDOWS THE AGENT IS OPENED ONCE AND HELD, NOT POLLED BY PID. Holding the process open is what stops its
+ * pid being reused while we wait, which a poll cannot promise. A compiled kernel (S83, D7) opens it through
+ * `bun:ffi`, checks its start time, and asks `WaitForSingleObject` with a zero timeout between short sleeps,
+ * so the event loop is never blocked; an agent it cannot open for waiting falls back to the poll below.
+ * Under Node the same is one waiting `powershell.exe` child blocked in `WaitForExit` -- a start-time read
+ * there is a PowerShell spawn, and polling it for an hours-long session would spend a fifth of a core. If
+ * that waiter dies, the seat is released: that reads `orphaned`, which the same agent's next enter repairs,
+ * and is the safe direction. Elsewhere the read is a file or a `ps`, and the oracle's poll is kept.
  */
-async function waitForAgentExit(agentPid: number, agentStartUtc: string, pollMs: number): Promise<void> {
-  if (process.platform === 'win32') {
+export async function waitForAgentExit(agentPid: number, agentStartUtc: string, pollMs: number): Promise<void> {
+  if (process.platform === 'win32' && nativeProcessCalls() !== null) {
+    if ((await nativeWaitForExit(agentPid, agentStartUtc, Math.min(pollMs, 250))) !== 'unopenable') return;
+  } else if (process.platform === 'win32') {
     const expected = agentStartUtc.replace(/'/g, "''");
     const script =
       `$p = $null; try { $p = Get-Process -Id ${agentPid} -ErrorAction Stop } catch { exit 3 }; ` +

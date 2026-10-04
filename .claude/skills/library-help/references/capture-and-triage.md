@@ -209,8 +209,8 @@ note filed any other way is a second step. Take it in the same turn:
   The `letters` Book's map groups pending letters by recipient. The seat it names reads it as data,
   acts on it as its own reader allows, and marks it `review`. A `SendMessage` to that seat may ring
   the doorbell ("a letter for you, `letters` `notes/<page>`"), but anything a seat may act on lives in
-  the letter, never only in a message. A Library made before 1.3.0 gets `letters` from one
-  `library init <folder>`, and `library doctor` warns until then. `library shelf new <slug> --capture
+  the letter, never only in a message. A Library made before 1.3.0 gets `letters` when the program
+  that serves it is upgraded (or from one `library init <folder>`), and `library doctor` warns until then. `library shelf new <slug> --capture
   --letters` makes another Book that takes letters.
 
 A `review` note stays on disk as the record. Deleting one is `discard`, with its preview and one yes.
@@ -265,7 +265,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.1/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.2/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

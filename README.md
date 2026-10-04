@@ -1,6 +1,6 @@
 # Deskpost
 
-**Status: 1.2, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
+**Status: 1.3, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -96,6 +96,7 @@ Options go after the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1
 | `-DryRun` | Shows the plan and changes nothing. |
 | `-AllowOverlap` | Lets the Library and the program folder contain each other, which is otherwise refused without a prompt. |
 | `-Repair` | Reinstalls the same version over itself, and brings an existing Library's managed files up to date. |
+| `-KeepLibraries` | On an upgrade, keeps the Libraries the install serves as they are, rather than bringing them up to date; each lags the program until `deskpost init <folder>`. |
 | `-Resume finish` / `-Resume undo` | Finishes or undoes an install, upgrade or uninstall that was interrupted. Running the one-liner again offers the same choice. |
 | `-NoPathChange` | Leaves PATH alone; run `<program>\bin\deskpost.cmd` instead. |
 | `-Plugin` | Also installs the Claude Code plugin. Opt-in, because each Library registers its own guards. |
@@ -104,7 +105,10 @@ Options go after the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1
 
 **Upgrading** is the same one line: it upgrades in place, and refuses while a session is open at a
 seat of a Library it serves, naming it (close it and press Enter to look again). It asks no Library
-question: the Libraries the install serves are kept as they are. If Deskpost is installed somewhere
+question: the same run brings the Libraries the install serves up to date, so no second command is
+needed (`[k]` on the screen, or `-KeepLibraries`, keeps them as they are). A Library that cannot be
+brought up to date, such as one holding hooks Deskpost did not write, is kept, named, and given the
+`deskpost init <folder>` line that finishes it. If Deskpost is installed somewhere
 other than the default folder, the bare line offers to upgrade that install, and when nobody can be
 asked it prints this line instead, naming that folder:
 
@@ -163,15 +167,14 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.1**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.2**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Now: 1.3.2, no PowerShell at runtime.** The last hooks, and the program's own process calls,
-  move into the program, so nothing you run needs PowerShell.
 - **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
   a browse mode in the main menu, and an unknown flag refused by every verb.
-- **Then: 1.5.0, a Library card and a read-only view of the Desk.**
-- **Exploring:** seats on more than one computer, so the seats you run share the load of the
+- **Then: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
+- **Exploring:** seats that work as a team, with a directory of who does what and mail sorted between
+  them; seats on more than one computer, so the seats you run share the load of the
   computers you already have and still talk to each other; and two Libraries in one household,
   sharing a collection on the home network with no accounts, database or server.
 

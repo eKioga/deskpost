@@ -30,8 +30,9 @@ run `deskpost seat start <seat>`. Everything from step 2 assumes a seat.
 > "What's on my desk?"
 
 **What it proves.** The Desk is per-seat. Yours comes back in full, and every other seat is a single
-line: whether someone is at it and roughly when it was last active, never what is open on it.
-Another seat's material does not appear on your Desk just because you asked.
+line: whether someone is at it, roughly when it was last active, and the name its session answers
+to for messages, never what is open on it. Another seat's material does not appear on your Desk
+just because you asked. The letters other seats have left for you are counted, Book by Book.
 
 **Look at afterwards.** What it says about **your** seat: how the seat was identified, and whether
 the hold on it is yours, free, or stale. "Named by the environment" and "bound to this conversation"
@@ -80,7 +81,9 @@ miniature. The note's file name carries today's date as your own clock reads it.
 
 The same move has a second destination. **"Report this to the Report Inbox"** files a defect in the
 Library itself, with the command that failed and what it printed. Whoever reads it later treats it
-as a claim to check, not as an order.
+as a claim to check, not as an order. A third, **"leave a letter for *another seat*"**, writes into
+the `letters` Book. When that seat reads it, the letter opens with a line naming the seat that wrote
+it, so it is read as information, never as instructions.
 
 ## 6. Ask what a reset would do, and stop there
 

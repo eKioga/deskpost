@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as zlib from 'node:zlib';
 import { psConvertToJson } from '../src/psjson.ts';
-import { mergeLibraryJsonValue, managedSectionPlan, desiredPermissionAllowlist } from '../src/init.ts';
+import { mergeLibraryJsonValue, managedSectionPlan, desiredPermissionAllowlist, planLibraryInit } from '../src/init.ts';
 import { newShelfCatalogEntryText, testShelfCatalogEntryText } from '../src/shelfcatalog.ts';
 import { toWorkspaceRoot, findWorkspaceByMarker } from '../src/workspace.ts';
 import { VERBS, READER_TOOLS } from '../src/verbs.ts';
@@ -478,6 +478,10 @@ if (selected(8)) {
       // From a checkout, or off Windows, both refuse in their own branch: there is no install to change.
       uninstall: ['uninstall', '--dry-run'],
       rollback: ['rollback'],
+      // S83. With no action it refuses with its usage, in its own branch.
+      process: ['process'],
+      // S83. With none of its arguments it refuses, in its own branch; off Windows it refuses by platform.
+      'finish-uninstall': ['finish-uninstall'],
       // S55. With no terminal and no answers the menu refuses in its own branch; an unknown action stops `library`'s.
       menu: ['menu'],
       library: ['library', 'no-such-action'],
@@ -790,7 +794,8 @@ if (selected(11)) {
 
     const unreadable = spawnSync(process.execPath, [CLI, 'hook', 'shelf-read', '--workspace', owned], { cwd: PROGRAM_ROOT, env: { ...process.env, ...env }, input: '{not json', encoding: 'utf8' });
     check((unreadable.stdout ?? '').includes('"permissionDecision":"deny"') && unreadable.status === 0, 'a payload the guard could not parse was not denied');
-    const noGuard = runCli(['hook', 'no-such-guard']);
+    // A call naming no verb at all is still refused by name; an unknown verb fails safe instead (section 111).
+    const noGuard = runCli(['hook']);
     check(noGuard.exit !== 0 && noGuard.stderr.includes('shelf-read or shell-shelf-read'), 'a hook call naming no guard was not refused by name');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1382,12 +1387,15 @@ if (selected(20)) {
     const keptRun = init(kept);
     check(keptRun.exit === 0 && fs.readFileSync(path.join(kept, 'shelf', 'holding', 'wiki', '_book.md'), 'utf8') === '# Mine\n' && actionOf(keptRun, 'shelf/holding') === 'unchanged', `init touched a Holding Shelf the workspace already had: ${keptRun.stderr.trim()}`);
 
+    // A HUSK HOLDS SOMETHING THE STANDARD RENDER DOES NOT WRITE (kickoffs/s81 row 0, PLAN-one-upgrade.md r8 R2a): an empty
+    // `shelf/reports`, or one holding only files the render writes, is a Book an apply left half made, and is completed.
     for (const [name, plant, words] of [
       ['husk', ['shelf', 'reports'], 'is a husk rather than a Book'],
       ['unrenderable', ['shelf', 'other', 'wiki'], 'the Shelf cannot be rendered'],
     ] as const) {
       const folder = path.join(root, name);
       fs.mkdirSync(path.join(folder, ...plant), { recursive: true });
+      if (name === 'husk') fs.writeFileSync(path.join(folder, ...plant, 'mine.txt'), 'not the standard render\n');
       const refused = init(folder);
       check(refused.exit !== 0 && refused.stderr.includes(words), `init over ${name} did not refuse with '${words}': ${refused.exit} ${refused.stderr.trim()}`);
       check(!fs.existsSync(path.join(folder, '.library')) && !fs.existsSync(path.join(folder, 'shelf', 'holding')), `a run refused over ${name} still wrote`);
@@ -1428,8 +1436,13 @@ if (selected(21) && process.platform !== 'win32') {
     };
     const claude = commandsOf(readJson('.claude/settings.local.json'));
     const prefix = `"${binary}" hook `;
-    check(claude.length === 5 && claude.every((row) => row.command.startsWith(prefix)), `init's Claude hooks are not the binary's five: ${claude.map((row) => row.command).join(' | ')}`);
-    for (const [verb, event] of [['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange']]) {
+    // NINE SINCE S82 (ADR-0064), found stale in the clean distro by S83 row 5: the four hooks that were scripts are
+    // verbs, so a POSIX init registers them too -- search-hit, compact-clear on PostCompact and SessionStart, seat-start.
+    check(claude.length === 9 && claude.every((row) => row.command.startsWith(prefix)), `init's Claude hooks are not the binary's nine: ${claude.map((row) => row.command).join(' | ')}`);
+    for (const [verb, event] of [
+      ['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange'],
+      ['search-hit', 'PostToolUse'], ['compact-clear', 'PostCompact'], ['compact-clear', 'SessionStart'], ['seat-start', 'SessionStart'],
+    ]) {
       check(claude.some((row) => row.event === event && row.command === prefix + verb), `init registered no ${event} '${verb}' for Claude`);
     }
     const reader = ((readJson('.mcp.json')['mcpServers'] ?? {}) as Record<string, { command?: string; args?: string[] }>)['validated-book-reader'];
@@ -1608,16 +1621,30 @@ if (selected(23)) {
     `the field walk did not treat exactly the *_route keys as remedies: ${JSON.stringify(routed)}`,
   );
 
-  // AN INSTALLED KERNEL ON WINDOWS (S47, the reader's ruling): a ported helper is its verb, as on POSIX, and one
-  // with no port is named by its full path in the installed program, runnable under a default execution policy.
+  // AN INSTALLED KERNEL ON WINDOWS (S47, the reader's ruling): a ported helper is its verb, as on POSIX. One with no
+  // port was named by its full path in the installed program until S83; a release ships no tools/*.ps1 since (D9),
+  // so it is named as a source-checkout helper the install does not ship, with no PowerShell and no path (D4).
   const installedRoot = String.raw`C:\Users\r\AppData\Local\deskpost\current`;
   const installed = (text: string) => hostRemedies(text, 'win32-compiled', installedRoot);
   for (const [given, wanted] of cases.slice(0, -1)) equal(installed(given), wanted, `the installed Windows remedy for '${given}'`);
   equal(
     installed('take it over with tools/Set-NotebookTopicOwner.ps1 -Topic x, or'),
-    `take it over with powershell -ExecutionPolicy Bypass -File "${installedRoot}${String.raw`\tools\Set-NotebookTopicOwner.ps1`}" -Topic x, or`,
-    'an installed kernel on Windows did not name an unported helper by its full path',
+    'take it over with Set-NotebookTopicOwner -Topic x (a helper in the Deskpost source checkout; this installed program does not ship it), or',
+    'an installed kernel on Windows did not name an unported helper as one it does not ship',
   );
+  // THE HELPERS WITH A VERB SINCE S83 (D4), on both hosts that rewrite; a switch's swallowed word is put back.
+  for (const [given, wanted] of [
+    ['run tools/Set-CollectionOwner.ps1 -Acquire -Force if that workspace is gone.', 'run deskpost collection owner --acquire --force if that workspace is gone.'],
+    ['Run tools/Set-CollectionOwner.ps1 -Status to confirm it.', 'Run deskpost collection owner --status to confirm it.'],
+    ['with tools/Set-CollectionOwner.ps1 -Release, or', 'with deskpost collection owner --release, or'],
+    ['Restore it with tools/Archive-ShelfBook.ps1 -Action Restore -BookSlug old before adding a page.', 'Restore it with deskpost shelf restore old before adding a page.'],
+    ['use tools/Copy-LocalPagesToProject.ps1. Nothing was written.', 'use deskpost hub copy-pages <slug>. Nothing was written.'],
+    ['Run tools/Initialize-LibraryWorkspace.ps1 to make it a workspace.', 'Run deskpost init to make it a workspace.'],
+    ['through tools/Invoke-LibraryTriage.ps1; a capture surface', 'through deskpost triage; a capture surface'],
+  ] as [string, string][]) {
+    equal(posix(given), wanted, `the POSIX remedy for '${given}'`);
+    equal(installed(given), wanted, `the installed Windows remedy for '${given}'`);
+  }
 
   const compiledKernel = (() => {
     try {
@@ -1639,7 +1666,8 @@ if (selected(23)) {
       fs.writeFileSync(path.join(seatDesk, '.open-books'), '');
       fs.writeFileSync(path.join(seatDesk, '.open-projects'), '');
       const denial = runCli(['hook', 'shelf-read', '--workspace', workspace, '--seat', 'reader'], { cwd: root, env, input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: path.join(workspace, 'shelf', 'holding', 'wiki', '_index.md') } }) }).stdout;
-      check(denial.includes('library desk open book holding --location shelf') && !denial.includes('Set-VirtualDesk.ps1'), `a closed-Book denial still offers a PowerShell helper on POSIX or from a compiled kernel: ${denial}`);
+      // `deskpost`, not `library`, since ADR-0055's rename: stale until S83 row 5 ran this branch in the clean distro.
+      check(denial.includes('deskpost desk open book holding --location shelf') && !denial.includes('Set-VirtualDesk.ps1'), `a closed-Book denial still offers a PowerShell helper on POSIX or from a compiled kernel: ${denial}`);
       // THE ROUTE FIELDS (S49): the Desk's quarantine block and the restore's list, each a command this host runs.
       // The Desk answers only a real seat, made as section 35 makes one: a Hub, then a confirmed `seat enter`.
       const { spawn } = await import('node:child_process');
@@ -1669,7 +1697,7 @@ if (selected(23)) {
           return `unreadable: ${overview.stdout.trim()} ${overview.stderr.trim()}`;
         }
       })();
-      equal(listRoute, 'library reset restore --list', "the Desk's notebook.quarantine.list_route on POSIX or from a compiled kernel");
+      equal(listRoute, 'deskpost reset restore --list', "the Desk's notebook.quarantine.list_route on POSIX or from a compiled kernel");
       const listing = runCli(['reset', 'restore', '--list', '--json'], { cwd: workspace, env });
       const showRoute = (() => {
         try {
@@ -1678,7 +1706,7 @@ if (selected(23)) {
           return `unreadable: ${listing.stdout.trim()} ${listing.stderr.trim()}`;
         }
       })();
-      equal(showRoute, 'library reset restore --quarantine <name> --show', "the restore listing's show_route on POSIX or from a compiled kernel");
+      equal(showRoute, 'deskpost reset restore --quarantine <name> --show', "the restore listing's show_route on POSIX or from a compiled kernel");
     } finally {
       // The seat's claim holder lets go when its agent dies; give it a moment, as section 35 does.
       const until = Date.now() + 5000;
@@ -3252,8 +3280,10 @@ if (selected(38) && process.platform === 'win32') {
 // workspace.compiled-init-registers-the-kernel-hooks -- S7 in Windows Sandbox on v0.2.1: a closed Holding Shelf page
 // read by Read was refused, but the denial named tools/Set-VirtualDesk.ps1, because `library init` on Windows
 // registered the program's guard scripts and ADR-0045's rewrite lives in the kernel's hook verbs. A compiled kernel now
-// registers its five ported hooks -- exec form for Claude, `& "<program>/bin/library" hook <verb>` for Codex, which runs
-// a hook through powershell.exe -Command -- and keeps the four with no port as PowerShell, which Windows has. A kernel run
+// registers its ported hooks -- exec form for Claude, `& "<program>/bin/library" hook <verb>` for Codex, which runs
+// a hook through powershell.exe -Command. Since S82 (ADR-0064) every hook the program registers is a verb -- the
+// compaction clear, the search-hit reminder and seat start were ported and the playbook hook retired -- so it registers
+// no PowerShell for Claude, here or on POSIX, and NO workspace registers the playbook hook. A kernel run
 // from source has no binary to name and keeps every script. Judged through the front door: the registration read back,
 // the hooks LAUNCHED as each harness launches them against a closed Book, and a re-run over the block v0.2.1 wrote.
 if (selected(39) && process.platform === 'win32') {
@@ -3284,18 +3314,21 @@ if (selected(39) && process.platform === 'win32') {
     const claude = entriesOf('.claude/settings.local.json');
     const codex = entriesOf('.codex/hooks.json');
     const binary = `${program}/bin/library.exe`;
-    const ported: [string, string][] = [['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange']];
-    const unported = ['Get-PlaybookContext.ps1', 'Add-SearchHitReminder.ps1', 'Restore-CompactedGuidance.ps1', 'Get-SeatStartContext.ps1'];
+    const ported: [string, string][] = [['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange'], ['compact-clear', 'PostCompact'], ['compact-clear', 'SessionStart'], ['search-hit', 'PostToolUse'], ['seat-start', 'SessionStart']];
+    // NO WORKSPACE REGISTERS THE PLAYBOOK HOOK (S82 row 4, ADR-0064): it is retired and its script deleted, so a
+    // registration of it would log a hook error on every shell call. From source and compiled, Claude and Codex.
+    check(![...claude, ...codex].some((row) => spelled(row.entry).toLowerCase().includes('get-playbookcontext')), `an init registered the retired playbook hook: ${[...claude, ...codex].map((row) => spelled(row.entry)).join(' | ')}`);
 
     if (!compiled) {
       check(claude.length > 0 && claude.every((row) => row.entry.command === 'powershell.exe'), `an init from source registered something other than the guard scripts for Claude: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
     } else {
       const exec = claude.filter((row) => row.entry.command === binary);
-      check(exec.length === 5 && exec.every((row) => Array.isArray(row.entry.args) && row.entry.args[0] === 'hook' && row.entry.args.length === 2), `a compiled init's Claude hooks are not the kernel's five in exec form: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+      check(exec.length === ported.length && exec.every((row) => Array.isArray(row.entry.args) && row.entry.args[0] === 'hook' && row.entry.args.length === 2), `a compiled init's Claude hooks are not the kernel's ${ported.length} in exec form: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+      check(!claude.some((row) => spelled(row.entry).includes('Restore-CompactedGuidance.ps1')), 'a compiled init still registers the compaction clear script, which empties the program\'s ledger');
       for (const [verb, event] of ported) check(exec.some((row) => row.event === event && row.entry.args?.[1] === verb), `a compiled init registered no ${event} '${verb}' for Claude`);
+      // EVERY HOOK HAS A VERB SINCE S82, so a compiled init registers no PowerShell for Claude at all.
       const scripts = claude.filter((row) => row.entry.command !== binary);
-      check(scripts.every((row) => row.entry.command === 'powershell.exe' && unported.some((name) => spelled(row.entry).includes(name))), `a compiled init registered a guard script the kernel has ported: ${scripts.map((row) => spelled(row.entry)).join(' | ')}`);
-      for (const name of unported) check(scripts.some((row) => spelled(row.entry).includes(name)), `a compiled init dropped the unported ${name}, which Windows can still run`);
+      check(scripts.length === 0, `a compiled init registered a hook script, and every hook the program registers has a verb: ${scripts.map((row) => spelled(row.entry)).join(' | ')}`);
 
       const codexPrefix = `& '${program.replace(/'/g, "''")}/bin/library' hook `;
       check(codex.length === 4 && codex.every((row) => row.entry.command.startsWith(codexPrefix) && row.entry.commandWindows === row.entry.command), `a compiled init's Codex hooks are not the kernel's four behind '& ': ${codex.map((row) => row.entry.command).join(' | ')}`);
@@ -4576,7 +4609,8 @@ if (selected(49)) {
 
 // Step 8's rules, pure where they can be: an entry is this install's only when a Deskpost form names a binary or a
 // -File script under its root (a near-miss root is not); a Library edit removes exactly those entries and keeps the
-// reader's; the legacy inventory reads a real ZIP; the finisher's removal block and install.ps1's are one text; and an
+// reader's; the legacy inventory reads a real ZIP; the kernel finisher's removal and install.ps1's block agree on a
+// frozen list; and an
 // argument reaches the finisher quoted as CommandLineToArgvW reads it back. The whole flow, against built releases, is
 // tools/Test-InstallLifecycle.ps1.
 if (selected(50)) {
@@ -4626,15 +4660,84 @@ if (selected(50)) {
       equal(listed.join('\n'), expected.join('\n'), 'the ZIP inventory did not read the entries and their hashes');
     }
 
-    // ONE REMOVAL BLOCK: the finisher's and install.ps1's are the same text.
-    const block = (file: string) => {
-      const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-      const start = text.indexOf('# --- BEGIN uninstall removal');
-      const end = text.indexOf('# --- END uninstall removal ---');
-      return start >= 0 && end > start ? text.substring(start, end) : null;
-    };
-    const finisher = block(path.join(PROGRAM_ROOT, 'tools', 'Finish-Uninstall.ps1'));
-    check(finisher !== null && finisher === block(path.join(PROGRAM_ROOT, 'install.ps1')), "install.ps1's uninstall removal block is not the finisher's, byte for byte");
+    // ONE REMOVAL, TWO WRITERS (S83, kickoffs/s83 ruling 4). The finisher is the kernel's `finish-uninstall` now, and
+    // install.ps1 keeps its own block for -Resume finish, so byte equality no longer applies. Instead both run on the
+    // same frozen list over twin fixtures, and must leave the same tree and report the same number of problems: a link
+    // removed as a link, a real folder named as a link kept, a file reached through a junction kept, a changed file kept,
+    // a folder that is not empty afterwards kept. The PATH entry is judged in section 116, through a compiled kernel
+    // (the registry is bun:ffi), against the same block.
+    if (process.platform === 'win32') {
+      const { removeUninstallList } = await import('../src/finisher.ts');
+      const installBlock = (() => {
+        const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), 'utf8').replace(/\r\n/g, '\n');
+        const start = text.indexOf('# --- BEGIN uninstall removal');
+        const end = text.indexOf('# --- END uninstall removal ---');
+        return start >= 0 && end > start ? text.substring(start, end) : null;
+      })();
+      check(installBlock !== null && installBlock.includes('function Invoke-UninstallRemoval'), "install.ps1 carries no uninstall removal block to judge the finisher against");
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(outside, { recursive: true });
+      fs.writeFileSync(path.join(outside, 'x.txt'), 'outside');
+      const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+      const twin = (name: string) => {
+        const r = path.join(root, name);
+        const v = path.join(r, 'versions', '1.0.0');
+        for (const folder of ['bin', 'docs', 'keep', 'notalink']) fs.mkdirSync(path.join(v, folder), { recursive: true });
+        fs.writeFileSync(path.join(v, 'bin', 'a.txt'), 'a');
+        fs.writeFileSync(path.join(v, 'docs', 'b.txt'), 'b');
+        fs.writeFileSync(path.join(v, 'docs', 'changed.txt'), 'changed after the plan');
+        fs.writeFileSync(path.join(v, 'keep', 'extra.txt'), 'not on the list');
+        fs.symlinkSync(outside, path.join(v, 'linked'), 'junction');
+        fs.symlinkSync(v, path.join(r, 'current'), 'junction');
+        fs.renameSync(path.join(v, 'notalink'), path.join(r, 'notalink'));
+        return r;
+      };
+      const removal = {
+        files: [
+          { path: 'versions/1.0.0/bin/a.txt', sha256: digest('a') },
+          { path: 'versions/1.0.0/docs/b.txt', sha256: digest('b') },
+          { path: 'versions/1.0.0/docs/changed.txt', sha256: digest('as planned') },
+          { path: 'versions/1.0.0/linked/x.txt', sha256: digest('outside') },
+          { path: 'versions/1.0.0/gone.txt', sha256: digest('gone') },
+        ],
+        links: ['current', 'notalink', 'absent'],
+        folders: ['versions/1.0.0/bin', 'versions/1.0.0/docs', 'versions/1.0.0/keep', 'versions/1.0.0', 'versions'],
+        kept: [],
+        path_entry: null,
+      };
+      const tree = (r: string): string[] => {
+        const out: string[] = [];
+        const walk = (directory: string) => {
+          for (const item of fs.readdirSync(directory).sort()) {
+            const full = path.join(directory, item);
+            const stat = fs.lstatSync(full);
+            out.push(`${path.relative(r, full).replace(/\\/g, '/')}${stat.isSymbolicLink() ? ' (link)' : stat.isDirectory() ? '/' : ''}`);
+            if (stat.isDirectory() && !stat.isSymbolicLink()) walk(full);
+          }
+        };
+        if (fs.existsSync(r)) walk(r);
+        return out;
+      };
+      const kernelRoot = twin('kernel-side');
+      const oracleRoot = twin('installer-side');
+      const kernelProblems = removeUninstallList(kernelRoot, removal);
+      fs.writeFileSync(path.join(root, 'block.ps1'), installBlock ?? '');
+      fs.writeFileSync(path.join(root, 'removal.json'), JSON.stringify(removal));
+      const oracle = spawnSync(
+        'powershell.exe',
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '. $env:S50_BLOCK; $r = [IO.File]::ReadAllText($env:S50_LIST) | ConvertFrom-Json; $p = Invoke-UninstallRemoval $env:S50_ROOT $r; Write-Output @($p).Count'],
+        { encoding: 'utf8', windowsHide: true, timeout: 120000, env: { ...process.env, S50_BLOCK: path.join(root, 'block.ps1'), S50_LIST: path.join(root, 'removal.json'), S50_ROOT: oracleRoot } },
+      );
+      equal(oracle.status, 0, `install.ps1's removal block did not run: ${(oracle.stderr ?? '').trim()}`);
+      equal(tree(kernelRoot).join('\n'), tree(oracleRoot).join('\n'), "the finisher's removal and install.ps1's left different trees on the same frozen list");
+      equal(kernelProblems.length, Number((oracle.stdout ?? '').trim().split(/\s+/).pop()), `the finisher and install.ps1 reported a different number of problems: ${kernelProblems.join('; ')}`);
+      check(
+        !fs.existsSync(path.join(kernelRoot, 'current')) && fs.existsSync(path.join(kernelRoot, 'notalink')) && fs.existsSync(path.join(outside, 'x.txt')) &&
+          !fs.existsSync(path.join(kernelRoot, 'versions', '1.0.0', 'bin')) && fs.existsSync(path.join(kernelRoot, 'versions', '1.0.0', 'docs', 'changed.txt')) &&
+          fs.existsSync(path.join(kernelRoot, 'versions', '1.0.0', 'keep', 'extra.txt')),
+        `the finisher's removal did not keep and remove what the rules say: ${tree(kernelRoot).join(', ')}`,
+      );
+    }
 
     for (const [given, wanted] of [['plain', 'plain'], ['C:\\a b\\c', '"C:\\a b\\c"'], ['C:\\a b\\', '"C:\\a b\\\\"'], ['say "hi"', '"say \\"hi\\""'], ['', '""']] as [string, string][]) {
       equal(argvQuote(given), wanted, `an argument was not quoted as CommandLineToArgvW reads it: ${given}`);
@@ -8050,16 +8153,26 @@ if (selected(90)) {
     check(upgrade.stdout.includes(`Upgrading Deskpost 1.1.0 to ${version} at ${prog}`), `the upgrade did not say from, to and root: ${upgrade.stdout}`);
     const upgraded = answers();
     check(upgraded['install_state'] === 'upgrade' && upgraded['library'] === null && upgraded['library_state'] === 'none', `an upgrade with no -Library chose a Library: ${JSON.stringify(upgraded)}`);
-    equal(JSON.stringify(upgraded['kept_libraries']), JSON.stringify([library]), 'the kept Libraries are not exactly the one the install serves');
-    check(upgrade.stdout.includes(library) && !fs.existsSync(path.join(home, 'Library')), 'the screen did not name the kept Library, or a Library appeared in the folder run from');
+    // SINCE 1.3.2 THE SERVED LIBRARY IS BROUGHT UP TO DATE IN THE SAME RUN (kickoffs/s81 row 2, ADR-0063), not kept.
+    equal(JSON.stringify(upgraded['refresh_libraries']), JSON.stringify([library]), 'the Libraries to bring up to date are not exactly the one the install serves');
+    equal(JSON.stringify(upgraded['kept_libraries']), '[]', 'an upgrade with no --keep-libraries kept a Library');
+    check(upgrade.stdout.includes(library) && !fs.existsSync(path.join(home, 'Library')), 'the screen did not name the served Library, or a Library appeared in the folder run from');
     const planFile = path.join(root, 'plan.json');
     const planned = runCli(['setup', '--plan', '--answers', answersFile, '--resources', PROGRAM_ROOT, '--register-as', path.join(prog, 'current'), '--out', planFile], { cwd: root, env });
     equal(planned.exit, 0, 'the upgrade did not plan');
-    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8').replace(/^\uFEFF/, '')) as { library: unknown; register: unknown };
-    check(plan.library === null && plan.register === null, 'the upgrade plan writes or registers a Library');
-    check(planned.stdout.includes(`${library} is kept as it is`) && !planned.stdout.includes('No Library'), `the upgrade's plan said "no Library" rather than the Library it keeps: ${planned.stdout.trim()}`);
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8').replace(/^\uFEFF/, '')) as { library: unknown; register: unknown; refresh?: { workspace: string }[] };
+    check(plan.library === null && plan.register === null && (plan.refresh ?? []).length === 1 && plan.refresh![0]!.workspace === library, `the upgrade plan writes the Library in the transaction, or carries no refresh for it: ${JSON.stringify(plan.refresh)}`);
+    check(planned.stdout.includes(library) && !planned.stdout.includes('No Library'), `the upgrade's plan said "no Library" rather than the Library it serves: ${planned.stdout.trim()}`);
     const applied = runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env });
-    check(applied.exit === 0 && applied.stdout.includes(`${library} is kept as it is`) && !applied.stdout.includes('No Library'), `the upgrade's apply said "no Library" rather than the Library it keeps: ${applied.stdout.trim()}`);
+    check(applied.exit === 0 && applied.stdout.includes(library) && !applied.stdout.includes('No Library'), `the upgrade's apply said "no Library" rather than the Library it serves: ${applied.stdout.trim()}`);
+    check(fs.existsSync(path.join(root, 'refresh-approval.json')), 'the upgrade\'s apply wrote no approval beside its plan');
+    equal(snapshot(library), libraryBefore, 'the apply wrote in a served Library, which only the refresh after the commit does');
+    // --keep-libraries (D4): the served Library kept as it is, and nothing inside it written.
+    equal(ask(['--install-root', prog, '--keep-libraries']).exit, 0, 'an upgrade with --keep-libraries was refused');
+    check(JSON.stringify(answers()['kept_libraries']) === JSON.stringify([library]) && JSON.stringify(answers()['refresh_libraries']) === '[]' && answers()['keep_libraries'] === true, `--keep-libraries did not keep the served Library: ${JSON.stringify(answers())}`);
+    equal(runCli(['setup', '--plan', '--answers', answersFile, '--resources', PROGRAM_ROOT, '--register-as', path.join(prog, 'current'), '--out', planFile], { cwd: root, env }).exit, 0, 'the kept upgrade did not plan');
+    const keptApplied = runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env });
+    check(keptApplied.exit === 0 && keptApplied.stdout.includes(`${library} is kept as it is`), `the kept upgrade's apply did not say the Library is kept: ${keptApplied.stdout.trim()}`);
     equal(snapshot(library), libraryBefore, 'the kept Library was written to');
 
     // 3. The same version: said as such, to a script, and -Repair still repairs.
@@ -8067,7 +8180,7 @@ if (selected(90)) {
     const same = ask(['--install-root', prog]);
     check(same.exit !== 0 && same.stderr.includes(`already at ${version}`) && same.stderr.includes('-Repair reinstalls it'), `the same version was not said as such: ${same.stderr.trim()}`);
     const repaired = ask(['--install-root', prog, '--repair']);
-    check(repaired.exit === 0 && answers()['install_state'] === 'repair' && answers()['library'] === null, `-Repair did not repair with the Libraries kept: ${repaired.stderr.trim()}`);
+    check(repaired.exit === 0 && answers()['install_state'] === 'repair' && answers()['library'] === null, `-Repair did not repair with the Libraries served: ${repaired.stderr.trim()}`);
   } catch (error) {
     failures.push(`section 90 stopped early: ${(error as Error).message}`);
   } finally {
@@ -8801,6 +8914,23 @@ if (selected(101)) {
     measured['reader.initialize'] = answer(1).length;
     measured['reader.tools-list'] = answer(2).length;
 
+    // The two hooks 1.3.2 ported that emit context (S82; compact-clear prints nothing and the playbook is retired):
+    // the search reminder, and the roster a seatless session starts with in this one-seat Library.
+    const additional = (stdout: string): string => {
+      try {
+        return String((JSON.parse(stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext'] ?? '');
+      } catch {
+        return '';
+      }
+    };
+    const hookEnv = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '' };
+    const hit = additional(runCli(['hook', 'search-hit'], { cwd: w.root, env: hookEnv, input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'mcp__validated-book-reader__search_open_books', tool_input: { query: 'x' } }) }).stdout);
+    check(hit.startsWith('A hit is a location'), `the budget fixture's search reminder was not sent: ${hit}`);
+    measured['search-hit'] = hit.length;
+    const roster = additional(runCli(['hook', 'seat-start', '--agent-pid', String(w.startAgent())], { cwd: w.workspace, env: hookEnv, input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: '10100000-0000-4000-8000-000000000002' }) }).stdout);
+    check(roster.includes('first  ->  project alpha'), `the budget fixture's seat roster was not sent: ${roster.slice(0, 300)}`);
+    measured['seat-start'] = roster.length;
+
     // The verdict, one line per measure.
     equal(Object.keys(measured).sort().join(','), Object.keys(budgets).sort().join(','), 'the budget file and the measures name different things');
     for (const [name, value] of Object.entries(measured)) {
@@ -9275,6 +9405,1023 @@ if (selected(106)) {
   } finally {
     w.dispose();
   }
+}
+
+// --- 107: init is safe and finishes what it started (kickoffs/s81 row 0, PLAN-one-upgrade.md r6 1-2, r8 R2a, r9 3, D7) --
+// A binary file on the Shelf is never planned; an apply cut short at any write boundary is finished by the next init,
+// the standard Books and the library-help Skill byte for byte as a clean init leaves them; a standard capture Book's
+// entry is brought up to date without changing a line that says something; and a managed Codex config holding the
+// reader's own entries is refused and left as it is.
+if (selected(107)) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-init-safe-'));
+  try {
+    const registry = path.join(root, 'reg');
+    const init = (folder: string, env: Record<string, string> = {}) => runCli(['init', folder, '--registry-root', registry, '--json'], { env });
+    const digest = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const tree = (folder: string, under: string = ''): Map<string, string> => {
+      const out = new Map<string, string>();
+      const walk = (relative: string): void => {
+        const full = path.join(folder, relative);
+        if (!fs.existsSync(full)) return;
+        for (const item of fs.readdirSync(full, { withFileTypes: true })) {
+          const child = relative ? `${relative}/${item.name}` : item.name;
+          if (child === 'internal') continue;
+          if (item.isDirectory()) {
+            out.set(child + '/', 'folder');
+            walk(child);
+          } else out.set(child, digest(path.join(folder, child)));
+        }
+      };
+      walk(under);
+      return out;
+    };
+    const sameTree = (left: Map<string, string>, right: Map<string, string>) =>
+      left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
+    const entryOf = (ws: string, slug: string) => path.join(ws, 'shelf', slug, '_catalog-entry.md');
+    const dropLines = (file: string, keys: string[]) =>
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split('\n').filter((line) => !keys.some((key) => line.startsWith(`- **${key}:**`))).join('\n'));
+
+    // A clean init, what every finished one is compared with.
+    const reference = path.join(root, 'reference');
+    equal(init(reference).exit, 0, 'the reference init failed');
+    const referenceShelf = tree(reference, 'shelf');
+    const referenceSkill = tree(reference, '.claude/skills');
+    const referenceNames = [...tree(reference).keys()].sort().join('|');
+    check(fs.readFileSync(entryOf(reference, 'holding'), 'utf8').includes('- **Closed by:** writer'), 'a fresh init no longer writes Closed by: writer on the Holding Shelf');
+
+    // r6 amendment 1: a PNG in a Shelf Book is not in the plan when `letters` is created, and survives byte for byte.
+    const png = path.join(root, 'png');
+    equal(init(png).exit, 0, 'the PNG workspace could not be made');
+    fs.rmSync(path.join(png, 'shelf', 'letters'), { recursive: true, force: true });
+    const picture = path.join(png, 'shelf', 'holding', 'wiki', 'assets', 'pic.png');
+    const pictureBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80, 0xc3, 0x28]);
+    fs.mkdirSync(path.dirname(picture), { recursive: true });
+    fs.writeFileSync(picture, pictureBytes);
+    const pngPlan = planLibraryInit({ workspacePath: png, registryRoot: registry, programRoot: PROGRAM_ROOT });
+    check(pngPlan.writes.some((write) => write.relative === 'shelf/letters/_catalog-entry.md'), `the PNG case did not plan the letters Book: ${pngPlan.writes.map((write) => write.relative).join(', ')}`);
+    check(!pngPlan.writes.some((write) => write.relative.endsWith('pic.png')), `a PNG the Shelf writers never touched was planned as a change: ${pngPlan.writes.map((write) => write.relative).join(', ')}`);
+    equal(init(png).exit, 0, 'init over the Shelf holding a PNG failed');
+    check(fs.readFileSync(picture).equals(pictureBytes), 'init changed the bytes of a PNG on the Shelf');
+
+    // r8 R2a and r9 amendment 3: an apply cut short before each of its writes is finished by the next init.
+    const writes = planLibraryInit({ workspacePath: path.join(root, 'never-made'), registryRoot: registry, programRoot: PROGRAM_ROOT }).writes;
+    check(writes.some((write) => write.relative.startsWith('shelf/letters/')) && writes.some((write) => write.relative.startsWith('.claude/skills/library-help/')), 'a fresh plan carries no standard Book or no Skill to cut short');
+    const skillOrder = writes.filter((write) => write.relative.startsWith('.claude/skills/library-help/')).map((write) => write.relative);
+    equal(skillOrder[0], '.claude/skills/library-help/.deskpost-managed.json', 'the Skill\'s ownership file is not written first');
+    for (let cut = 0; cut < writes.length; cut++) {
+      const ws = path.join(root, `cut-${cut}`);
+      const stopped = init(ws, { LIBRARY_INIT_FAULT_AFTER: String(cut) });
+      if (stopped.exit === 0 || !stopped.stderr.includes('FAULT INJECTED')) {
+        failures.push(`the init cut before write ${cut + 1} (${writes[cut]!.relative}) did not stop: ${stopped.stderr.slice(0, 200)}`);
+        continue;
+      }
+      const finished = init(ws);
+      if (finished.exit !== 0) {
+        failures.push(`init after a cut before write ${cut + 1} (${writes[cut]!.relative}) failed: ${finished.stderr.slice(0, 300)}`);
+        continue;
+      }
+      check(sameTree(tree(ws, 'shelf'), referenceShelf), `the Shelf after a cut before write ${cut + 1} (${writes[cut]!.relative}) is not what a clean init leaves`);
+      check(sameTree(tree(ws, '.claude/skills'), referenceSkill), `the Skill after a cut before write ${cut + 1} (${writes[cut]!.relative}) is not what a clean init leaves`);
+      equal([...tree(ws).keys()].sort().join('|'), referenceNames, `the files after a cut before write ${cut + 1} (${writes[cut]!.relative}) are not a clean init's`);
+    }
+
+    // D7: a standard capture Book's entry is brought up to date; a line that says something is never changed.
+    const d7 = path.join(root, 'd7');
+    equal(init(d7).exit, 0, 'the D7 workspace could not be made');
+    dropLines(entryOf(d7, 'reports'), ['Closed by']);
+    dropLines(entryOf(d7, 'letters'), ['Closed by', 'Letters']);
+    fs.writeFileSync(entryOf(d7, 'letters'), fs.readFileSync(entryOf(d7, 'letters'), 'utf8').replace('5 pending or 7 days', '9 pending or 9 days'));
+    equal(runCli(['shelf', 'render', '--workspace', d7]).exit, 0, 'the D7 Shelf could not be rendered');
+    const amended = init(d7);
+    equal(amended.exit, 0, `init over the D7 Shelf failed: ${amended.stderr}`);
+    const holding = fs.readFileSync(entryOf(d7, 'holding'), 'utf8');
+    const reports = fs.readFileSync(entryOf(d7, 'reports'), 'utf8');
+    const letters = fs.readFileSync(entryOf(d7, 'letters'), 'utf8');
+    check(holding.includes('- **Closed by:** writer') && !holding.includes('- **Closed by:** any'), `an explicit Closed by: writer was changed: ${holding}`);
+    check(reports.includes('- **Kind:** capture\n- **Closed by:** any\n'), `a Book without Closed by: did not gain any where the writer puts it: ${reports}`);
+    check(letters.includes('- **Kind:** capture\n- **Closed by:** any\n- **Letters:** yes\n- **Growing at:** 9 pending or 9 days\n'), `the letters entry did not gain its missing lines, in order, keeping its own Growing at: ${letters}`);
+    const catalog = fs.readFileSync(path.join(d7, 'shelf', '_catalog.md'));
+    equal(runCli(['shelf', 'render', '--workspace', d7]).exit, 0, 'the amended Shelf could not be rendered');
+    check(fs.readFileSync(path.join(d7, 'shelf', '_catalog.md')).equals(catalog), 'the catalog init left is not the one its entries render');
+    const settled = tree(d7);
+    equal(init(d7).exit, 0, 'a second init over the D7 Shelf failed');
+    check(sameTree(tree(d7), settled), 'a second init changed something');
+    dropLines(entryOf(d7, 'letters'), ['Growing at']);
+    equal(init(d7).exit, 0, 'init over a letters Book without Growing at: failed');
+    check(fs.readFileSync(entryOf(d7, 'letters'), 'utf8').includes('- **Letters:** yes\n- **Growing at:** 5 pending or 7 days\n'), `a missing Growing at: line was not added: ${fs.readFileSync(entryOf(d7, 'letters'), 'utf8')}`);
+
+    // r6 amendment 2: a managed Codex config holding the reader's own entries is refused and left byte for byte.
+    const codex = path.join(root, 'codex');
+    equal(init(codex).exit, 0, 'the Codex workspace could not be made');
+    const config = path.join(codex, '.codex', 'config.toml');
+    check(fs.existsSync(config), 'init wrote no Codex config to judge');
+    if (fs.existsSync(config)) {
+      const managed = fs.readFileSync(config, 'utf8');
+      const withMine = managed + '\n[mcp_servers.mine]\ncommand = "mine"\n';
+      fs.writeFileSync(config, withMine);
+      const refused = init(codex);
+      check(refused.exit !== 0 && refused.stderr.includes('your Codex config has entries Deskpost did not write') && refused.stderr.includes('mcp_servers.mine'), `a Codex config with the reader's own server was not refused: ${refused.stderr.slice(0, 300)}`);
+      equal(fs.readFileSync(config, 'utf8'), withMine, 'a refused Codex config was changed');
+      fs.writeFileSync(config, managed.replace('startup_timeout_sec = 20', 'startup_timeout_sec = 5'));
+      const redone = init(codex);
+      equal(redone.exit, 0, `a managed Codex config whose own value changed was refused: ${redone.stderr.slice(0, 300)}`);
+      equal(fs.readFileSync(config, 'utf8'), managed, 'a managed Codex config was not brought back to the render');
+    }
+  } catch (error) {
+    failures.push(`section 107 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 108: `doctor --served-by <root>` (kickoffs/s81 row 1, PLAN-one-upgrade.md D8 and r6 amendment 10) -------------
+// Exactly the Libraries whose registrations run the install at <root> -- through `.mcp.json` and hooks, or a Codex-only
+// one through `.codex/config.toml` -- each with its checks, and the registered Libraries it could not reach. A failing
+// check fails the run; the same check in a Library named `--kept` is a WARN. `--workspace` keeps its shape. Unknown
+// flags are accepted, so membership is judged from the report, never from the exit code alone.
+if (selected(108)) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-served-by-'));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACES: registry };
+    const install = path.join(root, 'install');
+    const other = path.join(root, 'other-install');
+    const binary = (at: string) => path.join(at, 'current', 'bin', 'library.exe').replace(/\\/g, '/');
+    const library = (name: string) => {
+      const ws = path.join(root, name);
+      equal(runCli(['init', ws, '--registry-root', registry], { env }).exit, 0, `the Library ${name} could not be made`);
+      return ws;
+    };
+    const claudeServed = library('claude-served');
+    const codexServed = library('codex-served');
+    const elsewhere = library('elsewhere');
+    const gone = library('gone');
+    // Served through the Claude reader registration.
+    fs.writeFileSync(path.join(claudeServed, '.mcp.json'), JSON.stringify({ mcpServers: { 'validated-book-reader': { command: binary(install), args: ['mcp', 'serve'] } } }, null, 2));
+    // Served only through Codex: no Claude registration names the install.
+    const toml = fs.readFileSync(path.join(codexServed, '.codex', 'config.toml'), 'utf8')
+      .replace(/^command = .*$/m, `command = "${binary(install)}"`)
+      .replace(/^args = .*$/m, 'args = ["mcp", "serve", "--state-directory", "x"]');
+    fs.writeFileSync(path.join(codexServed, '.codex', 'config.toml'), toml);
+    // Served by another install.
+    fs.writeFileSync(path.join(elsewhere, '.mcp.json'), JSON.stringify({ mcpServers: { 'validated-book-reader': { command: binary(other), args: ['mcp', 'serve'] } } }, null, 2));
+    fs.rmSync(gone, { recursive: true, force: true });
+
+    const doctor = (extra: string[]) => {
+      const ran = runCli(['doctor', '--served-by', install, '--registry-root', registry, '--json', ...extra], { env, cwd: root });
+      let report: any = null;
+      try {
+        report = JSON.parse(ran.stdout);
+      } catch {
+        report = null;
+      }
+      return { ...ran, report };
+    };
+    const first = doctor([]);
+    check(first.report !== null && Array.isArray(first.report.libraries), `doctor --served-by gave no libraries list: ${first.stdout.slice(0, 300)} ${first.stderr.slice(0, 300)}`);
+    if (first.report !== null && Array.isArray(first.report.libraries)) {
+      const names = (first.report.libraries as { workspace: string }[]).map((row) => path.resolve(row.workspace).toLowerCase()).sort();
+      equal(JSON.stringify(names), JSON.stringify([claudeServed, codexServed].map((folder) => path.resolve(folder).toLowerCase()).sort()), 'doctor --served-by did not list exactly the Libraries the install serves (a Codex-only one included)');
+      equal(JSON.stringify((first.report.unreached as string[]).map((folder) => path.resolve(folder).toLowerCase())), JSON.stringify([path.resolve(gone).toLowerCase()]), 'doctor --served-by did not name the registered Library it could not reach');
+      check((first.report.libraries as { checks: unknown[] }[]).every((row) => Array.isArray(row.checks) && row.checks.length > 0), 'a served Library came without its checks');
+
+      // A failing check in one Library fails the run; the same Library kept is a WARN, and the failure count drops by its rows.
+      fs.writeFileSync(path.join(claudeServed, 'shelf', '_catalog.md'), '# not what the entries render\n');
+      const failing = doctor([]);
+      const rowsOf = (report: any, folder: string) => ((report?.libraries ?? []) as { workspace: string; checks: { check: string; status: string; detail: string }[] }[]).find((row) => path.resolve(row.workspace).toLowerCase() === path.resolve(folder).toLowerCase())?.checks ?? [];
+      const broken = rowsOf(failing.report, claudeServed).filter((row) => row.status === 'fail');
+      check(broken.some((row) => row.check === 'shelf.catalog-renders-from-entries'), `a planted catalog fault did not fail its Library's check: ${JSON.stringify(broken)}`);
+      equal(failing.exit, 1, 'a failing check in a served Library did not fail doctor --served-by');
+      check(Number(failing.report?.failed) >= broken.length, 'doctor --served-by did not count the served Library\'s failures');
+      const kept = doctor(['--kept', claudeServed]);
+      const keptRows = rowsOf(kept.report, claudeServed);
+      check(!keptRows.some((row) => row.status === 'fail') && keptRows.some((row) => row.check === 'shelf.catalog-renders-from-entries' && row.status === 'warn' && row.detail.startsWith('kept as it is')), `a kept Library's failing check was not a WARN: ${JSON.stringify(keptRows.filter((row) => row.check === 'shelf.catalog-renders-from-entries'))}`);
+      equal(Number(kept.report?.failed), Number(failing.report?.failed) - broken.length, 'keeping a Library did not take exactly its failures out of the count');
+      equal(kept.exit, Number(kept.report?.failed) ? 1 : 0, 'the exit of doctor --served-by does not follow its failure count');
+      const text = runCli(['doctor', '--served-by', install, '--registry-root', registry, '--kept', claudeServed], { env, cwd: root });
+      check(text.stdout.includes(`${claudeServed}  (kept as it is)`) && text.stdout.includes(`Could not reach the registered Library ${path.resolve(gone)}`), `the served-by text did not name the kept and the unreached Libraries: ${text.stdout.slice(0, 600)}`);
+    }
+    // `--workspace` keeps its one-Library shape, which the matrix compares row for row.
+    const single = JSON.parse(runCli(['doctor', '--workspace', claudeServed, '--json'], { env, cwd: root }).stdout || '{}');
+    check(Array.isArray(single.checks) && !('libraries' in single) && single.workspace === path.resolve(claudeServed), `doctor --workspace changed its shape: ${Object.keys(single).join(', ')}`);
+  } catch (error) {
+    failures.push(`section 108 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 109: one upgrade brings the Libraries it serves up to date (kickoffs/s81 row 2, ADR-0063, PLAN-one-upgrade.md r7-r9) -
+// The plan carries each served Library's refresh and its id binds it; the apply writes the approval beside the plan and
+// nothing in a Library, and exits 0 naming a Library whose refresh refused; `setup --refresh-served` replays the approval
+// by the three-state rule under the lifecycle lock -- refusing while a transaction is pending, while `current` is not the
+// approved version, and while another holds the lock -- finishes an interrupted refresh, leaves a Library changed since
+// the preview as partly refreshed, clears the approval and runs doctor over every served Library. `--keep-libraries` keeps
+// them; a same-version run while a refresh is unfinished is refresh only. The program read is a release-shaped tree: the
+// files init reads and a stub `bin/library.exe`, so its Libraries' registrations name the install's kernel, as a real
+// release's do.
+if (selected(109)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-refresh-')));
+  let holder: ReturnType<typeof spawn> | null = null;
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    const version = String((JSON.parse(runCli(['--version']).stdout) as Record<string, unknown>)['plugin_version']);
+    const release = (name: string, change: (tree: string) => void): string => {
+      const tree = path.join(root, name);
+      for (const relative of ['templates', '.claude/skills', '.claude/hooks', '.codex', '.codex-plugin', 'docs/templates']) {
+        fs.cpSync(path.join(PROGRAM_ROOT, ...relative.split('/')), path.join(tree, ...relative.split('/')), { recursive: true });
+      }
+      fs.copyFileSync(path.join(PROGRAM_ROOT, '.claude', 'settings.json'), path.join(tree, '.claude', 'settings.json'));
+      fs.mkdirSync(path.join(tree, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(tree, 'bin', 'library.exe'), 'MZ');
+      change(tree);
+      return tree;
+    };
+    const older = release('rel-old', () => {});
+    const newer = release('rel-new', (tree) => fs.appendFileSync(path.join(tree, 'templates', 'workspace-instructions.md'), '\nA line the newer release adds.\n'));
+    const prog = path.join(root, 'prog');
+    const current = path.join(prog, 'current');
+    fs.mkdirSync(prog, { recursive: true });
+    const setVersion = (value: string) => fs.writeFileSync(path.join(prog, 'current.json'), JSON.stringify({ schema: 1, version: value }) + '\n');
+    const answersFile = path.join(root, 'answers.json');
+    const answers = () => JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^\uFEFF/, '')) as Record<string, any>;
+    const json = (text: string): any => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+    // Two Libraries the install serves, made through the older release as an install makes them.
+    const made = (name: string): string => {
+      const ws = path.join(root, name);
+      fs.writeFileSync(answersFile, JSON.stringify({ schema: 1, version, install_root: prog, install_state: 'new', from_version: null, library: ws, library_state: 'new', repair: false, make_default: name === 'alpha', overlap_accepted: false, assistant: null, path_change: false }));
+      const planFile = path.join(root, `make-${name}.json`);
+      equal(runCli(['setup', '--plan', '--answers', answersFile, '--resources', older, '--register-as', current, '--out', planFile], { cwd: root, env }).exit, 0, `the Library ${name} could not be planned`);
+      equal(runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env }).exit, 0, `the Library ${name} could not be made`);
+      return ws;
+    };
+    const alpha = made('alpha');
+    const beta = made('beta');
+    // beta carries a hook the Library did not write, so its refresh refuses and it is kept (D2).
+    const betaLocal = path.join(beta, '.claude', 'settings.local.json');
+    const betaSettings = JSON.parse(fs.readFileSync(betaLocal, 'utf8')) as { hooks: Record<string, unknown[]> };
+    betaSettings.hooks['Stop'] = [{ hooks: [{ type: 'command', command: 'C:/mine/notify.exe' }] }];
+    fs.writeFileSync(betaLocal, JSON.stringify(betaSettings, null, 2));
+    // alpha's Codex hooks in another serialisation, so the refresh rewrites them (D10).
+    const alphaCodex = path.join(alpha, '.codex', 'hooks.json');
+    fs.writeFileSync(alphaCodex, JSON.stringify(JSON.parse(fs.readFileSync(alphaCodex, 'utf8'))));
+    const backup = path.join(root, 'alpha-backup');
+    fs.cpSync(alpha, backup, { recursive: true });
+    const restoreAlpha = () => {
+      fs.rmSync(alpha, { recursive: true, force: true });
+      fs.cpSync(backup, alpha, { recursive: true });
+    };
+    const digestTree = (dir: string): string => {
+      const out: string[] = [];
+      const walk = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else out.push(`${path.relative(dir, f)}:${createHash('sha256').update(fs.readFileSync(f)).digest('hex')}`); } };
+      walk(dir);
+      return out.sort().join('\n');
+    };
+    const alphaBefore = digestTree(alpha);
+    const betaBefore = digestTree(beta);
+
+    // The upgrade's answers: both served Libraries to bring up to date, by default (D5).
+    setVersion('0.0.1');
+    equal(runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--cwd', root], { cwd: root, env }).exit, 0, 'the upgrade was not asked');
+    const toRefresh = (answers()['refresh_libraries'] as string[] | undefined ?? []).map((folder) => folder.toLowerCase()).sort();
+    equal(JSON.stringify(toRefresh), JSON.stringify([alpha, beta].map((folder) => folder.toLowerCase()).sort()), 'the upgrade does not bring exactly the served Libraries up to date');
+    const upgradeAnswers = fs.readFileSync(answersFile, 'utf8');
+
+    // The plan: alpha's writes, beta refused and named; its id binds the refresh (D9).
+    const pending = path.join(prog, '.pending');
+    fs.mkdirSync(pending, { recursive: true });
+    const planFile = path.join(pending, 'plan.json');
+    const plan = (out = planFile) => json(runCli(['setup', '--plan', '--answers', answersFile, '--resources', newer, '--register-as', current, '--out', out, '--release-sha', 'aa', '--script-sha', 'bb', '--json'], { cwd: root, env }).stdout);
+    const first = plan();
+    const frozen = JSON.parse(fs.readFileSync(planFile, 'utf8')) as { refresh: { workspace: string; decision: string; reason: string | null; plan: { writes: { relative: string; path: string; content: string; new_sha256: string }[] } | null }[] };
+    const alphaEntry = frozen.refresh.find((entry) => entry.workspace.toLowerCase() === alpha.toLowerCase());
+    const betaEntry = frozen.refresh.find((entry) => entry.workspace.toLowerCase() === beta.toLowerCase());
+    check(alphaEntry?.decision === 'refresh' && (alphaEntry.plan?.writes ?? []).some((write) => write.relative === 'CLAUDE.md') && (alphaEntry.plan?.writes ?? []).some((write) => write.relative === '.codex/hooks.json'), `alpha's refresh does not carry its instructions and Codex hooks: ${JSON.stringify(alphaEntry?.plan?.writes.map((write) => write.relative))} ${alphaEntry?.reason}`);
+    check(betaEntry?.decision === 'refused' && String(betaEntry.reason).includes('did not write'), `beta, with a foreign hook, was not refused and named: ${JSON.stringify(betaEntry)}`);
+    const otherPlan = path.join(root, 'other-plan.json');
+    fs.appendFileSync(path.join(alpha, 'CLAUDE.md'), '\nThe reader\'s own line.\n');
+    check(json(runCli(['setup', '--plan', '--answers', answersFile, '--resources', newer, '--register-as', current, '--out', otherPlan, '--release-sha', 'aa', '--script-sha', 'bb', '--json'], { cwd: root, env }).stdout)?.plan_id !== first?.plan_id, 'two plans differing only in a served Library\'s state have one plan id');
+    restoreAlpha();
+    equal(plan(otherPlan)?.plan_id, first?.plan_id, 'the same served Libraries planned again gave another plan id');
+
+    // The apply: the approval beside the plan, nothing in either Library, exit 0 with beta named.
+    const applied = runCli(['setup', '--apply', '--plan-file', planFile, '--json'], { cwd: root, env });
+    const appliedResult = json(applied.stdout);
+    equal(applied.exit, 0, `the apply did not exit 0 over a refused Library: ${applied.stderr.trim()}`);
+    check((appliedResult?.refused_libraries ?? []).some((row: any) => String(row.workspace).toLowerCase() === beta.toLowerCase() && String(row.reason).includes('did not write')), `the apply's result did not name the refused Library: ${applied.stdout.slice(0, 400)}`);
+    const approvalFile = path.join(pending, 'refresh-approval.json');
+    check(fs.existsSync(approvalFile), 'the apply wrote no approval beside the plan');
+    check(digestTree(alpha) === alphaBefore && digestTree(beta) === betaBefore, 'the apply wrote in a served Library');
+    const appliedText = runCli(['setup', '--apply', '--plan-file', planFile], { cwd: root, env });
+    check(appliedText.stdout.includes(`Kept as it is: ${beta}`), `the apply's text did not name the refused Library: ${appliedText.stdout.trim()}`);
+    const approvalText = fs.readFileSync(approvalFile, 'utf8');
+    const approval = JSON.parse(approvalText) as { libraries: { workspace: string; writes: { path: string; content: string; new_sha256: string }[] }[] };
+    const plant = (receipt: Record<string, unknown>) => fs.writeFileSync(path.join(prog, 'install-receipt.json'), JSON.stringify({ schema: 1, owned: [], pending: null, ...receipt }, null, 2));
+    const refresh = (extra: string[] = []) => runCli(['setup', '--refresh-served', prog, '--registry-root', registry, ...extra], { cwd: root, env });
+    const receiptField = () => 'refresh_pending' in (JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as Record<string, unknown>);
+
+    // Refused, writing nothing and keeping the approval: a transaction pending, then `current` not the approved version.
+    setVersion(version);
+    plant({ pending: { id: 'planted', operation: 'upgrade' }, refresh_pending: approvalText });
+    const whilePending = refresh();
+    check(whilePending.exit !== 0 && whilePending.stderr.includes('not finished') && receiptField() && digestTree(alpha) === alphaBefore, `the refresh did not refuse while a transaction is pending: ${whilePending.stderr.trim()}`);
+    setVersion('0.0.1');
+    plant({ refresh_pending: approvalText });
+    const wrongVersion = refresh();
+    check(wrongVersion.exit !== 0 && wrongVersion.stderr.includes(`is for Deskpost ${version}`) && receiptField() && digestTree(alpha) === alphaBefore, `the refresh did not refuse when current is not the approved version: ${wrongVersion.stderr.trim()}`);
+    setVersion(version);
+
+    // Another holds the lifecycle lock: the refresh waits, then refuses, writing nothing.
+    const lockPath = path.join(prog, '.lifecycle.lock');
+    holder = spawn(process.execPath, ['--input-type=module', '-e', `import { openShareNothing } from ${JSON.stringify(pathToFileURL(path.join(HERE, '..', 'src', 'seatclaim.ts')).href)}; const handle = openShareNothing(process.argv[1]); process.stdout.write('held\\n'); setTimeout(() => handle.close(), 30000);`, lockPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 10000);
+      holder!.stdout!.on('data', (chunk: Buffer) => { if (chunk.toString().includes('held')) { clearTimeout(timer); resolve(); } });
+    });
+    const locked = refresh();
+    check(locked.exit !== 0 && locked.stderr.includes('another Deskpost install') && receiptField() && digestTree(alpha) === alphaBefore, `the refresh did not wait for, then refuse on, a held lifecycle lock: ${locked.stderr.trim()}`);
+    holder.kill();
+    holder = null;
+
+    // The refresh: alpha brought up to date, beta kept and named, the approval cleared, doctor over both.
+    const done = refresh(['--json']);
+    const report = json(done.stdout);
+    const outcome = (folder: string) => (report?.refresh?.libraries ?? []).find((row: any) => String(row.workspace).toLowerCase() === folder.toLowerCase());
+    check(outcome(alpha)?.status === 'refreshed' && outcome(alpha)?.codex === true, `alpha was not brought up to date, its Codex hooks named: ${JSON.stringify(outcome(alpha))} ${done.stderr.trim()}`);
+    check(outcome(beta)?.status === 'refused' && String(outcome(beta)?.finish).includes(`init ${beta}`), `beta was not kept and named with its finish line: ${JSON.stringify(outcome(beta))}`);
+    check(fs.readFileSync(path.join(alpha, 'CLAUDE.md'), 'utf8').includes('A line the newer release adds.'), 'alpha\'s instructions are not the newer release\'s');
+    check(!receiptField(), 'the approval was not cleared once every Library was done or reported');
+    check(digestTree(beta) === betaBefore, 'the refused Library was written to');
+    const served = ((report?.libraries ?? []) as { workspace: string; kept: boolean; checks: { status: string }[] }[]);
+    check(served.length === 2 && served.some((row) => row.workspace.toLowerCase() === beta.toLowerCase() && row.kept && !row.checks.some((check) => check.status === 'fail')), `doctor did not run over both served Libraries, the refused one as WARNs: ${JSON.stringify(served.map((row) => [row.workspace, row.kept]))}`);
+    const again = refresh(['--json']);
+    check(json(again.stdout)?.refresh?.approved === false && Array.isArray(json(again.stdout)?.libraries), 'with no approval the refresh is not doctor alone');
+
+    // An interrupted refresh is finished by running it again: its first write made, the rest still to make.
+    restoreAlpha();
+    plant({ refresh_pending: approvalText });
+    const alphaWrites = approval.libraries.find((library) => library.workspace.toLowerCase() === alpha.toLowerCase())!.writes;
+    fs.writeFileSync(alphaWrites[0]!.path, alphaWrites[0]!.content);
+    const resumed = refresh();
+    check(resumed.stdout.includes(`Brought up to date: ${alpha}`) && resumed.stdout.includes('review') && !receiptField(), `an interrupted refresh was not finished, or its text did not name Codex's review: ${resumed.stdout.slice(0, 500)} ${resumed.stderr.trim()}`);
+    check(alphaWrites.every((write) => createHash('sha256').update(fs.readFileSync(write.path)).digest('hex') === write.new_sha256), 'a resumed refresh left a write unmade');
+
+    // A Library changed after the preview is left, and reported partly refreshed with its finish line.
+    restoreAlpha();
+    plant({ refresh_pending: approvalText });
+    fs.appendFileSync(path.join(alpha, 'CLAUDE.md'), '\nWritten after the preview.\n');
+    const changedBefore = digestTree(alpha);
+    const changed = json(refresh(['--json']).stdout);
+    const partly = (changed?.refresh?.libraries ?? []).find((row: any) => String(row.workspace).toLowerCase() === alpha.toLowerCase());
+    check(partly?.status === 'partly-refreshed' && String(partly.detail).includes('CLAUDE.md') && String(partly.finish).includes(`init ${alpha}`), `a Library changed after the preview was not reported partly refreshed: ${JSON.stringify(partly)}`);
+    equal(digestTree(alpha), changedBefore, 'a Library changed after the preview was written to');
+
+    // --keep-libraries: both kept, never written, and the approval says so.
+    restoreAlpha();
+    setVersion('0.0.1');
+    equal(runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--cwd', root, '--keep-libraries'], { cwd: root, env }).exit, 0, 'the kept upgrade was not asked');
+    check(answers()['keep_libraries'] === true && (answers()['refresh_libraries'] as unknown[]).length === 0 && (answers()['kept_libraries'] as unknown[]).length === 2, `--keep-libraries did not keep both: ${JSON.stringify(answers())}`);
+    const keptPlan = path.join(pending, 'kept-plan.json');
+    equal(runCli(['setup', '--plan', '--answers', answersFile, '--resources', newer, '--register-as', current, '--out', keptPlan], { cwd: root, env }).exit, 0, 'the kept upgrade did not plan');
+    fs.rmSync(approvalFile, { force: true });
+    equal(runCli(['setup', '--apply', '--plan-file', keptPlan], { cwd: root, env }).exit, 0, 'the kept upgrade did not apply');
+    setVersion(version);
+    plant({ refresh_pending: fs.readFileSync(approvalFile, 'utf8') });
+    const keptRun = json(refresh(['--json']).stdout);
+    check((keptRun?.refresh?.libraries ?? []).every((row: any) => row.status === 'kept') && digestTree(alpha) === alphaBefore && digestTree(beta) === betaBefore, `--keep-libraries wrote a Library, or did not report them kept: ${JSON.stringify(keptRun?.refresh)}`);
+
+    // R2b: the same version while an approved refresh is unfinished is refresh only; -Repair is still the whole repair.
+    fs.writeFileSync(answersFile, upgradeAnswers);
+    plant({ refresh_pending: approvalText });
+    equal(runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--cwd', root], { cwd: root, env }).exit, 0, 'a same-version run with an unfinished refresh was refused');
+    check(answers()['refresh_only'] === true && answers()['library'] === null, `a same-version run with an unfinished refresh was not refresh only: ${JSON.stringify(answers())}`);
+    equal(runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', prog, '--cwd', root, '--repair'], { cwd: root, env }).exit, 0, 'a same-version -Repair with an unfinished refresh was refused');
+    check(answers()['refresh_only'] !== true && answers()['install_state'] === 'repair', `-Repair over an unfinished refresh was not the whole repair: ${JSON.stringify(answers())}`);
+  } catch (error) {
+    failures.push(`section 109 stopped early: ${(error as Error).message}`);
+  } finally {
+    if (holder !== null) holder.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 110: rollback is program-only and names its lines (kickoffs/s81 row 3, ADR-0063 decision 9, r9 amendment 4) -------
+// What `deskpost rollback` says after the switch, judged in process because the switch itself needs a compiled install
+// (Test-InstallLifecycle and Test-KernelUpgrade drive it): for each Library the install serves, `deskpost init <folder>`
+// and `deskpost seat enter <seat>` for each of its seats, that a resumed conversation is not bound to its seat until then,
+// and an unreached Library named. It writes nothing. `install.ps1 -Rollback` is the kernel's rollback, not a second one.
+if (selected(110)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-rollback-lines-')));
+  try {
+    const lifecycle = (await import(pathToFileURL(path.join(HERE, '..', 'src', 'lifecycle.ts')).href)) as Record<string, unknown>;
+    const lines = lifecycle['rollbackLibraryLines'] as undefined | ((root: string, previous: string, registryRoot?: string) => { libraries: { workspace: string; init: string; seats: string[]; seat_enter: string[] }[]; unreached: string[]; text: string });
+    check(typeof lines === 'function', 'lifecycle has no rollbackLibraryLines: rollback names no line per Library');
+    if (typeof lines === 'function') {
+      const registry = path.join(root, 'reg');
+      const env = { LIBRARY_WORKSPACES: registry };
+      const install = path.join(root, 'install');
+      const served = path.join(root, 'served');
+      const other = path.join(root, 'other');
+      const gone = path.join(root, 'gone');
+      for (const folder of [served, other, gone]) equal(runCli(['init', folder, '--registry-root', registry], { env }).exit, 0, `the Library ${path.basename(folder)} could not be made`);
+      fs.writeFileSync(path.join(served, '.mcp.json'), JSON.stringify({ mcpServers: { 'validated-book-reader': { command: path.join(install, 'current', 'bin', 'library.exe'), args: ['mcp', 'serve'] } } }));
+      fs.mkdirSync(path.join(served, '.claude', 'seats'), { recursive: true });
+      fs.writeFileSync(path.join(served, '.claude', 'seats', '_registry.json'), JSON.stringify({ seats: [{ seat: 'alpha', project: 'alpha' }, { seat: 'beta', project: 'beta' }] }));
+      fs.rmSync(gone, { recursive: true, force: true });
+      const digest = (dir: string) => { const out: string[] = []; const walk = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else out.push(`${f}:${createHash('sha256').update(fs.readFileSync(f)).digest('hex')}`); } }; walk(dir); return out.sort().join('\n'); };
+      const before = digest(served) + digest(other);
+      const previousEnv = process.env['LIBRARY_WORKSPACES'];
+      process.env['LIBRARY_WORKSPACES'] = registry;
+      let said: ReturnType<typeof lines>;
+      try {
+        said = lines(install, '1.3.1');
+      } finally {
+        if (previousEnv === undefined) delete process.env['LIBRARY_WORKSPACES'];
+        else process.env['LIBRARY_WORKSPACES'] = previousEnv;
+      }
+      equal(JSON.stringify(said.libraries.map((row) => row.workspace.toLowerCase())), JSON.stringify([served.toLowerCase()]), 'rollback did not name exactly the Library the install serves');
+      const row = said.libraries[0];
+      equal(row?.init, `deskpost init ${served}`, 'rollback did not name the init line for the served Library');
+      equal(JSON.stringify(row?.seat_enter), JSON.stringify(['deskpost seat enter alpha', 'deskpost seat enter beta']), 'rollback did not name seat enter for each of the Library\'s seats');
+      check(said.text.includes('not changed') && said.text.includes('switches the program only') && said.text.includes('not bound to its seat') && said.text.includes(`deskpost init ${served}`) && said.text.includes("1.3.1's form") && said.text.includes('blocks nothing'), `rollback's text does not say what it left and how to finish: ${said.text}`);
+      check(said.unreached.some((folder) => folder.toLowerCase() === gone.toLowerCase()) && said.text.includes(`Could not reach the registered Library ${gone}`), `rollback did not name the Library it could not reach: ${said.text}`);
+      equal(digest(served) + digest(other), before, 'naming the rollback lines wrote in a Library');
+    }
+    // ONE ROLLBACK: install.ps1 -Rollback calls the kernel's, and keeps no rollback of its own.
+    const installer = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), 'utf8');
+    check(!/function Invoke-Rollback/.test(installer) && /'rollback', '--yes'/.test(installer), 'install.ps1 -Rollback is not the kernel\'s rollback --yes');
+  } catch (error) {
+    failures.push(`section 110 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 111: an unknown hook verb fails safe (kickoffs/s82 row 1, PLAN-no-powershell-runtime.md D3, ADR-0064) ----------
+// Through the front door, as a registration calls it: under PreToolUse a verb this binary lacks is a deny naming the verb,
+// this binary's version and the remedy; under any other event, or registered `--advisory`, it is silence and exit 0.
+// A known verb is unchanged. Before D3 every unknown verb exited 1 with a refusal, a non-blocking error.
+if (selected(111)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-unknown-hook-')));
+  const json = (text: string): any => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  };
+  try {
+    const version = String(json(runCli(['--version'], { cwd: root }).stdout)?.binary_version ?? '');
+    check(version !== '', 'library --version named no binary version');
+    const payload = (event: string) => JSON.stringify({ hook_event_name: event, session_id: 's', cwd: root, tool_name: 'Read', tool_input: { file_path: path.join(root, 'x.md') } });
+    const pre = runCli(['hook', 'some-later-guard', '--workspace', root], { cwd: root, input: payload('PreToolUse') });
+    const preDecision = json(pre.stdout)?.hookSpecificOutput;
+    equal(pre.exit, 0, `an unknown verb under PreToolUse did not exit 0: ${pre.stderr.trim()}`);
+    check(
+      preDecision?.hookEventName === 'PreToolUse' && preDecision?.permissionDecision === 'deny',
+      `an unknown verb under PreToolUse was not denied: ${pre.stdout.trim()} ${pre.stderr.trim()}`,
+    );
+    const reason = String(preDecision?.permissionDecisionReason ?? '');
+    check(reason.includes('some-later-guard') && reason.includes(`Deskpost ${version}`) && reason.includes('deskpost init') && reason.includes('upgrade'), `the deny does not name the verb, this binary's version and the remedy: ${reason}`);
+    for (const event of ['PostCompact', 'SessionStart', 'PostToolUse', 'UserPromptSubmit']) {
+      const other = runCli(['hook', 'some-later-verb'], { cwd: root, input: payload(event) });
+      check(other.exit === 0 && other.stdout === '' && other.stderr === '', `an unknown verb under ${event} was not a silent exit 0: ${other.exit} ${other.stdout.trim()} ${other.stderr.trim()}`);
+    }
+    const advisory = runCli(['hook', 'some-later-advice', '--advisory'], { cwd: root, input: payload('PreToolUse') });
+    check(advisory.exit === 0 && advisory.stdout === '' && advisory.stderr === '', `an unknown --advisory verb under PreToolUse was not a silent exit 0: ${advisory.exit} ${advisory.stdout.trim()} ${advisory.stderr.trim()}`);
+    // A known verb is unchanged: shelf-read still judges, and an unreadable payload is still its own denial.
+    const known = runCli(['hook', 'shelf-read', '--workspace', root], { cwd: root, input: '{not json' });
+    const knownReason = String(json(known.stdout)?.hookSpecificOutput?.permissionDecisionReason ?? '');
+    check(known.exit === 0 && knownReason.startsWith('Virtual Desk failed closed') && !knownReason.includes('does not have'), `a known verb no longer judges as it did: ${known.stdout.trim()} ${known.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section 111 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 112: `hook compact-clear` empties the workspace's serve ledger (kickoffs/s82 row 2, D1, D6, ADR-0064) ----------
+// The compaction-clear Report: an installed Library registered Restore-CompactedGuidance.ps1 with no -StateDirectory,
+// so the clear emptied the PROGRAM's ledger and the Desk block S77 withholds was sent on every prompt. The verb is the
+// clear alone. D6's judge: `{kernel} hook compact-clear` empties the workspace session's key, leaves every other
+// session's key and the program's ledger as they were, and prints nothing; with no workspace it is a silent exit 0.
+// Then an init-shaped registration (the program's own settings rendered for a binary that is there, as a compiled or
+// POSIX init writes them) makes `ledgerClearReaches` true, so an unchanged Desk block is withheld after the first
+// prompt, and sent again after the clear.
+if (selected(112)) {
+  const w = await seatClaimWorkspace('compact-clear');
+  try {
+    const stateDirectory = path.join(w.workspace, '.claude');
+    const ledgerFile = path.join(stateDirectory, '.hook-served.json');
+    const programLedger = path.join(PROGRAM_ROOT, '.claude', '.hook-served.json');
+    const programBefore = fs.existsSync(programLedger) ? fs.readFileSync(programLedger, 'utf8') : null;
+    const ledger = (): Record<string, unknown> => {
+      try {
+        return JSON.parse(fs.readFileSync(ledgerFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    const hookEnv = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_ASSISTANT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const clear = (input: Record<string, unknown>, cwd: string, extra: Record<string, string> = {}) =>
+      runCli(['hook', 'compact-clear'], { cwd, env: { ...hookEnv, ...extra }, input: JSON.stringify(input) });
+
+    // THE WORKSPACE FROM THE WORKING DIRECTORY, as a harness runs it: this session's key goes, the other stays.
+    fs.writeFileSync(ledgerFile, JSON.stringify({ 'session-a': ['desk-context:first:aa'], 'session-b': ['desk-context:first:bb'] }));
+    const compacted = clear({ hook_event_name: 'PostCompact', session_id: 'session-a', trigger: 'manual' }, w.workspace);
+    check(compacted.exit === 0 && compacted.stdout === '' && compacted.stderr === '', `compact-clear on PostCompact was not a silent exit 0: ${compacted.exit} ${compacted.stdout} ${compacted.stderr}`);
+    check(!('session-a' in ledger()) && 'session-b' in ledger(), `compact-clear did not empty exactly this session's key in the workspace ledger: ${JSON.stringify(ledger())}`);
+    // EVERY SessionStart SOURCE, and the workspace from LIBRARY_WORKSPACE when the working directory is in none.
+    const started = clear({ hook_event_name: 'SessionStart', session_id: 'session-b', source: 'startup' }, w.root, { LIBRARY_WORKSPACE: w.workspace });
+    check(started.exit === 0 && started.stdout === '' && !('session-b' in ledger()), `compact-clear on a startup SessionStart did not clear through LIBRARY_WORKSPACE: ${started.exit} ${started.stdout} ${JSON.stringify(ledger())}`);
+    equal(fs.existsSync(programLedger) ? fs.readFileSync(programLedger, 'utf8') : null, programBefore, "compact-clear touched the program's own ledger");
+    // NO WORKSPACE: silent, exit 0, nothing written.
+    const nowhere = fs.mkdtempSync(path.join(w.root, 'nowhere-'));
+    const lost = clear({ hook_event_name: 'PostCompact', session_id: 'session-c' }, nowhere);
+    check(lost.exit === 0 && lost.stdout === '' && lost.stderr === '' && fs.readdirSync(nowhere).length === 0, `compact-clear with no workspace was not a silent exit 0: ${lost.exit} ${lost.stdout} ${lost.stderr}`);
+
+    // AN INIT-SHAPED REGISTRATION: the program's own settings, rendered for a binary that is there.
+    const init = (await import(pathToFileURL(path.join(HERE, '..', 'src', 'init.ts')).href)) as { desiredHookRegistration: (programRoot: string) => unknown };
+    const desk = (await import(pathToFileURL(path.join(HERE, '..', 'src', 'deskcontext.ts')).href)) as { ledgerClearReaches: (workspace: string, stateDirectory: string) => boolean };
+    const program = path.join(w.root, 'program');
+    fs.mkdirSync(path.join(program, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(program, 'bin'), { recursive: true });
+    fs.copyFileSync(path.join(PROGRAM_ROOT, '.claude', 'settings.json'), path.join(program, '.claude', 'settings.json'));
+    fs.writeFileSync(path.join(program, 'bin', process.platform === 'win32' ? 'library.exe' : 'library'), '');
+    const hooks = init.desiredHookRegistration(program) as Record<string, { hooks: unknown[] }[]>;
+    const spelled = JSON.stringify(hooks);
+    for (const event of ['PostCompact', 'SessionStart']) {
+      check(JSON.stringify(hooks[event] ?? []).includes('compact-clear'), `an init-shaped registration has no compact-clear on ${event}: ${JSON.stringify(hooks[event])}`);
+    }
+    check(!spelled.includes('Restore-CompactedGuidance'), `an init-shaped registration still runs the clear script: ${spelled.slice(0, 600)}`);
+    const localFile = path.join(stateDirectory, 'settings.local.json');
+    const local = fs.existsSync(localFile) ? (JSON.parse(fs.readFileSync(localFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>) : {};
+    fs.writeFileSync(localFile, JSON.stringify({ ...local, hooks }, null, 2));
+    check(desk.ledgerClearReaches(w.workspace, stateDirectory), 'ledgerClearReaches is false for the kernel clear an init registers');
+    check(!desk.ledgerClearReaches(w.workspace, path.join(w.root, 'elsewhere', '.claude')), 'ledgerClearReaches is true for a state directory the kernel clear does not empty');
+    // --state-directory names another ledger: it does not reach this one.
+    const elsewhere = path.join(w.root, 'elsewhere');
+    const pointed = JSON.parse(JSON.stringify(hooks)) as Record<string, { hooks: { command: string; args?: string[] }[] }[]>;
+    for (const blocks of Object.values(pointed)) {
+      for (const block of blocks) {
+        for (const entry of block.hooks) {
+          if (Array.isArray(entry.args) && entry.args.includes('compact-clear')) entry.args.push('--state-directory', elsewhere);
+          else if (/ hook compact-clear$/.test(entry.command)) entry.command += ` --state-directory "${elsewhere}"`;
+        }
+      }
+    }
+    fs.writeFileSync(localFile, JSON.stringify({ ...local, hooks: pointed }, null, 2));
+    check(!desk.ledgerClearReaches(w.workspace, stateDirectory), 'ledgerClearReaches is true for a kernel clear pointed at another state directory');
+    fs.writeFileSync(localFile, JSON.stringify({ ...local, hooks }, null, 2));
+
+    // THE DESK BLOCK, END TO END: sent, withheld while unchanged, sent again after the clear.
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    const config = path.join(w.root, 'claude-config');
+    fs.mkdirSync(config, { recursive: true });
+    const session = '11200000-0000-4000-8000-000000000001';
+    const prompt = () =>
+      runCli(['hook', 'desk-context', '--workspace', w.workspace, '--agent-pid', String(agent)], { cwd: w.root, env: { ...hookEnv, CLAUDE_PID: String(agent), CLAUDE_CONFIG_DIR: config }, input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: session, prompt: 'hello' }) }).stdout.trim();
+    const sent = (stdout: string) => stdout.includes('Virtual Desk (seat first');
+    check(sent(prompt()), 'the first prompt did not send the Desk block');
+    equal(prompt(), '', 'the second prompt against an unchanged Desk sent the block again, under the kernel clear');
+    equal(clear({ hook_event_name: 'SessionStart', session_id: session, source: 'compact' }, w.workspace).exit, 0, 'compact-clear after a compaction failed');
+    check(sent(prompt()), 'the prompt after compact-clear did not send the Desk block again');
+  } catch (error) {
+    failures.push(`section 112 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 113: `hook search-hit` and `hook seat-start` (kickoffs/s82 row 3, D1, amendment 4, ADR-0064) ------------------
+// search-hit: the reminder for a reader tool under the registration's own prefix (the script's exact names never
+// matched a reader named any other way) and for both spellings of the kernel's raw search, and silence otherwise.
+// seat-start, the seat-start Report: an installed Library registered Get-SeatStartContext.ps1 with no -StateDirectory,
+// so it read the PROGRAM's seats. Through the front door with no --workspace, as an init registers it, run from inside
+// a Library with seats: a seatless start lists THAT Library's seats, and a resumed conversation is re-bound to the seat
+// it last held in that Library.
+if (selected(113)) {
+  const w = await seatClaimWorkspace('seat-start');
+  try {
+    const reminder = (input: Record<string, unknown>, extra: string[] = []) => {
+      const ran = runCli(['hook', 'search-hit', ...extra], { cwd: w.root, input: JSON.stringify({ hook_event_name: 'PostToolUse', ...input }) });
+      try {
+        return { exit: ran.exit, text: String((JSON.parse(ran.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext) };
+      } catch {
+        return { exit: ran.exit, text: ran.stdout };
+      }
+    };
+    const plugin = 'mcp__plugin_deskpost_validated-book-reader__';
+    const says = (result: { exit: number; text: string }) => result.exit === 0 && result.text.startsWith('A hit is a location, not a reading');
+    check(says(reminder({ tool_name: `${plugin}search_open_books`, tool_input: { query: 'x' } }, ['--reader-tool-prefix', plugin])), 'search-hit gave no reminder for the reader under its registration\'s prefix');
+    check(says(reminder({ tool_name: 'mcp__validated-book-reader__discover_book_pages', tool_input: {} })), 'search-hit gave no reminder for the reader under the default prefix');
+    const quiet = reminder({ tool_name: 'mcp__validated-book-reader__discover_book_pages', tool_input: {} }, ['--reader-tool-prefix', plugin]);
+    check(quiet.exit === 0 && quiet.text === '', `search-hit reminded for a reader the registration does not name: ${quiet.text}`);
+    for (const command of ['deskpost raw search kernel', 'library raw search kernel --json', '"C:/Program Files/Deskpost/current/bin/library.exe" raw search kernel', 'powershell -File tools/Search-RawBatch.ps1 -Query kernel']) {
+      check(says(reminder({ tool_name: 'Bash', tool_input: { command } })), `search-hit gave no reminder for the raw search '${command}'`);
+    }
+    for (const command of ['deskpost raw list', 'ls raw', 'echo research']) {
+      const none = reminder({ tool_name: 'Bash', tool_input: { command } });
+      check(none.exit === 0 && none.text === '', `search-hit reminded for '${command}', which searches nothing: ${none.text}`);
+    }
+
+    // A LIBRARY WITH SEATS: 'first' held by a live agent, 'second' last sat at by a conversation whose agent is gone.
+    const holder = w.startAgent();
+    equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+    const gone = w.startAgent();
+    equal(w.createSeat('second', 'beta', gone).exit, 0, 'the seat second could not be created');
+    const conversation = '11300000-0000-4000-8000-000000000001';
+    equal(w.as(gone, ['seat', 'enter', 'second', '--agent-pid', String(gone), '--session-id', conversation, '--workspace', w.workspace]).exit, 0, 'the conversation at second could not be recorded');
+    const goneAgent = w.agents.find((agent) => agent.pid === gone);
+    goneAgent?.kill();
+    check(w.untilFree('second'), 'the seat whose agent ended did not read free');
+
+    const hookEnv = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const seatStart = (agent: number, input: Record<string, unknown>) => {
+      const ran = runCli(['hook', 'seat-start', '--agent-pid', String(agent)], { cwd: w.workspace, env: hookEnv, input: JSON.stringify({ hook_event_name: 'SessionStart', ...input }) });
+      try {
+        return { exit: ran.exit, text: String((JSON.parse(ran.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext), raw: ran.stdout + ran.stderr };
+      } catch {
+        return { exit: ran.exit, text: '', raw: ran.stdout + ran.stderr };
+      }
+    };
+    const fresh = w.startAgent();
+    const started = seatStart(fresh, { source: 'startup', session_id: '11300000-0000-4000-8000-000000000002' });
+    check(
+      started.exit === 0 && started.text.includes('this session holds no seat') && started.text.includes('first  ->  project alpha  [held]') && started.text.includes('second  ->  project beta  [free]'),
+      `a seatless start did not list this Library's seats: ${started.raw.slice(0, 800)}`,
+    );
+    check(!started.text.includes('No seat exists') && started.text.includes('## Sitting down at a seat'), `a seatless start did not serve the section and the roster: ${started.text.slice(0, 400)}`);
+
+    // THE RESUME RE-BIND LANDS IN THIS LIBRARY: the new agent holds 'second' here.
+    const resumed = w.startAgent();
+    const rebound = seatStart(resumed, { source: 'resume', session_id: conversation });
+    check(rebound.exit === 0 && rebound.text.includes("re-bound to the seat it last held, 'second' (project beta)"), `a resumed conversation was not re-bound to its seat in this Library: ${rebound.raw.slice(0, 800)}`);
+    const binding = (() => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(w.workspace, '.claude', 'seats', 'second', 'binding.json'), 'utf8').replace(/^﻿/, '')) as { agent_pid?: number; session_id?: string };
+      } catch {
+        return {};
+      }
+    })();
+    check(Number(binding.agent_pid) === resumed && binding.session_id === conversation, `the re-bind did not bind the resumed agent in this Library: ${JSON.stringify(binding)}`);
+    check(w.claimed('second') === true, 'the re-bound seat does not read claimed');
+    // A RESUME WHOSE SEAT IS HELD reports it and offers the roster, binding nothing.
+    const held = seatStart(w.startAgent(), { source: 'resume', session_id: conversation });
+    check(held.text.includes("Seat 'second' is the one this conversation last held, and another live session is at it now") && held.text.includes('first  ->  project alpha'), `a resume onto a held seat was not reported with the roster: ${held.raw.slice(0, 600)}`);
+    // NO WORKSPACE: nothing at all.
+    const nowhere = fs.mkdtempSync(path.join(w.root, 'nowhere-'));
+    const outside = runCli(['hook', 'seat-start'], { cwd: nowhere, env: hookEnv, input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'x' }) });
+    check(outside.exit === 0 && outside.stdout === '', `seat-start outside any Library printed something: ${outside.stdout.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 113 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 114: the playbook hook is retired, and a fresh init misses nothing (kickoffs/s82 row 4, D1, D2, ADR-0064) -------
+// The retirement moves three tables at once: the program's settings block (which init copies into every Windows
+// workspace), REQUIRED_HOOKS and the oracle's required table. Leave one behind and every ConfigChange and doctor
+// reports the playbook hook missing, or a refreshed Library registers a script that is gone. Judged on a fresh init:
+// doctor's guard checks pass with nothing named missing, and the settings guard accepts the workspace's own settings
+// with no "Not registered" message. Section 39 judges the registrations themselves.
+if (selected(114)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-retired-hook-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const workspace = path.join(root, 'ws');
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'the fresh workspace could not be made');
+    check(!fs.existsSync(path.join(PROGRAM_ROOT, '.claude', 'hooks', 'Get-PlaybookContext.ps1')), 'the retired playbook hook script is still in the program');
+    check(!fs.readFileSync(path.join(PROGRAM_ROOT, '.claude', 'settings.json'), 'utf8').includes('Get-PlaybookContext'), "the program's settings still register the retired playbook hook, so init would copy it into every Windows workspace");
+    const doctor = runCli(['doctor', '--workspace', workspace, '--json'], { cwd: root, env });
+    const rows = (() => {
+      try {
+        return (JSON.parse(doctor.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks;
+      } catch {
+        return [];
+      }
+    })();
+    const guards = rows.find((row) => row.check === 'workspace.guards-registered');
+    check(guards?.status === 'pass' && !/playbook|not registered|missing/i.test(guards.detail), `doctor named a hook missing from a fresh init: ${JSON.stringify(guards)}`);
+    check(!rows.some((row) => /playbook/i.test(row.detail)), `a doctor check names the retired playbook hook: ${rows.filter((row) => /playbook/i.test(row.detail)).map((row) => row.check).join(', ')}`);
+    for (const source of ['local_settings', 'project_settings']) {
+      const guard = runCli(['hook', 'settings-integrity', '--state-directory', path.join(workspace, '.claude')], { cwd: workspace, env, input: JSON.stringify({ hook_event_name: 'ConfigChange', source }) });
+      check(guard.exit === 0 && guard.stdout.trim() === '', `the settings guard reported something about a fresh init's own ${source}: ${guard.stdout.trim()}`);
+    }
+  } catch (error) {
+    failures.push(`section 114 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 115: the kernel's process calls start no PowerShell (kickoffs/s83 row 1, PLAN-no-powershell-runtime.md D7) ------
+// A compiled kernel reads a process's start time, its parents, its exit and the process list through `bun:ffi`. So
+// judged against a compiled kernel (LIBRARY_SELFTEST_KERNEL naming an .exe) the child runs with every PATH entry that
+// holds powershell.exe or pwsh.exe removed -- the child's PATH only -- and must still answer, by the `bun-ffi` route.
+// The start time must equal the oracle's own expression for the same pid, read here in this process: the binding is
+// compared by exact string, so a spelling that differs by 100 ns reads as another process. From source (Node) the
+// kernel's fallback is that expression itself, so there the same checks run with PATH untouched. One pid, no DST claim.
+if (selected(115) && process.platform === 'win32') {
+  const compiledKernel = KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!);
+  const sleepers: ReturnType<typeof spawn>[] = [];
+  const sleeper = (ms: number) => {
+    const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${ms})`], { stdio: 'ignore', windowsHide: true });
+    sleepers.push(child);
+    return child;
+  };
+  try {
+    const env: Record<string, string> = {};
+    if (compiledKernel) {
+      const entries = (process.env['PATH'] ?? process.env['Path'] ?? '').split(';').filter((entry) => entry && !fs.existsSync(path.join(entry, 'powershell.exe')) && !fs.existsSync(path.join(entry, 'pwsh.exe')));
+      for (const key of Object.keys(process.env)) if (/^path$/i.test(key)) env[key] = '';
+      env['PATH'] = entries.join(';');
+    }
+    const run = (args: string[]) => {
+      const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+      const merged: Record<string, string | undefined> = { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB };
+      for (const key of Object.keys(merged)) if (/^path$/i.test(key) && compiledKernel) delete merged[key];
+      const result = spawnSync(file!, [...prefix, ...args], { cwd: PROGRAM_ROOT, env: { ...merged, ...env }, encoding: 'utf8', timeout: 60000 });
+      let value: Record<string, unknown> = {};
+      try {
+        value = JSON.parse(result.stdout ?? '') as Record<string, unknown>;
+      } catch {
+        value = {};
+      }
+      return { exit: result.status ?? -1, value, stderr: result.stderr ?? '' };
+    };
+    const routeOk = (value: Record<string, unknown>) => !compiledKernel || value['route'] === 'bun-ffi';
+    const target = sleeper(120000);
+    const pid = target.pid!;
+    const oracle = spawnSync(
+      'powershell.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`],
+      { encoding: 'utf8', windowsHide: true },
+    ).stdout.trim();
+    check(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/.test(oracle), `the oracle's expression read no start time for the fixture process: '${oracle}'`);
+
+    const start = run(['process', 'start', String(pid)]);
+    equal(start.exit, 0, `library process start exited non-zero: ${start.stderr.trim()}`);
+    check(routeOk(start.value), `a compiled kernel read the start time by the '${String(start.value['route'])}' route, not bun-ffi`);
+    equal(start.value['start_utc'], oracle, "the kernel's start time differs from the oracle expression's for the same pid");
+
+    const ancestry = run(['process', 'ancestry', String(pid)]);
+    const records = (ancestry.value['records'] ?? []) as { pid: number; parent_pid: number; name: string; created_utc: string | null }[];
+    equal(ancestry.exit, 0, `library process ancestry exited non-zero: ${ancestry.stderr.trim()}`);
+    check(routeOk(ancestry.value), `a compiled kernel walked the ancestry by the '${String(ancestry.value['route'])}' route, not bun-ffi`);
+    check(records[0]?.pid === pid && records[0]?.parent_pid === process.pid, `the walk did not start at the fixture child with this process as its parent: ${JSON.stringify(records.slice(0, 2))}`);
+    check(records[1]?.pid === process.pid && /^node(\.exe)?$/i.test(records[1]?.name ?? ''), `the walk from the child did not reach its parent: ${JSON.stringify(records.slice(0, 2))}`);
+    // Exact for the compiled kernel; the Node fallback reads Win32_Process.CreationDate, which WMI keeps to the microsecond.
+    if (compiledKernel) equal(records[0]?.created_utc, oracle, "the walk's record for the child carries a different start time");
+    else equal(records[0]?.created_utc?.slice(0, 26), oracle.slice(0, 26), "the walk's record for the child carries a different start time");
+
+    const list = run(['process', 'list', '--name', path.basename(process.execPath)]);
+    const rows = (list.value['processes'] ?? []) as { pid: number; parent_pid: number; path: string | null }[];
+    equal(list.exit, 0, `library process list exited non-zero: ${list.stderr.trim()}`);
+    check(routeOk(list.value), `a compiled kernel listed processes by the '${String(list.value['route'])}' route, not bun-ffi`);
+    const row = rows.find((candidate) => candidate.pid === pid);
+    check(row !== undefined && row.parent_pid === process.pid && (row.path ?? '').toLowerCase() === process.execPath.toLowerCase(), `the process list does not hold the fixture child with its parent and path: ${JSON.stringify(row)}`);
+
+    const mismatched = run(['process', 'wait', String(pid), '--start-utc', '2000-01-01T00:00:00.0000000Z']);
+    equal(mismatched.exit, 0, `library process wait on a mismatched start time exited non-zero: ${mismatched.stderr.trim()}`);
+    check(routeOk(mismatched.value), `a compiled kernel waited by the '${String(mismatched.value['route'])}' route, not bun-ffi`);
+    check(Number(mismatched.value['waited_ms'] ?? 1e9) < 5000 && target.exitCode === null, `the wait waited on a process whose start time does not match (${String(mismatched.value['waited_ms'])} ms)`);
+
+    const short = sleeper(2500);
+    const shortStart = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${short.pid}).StartTime.ToUniversalTime().ToString('o')`], { encoding: 'utf8', windowsHide: true }).stdout.trim();
+    const waited = run(['process', 'wait', String(short.pid), '--start-utc', shortStart]);
+    equal(waited.exit, 0, `library process wait exited non-zero: ${waited.stderr.trim()}`);
+    check(short.exitCode !== null || spawnSync('tasklist', ['/FI', `PID eq ${short.pid}`, '/NH'], { encoding: 'utf8' }).stdout.indexOf(String(short.pid)) < 0, 'the wait returned while the child it waited on was still running');
+    check(Number(waited.value['waited_ms'] ?? 0) > 200, `the wait returned at once instead of when the child exited (${String(waited.value['waited_ms'])} ms)`);
+  } catch (error) {
+    failures.push(`section 115 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const child of sleepers) child.kill();
+  }
+}
+
+// --- 116: the uninstall finisher is the program (kickoffs/s83 row 2, PLAN-no-powershell-runtime.md D8, ruling 4) -------
+// Judged only against a compiled kernel (LIBRARY_SELFTEST_KERNEL naming an .exe): the finisher is a copy of that binary.
+// A fixture install of it -- a version folder with its inventory, `current`, the shim, current.json and a receipt that
+// owns a PATH entry -- is uninstalled with powershell.exe off the child's PATH. The PATH entry lives in a fixture key
+// (DESKPOST_PATH_KEY, an HKCU\Software subkey), never HKCU\Environment, and the expected value is install.ps1's own
+// Remove-DeskpostPathEntry run on a twin key: every other entry byte for byte, unexpanded, REG_EXPAND_SZ. Then the
+// fault: DESKPOST_UNINSTALL_FAULT=no-finisher writes `cancel` and deletes nothing. And no `%TEMP%` copy is left.
+if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!)) {
+  const { SHIM_TEXT } = await import('../src/lifecycle.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-finisher-')));
+  const tag = path.basename(root).replace(/[^A-Za-z0-9]/g, '');
+  const keys = { kernel: `Software\\Deskpost-selftest-${tag}-kernel`, oracle: `Software\\Deskpost-selftest-${tag}-oracle` };
+  const ps = (script: string, env: Record<string, string> = {}) =>
+    spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 120000, env: { ...process.env, ...env } });
+  const readKey = (key: string) => {
+    const read = ps("$k = Get-Item -LiteralPath ('HKCU:\\' + $env:S116_KEY); [Console]::Out.Write($k.GetValueKind('Path').ToString() + '|' + [string]$k.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames))", { S116_KEY: key });
+    return read.stdout;
+  };
+  const resultFile = path.join(os.tmpdir(), 'deskpost-uninstall-result.json');
+  const finisherCopies = () => fs.readdirSync(os.tmpdir()).filter((name) => /^deskpost-finish-[0-9a-f]+\.exe$/i.test(name));
+  const copiesBefore = new Set(finisherCopies());
+  const install = (name: string, pathEntry: string | null) => {
+    const r = path.join(root, name);
+    const v = path.join(r, 'versions', '9.9.9');
+    fs.mkdirSync(path.join(v, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(v, '.codex-plugin'), { recursive: true });
+    fs.copyFileSync(KERNEL_COMMAND[0]!, path.join(v, 'bin', 'library.exe'));
+    fs.copyFileSync(path.join(PROGRAM_ROOT, '.codex-plugin', 'plugin.json'), path.join(v, '.codex-plugin', 'plugin.json'));
+    fs.writeFileSync(path.join(v, 'README.md'), 'a fixture release\n');
+    const files = ['bin/library.exe', '.codex-plugin/plugin.json', 'README.md'].map((file) => ({ path: file, sha256: createHash('sha256').update(fs.readFileSync(path.join(v, ...file.split('/')))).digest('hex') }));
+    fs.writeFileSync(path.join(v, '.inventory.json'), JSON.stringify({ schema: 1, files }));
+    fs.symlinkSync(v, path.join(r, 'current'), 'junction');
+    fs.mkdirSync(path.join(r, 'bin'));
+    fs.writeFileSync(path.join(r, 'bin', 'deskpost.cmd'), SHIM_TEXT);
+    fs.writeFileSync(path.join(r, 'current.json'), JSON.stringify({ schema: 1, version: '9.9.9', previous: null }));
+    fs.writeFileSync(path.join(r, 'install-receipt.json'), JSON.stringify({ schema: 1, owned: pathEntry ? [{ kind: 'path', entry: pathEntry }] : [], pending: null, path_change: null }));
+    return r;
+  };
+  try {
+    const registry = path.join(root, 'reg');
+    fs.mkdirSync(registry);
+    fs.writeFileSync(path.join(registry, 'workspaces.json'), JSON.stringify({ version: 1, workspaces: [] }));
+    const entries = (process.env['PATH'] ?? process.env['Path'] ?? '').split(';').filter((entry) => entry && !fs.existsSync(path.join(entry, 'powershell.exe')) && !fs.existsSync(path.join(entry, 'pwsh.exe')));
+    const base: Record<string, string | undefined> = { ...process.env, ...QUIET_TAB };
+    for (const key of Object.keys(base)) if (/^path$/i.test(key)) delete base[key];
+    const env = { ...base, PATH: entries.join(';'), LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', DESKPOST_PATH_KEY: keys.kernel, DESKPOST_UNINSTALL_FAULT: '' };
+
+    // THE COMPLETED UNINSTALL.
+    const r = install('R', null);
+    const entry = path.join(r, 'bin');
+    const stored = `%USERPROFILE%\\tools;${entry}\\;C:\\Other Dir;;C:\\last`;
+    for (const key of [keys.kernel, keys.oracle]) {
+      const made = ps("New-Item -Path ('HKCU:\\' + $env:S116_KEY) -Force | Out-Null; New-ItemProperty -Path ('HKCU:\\' + $env:S116_KEY) -Name Path -PropertyType ExpandString -Value $env:S116_VALUE -Force | Out-Null", { S116_KEY: key, S116_VALUE: stored });
+      equal(made.status, 0, `the fixture PATH key could not be made: ${made.stderr}`);
+    }
+    const receipt = JSON.parse(fs.readFileSync(path.join(r, 'install-receipt.json'), 'utf8')) as Record<string, unknown>;
+    receipt['owned'] = [{ kind: 'path', entry }];
+    fs.writeFileSync(path.join(r, 'install-receipt.json'), JSON.stringify(receipt));
+    const blockText = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), 'utf8').replace(/\r\n/g, '\n');
+    const block = blockText.substring(blockText.indexOf('# --- BEGIN uninstall removal'), blockText.indexOf('# --- END uninstall removal ---'));
+    fs.writeFileSync(path.join(root, 'block.ps1'), block.split("'HKCU:\\Environment'").join("('HKCU:\\' + $env:S116_KEY)"));
+    const expected = ps('. $env:S116_BLOCK; Remove-DeskpostPathEntry $env:S116_ENTRY', { S116_BLOCK: path.join(root, 'block.ps1'), S116_KEY: keys.oracle, S116_ENTRY: entry });
+    equal(expected.status, 0, `install.ps1's Remove-DeskpostPathEntry did not run on the twin key: ${expected.stderr}`);
+
+    fs.rmSync(resultFile, { force: true });
+    const ran = spawnSync(path.join(r, 'current', 'bin', 'library.exe'), ['uninstall', '--yes', '--json'], { cwd: root, env, encoding: 'utf8', timeout: 120000 });
+    equal(ran.status, 0, `uninstall --yes did not hand over to the finisher: ${(ran.stderr ?? '').trim()} ${(ran.stdout ?? '').trim()}`);
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline && !fs.existsSync(resultFile)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    const result = fs.existsSync(resultFile) ? (JSON.parse(fs.readFileSync(resultFile, 'utf8')) as { status: string; left: string[] }) : null;
+    equal(result?.status, 'completed', `the finisher did not complete: ${JSON.stringify(result)}`);
+    const settle = Date.now() + 10000;
+    while (Date.now() < settle && fs.existsSync(r)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    check(!fs.existsSync(r), `the fixture install is not gone: ${fs.existsSync(r) ? fs.readdirSync(r).join(', ') : ''}`);
+    const after = readKey(keys.kernel);
+    equal(after, readKey(keys.oracle), "the finisher's PATH edit differs from install.ps1's on the same value");
+    check(after.startsWith('ExpandString|') && !after.toLowerCase().includes(entry.toLowerCase()) && after.includes('%USERPROFILE%\\tools'), `the PATH entry was not removed with the rest kept unexpanded as REG_EXPAND_SZ: ${after}`);
+
+    // THE FAULT: no finisher starts, `cancel` is written, nothing is deleted.
+    const f = install('F', null);
+    const handshakesBefore = new Set(fs.readdirSync(os.tmpdir()).filter((name) => name.endsWith('.handshake')));
+    fs.rmSync(resultFile, { force: true });
+    const faulted = spawnSync(path.join(f, 'current', 'bin', 'library.exe'), ['uninstall', '--yes', '--json'], { cwd: root, env: { ...env, DESKPOST_UNINSTALL_FAULT: 'no-finisher' }, encoding: 'utf8', timeout: 120000 });
+    check(faulted.status !== 0, `uninstall reported success with no finisher: ${(faulted.stdout ?? '').trim()}`);
+    const newHandshakes = fs.readdirSync(os.tmpdir()).filter((name) => /^deskpost-finish-[0-9a-f]+\.handshake$/i.test(name) && !handshakesBefore.has(name));
+    check(newHandshakes.length === 1 && /^cancel/m.test(fs.readFileSync(path.join(os.tmpdir(), newHandshakes[0]!), 'utf8')), `the handshake was not cancelled: ${newHandshakes.join(', ')}`);
+    check(['current.json', 'install-receipt.json', path.join('bin', 'deskpost.cmd'), path.join('versions', '9.9.9', 'bin', 'library.exe')].every((file) => fs.existsSync(path.join(f, file))) && !fs.existsSync(resultFile), 'the cancelled uninstall deleted something, or a finisher ran');
+    for (const name of newHandshakes) fs.rmSync(path.join(os.tmpdir(), name), { force: true });
+
+    // THE %TEMP% COPY IS GONE: handed to a `cmd /c ping ... & del` child as the copy exited.
+    const copyDeadline = Date.now() + 15000;
+    const leftover = () => finisherCopies().filter((name) => !copiesBefore.has(name));
+    while (Date.now() < copyDeadline && leftover().length) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    check(!leftover().length, `the finisher's %TEMP% copy is still there: ${leftover().join(', ')}`);
+  } catch (error) {
+    failures.push(`section 116 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const key of Object.values(keys)) ps("Remove-Item -LiteralPath ('HKCU:\\' + $env:S116_KEY) -Recurse -Force -ErrorAction SilentlyContinue", { S116_KEY: key });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 117: a release ships only what runs (kickoffs/s83 row 3, PLAN-no-powershell-runtime.md D9, ruling 5) ----------------
+// Judged over a BUILT tree: LIBRARY_SELFTEST_KERNEL names the release's own bin/library.exe (a tree Build-KernelRelease.ps1
+// built from a clean clone, extracted), and the tree is the folder above bin/. It must hold no PowerShell outside the
+// installer and the reader adapter's closure, and none of the root launchers; the closure it does hold must be complete
+// (every script a closure file dot-sources is there); and an init from it must register no `powershell` in a Claude
+// workspace -- Codex's own `powershell.exe -Command` launcher is the named exception, so .codex/ is not read.
+if (selected(117) && KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path.dirname(path.dirname(KERNEL_COMMAND[0]!)), 'release.json'))) {
+  const { adapterClosure, disallowedScripts, dotSourcedTools, ADAPTER, INSTALLER_NEEDS } = await import('../src/releasefiles.ts');
+  const tree = path.dirname(path.dirname(path.resolve(KERNEL_COMMAND[0]!)));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-release-tree-')));
+  try {
+    const files: string[] = [];
+    const walk = (directory: string) => {
+      for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
+        const full = path.join(directory, item.name);
+        if (item.isDirectory()) walk(full);
+        else files.push(path.relative(tree, full).replace(/\\/g, '/'));
+      }
+    };
+    walk(tree);
+    const read = (relative: string) => {
+      try {
+        return fs.readFileSync(path.join(tree, ...relative.split('/')), 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const disallowed = disallowedScripts(files, read);
+    check(disallowed.length === 0, `the built release carries ${disallowed.length} PowerShell file(s) or launcher(s) outside the allowlist: ${disallowed.slice(0, 12).join(', ')}`);
+    check(files.includes('install.ps1'), 'the built release has no install.ps1 beside its files');
+    // FOUND IN THE CLEAN DISTRO (S83 row 5): install.sh `chmod`s the root `library` in the extracted tree, so a release
+    // that dropped it failed to install on Linux.
+    const installerMissing = INSTALLER_NEEDS.filter((file) => !files.includes(file));
+    check(installerMissing.length === 0, `the built release lacks what install.sh touches in it: ${installerMissing.join(', ')}`);
+    const closure = adapterClosure(read);
+    check(closure.includes(ADAPTER) && closure.length > 1, `the built release does not carry the reader adapter and its closure: ${closure.join(', ')}`);
+    const unresolved = closure.flatMap((file) => dotSourcedTools(read(file) ?? '').filter((needed) => !files.includes(needed)).map((needed) => `${file} needs ${needed}`));
+    check(unresolved.length === 0, `the reader adapter's closure in the built release is incomplete: ${unresolved.join('; ')}`);
+
+    const registry = path.join(root, 'reg');
+    const workspace = path.join(root, 'ws');
+    const entries = (process.env['PATH'] ?? process.env['Path'] ?? '').split(path.delimiter).filter((entry) => entry && !fs.existsSync(path.join(entry, 'powershell.exe')) && !fs.existsSync(path.join(entry, 'pwsh.exe')));
+    const base: Record<string, string | undefined> = { ...process.env, ...QUIET_TAB };
+    for (const key of Object.keys(base)) if (/^path$/i.test(key)) delete base[key];
+    const init = spawnSync(KERNEL_COMMAND[0]!, ['init', workspace, '--registry-root', registry], {
+      cwd: root,
+      env: { ...base, PATH: entries.join(path.delimiter), LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' },
+      encoding: 'utf8',
+      timeout: 120000,
+    });
+    equal(init.status, 0, `init from the built release failed: ${(init.stderr ?? '').trim()}`);
+    // WHAT EACH REGISTRATION RUNS: a hook's or a server's command and arguments. A matcher naming the PowerShell TOOL
+    // (`Bash|PowerShell`) is what the guard watches, not something it starts.
+    const registrations: string[] = [];
+    const runs = (entry: unknown) => {
+      if (entry === null || typeof entry !== 'object') return '';
+      const record = entry as { command?: unknown; args?: unknown };
+      return [record.command, ...(Array.isArray(record.args) ? record.args : [])].map(String).join(' ');
+    };
+    for (const file of [path.join(workspace, '.claude', 'settings.json'), path.join(workspace, '.claude', 'settings.local.json'), path.join(workspace, '.mcp.json')]) {
+      if (!fs.existsSync(file)) continue;
+      const document = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as { hooks?: Record<string, { hooks?: unknown[] }[]>; mcpServers?: Record<string, unknown>; statusLine?: unknown };
+      for (const [event, blocks] of Object.entries(document.hooks ?? {})) {
+        for (const block of Array.isArray(blocks) ? blocks : []) for (const hook of block.hooks ?? []) registrations.push(`${path.basename(file)} hook ${event}: ${runs(hook)}`);
+      }
+      for (const [name, server] of Object.entries(document.mcpServers ?? {})) registrations.push(`${path.basename(file)} server ${name}: ${runs(server)}`);
+      if (document.statusLine) registrations.push(`${path.basename(file)} statusLine: ${runs(document.statusLine)}`);
+    }
+    check(registrations.some((line) => line.includes(' hook ')), `init from the built release registered no hooks to judge: ${registrations.join(' | ')}`);
+    const powershell = registrations.filter((line) => /powershell|pwsh|\.ps1/i.test(line));
+    check(powershell.length === 0, `init from the built release registers PowerShell in a Claude workspace: ${powershell.join(' | ').slice(0, 600)}`);
+  } catch (error) {
+    failures.push(`section 117 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 118: advice names only what ships (kickoffs/s83 row 4, PLAN-no-powershell-runtime.md D4, amendment 1) --------------
+// Every sentence in the kernel's source that names a `tools/*.ps1` helper, passed through hostRemedies as an installed
+// Windows kernel says it, must name no `.ps1` the release does not carry: D9's allowlist is the installer and the reader
+// adapter's closure, computed by the same module the build uses. Pure, so it judges the rewrite table on every host.
+if (selected(118)) {
+  const { hostRemedies } = await import('../src/remedy.ts');
+  const { allowedScripts } = await import('../src/releasefiles.ts');
+  const allowed = new Set(
+    [...allowedScripts((relative) => {
+      try {
+        return fs.readFileSync(path.join(PROGRAM_ROOT, ...relative.split('/')), 'utf8');
+      } catch {
+        return null;
+      }
+    })].map((file) => path.posix.basename(file).toLowerCase()),
+  );
+  check(allowed.has('install.ps1') && allowed.has('validated-bookreader.ps1'), `the allowlist does not hold the installer and the adapter: ${[...allowed].join(', ')}`);
+  const source = path.join(PROGRAM_ROOT, 'kernel', 'src');
+  let sentences = 0;
+  const offenders: string[] = [];
+  for (const name of fs.readdirSync(source).filter((file) => file.endsWith('.ts')).sort()) {
+    for (const line of fs.readFileSync(path.join(source, name), 'utf8').split(/\r?\n/)) {
+      if (!/tools\/[A-Za-z-]+\.ps1/.test(line) || /^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      sentences += 1;
+      const said = hostRemedies(line.slice(line.search(/tools\/[A-Za-z-]+\.ps1/)), 'win32-compiled', String.raw`C:\p\current`);
+      for (const named of said.matchAll(/([A-Za-z0-9_-]+)\.ps1/g)) {
+        if (!allowed.has(`${named[1]!.toLowerCase()}.ps1`)) offenders.push(`${name}: ${named[0]} in "${said.slice(0, 140)}"`);
+      }
+    }
+  }
+  check(sentences > 50, `too few kernel sentences name a helper for this judge to mean anything (${sentences})`);
+  check(offenders.length === 0, `${offenders.length} remedy sentence(s) from an installed Windows kernel name a .ps1 the release does not ship: ${offenders.slice(0, 8).join('; ')}`);
 }
 
 // --- the verdict ----------------------------------------------------------------------------------------

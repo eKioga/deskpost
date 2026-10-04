@@ -28,7 +28,7 @@ A hook here does exactly one of these, and the file says which:
 | --- | --- | --- |
 | Can refuse a call | yes | never |
 | Fails | closed | silent |
-| Examples | `Guard-BasicMemoryRead`, `Guard-ShelfBookRead`, `Guard-ShellShelfRead` | `Get-VirtualDeskContext`, `Get-PlaybookContext`, `Add-SearchHitReminder` |
+| Examples | `Guard-BasicMemoryRead`, `Guard-ShelfBookRead`, `Guard-ShellShelfRead` | `Get-VirtualDeskContext`, `Get-SeatStartContext`, `Add-SearchHitReminder` |
 
 The split matters at the failure edge. A guard that cannot read Desk state must deny, because the
 cost of a wrong allow is disclosure. An informer that fails must say nothing at all, because it
@@ -121,19 +121,21 @@ was actually harming the reader was the message, and the message is fixed.
 
 Recorded as [ADR-0014](adr/0014-a-hook-delivers-a-document-it-does-not-hold-a-rule.md).
 
-`Get-PlaybookContext` carries no procedure of its own. It holds a routing table from helper filename
-to a **heading in `librarian-operation-playbooks.md`**, cuts that section out at the moment the
-helper is invoked, and hands it over. `Restore-CompactedGuidance` does the same against
-`.claude/rules/library-development.md`.
+`Restore-CompactedGuidance` carries no procedure of its own: it cuts the standing-rules section out
+of `.claude/rules/library-development.md` and hands it over. Until 1.3.2 `Get-PlaybookContext` did
+the same with a routing table from helper filename to a heading in
+`librarian-operation-playbooks.md`; it was retired, with its routed-heading gate, in 1.3.2
+([ADR-0064](adr/0064-the-runtime-hooks-are-kernel-verbs.md)), and the playbooks stay as a document.
 
-`Get-SeatStartContext` is the third, added 2026-09-10 for `PLAN-seat-launch.md` step 9: it serves
+`Get-SeatStartContext` is the other, added 2026-09-10 for `PLAN-seat-launch.md` step 9: it serves
 *Sitting down at a seat* from `seats.md` to a session that has no seat. What it adds to the served
 text is **state** — the seat roster, generated at the moment it is read — which is the one thing a
 tracked document must not hold, because a written roster is stale the moment a seat is created.
 
-The consequence worth stating: `library-hooks.boundary-suite` asserts every routed heading resolves
-in the tracked document, and `seats.session-start-section-resolves` does the same for the seat
-section, so rewording a heading fails the gate rather than silently serving nothing.
+The consequence worth stating: `seats.session-start-section-resolves` asserts the seat section
+resolves in the tracked document, so rewording that heading fails the gate rather than silently
+serving nothing. Since 1.3.2 an installed Library runs the kernel's `hook seat-start`, which serves
+the same section; kernel self-test section 113 holds it.
 
 ### The output shape, measured rather than assumed (2026-09-09)
 
@@ -155,16 +157,19 @@ with the fixture. Capture one.
 
 ### The serve ledger, and its contract with compaction
 
-A playbook section injected on *every* call charges for it every time. Injected **once per session**
-it costs once — and then rots along with everything else. `.claude/.hook-served.json` (untracked,
-keyed by session id) splits the difference, and `Restore-CompactedGuidance` empties the session's
-entry on `PostCompact`, because a compaction is precisely the event that summarises the first
-injection away. That ledger clear runs before anything else in that hook and does not depend on the
-rule file being present.
+A block injected on *every* prompt charges for it every time. Injected **once per session** it costs
+once — and then rots along with everything else. `.claude/.hook-served.json` (untracked, keyed by
+session id) splits the difference: the Desk context hook sends an unchanged Desk block once per
+session (S77), and the clear empties the session's entry on `PostCompact`, because a compaction is
+precisely the event that summarises the first injection away. In the development checkout the clear
+is `Restore-CompactedGuidance`, where it runs before anything else and does not depend on the rule
+file being present; in an installed Library since 1.3.2 it is the kernel's `hook compact-clear`,
+which empties the **workspace's** ledger (the script, registered with no `-StateDirectory`, emptied
+the program's). Until 1.3.2 the retired playbook hook used the same ledger for its sections.
 
 Since 2026-09-10 it also runs on **every** `SessionStart` source, not only the two that are served.
 A `clear` may keep its session id — that event could not be captured — and if it does, a ledger left
-in place withholds every playbook from a context that has just been thrown away. A redundant clear
+in place withholds the Desk block from a context that has just been thrown away. A redundant clear
 costs one repetition; a missed one costs the guidance.
 
 ### Why the post-compact hook does not restate CLAUDE.md
@@ -554,9 +559,10 @@ What now holds the field names is measurement:
 - **`mkdir .claude/hooks/.capture`** turns capture on: while that directory exists, every hook writes
   the raw bytes it was handed into it, one file per invocation. It is gitignored, it is how the
   contract is re-measured after a client upgrade, and removing the directory turns it off.
-- Section 12 of `tools/Test-LibraryHooks.ps1` drives the playbook hook and the settings guard with the
-  captured envelopes themselves rather than with composed ones, so "the id arrives" and "the source
-  arrives" are assertions rather than assumptions.
+- Section 12 of `tools/Test-LibraryHooks.ps1` drives the settings guard with the captured envelopes
+  themselves rather than with composed ones, and asserts the captured PreToolUse envelope carries a
+  `session_id`, so "the id arrives" and "the source arrives" are assertions rather than assumptions.
+  (It drove the playbook hook too, until that hook was retired in 1.3.2.)
 
 Falsified on introduction: putting `config_source` back reddens both the suite and the gate check;
 planting `startup_reason` reddens the check; emptying the check's own AST match set makes it throw

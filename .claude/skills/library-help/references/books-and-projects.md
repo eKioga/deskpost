@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.1/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.2/docs/seats.md).
 
 ## Books
 
@@ -70,9 +70,9 @@ a superseded page with a pointer to its canonical copy, after a preview and an a
 ### Keeping a Book current with its source
 
 The Currency check ("is this Book behind its upstream?"), fetching a git URL into `raw/`, and
-rebuilding a Notebook source from a published Book are **not in the `library` program**. On Windows
-they are the PowerShell helpers `Get-BookCurrency.ps1`, `Sync-RawUpstream.ps1` and
-`Restore-BookSource.ps1`. A **Currency check is not a Source check** in any case: a matching pin
+rebuilding a Notebook source from a published Book are **not in the `deskpost` program**, and an
+installed Deskpost does not ship them: they are helpers in the Deskpost source checkout
+(`Get-BookCurrency`, `Sync-RawUpstream` and `Restore-BookSource`). A **Currency check is not a Source check** in any case: a matching pin
 proves the source has not moved, and never that an article reflects it.
 
 ## Project Hubs
@@ -139,7 +139,7 @@ are checked so they cannot lose text. `replace-item`, `replace-section`, `remove
 There is no remove-item mode. An archived Hub is read-only, and those seven edit only pages that
 already **exist**. On a local collection an eighth, `--mode new-page --page <path> --content-path <f>`,
 makes a page that does not exist -- the dated `notes/` page history belongs on -- and never replaces one;
-on Basic Memory a new page goes through `tools/Copy-LocalPagesToProject.ps1`. `hub archive` and
+on Basic Memory a new page goes through `deskpost hub copy-pages`. `hub archive` and
 `hub copy-pages` work against a shared collection only.
 
 **Renaming a Hub** in this Library's own collection is `library hub rename <old> <new> --title "<t>"`: preview with

@@ -20,27 +20,13 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 | **Now** | scoped into the current or next session |
 | **Next** | designed or confirmed, waiting for its session |
 | **Exploring** | an idea being shaped; no design is signed off yet |
+| **Back burner** | set aside on purpose; not planned |
 | **Released** | shipped, with the release that carried it |
 
 ## Now
 
-### 1.3.2: No PowerShell at runtime (0 of 3 sessions)
-
-Deskpost's program is TypeScript, but a few pieces still start Windows PowerShell while you work.
-This milestone moves them into the program, so nothing you run needs PowerShell.
-
-- **The last hooks become part of the program**, and one upgrade moves an existing Library's hook
-  settings onto them.
-- **The program stops calling PowerShell itself** to look up or wait for a process, or to finish an
-  uninstall or upgrade. Anything that cannot move yet keeps working as it does today.
-- **A release no longer ships the PowerShell scripts** that nothing runs any more.
-- **One upgrade finishes the job.** Upgrading also brings each Library it serves up to date, in the
-  same plan and on the same yes: a new standard Book, a missing `Closed by:` line, the Library's own
-  help. Its closing check runs against those Libraries too, so a Library left behind is named before
-  the upgrade says it is done. Today that takes a separate `deskpost init <folder>` afterwards.
-
-After it: installing without PowerShell (about 1 session, planned first), and then, once 1.4.0's
-plans are done, the development tools themselves.
+Nothing is scoped into a session yet: the next milestone is being planned. First in line are
+installing without PowerShell (about 1 session) and seats that work as a team (below).
 
 ## Next
 
@@ -59,23 +45,31 @@ plans are done, the development tools themselves.
 - **A Book's source text has a named home**, so material compiled out of `raw/` has somewhere
   durable to go.
 
-### 1.5.0: A Library card and a view of the Desk (planning; about 2 sessions)
+After 1.3.2: installing without PowerShell (about 1 session, planned first), and then, once 1.4.0's
+plans are done, the development tools themselves.
+
+### 1.5.0: A Library card (planning)
 
 - **A Library card**: a display name for a Library, with no account and no server behind it. The
   card is a label, not a credential. Notes and reports record which Library wrote them, and
   `collection owner --status` names the holder by card instead of by id.
-- **A read-only Desk view**: seats, open Books, the Notebook and inbox counts at a glance, drawn
-  from the same data `library desk` reports. It is another client of the program, never a second
-  implementation, and it is exactly as honest as the program: a closed Book looks closed.
 
 ## Exploring
 
-### Seats on more than one computer (the first to be shaped)
+### Seats that work as a team (the next to be shaped)
+
+Each seat can say what it does, and may belong to a department, such as development, IT or
+marketing. A seat can write to a department rather than to a named seat, and one seat sorts that
+mail into the right hands. Mail between seats is kept apart from the Report Inbox, has a status
+(open, answered, closed), and is never taken as an order. It is the priority among these ideas
+(2026-10-03), and no design is signed off yet.
+
+### Seats on more than one computer
 
 Your seats spread across the computers you already have, so one machine's memory and processor stop
 being the limit. One computer might hold the IT seats and another the development seats, and they
 still work as one reservoir of seats that talk to each other. It is the step after seats that work
-together, and it is shaped first among these ideas. It shares its first questions with **Two
+together, and it is shaped after seats that work as a team. It shares its first questions with **Two
 Libraries, one household** below.
 
 - **One program, not a satellite.** Every computer runs the same Deskpost, including the Linux build
@@ -119,8 +113,16 @@ folder, with each step worth keeping even if the next never ships.
 ### Also being considered
 
 - Copying a local Library to a Basic Memory server.
-- Moving Books on and off the Desk from the Desk view.
 - A passive "a new version is out" hint in `library doctor`.
+
+## Back burner
+
+Set aside on purpose, not planned, until real use calls for them again:
+
+- **A read-only Desk view**: seats, open Books, the Notebook and inbox counts at a glance, drawn
+  from the same data `library desk` reports. It would be another client of the program, never a
+  second implementation, and exactly as honest as the program: a closed Book looks closed.
+- **Moving Books on and off the Desk from the Desk view.**
 
 ## Released
 
@@ -212,6 +214,25 @@ reach it.
 - **Each seat sets who may message it**: `deskpost seat settings <seat> --inbound accept|hold|refuse`,
   passed on every launch of that seat, with a `library doctor` warning when a setting reaches every
   seat by accident.
+
+### 1.3.2: No PowerShell at runtime (3 of 3 sessions; released 2026-10-04)
+
+Deskpost's program is TypeScript, but a few pieces still start Windows PowerShell while you work.
+This milestone moves them into the program, so nothing you run needs PowerShell.
+
+- **The last hooks become part of the program**, and one upgrade moves an existing Library's hook
+  settings onto them. An installed Library then sends the Desk reminder once per session, as 1.3.0
+  meant, and a session with no seat is offered its own Library's seats. The playbook hook is
+  retired.
+- **The program stops calling PowerShell itself** to look up or wait for a process, or to finish an
+  uninstall: the uninstall is finished by a copy of the program.
+- **A release no longer ships the PowerShell scripts** that nothing runs any more, and the advice
+  the program gives names only commands it has. What still uses PowerShell on Windows is named: the
+  installer, and a Library attached to Basic Memory.
+- **One upgrade finishes the job.** Upgrading also brings each Library it serves up to date, in the
+  same plan and on the same yes: a new standard Book, a missing `Closed by:` line, the Library's own
+  help. Its closing check runs against those Libraries too, so a Library left behind is named before
+  the upgrade says it is done.
 
 ### Earlier releases
 

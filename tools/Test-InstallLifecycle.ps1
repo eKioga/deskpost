@@ -53,7 +53,7 @@ Check ((Get-FileHash "$L\.claude\settings.local.json").Hash -eq $hooks.Hash) 'th
 try { & $installer -Release $ReleaseB -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "B: $($_.Exception.Message)" }
 $record = Get-Content "$R\current.json" -Raw | ConvertFrom-Json
 Check ($ok -and $record.version -eq $versionB -and $record.previous -eq $versionA) "upgrade $versionA -> $versionB in place ($($record.version), previous $($record.previous))"
-Check ((Get-FileHash "$L\.claude\settings.local.json").Hash -eq $hooks.Hash) 'the upgrade left the Library''s hooks byte for byte'
+Check ([IO.File]::ReadAllText("$L\.claude\settings.local.json").Contains(($R -replace '\\', '/') + '/current/') -and -not [IO.File]::ReadAllText("$L\.claude\settings.local.json").Contains('/versions/')) 'the upgrade brought the Library''s hooks up to date, naming current'
 $doctor = & "$R\bin\deskpost.cmd" doctor --workspace $L --json | ConvertFrom-Json
 Check ($doctor.failed -eq 0) "doctor green after the upgrade ($($doctor.failed) failed)"
 # AN INTERRUPTED `deskpost rollback` MET BY THE INSTALLER (post-build inspection #1): current put back, never removed.

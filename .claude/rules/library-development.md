@@ -148,8 +148,9 @@ shape.
    enumerates by bucket, not by age: measured on 2026-09-19 against a full twenty-entry ledger, a
    newly added key came out FIRST for every id tried, so the trim kept the twenty **oldest** and
    dropped the one just written. `.claude/.hook-served.json` froze at exactly twenty sessions and
-   recorded nothing from then on — every just-in-time playbook section re-injected on every matching
-   tool call for the life of every session, `Clear-HookServed` with nothing to clear, and a file that
+   recorded nothing from then on — every just-in-time playbook section (a hook retired in 1.3.2)
+   re-injected on every matching tool call for the life of every session, `Clear-HookServed` with
+   nothing to clear, and a file that
    looked healthy because its bytes came out identical. Two reports read it as a blank `session_id`
    and one of them ran an experiment that could not tell the two apart. Use `[ordered]@{}` wherever
    order is load-bearing, and type the parameter `[System.Collections.IDictionary]`: `[hashtable]`
@@ -188,6 +189,7 @@ the next change, not records of a past one, so they belong beside the code they 
   `Get-PlaybookContext.ps1` and the playbook, but never the hook's table against the list -- so a
   route added to the hook and not to the test was asserted by nothing, and
   `Copy-LocalPagesToProject.ps1`, a **gated shared write**, had no playbook served for it at all.
+  (That hook and its route check were retired in 1.3.2, ADR-0064; the lesson stands.)
   Whenever a check enumerates a hardcoded list to stand for a table defined elsewhere, derive the
   other side and compare in both directions; a missing entry and a stale entry are different
   faults, and only one of them is loud. **Never a hardcoded count** -- derive both sets.

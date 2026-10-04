@@ -128,7 +128,9 @@ function samePath(left: string, right: string): boolean {
  *
  * MEASURED, NOT ASSUMED (S77): an installed Library registers `<program>/.claude/hooks/Restore-CompactedGuidance.ps1`
  * with no `-StateDirectory`, so its clear empties the PROGRAM's `.claude/.hook-served.json`, never the workspace's this
- * hook writes, and this answers false there. The file the harness reads is the one judged: when `settings.local.json`
+ * hook writes, and this answers false there. Since S82 a compiled or POSIX init registers the kernel's own
+ * `hook compact-clear` instead, which empties the workspace's ledger, so an installed Library answers true. The file
+ * the harness reads is the one judged: when `settings.local.json`
  * declares its own `hooks` block only it counts (`launchSettingsFaults`' rule), and the plugin registers no clear.
  */
 export function ledgerClearReaches(workspace: string, stateDirectory: string): boolean {
@@ -147,6 +149,17 @@ export function ledgerClearReaches(workspace: string, stateDirectory: string): b
   const events = tree['hooks'] as Record<string, unknown>;
   const clears = (entry: unknown): boolean => {
     const tokens = entryTokens(entry);
+    // THE KERNEL'S VERB (S82, ADR-0064): `<binary> hook compact-clear` empties `--state-directory` if it names one, and
+    // otherwise `<workspace>/.claude` of the workspace it resolves as this hook does -- this one, so it reaches this
+    // ledger exactly when that is the state directory this hook writes. The binary must be there to run at all.
+    const verbAt = tokens.findIndex((token, index) => token === 'hook' && tokens[index + 1] === 'compact-clear');
+    if (verbAt >= 0) {
+      const binary = tokens[0] ?? '';
+      if (!binary.trim() || !fs.existsSync(path.isAbsolute(binary) ? binary : path.join(workspace, binary))) return false;
+      const flag = tokens.findIndex((token) => token === '--state-directory');
+      const target = flag >= 0 ? tokens[flag + 1] ?? '' : path.join(workspace, '.claude');
+      return target.trim() !== '' && samePath(path.isAbsolute(target) ? target : path.join(workspace, target), stateDirectory);
+    }
     const at = tokens.findIndex((token) => path.basename(token.replace(/\\/g, '/')).toLowerCase() === CLEAR_HOOK);
     if (at < 0) return false;
     const script = path.isAbsolute(tokens[at]!) ? tokens[at]! : path.join(workspace, tokens[at]!);
