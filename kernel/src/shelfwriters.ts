@@ -78,6 +78,7 @@ import { psConvertToJson } from './psjson.ts';
 import { convertToBookPagePath } from './pagepath.ts';
 // `yyyy-MM-dd` in LOCAL time, which is what `(Get-Date).ToString('yyyy-MM-dd')` gives.
 import { localDate as today } from './localdate.ts';
+import { releaseTuple } from './programroot.ts';
 import { deleteRecallRecord, readRecallRecord, recallRecordLabel, recallRecordPath, recallRecordTakenRefusal, writeRecallRecord } from './recallrecord.ts';
 
 /** Whether a Shelf slug has a recall record (S70). Unreadable counts as present: the writer says so rather than skip it. */
@@ -552,7 +553,7 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
     plan['reader_map'] = `shelf/${newSlug}/wiki/_index.md`;
     plan['pages_verified_identical'] = contentPages.length;
     plan['journal'] = workspaceRelative(workspace, journalPath);
-    plan['next'] = 'Migrate the source references listed above in the same commit, then run tools/Invoke-LibraryChecks.ps1.';
+    plan['next'] = 'Migrate the source references listed above in the same commit, then run deskpost doctor --workspace <Library>.';
   } catch (error) {
     const failure = (error as Error).message;
     const rollback = runRollback([
@@ -979,7 +980,7 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
   const book = getShelfBook(workspace, slug);
   if (book.isCapture) {
     refuse(
-      `Shelf Book '${slug}' is a capture Book. Its notes are triaged with tools/Invoke-LibraryTriage.ps1; a capture surface is not archived wholesale.`,
+      `Shelf Book '${slug}' is a capture Book. Its notes are triaged with deskpost triage; a capture surface is not archived wholesale.`,
     );
   }
   const previewLock = enterSeatRegistryLock(workspace, LOCK_TIMEOUT_SECONDS);
@@ -991,7 +992,7 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
   }
   if (openRoots.includes(`shelf/${slug}`)) {
     refuse(
-      `shelf/${slug} is open on the Desk. Close it first with tools/Set-VirtualDesk.ps1 -Action Close -Kind Book -Location Shelf -Slug ${slug}, so archiving never happens to material in play.`,
+      `shelf/${slug} is open on the Desk. Close it first with deskpost desk close book ${slug} --location shelf, so archiving never happens to material in play.`,
     );
   }
   if (fs.existsSync(archivedRoot)) {
@@ -1046,8 +1047,8 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
       "Moves this Book's whole directory into the local archive, removes its Book Catalog entry, and moves its " +
       'Discovery manifest into the archive store. Every page is verified byte-identical at the archive path ' +
       'afterwards. The Book stays findable and is LABELLED archived: Discovery covers it, and it opens read-only on ' +
-      'the Desk with -Shelf Archive, which is what full text needs. It is out of the active Shelf catalog, so no ' +
-      'Shelf writer will touch it. Nothing is deleted, and -Action Restore puts it back.',
+      'the Desk with --shelf archive, which is what full text needs. It is out of the active Shelf catalog, so no ' +
+      'Shelf writer will touch it. Nothing is deleted, and deskpost shelf restore puts it back.',
     next: references.blocking.length
       ? `blocking_references lists ${references.blocking.length} file(s) on a surface shelf.references-resolve reads, so the gate WILL fail until they are updated in the same commit. other_references are mentions the gate does not read; a dated record naming this Book stays true and needs no edit.`
       : `No blocking references: nothing on a surface shelf.references-resolve reads names this Book, so the gate will pass. other_references lists ${references.other.length} mention(s) elsewhere -- history rather than live claims, and no edit is needed for the gate.`,
@@ -1165,8 +1166,8 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
     plan['pages_verified_identical'] = manifest.length;
     plan['journal'] = workspaceRelative(workspace, journalPath);
     plan['next'] = references.blocking.length
-      ? 'Run tools/Invoke-LibraryChecks.ps1. shelf.references-resolve will fail until blocking_references are updated.'
-      : 'Run tools/Invoke-LibraryChecks.ps1; nothing here should need editing for it to pass.';
+      ? 'Run deskpost doctor --workspace <Library>. shelf.references-resolve will fail until blocking_references are updated.'
+      : 'Run deskpost doctor --workspace <Library>; nothing here should need editing for it to pass.';
   } catch (error) {
     const failure = (error as Error).message;
     const rollback = runRollback([
@@ -1219,13 +1220,13 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
   const recordFile = archiveRecordPath(workspace, slug);
 
   if (!fs.existsSync(archivedRoot)) {
-    refuse(`shelf/${ARCHIVE_FOLDER}/${slug} was not found. Run -Action List to see what is archived.`);
+    refuse(`shelf/${ARCHIVE_FOLDER}/${slug} was not found. The archived Shelf Books are the folders under shelf/${ARCHIVE_FOLDER}/.`);
   }
   if (fs.existsSync(activeRoot)) refuse(`shelf/${slug} already exists on the active Shelf. Rename or archive that Book first.`);
   if (!fs.existsSync(recordFile)) {
     refuse(
       `shelf/${ARCHIVE_FOLDER}/${slug} has no ${ARCHIVE_RECORD_NAME}, so the catalog entry it was archived with is not ` +
-        'recoverable. Restore it by hand, or re-add it with tools/Import-ExternalWikiToShelf.ps1.',
+        'recoverable. Restore it by hand.',
     );
   }
   // Read before anything moves: the rollback needs these exact bytes to put the record back, and by
@@ -1271,7 +1272,7 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
     scope:
       'Moves the archived Book back to shelf/<slug>, restores its Book Catalog entry verbatim, and commits a fresh ' +
       'Discovery manifest. Every page is verified byte-identical afterwards. The Book is restored CLOSED; open it ' +
-      'with tools/Set-VirtualDesk.ps1.',
+      'with deskpost desk open book <slug> --location shelf.',
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -1356,7 +1357,7 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
     plan['pages_verified_identical'] = restoreManifest.length;
     plan['journal'] = workspaceRelative(workspace, journalPath);
     plan['next'] =
-      `The Book is on the Shelf and closed. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Slug ${slug}, then run tools/Invoke-LibraryChecks.ps1.`;
+      `The Book is on the Shelf and closed. Open it with deskpost desk open book ${slug} --location shelf, then run deskpost doctor --workspace <Library>.`;
   } catch (error) {
     const failure = (error as Error).message;
     const rollback = runRollback([
@@ -1416,7 +1417,7 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
   const book = getShelfBook(workspace, bookSlug);
   if (book.isCapture) {
     refuse(
-      `Shelf Book '${bookSlug}' is a capture Book. Its notes are triaged with tools/Invoke-LibraryTriage.ps1; the stub pattern is for curated Books.`,
+      `Shelf Book '${bookSlug}' is a capture Book. Its notes are triaged with deskpost triage; the stub pattern is for curated Books.`,
     );
   }
   if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${bookSlug}' has no pages directory at shelf/${bookSlug}/wiki.`);
@@ -1430,7 +1431,7 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
   const fullPath = path.join(book.wikiPath, ...relative.split('/'));
   if (!fs.existsSync(fullPath)) {
     refuse(
-      `shelf/${bookSlug}/wiki/${relative} does not exist. This helper only ever replaces an existing page; use tools/Add-ShelfBookPage.ps1 to create one.`,
+      `shelf/${bookSlug}/wiki/${relative} does not exist. shelf stub only ever replaces an existing page; use deskpost book add-page to create one.`,
     );
   }
 
@@ -1441,17 +1442,15 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
   const title = headingMatch ? headingMatch[1]!.trim() : page.split('/').pop()!;
   const titleSource = headingMatch ? "the page's own H1" : 'the page file name (it has no H1)';
 
-  // Depth from the page's directory to the workspace root: shelf/<slug>/wiki is three, plus one for
-  // every directory the page sits inside. Computed rather than assumed -- the surviving hand-written
-  // stubs are all at one level of nesting, so a constant would be right by coincidence.
-  const docsDepth = 3 + page.split('/').length - 1;
+  // THE GUIDE IS LINKED AT THIS PROGRAM'S OWN VERSION ON GITHUB (S85 row 1): a release ships no docs/, so the
+  // relative `../../../docs/...` link the stub carried resolved to nothing in an installed Library.
   const stubBody = newStubBody({
     title,
     date: supersededOn,
     canonicalBookTitle: canonicalBook,
     canonicalPagePath: canonicalPageClean,
     because: parsed.options.get('reason') ?? '',
-    docsDepth,
+    version: String(releaseTuple().binary_version ?? ''),
   });
 
   // Idempotence by content, decided BEFORE a plan_id is issued: a retry that needs no write should
@@ -1565,8 +1564,8 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
     plan['journal'] = workspaceRelative(workspace, journalPath);
     delete plan['replacement_text'];
     plan['next'] =
-      'The Book is open; read the stub back with mcp__validated-book-reader__read_open_book_page. Record the ' +
-      'resolution with tools/Set-TopicOverlap.ps1 if this page was part of a topic overlap.';
+      'The Book is open; read the stub back with mcp__validated-book-reader__read_open_book_page. If this page was ' +
+      'part of a topic overlap, record its resolution by hand: this program has no writer for that record yet.';
   } catch (error) {
     const failure = (error as Error).message;
     let rollback = 'not required';
@@ -1593,15 +1592,16 @@ function newStubBody(options: {
   canonicalBookTitle: string;
   canonicalPagePath: string;
   because: string;
-  docsDepth: number;
+  version: string;
 }): string {
-  const docsLink = '../'.repeat(options.docsDepth) + 'docs/duplicate-topic-resolution.md';
+  const docsLink = `https://github.com/eKioga/deskpost/blob/${options.version ? `v${options.version}` : 'main'}/docs/duplicate-topic-resolution.md`;
+  const canonicalLink = `[[shelf/${options.canonicalBookTitle}/wiki/${options.canonicalPagePath}|${options.canonicalPagePath}]]`;
   const reasonClause = options.because.trim() ? ' -- ' + options.because.trim().replace(/\.+$/, '') : '';
   return [
     `# ${options.title}`,
     '',
     `> **Superseded ${options.date}.** This topic now lives in the **${options.canonicalBookTitle}** Book, page`,
-    '> `' + options.canonicalPagePath + '`' + reasonClause + '. Kept here as a stub so nothing that links to this page',
+    '> ' + canonicalLink + reasonClause + '. Kept here as a stub so nothing that links to this page',
     `> breaks. See [Duplicate Topic Resolution](${docsLink}).`,
     '',
   ].join('\n');
@@ -1625,10 +1625,10 @@ function assertShelfBookOpen(workspace: string, slug: string, action: string): v
   if (openBooks.includes(`shelf/${slug}`)) return;
   if (openBooks.includes(`shelf/${ARCHIVE_FOLDER}/${slug}`)) {
     refuse(
-      `Shelf Book '${slug}' is archived and read-only. Restore it with tools/Archive-ShelfBook.ps1 -Action Restore -BookSlug ${slug} before ${action}.`,
+      `Shelf Book '${slug}' is archived and read-only. Restore it with deskpost shelf restore ${slug} before ${action}.`,
     );
   }
   refuse(
-    `Shelf Book '${slug}' is closed. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} before ${action}.`,
+    `Shelf Book '${slug}' is closed. Open it with deskpost desk open book ${slug} --location shelf before ${action}.`,
   );
 }

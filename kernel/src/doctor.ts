@@ -785,7 +785,7 @@ function catalogRendersFromEntries(workspace: string, program: string): string {
       problems.push(`the Shelf cannot be rendered: ${(error as Error).message}`);
     }
     if (expected !== null && readStrictUtf8(catalogPath) !== expected) {
-      problems.push('shelf/_catalog.md does not match the tracked header plus the validated entry files; re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .');
+      problems.push('shelf/_catalog.md does not match the tracked header plus the validated entry files; re-render it with deskpost shelf render');
     }
   }
   if (problems.length) throw new Error(problems.join('; '));

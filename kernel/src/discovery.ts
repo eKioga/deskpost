@@ -50,25 +50,25 @@ const DISCOVERY_SCHEMA = 1;
 const DEFAULT_MAX_RESULTS = 50;
 const MAX_PAGES_PER_BOOK = 2000;
 
+// ADVICE NAMES ONLY WHAT SHIPS (S85 row 1): the manifest rebuilders these named are PowerShell helpers a release does
+// not carry. A Shelf Book's manifest is rebuilt by any write to it; a shared one has no rebuilder in this program.
+const SHARED_REBUILDER_MISSING = 'this program has no command that builds shared-collection manifests';
 const SHARED_NOTE_NONE =
-  'No shared-collection manifests are present, so this answer covers the local Shelf only -- run ' +
-  'tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope.';
-const REPAIR_HINT = "run tools/Update-BookManifests.ps1 to repair this Book's manifest";
-const SHARED_REPAIR_HINT = "run tools/Update-SharedBookManifests.ps1 to repair this shared Book's manifest";
+  'No shared-collection manifests are present, so this answer covers the local Shelf only -- ' + SHARED_REBUILDER_MISSING + '.';
+const REPAIR_HINT = "write to this Book once (deskpost book add-page, or deskpost capture for a capture Book) to rebuild its manifest";
+const SHARED_REPAIR_HINT = `this shared Book's manifest cannot be repaired here: ${SHARED_REBUILDER_MISSING}`;
 const SHELF_ARCHIVE_REPAIR_HINT =
-  "run tools/Update-BookManifests.ps1 -IncludeArchive to repair this archived Book's manifest";
-const SHARED_ARCHIVE_REPAIR_HINT =
-  "run tools/Update-SharedBookManifests.ps1 -IncludeArchive to repair this archived shared Book's manifest";
+  "restore it with deskpost shelf restore and archive it again with deskpost shelf archive to rebuild this archived Book's manifest";
+const SHARED_ARCHIVE_REPAIR_HINT = `this archived shared Book's manifest cannot be repaired here: ${SHARED_REBUILDER_MISSING}`;
 const SHARED_ARCHIVE_NOTE_NONE =
-  "the shared collection's archive is NOT covered by this answer -- run " +
-  'tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests';
+  "the shared collection's archive is NOT covered by this answer -- " + SHARED_REBUILDER_MISSING;
 const CLOSING_RULE =
   'A hit is a location, not a reading: these are headings and titles, not content, so a hit says which Book to open ' +
   'and never what the page says. Open it with read_open_book_page before answering from it.';
-const COLLECTION_REPAIR_HINT = "run `library collection rebuild` to rebuild the Local collection's Discovery manifests";
+const COLLECTION_REPAIR_HINT = "run `deskpost collection rebuild` to rebuild the Local collection's Discovery manifests";
 const SHARED_NOTE_NOT_REBUILT =
-  "The shared collection this Library connects to is NOT covered: shared manifests not rebuilt by this program -- their " +
-  "kernel port is 1.2. Open a shared Book from its catalog, read_book_catalog with location 'shared'.";
+  'The shared collection this Library connects to is NOT covered: ' + SHARED_REBUILDER_MISSING + ". Open a shared " +
+  "Book from its catalog, read_book_catalog with location 'shared'.";
 
 /**
  * Deterministic ordering. Book-level matches come before page-level ones because they ORIENT: a
@@ -567,7 +567,7 @@ export function findBookPages(options: {
     ? ''
     : ` Shared Book list as of ${sharedRosterAsOf.substring(0, Math.min(10, sharedRosterAsOf.length))}; a Book added since then is not in this answer.`;
   // A LOCAL LIBRARY WITH A CONNECTION HAS NO REBUILDER FOR ITS SHARED MANIFESTS YET (step 5): the rebuild is
-  // PowerShell, and its kernel port is 1.2. So that absence is named as what it is, not as a script to run.
+  // PowerShell, which a release does not ship. So that absence is named as what it is, not as a script to run.
   const connected = localBackend && markerConnection(root) !== null;
   const sharedNote = !sharedCovered
     ? connected

@@ -600,7 +600,7 @@ async function candidateConfirmed(
       const rootKeys = ['book_slug', 'source_digest_sha256', 'page_manifest_sha256', 'approved_plan_id', ...(input.collection ? ['collection'] : [])];
       const sameRoot = rootKeys.every((name) => meta(root, name) === psText(copying[name]));
       if (!sameRoot) {
-        if (!replaceExisting) refuse('Existing Book has a different source or manifest. Review the preflight and rerun with -ReplaceExisting to refresh this exact Book.');
+        if (!replaceExisting) refuse('Existing Book has a different source or manifest. Review the preflight and rerun with --replace-existing to refresh this exact Book.');
         if (meta(root, 'book_slug') !== input.bookSlug) refuse('Existing root does not belong to this Book slug; it will not be replaced.');
         attempted.push(rootRecord.path);
         await createRecord(rootRecord, copying, true);
@@ -889,7 +889,7 @@ async function localCandidateConfirmed(
         const rootKeys = ['book_slug', 'source_digest_sha256', 'page_manifest_sha256', 'approved_plan_id', ...(input.collection ? ['collection'] : [])];
         const sameRoot = rootKeys.every((name) => (fields.get(name) ?? null) === psText(copying[name]));
         if (!sameRoot) {
-          if (!replaceExisting) refuse('Existing Book has a different source or manifest. Review the preflight and rerun with -ReplaceExisting to refresh this exact Book.');
+          if (!replaceExisting) refuse('Existing Book has a different source or manifest. Review the preflight and rerun with --replace-existing to refresh this exact Book.');
           if ((fields.get('book_slug') ?? null) !== input.bookSlug) refuse('Existing root does not belong to this Book slug; it will not be replaced.');
           attempted.push(rootRecord.path);
           write(rootRecord.path, rootText('copying'), rootMatches);

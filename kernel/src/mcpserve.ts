@@ -28,7 +28,7 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { parseArguments } from './argv.ts';
 import type { McpResult, ReaderArguments } from './reader.ts';
-import { answerReaderTool, readerContext, readerEnvelope } from './reader.ts';
+import { answerReaderTool, readerContext, readerEnvelope, readerRejectionPrefix } from './reader.ts';
 import { homeDirectory, markerField, readMarker, resolveWorkspace, toWorkspaceRoot } from './workspace.ts';
 import { programRoot } from './programroot.ts';
 import type { PsJsonValue } from './psjson.ts';
@@ -242,11 +242,13 @@ export async function answerLine(line: string, binding: Binding, seat: string | 
     if (method === 'notifications/initialized') return null;
     if (method === 'tools/list') return asciiLine({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
     if (method === 'tools/call') {
+      // Outside the try: the refusal's prefix names the tool's kind (S85 row 2).
+      let callName = '';
       try {
         const params = property(request, 'params');
         const callParams = params.found ? params.value : null;
         const name = property(callParams, 'name');
-        const callName = name.found ? asString(name.value) : '';
+        callName = name.found ? asString(name.value) : '';
         const argumentsProperty = property(callParams, 'arguments');
         const callArguments = argumentsProperty.found ? argumentsProperty.value : null;
         const args: ReaderArguments = {
@@ -268,7 +270,7 @@ export async function answerLine(line: string, binding: Binding, seat: string | 
         const text = await answerReaderTool(context, callName, args);
         return asciiLine(readerEnvelope(id as PsJsonValue, text, false));
       } catch (error) {
-        return asciiLine(readerEnvelope(id as PsJsonValue, `Book read rejected: ${(error as Error).message}`, true));
+        return asciiLine(readerEnvelope(id as PsJsonValue, `${readerRejectionPrefix(callName)}: ${(error as Error).message}`, true));
       }
     }
     return id === null || id === undefined ? null : asciiLine({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found.' } });

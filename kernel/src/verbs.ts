@@ -36,6 +36,8 @@ export interface VerbDeclaration {
   ported: boolean;
   /** The ledger row of PLAN-public-release.md that carries it. */
   row: string;
+  /** Lines `<verb> <action> --help` adds under the action's usage, one per mode or rule (S85 row 1). */
+  details?: Record<string, string[]>;
 }
 
 export const VERBS: Record<string, VerbDeclaration> = {
@@ -150,6 +152,24 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '[--at-project-root | --destination-directory <d>] --preflight; ' +
       'library hub rename <old-slug> <new-slug> --title <t> [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
     actions: ['archive', 'copy-pages', 'edit', 'new', 'rename'],
+    // ONE LINE PER MODE (S85 rows 1 and 3): the usage names eight modes and said nothing of what each takes, so a
+    // seat put the section's own `## ` heading into its content and was told the page held the section twice.
+    details: {
+      edit: [
+        'Modes:',
+        "  add-section      --section <s> --content-path <f>: a new level-two section at the page's end.",
+        '  append-section   --section <s> --content-path <f>: lines added at the end of an existing section.',
+        '  remove-section   --section <s>: removes a section other than Purpose, Now or Next. Gated.',
+        "  replace-section  --section <s> --content-path <f>: the section's body replaced. Gated.",
+        '  replace-body     --content-path <f>: the whole page replaced. Gated.',
+        '  check-item       --match-text <t> [--section <s>] [--uncheck]: ticks or unticks one checkbox item.',
+        '  replace-item     --match-text <t> [--section <s>] --content-path <f>: one item replaced. Gated.',
+        "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
+        '',
+        "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line.",
+        "Gated means --preflight first, then --user-confirmed --plan-id <id> with the reader's yes.",
+      ],
+    },
     positional: false,
     // `new` against both backends (S30 local, S33 Basic Memory); `edit` against both (S34); `archive`
     // (S34) and `copy-pages` (S35) against Basic Memory, their preflights, with the confirmed halves
@@ -337,6 +357,17 @@ export const VERBS: Record<string, VerbDeclaration> = {
   triage: {
     summary: 'The triage inventory, plan validation, and the resumable batch.',
     usage: 'library triage <inventory|validate|batch> [--actions <json>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
+    // THE SOURCES, AND HOW A LETTER IS CLOSED (S85 row 5, backlog Row C): `source_slug` was nowhere in the help.
+    details: {
+      '*': [
+        'Sources:',
+        "  holding    a note in a capture Book: the Holding Shelf, or the Book source_slug names (reports, letters).",
+        '  notebook   a Notebook article.',
+        '',
+        'Marking a letter read (the seat it is for may close it):',
+        `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,
+      ],
+    },
     actions: ['batch', 'inventory', 'validate'],
     positional: false,
     // All three answer. `batch` (S43) runs and resumes a plan for the local kinds and refuses a project or
@@ -411,6 +442,9 @@ export function verbUsageText(verb: string, action?: string): string {
   const shown = picked.length ? picked : clauses;
   const lines = [`deskpost ${verb} -- ${declaration.summary}`, '', 'Usage:', ...shown.map((clause) => `  ${clause}`)];
   if (declaration.actions.length && !picked.length) lines.push('', `Actions: ${declaration.actions.join(', ')}`);
+  // `*` is the verb's own lines, shown when no one action is picked.
+  const details = picked.length && action ? declaration.details?.[action] : declaration.details?.['*'];
+  if (details?.length) lines.push('', ...details);
   return lines.join('\n') + '\n';
 }
 

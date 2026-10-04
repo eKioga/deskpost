@@ -647,7 +647,7 @@ export function runRawSearch(argv: string[], workspace: string): RawResult {
   try {
     if (query === undefined || !String(query).trim()) {
       return {
-        refusal: 'A search needs -Query. Run with -List to see the source batches you can name.',
+        refusal: 'A search needs a query: deskpost raw search <batch> <query>. The batches are the folders under raw/.',
         value: null,
       };
     }

@@ -91,7 +91,7 @@ export function renderPageBody(body: string, title: string): RenderedPage {
   const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(rest);
   const keepsOwn = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
   if (!keepsOwn && !title.trim()) {
-    refuse('The body has no leading H1, so -Title is required to give the page a heading.');
+    refuse('The body has no leading H1, so --title is required to give the page a heading.');
   }
   const pageTitle = keepsOwn ? heading![1]!.trim() : title.trim();
   let rendered: string;

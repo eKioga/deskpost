@@ -139,11 +139,11 @@ function assertShelfBookOpen(workspace: string, slug: string, action: string, re
   if (openBooks.includes(`shelf/${slug}`)) return;
   if (openBooks.includes(`shelf/${ARCHIVE_FOLDER}/${slug}`)) {
     refuse(
-      `Shelf Book '${slug}' is archived and read-only. Restore it with tools/Archive-ShelfBook.ps1 -Action Restore -BookSlug ${slug} before ${action}.`,
+      `Shelf Book '${slug}' is archived and read-only. Restore it with deskpost shelf restore ${slug} before ${action}.`,
     );
   }
   refuse(
-    `Shelf Book '${slug}' is closed. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} before ${action}.`,
+    `Shelf Book '${slug}' is closed. Open it with deskpost desk open book ${slug} --location shelf before ${action}.`,
   );
 }
 
@@ -205,7 +205,7 @@ function readerMapLabel(content: string, relative: string): string {
 }
 
 /** Regenerated from the pages on disk, so a generated map can never drift from what the Book holds. */
-function updateShelfBookIndex(book: ShelfBook): { pageCount: number } {
+export function updateShelfBookIndex(book: ShelfBook): { pageCount: number } {
   const relatives = bookPageRelatives(book.wikiPath);
   const links = ['- [[_book|Book metadata and limits]]'].concat(
     relatives.map((relative) => {
@@ -301,9 +301,9 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
 } {
   const hasPath = contentPath !== undefined && contentPath.trim() !== '';
   const hasInline = inline !== undefined && inline.trim() !== '';
-  if (hasPath && hasInline) refuse('Give either -ContentPath or -Content, not both.');
+  if (hasPath && hasInline) refuse('Give either --content-path or --body, not both.');
   if (!hasPath && !hasInline) {
-    refuse(`A ${what} needs a body: pass -ContentPath (preferred for prose) or -Content.`);
+    refuse(`A ${what} needs a body: pass --content-path <file> (preferred for prose) or --body <text>.`);
   }
   if (!hasPath) return { body: inline!, source: '(inline)' };
   // A body is often a scratch file outside the workspace, so an absolute path is taken as given and
@@ -639,9 +639,17 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     plan['pending_count'] = pendingCount;
     plan['reader_map'] = `${book.bookRoot}/wiki/_index.md`;
     plan['manifest'] = manifestSummary;
+    // OPEN AT THIS SEAT ALREADY (S85 row 1): "closed by default" told a seat with the Book open to open it again.
+    let openHere = false;
+    try {
+      openHere = fromSeat !== '' && deskEntriesForSeat(stateDirectory(workspace), fromSeat, 'books').includes(`shelf/${slug}`);
+    } catch {
+      openHere = false;
+    }
     plan['next'] =
-      `This Book is closed by default. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} ` +
-      'when you are ready to review.' +
+      (openHere
+        ? 'This Book is open at this seat; read the note with read_open_book_page when you are ready to review.'
+        : `This Book is closed by default. Open it with deskpost desk open book ${slug} --location shelf when you are ready to review.`) +
       (why || !whyMissingSaid ? '' : WHY_MISSING_NEXT);
     return { refusal: null, value: plan };
   } catch (error) {
@@ -672,7 +680,7 @@ function addPage(argv: string[], workspace: string): WriterResult {
   }
   if (book.isCapture) {
     refuse(
-      `Shelf Book '${slug}' is a capture Book. Use tools/Add-ShelfNote.ps1 for it; this helper is for graduating material into a curated Book.`,
+      `Shelf Book '${slug}' is a capture Book. Capture into it with deskpost capture ${slug}; book add-page is for adding a page to a curated Book.`,
     );
   }
   if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
@@ -688,12 +696,17 @@ function addPage(argv: string[], workspace: string): WriterResult {
   // THE PAGE STAYS INSIDE THE BOOK (S67, plan 0.3): a folder that is a link or junction would carry it out.
   assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
   if (fs.existsSync(fullPath)) {
-    refuse(`shelf/${slug}/wiki/${relative} already exists. This helper only ever adds a page; choose another PagePath.`);
+    refuse(`shelf/${slug}/wiki/${relative} already exists. book add-page only ever adds a page; choose another page path.`);
   }
 
   const rendered = convertToShelfPageBody(body, parsed.options.get('title') ?? '');
   const mapPath = path.join(book.wikiPath, '_index.md');
   const mapIsGenerated = testGeneratedReaderMap(mapPath);
+  // THE TOPIC INDEX THIS WRITER LEAVES ALONE, named as `collection add-page` names it (S85 row 1): a page added under a
+  // folder whose `_index.md` exists is not linked from it, and the reader should know to add the line.
+  const folder = page.includes('/') ? page.substring(0, page.lastIndexOf('/')) : '';
+  const topicIndexFull = folder ? path.join(book.wikiPath, ...folder.split('/'), '_index.md') : '';
+  const topicIndex = folder && fs.existsSync(topicIndexFull) && `${folder}/_index` !== page ? `${book.bookRoot}/wiki/${folder}/_index.md` : null;
 
   const plan: Record<string, PsJsonValue> = {
     schema: LIBRARY_OUTPUT_SCHEMA,
@@ -710,6 +723,7 @@ function addPage(argv: string[], workspace: string): WriterResult {
       ? 'regenerate from the pages on disk'
       : 'append the link; this map is curated, so it is not regenerated',
     reader_map_unlisted: getUnlistedBookPages(book).length,
+    topic_index_not_updated: topicIndex,
     confirmation_required: false,
     shared_library_write: false,
     scope:
@@ -823,7 +837,7 @@ function graduate(argv: string[], workspace: string): WriterResult {
   const book = getShelfBook(workspace, slug);
   if (book.isCapture) {
     refuse(
-      `Shelf Book '${slug}' is a capture Book. Use tools/Add-ShelfNote.ps1 for it; this helper graduates curated material into a curated Book.`,
+      `Shelf Book '${slug}' is a capture Book. Capture into it with deskpost capture ${slug}; book graduate moves curated material into a curated Book.`,
     );
   }
   if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
@@ -862,7 +876,7 @@ function graduate(argv: string[], workspace: string): WriterResult {
           .sort()
   ).filter((file) => file.toLowerCase().endsWith('.md'));
   if (!articles.length) {
-    const hint = recurse ? '' : ' (pass -Recurse to include subfolders)';
+    const hint = recurse ? '' : ' (pass --recurse to include subfolders)';
     refuse(`No .md articles found under ${sourcePath}${hint}.`);
   }
 
@@ -986,7 +1000,7 @@ function graduate(argv: string[], workspace: string): WriterResult {
     plan['divergent_pages'] = divergent.map((entry) => entry.page);
     plan['next'] =
       'Each page listed in divergent_pages already exists with different content. Compare them and either update the ' +
-      'source to match or choose another -PagePrefix; this helper will not overwrite or suffix.';
+      'source to match or choose another --page-prefix; book graduate will not overwrite or suffix.';
   }
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -994,7 +1008,7 @@ function graduate(argv: string[], workspace: string): WriterResult {
     refuse(
       `Refused before writing anything: ${divergent.length} target page(s) already exist with different content -- ` +
         divergent.map((entry) => entry.page).join(', ') +
-        '. Compare them and either update the source or choose another -PagePrefix.',
+        '. Compare them and either update the source or choose another --page-prefix.',
     );
   }
 
@@ -1003,7 +1017,7 @@ function graduate(argv: string[], workspace: string): WriterResult {
   // that wrote the pages without one would be a writer whose whole distinctive property is missing.
   refuse(
     'library book graduate answers --preflight only: the resumable apply half, with its per-page progress journal, ' +
-      'is not ported yet (PLAN-public-release.md step 24, S15 carries it). Run tools/Add-ShelfBookTopic.ps1 to apply one.',
+      'is not in this program yet (PLAN-public-release.md step 24). Add the pages one at a time with deskpost book add-page.',
   );
 }
 

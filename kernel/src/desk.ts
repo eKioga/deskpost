@@ -125,7 +125,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   if (!fs.existsSync(deskDirectory)) {
     refuse(
       `Seat '${seat}' has no Desk in this workspace. Create it with ` +
-        `tools/Start-LibrarySeat.ps1 -Seat ${seat} -Project <project-slug>.`,
+        `deskpost seat start ${seat} --project <project-slug>.`,
     );
   }
   const sharedNotebook = path.join(workspace, 'notebook');
@@ -214,7 +214,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     undated_count: quarantineRows.length - dated.length,
     // NAMED EVEN WHEN THE COUNT IS ZERO. A reader who has just been told there is nothing in
     // quarantine is the one most likely to want to check that for themselves.
-    list_route: 'tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List',
+    list_route: 'deskpost reset restore --list',
     note: 'Set aside by a reset and still recoverable. Both reads need no seat, unlike this overview.',
   };
 
@@ -238,7 +238,11 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       // WHY THE PENDING NOTES ARE THERE (S73 row 3b), a count per closed category and one for the rest. No value a
       // writer typed is ever said here: a `why:` outside the category counts as missing.
       pending_by_why: Object.fromEntries(WHY_CATEGORIES.map((category) => [category, pending.filter((note) => note.why === category).length])),
-      pending_why_missing: pending.filter((note) => !(WHY_CATEGORIES as readonly string[]).includes(note.why ?? '')).length,
+      // NOT FOR A `Closed by: any` BOOK (S85 row 4): capture says no why-missing advice there (S77 row 4), so the count
+      // was a nag with no remedy. The Report Inbox is the case.
+      ...(book.closedByDeclared === 'any'
+        ? {}
+        : { pending_why_missing: pending.filter((note) => !(WHY_CATEGORIES as readonly string[]).includes(note.why ?? '')).length }),
       // GROWING (S77 row 2): past the Book's pending count or age, from its own `Growing at:` line or 5 and 7. Then
       // the route, and how many of the pending notes this seat may close. Counts only.
       ...((): Record<string, PsJsonValue> => {
@@ -367,7 +371,14 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   thisSeat['conversation_line'] = formatSeatConversationCell(conversation);
   // AND WHETHER THAT CONVERSATION IS THIS ONE, which is the difference between "your seat last held
   // X" and "you are X".
-  thisSeat['is_this_conversation'] = thisClaim.thisAgent && conversation.conversation_source === 'binding';
+  // A LAUNCHER-HELD SEAT HAS NO BINDING (S85 row 4, ruling 5), so the binding rule said false of the very conversation
+  // that ran this. There the recorded conversation is matched by session id against Claude Code's own
+  // CLAUDE_CODE_SESSION_ID; a bound seat keeps the binding rule. The field keeps its name: the dashboard reads it.
+  const launcherHeld = resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat);
+  const thisSessionId = (process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
+  thisSeat['is_this_conversation'] = launcherHeld
+    ? thisSessionId !== '' && conversation.session_id === thisSessionId
+    : thisClaim.thisAgent && conversation.conversation_source === 'binding';
 
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
@@ -562,7 +573,7 @@ export function seatRegistryConsistency(workspace: string, stateDirectory: strin
       faults.push(
         `seat '${seat}' is in the registry with no .claude/seats/${seat} directory: its Desk is gone and ` +
           "nothing treats it as retired, so its Notebook topics stay out of every other seat's reset. Retire it with " +
-          `tools/Retire-Seat.ps1 -Seat ${seat} to record that it is finished, or recreate its Desk by entering it.`,
+          `deskpost seat retire ${seat} to record that it is finished, or recreate its Desk by entering it.`,
       );
     } else if (state === 'unregistered') {
       faults.push(
@@ -624,7 +635,7 @@ export function readSeatRegistry(stateDirectory: string): SeatRegistryEntry[] {
   }
   if (new Set(seats.map((entry) => entry.project)).size !== seats.length) {
     throw new Error(
-      `The seat registry at ${file} binds one project to two seats. A project has at most one seat; retire one with tools/Retire-Seat.ps1.`,
+      `The seat registry at ${file} binds one project to two seats. A project has at most one seat; retire one with deskpost seat retire <name>.`,
     );
   }
   return seats;
@@ -705,7 +716,7 @@ function addSeatRosterToRefusal(message: string, workspace: string, stateDirecto
 
 function seatRosterSentence(seats: string[]): string {
   if (!seats.length) {
-    return 'This workspace has no seats yet. Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.';
+    return 'This workspace has no seats yet. Create one with deskpost seat start <name> --project <project-slug>.';
   }
   if (seats.length === 1) return `This workspace has one seat: ${seats[0]}.`;
   return `This workspace has ${seats.length} seats: ${seats.join(', ')}.`;
@@ -1024,12 +1035,38 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
           }
         }
         if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
+      } else if (options.location === undefined) {
+        // NO --location CLOSES THE ONE OPEN BOOK OF THAT SLUG, WHEREVER IT IS OPEN (S85 row 4, ruling 4). It meant the
+        // collection, so closing a Shelf Book without `--location shelf` closed nothing, exited 0, and left the seat
+        // believing a Book was closed that was still readable. Two places is a question, so it refuses naming both.
+        const matches = openBooks.filter((entry) => {
+          const parts = parseBookRoot(entry);
+          return parts !== null && parts.slug === options.slug && parts.shelf === options.shelf;
+        });
+        const archived = options.shelf === 'archive' ? 'archived ' : '';
+        if (matches.length === 0) {
+          refuse(`No ${archived}Book '${options.slug}' is open on this seat's Desk, so there is nothing to close. Nothing was changed.`);
+        }
+        if (matches.length > 1) {
+          const places = matches.map((entry) => placeOfRoot(parseBookRoot(entry)!, local));
+          refuse(
+            `${archived ? 'Archived ' : ''}Book '${options.slug}' is open in ${matches.length} places on this seat's Desk: ${places.join(', ')}. ` +
+              `Close one with --location ${places.join(' or --location ')}. Nothing was changed.`,
+          );
+        }
+        bookPlace = placeOfRoot(parseBookRoot(matches[0]!)!, local);
+        openBooks = openBooks.filter((entry) => entry !== matches[0]);
       } else {
         // A `shared/` ENTRY CLOSES WHETHER OR NOT THE CONNECTION IS STILL THERE (S53 post-build inspection #2): after a
         // disconnect `--location shared` would otherwise mean `books/<slug>`, leaving the entry on the Desk for good --
         // and the rollback check's own close command a silent no-op.
         const sharedForm = local && options.location === 'shared' ? rootForPlace('shared', options.shelf, options.slug, true) : null;
-        openBooks = openBooks.filter((entry) => entry !== bookRoot && entry !== sharedForm);
+        const kept = openBooks.filter((entry) => entry !== bookRoot && entry !== sharedForm);
+        // A CLOSE THAT MATCHES NOTHING REFUSES (S85 row 4, ruling 4), with a non-zero exit, rather than reporting a close.
+        if (kept.length === openBooks.length) {
+          refuse(`Book '${options.slug}' is not open on this seat's Desk at --location ${options.location}, so there is nothing to close. Nothing was changed.`);
+        }
+        openBooks = kept;
       }
     } else {
       const projectRoot = options.shelf === 'archive' ? `archive/projects/${options.slug}` : `projects/${options.slug}`;

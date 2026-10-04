@@ -248,9 +248,9 @@ export function shelfRootForPath(relative: string): string | null {
 export function shelfOpenCommand(root: string): string {
   const parts = splitBookRoot(root);
   if (parts.shelf === 'archive') {
-    return `tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug ${parts.slug}`;
+    return `deskpost desk open book ${parts.slug} --location shelf --shelf archive`;
   }
-  return `tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${parts.slug}`;
+  return `deskpost desk open book ${parts.slug} --location shelf`;
 }
 
 function isShelfBrowseSurface(relative: string): boolean {
@@ -615,7 +615,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
     if (target === '*') {
       deny(
         'That pattern spans Shelf Books that are closed. Narrow it to an open Book, or open the one you need with ' +
-          'tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.',
+          'deskpost desk open book <slug> --location shelf.',
       );
     }
     if (target) {
@@ -824,7 +824,7 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
     if (target === '*') {
       deny(
         `This command's text ${quoted} spans Shelf Books that are closed. Narrow it to an open Book, or open the one you need with ` +
-          `tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>. ${PATTERN_REMEDY}`,
+          `deskpost desk open book <slug> --location shelf. ${PATTERN_REMEDY}`,
       );
     }
     const parts = splitBookRoot(target);
@@ -969,11 +969,11 @@ const DUPLICATING_EDIT_DENIAL =
   'Only the edit_note operations replace_section and find_replace take this direct path. append, prepend, insert_before_section and ' +
   'insert_after_section duplicate content silently when applied twice, and nothing here journals a previous body or reads back what it ' +
   'wrote; any other operation is one this guard has not been taught. Use replace_section or find_replace, or go through ' +
-  'tools/Edit-ProjectHub.ps1, which journals, locks and verifies.';
+  'deskpost hub edit, which journals, locks and verifies.';
 
 const HUB_ROOT_DENIAL =
   "A Project Hub's root page is the one page every session touches, so a whole-page overwrite of it goes through " +
-  'tools/Edit-ProjectHub.ps1 -- which journals the previous body, holds the projects/<slug> lock across the write, and ' +
+  'deskpost hub edit -- which journals the previous body, holds the projects/<slug> lock across the write, and ' +
   'verifies the readback. Every other page under projects/<slug>/ still takes this direct path.';
 
 /**

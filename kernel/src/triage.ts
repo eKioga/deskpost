@@ -174,11 +174,11 @@ export function assertShelfBookOpen(workspace: string, slug: string, action: str
   if (openBooks.includes(`shelf/${slug}`)) return;
   if (openBooks.includes(`shelf/${ARCHIVE_FOLDER}/${slug}`)) {
     refuse(
-      `Shelf Book '${slug}' is archived and read-only. Restore it with tools/Archive-ShelfBook.ps1 -Action Restore -BookSlug ${slug} before ${action}.`,
+      `Shelf Book '${slug}' is archived and read-only. Restore it with deskpost shelf restore ${slug} before ${action}.`,
     );
   }
   refuse(
-    `Shelf Book '${slug}' is closed. Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} before ${action}.`,
+    `Shelf Book '${slug}' is closed. Open it with deskpost desk open book ${slug} --location shelf before ${action}.`,
   );
 }
 
@@ -358,7 +358,12 @@ function assertKindReachable(kind: string, sourceKind: string): void {
     refuse(`Unknown triage action kind '${kind}'. Use one of: ${EXECUTION_ORDER.join(', ')}.`);
   }
   if (!Object.prototype.hasOwnProperty.call(SOURCE_KINDS, sourceKind)) {
-    refuse(`Unknown triage source '${sourceKind}'. Use 'notebook' or 'holding'.`);
+    // THE ROUTE TO ANOTHER CAPTURE BOOK IS source_slug (S85 row 5, backlog Row C): a seat closing a letter tried
+    // `source: "letters"` and was told only the two source kinds.
+    refuse(
+      `Unknown triage source '${sourceKind}'. Use 'notebook' or 'holding'. A note in another capture Book, such as reports or ` +
+        `letters, is source 'holding' with source_slug naming the Book: {"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}.`,
+    );
   }
   if (SOURCE_KINDS[sourceKind]!.includes(kind)) return;
   const reason =

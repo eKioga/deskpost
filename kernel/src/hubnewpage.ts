@@ -76,7 +76,7 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
   if (marker === null || String(marker['backend'] ?? '') !== 'local') {
     refuse(
       "hub edit --mode new-page makes a page in a local Library's own collection, and this workspace is attached to Basic Memory: " +
-        'a page is added to a shared Hub with tools/Copy-LocalPagesToProject.ps1. Nothing was written.',
+        'a page is added to a shared Hub with deskpost hub copy-pages <slug>. Nothing was written.',
     );
   }
 

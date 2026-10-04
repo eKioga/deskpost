@@ -184,7 +184,7 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
   if (!fs.existsSync(request.contentPath) || !fs.statSync(request.contentPath).isFile()) {
     throw new Error(`ContentPath is not a file: ${request.contentPath}`);
   }
-  if (!request.sourceFiles.length) throw new Error('At least one -SourceFile is required.');
+  if (!request.sourceFiles.length) throw new Error('At least one --source-file is required.');
 
   const resolved = resolveRawBatch(workspace, request.batch);
   if (!resolved.recognised) throw new Error(`Raw batch '${request.batch}' was refused: ${resolved.reason}`);
@@ -194,7 +194,7 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
   if (!heading || heading.index !== 0) throw new Error('The compiled article must begin with one H1 heading.');
   if (!/^## Key Takeaways\s*$/m.test(draft)) throw new Error('The compiled article must contain a ## Key Takeaways section.');
   if (/^## Sources\s*$/m.test(draft)) {
-    throw new Error('Omit ## Sources from ContentPath; this helper generates it from the exact -SourceFile manifest.');
+    throw new Error('Omit ## Sources from --content-path; compile generates it from the exact --source-file manifest.');
   }
   const articleTitle = heading[1]!.trim();
   if (/[|[\]]/.test(articleTitle)) {
@@ -244,7 +244,7 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
       throw new Error(
         `${file.rawPath} lies in a git repository at ${repository}, and compiling it means capturing an upstream pin -- ` +
           'HEAD, its tracked remote ref, and a bounded fetch proving that commit is on the remote -- which this kernel ' +
-          'does not carry yet. Compile this batch with tools/Compile-RawBatchToNotebook.ps1; withholding the pin here ' +
+          'does not carry yet, so this program cannot compile this batch; withholding the pin here ' +
           'would record the article as unanchored for a reason that is not true.',
       );
     }
@@ -284,7 +284,7 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
   const articleUnchanged = articleExists && existingHash === articleHash;
   if (articleExists && !articleUnchanged && !request.allowReplace) {
     throw new Error(
-      `Notebook article ${scope.relative}/${topic}/${articleSlug}.md already exists with different content. Use -ReplaceExisting and preflight the replacement.`,
+      `Notebook article ${scope.relative}/${topic}/${articleSlug}.md already exists with different content. Use --replace-existing and preflight the replacement.`,
     );
   }
 
@@ -401,7 +401,7 @@ function compileVerb(workspace: string, argv: string[]): PsJsonValue {
     try {
       const current = compilationPlan(request, scope);
       if (current.public['confirmation_required'] === true && approvedPlanId !== current.public['plan_id']) {
-        throw new Error(`Approved plan_id does not match current content. Re-run -Preflight and approve exactly ${String(current.public['plan_id'])}.`);
+        throw new Error(`Approved plan_id does not match current content. Re-run --preflight and approve exactly ${String(current.public['plan_id'])}.`);
       }
       if (current.public['status'] === 'unchanged') return current.public;
 

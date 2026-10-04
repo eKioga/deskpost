@@ -161,6 +161,10 @@ function New-AcceptanceFixture {
         # installed binary it is the release tree, whose initialiser is this one's file. The rows then
         # ask what they say -- the SAME program running init again -- rather than an upgrade, which has
         # a fixture of its own (tools/Test-KernelUpgrade.ps1). Every other writer is still this checkout's.
+        # SINCE S85 THIS CHECKOUT'S INITIALISER BUILDS EVERY FIXTURE (kickoffs/s85 ruling 1): a release ships no
+        # tools/*.ps1 since D9, so a release tree has no initialiser to run. This root is recorded as the
+        # fixture's `program_root`, and the initialiser's own root as `initialiser_root`, which the comparison
+        # normalises as `<program>` beside the arm's root (Get-AcceptanceNormalisationTokens).
         [string]$ProgramRoot,
         # A DISPOSABLE PROJECT TO PIN THE WORKSPACE TO (S32, the reader's ruling), from
         # New-AcceptanceDisposableCollection. Absent, the fixture is pinned to the all-zeroes id, which
@@ -173,10 +177,11 @@ function New-AcceptanceFixture {
         # the first fixture's workspace is registered, so a guard reading that registry knows both.
         [string]$RegistryRoot
     )
-    if ([string]::IsNullOrWhiteSpace($ProgramRoot)) { $ProgramRoot = Split-Path -Parent $PSScriptRoot }
-    $initialiser = Join-Path $ProgramRoot 'tools/Initialize-LibraryWorkspace.ps1'
+    $initialiserRoot = Split-Path -Parent $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($ProgramRoot)) { $ProgramRoot = $initialiserRoot }
+    $initialiser = Join-Path $initialiserRoot 'tools/Initialize-LibraryWorkspace.ps1'
     if (-not (Test-Path -LiteralPath $initialiser -PathType Leaf)) {
-        throw "the program root '$ProgramRoot' has no tools/Initialize-LibraryWorkspace.ps1, so no fixture can be initialised by it"
+        throw "this checkout '$initialiserRoot' has no tools/Initialize-LibraryWorkspace.ps1, so no fixture can be initialised by it"
     }
 
     $declarations = Get-AcceptanceFixtureDeclarations
@@ -207,6 +212,8 @@ function New-AcceptanceFixture {
         second_seat     = $SecondSeat
         collection_id   = $script:AcceptanceFixtureCollectionId
         initialiser     = $initialiser
+        initialiser_root = $initialiserRoot
+        program_root    = $ProgramRoot
         mcp_url         = ''
         shared_root     = ''
     }

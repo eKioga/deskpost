@@ -177,21 +177,21 @@
       "reason": "1.2.5 (S72 row 4, ADR-0061): a seat's added folders are a kernel feature, and the Desk overview's this_seat names them, each with whether it is there now. The PowerShell overview has no such record, so it has no field. Only this_seat.added_dirs is the kernel's; every other field of the overview is compared.",
       "approved_by": "the S72 kickoff (kickoffs/s72-r2, ruling 8): a kernel-only feature takes a kernel_only delta with the reason",
       "approved_on": "2026-09-30",
-      "applies_to": ["area:desk"],
+      "applies_to": ["area:desk", "workspace.resolves-by-walking-up-from-a-subdirectory"],
       "match": { "field_pattern": "^result\\.this_seat\\.added_dirs(\\[|\\.|$)" }
     },
     "kernel-desk-names-the-address-its-session-answers-to": {
       "reason": "1.2.6 (S75 row 2, PLAN-seat-messaging.md Phase 2 item 3): while a seat is held, the kernel's Desk overview names the name its session answers to in ListAgents, this_seat.message_name, or null until the session has named itself. The name is recorded by the kernel's Desk hook, and the PowerShell overview has no such record, so it has no field. Only this_seat.message_name is the kernel's; every other field of the overview is compared.",
       "approved_by": "the S75 kickoff (kickoffs/s75-r2, row 2): a kernel_only delta on this_seat.message_name beside added_dirs's",
       "approved_on": "2026-09-30",
-      "applies_to": ["area:desk"],
+      "applies_to": ["area:desk", "workspace.resolves-by-walking-up-from-a-subdirectory"],
       "match": { "field_pattern": "^result\\.this_seat\\.message_name$" }
     },
     "kernel-desk-counts-the-letters-for-this-seat": {
       "reason": "1.3.1 (S79 row 2, ADR-0062, PLAN-seat-network.md section 2): while this seat is held, the kernel's Desk overview counts the pending notes in any capture Book whose for_seat names it, letters_for_this_seat, with a count per Book and the oldest pending date, never a title. Letters are a kernel feature (the writing half shipped in 1.3.0 as kernel_only), and the PowerShell overview has no such field. Only letters_for_this_seat is the kernel's; every other field of the overview is compared.",
       "approved_by": "the S79 kickoff (kickoffs/s79, row 2): each new Desk key is a kernel_only delta on the Desk row",
       "approved_on": "2026-10-02",
-      "applies_to": ["area:desk"],
+      "applies_to": ["area:desk", "workspace.resolves-by-walking-up-from-a-subdirectory"],
       "match": { "field_pattern": "^result\\.letters_for_this_seat(\\.|$)" }
     },
     "kernel-desk-names-each-peers-address": {
@@ -212,7 +212,7 @@
       "reason": "1.3.1 (S79 row 3, ADR-0062, PLAN-seat-network.md section 3): while a seat is held, the kernel's Desk overview says its inbound policy, inbound_policy, worded as its own one-key file says it (seat file: accept, hold or refuse; unset; or invalid (not passed)), never as the effective value, on this_seat and on each held other_seats row. Per-seat inbound policy is a kernel feature the launcher applies, and the PowerShell overview has no such file or field. Only inbound_policy is the kernel's; every other field of the overview is compared.",
       "approved_by": "the S79 kickoff (kickoffs/s79, rows 2 and 3): each new Desk key is a kernel_only delta on the Desk row",
       "approved_on": "2026-10-02",
-      "applies_to": ["area:desk"],
+      "applies_to": ["area:desk", "workspace.resolves-by-walking-up-from-a-subdirectory"],
       "match": { "field_pattern": "^result\\.(this_seat|other_seats\\[\\d+\\])\\.inbound_policy$" }
     },
     "kernel-desk-context-names-the-session-after-its-seat": {
@@ -261,6 +261,97 @@
           { "kernel": " This Library's Notebook is in the retired shared layout, so Notebook writes refuse until 'deskpost migrate' runs; save to the Holding Shelf meanwhile.", "powershell": "" }
         ]
       }
+    },
+    "kernel-advice-names-doctor-not-the-checks-runner": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3): after a Shelf rename, archive or restore, the kernel's next line names deskpost doctor --workspace <Library>, a command an installed program has, where the PowerShell oracle still names Invoke-LibraryChecks with the note that the installed program does not ship it. The oracle is not edited (ruling 5: new PowerShell work for a retiring arm). Only that one clause of result.next is paired, verbatim; every other word is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["shelf.rename-book-keeps-every-page", "shelf.archive-retires-a-book-without-destroying-it", "shelf.archived-book-restores-to-the-active-shelf"],
+      "match": {
+        "field_pattern": "^result\\.next$",
+        "phrases": [
+          { "kernel": "deskpost doctor --workspace <Library>", "powershell": "Invoke-LibraryChecks (a helper in the Deskpost source checkout; this installed program does not ship it)" }
+        ]
+      }
+    },
+    "kernel-advice-names-deskpost-verbs-not-helpers": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3): the kernel's scope and reset sentences name deskpost verbs and flags (--shelf archive, deskpost shelf restore, deskpost desk open book <slug> --location shelf, --clear-desk, deskpost reset restore) where the PowerShell oracle names its own parameters and helpers (-Shelf Archive, -Action Restore, tools/Set-VirtualDesk.ps1, -ClearDesk, tools/Restore-NotebookQuarantine.ps1 and tools/Remove-NotebookQuarantine.ps1). The oracle is not edited (ruling 5). Only those phrases are paired, verbatim; every other word of result.scope, result.desk_action and result.recoverable is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["shelf.archive-retires-a-book-without-destroying-it", "shelf.archived-book-restores-to-the-active-shelf", "reset.preflight-states-what-would-be-quarantined", "reset.quarantines-rather-than-deletes"],
+      "match": {
+        "field_pattern": "^result\\.(scope|desk_action|recoverable)$",
+        "phrases": [
+          { "kernel": "on the Desk with --shelf archive,", "powershell": "on the Desk with -Shelf Archive," },
+          { "kernel": "and deskpost shelf restore puts it back.", "powershell": "and -Action Restore puts it back." },
+          { "kernel": "open it with deskpost desk open book <slug> --location shelf.", "powershell": "open it with tools/Set-VirtualDesk.ps1." },
+          { "kernel": "Pass --clear-desk for the full Library Reset.", "powershell": "Pass -ClearDesk for the full Library Reset." },
+          { "kernel": "Bring them back with deskpost reset restore, its own preflighted, approved operation.", "powershell": "Bring them back with tools/Restore-NotebookQuarantine.ps1, or destroy them for good with tools/Remove-NotebookQuarantine.ps1 -- each is its own preflighted, approved operation." }
+        ]
+      }
+    },
+    "kernel-advice-says-what-the-program-lacks": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3, standing answer 5): where no shipped command exists, the kernel says what the program lacks (no command that builds shared-collection manifests; a topic overlap's resolution recorded by hand) where the PowerShell oracle names Update-SharedBookManifests.ps1 and Set-TopicOverlap. The oracle is not edited (ruling 5). Only those sentences are paired, verbatim; the rest of Discovery's answer and of the stub's next line is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["discovery.finds-pages-in-closed-books", "discovery.never-returns-closed-book-content", "shelf.page-stub-marks-a-page-as-pending"],
+      "match": {
+        "field_pattern": "^result\\.(next|result\\.content\\[0\\]\\.text)$",
+        "phrases": [
+          { "kernel": "is NOT covered by this answer -- this program has no command that builds shared-collection manifests.", "powershell": "is NOT covered by this answer -- run tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests." },
+          { "kernel": "covers the local Shelf only -- this program has no command that builds shared-collection manifests.", "powershell": "covers the local Shelf only -- run tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope." },
+          { "kernel": "If this page was part of a topic overlap, record its resolution by hand: this program has no writer for that record yet.", "powershell": "Record the resolution with Set-TopicOverlap (a helper in the Deskpost source checkout; this installed program does not ship it) if this page was part of a topic overlap." }
+        ]
+      }
+    },
+    "kernel-guard-denials-name-hub-edit-without-placeholders": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3): the Basic Memory guard's denials name deskpost hub edit plainly, where the PowerShell oracle's say deskpost hub edit <slug> --mode <mode>. The oracle is not edited (ruling 5). Only the placeholder words are paired, verbatim; every other word of the denial is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["guards.basic-memory-refuses-a-whole-page-hub-root-overwrite", "guards.basic-memory-refuses-a-duplicating-edit", "guards.basic-memory-codex-spelling-keeps-the-edit-allowlist"],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.permissionDecisionReason$",
+        "phrases": [
+          { "kernel": "goes through deskpost hub edit -- which", "powershell": "goes through deskpost hub edit <slug> --mode <mode> -- which" },
+          { "kernel": "go through deskpost hub edit, which", "powershell": "go through deskpost hub edit <slug> --mode <mode>, which" }
+        ]
+      }
+    },
+    "kernel-names-a-new-books-first-writer": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3, standing answer 7): a new Book's manifest line names what builds its first manifest (the first book add-page for a curated Book, the first capture for a capture Book) where the PowerShell oracle says the backfill; the curated Book's next line names its own slug, and the capture Book's names --content-path, where the oracle says <slug> and --body <text>. The oracle is not edited (ruling 5). Only those phrases are paired, verbatim; every other word of result.manifest and result.next is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["shelf.new-book-creates-a-book-root", "shelf.new-capture-book-gets-a-capture-reader-map"],
+      "match": {
+        "field_pattern": "^result\\.(manifest|next)$",
+        "phrases": [
+          { "kernel": "until the first book add-page builds one.", "powershell": "until the backfill builds one." },
+          { "kernel": "until the first capture builds one.", "powershell": "until the backfill builds one." },
+          { "kernel": "deskpost book add-page oracle <page>", "powershell": "deskpost book add-page <slug> <page>" },
+          { "kernel": "--title <title> --content-path <file>. It is closed by default", "powershell": "--title <title> --body <text>. It is closed by default" }
+        ]
+      }
+    },
+    "kernel-page-stub-links-its-page-and-guide": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3, standing answer 8): the stub the kernel writes links its canonical page as [[shelf/<book>/wiki/<page>|<page>]] and the guide at https://github.com/eKioga/deskpost/blob/v<version>/docs/duplicate-topic-resolution.md (main when no version is known), where the PowerShell oracle writes `<page>` and a relative ../../../docs/ link; so the stub's with_characters is 350 where the oracle's is 285. The oracle is not edited (ruling 5). The value_pattern is the whole stub, with only the two links and the date left open, so no other byte of the page can differ; with_characters is paired only as 285 against 350 (a release version of another length changes it, and this delta must then be widened in the bump that does).",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["shelf.page-stub-marks-a-page-as-pending"],
+      "match": { "field_pattern": "^(effect\\.shelf/curated/wiki/sibling\\.md|result\\.with_characters)$", "value_pattern": "(?s)^text:# Sibling\\n\\n> \\*\\*Superseded \\d{4}-\\d{2}-\\d{2}\\.\\*\\* This topic now lives in the \\*\\*curated\\*\\* Book, page\\n> (`alpha`|\\[\\[shelf/curated/wiki/alpha\\|alpha\\]\\]) -- Superseded by the acceptance matrix\\. Kept here as a stub so nothing that links to this page\\n> breaks\\. See \\[Duplicate Topic Resolution\\]\\((\\.\\./\\.\\./\\.\\./docs|https://github\\.com/eKioga/deskpost/blob/(v\\d+\\.\\d+\\.\\d+|main)/docs)/duplicate-topic-resolution\\.md\\)\\.$|^(285|350)$" }
+    },
+    "kernel-add-page-says-whether-the-topic-index-was-updated": {
+      "reason": "S85 row 1 (b8d717d, 1.3.3): book add-page reports topic_index_not_updated, null when there is nothing to say, on its own result and on a triage action's child add-page (result.actions[n].plan in a preflight, result.outcomes[n].result in a run). The PowerShell oracle has no such field. The oracle is not edited (ruling 5). Only that key, and only absent against null, is paired; every other field is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["capture.page-added-to-an-open-curated-book", "triage.batch-preflight-binds-every-action", "triage.batch-confirmed-lands-every-action-and-journals-it", "triage.batch-files-a-holding-note-and-closes-it"],
+      "match": { "field_pattern": "^result(\\.actions\\[\\d+\\]\\.plan|\\.outcomes\\[\\d+\\]\\.result)?\\.topic_index_not_updated$", "value_pattern": "^(<absent>|<null>)$" }
+    },
+    "kernel-desk-omits-why-missing-for-a-book-anyone-closes": {
+      "reason": "S85 row 4 (4da9aeb, 1.3.3): the Desk overview omits pending_why_missing for a capture Book whose Closed by: is any, where it misled, while the PowerShell oracle still reports it as 0. The oracle is not edited (ruling 5). Only that key, and only 0 against absent, is paired; every other field of the overview is compared.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
+      "approved_on": "2026-10-04",
+      "applies_to": ["workspace.resolves-by-walking-up-from-a-subdirectory", "desk.overview-names-what-is-open-at-this-seat", "desk.a-bare-slug-on-the-desk-is-a-shared-book"],
+      "match": { "field_pattern": "^result\\.capture_books\\[\\d+\\]\\.pending_why_missing$", "value_pattern": "^(0|<absent>)$" }
     }
   },
   "excluded_helpers": {

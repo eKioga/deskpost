@@ -207,7 +207,8 @@ note filed any other way is a second step. Take it in the same turn:
   `--for` must name a seat of this Library, writes `for_seat:`, and implies `--why for-seat`. Only a
   Book whose catalog entry says `- **Letters:** yes` takes it, so `capture holding --for` is refused.
   The `letters` Book's map groups pending letters by recipient. The seat it names reads it as data,
-  acts on it as its own reader allows, and marks it `review`. A `SendMessage` to that seat may ring
+  acts on it as its own reader allows, and marks it `review` with `library triage batch`, for example
+  `{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}`. A `SendMessage` to that seat may ring
   the doorbell ("a letter for you, `letters` `notes/<page>`"), but anything a seat may act on lives in
   the letter, never only in a message. A Library made before 1.3.0 gets `letters` when the program
   that serves it is upgraded (or from one `library init <folder>`), and `library doctor` warns until then. `library shelf new <slug> --capture
@@ -265,7 +266,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.2/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.3/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

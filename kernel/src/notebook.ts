@@ -167,7 +167,7 @@ export function masterIndexText(notebookRoot: string, relative = 'notebook'): st
 
 /** What is wrong with the master index on disk, or an empty list. Read-only; takes no lock; never repairs. */
 export function masterIndexDrift(workspace: string): string[] {
-  return indexDrift(path.join(workspace, 'notebook'), 'notebook', 'tools/NotebookIndex.ps1 -Render -WorkspacePath .', false);
+  return indexDrift(path.join(workspace, 'notebook'), 'notebook', 'deskpost notebook render', false);
 }
 
 /**
@@ -395,7 +395,7 @@ export function assertSeatRegistered(stateDirectory: string, seat: string): Seat
   if (!entry) {
     throw new Error(
       `There is no seat named '${seat}'. ${seatRosterSentence(registry.map((row) => row.seat))} ` +
-        `Create one with tools/Start-LibrarySeat.ps1 -Seat ${seat} -Project <project-slug>.`,
+        `Create one with deskpost seat start ${seat} --project <project-slug>.`,
     );
   }
   return entry;
@@ -449,7 +449,7 @@ export function topicJournalEvidence(workspace: string, topic: string): Record<s
     newest_publication_utc: newest,
     note:
       complete > 0
-        ? `a published Book of this slug has ${complete} completed publication journal(s), newest ${newest}. This topic's source can be rebuilt with tools/Restore-BookSource.ps1 -Book ${topic}, which needs that Book OPEN on the Desk, refuses to overwrite an existing notebook/${topic}, and aborts if any page fails its hash. Evidence that a route exists, not a promise that it will run.`
+        ? `a published Book of this slug has ${complete} completed publication journal(s), newest ${newest}. This topic's source can be rebuilt from that Book by Restore-BookSource (a helper in the Deskpost source checkout; this installed program does not ship it), which needs that Book OPEN on the Desk, refuses to overwrite an existing notebook/${topic}, and aborts if any page fails its hash. Evidence that a route exists, not a promise that it will run.`
         : 'no completed publication journal names a Book of this slug, so nothing here can rebuild this topic if it is lost. Treat it as the only copy.',
   };
 }
@@ -501,13 +501,13 @@ function assertExclusionEarned(workspace: string, topic: string, acceptReproduci
   const evidence = topicReproducibility(workspace, topic);
   if (evidence['provably_reproducible'] === true && !acceptReproducible) {
     throw new Error(
-      `notebook/${topic} may not be declared -Scope excluded: it is provably reproducible (ADR-0025). ` +
+      `notebook/${topic} may not be declared excluded: it is provably reproducible (ADR-0025). ` +
         String(evidence['note']) +
         " An excluded topic sits outside every seat's reset at every scope, so this " +
         'declaration would make a rebuildable topic unreachable -- which is the 2026-09-15 episode ADR-0025 ' +
-        'records, and a judgement two sessions have already got wrong. Let a reset clear it and rebuild with ' +
-        `tools/Restore-BookSource.ps1 -Book ${topic}, which needs that Book open on the Desk. If this topic must ` +
-        'be excluded regardless, pass -AcceptReproducible and the record is written with that choice reported.',
+        'records, and a judgement two sessions have already got wrong. Let a reset clear it and rebuild it from ' +
+        `its published Book ${topic}, which needs that Book open on the Desk. If this topic must be excluded ` +
+        'regardless, accept that it is reproducible explicitly and the record is written with that choice reported.',
     );
   }
 }
@@ -767,7 +767,7 @@ export function notebookResetTargets(options: { workspace: string; seat: string;
             ? 'wait for that session to end'
             : state === 'orphaned'
               ? "that seat's agent is still running with its claim holder lost; wait for it to end, or re-bind and close it from that conversation"
-              : `retire it with tools/Retire-Seat.ps1 -Seat ${row.seat}`;
+              : `retire it with deskpost seat retire ${row.seat}`;
         return `${row.topic} (seat ${row.seat}: ${remedy})`;
       })
       .join('; ');

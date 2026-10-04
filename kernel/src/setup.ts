@@ -535,7 +535,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
       overlapAccepted = true;
       break;
     }
-    if (!talk.interactive) refuseWith(`Your Library would be ${where} (${library}; program ${installRoot}). Deleting one would delete the other. Choose another folder, or pass -AllowOverlap.`);
+    if (!talk.interactive) refuseWith(`Your Library would be ${where} (${library}; program ${installRoot}). Deleting one would delete the other. Choose another folder, or pass --allow-overlap.`);
     talk.say(`\nYour Library would be ${where}. Deleting one would delete the other.`);
     const choice = (await talk.ask('[Enter] choose another folder   [k] keep them together — I understand › ')).toLowerCase();
     if (choice === 'k') {

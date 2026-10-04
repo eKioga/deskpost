@@ -375,7 +375,7 @@ async function readSharedBookCatalog(context: ReaderContext, requested: string):
 }
 
 const ARCHIVE_CATALOG_NOTE =
-  "\n\nThis is the SHARED collection's archive. Archived Books here can be opened with Set-VirtualDesk -Location Archive. The local Shelf keeps its own separate archive; list it with tools/Archive-ShelfBook.ps1 -Action List. discover_book_pages covers archived Books in both archives and labels every archived hit ARCHIVED; each answer states which archives it actually searched, and names tools/Update-SharedBookManifests.ps1 -IncludeArchive when this one has no manifests yet. search_open_books reaches an archived Book only while it is open on the Desk.";
+  "\n\nThis is the SHARED collection's archive. Archived Books here open with deskpost desk open book <slug> --shelf archive. The local Shelf keeps its own separate archive: its Books are the folders under shelf/_archive/. discover_book_pages covers archived Books in both archives and labels every archived hit ARCHIVED; each answer states which archives it actually searched, and says so when this one has no manifests yet. search_open_books reaches an archived Book only while it is open on the Desk.";
 
 /** The connection's own Book Catalog, or its archive's: the `shared` scopes of a connected local Library. */
 async function readConnectionBookCatalog(context: ReaderContext, requested: string): Promise<string> {
@@ -422,7 +422,7 @@ async function readValidatedBookCatalog(context: ReaderContext, location: string
   }
   return (
     shared + '\n\n---\n\n' + shelf +
-    '\n\nShared Books open with -Location Shared; Shelf Books open with -Location Shelf. Both are read through read_open_book_page.'
+    '\n\nShared Books open with deskpost desk open book <slug> --location shared; Shelf Books with --location shelf. Both are read through read_open_book_page.'
   );
 }
 
@@ -451,8 +451,22 @@ async function readSharedProjectCatalog(context: ReaderContext, shelf: 'active' 
   return record.content;
 }
 
+/**
+ * A PROJECT SLUG AS A READER WRITES ONE (S85 row 2, backlog Row B): the Desk and the Hub's own links say
+ * `projects/<slug>`, and that form was refused as malformed. The prefix is dropped; anything else is checked as before.
+ */
+export function projectSlugArgument(slug: string): string {
+  return slug.startsWith('projects/') ? slug.substring('projects/'.length) : slug;
+}
+
+/** The prefix a refused reader call carries: a Project tool's says Project, every other tool's says Book (S85 row 2). */
+export function readerRejectionPrefix(tool: string): string {
+  return /project/i.test(tool) ? 'Project read rejected' : 'Book read rejected';
+}
+
 /** `Read-ValidatedProjectPage`: one exact page of a Project open at this seat. */
 async function readSharedProjectPage(context: ReaderContext, slug: string, page: string): Promise<{ path: string; content: string }> {
+  slug = projectSlugArgument(slug);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) refuse('Project slug is malformed.');
   assertPage(page);
   const state = deskState(context);
@@ -469,7 +483,11 @@ async function readSharedProjectPage(context: ReaderContext, slug: string, page:
     different: 'The shared Library returned a different Project record; its content was withheld.',
     empty: 'The exact shared Project page has no readable content.',
   });
-  if (record === 'absent') refuse('That page is not in this Project.');
+  // A HUB'S ROOT IS `_project` (S85 row 2): a reader asking for the Hub by its slug, `README` or `index` was told only
+  // that the page is not there.
+  if (record === 'absent') {
+    refuse(page === '_project' ? 'That page is not in this Project.' : "That page is not in this Project. A Project Hub's root page is '_project'.");
+  }
   return { path: requested, content: record.content };
 }
 
@@ -509,6 +527,7 @@ function briefingSection(label: string, items: string[]): string {
 
 /** `Get-ProjectReturnBriefing`: the Hub's recorded connections, from its root or its connections page. */
 async function readSharedProjectBriefing(context: ReaderContext, slug: string): Promise<string> {
+  slug = projectSlugArgument(slug);
   const root = await readSharedProjectPage(context, slug, '_project');
   const titleMatch = /^#\s+(.+?)\s*$/m.exec(root.content);
   const title = titleMatch ? titleMatch[1]!.trim() : slug;
@@ -749,6 +768,6 @@ export async function runMcpVerb(argv: string[]): Promise<McpResult> {
     // response whose `isError` is true and whose exit code is 0, because the transport succeeded even
     // where the read did not.
     const message = error instanceof Error ? error.message : String(error);
-    return { refusal: null, value: readerEnvelope(id, `Book read rejected: ${message}`, true), exitCode: 0 };
+    return { refusal: null, value: readerEnvelope(id, `${readerRejectionPrefix(tool)}: ${message}`, true), exitCode: 0 };
   }
 }

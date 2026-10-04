@@ -258,6 +258,15 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
   }
   if (!['ReplaceBody', 'CheckItem', 'RemoveSection'].includes(mode) && addition.length === 0) refuse('The supplied content is empty.');
+  // THE CONTENT IS THE SECTION'S BODY ONLY (S85 row 3, ruling 3, backlog Row E). Content that repeats its own heading
+  // was refused as "appears more than once on this page", which blamed the page for the content's mistake. It is
+  // refused by name before the page is built, and never stripped: the tool does not guess what the writer meant.
+  if (SECTION_MODES.includes(mode) && mode !== 'RemoveSection') {
+    const heading = `## ${section}`;
+    if (addition.some((line) => line.trim() === heading)) {
+      refuse(`The content repeats the heading '${heading}'. --content and --content-path are the section's body only; remove that line.`);
+    }
+  }
 
   if (ITEM_MODES.includes(mode)) {
     let start = 0;
@@ -386,9 +395,13 @@ export function newProjectBody(currentBody: string, mode: EditMode, section: str
   return proposed;
 }
 
+/**
+ * EVERY LINE COUNTS, BLANK ONES TOO (S85 row 5, ruling 6): the counts left blank lines out while the line counts beside
+ * them did not, so a preview and the page it described disagreed. The field names are kept.
+ */
 export function changeCounts(oldBody: string, newBody: string): { added_lines: number; removed_lines: number } {
-  const oldLines = toLines(oldBody).filter((line) => !isBlank(line));
-  const newLines = toLines(newBody).filter((line) => !isBlank(line));
+  const oldLines = toLines(oldBody);
+  const newLines = toLines(newBody);
   const oldCounts = new Map<string, number>();
   for (const line of oldLines) oldCounts.set(line, (oldCounts.get(line) ?? 0) + 1);
   let added = 0;
@@ -676,15 +689,15 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const contentPathGiven = parsed.options.has('content-path');
   let content = parsed.options.get('content') ?? '';
   const contentPath = parsed.options.get('content-path') ?? '';
-  if (SECTION_MODES.includes(mode) && isBlank(section)) refuse(`${mode} requires -Section, the exact level-two heading text without the leading '##'.`);
+  if (SECTION_MODES.includes(mode) && isBlank(section)) refuse(`${mode} requires --section, the exact level-two heading text without the leading '##'.`);
   if (!isBlank(section)) section = section.trim().replace(/^#+/, '').trim();
   if (mode === 'RemoveSection') {
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
-    if (contentGiven || contentPathGiven) refuse('RemoveSection takes no content; do not supply -Content or -ContentPath.');
-    if (parsed.options.has('match-text')) refuse('RemoveSection takes no -MatchText.');
+    if (contentGiven || contentPathGiven) refuse('RemoveSection takes no content; do not supply --content or --content-path.');
+    if (parsed.options.has('match-text')) refuse('RemoveSection takes no --match-text.');
   }
   if (ITEM_MODES.includes(mode) && isBlank(matchText)) {
-    refuse(`${mode} requires -MatchText: text appearing in exactly one item, matched case-sensitively. -Section is optional and narrows the search.`);
+    refuse(`${mode} requires --match-text: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
   }
   const usedContent = !isBlank(content);
   const usedContentPath = !isBlank(contentPath);
@@ -692,7 +705,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (mode === 'CheckItem') {
     if (usedContent || usedContentPath) refuse('CheckItem changes only the checkbox marker; it takes no content.');
   } else if (mode !== 'RemoveSection' && usedContent === usedContentPath) {
-    refuse('Supply exactly one of -Content or -ContentPath.');
+    refuse('Supply exactly one of --content or --content-path.');
   }
   if (usedContentPath) {
     contentFull = path.resolve(path.isAbsolute(contentPath) ? contentPath : path.join(workspace, contentPath));
@@ -728,7 +741,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (!openProjects.includes(`projects/${slug}`)) {
     refuse(
       shared
-        ? `Project '${slug}' is not open. Open it first: tools/Set-VirtualDesk.ps1 -Action Open -Kind Project -Slug ${slug}`
+        ? `Project '${slug}' is not open. Open it first: deskpost desk open project ${slug}`
         : `Project '${slug}' is not open. Open it first: deskpost desk open project ${slug}`,
     );
   }
@@ -740,7 +753,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     // Basic Memory, so a local Library is sent to the mode that makes a page in its own collection.
     refuse(
       shared
-        ? `Page '${pagePath}' does not exist. This helper edits existing Project pages; create a Hub with tools/New-ProjectHub.ps1 or copy Notebook pages with tools/Copy-LocalPagesToProject.ps1.`
+        ? `Page '${pagePath}' does not exist. This mode edits an existing page; create a Hub with deskpost hub new ${slug} --title <title> or copy Notebook pages with deskpost hub copy-pages ${slug}.`
         : `Page '${pagePath}' does not exist. This mode edits an existing page; make a new one with deskpost hub edit ${slug} --mode new-page --page ${pageName} --content-path <file>.`,
     );
   }

@@ -272,7 +272,7 @@ async function startSeatClaimHolder(options: {
     throw new Error(
       `The claim holder for seat '${options.seat}' did not take the seat's handle within ${options.deadlineSeconds} second(s), so ` +
         'nothing was bound. The attempt is marked abandoned and the holder releases itself; try again, or start ' +
-        `work at the seat from a terminal with tools/Start-LibrarySeat.ps1 -Seat ${options.seat}.`,
+        `work at the seat from a terminal with deskpost seat start ${options.seat}.`,
     );
   }
   return { attemptId, holderPid, deadlineUtc, startedUtc };
@@ -573,8 +573,8 @@ function assertNewSeatIsCreatable(options: {
   const { seat, project } = options;
   if (options.rows.some((row) => String(row['seat']) === seat)) {
     refuse(
-      `Seat '${seat}' already exists. Enter it with tools/Enter-LibrarySeat.ps1 -Seat ${seat}, or work at it from a ` +
-        `terminal with tools/Start-LibrarySeat.ps1 -Seat ${seat}; creation is for a seat that does not exist yet.`,
+      `Seat '${seat}' already exists. Enter it with deskpost seat enter ${seat}, or work at it from a ` +
+        `terminal with deskpost seat start ${seat}; creation is for a seat that does not exist yet.`,
     );
   }
   const blockers = seatSlugReuseBlockers(options.workspace, options.stateDirectory, seat);
@@ -606,7 +606,7 @@ function assertNewSeatIsCreatable(options: {
   if (clash) {
     refuse(
       `Project '${project}' is already bound to seat '${String(clash['seat'])}'. A project has at most one seat: ` +
-        `work it there, or retire that seat first with tools/Retire-Seat.ps1 -Seat ${String(clash['seat'])}.`,
+        `work it there, or retire that seat first with deskpost seat retire ${String(clash['seat'])}.`,
     );
   }
 }
@@ -821,7 +821,7 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
     refuse(
       'This process is not recognised as an agent tool child, so there is no agent process to bind a seat to. ' +
         'CLAUDE_PID is set in Claude Code tool and hook children and nowhere else. Run this from a tool call in the ' +
-        `conversation that should hold the seat, or start work at a terminal with tools/Start-LibrarySeat.ps1 -Seat ${seat}.`,
+        `conversation that should hold the seat, or start work at a terminal with deskpost seat start ${seat}.`,
     );
   }
   const agentStartUtc = agentProcessIdentity(agentPid);
@@ -1161,7 +1161,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   if (parsed.options.has('restore-desk-from-archive') || parsed.flags.has('retire-legacy-desk')) {
     refuse(
       "Restoring a retired seat's Desk and retiring a pre-seat Desk are not ported to the kernel yet; they are " +
-        `tools/Start-LibrarySeat.ps1 -Seat ${name} -RestoreDeskFromArchive <archive> and -RetireLegacyDesk.`,
+        `deskpost seat start ${name} -RestoreDeskFromArchive <archive> and -RetireLegacyDesk.`,
     );
   }
   const resolved = resolveSeatName({ seat: name, stateDirectory });
@@ -1226,7 +1226,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   if (fs.existsSync(path.join(stateDirectory, '.open-books')) && !fs.existsSync(deskDirectory)) {
     refuse(
       `This workspace still keeps a pre-seat Desk in .claude/.open-books, which the kernel does not migrate yet. Start ` +
-        `seat '${seat}' once with tools/Start-LibrarySeat.ps1 -Seat ${seat}, which copies it in.`,
+        `seat '${seat}' once with deskpost seat start ${seat}, which copies it in.`,
     );
   }
 
@@ -1276,7 +1276,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
             : 'already has a live session';
         refuse(
           `Seat '${seat}' ${because}, so starting one here would be refused and this preflight will not plan it. One ` +
-            'session per seat: finish or close that one, or start work at another seat with tools/Start-LibrarySeat.ps1 -Seat <name>.',
+            'session per seat: finish or close that one, or start work at another seat with deskpost seat start <name>.',
         );
       }
       return {
@@ -1302,7 +1302,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       refuse(
         `Seat '${seat}' is bound to agent process ${claimState.agentPid}, which is still running; its claim holder is gone, ` +
           'which is not the same as the seat being free. Re-bind it from that conversation, or start work at another ' +
-          'seat with tools/Start-LibrarySeat.ps1 -Seat <name>.',
+          'seat with deskpost seat start <name>.',
       );
     }
     claim = enterSeatClaim(stateDirectory, seat);

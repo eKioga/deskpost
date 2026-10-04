@@ -161,6 +161,13 @@
       "result": "pass",
       "judged_utc": "2026-09-26T17:33:00Z",
       "evidence": "CARRIED from v1.0.0-rc.1 (library.exe 0f016bc6..., judged 2026-09-26T09:48:25Z, hook-level) by the reader's S50 ruling (ADR-0048), licensed by the same check: `git diff dea7f1f -- kernel/` at v1.0.0's public commit b242476 changes only kernel/package.json's version. Not judged again in a session."
+    },
+    {
+      "row": "harness.a-post-compaction-session-still-knows-where-it-is",
+      "kernel_sha256": "9cca3d52015eaf472c978d80f5f7c6cef40270bba8749dc1e5c47102e40bc946",
+      "result": "pass",
+      "judged_utc": "2026-10-04T09:02:48Z",
+      "evidence": "S84, D6 of PLAN-no-powershell-runtime.md: the library.exe from v1.3.2's published win-x64 zip, extracted to a scratch folder, on the host (not Windows Sandbox). A workspace-open-book fixture made by that library.exe (init, hub new verdict, one reports page) with every registration init wrote set aside, so the plugin (--plugin-dir the extracted release, --setting-sources project) was the only source of hooks and of the reader. claude 2.1.289 -p --model haiku with stream-json, started by `library seat start fixture`, opened reports from inside the live session (library desk open book reports --location shelf); --resume with /compact (compact_boundary, manual, 29,559 to 1,639 tokens); --resume asking where it is: it named the open Book reports, the Project projects/verdict and the exact reader tool mcp__plugin_deskpost_validated-book-reader__read_open_book_page, and read notes/2026-10-04-compaction-verdict-page through it (its canary line returned). Its wording of the seat was loose ('the seat held by the deskpost launcher'); a further resumed turn with --include-hook-events shows the Desk hook served 'Virtual Desk (seat fixture, held for this session by the deskpost launcher that started it) - Books: reports (shelf). Projects: projects/verdict' with the exact reader tool, which is what the row holds."
     }
   ]
 }

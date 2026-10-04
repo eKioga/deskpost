@@ -727,6 +727,23 @@ function ConvertTo-AcceptanceKernelConfirmFlag {
 # kernel's pattern is JavaScript's end of input, spelled `\z` here.
 $script:RemedyValue = '(?:<[^>\s]+>|[A-Za-z0-9_][A-Za-z0-9_.-]*[A-Za-z0-9_]|[A-Za-z0-9_]|\.(?=[\s)]|\z))'
 $script:RemedyKeys = @('next', 'remedy', 'detail', 'message', 'reason', 'refusal', 'hint', 'repair', 'guidance', 'permissionDecisionReason', 'additionalContext')
+# THE KERNEL'S VERBS, read from this checkout's kernel/src/verbs.ts (the keys of `VERBS`) plus `help`, as remedy.ts's
+# LIBRARY_COMMAND builds them. Read, not listed here, so a verb added there is renamed here too.
+$script:AcceptanceKernelVerbPattern = & {
+    $verbsFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'kernel/src/verbs.ts'
+    $names = [Collections.Generic.List[string]]::new()
+    $inside = $false
+    $lines = @([IO.File]::ReadAllLines($verbsFile))
+    foreach ($line in $lines) {
+        if (-not $inside) { if ($line.StartsWith('export const VERBS', [StringComparison]::Ordinal)) { $inside = $true }; continue }
+        if ($line.StartsWith('};', [StringComparison]::Ordinal)) { break }
+        $match = [regex]::Match($line, "^  '?([a-z][a-z-]*)'?:")
+        if ($match.Success) { $names.Add($match.Groups[1].Value) }
+    }
+    if ($names.Count -eq 0) { throw "no verbs were read from $verbsFile; the library-to-deskpost rename would rename nothing" }
+    $names.Add('help')
+    (@($names) | ForEach-Object { [regex]::Escape($_) }) -join '|'
+}
 
 # A FIELD NAMED `*_route` IS A COMMAND TO RUN, SO IT IS A REMEDY (S49, the reader's ruling): `library desk`'s
 # `quarantine.list_route` and the restore's `show_route` and `restore_route` named a PowerShell helper on POSIX
@@ -818,7 +835,10 @@ function ConvertTo-AcceptanceInstalledRemedy {
             })
     }
     $out = [regex]::Replace($out, '\bpass -WorkspacePath\b', 'pass --workspace')
-    [regex]::Replace($out, '\bpass -Seat\b', 'pass --seat')
+    $out = [regex]::Replace($out, '\bpass -Seat\b', 'pass --seat')
+    # ADR-0055, as kernel/src/remedy.ts hostRemedies says it (S85, kickoffs/s85 ruling 1): `library <verb>` leaves an
+    # installed kernel as `deskpost <verb>`. Only a verb the kernel has, so a path (`bin/library`) or prose is untouched.
+    [regex]::Replace($out, "(^|[^\w./\\-])library(?= (?:$($script:AcceptanceKernelVerbPattern))\b)", '${1}deskpost')
 }
 
 function ConvertTo-AcceptanceInstalledRemedyFields {
@@ -880,6 +900,9 @@ function Get-AcceptanceNormalisationTokens {
     # A shared row's disposable project (S32): each arm has its own, so its share path is incidental.
     if (@($Fixture.PSObject.Properties.Name) -ccontains 'shared_root') { Add-Pair ([string]$Fixture.shared_root) '<collection>' }
     Add-Pair $ProgramRoot '<program>'
+    # THE ROOT WHOSE INITIALISER BUILT THE FIXTURE (S85, kickoffs/s85 ruling 1): this checkout's in both arms, since a
+    # release ships no initialiser. The paths `init` wrote from it are as incidental as the arm's own root.
+    if (@($Fixture.PSObject.Properties.Name) -ccontains 'initialiser_root') { Add-Pair ([string]$Fixture.initialiser_root) '<program>' }
     Add-Pair ([IO.Path]::GetTempPath()) '<temp>'
     Add-Pair $env:USERPROFILE '<home>'
     Add-Pair $env:COMPUTERNAME '<host>'

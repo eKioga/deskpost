@@ -99,7 +99,7 @@ from both places, the Librarian asks which one you mean.
 
 **Before switching back to 1.0,** close your shared Books: 1.0 cannot read a Desk that holds one.
 `library basic-memory rollback-check` lists every seat that holds one, with the command that closes it, and
-`install.ps1 -Rollback` refuses to switch until they are closed.
+`deskpost rollback` runs the same check and refuses to switch until they are closed.
 
 ## A Library inside a synced vault
 

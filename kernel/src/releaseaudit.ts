@@ -233,8 +233,12 @@ export function main(args: string[]): number {
   return clean ? 0 : 1;
 }
 
+// THE FILE NAME TOO (S85 row 6): inside a compiled bundle every module's import.meta.url is the executable, so the
+// path test alone ran this as main in a compiled self-test, printed its usage and set exit code 2 after a green run.
 const invokedDirectly =
-  process.argv[1] !== undefined && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  process.argv[1] !== undefined &&
+  path.basename(process.argv[1]) === 'releaseaudit.ts' &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
   try {

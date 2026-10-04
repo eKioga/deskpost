@@ -258,7 +258,7 @@ export function enterSeatClaim(stateDirectory: string, seat: string, attemptId =
   const refused = (): Error =>
     new Error(
       `Seat '${seat}' already has a live session. One session per seat: finish or close that one, ` +
-        'or start work at another seat with tools/Start-LibrarySeat.ps1 -Seat <name>.',
+        'or start work at another seat with deskpost seat start <name>.',
     );
 
   let lockHandle: ExclusiveHandle | null = null;
@@ -493,7 +493,7 @@ export function seatBindingForAgent(
     throw new Error(
       `Agent process ${self} is bound to ${found.length} seats -- ${found.map((row) => row.seat).join(', ')} ` +
         '-- and one agent process holds exactly one seat. Remove the binding that does not belong, ' +
-        'with tools/Retire-Seat.ps1 or by ending this conversation and starting a new one.',
+        'with deskpost seat retire <name> or by ending this conversation and starting a new one.',
     );
   }
   return found.length ? { seat: found[0]!.seat, binding: found[0]!.binding, agentPid: self } : null;
@@ -592,13 +592,13 @@ export function assertSeatClaimHeld(options: {
   if (claim.state === 'free') {
     throw new Error(
       `Seat '${options.seat}' has no live session, so nothing may be changed at it. Start work with ` +
-        `tools/Start-LibrarySeat.ps1 -Seat ${options.seat}, which holds the seat for the life of the session. ` +
+        `deskpost seat start ${options.seat}, which holds the seat for the life of the session. ` +
         'Reading is unaffected.',
     );
   }
   throw new Error(
     `This session does not hold seat '${options.seat}' -- neither LIBRARY_SEAT_CLAIM nor this agent process matches the ` +
-      'live claim. Another session is working that seat. Start your own with tools/Start-LibrarySeat.ps1 -Seat <name>.',
+      'live claim. Another session is working that seat. Start your own with deskpost seat start <name>.',
   );
 }
 

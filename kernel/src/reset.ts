@@ -261,15 +261,14 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
     plan_id: planId,
     recoverable:
       'Topics are MOVED into internal/notebook-reset-quarantine/, never deleted. Bring them back with ' +
-      'tools/Restore-NotebookQuarantine.ps1, or destroy them for good with tools/Remove-NotebookQuarantine.ps1 -- ' +
-      'each is its own preflighted, approved operation.',
+      'deskpost reset restore, its own preflighted, approved operation.',
     open_books_advisory: deskEntries(stateDirectory, seat, 'books'),
     open_projects_advisory: deskEntries(stateDirectory, seat, 'projects'),
     library_copy_advisory: libraryCopyAdvisory,
     shared_library_write: false,
     desk_action: clearDesk
       ? 'cleared: this is the full Library Reset'
-      : 'preserved: open Books and Project Hubs stay open. Pass -ClearDesk for the full Library Reset.',
+      : 'preserved: open Books and Project Hubs stay open. Pass --clear-desk for the full Library Reset.',
     seat_scope: "this seat's own topics only. Every other seat's material is left where it is.",
     scope: clearDesk
       ? 'Only the named Notebook directory will be deleted and rebuilt, and the local Virtual Desk will be cleared. raw, output, docs, internal state, workspace configuration, and Basic Memory are excluded. No repository file is touched and no Git command is run, so a clean working tree is not evidence that this reset happened.'
@@ -435,13 +434,13 @@ function restoreDispositions(scope: NotebookScope, actingSeat: string, quarantin
       } else if (adopt) {
         action = 'adopt';
         reason = recordedSeat.trim()
-          ? `the quarantine records it as seat '${recordedSeat}''s (${which}), which is ${status}; -Adopt takes it over`
-          : 'nothing records who owned it; -Adopt takes it over';
+          ? `the quarantine records it as seat '${recordedSeat}''s (${which}), which is ${status}; --adopt takes it over`
+          : 'nothing records who owned it; --adopt takes it over';
       } else {
         action = 'blocked';
         reason = recordedSeat.trim()
-          ? `the quarantine records ${name} as seat '${recordedSeat}''s (${which}), which is ${status} rather than this seat. Pass -Adopt to take it over`
-          : `nothing records who owned ${name}, so restoring it here would be taking it over rather than getting it back. Pass -Adopt to do that deliberately`;
+          ? `the quarantine records ${name} as seat '${recordedSeat}''s (${which}), which is ${status} rather than this seat. Pass --adopt to take it over`
+          : `nothing records who owned ${name}, so restoring it here would be taking it over rather than getting it back. Pass --adopt to do that deliberately`;
       }
     }
     return {
@@ -496,8 +495,8 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
   // THE TWO READS NEED NO SEAT: a reader whose session lost its seat is exactly the reader asking what survived.
   if (list && show) {
     throw new Error(
-      'Restore aborted: -List and -Show are two reads, not one. -List is the roster of every quarantine; ' +
-        '-Quarantine <name> -Show names the articles in one of them.',
+      'Restore aborted: --list and --show are two reads, not one. --list is the roster of every quarantine; ' +
+        '--quarantine <name> --show names the articles in one of them.',
     );
   }
   if (list) {
@@ -520,16 +519,16 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
         article_count: quarantineTopicArticles(row.directory).reduce((total, topic) => total + topic.article_count, 0),
         loose_files: row.loose_files,
       })),
-      show_route: 'tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show',
+      show_route: 'deskpost reset restore --quarantine <name> --show',
       shared_library_write: false,
     };
   }
   if (show) {
     if (preflight || approvedPlanId) {
-      throw new Error('Restore aborted: -Show is a read and plans nothing. Run it on its own, then rerun with -Preflight to plan the restore it showed you.');
+      throw new Error('Restore aborted: --show is a read and plans nothing. Run it on its own, then rerun with --preflight to plan the restore it showed you.');
     }
     if (!quarantineName.trim()) {
-      throw new Error('Restore aborted: name the quarantine to show with -Quarantine <name>. Run this helper with -List to see which ones there are.');
+      throw new Error('Restore aborted: name the quarantine to show with --quarantine <name>. Run deskpost reset restore --list to see which ones there are.');
     }
     const shown = notebookQuarantineInventory(workspace, quarantineName);
     if (!shown.length) throw unknownQuarantine(workspace, quarantineName);
@@ -559,7 +558,7 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
         'Read-only: the names of the files in one quarantine directory. No page content was ' +
         'read, nothing was moved, and no lock was taken. `_index.md` is rendered from a topic ' +
         'rather than written into it, so it is counted in file_count and not named as an article.',
-      restore_route: `tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine ${row.name} -Preflight`,
+      restore_route: `deskpost reset restore --quarantine ${row.name} --preflight`,
       shared_library_write: false,
     };
   }
@@ -569,7 +568,7 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
   const seat = seatState.seat!;
   if (!quarantineName.trim()) {
     throw new Error(
-      'Restore aborted: name the quarantine to restore with -Quarantine <name>. Run this helper with -List to ' +
+      'Restore aborted: name the quarantine to restore with --quarantine <name>. Run deskpost reset restore --list to ' +
         'see what is there; a restore plans one stamped directory, because "restore my Notebook" is ambiguous the ' +
         'moment a second reset has run.',
     );

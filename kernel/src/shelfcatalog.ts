@@ -229,7 +229,7 @@ export function invokeShelfCatalogRenderAfterRollback(workspace: string, program
   } catch (error) {
     throw new Error(
       'the Book and its journaled files were restored, but shelf/_catalog.md could not be re-derived ' +
-        `afterwards: ${(error as Error).message} Run tools/ShelfCatalog.ps1 -Render -WorkspacePath . once that is ` +
+        `afterwards: ${(error as Error).message} Run deskpost shelf render once that is ` +
         'repaired; until then the catalog still describes the Shelf as it was mid-operation.',
     );
   }

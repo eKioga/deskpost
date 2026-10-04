@@ -142,7 +142,7 @@ export function createShelfBook(options: {
     refuse(
       `shelf/${slug} exists but has no wiki/, so it is a husk rather than a Book -- creating one here would adopt whatever ` +
         `catalog entry it carries. Remove shelf/${slug} if nothing needs it, then re-render with ` +
-        'tools/ShelfCatalog.ps1 -Render -WorkspacePath . (see docs/derived-indexes.md).',
+        'deskpost shelf render.',
     );
   }
 
@@ -236,10 +236,12 @@ export function createShelfBook(options: {
   plan['is_capture'] = capture;
   plan['catalog_entry_count'] = entryCount;
   plan['reader_map'] = `shelf/${slug}/wiki/_index.md`;
-  plan['manifest'] = 'none yet: a new Book has no Discovery manifest until the backfill builds one.';
+  plan['manifest'] = capture
+    ? 'none yet: a new Book has no Discovery manifest until the first capture builds one.'
+    : 'none yet: a new Book has no Discovery manifest until the first book add-page builds one.';
   plan['next'] = capture
-    ? `Capture into it with tools/Add-ShelfNote.ps1 -BookSlug ${slug}. It is closed by default; open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug} to read a page.`
-    : `Add pages with tools/Add-ShelfBookPage.ps1, which needs the Book open: tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug ${slug}.`;
+    ? `Capture into it with deskpost capture ${slug} --title <title> --content-path <file>. It is closed by default; open it with deskpost desk open book ${slug} --location shelf to read a page.`
+    : `Add pages with deskpost book add-page ${slug} <page> --content-path <file>, which needs the Book open: deskpost desk open book ${slug} --location shelf.`;
   return plan;
 }
 

@@ -235,8 +235,8 @@ export function findOpenBookLines(options: {
         // The repair has to match where the Book actually is: sending a reader to shelf/_catalog.md
         // for an ARCHIVED Book is advice that cannot work, because archiving removed that entry.
         repair: isArchived
-          ? `check shelf/_archive/${slug}/_archived.json is intact, or close the Book with tools/Set-VirtualDesk.ps1`
-          : 'check shelf/_catalog.md lists this Book, or close it with tools/Set-VirtualDesk.ps1',
+          ? `check shelf/_archive/${slug}/_archived.json is intact, or close the Book with deskpost desk close book ${slug} --location shelf --shelf archive`
+          : `check shelf/_catalog.md lists this Book, or close it with deskpost desk close book ${slug} --location shelf`,
       });
       continue;
     }
@@ -248,7 +248,7 @@ export function findOpenBookLines(options: {
         collection: openBook.form === 'books' ? 'collection' : 'shelf',
         book_shelf: openBook.shelf,
         reason: `This Book has no pages directory at ${openBook.form === 'books' ? `collection/${openBook.storeWiki}` : openBook.wikiRoot}.`,
-        repair: 'restore the Book directory, or close it with tools/Set-VirtualDesk.ps1',
+        repair: `restore the Book directory, or close it with deskpost desk close book ${slug}`,
       });
       continue;
     }

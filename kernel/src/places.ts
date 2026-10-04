@@ -91,6 +91,14 @@ export const BOOK_PLACES: BookPlace[] = ['shelf', 'collection', 'shared'];
 export function parsePlaceArgument(value: unknown): BookPlace | null {
   if (value === null || value === undefined || String(value).trim() === '') return null;
   const named = String(value).trim().toLowerCase();
+  // AN ARCHIVE IS A SHELF, NOT A PLACE (S85 row 2, backlog Row B): `place: archive` was refused with the list alone,
+  // and the list did not say where an archived Book is read.
+  if (named === 'archive') {
+    throw new Error(
+      `place is one of ${BOOK_PLACES.join(', ')}; got '${String(value)}'. An archived Book reads with place: collection ` +
+        '(place: shelf for an archived Shelf Book), once it is open on the Desk with --shelf archive.',
+    );
+  }
   if (!(BOOK_PLACES as string[]).includes(named)) {
     throw new Error(`place is one of ${BOOK_PLACES.join(', ')}; got '${String(value)}'.`);
   }

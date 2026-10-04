@@ -1162,24 +1162,24 @@ function Invoke-AcceptanceMatrixSelfTest {
     # THE INSTALLED KERNEL'S REMEDIES, SAID BY THE ORACLE SIDE (S47, ADR-0045): the same cases kernel self-test
     # section 23 holds the kernel's rewrite to, so the two implementations cannot drift apart unseen.
     $remedyCases = @(
-        @('Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta, then read', 'Open it with library desk open book beta --location shelf, then read'),
-        @('tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug old', 'library desk open book old --location shelf --shelf archive'),
-        @('tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.', 'library desk open book <slug> --location shelf.'),
-        @('tools/Set-VirtualDesk.ps1 -Action Close -Kind Project -Slug hub', 'library desk close project hub'),
-        @('Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or', 'Sit down at a seat with library seat enter <name>, or'),
-        @('tools/Retire-Seat.ps1 -Seat old', 'library seat retire old'),
-        @('re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .', 're-render it with library shelf render'),
-        @('tools/NotebookIndex.ps1 -Render -WorkspacePath .', 'library notebook render'),
-        @('Capture into it with tools/Add-ShelfNote.ps1 -BookSlug holding. It is', 'Capture into it with library capture holding --title <title> --body <text>. It is'),
-        @('Use tools/Get-DeskOverview.ps1 until then.', 'Use library desk until then.'),
-        @('Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with library seat start <name> --project <project-slug>.'),
+        @('Open it with tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug beta, then read', 'Open it with deskpost desk open book beta --location shelf, then read'),
+        @('tools/Set-VirtualDesk.ps1 -Action Open -Kind Book -Location Shelf -Shelf Archive -Slug old', 'deskpost desk open book old --location shelf --shelf archive'),
+        @('tools/Set-VirtualDesk.ps1 -Action Open -Location Shelf -Slug <slug>.', 'deskpost desk open book <slug> --location shelf.'),
+        @('tools/Set-VirtualDesk.ps1 -Action Close -Kind Project -Slug hub', 'deskpost desk close project hub'),
+        @('Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or', 'Sit down at a seat with deskpost seat enter <name>, or'),
+        @('tools/Retire-Seat.ps1 -Seat old', 'deskpost seat retire old'),
+        @('re-render it with tools/ShelfCatalog.ps1 -Render -WorkspacePath .', 're-render it with deskpost shelf render'),
+        @('tools/NotebookIndex.ps1 -Render -WorkspacePath .', 'deskpost notebook render'),
+        @('Capture into it with tools/Add-ShelfNote.ps1 -BookSlug holding. It is', 'Capture into it with deskpost capture holding --title <title> --body <text>. It is'),
+        @('Use tools/Get-DeskOverview.ps1 until then.', 'Use deskpost desk until then.'),
+        @('Create one with tools/Start-LibrarySeat.ps1 -Seat <name> -Project <project-slug>.', 'Create one with deskpost seat start <name> --project <project-slug>.'),
         @('pass -WorkspacePath, set LIBRARY_WORKSPACE, or pass -Seat explicitly.', 'pass --workspace, set LIBRARY_WORKSPACE, or pass --seat explicitly.'),
         @('take it over with tools/Set-NotebookTopicOwner.ps1 -Topic x, or', 'take it over with Set-NotebookTopicOwner -Topic x (a helper in the Deskpost source checkout; this installed program does not ship it), or'),
-        @('run tools/Set-CollectionOwner.ps1 -Acquire -Force if that workspace is gone.', 'run library collection owner --acquire --force if that workspace is gone.'),
-        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'library reset restore --list'),
-        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'library reset restore --quarantine <name> --show'),
-        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'library reset restore --quarantine reset-20260926-0102 --preflight'),
-        @('restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with library reset restore, or'),
+        @('run tools/Set-CollectionOwner.ps1 -Acquire -Force if that workspace is gone.', 'run deskpost collection owner --acquire --force if that workspace is gone.'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List', 'deskpost reset restore --list'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine <name> -Show', 'deskpost reset restore --quarantine <name> --show'),
+        @('tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -Quarantine reset-20260926-0102 -Preflight', 'deskpost reset restore --quarantine reset-20260926-0102 --preflight'),
+        @('restore them with tools/Restore-NotebookQuarantine.ps1, or', 'restore them with deskpost reset restore, or'),
         @('no helper named here', 'no helper named here')
     )
     foreach ($case in $remedyCases) {
@@ -1209,15 +1209,15 @@ function Invoke-AcceptanceMatrixSelfTest {
         Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
     }
     $walked = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ next = 'Use tools/Get-DeskOverview.ps1 until then.'; body = 'tools/Get-DeskOverview.ps1'; items = @([pscustomobject]@{ reason = 'tools/Retire-Seat.ps1 -Seat old' }) })
-    Check ($walked.next -ceq 'Use library desk until then.' -and $walked.body -ceq 'tools/Get-DeskOverview.ps1' -and $walked.items[0].reason -ceq 'library seat retire old') "the oracle side's field walk rewrote the wrong fields: $($walked | ConvertTo-Json -Compress -Depth 5)"
+    Check ($walked.next -ceq 'Use deskpost desk until then.' -and $walked.body -ceq 'tools/Get-DeskOverview.ps1' -and $walked.items[0].reason -ceq 'deskpost seat retire old') "the oracle side's field walk rewrote the wrong fields: $($walked | ConvertTo-Json -Compress -Depth 5)"
     # A `*_route` FIELD IS A REMEDY (S49, the reader's ruling), any such key; a field merely containing `route` is not.
     $routed = ConvertTo-AcceptanceInstalledRemedyFields -Value ([pscustomobject]@{ quarantine = [pscustomobject]@{ list_route = 'tools/Restore-NotebookQuarantine.ps1 -WorkspacePath . -List'; note = 'tools/Restore-NotebookQuarantine.ps1' }; later_route = 'tools/Get-DeskOverview.ps1'; routes = 'tools/Get-DeskOverview.ps1' })
-    Check ($routed.quarantine.list_route -ceq 'library reset restore --list' -and $routed.later_route -ceq 'library desk' -and $routed.quarantine.note -ceq 'tools/Restore-NotebookQuarantine.ps1' -and $routed.routes -ceq 'tools/Get-DeskOverview.ps1') "the oracle side's field walk did not treat exactly the *_route keys as remedies: $($routed | ConvertTo-Json -Compress -Depth 5)"
+    Check ($routed.quarantine.list_route -ceq 'deskpost reset restore --list' -and $routed.later_route -ceq 'deskpost desk' -and $routed.quarantine.note -ceq 'tools/Restore-NotebookQuarantine.ps1' -and $routed.routes -ceq 'tools/Get-DeskOverview.ps1') "the oracle side's field walk did not treat exactly the *_route keys as remedies: $($routed | ConvertTo-Json -Compress -Depth 5)"
     # A READER TOOL'S ERROR TEXT IS A REMEDY, AND A PAGE IS NOT (kernel/src/reader.ts): S47's full run met the
     # seatless refusal inside `result.content[0].text`, which no remedy key names.
     $failed = ConvertTo-AcceptanceInstalledRemedyFields -Value ('{"result":{"isError":true,"content":[{"type":"text","text":"Use tools/Get-DeskOverview.ps1 until then."}]}}' | ConvertFrom-Json)
     $served = ConvertTo-AcceptanceInstalledRemedyFields -Value ('{"result":{"isError":false,"content":[{"type":"text","text":"Use tools/Get-DeskOverview.ps1 until then."}]}}' | ConvertFrom-Json)
-    Check ($failed.result.content[0].text -ceq 'Use library desk until then.') "the oracle side left a reader error's text as the oracle said it: $($failed.result.content[0].text)"
+    Check ($failed.result.content[0].text -ceq 'Use deskpost desk until then.') "the oracle side left a reader error's text as the oracle said it: $($failed.result.content[0].text)"
     Check ($served.result.content[0].text -ceq 'Use tools/Get-DeskOverview.ps1 until then.') "the oracle side rewrote a page the reader served: $($served.result.content[0].text)"
     # A WALKED RESULT SERIALISES AS IT CAME IN: S47's first full run read a list of Book slugs back as
     # `{"Length":7}` objects, because a string from a pipeline is wrapped, on 6 fields of one row.

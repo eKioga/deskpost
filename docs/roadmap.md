@@ -234,6 +234,19 @@ This milestone moves them into the program, so nothing you run needs PowerShell.
   help. Its closing check runs against those Libraries too, so a Library left behind is named before
   the upgrade says it is done.
 
+### 1.3.3: Advice that's right (1 of 1 sessions; released 2026-10-04)
+
+Advice and refusals name only what ships, the reader's and `hub edit`'s refusals give a route, and the
+Desk tells the truth about what is open.
+
+- **Advice and refusals name `deskpost` commands**, not the PowerShell helpers a release no longer
+  ships, and say what the program lacks where no command exists yet.
+- **The reader's and `hub edit`'s refusals give a route**: the reader accepts `projects/<slug>` and
+  names `_project` for a missing Hub page, and `hub edit` names the content when a body repeats its
+  own heading.
+- **`desk close book` closes the Book wherever it is open**, and refuses when nothing matches.
+- **The Desk tells the truth about what is open**, including for a seat the launcher holds.
+
 ### Earlier releases
 
 - **1.0.** One binary for Windows and Linux

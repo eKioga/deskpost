@@ -97,6 +97,7 @@ freeze. The `library-help` Skill offers the same five.
 ## Narrative records
 
 * [Librarian Operating Rules](librarian-operating-rules.md) - durable Library operating guidance
+* [Library Rules Register](library-rules.md) - the upkeep rules as pointers: each rule's home, its enforcer, and what a client can see of it; the kernel self-test checks every home resolves
 * [Librarian Voice and Wayfinding](librarian-voice-and-wayfinding.md) - reader benefit, front-desk cadence, and plain-language safety boundary
 * [Librarian Operation Playbooks](librarian-operation-playbooks.md) - on-demand procedures for publishing, triage, archiving, reset, and Library development
 * [Notebook and Desk Model](notebook-and-desk-model.md) - volatile Notebook boundary, desk overview, reset scope, and acceptance evidence

@@ -203,7 +203,7 @@ export function runSeatStartVerb(argv: string[], stdinText: string): string {
   } catch (error) {
     add(
       `Seat state could not be read at session start, so no roster is offered: ${(error as Error).message} ` +
-        'Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, or ask the reader which seat they want.',
+        'Sit down at a seat with deskpost seat enter <name>, or ask the reader which seat they want.',
     );
   }
   return paragraphs.length ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: paragraphs.join('\n\n') } }) : '';

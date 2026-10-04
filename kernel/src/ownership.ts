@@ -143,7 +143,7 @@ export function collectionBackendState(workspace: string): BackendState {
         "arbitrated by exclusive create in the collection's own folder, and the deployed Basic " +
         'Memory MCP surface has no exclusive-create verb to do it over the transport. Set ' +
         'LIBRARY_SHARED_COLLECTION_ROOT, or write the path into .claude/.library-shared-root, ' +
-        'and run tools/Set-CollectionOwner.ps1 -Status to confirm it.',
+        'and run deskpost collection owner --status to confirm it.',
     };
   }
   if (!isSharedCollectionRoot(sharedRoot)) {
@@ -308,7 +308,7 @@ export function assertCollectionWriteAllowed(workspace: string, operation: strin
     refuse(
       `${operation} is refused: no workspace holds the writable role for this collection. ` +
         `Incarnation ${record.incarnation} was released by ${record.workspace_id} at ` +
-        `${record.released}. Acquire it here with tools/Set-CollectionOwner.ps1 -Acquire.`,
+        `${record.released}. Acquire it here with deskpost collection owner --acquire.`,
     );
   }
   if (!workspaceId.trim()) {
@@ -316,7 +316,7 @@ export function assertCollectionWriteAllowed(workspace: string, operation: strin
       `${operation} is refused: workspace ${record.workspace_id} holds the writable role for ` +
         `this collection at incarnation ${record.incarnation}, and this directory ` +
         `(${workspace}) carries no workspace marker, so it cannot be that workspace. Run ` +
-        'tools/Initialize-LibraryWorkspace.ps1 to make it a workspace.',
+        'deskpost init to make it a workspace.',
     );
   }
   if (record.workspace_id !== workspaceId) {
@@ -324,7 +324,7 @@ export function assertCollectionWriteAllowed(workspace: string, operation: strin
       `${operation} is refused: workspace ${record.workspace_id} holds the writable role for ` +
         `this collection at incarnation ${record.incarnation}, on ${record.machine}. This ` +
         `workspace (${workspaceId}) is attached read-only. Release it there, or take it over ` +
-        'here with tools/Set-CollectionOwner.ps1 -Acquire -Force if that workspace is gone.',
+        'here with deskpost collection owner --acquire --force if that workspace is gone.',
     );
   }
 }
@@ -400,8 +400,8 @@ function enterCollectionOwnership(collectionRoot: string, workspaceId: string, w
           `${before.machine}. One writable workspace per collection: book locks live under ` +
           'each workspace, so a second writer would take a different lock over the same page ' +
           '(ADR-0015, ADR-0030). Either release it there with ' +
-          'tools/Set-CollectionOwner.ps1 -Release, or -- only if that workspace is gone for ' +
-          'good -- take it over here with tools/Set-CollectionOwner.ps1 -Acquire -Force, which ' +
+          'deskpost collection owner --release, or -- only if that workspace is gone for ' +
+          'good -- take it over here with deskpost collection owner --acquire --force, which ' +
           `records the takeover under this workspace's name. Record: ${ownerDirectory}`,
       );
     }
@@ -435,7 +435,7 @@ function enterCollectionOwnership(collectionRoot: string, workspaceId: string, w
     refuse(
       `Another workspace acquired incarnation ${next} of this collection's writable role while ` +
         `this acquire was in flight; it is now held by ${after.workspace_id} on ` +
-        `${after.machine}. Nothing was written here. Run tools/Set-CollectionOwner.ps1 -Status ` +
+        `${after.machine}. Nothing was written here. Run deskpost collection owner --status ` +
         'to see the current record.',
     );
   }
@@ -469,7 +469,7 @@ function exitCollectionOwnership(collectionRoot: string, workspaceId: string, wo
       `This workspace (${workspaceId}) does not hold the writable role for this collection; ` +
         `workspace ${state.workspace_id} holds incarnation ${state.incarnation}. A release ` +
         'by another workspace is only valid as a forced takeover: ' +
-        `tools/Set-CollectionOwner.ps1 -Acquire -Force. Record: ${ownerDirectory}`,
+        `deskpost collection owner --acquire --force. Record: ${ownerDirectory}`,
     );
   }
   if (state.state === 'released') return { outcome: 'already_released', incarnation: state.incarnation };
@@ -543,7 +543,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
     if (!workspaceId.trim()) {
       refuse(
         `${workspace} carries no workspace marker, so it has no identity to record against the ` +
-          'collection. Run tools/Initialize-LibraryWorkspace.ps1 to make it a workspace first.',
+          'collection. Run deskpost init to make it a workspace first.',
       );
     }
     const collectionRoot = backend.collection_root;
@@ -569,7 +569,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
             advice:
               `Re-run with --force --user-confirmed only if workspace ${record.workspace_id} ` +
               `on ${record.machine} is gone for good. If it is merely idle, run ` +
-              'tools/Set-CollectionOwner.ps1 -Release there instead: a forced takeover is ' +
+              'deskpost collection owner --release there instead: a forced takeover is ' +
               "recorded permanently and the displaced workspace's next shared write is refused " +
               'wherever it is running.',
           },
@@ -616,7 +616,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
     if (record.state === 'unowned') {
       refusal =
         'No workspace owns this collection yet, so shared writes are not fenced. ' +
-        'tools/Set-CollectionOwner.ps1 -Acquire claims the writable role for this workspace ' +
+        'deskpost collection owner --acquire claims the writable role for this workspace ' +
         'and refuses every other workspace from then on.';
     } else {
       try {

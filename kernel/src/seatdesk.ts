@@ -93,7 +93,7 @@ export function seatDirectoryNames(stateDirectory: string): string[] {
     if (item.isSymbolicLink()) {
       throw new Error(
         `Seat directory '${item.name}' is a reparse point. A seat's Desk must live inside this Library; ` +
-          'remove the junction, or retire the seat with tools/Retire-Seat.ps1.',
+          'remove the junction, or retire the seat with deskpost seat retire <name>.',
       );
     }
     if (!item.isDirectory()) continue;
@@ -242,7 +242,7 @@ export function resolveSeatName(options: {
     source: null,
     message:
       `Seat name '${candidate}'${whose} is malformed. A seat is lowercase letters, digits and hyphens, ` +
-      'starting with a letter or a digit. List the seats with tools/Get-DeskOverview.ps1.',
+      'starting with a letter or a digit. List the seats with deskpost desk.',
   });
 
   let seatArgumentClause = '';
@@ -334,8 +334,8 @@ export function resolveSeatName(options: {
     message:
       `No seat is named. ${agentClause}, and the ` +
       'Library has no default seat, because a default would silently merge stray work into whichever ' +
-      'seat holds it. Sit down at a seat with tools/Enter-LibrarySeat.ps1 -Seat <name>, start one with ' +
-      'tools/Start-LibrarySeat.ps1 -Seat <name>' +
+      'seat holds it. Sit down at a seat with deskpost seat enter <name>, start one with ' +
+      'deskpost seat start <name>' +
       (options.actingSeatOnly ? `, or set LIBRARY_SEAT for this session.${seatArgumentClause}` : ', or pass -Seat explicitly.'),
   };
 }

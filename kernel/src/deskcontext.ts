@@ -240,7 +240,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     if (!deskPresent) {
       return contextDocument(
         `Virtual Desk - seat '${seat}' has no Desk in this workspace. ` +
-          `Create it with tools/Start-LibrarySeat.ps1 -Seat ${seat} -Project <project-slug>.`,
+          `Create it with deskpost seat start ${seat} --project <project-slug>.`,
       );
     }
     let seatNote = '';
@@ -254,7 +254,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
         seatNote = ', holder lost';
         seatWarning =
           " This seat's claim holder is gone while this conversation is still bound to it, so every write will refuse." +
-          ` Re-bind before changing anything: tools/Enter-LibrarySeat.ps1 -Seat ${seat}.`;
+          ` Re-bind before changing anything: deskpost seat enter ${seat}.`;
       }
       // THE BACKSTOP RECORDER, and the lock is taken only when there is something to write.
       try {

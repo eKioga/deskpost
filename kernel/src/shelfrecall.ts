@@ -31,7 +31,8 @@ import { parseBookRoot } from './places.ts';
 import { collectionBookIdentity, collectionBookWiki } from './collectionbooks.ts';
 import { splitLocalFrontmatter } from './localcatalog.ts';
 import { readStrictUtf8 } from './notebook.ts';
-import { ARCHIVE_FOLDER, SLUG_PATTERN } from './shelfbook.ts';
+import { ARCHIVE_FOLDER, SLUG_PATTERN, getShelfBook } from './shelfbook.ts';
+import { updateShelfBookIndex } from './capture.ts';
 import { invokeShelfCatalogRenderAfterRollback, refuse } from './shelfcatalog.ts';
 import { createShelfBook } from './shelf.ts';
 // `yyyy-MM-dd` in local time, as the Shelf's own `created` origin is dated.
@@ -314,6 +315,15 @@ export function shelfRecallVerb(argv: string[], programRoot: string, workspace: 
 
         // 7. OPEN ON THIS SEAT (Q5), under the registry lock already held, as removeVerb closes one.
         deskOpened = setDeskEntryForSeat({ workspace, stateDirectory: desks, seat: current.seat, kind: 'books', entry: `shelf/${shelfSlug}`, action: 'Add' });
+
+        // 7b. THE READER MAP, FROM DISK (S85 row 5, backlog Row C): `createShelfBook` wrote it before any page was
+        // copied, so it listed only `_book`. Regenerated before the manifest commit, and checked to list every page.
+        updateShelfBookIndex(getShelfBook(workspace, shelfSlug));
+        const map = fs.readFileSync(path.join(shelfWiki, '_index.md'), 'utf8');
+        const unlisted = current.manifest.pages
+          .map((page) => page.path.replace(/\.md$/, ''))
+          .filter((page) => page !== '_index' && page !== '_book' && !map.includes(`[[${page}|`));
+        if (unlisted.length) throw new Error(`shelf/${shelfSlug}/wiki/_index.md does not list ${unlisted.join(', ')} after it was regenerated`);
 
         // 8. THE MANIFEST.
         const manifest = completeBookMutation(mutation);
