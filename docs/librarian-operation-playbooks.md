@@ -179,8 +179,9 @@ triage as part of the reset confirmation itself — offer it first, as its own s
 **Which collection this serves (S67).** On a Library with its own local collection, `deskpost publish` and
 `deskpost publish refresh` write `collection/books/<slug>/` and nothing goes to Basic Memory. Their preview lists
 `pages_left_behind`: pages already in that Book which this publication does not carry. They stay on disk and in
-Discovery, drop out of the reader map, and are never removed. When the list is not empty, a refresh is approved with
-its `refresh_plan_id`, not its `plan_id`. **To add one page to a collection Book, do not rebuild it**:
+Discovery, drop out of the reader map, and are never removed. A local refresh is always approved with its
+`refresh_plan_id`. Its `candidate_plan_id` is the resume key, not an approval (S87). A confirmed refresh writes its
+summary to the Shelf entry as well, so the next refresh without `--summary` keeps it. **To add one page to a collection Book, do not rebuild it**:
 `deskpost collection add-page <slug> <page> --content-path <file> --preflight`, then
 `--user-confirmed --plan-id <id>` after one yes -- it only ever adds, and the reader map gains one line.
 

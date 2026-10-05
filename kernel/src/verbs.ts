@@ -245,8 +245,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
   publish: {
     summary: "Publish, batch-publish or refresh a Shelf Book into the Library's collection: collection/ on a local Library, Basic Memory on one attached to it.",
     usage:
-      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] --preflight; ' +
-      'library publish batch --plan <path> --preflight; library publish refresh <slug> --title <t> --summary <s> --preflight',
+      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] --preflight, ' +
+      'then --user-confirmed --plan-id <plan_id>; library publish batch --plan <path> --preflight; ' +
+      'library publish refresh <slug> --title <t> --summary <s> [--collection <c>] --preflight, then --user-confirmed --plan-id <refresh_plan_id>. ' +
+      "A recalled Book's --title and --summary default to its Shelf entry. On a local Library a refresh is approved by its refresh_plan_id, never its candidate_plan_id",
     actions: ['batch', 'refresh'],
     positional: true,
     // The fence (S34), then the three preflights (S35, src/publish.ts): Publish-ShelfBookToShared,
@@ -332,7 +334,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   shelf: {
     summary:
-      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, recall a collection Book to the Shelf, and tidy a capture Book's closed notes.",
+      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, recall a collection Book to the Shelf, tidy a capture Book's closed notes, and rebuild a Book's Discovery manifest from disk.",
     usage:
       // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `shelf <action> --help` shows it.
       'library shelf <action> [arguments] [--workspace <path>] [--json]; ' +
@@ -346,8 +348,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library shelf duplicates [--embedding-url <u>] [--embedding-model <m>] [--api-key <k>] [--similarity-threshold <n>] [--batch-size <n>]; ' +
       'library shelf carry <old-workspace> --book <capture-book> (--preflight | --user-confirmed --plan-id <id>); ' +
       'library shelf recall <book-slug> [--shelf-slug <s>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]; ' +
-      'library shelf tidy <capture-book> [--days <n>] [--restore reviewed/<yyyy-mm>/<name>] (--preflight | --user-confirmed --plan-id <id>)',
-    actions: ['archive', 'carry', 'duplicates', 'new', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
+      'library shelf tidy <capture-book> [--days <n>] [--restore reviewed/<yyyy-mm>/<name>] (--preflight | --user-confirmed --plan-id <id>); ' +
+      'library shelf rebuild [<slug>]',
+    actions: ['archive', 'carry', 'duplicates', 'new', 'rebuild', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
     positional: false,
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.

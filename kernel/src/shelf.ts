@@ -32,6 +32,7 @@ import { updateShelfNoteIndex } from './capture.ts';
 import { shelfCarryVerb } from './shelfcarry.ts';
 import { shelfRecallVerb, SHELF_RECALL_OPTIONS } from './shelfrecall.ts';
 import { shelfTidyVerb, SHELF_TIDY_OPTIONS } from './shelftidy.ts';
+import { shelfRebuildVerb } from './shelfrebuild.ts';
 import { readRecallRecord, recallRecordTakenRefusal } from './recallrecord.ts';
 import { localDate } from './localdate.ts';
 import { verbUsageText } from './verbs.ts';
@@ -43,7 +44,7 @@ export interface VerbResult {
   humanText?: string;
 }
 
-const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall', 'tidy'];
+const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall', 'tidy', 'rebuild'];
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -252,7 +253,7 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
   }
   // A MISSING SLUG IS USAGE (S71 row 10), once for every action that takes one: its own usage, not the slug-format
   // refusal a writer gives an empty string. Every action's valued options, so a value is never read as the slug.
-  if (!['render', 'duplicates'].includes(action)) {
+  if (!['render', 'duplicates', 'rebuild'].includes(action)) {
     const valued = [...new Set([...SHELF_RECALL_OPTIONS, ...SHELF_TIDY_OPTIONS, 'workspace', 'plan-id', 'new-title', 'reason', 'seat', 'canonical', 'superseded-on', 'title', 'summary', 'topics', 'origin', 'book', 'closed-by'])];
     if (!(parseArguments(argv.slice(1), valued).positional[0] ?? '').trim()) {
       return { refusal: verbUsageText('shelf', action).trimEnd(), value: null, asJson: false };
@@ -276,6 +277,12 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         const parsed = parseArguments(argv.slice(1), SHELF_TIDY_OPTIONS);
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         return { refusal: null, value: shelfTidyVerb(argv.slice(1), workspace), asJson: true };
+      }
+      case 'rebuild': {
+        // S87 row 2, ruling 4: a Shelf Book's Discovery manifest written again from disk; every Book with no slug.
+        const parsed = parseArguments(argv.slice(1), ['workspace']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        return { refusal: null, value: shelfRebuildVerb(argv.slice(1), workspace), asJson: true };
       }
       case 'carry': {
         // PLAN-basic-memory.md step 4b: another workspace's capture notes, carried byte for byte into this Library's Shelf.

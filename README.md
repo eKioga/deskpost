@@ -167,7 +167,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.3**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.4**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
 - **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,

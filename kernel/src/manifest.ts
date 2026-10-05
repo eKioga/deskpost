@@ -126,6 +126,15 @@ export function getBookPageDigest(pages: ManifestPage[]): string {
   return sha256OfText(parts.join('\n'));
 }
 
+/**
+ * A Shelf Book's page digest FROM DISK, as `newBookManifestForShelfBook` would record it, without decoding a page: the
+ * same files in the same order, hashed as bytes (S87, ruling 4). Discovery compares it with the stored `source_digest`.
+ */
+export function getShelfBookPageDigest(book: ShelfBook): string {
+  const files = listFilesRecursive(book.wikiPath).filter((file) => file.toLowerCase().endsWith('.md'));
+  return getBookPageDigest(files.map((file) => ({ path: convertToCanonicalPagePath(book.wikiPath, file), text: '', bytes: fs.readFileSync(file) })));
+}
+
 /** The union rule. Either signal saying `capture` is enough. */
 export function testBookIsCapture(book: ShelfBook): boolean {
   if (book.isCapture) return true;

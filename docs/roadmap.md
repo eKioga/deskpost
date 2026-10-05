@@ -247,6 +247,13 @@ Desk tells the truth about what is open.
 - **`desk close book` closes the Book wherever it is open**, and refuses when nothing matches.
 - **The Desk tells the truth about what is open**, including for a seat the launcher holds.
 
+### 1.3.4: A Book kept in one place (1 of 1 sessions; released 2026-10-04)
+
+A Book that changes often can be kept in one place without paper cuts: a refresh has one id to
+approve and keeps its summary on the Shelf, the reader says when a Book was archived, Discovery says
+when a Shelf Book's index is stale and `shelf rebuild` repairs it, and `hub edit replace-item` keeps a
+nested list with its item.
+
 ### Earlier releases
 
 - **1.0.** One binary for Windows and Linux

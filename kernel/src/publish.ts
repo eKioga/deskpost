@@ -48,6 +48,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { psSortCompare } from './pssort.ts';
 import { readStrictUtf8 } from './notebook.ts';
 import { getShelfBook } from './shelfbook.ts';
+import { ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogEntryPath, singleTrailingNewline, testShelfCatalogEntryText } from './shelfcatalog.ts';
 import { assertShelfBookOpen } from './triage.ts';
 import { removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
 import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
@@ -166,6 +167,8 @@ interface CandidateInput {
   expectedDestinationPresent?: boolean;
   /** The recall record's digest the approval covered ('' for none), rechecked with the drift under the Book lock (S70). */
   expectedRecallDigest?: string;
+  /** A local refresh only: the confirmed run also writes the summary to the Shelf Book's catalog entry (S87, ruling 2). */
+  keepShelfSummary?: boolean;
 }
 
 /** `--lock-timeout <seconds>`, twenty when absent or unreadable, as `library hub edit` reads it. */
@@ -985,6 +988,10 @@ async function localCandidateConfirmed(
       const manifest = completeBookMutation(mutation, newBookManifestForCollectionBook(workspace, 'active', input.bookSlug));
       mutation = null;
       saveJournal('complete', '');
+      // THE SUMMARY IS THE BOOK'S SUMMARY EVERYWHERE (S87, ruling 2): a refresh's next run defaults its summary from the
+      // Shelf entry, so the entry takes the summary just written, and the Shelf catalog is rendered, still under the Book
+      // lock. Never thrown, as the recall record is not: the collection has landed, and a stale entry only misleads.
+      const shelfSummary = input.keepShelfSummary ? keepShelfSummary(workspace, input.shelfSlug, input.summary) : null;
       return {
         operation: 'Publish a Copy',
         destination: 'collection',
@@ -1001,6 +1008,7 @@ async function localCandidateConfirmed(
         reused_records: reused,
         discovery_manifest: manifest.summary,
         ...(recallRecord !== null ? { recall_record: recallRecord } : {}),
+        ...(shelfSummary !== null ? { shelf_summary: shelfSummary } : {}),
         pages_left_behind: candidate.leftBehind.pages as unknown as PsJsonValue,
         ...(candidate.leftBehind.pages.length
           ? {
@@ -1143,6 +1151,29 @@ function returnDefaults(workspace: string, shelfSlug: string, parsed: { options:
     title: parsed.options.get('title') || entry?.title || record.title,
     summary: parsed.options.get('summary') || entry?.summary || record.summary,
   };
+}
+
+/**
+ * A CONFIRMED LOCAL REFRESH'S SUMMARY, ON THE SHELF (S87, ruling 2): `shelf/<slug>/_catalog-entry.md`'s Summary item --
+ * which may wrap onto indented lines -- replaced by the summary the collection now carries, or added after the heading,
+ * and the Shelf catalog rendered through the one renderer. Returns what happened, in a sentence; never throws.
+ */
+function keepShelfSummary(workspace: string, shelfSlug: string, summary: string): string {
+  const label = `shelf/${shelfSlug}/${ENTRY_NAME}`;
+  try {
+    const file = shelfCatalogEntryPath(workspace, shelfSlug);
+    if (!fs.existsSync(file)) return `${label} is missing, so the Shelf entry was NOT given the new summary`;
+    const before = singleTrailingNewline(readStrictUtf8(file));
+    const line = `- **Summary:** ${summary.replace(/\s+/g, ' ').trim()}`;
+    const item = /^[ \t]*-[ \t]+\*\*Summary:\*\*[^\n]*\n(?:(?![ \t]*-[ \t]+\*\*)[ \t]+\S[^\n]*\n)*/m;
+    const after = item.test(before) ? before.replace(item, `${line}\n`) : before.replace(/^(##[^\n]*\n)/, `$1${line}\n`);
+    if (after === before) return `${label} already carried this summary`;
+    testShelfCatalogEntryText(after, shelfSlug, label);
+    invokeShelfCatalogRender({ workspace, programRoot: programRoot(), writeEntry: [{ path: file, text: after }] });
+    return `${label} given the new summary, and shelf/_catalog.md rendered`;
+  } catch (error) {
+    return `${label} NOT given the new summary (${(error as Error).message}); pass --summary on the next refresh, or the old one returns`;
+  }
 }
 
 async function publishVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
@@ -1288,29 +1319,40 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
   // A RECALLED BOOK'S RETURN IS BOUND TO ITS RECALL RECORD THE SAME WAY (S70): the record's digest joins the id.
   const bound = [...(candidate.leftBehind.digest ? [candidate.leftBehind.digest] : []), ...(candidate.recall ? [`recall=${candidate.recall.digest}`] : [])];
   const refreshPlanId = bound.length ? 'refresh-' + sha256OfText([candidate.planId, ...bound].join('\n')) : candidate.planId;
+  const local = isLocalBackend(workspace);
   if (parsed.flags.has('preflight')) {
+    // ONE ID A SEAT CAN PASS (S87, ruling 1): on a local Library the candidate's own id, the resume key, is
+    // `candidate_plan_id`, and `refresh_plan_id` is always the approval -- the candidate id itself when nothing is bound.
+    // A Basic Memory refresh binds nothing and keeps the oracle's document, `plan_id` and all.
+    if (!local) return { schema: 1, ...candidate.plan };
     const covers = [
       ...(candidate.leftBehind.digest
         ? [`the ${candidate.leftBehind.pages.length} page(s) listed in pages_left_behind, which the refresh leaves on disk and does not remove`]
         : []),
       ...(candidate.recall ? [`the recall record ${recallRecordLabel(shelfSlug)}, which the refresh checks for drift again under the Book lock`] : []),
     ];
+    const plan = Object.fromEntries(Object.entries(candidate.plan).map(([key, value]) => [key === 'plan_id' ? 'candidate_plan_id' : key, value]));
     return {
       schema: 1,
-      ...candidate.plan,
-      ...(bound.length ? { refresh_plan_id: refreshPlanId, approve_with: `--user-confirmed --plan-id ${refreshPlanId}: this id covers ${covers.join(', and ')}.` } : {}),
+      ...plan,
+      refresh_plan_id: refreshPlanId,
+      approve_with:
+        `--user-confirmed --plan-id ${refreshPlanId}: this id covers the planned records` + (covers.length ? `, and ${covers.join(', and ')}.` : '.'),
     };
   }
   if (!parsed.flags.has('user-confirmed')) refuse('Shared publication is not yet performed: review the manifest and rerun with --user-confirmed.');
   if ((parsed.options.get('plan-id') ?? '') !== refreshPlanId) {
     refuse(
       candidate.leftBehind.digest
-        ? 'The refresh is not yet performed: it leaves pages behind, so its approval is refresh_plan_id, not plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
+        ? 'The refresh is not yet performed: it leaves pages behind, so its approval is refresh_plan_id, not candidate_plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
         : candidate.recall
-          ? 'The refresh is not yet performed: it returns a recalled Book, so its approval is refresh_plan_id, not plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
-          : 'Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.',
+          ? 'The refresh is not yet performed: it returns a recalled Book, so its approval is refresh_plan_id, not candidate_plan_id. Rerun the current preflight and pass its exact refresh_plan_id.'
+          : local
+            ? 'The refresh is not yet performed: rerun the current preflight and pass its exact refresh_plan_id as --plan-id.'
+            : 'Shared publication is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.',
     );
   }
+  if (local) input.keepShelfSummary = true;
   if (isLocalBackend(workspace)) {
     input.expectedLeftBehindDigest = candidate.leftBehind.digest;
     input.expectedDestinationPresent = fs.existsSync(path.join(workspace, 'collection', 'books', input.bookSlug, 'wiki'));

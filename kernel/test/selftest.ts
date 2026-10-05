@@ -3587,7 +3587,7 @@ if (selected(41)) {
     makeShelfBook('field-notes', 'Field Notes', { birds: '# Birds\n\nHerons and egrets wade at dawn.\n', 'trees/oaks': '# Oaks\n\nAcorns in autumn.\n' });
     const refreshArgs = ['publish', 'refresh', 'field-notes', '--title', 'field-notes title', '--summary', 'What field-notes holds.'];
     const refreshPlan = json(cli([...refreshArgs, '--preflight', '--json']), 'the refresh preflight');
-    const refreshed = cli([...refreshArgs, '--user-confirmed', '--plan-id', String(refreshPlan['plan_id'] ?? ''), '--json']);
+    const refreshed = cli([...refreshArgs, '--user-confirmed', '--plan-id', String(refreshPlan['refresh_plan_id'] ?? ''), '--json']);
     equal(refreshed.exit, 0, `a local refresh failed: ${refreshed.stderr.trim().slice(0, 400)}`);
     check(text(path.join(wiki, 'birds.md')).includes('egrets'), 'a local refresh did not replace the changed page');
     check(read('discover_book_pages', ['--query', 'Oaks']).text.includes('[books/field-notes'), 'Discovery lost the refreshed Book');
@@ -5908,8 +5908,8 @@ if (selected(61)) {
 
     // NOTHING LEFT BEHIND: a first publication into the collection, approved by the candidate id as before.
     const firstPlan = json(cli([...refresh, '--preflight']));
-    check(Array.isArray(firstPlan['pages_left_behind']) && (firstPlan['pages_left_behind'] as unknown[]).length === 0 && firstPlan['refresh_plan_id'] === undefined, `a refresh with nothing left behind reported something: ${JSON.stringify(firstPlan).slice(0, 300)}`);
-    const firstRun = cli([...refresh, '--user-confirmed', '--plan-id', String(firstPlan['plan_id'])]);
+    check(Array.isArray(firstPlan['pages_left_behind']) && (firstPlan['pages_left_behind'] as unknown[]).length === 0 && firstPlan['plan_id'] === undefined && firstPlan['refresh_plan_id'] === firstPlan['candidate_plan_id'], `a refresh with nothing left behind reported something: ${JSON.stringify(firstPlan).slice(0, 300)}`);
+    const firstRun = cli([...refresh, '--user-confirmed', '--plan-id', String(firstPlan['refresh_plan_id'])]);
     check(firstRun.exit === 0, `a refresh with nothing left behind did not run on its plan_id: ${firstRun.stderr.trim()}`);
 
     // A PAGE THE SHELF COPY NO LONGER CARRIES.
@@ -5921,8 +5921,8 @@ if (selected(61)) {
     const listed = (preview['pages_left_behind'] as { path: string; sha256: string }[] | undefined) ?? [];
     check(listed.length === 1 && listed[0]!.path === 'collection/books/demo/wiki/topic/_index.md' && /^[0-9a-f]{64}$/.test(listed[0]!.sha256), `the preview does not list the page left behind: ${JSON.stringify(listed)}`);
     const refreshId = String(preview['refresh_plan_id'] ?? '');
-    check(/^refresh-[0-9a-f]{64}$/.test(refreshId) && refreshId !== preview['plan_id'], `the preview has no refresh_plan_id of its own: ${refreshId}`);
-    const onCandidate = cli([...refresh, '--user-confirmed', '--plan-id', String(preview['plan_id'])]);
+    check(/^refresh-[0-9a-f]{64}$/.test(refreshId) && refreshId !== preview['candidate_plan_id'] && preview['plan_id'] === undefined, `the preview has no refresh_plan_id of its own: ${refreshId}`);
+    const onCandidate = cli([...refresh, '--user-confirmed', '--plan-id', String(preview['candidate_plan_id'])]);
     check(onCandidate.exit !== 0 && onCandidate.stderr.includes('refresh_plan_id'), `a refresh leaving pages behind ran on the candidate plan_id: ${onCandidate.stderr.trim()}`);
 
     // A PAGE ADDED WHILE THE RUN WAITS ON THE LOCK refuses it.
@@ -5954,8 +5954,8 @@ if (selected(61)) {
       const lockFile = path.join(lib, 'internal', 'book-locks', 'books-demo.lock');
       fs.rmSync(orphan, { force: true });
       const current = json(cli([...refresh, '--preflight']));
-      check(current['refresh_plan_id'] === undefined, 'the archive scenario did not start with nothing left behind');
-      const id = String(current['plan_id']);
+      check(current['refresh_plan_id'] === current['candidate_plan_id'], 'the archive scenario did not start with nothing left behind');
+      const id = String(current['refresh_plan_id']);
       fs.writeFileSync(lockFile, `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=books/demo\n`);
       const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
       const waiting = spawn(file!, [...prefix, ...refresh, '--user-confirmed', '--plan-id', id, '--workspace', lib], {
@@ -6333,7 +6333,7 @@ if (selected(68)) {
     };
     const refresh = (slug: string, extra: string[] = []) => {
       const plan = json(cli(['publish', 'refresh', slug, ...extra, '--preflight']));
-      const id = String(plan['refresh_plan_id'] ?? plan['plan_id'] ?? '');
+      const id = String(plan['refresh_plan_id'] ?? '');
       return { plan, ran: cli(['publish', 'refresh', slug, ...extra, '--user-confirmed', '--plan-id', id]) };
     };
     const verbNamed = (text: string, verb: string, action: string) =>
@@ -6430,7 +6430,7 @@ if (selected(68)) {
     fs.writeFileSync(path.join(shelfWiki('demo'), 'alpha.md'), fs.readFileSync(path.join(shelfWiki('demo'), 'alpha.md'), 'utf8') + 'Edited on the Shelf.\n');
     const back = refresh('demo');
     check(back.ran.exit === 0, `the return did not run: ${said(back.ran).slice(0, 400)}`);
-    check(typeof back.plan['refresh_plan_id'] === 'string' && back.plan['refresh_plan_id'] !== back.plan['plan_id'], 'the return was not bound to its recall record by a refresh_plan_id of its own');
+    check(typeof back.plan['refresh_plan_id'] === 'string' && back.plan['refresh_plan_id'] !== back.plan['candidate_plan_id'] && back.plan['plan_id'] === undefined, 'the return was not bound to its recall record by a refresh_plan_id of its own');
     check(sha(path.join(collectionWiki, 'alpha.md')) !== alphaInCollection && fs.readFileSync(path.join(collectionWiki, 'alpha.md'), 'utf8').endsWith('Edited on the Shelf.\n'), 'the edited page did not reach the collection');
     equal(sha(path.join(collectionWiki, 'topic', 'beta.md')), betaNow, 'an unedited page changed on the round trip');
     const rewritten = readRecord('demo');
@@ -10803,6 +10803,276 @@ if (selected(124)) {
     check(map.includes('[[alpha|Alpha]]') && map.includes('[[topic/beta|Beta]]'), `the recalled Book's reader map does not list its pages: ${map.slice(0, 300)}`);
   } catch (error) {
     failures.push(`section 124 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 125. A BOOK KEPT IN ONE PLACE: THE REFRESH (kickoffs/s87 row 0, rulings 1 and 2). A recalled Book's refresh
+// preflight carries `candidate_plan_id` and `refresh_plan_id`, never a bare `plan_id`, and its `approve_with` runs; a
+// refresh with a new `--summary` writes it to the collection and the Shelf entry, so a refresh without one keeps it;
+// and `publish --help` shows the confirm form and the recalled Book's defaults.
+if (selected(125)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kept-refresh-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    const text = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the kept-refresh fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the kept-refresh fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the kept-refresh fixture seat was not made');
+
+    // THE FIXTURE: a Book published out of the Shelf, then recalled.
+    const desk = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.']).exit, 0, 'the fixture Shelf Book was not made');
+    fs.writeFileSync(desk, 'shelf/demo\n');
+    fs.writeFileSync(path.join(lib, 'shelf', 'demo', 'wiki', 'alpha.md'), '# Alpha\n\nThe first page.\n');
+    const exitPlan = json(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--preflight']));
+    equal(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--user-confirmed', '--plan-id', String(exitPlan['plan_id'] ?? '')]).exit, 0, 'the fixture Book did not leave the Shelf');
+    fs.writeFileSync(desk, 'books/demo\n');
+    const recallPlan = json(cli(['shelf', 'recall', 'demo', '--preflight']));
+    equal(cli(['shelf', 'recall', 'demo', '--user-confirmed', '--plan-id', String(recallPlan['plan_id'] ?? '')]).exit, 0, 'the fixture Book was not recalled');
+
+    // 1. ONE ID A SEAT CAN PASS: no `plan_id`, and the id `approve_with` names is the one that runs.
+    const plan = json(cli(['publish', 'refresh', 'demo', '--preflight']));
+    check(plan['plan_id'] === undefined, `a recalled Book's refresh preflight still carries plan_id: ${String(plan['plan_id'])}`);
+    check(/^shelf-copy-/.test(String(plan['candidate_plan_id'] ?? '')) && /^refresh-[0-9a-f]{64}$/.test(String(plan['refresh_plan_id'] ?? '')), `the preflight lacks candidate_plan_id or refresh_plan_id: ${JSON.stringify(plan).slice(0, 300)}`);
+    const named = /--plan-id (\S+):/.exec(String(plan['approve_with'] ?? ''))?.[1] ?? '';
+    equal(named, String(plan['refresh_plan_id']), 'approve_with does not name the refresh_plan_id');
+    const onCandidate = cli(['publish', 'refresh', 'demo', '--user-confirmed', '--plan-id', String(plan['candidate_plan_id'])]);
+    check(onCandidate.exit !== 0 && said(onCandidate).includes('refresh_plan_id, not candidate_plan_id'), `the candidate id ran a recalled Book's refresh: ${said(onCandidate).slice(0, 300)}`);
+    const ran = cli(['publish', 'refresh', 'demo', '--user-confirmed', '--plan-id', named]);
+    check(ran.exit === 0, `the refresh did not run on approve_with's id: ${said(ran).slice(0, 400)}`);
+
+    // 2. THE SUMMARY IS THE BOOK'S SUMMARY EVERYWHERE.
+    const refresh = (extra: string[]) => {
+      const preview = json(cli(['publish', 'refresh', 'demo', ...extra, '--preflight']));
+      return cli(['publish', 'refresh', 'demo', ...extra, '--user-confirmed', '--plan-id', String(preview['refresh_plan_id'] ?? '')]);
+    };
+    const book = path.join(lib, 'collection', 'books', 'demo', 'wiki', '_book.md');
+    const catalog = path.join(lib, 'collection', 'books', 'README.md');
+    const entry = path.join(lib, 'shelf', 'demo', '_catalog-entry.md');
+    const shelfCatalog = path.join(lib, 'shelf', '_catalog.md');
+    const changed = refresh(['--summary', 'A summary kept in one place.']);
+    check(changed.exit === 0 && String(json(changed)['shelf_summary'] ?? '').includes('given the new summary'), `the refresh with a new summary did not say it kept it on the Shelf: ${said(changed).slice(0, 400)}`);
+    const kept = refresh([]);
+    check(kept.exit === 0, `the refresh without --summary did not run: ${said(kept).slice(0, 400)}`);
+    for (const [file, label] of [[book, 'the collection _book.md'], [catalog, 'books/README.md'], [entry, 'the Shelf entry'], [shelfCatalog, 'shelf/_catalog.md']] as const) {
+      check(text(file).includes('A summary kept in one place.') && !text(file).includes('A curated Book.'), `${label} did not keep the new summary: ${text(file).slice(0, 300)}`);
+    }
+
+    // 3. `publish --help` shows the confirm forms and the defaults.
+    const help = runCli(['publish', '--help'], { cwd: root, env });
+    check(help.exit === 0 && help.stdout.includes('--plan-id <refresh_plan_id>') && help.stdout.includes('default to its Shelf entry') && help.stdout.includes('candidate_plan_id'), `publish --help does not show the refresh confirm form and defaults: ${help.stdout.slice(0, 600)}`);
+  } catch (error) {
+    failures.push(`section 125 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 126. A BOOK KEPT IN ONE PLACE: THE READER AND THE ROUTE (kickoffs/s87 row 1, ruling 3). A page of an open
+// collection Book whose `_book.md` is gone is refused as a Book no longer in the collection, naming `place: archive`;
+// a missing page of a Book still there keeps "That page is not in this Book."; and `collection add-page` onto an
+// existing page names the recall, edit and refresh route.
+if (selected(126)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kept-reader-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    const read = (page: string) => {
+      const ran = cli(['mcp', 'call', 'read_open_book_page', '--slug', 'demo', '--page', page, '--seat', 'first']);
+      try {
+        const envelope = JSON.parse(ran.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${ran.stdout.slice(0, 200)} ${ran.stderr.trim()}` };
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the kept-reader fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the kept-reader fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the kept-reader fixture seat was not made');
+
+    // THE FIXTURE: a Book published into the collection and open on the Desk there.
+    const desk = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.']).exit, 0, 'the fixture Shelf Book was not made');
+    fs.writeFileSync(desk, 'shelf/demo\n');
+    fs.writeFileSync(path.join(lib, 'shelf', 'demo', 'wiki', 'alpha.md'), '# Alpha\n\nThe first page.\n');
+    const exitPlan = json(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--preflight']));
+    equal(cli(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--user-confirmed', '--plan-id', String(exitPlan['plan_id'] ?? '')]).exit, 0, 'the fixture Book did not reach the collection');
+    fs.writeFileSync(desk, 'books/demo\n');
+    const alpha = read('alpha');
+    check(!alpha.error && alpha.text.includes('The first page.'), `the fixture page did not read: ${alpha.text.slice(0, 300)}`);
+
+    // 1. A MISSING PAGE OF A BOOK STILL THERE.
+    const missing = read('nowhere');
+    check(missing.error && missing.text.includes('That page is not in this Book.'), `a missing page of a present Book was not refused as before: ${missing.text.slice(0, 300)}`);
+
+    // 2. THE ROUTE FOR AN EXISTING PAGE.
+    const body = path.join(root, 'alpha.md');
+    fs.writeFileSync(body, '# Alpha\n\nAgain.\n');
+    const taken = cli(['collection', 'add-page', 'demo', 'alpha', '--content-path', body, '--preflight']);
+    check(taken.exit !== 0 && said(taken).includes('deskpost shelf recall demo') && said(taken).includes('deskpost publish refresh'), `add-page onto an existing page named no route: ${said(taken).slice(0, 400)}`);
+
+    // 3. THE BOOK LEFT: its `_book.md` removed.
+    fs.rmSync(path.join(lib, 'collection', 'books', 'demo', 'wiki', '_book.md'));
+    const gone = read('nowhere');
+    check(
+      gone.error && gone.text.includes('This Book is no longer in the collection (archived or removed).') && gone.text.includes('place: archive') && !gone.text.includes('That page is not in this Book.'),
+      `a page of a Book that left the collection was not refused as such: ${gone.text.slice(0, 300)}`,
+    );
+  } catch (error) {
+    failures.push(`section 126 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 127. DISCOVERY NAMES A STALE SHELF BOOK, AND `shelf rebuild` REPAIRS IT (kickoffs/s87 row 2, ruling 4;
+// backlog Row G). A Shelf page's heading edited by hand: Discovery lists the Book as stale and still finds the old
+// heading; `shelf rebuild <slug>` clears it and the new heading is found; with no slug every Shelf Book is rebuilt.
+if (selected(127)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-stale-shelf-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    const discover = (query: string) => {
+      const ran = cli(['mcp', 'call', 'discover_book_pages', '--query', query, '--seat', 'first']);
+      try {
+        const envelope = JSON.parse(ran.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return envelope.result.content[0]?.text ?? '';
+      } catch {
+        return `unparseable: ${ran.stdout.slice(0, 200)} ${ran.stderr.trim()}`;
+      }
+    };
+    const staleBlock = (text: string) => (text.split('Shelf Books searched from a STALE manifest')[1] ?? '').split('\n\n')[0]!;
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the stale-shelf fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the stale-shelf fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the stale-shelf fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/demo\nshelf/other\n');
+    for (const slug of ['demo', 'other']) {
+      equal(cli(['shelf', 'new', slug, '--title', `Book ${slug}`, '--summary', 'A curated Book.']).exit, 0, `the fixture Shelf Book ${slug} was not made`);
+      const body = path.join(root, `${slug}.md`);
+      fs.writeFileSync(body, `# Page of ${slug}\n\n## Heron watching ${slug}\n\nA page.\n`);
+      equal(cli(['book', 'add-page', slug, 'page', '--content-path', body]).exit, 0, `the fixture page of ${slug} was not added`);
+    }
+    const fresh = discover('Heron');
+    check(fresh.includes('Heron watching demo') && !fresh.includes('STALE manifest'), `a fresh Shelf was reported stale or not found: ${fresh.slice(0, 400)}`);
+
+    // 1. A HEADING EDITED BY HAND: still searched, and named stale with its repair.
+    for (const slug of ['demo', 'other']) {
+      const page = path.join(lib, 'shelf', slug, 'wiki', 'page.md');
+      fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace(`## Heron watching ${slug}`, `## Egret watching ${slug}`));
+    }
+    const stale = discover('Heron');
+    check(stale.includes('Heron watching demo'), `a stale Shelf Book was not still searched: ${stale.slice(0, 400)}`);
+    check(staleBlock(stale).includes('demo [shelf/demo]') && staleBlock(stale).includes('deskpost shelf rebuild demo'), `Discovery did not list the stale Book with its repair: ${stale.slice(0, 600)}`);
+
+    // 2. `shelf rebuild <slug>` clears that Book, and only that Book.
+    const one = cli(['shelf', 'rebuild', 'demo', '--json']);
+    check(one.exit === 0 && json(one)['books_rebuilt'] === 1, `shelf rebuild demo did not rebuild one Book: ${said(one).slice(0, 400)}`);
+    const after = discover('Egret');
+    check(after.includes('Egret watching demo') && !staleBlock(after).includes('shelf/demo') && staleBlock(after).includes('shelf/other'), `shelf rebuild demo did not clear demo alone: ${after.slice(0, 600)}`);
+
+    // 3. With no slug, every Shelf Book.
+    const all = cli(['shelf', 'rebuild', '--json']);
+    const result = json(all);
+    check(all.exit === 0 && Number(result['books_total']) >= 2 && result['books_not_rebuilt'] === 0, `shelf rebuild did not rebuild every Shelf Book: ${said(all).slice(0, 400)}`);
+    const clean = discover('Egret');
+    check(clean.includes('Egret watching other') && !clean.includes('STALE manifest'), `a Shelf rebuilt in full still reads stale: ${clean.slice(0, 600)}`);
+    check(cli(['shelf', 'rebuild', 'nowhere']).exit !== 0, 'shelf rebuild of a Book the Shelf does not list was not refused');
+  } catch (error) {
+    failures.push(`section 127 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 128. `replace-item` KEEPS A NESTED LIST WITH ITS PARENT (kickoffs/s87 row 3, ruling 5; backlog Row F). An
+// item of three lines with a nested sub-list and a trailing continuation line: `item_before` holds all of it,
+// `removed_lines` counts it, and applying leaves nothing of it behind; `check-item` on the same item ticks its first
+// line only; and text in a nested item still names that item alone.
+if (selected(128)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-nested-item-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the nested-item fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the nested-item fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the nested-item fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const page = path.join(lib, 'collection', 'projects', 'work', '_project.md');
+    const item = [
+      '- [ ] Parent item, line one',
+      '  line two of the parent',
+      '  line three of the parent',
+      '  - [ ] nested child A',
+      '  - nested child B',
+      '  trailing continuation of the parent',
+    ];
+    const items = path.join(root, 'items.md');
+    fs.writeFileSync(items, [...item, '- [ ] Sibling item'].join('\n') + '\n');
+    equal(cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', items]).exit, 0, 'the nested item was not appended');
+    const original = fs.readFileSync(page, 'utf8');
+
+    // 1. THE PREVIEW HOLDS THE WHOLE ITEM, AND THE APPLY LEAVES NOTHING OF IT BEHIND.
+    const replacement = path.join(root, 'replacement.md');
+    fs.writeFileSync(replacement, '- [ ] Replaced parent\n');
+    const replace = ['hub', 'edit', 'work', '--mode', 'replace-item', '--section', 'Next', '--match-text', 'Parent item, line one', '--content-path', replacement];
+    const preview = json(cli([...replace, '--preflight']));
+    equal(String(preview['item_before'] ?? '').replace(/\r\n/g, '\n'), item.join('\n'), 'item_before does not hold the whole nested item');
+    equal(preview['removed_lines'], item.length, 'removed_lines does not count the whole nested item');
+    const applied = cli([...replace, '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? '')]);
+    check(applied.exit === 0, `the replace-item did not apply: ${said(applied).slice(0, 400)}`);
+    const after = fs.readFileSync(page, 'utf8');
+    check(after.includes('- [ ] Replaced parent\n- [ ] Sibling item') && !/nested child|line two of the parent|trailing continuation/.test(after), `replace-item left part of the nested item behind: ${after.slice(-400)}`);
+
+    // 2. CHECK-ITEM TICKS THE FIRST LINE ONLY, AND A NESTED ITEM'S TEXT NAMES THAT ITEM.
+    fs.writeFileSync(page, original);
+    equal(cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Parent item, line one']).exit, 0, 'check-item on the nested item failed');
+    const ticked = fs.readFileSync(page, 'utf8');
+    check(ticked.includes('- [x] Parent item, line one') && ticked.includes('  - [ ] nested child A') && ticked.includes('- [ ] Sibling item'), `check-item ticked more than the item's first line: ${ticked.slice(-400)}`);
+    equal(cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'nested child A']).exit, 0, 'check-item on a nested child failed');
+    const child = fs.readFileSync(page, 'utf8');
+    check(child.includes('  - [x] nested child A') && child.includes('- [ ] Sibling item'), `check-item on a nested child did not tick that child alone: ${child.slice(-400)}`);
+  } catch (error) {
+    failures.push(`section 128 stopped early: ${(error as Error).message}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

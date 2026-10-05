@@ -207,31 +207,62 @@ interface Block {
   end: number;
 }
 
+/** A line's indent in columns, a tab counting four. */
+function indentOf(line: string): number {
+  return /^[ \t]*/.exec(line)![0].replace(/\t/g, '    ').length;
+}
+
+/**
+ * AN ITEM KEEPS ITS NESTED LIST (S87, ruling 5; backlog Row F): a list item's block runs to the next list line at the
+ * same or a lesser indent, or to a blank line followed by a line with no indent, so its sub-list and its continuation
+ * lines go with it. Before S87 it ended at the first nested `  - ` line, and `replace-item` left the sub-list behind.
+ * A nested item is a block of its own as well, so blocks may nest, and `findUniqueBlock` picks the innermost. Any
+ * other line no item holds is a block of one line, as before.
+ */
 function itemBlocks(lines: string[], start: number, end: number): Block[] {
   const blocks: Block[] = [];
-  let index = start;
-  while (index < end) {
-    if (isListLine(lines[index]!)) {
-      let last = index;
-      let scan = index + 1;
-      while (scan < end && !isListLine(lines[scan]!) && /^[ \t]+\S/.test(lines[scan]!)) {
-        last = scan;
-        scan++;
-      }
-      blocks.push({ start: index, end: last });
-      index = scan;
+  let heldUntil = -1;
+  for (let index = start; index < end; index++) {
+    const line = lines[index]!;
+    if (!isListLine(line)) {
+      if (!isBlank(line) && index > heldUntil) blocks.push({ start: index, end: index });
       continue;
     }
-    if (!isBlank(lines[index])) blocks.push({ start: index, end: index });
-    index++;
+    const indent = indentOf(line);
+    let last = index;
+    let scan = index + 1;
+    while (scan < end) {
+      const next = lines[scan]!;
+      if (isBlank(next)) {
+        let after = scan + 1;
+        while (after < end && isBlank(lines[after])) after++;
+        if (after >= end || !/^[ \t]+\S/.test(lines[after]!)) break;
+        scan = after;
+        continue;
+      }
+      if (isListLine(next) ? indentOf(next) <= indent : !/^[ \t]+\S/.test(next)) break;
+      last = scan;
+      scan++;
+    }
+    blocks.push({ start: index, end: last });
+    heldUntil = Math.max(heldUntil, last);
   }
   return blocks;
 }
 
+/** True when `inner` lies inside `outer`. */
+function within(inner: Block, outer: Block): boolean {
+  return inner.start >= outer.start && inner.end <= outer.end;
+}
+
 function findUniqueBlock(lines: string[], start: number, end: number, matchText: string): Block {
   if (isBlank(matchText)) refuse('MatchText is required: give text that appears in exactly one item or line.');
-  const matched = itemBlocks(lines, start, end).filter((block) => lines.slice(block.start, block.end + 1).join(' ').includes(matchText));
+  let matched = itemBlocks(lines, start, end).filter((block) => lines.slice(block.start, block.end + 1).join(' ').includes(matchText));
   if (matched.length === 0) refuse(`No item or line contains '${matchText}'.`);
+  // TEXT IN A NESTED ITEM MATCHES ITS PARENTS TOO (S87): when the matches nest, one inside the next, the innermost is
+  // the item meant, as it was before a block carried its sub-list. Siblings still refuse.
+  const innermost = matched.find((block) => matched.every((other) => within(block, other)));
+  if (innermost !== undefined) matched = [innermost];
   if (matched.length > 1) {
     const preview = matched
       .slice(0, 4)

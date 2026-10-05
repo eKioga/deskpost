@@ -31,7 +31,7 @@ import {
   resolveSearchResultCap,
   testSearchContains,
 } from './rawsearch.ts';
-import { getMarkdownHeadings, type Heading } from './manifest.ts';
+import { getMarkdownHeadings, getShelfBookPageDigest, type Heading } from './manifest.ts';
 import { parseBookRoot } from './places.ts';
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend, markerConnection } from './basicmemory.ts';
@@ -55,7 +55,9 @@ const MAX_PAGES_PER_BOOK = 2000;
 const SHARED_REBUILDER_MISSING = 'this program has no command that builds shared-collection manifests';
 const SHARED_NOTE_NONE =
   'No shared-collection manifests are present, so this answer covers the local Shelf only -- ' + SHARED_REBUILDER_MISSING + '.';
-const REPAIR_HINT = "write to this Book once (deskpost book add-page, or deskpost capture for a capture Book) to rebuild its manifest";
+const REPAIR_HINT = 'run deskpost shelf rebuild <slug> to rebuild its manifest from its pages on disk';
+// A SHELF BOOK EDITED BY HAND (S87, ruling 4): its stored manifest still reads `ok`, so it is searched, and named.
+const STALE_NOTE = 'its pages changed since its Discovery manifest was written, so hits may name old headings';
 const SHARED_REPAIR_HINT = `this shared Book's manifest cannot be repaired here: ${SHARED_REBUILDER_MISSING}`;
 const SHELF_ARCHIVE_REPAIR_HINT =
   "restore it with deskpost shelf restore and archive it again with deskpost shelf archive to rebuild this archived Book's manifest";
@@ -138,6 +140,15 @@ interface UnavailableBook {
   book_shelf: string;
   book_open: boolean;
   status: string;
+  reason: string;
+  repair: string;
+}
+
+/** A Shelf Book searched from a manifest older than its pages (S87): still searched, and named with its repair. */
+interface StaleBook {
+  book: string;
+  book_root: string;
+  book_open: boolean;
   reason: string;
   repair: string;
 }
@@ -417,6 +428,8 @@ export interface DiscoveryResult {
   books_total: number;
   books_searched: number;
   books_unavailable: UnavailableBook[];
+  /** Present only when a Shelf Book's pages differ from its manifest (S87), so an answer with none reads as before. */
+  books_stale?: StaleBook[];
   match_count: number;
   result_count: number;
   truncated: boolean;
@@ -470,6 +483,7 @@ export function findBookPages(options: {
 
   const hits: { order: number; rank: number; hit: DiscoveryHit }[] = [];
   const unavailable: UnavailableBook[] = [];
+  const stale: StaleBook[] = [];
   const searchedByCollection: Record<string, number> = {};
   for (const name of MANIFEST_COLLECTIONS) searchedByCollection[name] = 0;
   let order = 0;
@@ -513,12 +527,25 @@ export function findBookPages(options: {
           book_open: isOpen,
           status: resolveFailure ? 'unresolvable' : stored!.status,
           reason: resolveFailure ? resolveFailure : stored!.reason,
-          repair: plan.repair,
+          repair: plan.repair.replace('<slug>', slug),
         });
         continue;
       }
       searchedByCollection[manifestCollection] = (searchedByCollection[manifestCollection] ?? 0) + 1;
       const manifest = stored.manifest!;
+      // THE STORED DIGEST AGAINST THE PAGES ON DISK, for an active Shelf Book only (S87, ruling 4): a page corrected in
+      // place leaves an `ok` manifest describing the old page. A digest that cannot be read is not called stale.
+      if (isLocal && parts.shelf === 'active' && book !== null) {
+        let digest = '';
+        try {
+          digest = getShelfBookPageDigest(book);
+        } catch {
+          digest = '';
+        }
+        if (digest && digest !== stored.sourceDigest) {
+          stale.push({ book: slug, book_root: bookRoot, book_open: isOpen, reason: STALE_NOTE, repair: `run deskpost shelf rebuild ${slug}` });
+        }
+      }
 
       // The union rule: either signal saying capture is enough. It cannot widen disclosure -- the
       // live path is gated on the Book being open, not on its kind -- but a Book reported as
@@ -641,6 +668,7 @@ export function findBookPages(options: {
     books_total: slugs.length + sharedSlugs.length + shelfArchiveSlugs.length + sharedArchiveSlugs.length + collectionSlugs.length + collectionArchiveSlugs.length,
     books_searched: shelfSearched + sharedSearched + shelfArchiveSearched + sharedArchiveSearched + collectionSearched + collectionArchiveSearched,
     books_unavailable: unavailable,
+    ...(stale.length ? { books_stale: stale } : {}),
     match_count: sorted.length,
     result_count: returned.length,
     truncated: sorted.length > returned.length,
@@ -672,6 +700,11 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
     for (const entry of result.books_unavailable) {
       lines.push(`- ${entry.book} [${entry.book_root}] (${entry.status}): ${entry.reason} -- ${entry.repair}`);
     }
+  }
+  if (result.books_stale?.length) {
+    lines.push('');
+    lines.push('Shelf Books searched from a STALE manifest, so their hits may be out of date:');
+    for (const entry of result.books_stale) lines.push(`- ${entry.book} [${entry.book_root}]: ${entry.reason} -- ${entry.repair}`);
   }
   lines.push('');
   if (!result.results.length) {

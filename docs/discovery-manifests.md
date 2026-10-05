@@ -448,7 +448,14 @@ flag would leave the string still lying.
 the helpers — the reader opening a Shelf page in an editor updates no manifest and sets no marker.
 Its output is therefore not "twelve Books rebuilt" but *which Books changed*: the committed
 `source_digest` is read before the window opens and compared after the commit, and each Book is
-reported `changed` or `unchanged`. Nothing else in the Library can answer that question.
+reported `changed` or `unchanged`. Until S87 nothing else in the Library could answer that question.
+
+**The program's answer since S87 (1.3.4).** A stored manifest that reads `ok` while its pages changed is no longer
+served as current. Discovery recomputes the page digest of every active **local Shelf** Book it searches (not a shared
+Book, not the Local collection) and compares it with the stored `source_digest`. On a mismatch it still searches that
+manifest, and it lists the Book in `books_stale` with its repair. `deskpost shelf rebuild <slug>` writes a new
+generation from the pages on disk through the ordinary mutation window, and with no slug it rebuilds every Book the
+Shelf catalog lists. The repair hint for a Shelf Book whose manifest is missing or dirty names the same verb.
 
 **Resume is disabled under `-Rebuild`, and that is a deviation from the spec worth keeping.** The
 spec described one resume rule; the delegate found that applying it to a rebuild defeats the

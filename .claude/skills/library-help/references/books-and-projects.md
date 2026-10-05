@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.3/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.4/docs/seats.md).
 
 ## Books
 
@@ -56,7 +56,11 @@ reader or search for ordinary reader requests.
 library shelf new <slug> --title "<title>" --summary "<one line>"      # a new curated Book
 library book add-page <slug> <page> --content-path <file>             # add a page; the Book open
 library shelf rename | remove | archive | restore                      # each previews first
+library shelf rebuild [<slug>]                                         # Discovery manifest from disk
 ```
+
+A page corrected in place on the Shelf leaves its Discovery manifest behind. Discovery then lists the Book in
+`books_stale` and still searches it; `library shelf rebuild <slug>` brings the manifest up to date.
 
 ### When two Books cover the same thing
 
@@ -103,6 +107,11 @@ library hub edit <slug> --mode <mode> ...
 ```
 
 `hub new` needs no seat, and a seat can only be created for a Hub that exists and is active.
+
+**Linking a Hub page to a Book.** A collection Book's page is `[[books/<slug>/wiki/<page>|label]]`, and a Shelf
+Book's is `[[shelf/<slug>/wiki/<page>|label]]`. A Book that changes often is best kept on the Shelf and linked
+there, because its pages can be corrected in place; a collection Book's pages change only by recall and refresh
+until 1.4.0 brings an in-place edit.
 
 ### A Hub for development work
 

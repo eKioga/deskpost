@@ -348,7 +348,23 @@ async function readValidatedBookPageContent(context: ReaderContext, slug: string
     bookRoot.form === 'shared'
       ? await readConnectionRecord(context, `${bookRoot.storeWiki}/${page}`, words)
       : await readCollectionRecord(context, state.projectId, `${bookRoot.wikiRoot}/${page}`, words);
-  if (record === 'absent') refuse('That page is not in this Book.');
+  if (record === 'absent') {
+    // AN ARCHIVED BOOK IS NAMED, NOT SEARCHED FOR (S87, ruling 3): when the Book's own `_book` is gone too, the Book left
+    // the collection, and "not in this Book" would send a seat looking for a page. No archive lookup in the refusal.
+    let book: { content: string } | 'absent' | null = null;
+    try {
+      book =
+        bookRoot.form === 'shared'
+          ? await readConnectionRecord(context, `${bookRoot.storeWiki}/_book`, words)
+          : await readCollectionRecord(context, state.projectId, `${bookRoot.wikiRoot}/_book`, words);
+    } catch {
+      book = null;
+    }
+    if (book === 'absent') {
+      refuse('This Book is no longer in the collection (archived or removed). Close it, or read it from the archive with `place: archive`.');
+    }
+    refuse('That page is not in this Book.');
+  }
   return record.content;
 }
 

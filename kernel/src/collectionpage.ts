@@ -153,7 +153,9 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
   const pageFull = path.join(wiki, ...`${page}.md`.split('/'));
   assertInsideRoot(wiki, `${page}.md`, `collection/books/${slug}/wiki`);
   if (lexists(pageFull)) {
-    refuse(`collection/books/${slug}/wiki/${page}.md already exists. This writer only ever adds a page; choose another page path.`);
+    refuse(`collection/books/${slug}/wiki/${page}.md already exists. This writer only ever adds a page; choose another page path. ` +
+        `To change that page, recall the Book (deskpost shelf recall ${slug}), edit the Shelf copy, and return it with ` +
+        `deskpost publish refresh <shelf-slug>; 1.4.0 brings an in-place page edit.`);
   }
 
   // THE BODY: a file (preferred for prose) or inline text, never both.
