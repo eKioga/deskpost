@@ -56,7 +56,10 @@ Every Kickoff carries these sections:
 - **WHERE THINGS STAND**: the checkout's SHA, the installed version, and what is not in scope.
 - **PARTS**: the rows, in order, each its own commit.
 - **MERGE**: `desk/sNN` with `base=<master SHA>`, `tip=<commit SHA>` and the gate digest for that
-  tip, or "none".
+  tip, or "none". The **gate digest** is the `-Fast` gate's summary line at the tip
+  (`N passed, N warned, N failed, N skipped`) and `git config core.bare` after it. It is a summary,
+  not a hash, so a branch rebased onto `master` takes it from a `-Fast` run at the new tip, never from
+  an amend.
 - **COMMANDS**: the command families it will run, so the reader can widen the harness allowlist
   beforehand.
 - **CHARTER**: the commits and the one private push the session may make. See below.
@@ -87,7 +90,8 @@ There is no template file. The reference is the most recent real Kickoff.
    `started`. Then A ticks the pointer with `check-item`.
 4. **Merge.** If MERGE names a branch, A checks that `master` still equals `base` and `desk/sNN`
    still points at `tip`, then runs `git merge --ff-only <tip>`. A mismatch in either SHA parks the
-   merge, and B owns it.
+   merge, and B owns it. A's `-Fast` gate after the merge is checked against MERGE's gate digest; a
+   FAIL there, or a summary line that differs, is recorded on the attempt page.
 5. Reconcile the plan ledger with `git log`, and run the gate.
 
 ### Work

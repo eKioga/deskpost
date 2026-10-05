@@ -284,8 +284,8 @@ function sha256File(file: string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** One ZIP's file entries, name and uncompressed bytes' SHA-256, read from its central directory (legacy adoption). */
-export function zipInventory(zipFile: string): { path: string; sha256: string }[] {
+/** One ZIP's file entries in central-directory order: each name, and its uncompressed bytes read on demand. */
+function zipEntries(zipFile: string): { name: string; bytes: () => Buffer }[] {
   const data = fs.readFileSync(zipFile);
   let end = -1;
   for (let i = data.length - 22; i >= Math.max(0, data.length - 65557); i -= 1) {
@@ -297,7 +297,7 @@ export function zipInventory(zipFile: string): { path: string; sha256: string }[
   if (end < 0) throw new Error(`${zipFile} is not a ZIP archive this can read (no end of central directory).`);
   const count = data.readUInt16LE(end + 10);
   let at = data.readUInt32LE(end + 16);
-  const out: { path: string; sha256: string }[] = [];
+  const out: { name: string; bytes: () => Buffer }[] = [];
   for (let n = 0; n < count; n += 1) {
     if (data.readUInt32LE(at) !== 0x02014b50) throw new Error(`${zipFile} has a malformed central directory.`);
     const method = data.readUInt16LE(at + 10);
@@ -308,16 +308,63 @@ export function zipInventory(zipFile: string): { path: string; sha256: string }[
     const local = data.readUInt32LE(at + 42);
     const name = data.toString('utf8', at + 46, at + 46 + nameLength);
     at += 46 + nameLength + extraLength + commentLength;
-    if (name.endsWith('/')) continue;
-    const localName = data.readUInt16LE(local + 26);
-    const localExtra = data.readUInt16LE(local + 28);
-    const start = local + 30 + localName + localExtra;
-    const raw = data.subarray(start, start + compressed);
-    const bytes = method === 0 ? raw : method === 8 ? zlib.inflateRawSync(raw) : null;
-    if (bytes === null) throw new Error(`${zipFile} holds ${name} compressed with method ${method}, which this cannot read.`);
-    out.push({ path: name, sha256: createHash('sha256').update(bytes).digest('hex') });
+    out.push({
+      name,
+      bytes: () => {
+        const localName = data.readUInt16LE(local + 26);
+        const localExtra = data.readUInt16LE(local + 28);
+        const start = local + 30 + localName + localExtra;
+        const raw = data.subarray(start, start + compressed);
+        const bytes = method === 0 ? raw : method === 8 ? zlib.inflateRawSync(raw) : null;
+        if (bytes === null) throw new Error(`${zipFile} holds ${name} compressed with method ${method}, which this cannot read.`);
+        return bytes;
+      },
+    });
   }
   return out;
+}
+
+/** One ZIP's file entries, name and uncompressed bytes' SHA-256, read from its central directory (legacy adoption). */
+export function zipInventory(zipFile: string): { path: string; sha256: string }[] {
+  return zipEntries(zipFile)
+    .filter((entry) => !entry.name.endsWith('/'))
+    .map((entry) => ({ path: entry.name, sha256: createHash('sha256').update(entry.bytes()).digest('hex') }));
+}
+
+/**
+ * EXTRACT A RELEASE ARCHIVE (PLAN-install-without-powershell.md D2), as install.ps1's `ZipFile.ExtractToDirectory` and
+ * its one-top-folder check did, refusing before anything is written: an absolute name, a drive, a `..` segment, and
+ * anything but exactly one top folder holding every file. Returns that folder, under `destination`.
+ */
+export function zipExtract(zipFile: string, destination: string): string {
+  const entries = zipEntries(zipFile);
+  const tops = new Set<string>();
+  const label = path.basename(zipFile);
+  for (const entry of entries) {
+    const name = entry.name.replace(/\\/g, '/');
+    if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) throw new Error(`${label} names an absolute path (${entry.name}); a release holds relative paths only. Nothing was extracted.`);
+    const segments = name.split('/').filter((segment) => segment !== '');
+    if (segments.some((segment) => segment === '..' || segment === '.')) throw new Error(`${label} names a path that leaves its folder (${entry.name}). Nothing was extracted.`);
+    // A ':' is a drive or an alternate data stream on Windows, never a file name a release ships.
+    if (segments.some((segment) => segment.includes(':'))) throw new Error(`${label} names a path with ':' in it (${entry.name}), which is not a file name. Nothing was extracted.`);
+    if (!segments.length) continue;
+    if (segments.length === 1 && !name.endsWith('/')) throw new Error(`${label} holds the file ${entry.name} outside a top-level folder; a release holds one folder. Nothing was extracted.`);
+    tops.add(segments[0]!);
+  }
+  if (tops.size !== 1) throw new Error(`${label} holds ${tops.size} top-level folders; a release holds one. Nothing was extracted.`);
+  const top = path.join(destination, [...tops][0]!);
+  fs.mkdirSync(top, { recursive: true });
+  for (const entry of entries) {
+    const name = entry.name.replace(/\\/g, '/');
+    const target = path.join(destination, ...name.split('/').filter((segment) => segment !== ''));
+    if (name.endsWith('/')) {
+      fs.mkdirSync(target, { recursive: true });
+      continue;
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, entry.bytes());
+  }
+  return top;
 }
 
 export interface RemovalList {

@@ -1071,7 +1071,7 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
 }
 
 /** The checks that need no Library: the program's own, run once whatever the Libraries are. */
-const PROGRAM_WIDE_CHECKS = new Set(['program.command-resolves', 'program.assistant-present', 'settings.user-inbound', 'program.refresh-finished']);
+export const PROGRAM_WIDE_CHECKS = new Set(['program.command-resolves', 'program.assistant-present', 'settings.user-inbound', 'program.refresh-finished']);
 
 /**
  * `doctor --served-by <root>` (D8, PLAN-one-upgrade.md r6 amendment 10): every Library the install at <root> serves,

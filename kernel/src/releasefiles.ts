@@ -6,11 +6,12 @@
  * development". This filters the RELEASE ARCHIVE only. tools/Build-KernelRelease.ps1 passes the public tree's file list
  * (tools/PublicTreeAllowlist.ps1) on stdin and stages what this prints. It keeps:
  *   - every file that is not PowerShell -- the kernel, the plugin, the skills and docs the program reads at runtime;
- *   - `install.ps1` (the installer, the first named exception, until "Install without PowerShell");
+ *   - `install.ps1` (since 1.3.5 a forwarder onto `library install`, kept for the one-liners until the PowerShell
+ *     development tooling goes; ADR-0066);
  *   - the Basic Memory reader adapter, `.claude/adapters/Validated-BookReader.ps1`, and its transitive closure of
  *     dot-sourced `tools/` scripts, computed here from the files themselves (Q3: the second named exception).
  * It drops every other `.ps1`, the source checkout's hook scripts among them, and the root `library.cmd` and
- * `library.ps1`: the installed shims call `current\bin\library.exe`. The root `library` stays, for install.sh.
+ * `library.ps1`: the installed shims call `current\bin\library.exe`. The root `library` goes too (D10, S90).
  *
  * Self-test section 117 judges a built tree against these same rules, and that the closure it holds is complete.
  */
@@ -26,14 +27,12 @@ export const ADAPTER = '.claude/adapters/Validated-BookReader.ps1';
 export const KEPT_SCRIPTS = ['install.ps1'];
 
 /**
- * The root launchers a release drops: library.ps1 is the dispatcher, and library.cmd runs it; an install runs
- * bin\library.exe instead. THE EXTENSIONLESS `library` STAYS (S83 row 5, found in the clean distro): install.sh
- * `chmod`s it in the extracted tree (`install.sh:142`), so a release without it does not install on Linux.
+ * The root launchers a release drops: library.ps1 is the dispatcher, and library.cmd and the extensionless `library`
+ * run it; an install runs bin/library[.exe] instead. The extensionless one was kept from S83 row 5 only because
+ * install.sh `chmod`ed it in the extracted tree; since S90 (PLAN-install-without-powershell.md D10) install.sh marks
+ * only bin/library, so it goes with the other two. The source checkout keeps all three.
  */
-export const DROPPED_LAUNCHERS = ['library.cmd', 'library.ps1'];
-
-/** Root files the installers touch in an extracted release, which every release must therefore carry. */
-export const INSTALLER_NEEDS = ['library'];
+export const DROPPED_LAUNCHERS = ['library', 'library.cmd', 'library.ps1'];
 
 function isPowerShell(file: string): boolean {
   return /\.ps(1|m1|d1)$/i.test(file);

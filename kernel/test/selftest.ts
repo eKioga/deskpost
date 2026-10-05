@@ -502,6 +502,8 @@ if (selected(8)) {
       process: ['process'],
       // S83. With none of its arguments it refuses, in its own branch; off Windows it refuses by platform.
       'finish-uninstall': ['finish-uninstall'],
+      // S89. A flag it does not take refuses in its own branch, before anything is read.
+      install: ['install', '--no-such-flag'],
       // S55. With no terminal and no answers the menu refuses in its own branch; an unknown action stops `library`'s.
       menu: ['menu'],
       library: ['library', 'no-such-action'],
@@ -4680,21 +4682,13 @@ if (selected(50)) {
       equal(listed.join('\n'), expected.join('\n'), 'the ZIP inventory did not read the entries and their hashes');
     }
 
-    // ONE REMOVAL, TWO WRITERS (S83, kickoffs/s83 ruling 4). The finisher is the kernel's `finish-uninstall` now, and
-    // install.ps1 keeps its own block for -Resume finish, so byte equality no longer applies. Instead both run on the
-    // same frozen list over twin fixtures, and must leave the same tree and report the same number of problems: a link
-    // removed as a link, a real folder named as a link kept, a file reached through a junction kept, a changed file kept,
-    // a folder that is not empty afterwards kept. The PATH entry is judged in section 116, through a compiled kernel
-    // (the registry is bun:ffi), against the same block.
+    // ONE REMOVAL (S83, kickoffs/s83 ruling 4; S89 row 4). The finisher and `library install --resume finish` both run the
+    // kernel's removeUninstallList. Its differential against install.ps1's removal block retired with that block, which
+    // the forwarder no longer carries (PLAN-install-without-powershell.md D6); the rules are held here directly, on a
+    // frozen list: a link removed as a link, a real folder named as a link kept, a file reached through a junction kept,
+    // a changed file kept, a folder that is not empty afterwards kept. The PATH entry is section 116's.
     if (process.platform === 'win32') {
       const { removeUninstallList } = await import('../src/finisher.ts');
-      const installBlock = (() => {
-        const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), 'utf8').replace(/\r\n/g, '\n');
-        const start = text.indexOf('# --- BEGIN uninstall removal');
-        const end = text.indexOf('# --- END uninstall removal ---');
-        return start >= 0 && end > start ? text.substring(start, end) : null;
-      })();
-      check(installBlock !== null && installBlock.includes('function Invoke-UninstallRemoval'), "install.ps1 carries no uninstall removal block to judge the finisher against");
       const outside = path.join(root, 'outside');
       fs.mkdirSync(outside, { recursive: true });
       fs.writeFileSync(path.join(outside, 'x.txt'), 'outside');
@@ -4739,18 +4733,15 @@ if (selected(50)) {
         return out;
       };
       const kernelRoot = twin('kernel-side');
-      const oracleRoot = twin('installer-side');
       const kernelProblems = removeUninstallList(kernelRoot, removal);
-      fs.writeFileSync(path.join(root, 'block.ps1'), installBlock ?? '');
-      fs.writeFileSync(path.join(root, 'removal.json'), JSON.stringify(removal));
-      const oracle = spawnSync(
-        'powershell.exe',
-        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '. $env:S50_BLOCK; $r = [IO.File]::ReadAllText($env:S50_LIST) | ConvertFrom-Json; $p = Invoke-UninstallRemoval $env:S50_ROOT $r; Write-Output @($p).Count'],
-        { encoding: 'utf8', windowsHide: true, timeout: 120000, env: { ...process.env, S50_BLOCK: path.join(root, 'block.ps1'), S50_LIST: path.join(root, 'removal.json'), S50_ROOT: oracleRoot } },
+      // What the retired differential last measured both writers leave: one problem each for the real folder named as a
+      // link, the file reached through the junction, and the changed file.
+      equal(
+        tree(kernelRoot).join('\n'),
+        ['notalink/', 'versions/', 'versions/1.0.0/', 'versions/1.0.0/docs/', 'versions/1.0.0/docs/changed.txt', 'versions/1.0.0/keep/', 'versions/1.0.0/keep/extra.txt', 'versions/1.0.0/linked (link)'].join('\n'),
+        "the removal did not leave exactly what the rules keep",
       );
-      equal(oracle.status, 0, `install.ps1's removal block did not run: ${(oracle.stderr ?? '').trim()}`);
-      equal(tree(kernelRoot).join('\n'), tree(oracleRoot).join('\n'), "the finisher's removal and install.ps1's left different trees on the same frozen list");
-      equal(kernelProblems.length, Number((oracle.stdout ?? '').trim().split(/\s+/).pop()), `the finisher and install.ps1 reported a different number of problems: ${kernelProblems.join('; ')}`);
+      equal(kernelProblems.length, 3, `the removal reported other than its three problems: ${kernelProblems.join('; ')}`);
       check(
         !fs.existsSync(path.join(kernelRoot, 'current')) && fs.existsSync(path.join(kernelRoot, 'notalink')) && fs.existsSync(path.join(outside, 'x.txt')) &&
           !fs.existsSync(path.join(kernelRoot, 'versions', '1.0.0', 'bin')) && fs.existsSync(path.join(kernelRoot, 'versions', '1.0.0', 'docs', 'changed.txt')) &&
@@ -10234,14 +10225,15 @@ if (selected(115) && process.platform === 'win32') {
 // Judged only against a compiled kernel (LIBRARY_SELFTEST_KERNEL naming an .exe): the finisher is a copy of that binary.
 // A fixture install of it -- a version folder with its inventory, `current`, the shim, current.json and a receipt that
 // owns a PATH entry -- is uninstalled with powershell.exe off the child's PATH. The PATH entry lives in a fixture key
-// (DESKPOST_PATH_KEY, an HKCU\Software subkey), never HKCU\Environment, and the expected value is install.ps1's own
-// Remove-DeskpostPathEntry run on a twin key: every other entry byte for byte, unexpanded, REG_EXPAND_SZ. Then the
-// fault: DESKPOST_UNINSTALL_FAULT=no-finisher writes `cancel` and deletes nothing. And no `%TEMP%` copy is left.
+// (DESKPOST_PATH_KEY, an HKCU\Software subkey), never HKCU\Environment, and the value left is asserted here (S89 row 4:
+// install.ps1's Remove-DeskpostPathEntry, the oracle until then, left with the forwarder): every other entry byte for
+// byte, unexpanded, empty entries dropped, REG_EXPAND_SZ. Then the fault: DESKPOST_UNINSTALL_FAULT=no-finisher writes
+// `cancel` and deletes nothing. And no `%TEMP%` copy is left.
 if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!)) {
   const { SHIM_TEXT } = await import('../src/lifecycle.ts');
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-finisher-')));
   const tag = path.basename(root).replace(/[^A-Za-z0-9]/g, '');
-  const keys = { kernel: `Software\\Deskpost-selftest-${tag}-kernel`, oracle: `Software\\Deskpost-selftest-${tag}-oracle` };
+  const keys = { kernel: `Software\\Deskpost-selftest-${tag}-kernel` };
   const ps = (script: string, env: Record<string, string> = {}) =>
     spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 120000, env: { ...process.env, ...env } });
   const readKey = (key: string) => {
@@ -10281,18 +10273,11 @@ if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1
     const r = install('R', null);
     const entry = path.join(r, 'bin');
     const stored = `%USERPROFILE%\\tools;${entry}\\;C:\\Other Dir;;C:\\last`;
-    for (const key of [keys.kernel, keys.oracle]) {
-      const made = ps("New-Item -Path ('HKCU:\\' + $env:S116_KEY) -Force | Out-Null; New-ItemProperty -Path ('HKCU:\\' + $env:S116_KEY) -Name Path -PropertyType ExpandString -Value $env:S116_VALUE -Force | Out-Null", { S116_KEY: key, S116_VALUE: stored });
-      equal(made.status, 0, `the fixture PATH key could not be made: ${made.stderr}`);
-    }
+    const made = ps("New-Item -Path ('HKCU:\\' + $env:S116_KEY) -Force | Out-Null; New-ItemProperty -Path ('HKCU:\\' + $env:S116_KEY) -Name Path -PropertyType ExpandString -Value $env:S116_VALUE -Force | Out-Null", { S116_KEY: keys.kernel, S116_VALUE: stored });
+    equal(made.status, 0, `the fixture PATH key could not be made: ${made.stderr}`);
     const receipt = JSON.parse(fs.readFileSync(path.join(r, 'install-receipt.json'), 'utf8')) as Record<string, unknown>;
     receipt['owned'] = [{ kind: 'path', entry }];
     fs.writeFileSync(path.join(r, 'install-receipt.json'), JSON.stringify(receipt));
-    const blockText = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), 'utf8').replace(/\r\n/g, '\n');
-    const block = blockText.substring(blockText.indexOf('# --- BEGIN uninstall removal'), blockText.indexOf('# --- END uninstall removal ---'));
-    fs.writeFileSync(path.join(root, 'block.ps1'), block.split("'HKCU:\\Environment'").join("('HKCU:\\' + $env:S116_KEY)"));
-    const expected = ps('. $env:S116_BLOCK; Remove-DeskpostPathEntry $env:S116_ENTRY', { S116_BLOCK: path.join(root, 'block.ps1'), S116_KEY: keys.oracle, S116_ENTRY: entry });
-    equal(expected.status, 0, `install.ps1's Remove-DeskpostPathEntry did not run on the twin key: ${expected.stderr}`);
 
     fs.rmSync(resultFile, { force: true });
     const ran = spawnSync(path.join(r, 'current', 'bin', 'library.exe'), ['uninstall', '--yes', '--json'], { cwd: root, env, encoding: 'utf8', timeout: 120000 });
@@ -10304,9 +10289,7 @@ if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1
     const settle = Date.now() + 10000;
     while (Date.now() < settle && fs.existsSync(r)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
     check(!fs.existsSync(r), `the fixture install is not gone: ${fs.existsSync(r) ? fs.readdirSync(r).join(', ') : ''}`);
-    const after = readKey(keys.kernel);
-    equal(after, readKey(keys.oracle), "the finisher's PATH edit differs from install.ps1's on the same value");
-    check(after.startsWith('ExpandString|') && !after.toLowerCase().includes(entry.toLowerCase()) && after.includes('%USERPROFILE%\\tools'), `the PATH entry was not removed with the rest kept unexpanded as REG_EXPAND_SZ: ${after}`);
+    equal(readKey(keys.kernel), 'ExpandString|%USERPROFILE%\\tools;C:\\Other Dir;C:\\last', 'the PATH entry was not removed with the rest kept as stored, unexpanded, as REG_EXPAND_SZ');
 
     // THE FAULT: no finisher starts, `cancel` is written, nothing is deleted.
     const f = install('F', null);
@@ -10339,7 +10322,7 @@ if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1
 // (every script a closure file dot-sources is there); and an init from it must register no `powershell` in a Claude
 // workspace -- Codex's own `powershell.exe -Command` launcher is the named exception, so .codex/ is not read.
 if (selected(117) && KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path.dirname(path.dirname(KERNEL_COMMAND[0]!)), 'release.json'))) {
-  const { adapterClosure, disallowedScripts, dotSourcedTools, ADAPTER, INSTALLER_NEEDS } = await import('../src/releasefiles.ts');
+  const { adapterClosure, disallowedScripts, dotSourcedTools, ADAPTER } = await import('../src/releasefiles.ts');
   const tree = path.dirname(path.dirname(path.resolve(KERNEL_COMMAND[0]!)));
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-release-tree-')));
   try {
@@ -10362,10 +10345,10 @@ if (selected(117) && KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path
     const disallowed = disallowedScripts(files, read);
     check(disallowed.length === 0, `the built release carries ${disallowed.length} PowerShell file(s) or launcher(s) outside the allowlist: ${disallowed.slice(0, 12).join(', ')}`);
     check(files.includes('install.ps1'), 'the built release has no install.ps1 beside its files');
-    // FOUND IN THE CLEAN DISTRO (S83 row 5): install.sh `chmod`s the root `library` in the extracted tree, so a release
-    // that dropped it failed to install on Linux.
-    const installerMissing = INSTALLER_NEEDS.filter((file) => !files.includes(file));
-    check(installerMissing.length === 0, `the built release lacks what install.sh touches in it: ${installerMissing.join(', ')}`);
+    // THE ROOT LAUNCHERS ARE GONE, THE EXTENSIONLESS `library` TOO (S90 row 7, PLAN D10): install.sh no longer `chmod`s
+    // it, so a release does not carry the dead launcher (S83 row 5 had kept it for that `chmod` alone).
+    const launchers = ['library', 'library.cmd', 'library.ps1'].filter((file) => files.includes(file));
+    check(launchers.length === 0, `the built release still carries a root launcher: ${launchers.join(', ')}`);
     const closure = adapterClosure(read);
     check(closure.includes(ADAPTER) && closure.length > 1, `the built release does not carry the reader adapter and its closure: ${closure.join(', ')}`);
     const unresolved = closure.flatMap((file) => dotSourcedTools(read(file) ?? '').filter((needed) => !files.includes(needed)).map((needed) => `${file} needs ${needed}`));
@@ -10498,7 +10481,8 @@ if (selected(120)) {
       why: 'a PowerShell process the kernel starts',
     },
     { pattern: /Get-Process|Get-CimInstance|ConvertTo-Json/, why: 'a PowerShell script the kernel runs' },
-    { pattern: /-InstallRoot|-NoPathChange|-Resume finish|install\.ps1/, why: "the installer's own flags, and the installer ships" },
+    // S89: `library install` spells these as install.ps1 does when that forwarder runs it (`--forwarded`).
+    { pattern: /-InstallRoot|-NoPathChange|-Resume\b|-DryRun|-Json\b|-PlanId|install\.ps1/, why: "the installer's own flags, and the installer ships" },
     { pattern: /^-Title$/, why: "a result's title_source value, which the oracle reports the same" },
   ];
   // THE BACKLOG, file by file: the PowerShell-era strings not yet rewritten (S85's handback lists them for B).
@@ -11073,6 +11057,1077 @@ if (selected(128)) {
     check(child.includes('  - [x] nested child A') && child.includes('- [ ] Sibling item'), `check-item on a nested child did not tick that child alone: ${child.slice(-400)}`);
   } catch (error) {
     failures.push(`section 128 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A ZIP WRITTEN HERE, entry by entry: method 0 (stored) or 8 (deflated), so the extractor reads both kinds a release
+ * build writes. Names are written as given, so a section can hand the extractor a name no build would make.
+ */
+function selftestZip(entries: { name: string; data?: string; bytes?: Buffer; deflate?: boolean }[]): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const raw = entry.bytes ?? Buffer.from(entry.data ?? '', 'utf8');
+    const body = entry.deflate ? zlib.deflateRawSync(raw) : raw;
+    const crc = zlib.crc32(raw);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(entry.deflate ? 8 : 0, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(entry.deflate ? 8 : 0, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(raw.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, body);
+    centrals.push(central, name);
+    offset += 30 + name.length + body.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
+
+// SECTION 129. THE BOOTSTRAP'S RELEASE READING (kickoffs/s89 row 0, PLAN-install-without-powershell.md D2, D3). The
+// extractor writes a release's one top folder, stored and deflated entries alike, and refuses before writing anything an
+// absolute name, a drive, a `..` segment, a ':' in a name, a file outside a top folder, and two top folders. A
+// SHA256SUMS line is chosen as D2 says: the versioned name first, the unversioned one only alone, both only with equal
+// hashes, never two of a kind. A local release folder is read by copying, and one without the file refuses. A caller
+// cannot hand the extracted binary another tree: `--extracted` and `--archive-sha256` are the bootstrap's alone.
+if (selected(129)) {
+  const { zipExtract } = await import('../src/lifecycle.ts');
+  const { archiveToRead, chooseArchive, readReleaseFile, withoutInternalOptions } = await import('../src/bootstrap.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-bootstrap-')));
+  try {
+    const zipAt = (name: string, entries: { name: string; data?: string; deflate?: boolean }[]) => {
+      const file = path.join(root, name);
+      fs.writeFileSync(file, selftestZip(entries));
+      return file;
+    };
+    const filesUnder = (folder: string): string[] => {
+      if (!fs.existsSync(folder)) return [];
+      return fs.readdirSync(folder, { recursive: true, withFileTypes: true }).filter((item) => item.isFile()).map((item) => path.join(item.parentPath, item.name));
+    };
+
+    // 1. A RELEASE'S ONE FOLDER, STORED AND DEFLATED.
+    const good = zipAt('good.zip', [
+      { name: 'deskpost-9.9.9-win-x64/release.json', data: '{"plugin_version":"9.9.9"}' },
+      { name: 'deskpost-9.9.9-win-x64/bin/', data: '' },
+      { name: 'deskpost-9.9.9-win-x64/docs/deep/guide.md', data: 'a guide\n'.repeat(50), deflate: true },
+    ]);
+    const into = path.join(root, 'good');
+    const top = zipExtract(good, into);
+    equal(top, path.join(into, 'deskpost-9.9.9-win-x64'), 'the extractor did not return the release\'s one top folder');
+    equal(fs.readFileSync(path.join(top, 'docs', 'deep', 'guide.md'), 'utf8'), 'a guide\n'.repeat(50), 'a deflated entry did not extract to its bytes');
+    equal(fs.readFileSync(path.join(top, 'release.json'), 'utf8'), '{"plugin_version":"9.9.9"}', 'a stored entry did not extract to its bytes');
+    check(fs.statSync(path.join(top, 'bin')).isDirectory(), 'a folder entry was not made');
+
+    // 2. EVERY REFUSAL WRITES NOTHING.
+    const refusals: [string, { name: string; data?: string }[], RegExp][] = [
+      ['absolute', [{ name: '/etc/passwd', data: 'x' }], /absolute path/],
+      ['drive', [{ name: 'C:/Windows/x.dll', data: 'x' }], /absolute path/],
+      ['dotdot', [{ name: 'deskpost-1-win-x64/../../outside.txt', data: 'x' }], /leaves its folder/],
+      ['backslash dotdot', [{ name: 'deskpost-1-win-x64\\..\\outside.txt', data: 'x' }], /leaves its folder/],
+      ['stream', [{ name: 'deskpost-1-win-x64/file.txt:hidden', data: 'x' }], /with ':' in it/],
+      ['loose file', [{ name: 'deskpost-1-win-x64/a.txt', data: 'x' }, { name: 'loose.txt', data: 'x' }], /outside a top-level folder/],
+      ['two tops', [{ name: 'one/a.txt', data: 'x' }, { name: 'two/b.txt', data: 'x' }], /2 top-level folders/],
+      ['empty', [], /0 top-level folders/],
+    ];
+    for (const [label, entries, pattern] of refusals) {
+      const destination = path.join(root, `refused-${label.replace(/\s+/g, '-')}`);
+      let message = '';
+      try {
+        zipExtract(zipAt(`${label.replace(/\s+/g, '-')}.zip`, entries), destination);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      check(pattern.test(message), `the extractor did not refuse the ${label} archive as it should: '${message}'`);
+      equal(filesUnder(destination).length, 0, `the extractor wrote a file from the refused ${label} archive`);
+    }
+    check(!fs.existsSync(path.join(root, 'outside.txt')), 'a `..` entry escaped the extraction folder');
+
+    // 3. WHICH SHA256SUMS LINE.
+    const a = 'a'.repeat(64);
+    const b = 'b'.repeat(64);
+    const pick = (text: string, platform = 'win-x64') => {
+      try {
+        return chooseArchive(text, platform);
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    equal(JSON.stringify(pick(`${a}  deskpost-1.3.5-win-x64.zip\n${a}  deskpost-win-x64.zip\n${b}  deskpost-1.3.5-linux-x64.zip\n`)), JSON.stringify({ sha256: a, name: 'deskpost-1.3.5-win-x64.zip' }), 'with both names listed and equal, the versioned name was not chosen');
+    equal(JSON.stringify(pick(`${a} *deskpost-win-x64.zip\n`)), JSON.stringify({ sha256: a, name: 'deskpost-win-x64.zip' }), 'the unversioned name alone was not chosen');
+    equal(JSON.stringify(pick(`${a}  deskpost-1.3.4-win-x64.zip\n`)), JSON.stringify({ sha256: a, name: 'deskpost-1.3.4-win-x64.zip' }), 'a 1.3.4 SHA256SUMS (versioned only) was not read');
+    check(/different hashes/.test(String(pick(`${a}  deskpost-1.3.5-win-x64.zip\n${b}  deskpost-win-x64.zip\n`))), 'two names with different hashes were not refused');
+    check(/names 2 archive/.test(String(pick(`${a}  deskpost-1.3.5-win-x64.zip\n${b}  deskpost-1.3.6-win-x64.zip\n`))), 'two versioned lines were not refused');
+    check(/names 0 archive/.test(String(pick(`${a}  deskpost-1.3.5-linux-x64.zip\n`))), 'a SHA256SUMS with no line for the platform was not refused');
+    equal(JSON.stringify(pick(`${a}  deskpost-1.3.5-win-arm64.zip\n${b}  deskpost-1.3.5-win-x64.zip\n`, 'win-arm64')), JSON.stringify({ sha256: a, name: 'deskpost-1.3.5-win-arm64.zip' }), 'the arm64 line was not chosen for win-arm64');
+
+    // 4. A LOCAL RELEASE FOLDER IS READ BY COPYING; ONE WITHOUT THE FILE REFUSES.
+    const folder = path.join(root, 'release');
+    fs.mkdirSync(folder);
+    fs.writeFileSync(path.join(folder, 'SHA256SUMS'), `${a}  deskpost-win-x64.zip\n`);
+    const temp = path.join(root, 'temp');
+    fs.mkdirSync(temp);
+    const read = await readReleaseFile(folder, 'SHA256SUMS', temp);
+    equal(fs.readFileSync(read, 'utf8'), `${a}  deskpost-win-x64.zip\n`, 'a local release folder\'s SHA256SUMS was not copied as it is');
+    let missing = '';
+    try {
+      await readReleaseFile(folder, 'deskpost-win-x64.zip', temp);
+    } catch (error) {
+      missing = (error as Error).message;
+    }
+    check(/holds no deskpost-win-x64\.zip/.test(missing), `a release folder missing its archive was not refused by name: '${missing}'`);
+
+    // 4b. THE COMMAND PROMPT LINE'S FOLDER (S91): SHA256SUMS lists both names, the folder holds only the unversioned
+    // twin, so the twin is read; with the versioned file there it is preferred; with neither, the versioned name stands.
+    const both = `${a}  deskpost-1.3.5-win-x64.zip\n${b}  deskpost-1.3.5-linux-x64.zip\n${a}  deskpost-win-x64.zip\n${b}  deskpost-linux-x64.zip\n`;
+    const lineFolder = path.join(root, 'line-release');
+    fs.mkdirSync(lineFolder);
+    equal(archiveToRead(lineFolder, both, 'win-x64').name, 'deskpost-1.3.5-win-x64.zip', 'with neither archive in the folder, the versioned name did not stand');
+    fs.writeFileSync(path.join(lineFolder, 'deskpost-win-x64.zip'), 'twin');
+    equal(JSON.stringify(archiveToRead(lineFolder, both, 'win-x64')), JSON.stringify({ sha256: a, name: 'deskpost-win-x64.zip' }), 'a folder holding only the unversioned twin did not read it');
+    equal(archiveToRead(lineFolder, `${a}  deskpost-1.3.5-win-x64.zip\n`, 'win-x64').name, 'deskpost-1.3.5-win-x64.zip', 'an unlisted twin was read');
+    fs.writeFileSync(path.join(lineFolder, 'deskpost-1.3.5-win-x64.zip'), 'versioned');
+    equal(archiveToRead(lineFolder, both, 'win-x64').name, 'deskpost-1.3.5-win-x64.zip', 'with both archives in the folder, the versioned name was not preferred');
+    equal(archiveToRead('https://example.invalid/download', both, 'win-x64').name, 'deskpost-1.3.5-win-x64.zip', 'a release URL did not keep the versioned name');
+
+    // 5. THE BOOTSTRAP'S OWN TWO OPTIONS NEVER COME FROM ITS CALLER.
+    equal(
+      JSON.stringify(withoutInternalOptions(['--release', 'x', '--extracted', 'C:\\elsewhere', '--yes', '--archive-sha256', 'f00', '--bootstrap-folder', 'C:\\setup', '--json'])),
+      JSON.stringify(['--release', 'x', '--yes', '--json']),
+      'a caller\'s --extracted, --archive-sha256 or --bootstrap-folder reached the extracted binary',
+    );
+  } catch (error) {
+    failures.push(`section 129 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A RELEASE TREE TO INSTALL FROM, for the sections that drive `library install --extracted` (130 on): the tree the
+ * compiled kernel under test sits in (LIBRARY_SELFTEST_KERNEL naming `<tree>\bin\library.exe`, a release built and
+ * extracted), or a copy of it re-versioned to `<version>+<suffix>` the way tools/Test-KernelUpgrade.ps1 makes its second
+ * release: release.json's plugin_version and the two plugin manifests, re-hashed in `.inventory.json`. The binary's baked
+ * version stays, which is what release.json's binary_version says. Null when no such tree is under test.
+ */
+function releaseTreeUnderTest(): string | null {
+  if (process.platform !== 'win32' || KERNEL_COMMAND.length !== 1 || !/\.exe$/i.test(KERNEL_COMMAND[0]!)) return null;
+  const tree = path.dirname(path.dirname(path.resolve(KERNEL_COMMAND[0]!)));
+  return fs.existsSync(path.join(tree, 'release.json')) ? tree : null;
+}
+
+function reversionedTree(tree: string, into: string, suffix: string): { tree: string; version: string } {
+  fs.cpSync(tree, into, { recursive: true });
+  const release = JSON.parse(fs.readFileSync(path.join(into, 'release.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+  const version = `${String(release['plugin_version'])}+${suffix}`;
+  const edited: string[] = [];
+  for (const [file, field] of [['release.json', 'plugin_version'], ['.codex-plugin/plugin.json', 'version'], ['.claude-plugin/plugin.json', 'version']] as const) {
+    const full = path.join(into, ...file.split('/'));
+    if (!fs.existsSync(full)) continue;
+    fs.writeFileSync(full, fs.readFileSync(full, 'utf8').replace(new RegExp(`("${field}"\\s*:\\s*")[^"]*"`), `$1${version}"`));
+    edited.push(file);
+  }
+  const inventoryFile = path.join(into, '.inventory.json');
+  if (fs.existsSync(inventoryFile)) {
+    const inventory = JSON.parse(fs.readFileSync(inventoryFile, 'utf8').replace(/^﻿/, '')) as { files: { path: string; sha256: string }[] };
+    for (const entry of inventory.files) {
+      if (edited.includes(entry.path)) entry.sha256 = createHash('sha256').update(fs.readFileSync(path.join(into, ...entry.path.split('/')))).digest('hex');
+    }
+    fs.writeFileSync(inventoryFile, JSON.stringify(inventory, null, 2) + '\n');
+  }
+  return { tree: into, version };
+}
+
+/** An environment for a fixture install: the machine's own Deskpost and registry out of it, every PATH entry holding a shim dropped. */
+function fixtureInstallEnv(root: string, extra: Record<string, string> = {}): Record<string, string | undefined> {
+  const base: Record<string, string | undefined> = { ...process.env, ...QUIET_TAB };
+  const entries = (process.env['PATH'] ?? process.env['Path'] ?? '').split(';').filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')));
+  for (const key of Object.keys(base)) if (/^path$/i.test(key)) delete base[key];
+  return {
+    ...base,
+    PATH: entries.join(';'),
+    LIBRARY_WORKSPACE: '',
+    LIBRARY_SEAT: '',
+    LIBRARY_SEAT_CLAIM: '',
+    LIBRARY_WORKSPACES: path.join(root, 'reg'),
+    DESKPOST_USER_PATH: ';',
+    DESKPOST_INSTALL_FAULT_AFTER: '',
+    DESKPOST_INSTALL_ROOT: '',
+    DESKPOST_LIBRARY: '',
+    DESKPOST_YES: '',
+    CLAUDE_PID: '',
+    ...extra,
+  };
+}
+
+// SECTION 130. `library install` IS THE INSTALLER (kickoffs/s89 row 1, PLAN-install-without-powershell.md D1, D5).
+// Judged against a compiled kernel in a release tree, as the bootstrap runs one: `install --extracted <tree>`, its
+// binary the tree's own. A fresh install completes with its Library, `current`, the shims and a committed receipt, and
+// leaves no staging and no .pending; the same version again is refused without --repair and reuses versions\<v> with it;
+// an upgrade faulted after `activated` leaves pending with its owner relinquished, a re-run without --resume names the
+// choice, and --resume undo puts current and current.json back byte for byte and removes the new version; an upgrade
+// faulted after `staged` has nothing to undo, and --resume finish starts over and completes it. A refusal reaches
+// --refusal-file in the program's own words. A dry run as JSON is one line naming its plan and creates nothing, and the
+// install by that plan_id prints one result.
+if (selected(130) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-install-')));
+  try {
+    const versionA = String((JSON.parse(fs.readFileSync(path.join(treeA, 'release.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['plugin_version']);
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's130');
+    const shaOf = (text: string) => createHash('sha256').update(text).digest('hex');
+    const archiveA = shaOf(`archive ${versionA}`);
+    const archiveB = shaOf(`archive ${b.version}`);
+    const prog = path.join(root, 'prog');
+    const lib = path.join(root, 'lib');
+    fs.mkdirSync(path.join(root, 'reg'));
+    const install = (tree: string, archive: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(path.join(tree, 'bin', 'library.exe'), ['install', '--extracted', tree, '--archive-sha256', archive, '--install-root', prog, '--no-path-change', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, extra),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      // THE REFUSAL LAST: it is stderr's final line, after the screen on stdout.
+      return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', stderr: ran.stderr ?? '', said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-400) };
+    };
+    const receipt = () => JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as { pending: Record<string, unknown> | null; owned: Record<string, unknown>[] };
+    const currentTarget = () => {
+      try {
+        return path.basename(fs.readlinkSync(path.join(prog, 'current')).replace(/[\\/]+$/, ''));
+      } catch {
+        return null;
+      }
+    };
+    const leftovers = () => (fs.existsSync(path.join(prog, 'versions')) ? fs.readdirSync(path.join(prog, 'versions')).filter((name) => name.startsWith('.incoming-')) : []);
+
+    // 1. A FRESH INSTALL.
+    const fresh = install(treeA, archiveA, ['--library', lib, '--yes']);
+    equal(fresh.exit, 0, `a fresh install did not complete: ${fresh.said}`);
+    check(fs.existsSync(path.join(lib, '.library', 'workspace.json')), 'the fresh install made no Library');
+    equal(currentTarget(), versionA, 'current does not name the installed version');
+    check(receipt().pending === null && receipt().owned.some((item) => item['kind'] === 'version') && receipt().owned.some((item) => item['kind'] === 'library'), `the receipt was not committed with the version and the Library it owns: ${JSON.stringify(receipt()).slice(0, 300)}`);
+    for (const shim of ['deskpost.cmd', 'library.cmd']) check(fs.existsSync(path.join(prog, 'bin', shim)), `the fresh install wrote no ${shim}`);
+    check(!leftovers().length && !fs.existsSync(path.join(prog, '.pending')), `staging or .pending was left after a completed install: ${leftovers().join(', ')}`);
+    equal(fs.readFileSync(path.join(prog, 'versions', versionA, '.archive-sha256'), 'utf8').trim(), archiveA, 'the placed version does not record its archive');
+
+    // 2. THE SAME VERSION: REFUSED WITHOUT --repair, REUSED WITH IT.
+    const recordBefore = fs.readFileSync(path.join(prog, 'current.json'), 'utf8');
+    const refusalFile = path.join(root, 'refusal.txt');
+    const same = install(treeA, archiveA, ['--library', lib, '--yes', '--refusal-file', refusalFile]);
+    check(same.exit !== 0 && /already at/.test(same.said), `the same version without --repair was not refused: ${same.said}`);
+    check(fs.existsSync(refusalFile) && /already at/.test(fs.readFileSync(refusalFile, 'utf8')), 'the refusal did not reach --refusal-file in the program\'s own words');
+    equal(fs.readFileSync(path.join(prog, 'current.json'), 'utf8'), recordBefore, 'a refused run changed current.json');
+    const repair = install(treeA, archiveA, ['--library', lib, '--yes', '--repair']);
+    equal(repair.exit, 0, `--repair did not complete: ${repair.said}`);
+    check(receipt().pending === null && fs.readdirSync(path.join(prog, 'versions')).length === 1, `--repair did not reuse versions\\<v>: ${fs.readdirSync(path.join(prog, 'versions')).join(', ')}`);
+
+    // 3. AN UPGRADE FAULTED AFTER `activated`, THEN UNDONE.
+    const record = fs.readFileSync(path.join(prog, 'current.json'), 'utf8');
+    const hooks = fs.readFileSync(path.join(lib, '.claude', 'settings.local.json'), 'utf8');
+    const faulted = install(b.tree, archiveB, ['--yes'], { DESKPOST_INSTALL_FAULT_AFTER: 'activated' });
+    check(faulted.exit !== 0 && /fault injected after 'activated'/.test(faulted.said), `the fault after 'activated' did not stop the upgrade: ${faulted.said}`);
+    const pending = receipt().pending;
+    check(pending !== null && pending['phase'] === 'activated' && pending['owner'] === null && pending['operation'] === 'upgrade', `the fault did not leave pending at 'activated' with its owner relinquished: ${JSON.stringify(pending)}`);
+    const again = install(b.tree, archiveB, ['--yes']);
+    check(again.exit !== 0 && /--resume finish or --resume undo/.test(again.said), `a re-run without --resume did not name the choice: ${again.said}`);
+    const undone = install(b.tree, archiveB, ['--yes', '--resume', 'undo']);
+    equal(undone.exit, 0, `--resume undo did not complete: ${undone.said}`);
+    equal(currentTarget(), versionA, 'the undone upgrade did not put current back');
+    equal(fs.readFileSync(path.join(prog, 'current.json'), 'utf8'), record, 'the undone upgrade did not put current.json back byte for byte');
+    check(!fs.existsSync(path.join(prog, 'versions', b.version)) && receipt().pending === null && !fs.existsSync(path.join(prog, '.pending')), 'the undone upgrade left its version, its pending or .pending');
+    equal(fs.readFileSync(path.join(lib, '.claude', 'settings.local.json'), 'utf8'), hooks, "the undone upgrade changed the Library's hooks");
+
+    // 4. AN UPGRADE FAULTED AFTER `staged`: NOTHING TO UNDO, AND FINISH STARTS OVER.
+    const staged = install(b.tree, archiveB, ['--yes'], { DESKPOST_INSTALL_FAULT_AFTER: 'staged' });
+    check(staged.exit !== 0 && receipt().pending?.['phase'] === 'staged', `the fault after 'staged' did not stop there: ${staged.said}`);
+    const nothing = install(b.tree, archiveB, ['--yes', '--resume', 'undo']);
+    check(nothing.exit !== 0 && /nothing to undo/.test(nothing.said), `undo before the plan was frozen was not refused: ${nothing.said}`);
+    const finished = install(b.tree, archiveB, ['--yes', '--resume', 'finish']);
+    equal(finished.exit, 0, `--resume finish before the plan was frozen did not start over and complete: ${finished.said}`);
+    equal(currentTarget(), b.version, 'the finished upgrade does not run the new version');
+    const upgraded = JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    check(upgraded['version'] === b.version && upgraded['previous'] === versionA, `current.json after the upgrade: ${JSON.stringify(upgraded)}`);
+    check(!leftovers().length && !fs.existsSync(path.join(prog, '.pending')), 'the finished upgrade left staging or .pending');
+
+    // 5. A DRY RUN AS JSON NAMES ITS PLAN AND CREATES NOTHING; THE INSTALL BY ITS plan_id PRINTS ONE RESULT.
+    const prog2 = path.join(root, 'prog2');
+    const lib2 = path.join(root, 'lib2');
+    const dry = spawnSync(path.join(treeA, 'bin', 'library.exe'), ['install', '--extracted', treeA, '--archive-sha256', archiveA, '--install-root', prog2, '--library', lib2, '--no-path-change', '--json', '--dry-run'], { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+    const dryLines = (dry.stdout ?? '').split(/\r?\n/).filter((line) => line.trim());
+    let plan: Record<string, unknown> = {};
+    try {
+      plan = JSON.parse(dryLines[dryLines.length - 1] ?? '') as Record<string, unknown>;
+    } catch {
+      plan = {};
+    }
+    check(dry.status === 0 && dryLines.length === 1 && plan['status'] === 'dry-run' && /^[0-9a-f]{64}$/.test(String(plan['plan_id'])) && ((plan['plan'] as { rows?: unknown[] })?.rows ?? []).length >= 5, `the JSON dry run did not print one line naming its plan: ${(dry.stdout ?? '').slice(0, 300)} ${(dry.stderr ?? '').slice(-300)}`);
+    check(!fs.existsSync(prog2) && !fs.existsSync(lib2), 'the dry run created the program folder or the Library');
+    const byPlan = spawnSync(path.join(treeA, 'bin', 'library.exe'), ['install', '--extracted', treeA, '--archive-sha256', archiveA, '--install-root', prog2, '--library', lib2, '--no-path-change', '--json', '--plan-id', String(plan['plan_id'])], { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+    const resultLines = (byPlan.stdout ?? '').split(/\r?\n/).filter((line) => line.trim());
+    let result: Record<string, unknown> = {};
+    try {
+      result = JSON.parse(resultLines[0] ?? '') as Record<string, unknown>;
+    } catch {
+      result = {};
+    }
+    check(byPlan.status === 0 && resultLines.length === 1 && result['status'] === 'installed' && result['plan_id'] === plan['plan_id'], `the install by plan_id did not print one result: ${(byPlan.stdout ?? '').slice(0, 300)} ${(byPlan.stderr ?? '').slice(-300)}`);
+  } catch (error) {
+    failures.push(`section 130 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 131. THE PATH ENTRY, ADDED BY THE PROGRAM (kickoffs/s89 row 2, PLAN-install-without-powershell.md D4). Against
+// a compiled release tree, every PATH write on a twin key (DESKPOST_PATH_KEY, an HKCU\Software subkey), never
+// HKCU\Environment, set up and read with reg.exe. A fresh install appends `<root>\bin` to the stored value and keeps it
+// REG_EXPAND_SZ with every other entry unexpanded, and the receipt owns the entry; a second run leaves one entry; a
+// fresh install faulted after `placed` and undone takes out exactly the entry it added; and a 1.0-shaped install (the
+// entry there, current.json, no receipt) is adopted with its entry, which the upgrade's receipt then owns, still once.
+if (selected(131) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-path-add-')));
+  const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
+  const reg = (args: string[]) => spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const readKey = (): { kind: string; value: string } => {
+    const ran = reg(['query', `HKCU\\${key}`, '/v', 'Path']);
+    const match = /^\s+Path\s+(REG_\w+)\s+(.*?)\s*$/m.exec(ran.stdout ?? '');
+    return match ? { kind: match[1]!, value: match[2]! } : { kind: 'none', value: '' };
+  };
+  const stored = '%USERPROFILE%\\tools;C:\\Other Dir';
+  try {
+    const made = reg(['add', `HKCU\\${key}`, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', stored, '/f']);
+    equal(made.status, 0, `the twin PATH key could not be made: ${made.stderr}`);
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's131');
+    const shaOf = (text: string) => createHash('sha256').update(text).digest('hex');
+    fs.mkdirSync(path.join(root, 'reg'));
+    const install = (tree: string, prog: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(path.join(tree, 'bin', 'library.exe'), ['install', '--extracted', tree, '--archive-sha256', shaOf(tree), '--install-root', prog, '--library', 'none', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, { DESKPOST_PATH_KEY: key, ...extra }),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-400) };
+    };
+    const entriesOf = (bin: string) => readKey().value.split(';').filter((entry) => entry.replace(/\\+$/, '').toLowerCase() === bin.toLowerCase()).length;
+    const receiptOf = (prog: string) => JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as { owned: Record<string, unknown>[]; path_change: unknown };
+
+    // 1. A FRESH INSTALL ADDS THE ENTRY, RAW AND REG_EXPAND_SZ; A SECOND RUN LEAVES ONE.
+    const prog = path.join(root, 'prog');
+    const bin = path.join(prog, 'bin');
+    const fresh = install(treeA, prog, ['--yes']);
+    equal(fresh.exit, 0, `a fresh install with a PATH change did not complete: ${fresh.said}`);
+    equal(JSON.stringify(readKey()), JSON.stringify({ kind: 'REG_EXPAND_SZ', value: `${stored};${bin}` }), 'the PATH entry was not appended with the rest kept unexpanded as REG_EXPAND_SZ');
+    check(receiptOf(prog).owned.some((item) => item['kind'] === 'path' && String(item['entry']).toLowerCase() === bin.toLowerCase()) && receiptOf(prog).path_change === true, 'the receipt does not own the PATH entry it added');
+    const again = install(treeA, prog, ['--yes', '--repair']);
+    equal(again.exit, 0, `a repair with a PATH change did not complete: ${again.said}`);
+    equal(entriesOf(bin), 1, 'a second run added the PATH entry again');
+
+    // 2. AN INSTALL FAULTED AFTER `placed` AND UNDONE TAKES OUT EXACTLY THE ENTRY IT ADDED.
+    const prog3 = path.join(root, 'prog3');
+    const bin3 = path.join(prog3, 'bin');
+    const faulted = install(treeA, prog3, ['--yes'], { DESKPOST_INSTALL_FAULT_AFTER: 'placed' });
+    check(faulted.exit !== 0 && entriesOf(bin3) === 1, `the fault after 'placed' did not leave the added entry: ${faulted.said}`);
+    const undone = install(treeA, prog3, ['--yes', '--resume', 'undo']);
+    equal(undone.exit, 0, `--resume undo did not complete: ${undone.said}`);
+    equal(JSON.stringify(readKey()), JSON.stringify({ kind: 'REG_EXPAND_SZ', value: `${stored};${bin}` }), 'the undo did not take out exactly the entry it added, the rest kept as stored');
+
+    // 3. A 1.0-SHAPED INSTALL IS ADOPTED WITH ITS ENTRY.
+    fs.rmSync(path.join(prog, 'install-receipt.json'), { force: true });
+    const adopted = install(b.tree, prog, ['--yes']);
+    equal(adopted.exit, 0, `the upgrade of a 1.0-shaped install did not complete: ${adopted.said}`);
+    check(receiptOf(prog).owned.some((item) => item['kind'] === 'path' && String(item['entry']).toLowerCase() === bin.toLowerCase()), 'the upgrade did not adopt the 1.0 PATH entry into the receipt');
+    equal(entriesOf(bin), 1, 'adopting the 1.0 entry added it again');
+  } catch (error) {
+    failures.push(`section 131 stopped early: ${(error as Error).message}`);
+  } finally {
+    reg(['delete', `HKCU\\${key}`, '/f']);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 132. THE CLOSING CHECK IS SAID, NEVER THROWN (kickoffs/s89 row 3, PLAN-install-without-powershell.md D7; the
+// Report "Installer ends in a raw PowerShell exception when its closing doctor finds a Library issue"). The verdict tells
+// the program's own failure from a Library's, a served Library's too, and a refresh that refused before doctor ran; only
+// a program failure with a version to go back to names `rollback`. Then, against a compiled release tree: a repair
+// whose closing doctor finds a Library problem (a Notebook topic with no index, the Report's case) is committed, exits 1
+// with one plain message that names the Library and no rollback, and prints no stack and no refusal; as JSON it is one
+// object carrying the status and the closing result. S90 row 3 (the Codex review's findings 4-6): only the program-wide
+// checks are the program's, so the ordinary doctor's own report with a failing `seats.added-folders` (a malformed seat
+// registry) is the Library's and names no rollback; a closing program that cannot start is the program's, said with its
+// start error and never thrown; and install.ps1 run as a FILE over a committed repair with a Library finding exits 1
+// with no exception, is one JSON object under -Json, and dot-sourced never takes the `exit` branch.
+if (selected(132)) {
+  const { closingPart, closingMessage, runClosing } = await import('../src/install.ts');
+  const row = (status: string, check = 'program.command-resolves') => ({ check, status, detail: '' });
+  equal(closingPart(0, { program_checks: [row('pass')], checks: [row('warn')] }, false), null, 'a green doctor was read as a failure');
+  equal(closingPart(1, { program_checks: [row('fail')], checks: [row('fail')] }, false), 'program', "a program check's failure was not the program's");
+  equal(closingPart(1, { program_checks: [row('pass'), row('fail', 'seats.added-folders')] }, false), 'library', "a Library check kept in program_checks was read as the program's");
+  equal(closingPart(1, { program_checks: [row('fail', 'settings.user-inbound'), row('fail', 'shelf.standard-books-present')] }, false), 'program', 'a program-wide failure beside a Library one was not the program\'s');
+  const unstarted = runClosing({ args: { json: true } as Parameters<typeof runClosing>[0]['args'], say: () => {} }, path.join(os.tmpdir(), `no-such-${process.pid}`, 'library.exe'), ['doctor']);
+  check(unstarted.part === 'program' && unstarted.report === null && /could not be started/.test(unstarted.detail), `a closing program that cannot start was not said as the program's, with its start error: ${JSON.stringify(unstarted)}`);
+  check(/could not be started/.test(closingMessage('program', 'Deskpost 9.9.9 is installed.', false, unstarted.detail)), 'the closing message does not carry the start error');
+  equal(closingPart(1, { program_checks: [row('pass')], checks: [row('fail')] }, false), 'library', "a Library check's failure was not the Library's");
+  equal(closingPart(1, { program_checks: [row('pass')], libraries: [{ workspace: 'L', checks: [row('pass')] }, { workspace: 'M', checks: [row('fail')] }] }, true), 'library', "a served Library's failure was not the Library's");
+  equal(closingPart(1, null, true), 'refresh', 'a refresh that refused before doctor ran was not said as the refresh');
+  equal(closingPart(1, null, false), 'program', "a doctor that did not answer was not the program's");
+  const libraryMessage = closingMessage('library', 'Deskpost 9.9.9 is installed.', true);
+  check(libraryMessage.startsWith('Deskpost 9.9.9 is installed. ') && /inside a Library/.test(libraryMessage) && !/rollback switches/.test(libraryMessage), `a Library finding names a rollback or does not say it is the Library's: ${libraryMessage}`);
+  check(/rollback switches back/.test(closingMessage('program', 'Deskpost is upgraded to 9.9.9.', true)), 'a program failure after an upgrade does not name the rollback');
+  check(!/rollback/.test(closingMessage('program', 'Deskpost 9.9.9 is installed.', false)), 'a program failure with no version to go back to names a rollback');
+  check(/Run the installer again to finish the refresh/.test(closingMessage('refresh', '', false, 'Close your sessions first')), 'a refused refresh does not say how to finish it');
+
+  const treeA = releaseTreeUnderTest();
+  if (treeA !== null) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-closing-')));
+    try {
+      const prog = path.join(root, 'prog');
+      const lib = path.join(root, 'lib');
+      fs.mkdirSync(path.join(root, 'reg'));
+      const archive = createHash('sha256').update('closing').digest('hex');
+      const exe = path.join(treeA, 'bin', 'library.exe');
+      const base = ['install', '--extracted', treeA, '--archive-sha256', archive, '--install-root', prog, '--library', lib, '--no-path-change'];
+      const run = (args: string[]) => {
+        const ran = spawnSync(exe, [...base, ...args], { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+        return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', stderr: ran.stderr ?? '' };
+      };
+      equal(run(['--yes']).exit, 0, 'the closing fixture did not install');
+      fs.mkdirSync(path.join(lib, 'notebook', 'orphan-topic'), { recursive: true });
+      fs.writeFileSync(path.join(lib, 'notebook', 'orphan-topic', 'page.md'), '# A page\n');
+      const refusal = path.join(root, 'refusal.txt');
+      const repaired = run(['--yes', '--repair', '--refusal-file', refusal]);
+      const lastLine = repaired.stdout.trim().split(/\r?\n/).pop() ?? '';
+      equal(repaired.exit, 1, `a committed repair whose closing doctor fails did not exit 1: ${repaired.stderr.slice(-300)}`);
+      check(/Deskpost .* is repaired\. Doctor found a problem inside a Library/.test(lastLine) && !/rollback switches/.test(lastLine), `the closing message does not name the Library, or names a rollback: ${lastLine}`);
+      check(/Notebook index/.test(repaired.stdout), "the closing doctor's own lines were not printed");
+      check(!/^\s+at .+:\d+:\d+\)?\s*$|Error:|line \d+ char/m.test(repaired.stdout + repaired.stderr) && !fs.existsSync(refusal), 'a committed transaction ended in a stack, an error or a refusal');
+      const receipt = JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as { pending: unknown };
+      check(receipt.pending === null && !fs.existsSync(path.join(prog, '.pending')), 'the repair was not committed before its closing check');
+      const dry = run(['--repair', '--json', '--dry-run']);
+      let planned: Record<string, unknown> = {};
+      try {
+        planned = JSON.parse(dry.stdout.trim()) as Record<string, unknown>;
+      } catch {
+        planned = {};
+      }
+      const byPlan = run(['--repair', '--json', '--plan-id', String(planned['plan_id'] ?? '')]);
+      const lines = byPlan.stdout.split(/\r?\n/).filter((line) => line.trim());
+      let result: Record<string, unknown> = {};
+      try {
+        result = JSON.parse(lines[0] ?? '') as Record<string, unknown>;
+      } catch {
+        result = {};
+      }
+      const closing = (result['closing'] ?? {}) as Record<string, unknown>;
+      check(
+        byPlan.exit === 1 && lines.length === 1 && result['status'] === 'repaired' && closing['ok'] === false && closing['failed'] === 'library' && /inside a Library/.test(String(closing['message'])) && Number(result['doctor_exit']) === 1,
+        `as JSON, the closing failure was not one object with the status and the closing result: exit ${byPlan.exit} ${byPlan.stdout.slice(0, 400)} ${byPlan.stderr.slice(-200)}`,
+      );
+
+      // THE ORDINARY DOCTOR'S OWN REPORT (finding 6): a malformed seat registry fails `seats.added-folders`, which that
+      // doctor keeps in program_checks. It is the Library's, and its message names no rollback.
+      const registry = path.join(lib, '.claude', 'seats', '_registry.json');
+      fs.mkdirSync(path.dirname(registry), { recursive: true });
+      const registryBefore = fs.existsSync(registry) ? fs.readFileSync(registry) : null;
+      fs.writeFileSync(registry, '{ not json');
+      const doctorEnv = fixtureInstallEnv(root);
+      doctorEnv['PATH'] = `${doctorEnv['PATH']};${path.join(prog, 'bin')}`;
+      const doctored = spawnSync(path.join(prog, 'current', 'bin', 'library.exe'), ['doctor', '--workspace', lib, '--json'], { cwd: root, env: doctorEnv, encoding: 'utf8', timeout: 120000 });
+      let report: Record<string, unknown> | null = null;
+      try {
+        report = JSON.parse(doctored.stdout ?? '') as Record<string, unknown>;
+      } catch {
+        report = null;
+      }
+      const added = ((report?.['program_checks'] ?? []) as Record<string, unknown>[]).find((item) => item['check'] === 'seats.added-folders');
+      check(added?.['status'] === 'fail', `the ordinary doctor did not fail seats.added-folders in program_checks over a malformed seat registry: ${JSON.stringify(added ?? null)}`);
+      equal(closingPart(doctored.status ?? 1, report, false), 'library', "the ordinary doctor's seats.added-folders failure was read as the program's");
+      check(!/rollback/.test(closingMessage(closingPart(doctored.status ?? 1, report, false) ?? 'program', 'Deskpost is upgraded to 9.9.9.', true)), "a malformed seat registry's message names a rollback");
+      if (registryBefore === null) fs.rmSync(registry, { force: true });
+      else fs.writeFileSync(registry, registryBefore);
+
+      // install.ps1 RUN AS A FILE over a committed repair with a Library finding (finding 4, ruling 3): exit 1 and no
+      // exception; -Json gives one object; dot-sourced, the `exit` branch is never taken, so the caller goes on.
+      const release = releaseFolderOf(treeA, path.join(root, 'rel'));
+      const forwarder = path.join(release.folder, 'install.ps1');
+      fs.copyFileSync(path.join(PROGRAM_ROOT, 'install.ps1'), forwarder);
+      const prog3 = path.join(root, 'prog3');
+      const lib3 = path.join(root, 'lib3');
+      const asFile = (args: string[]) => {
+        const ran = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', forwarder, '-Release', release.folder, '-InstallRoot', prog3, '-Library', lib3, '-NoPathChange', ...args], { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+        return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', stderr: ran.stderr ?? '' };
+      };
+      const thrown = /Exception|CategoryInfo|FullyQualifiedErrorId|At line:|\.ps1:\d+/;
+      const first = asFile(['-Yes']);
+      equal(first.exit, 0, `the forwarder run as a file did not install: ${first.stderr.slice(-300)}`);
+      fs.mkdirSync(path.join(lib3, 'notebook', 'orphan-topic'), { recursive: true });
+      fs.writeFileSync(path.join(lib3, 'notebook', 'orphan-topic', 'page.md'), '# A page\n');
+      const fileRun = asFile(['-Yes', '-Repair']);
+      check(fileRun.exit === 1 && /inside a Library/.test(fileRun.stdout) && !thrown.test(fileRun.stdout + fileRun.stderr), `the forwarder run as a file over a committed repair with a Library finding did not exit 1 without an exception: exit ${fileRun.exit} ${fileRun.stdout.slice(-300)} ${fileRun.stderr.slice(-300)}`);
+      const shown = asFile(['-Repair', '-DryRun', '-Json']);
+      let shownPlan: Record<string, unknown> = {};
+      try {
+        shownPlan = JSON.parse(shown.stdout.trim()) as Record<string, unknown>;
+      } catch {
+        shownPlan = {};
+      }
+      const jsonRun = asFile(['-Repair', '-Json', '-PlanId', String(shownPlan['plan_id'] ?? '')]);
+      const jsonLines = jsonRun.stdout.split(/\r?\n/).filter((line) => line.trim());
+      let jsonResult: Record<string, unknown> = {};
+      try {
+        jsonResult = JSON.parse(jsonLines[0] ?? '') as Record<string, unknown>;
+      } catch {
+        jsonResult = {};
+      }
+      check(jsonRun.exit === 1 && jsonLines.length === 1 && jsonResult['status'] === 'repaired' && (jsonResult['closing'] as Record<string, unknown> | undefined)?.['failed'] === 'library' && !thrown.test(jsonRun.stdout + jsonRun.stderr), `under -Json the file run's stdout is not one object, or an exception followed: exit ${jsonRun.exit} ${jsonRun.stdout.slice(0, 300)} ${jsonRun.stderr.slice(-300)}`);
+      const dotted = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ". $env:S132_PS1 -Release $env:S132_REL -InstallRoot $env:S132_PROG -Library $env:S132_LIB -NoPathChange -Yes -Repair; [Console]::Out.WriteLine('AFTER ' + $LASTEXITCODE)"], {
+        cwd: root,
+        env: { ...fixtureInstallEnv(root), S132_PS1: forwarder, S132_REL: release.folder, S132_PROG: prog3, S132_LIB: lib3 },
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      check(/^AFTER 1\s*$/m.test(dotted.stdout ?? '') && !thrown.test(`${dotted.stdout ?? ''}${dotted.stderr ?? ''}`), `dot-sourced, the forwarder took the exit branch or threw: ${(dotted.stdout ?? '').slice(-300)} ${(dotted.stderr ?? '').slice(-300)}`);
+    } catch (error) {
+      failures.push(`section 132 stopped early: ${(error as Error).message}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+// SECTION 133. THE `.pending` FAULT PHASE (kickoffs/s89 row 5, PLAN-install-without-powershell.md D5, the backlog's
+// injected-fault proof). Against a compiled release tree: an install faulted after `committed` -- the receipt's commit
+// written, .pending not yet removed -- leaves the transaction committed and .pending behind; --resume finish removes
+// it under the lock and says so, leaving the receipt as committed; and a later install over it is not blocked. A
+// committed upgrade that still owes its refresh runs it on --resume finish (S90 row 2); and a claimant trying the lock
+// throughout an install never sees a committed receipt beside .pending (S90 row 4).
+if (selected(133) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-pending-fault-')));
+  try {
+    const prog = path.join(root, 'prog');
+    fs.mkdirSync(path.join(root, 'reg'));
+    const archive = createHash('sha256').update('pending fault').digest('hex');
+    const run = (args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(path.join(treeA, 'bin', 'library.exe'), ['install', '--extracted', treeA, '--archive-sha256', archive, '--install-root', prog, '--library', 'none', '--no-path-change', '--yes', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, extra),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-400) };
+    };
+    const receipt = () => JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as { pending: unknown; owned: Record<string, unknown>[] };
+    const faulted = run([], { DESKPOST_INSTALL_FAULT_AFTER: 'committed' });
+    check(faulted.exit !== 0 && /fault injected after 'committed'/.test(faulted.said), `the fault after 'committed' did not stop the install: ${faulted.said}`);
+    const committed = receipt();
+    check(committed.pending === null && committed.owned.some((item) => item['kind'] === 'version'), `the faulted install's receipt is not committed: ${JSON.stringify(committed).slice(0, 300)}`);
+    check(fs.existsSync(path.join(prog, '.pending', 'plan.json')), 'the fault after `committed` left no .pending behind to prove its removal');
+    const finished = run(['--resume', 'finish']);
+    equal(finished.exit, 0, `--resume finish did not complete over a committed transaction's .pending: ${finished.said}`);
+    check(/already committed/.test(finished.said), `--resume finish did not say the transaction had already committed: ${finished.said}`);
+    check(!fs.existsSync(path.join(prog, '.pending')), '--resume finish left .pending behind');
+    equal(JSON.stringify(receipt()), JSON.stringify(committed), '--resume finish changed the committed receipt');
+    const again = run(['--repair']);
+    equal(again.exit, 0, `a repair after the recovered fault did not complete: ${again.said}`);
+
+    // A COMMITTED UPGRADE THAT STILL OWES ITS REFRESH (kickoffs/s90 row 2, the Codex review's finding 2): an install with
+    // a Library, then an upgrade faulted after `committed` with `refresh_pending` in its receipt; --resume finish runs
+    // the refresh and the closing check, and says so (exit 0, its text; JSON needs --plan-id, D1).
+    const prog2 = path.join(root, 'prog2');
+    const lib = path.join(root, 'lib');
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's133');
+    const archiveB = createHash('sha256').update('pending fault b').digest('hex');
+    const runIn = (tree: string, sha: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(path.join(tree, 'bin', 'library.exe'), ['install', '--extracted', tree, '--archive-sha256', sha, '--install-root', prog2, '--no-path-change', '--yes', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, extra),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-400) };
+    };
+    equal(runIn(treeA, archive, ['--library', lib]).exit, 0, 'the install with a Library did not complete');
+    const upgrade = runIn(b.tree, archiveB, [], { DESKPOST_INSTALL_FAULT_AFTER: 'committed' });
+    const owed = JSON.parse(fs.readFileSync(path.join(prog2, 'install-receipt.json'), 'utf8')) as Record<string, unknown>;
+    check(upgrade.exit !== 0 && owed['pending'] === null && 'refresh_pending' in owed && fs.existsSync(path.join(prog2, '.pending')), `the upgrade faulted after 'committed' did not leave its refresh owed and .pending behind: ${upgrade.said}`);
+    const resumed = runIn(b.tree, archiveB, ['--resume', 'finish']);
+    check(resumed.exit === 0 && /already committed/.test(resumed.said) && /the refresh it approved has run/.test(resumed.said), `--resume finish did not run the owed refresh and say so: exit ${resumed.exit} ${resumed.said}`);
+    check(/Library Checks|Doctor|PASS|OK/i.test(resumed.stdout), `the owed refresh's closing check printed nothing: ${resumed.stdout.slice(0, 300)}`);
+    const after = JSON.parse(fs.readFileSync(path.join(prog2, 'install-receipt.json'), 'utf8')) as Record<string, unknown>;
+    check(!('refresh_pending' in after) && !fs.existsSync(path.join(prog2, '.pending')), 'the owed refresh was not run: refresh_pending or .pending is still there');
+
+    // .pending GOES UNDER THE LOCK (kickoffs/s90 row 4, the Codex review's finding 7). An install that waits 3 s before
+    // removing .pending, while this process tries the lifecycle lock over and over: whenever it holds the lock, a
+    // committed receipt never sits beside .pending. Were the removal outside withLifecycleLock, the claimant would get
+    // the lock in the wait and see both.
+    const { withLifecycleLock } = await import('../src/lifecycle.ts');
+    const prog3 = path.join(root, 'prog3');
+    fs.mkdirSync(prog3, { recursive: true });
+    const child = spawn(path.join(treeA, 'bin', 'library.exe'), ['install', '--extracted', treeA, '--archive-sha256', archive, '--install-root', prog3, '--library', 'none', '--no-path-change', '--yes'], {
+      cwd: root,
+      env: fixtureInstallEnv(root, { DESKPOST_INSTALL_PAUSE_PENDING_REMOVAL: '3000' }),
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    let exited: number | null = null;
+    const ended = new Promise<void>((resolve) => child.on('exit', (code) => {
+      exited = code ?? -1;
+      resolve();
+    }));
+    let looks = 0;
+    let committedWithPending = 0;
+    let sawPendingFolder = false;
+    const deadline = Date.now() + 240000;
+    while (exited === null && Date.now() < deadline) {
+      withLifecycleLock(prog3, () => {
+        looks += 1;
+        const file = path.join(prog3, 'install-receipt.json');
+        if (!fs.existsSync(file)) return;
+        const seen = JSON.parse(fs.readFileSync(file, 'utf8')) as { pending: unknown; owned: unknown[] };
+        if (fs.existsSync(path.join(prog3, '.pending'))) sawPendingFolder = true;
+        if (seen.pending === null && seen.owned.length && fs.existsSync(path.join(prog3, '.pending'))) committedWithPending += 1;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await ended;
+    equal(exited, 0, 'the paused install did not complete');
+    check(looks > 20 && sawPendingFolder, `the claimant did not watch the transaction (${looks} looks, .pending seen: ${sawPendingFolder})`);
+    equal(committedWithPending, 0, 'a claimant holding the lifecycle lock saw a committed receipt beside .pending: its removal is outside the lock');
+  } catch (error) {
+    failures.push(`section 133 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A RELEASE FOLDER MADE FROM A TREE (S90, the sections that drive the bootstrap, 134 on): the tree zipped under its one
+ * top folder `deskpost-<version>-<platform>` as `deskpost-<version>-<platform>.zip`, and `SHA256SUMS` naming it, as
+ * Build-KernelRelease.ps1 lays a release out. What `library install --release <folder>` reads.
+ */
+function releaseFolderOf(tree: string, into: string): { folder: string; version: string } {
+  const release = JSON.parse(fs.readFileSync(path.join(tree, 'release.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+  const version = String(release['plugin_version']);
+  const top = `deskpost-${version}-${String(release['platform'])}`;
+  const entries: { name: string; bytes: Buffer; deflate: boolean }[] = [];
+  for (const item of fs.readdirSync(tree, { recursive: true, withFileTypes: true })) {
+    if (!item.isFile()) continue;
+    const full = path.join(item.parentPath, item.name);
+    entries.push({ name: `${top}/${path.relative(tree, full).replace(/\\/g, '/')}`, bytes: fs.readFileSync(full), deflate: true });
+  }
+  fs.mkdirSync(into, { recursive: true });
+  const zipName = `${top}.zip`;
+  const zip = selftestZip(entries);
+  fs.writeFileSync(path.join(into, zipName), zip);
+  fs.writeFileSync(path.join(into, 'SHA256SUMS'), `${createHash('sha256').update(zip).digest('hex')}  ${zipName}\n`);
+  return { folder: into, version };
+}
+
+/** How many `library.exe` processes run on this machine: a compiled run's children must all be gone after it (S85 stall 2). */
+function libraryProcessCount(): number {
+  const ran = spawnSync('tasklist.exe', ['/FO', 'CSV', '/NH', '/FI', 'IMAGENAME eq library.exe'], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  return (ran.stdout ?? '').split(/\r?\n/).filter((line) => /^"library\.exe"/i.test(line)).length;
+}
+
+function waitFor(condition: () => boolean, ms: number): boolean {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
+  return condition();
+}
+
+// SECTION 134. NO RUNNING IMAGE IN A TREE BEING REMOVED (kickoffs/s90 row 0, the Codex review's finding 1; ADR-0067).
+// Against a compiled release tree, through the BOOTSTRAP (`library install --release <folder>`) from the installed
+// `current\bin\library.exe`, whose image is inside `versions\<v>` while it waits on its child: install A, upgrade to B
+// faulted after `activated`, then `--resume undo` run by B's own installed program. It completes (exit 0), `current` and
+// current.json are A's byte for byte, versions\B is gone, and the program it ran from, moved aside, is named and gone
+// once it exits. Then an uninstall with no finisher (DESKPOST_UNINSTALL_FAULT=no-finisher) is finished by `--resume
+// finish` run by the installed program: the root is gone once it exits. No library.exe is left running.
+if (selected(134) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-running-image-')));
+  try {
+    const processesBefore = libraryProcessCount();
+    const releaseA = releaseFolderOf(treeA, path.join(root, 'rel-a'));
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's134');
+    const releaseB = releaseFolderOf(b.tree, path.join(root, 'rel-b'));
+    fs.rmSync(b.tree, { recursive: true, force: true });
+    const prog = path.join(root, 'prog');
+    fs.mkdirSync(path.join(root, 'reg'));
+    const installed = path.join(prog, 'current', 'bin', 'library.exe');
+    const run = (exe: string, release: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(exe, ['install', '--release', release, '--install-root', prog, '--library', 'none', '--no-path-change', '--yes', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, extra),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-600) };
+    };
+    const currentTarget = () => {
+      try {
+        return path.basename(fs.readlinkSync(path.join(prog, 'current')).replace(/[\\/]+$/, ''));
+      } catch {
+        return null;
+      }
+    };
+
+    // 1. INSTALL A, THEN AN UPGRADE TO B FAULTED AFTER `activated`, BOTH THROUGH THE BOOTSTRAP.
+    const fresh = run(path.join(treeA, 'bin', 'library.exe'), releaseA.folder, []);
+    equal(fresh.exit, 0, `the bootstrap did not install A: ${fresh.said}`);
+    const record = fs.readFileSync(path.join(prog, 'current.json'), 'utf8');
+    const faulted = run(installed, releaseB.folder, [], { DESKPOST_INSTALL_FAULT_AFTER: 'activated' });
+    check(faulted.exit !== 0 && /fault injected after 'activated'/.test(faulted.said) && currentTarget() === releaseB.version, `the upgrade to B did not stop after 'activated' with current on B: ${faulted.said}`);
+
+    // 2. UNDONE BY B'S OWN INSTALLED PROGRAM: ITS IMAGE IS IN versions\B.
+    const undone = run(installed, releaseB.folder, ['--resume', 'undo']);
+    equal(undone.exit, 0, `--resume undo run from the installed program did not complete: ${undone.said}`);
+    check(!/EBUSY|EPERM|resource busy/i.test(undone.said), `the undo met the running image: ${undone.said}`);
+    equal(currentTarget(), releaseA.version, 'the undo did not put current back on A');
+    equal(fs.readFileSync(path.join(prog, 'current.json'), 'utf8'), record, 'the undo did not put current.json back byte for byte');
+    const receipt = JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8')) as { pending: unknown };
+    check(receipt.pending === null && !fs.existsSync(path.join(prog, '.pending')), 'the undo left its pending transaction or .pending');
+    check(!fs.existsSync(path.join(prog, 'versions', releaseB.version)), `versions\\${releaseB.version} is still there after the undo`);
+    check(/still running/.test(undone.said) && /\.leftover/.test(undone.said), `the undo did not name the running program it moved aside: ${undone.said}`);
+    check(waitFor(() => !fs.existsSync(path.join(prog, '.leftover')), 30000), `the moved program was not deleted once it exited: ${fs.existsSync(path.join(prog, '.leftover')) ? fs.readdirSync(path.join(prog, '.leftover')).join(', ') : ''}`);
+
+    // 3. AN UNINSTALL WITH NO FINISHER, FINISHED BY THE INSTALLED PROGRAM.
+    const uninstall = spawnSync(installed, ['uninstall', '--yes', '--json'], { cwd: root, env: fixtureInstallEnv(root, { DESKPOST_UNINSTALL_FAULT: 'no-finisher' }), encoding: 'utf8', timeout: 120000 });
+    check(uninstall.status !== 0 && fs.existsSync(installed), `the uninstall with no finisher did not leave the program: ${(uninstall.stdout ?? '').slice(0, 300)}`);
+    const finished = run(installed, releaseA.folder, ['--resume', 'finish']);
+    equal(finished.exit, 0, `--resume finish of the uninstall, run from the installed program, did not complete: ${finished.said}`);
+    check(/still running/.test(finished.said), `the uninstall's finish did not name the running program it moved aside: ${finished.said}`);
+    check(waitFor(() => !fs.existsSync(prog), 30000), `the uninstalled root is not gone once its program exited: ${fs.existsSync(prog) ? fs.readdirSync(prog).join(', ') : ''}`);
+    check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+  } catch (error) {
+    failures.push(`section 134 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 135. `--no-path-change` WINS ON A RESUME (kickoffs/s90 row 1, ruling 4; the Codex review's finding 3). Against
+// a compiled release tree, every PATH write on a twin key (DESKPOST_PATH_KEY) set up and read with reg.exe: an install
+// with a PATH change faulted after `shims` (its entry not yet added) and finished with --no-path-change leaves the key
+// byte for byte and names the entry it did not add; one faulted after `placed` (its entry added) and undone with
+// --no-path-change leaves the entry and names it; and an uninstall with no finisher, finished with --no-path-change,
+// leaves its entry and names it.
+if (selected(135) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-resume-path-')));
+  const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
+  const reg = (args: string[]) => spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const rawKey = () => reg(['query', `HKCU\\${key}`, '/v', 'Path']).stdout ?? '';
+  try {
+    equal(reg(['add', `HKCU\\${key}`, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', '%USERPROFILE%\\tools;C:\\Other Dir', '/f']).status, 0, 'the twin PATH key could not be made');
+    fs.mkdirSync(path.join(root, 'reg'));
+    const archive = createHash('sha256').update('resume path').digest('hex');
+    const exe = path.join(treeA, 'bin', 'library.exe');
+    const run = (prog: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(exe, ['install', '--extracted', treeA, '--archive-sha256', archive, '--install-root', prog, '--library', 'none', '--yes', ...args], {
+        cwd: root,
+        env: fixtureInstallEnv(root, { DESKPOST_PATH_KEY: key, ...extra }),
+        encoding: 'utf8',
+        timeout: 300000,
+        input: '',
+      });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-500) };
+    };
+
+    // 1. FAULTED AFTER `shims`, BEFORE THE ENTRY: FINISHED WITH --no-path-change ADDS NOTHING, AND SAYS SO.
+    const prog1 = path.join(root, 'prog1');
+    const faulted = run(prog1, [], { DESKPOST_INSTALL_FAULT_AFTER: 'shims' });
+    const pending = (JSON.parse(fs.readFileSync(path.join(prog1, 'install-receipt.json'), 'utf8')) as { pending: Record<string, unknown> | null }).pending;
+    check(faulted.exit !== 0 && pending?.['phase'] === 'shims' && pending?.['path_change'] === true, `the fault after 'shims' did not leave a pending install with a PATH change: ${faulted.said}`);
+    const before1 = rawKey();
+    const finished = run(prog1, ['--resume', 'finish', '--no-path-change']);
+    equal(finished.exit, 0, `--resume finish --no-path-change did not complete: ${finished.said}`);
+    equal(rawKey(), before1, '--resume finish --no-path-change changed the PATH key');
+    check(finished.said.includes(path.join(prog1, 'bin')) && /not added/.test(finished.said), `the finish did not name the PATH entry it did not add: ${finished.said}`);
+    const committed = JSON.parse(fs.readFileSync(path.join(prog1, 'install-receipt.json'), 'utf8')) as { path_change: unknown; owned: Record<string, unknown>[] };
+    check(committed.path_change === false && !committed.owned.some((item) => item['kind'] === 'path'), `the finished receipt still claims a PATH change: ${JSON.stringify(committed).slice(0, 300)}`);
+
+    // 2. FAULTED AFTER `placed`, THE ENTRY ADDED: UNDONE WITH --no-path-change LEAVES IT, AND SAYS SO.
+    const prog2 = path.join(root, 'prog2');
+    const placed = run(prog2, [], { DESKPOST_INSTALL_FAULT_AFTER: 'placed' });
+    const before2 = rawKey();
+    check(placed.exit !== 0 && before2.includes(path.join(prog2, 'bin')), `the fault after 'placed' did not leave its entry added: ${placed.said}`);
+    const undone = run(prog2, ['--resume', 'undo', '--no-path-change']);
+    equal(undone.exit, 0, `--resume undo --no-path-change did not complete: ${undone.said}`);
+    equal(rawKey(), before2, '--resume undo --no-path-change changed the PATH key');
+    check(undone.said.includes(path.join(prog2, 'bin')) && /not removed/.test(undone.said), `the undo did not name the PATH entry it did not remove: ${undone.said}`);
+
+    // 3. AN UNINSTALL WITH NO FINISHER, FINISHED WITH --no-path-change, LEAVES ITS ENTRY.
+    const prog3 = path.join(root, 'prog3');
+    equal(run(prog3, []).exit, 0, 'the third fixture did not install');
+    const uninstall = spawnSync(path.join(prog3, 'current', 'bin', 'library.exe'), ['uninstall', '--yes', '--json'], { cwd: root, env: fixtureInstallEnv(root, { DESKPOST_PATH_KEY: key, DESKPOST_UNINSTALL_FAULT: 'no-finisher' }), encoding: 'utf8', timeout: 120000 });
+    check(uninstall.status !== 0, `the uninstall with no finisher reported success: ${(uninstall.stdout ?? '').slice(0, 200)}`);
+    const before3 = rawKey();
+    const removed = run(prog3, ['--resume', 'finish', '--no-path-change']);
+    equal(removed.exit, 0, `--resume finish --no-path-change of the uninstall did not complete: ${removed.said}`);
+    equal(rawKey(), before3, "the uninstall's finish with --no-path-change changed the PATH key");
+    check(removed.said.includes(path.join(prog3, 'bin')) && /not removed/.test(removed.said), `the uninstall's finish did not name the PATH entry it did not remove: ${removed.said}`);
+  } catch (error) {
+    failures.push(`section 135 stopped early: ${(error as Error).message}`);
+  } finally {
+    reg(['delete', `HKCU\\${key}`, '/f']);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 136. INSTALL WITHOUT POWERSHELL, LIVE (kickoffs/s90 row 5, ruling 6; PLAN-install-without-powershell.md D9
+// bullet 3, settled question 3). Against a compiled release tree, every child runs with each PATH entry that holds
+// powershell.exe or pwsh.exe removed (the section 115/116 technique, ADR-0065 section 1), so a spawn by name fails, and
+// with the twin PATH key (DESKPOST_PATH_KEY), set up and read with reg.exe. Through the bootstrap
+// (`library.exe install --release <folder>`): an install with a Library and a PATH change, by its dry run's plan_id,
+// adds the entry raw as REG_EXPAND_SZ and reports the broadcast answered; the installed program upgrades to B; `deskpost
+// rollback` goes back to A; an upgrade faulted after `activated` is undone by B's own installed program. Then the cheap
+// second row: no spawn of powershell or pwsh in the install code's own source. No library.exe is left running.
+if (selected(136) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-no-powershell-')));
+  const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
+  const reg = (args: string[]) => spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const readKey = (): { kind: string; value: string } => {
+    const match = /^\s+Path\s+(REG_\w+)\s+(.*?)\s*$/m.exec(reg(['query', `HKCU\\${key}`, '/v', 'Path']).stdout ?? '');
+    return match ? { kind: match[1]!, value: match[2]! } : { kind: 'none', value: '' };
+  };
+  const stored = '%USERPROFILE%\\tools;C:\\Other Dir';
+  try {
+    const processesBefore = libraryProcessCount();
+    equal(reg(['add', `HKCU\\${key}`, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', stored, '/f']).status, 0, 'the twin PATH key could not be made');
+    const releaseA = releaseFolderOf(treeA, path.join(root, 'rel-a'));
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's136');
+    const releaseB = releaseFolderOf(b.tree, path.join(root, 'rel-b'));
+    fs.rmSync(b.tree, { recursive: true, force: true });
+    fs.mkdirSync(path.join(root, 'reg'));
+    const prog = path.join(root, 'prog');
+    const lib = path.join(root, 'lib');
+    const bin = path.join(prog, 'bin');
+    const installed = path.join(prog, 'current', 'bin', 'library.exe');
+    const env = fixtureInstallEnv(root, { DESKPOST_PATH_KEY: key });
+    env['PATH'] = String(env['PATH']).split(';').filter((entry) => entry && !fs.existsSync(path.join(entry, 'powershell.exe')) && !fs.existsSync(path.join(entry, 'pwsh.exe'))).join(';');
+    const run = (exe: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(exe, args, { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 300000, input: '' });
+      return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-600) };
+    };
+    const currentTarget = () => {
+      try {
+        return path.basename(fs.readlinkSync(path.join(prog, 'current')).replace(/[\\/]+$/, ''));
+      } catch {
+        return null;
+      }
+    };
+    const lastJson = (stdout: string): Record<string, unknown> => {
+      const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
+      try {
+        return lines.length === 1 ? (JSON.parse(lines[0]!) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    // 0. POWERSHELL IS UNREACHABLE BY NAME FROM THE CHILDREN'S PATH.
+    const where = spawnSync(path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'where.exe'), ['powershell.exe', 'pwsh.exe'], { env, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    check(where.status !== 0, `powershell or pwsh is still on the fixture's PATH: ${(where.stdout ?? '').trim()}`);
+
+    // 1. THE INSTALL, THROUGH THE BOOTSTRAP, BY ITS DRY RUN'S plan_id: THE ENTRY ADDED AND BROADCAST.
+    const base = ['install', '--release', releaseA.folder, '--install-root', prog, '--library', lib];
+    const dry = run(path.join(treeA, 'bin', 'library.exe'), [...base, '--dry-run', '--json']);
+    const shown = lastJson(dry.stdout);
+    check(dry.exit === 0 && shown['status'] === 'dry-run', `the bootstrap's JSON dry run did not show a plan: ${dry.said}`);
+    const fresh = run(path.join(treeA, 'bin', 'library.exe'), [...base, '--json', '--plan-id', String(shown['plan_id'] ?? '')]);
+    const result = lastJson(fresh.stdout);
+    check(fresh.exit === 0 && result['status'] === 'installed', `the bootstrap did not install with no PowerShell: ${fresh.said}`);
+    equal(JSON.stringify(result['path_entry'] ?? null), JSON.stringify({ added: true, broadcast: true }), 'the install did not report its PATH entry added and the broadcast answered');
+    equal(JSON.stringify(readKey()), JSON.stringify({ kind: 'REG_EXPAND_SZ', value: `${stored};${bin}` }), 'the PATH entry was not appended raw as REG_EXPAND_SZ on the twin key');
+    check(fs.existsSync(path.join(lib, '.library', 'workspace.json')), 'the install made no Library');
+
+    // 2. THE UPGRADE TO B, BY THE INSTALLED PROGRAM; 3. THE ROLLBACK TO A.
+    const upgraded = run(installed, ['install', '--release', releaseB.folder, '--install-root', prog, '--yes']);
+    check(upgraded.exit === 0 && currentTarget() === releaseB.version, `the installed program did not upgrade to B with no PowerShell: ${upgraded.said}`);
+    equal(readKey().value, `${stored};${bin}`, 'the upgrade added the PATH entry again');
+    const rolled = run(installed, ['rollback', '--yes']);
+    check(rolled.exit === 0 && currentTarget() === releaseA.version, `deskpost rollback did not go back to A with no PowerShell: ${rolled.said}`);
+
+    // 4. AN UPGRADE FAULTED AFTER `activated`, UNDONE BY B'S OWN INSTALLED PROGRAM (after row 0).
+    const faulted = run(installed, ['install', '--release', releaseB.folder, '--install-root', prog, '--yes'], { DESKPOST_INSTALL_FAULT_AFTER: 'activated' });
+    check(faulted.exit !== 0 && currentTarget() === releaseB.version, `the upgrade did not stop after 'activated' on B: ${faulted.said}`);
+    const undone = run(installed, ['install', '--release', releaseB.folder, '--install-root', prog, '--yes', '--resume', 'undo']);
+    check(undone.exit === 0 && currentTarget() === releaseA.version, `--resume undo from the installed program did not complete with no PowerShell: ${undone.said}`);
+    equal(readKey().value, `${stored};${bin}`, 'the undo of an upgrade that added no entry changed the PATH key');
+    check(waitFor(() => !fs.existsSync(path.join(prog, '.leftover')), 30000), 'the moved program was not deleted once it exited');
+
+    // 5. THE CHEAP SECOND ROW: no spawn of powershell or pwsh in the install code's source (comments aside).
+    for (const file of ['install.ts', 'bootstrap.ts', 'finisher.ts']) {
+      const lines = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'src', file), 'utf8').split(/\r?\n/).filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
+      const named = lines.filter((line) => /['"`][^'"`]*\b(powershell|pwsh)(\.exe)?['"`]/i.test(line));
+      check(!named.length, `kernel/src/${file} names powershell or pwsh in code: ${named.join(' | ').slice(0, 300)}`);
+    }
+    check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+  } catch (error) {
+    failures.push(`section 136 stopped early: ${(error as Error).message}`);
+  } finally {
+    reg(['delete', `HKCU\\${key}`, '/f']);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 137. CROSS-FINISH WITH THE PUBLISHED 1.3.4 install.ps1 (kickoffs/s90 row 6, ruling 5; PLAN D9 bullet 4, D5).
+// LIBRARY_SELFTEST_PREVIOUS_INSTALLER names an unchanged copy of the published v1.3.4 `install.ps1` (no network
+// fetch); it is the only PowerShell this section runs, as test setup. Against a compiled release tree: an upgrade A to B
+// begun by the 1.3.4 script and faulted after `staged` is finished by `library install --resume finish`; and one begun
+// by the kernel and faulted after `activated` is finished by the 1.3.4 script run non-JSON (`:645` refuses -Json with a
+// pending). Each ends with the receipt committed, no .pending, and current.json naming B. THE REAL USER PATH IS NEVER
+// WRITTEN: the 1.3.4 script writes HKCU\Environment itself, so every run passes --no-path-change, and the script is
+// run over a pending transaction only when that transaction records `path_change: false`.
+const PREVIOUS_INSTALLER = (process.env['LIBRARY_SELFTEST_PREVIOUS_INSTALLER'] ?? '').trim();
+if (selected(137) && releaseTreeUnderTest() !== null && PREVIOUS_INSTALLER && fs.existsSync(PREVIOUS_INSTALLER)) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-cross-finish-')));
+  try {
+    const processesBefore = libraryProcessCount();
+    const releaseA = releaseFolderOf(treeA, path.join(root, 'rel-a'));
+    const b = reversionedTree(treeA, path.join(root, 'tree-b'), 's137');
+    const releaseB = releaseFolderOf(b.tree, path.join(root, 'rel-b'));
+    fs.rmSync(b.tree, { recursive: true, force: true });
+    fs.mkdirSync(path.join(root, 'reg'));
+    const kernel = (prog: string, exe: string, release: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync(exe, ['install', '--release', release, '--install-root', prog, '--library', 'none', '--no-path-change', '--yes', ...args], { cwd: root, env: fixtureInstallEnv(root, extra), encoding: 'utf8', timeout: 300000, input: '' });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-600) };
+    };
+    const script = (prog: string, release: string, args: string[], extra: Record<string, string> = {}) => {
+      const ran = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', PREVIOUS_INSTALLER, '-Release', release, '-InstallRoot', prog, '-Library', 'none', '-NoPathChange', '-Yes', ...args], { cwd: root, env: fixtureInstallEnv(root, extra), encoding: 'utf8', timeout: 300000, input: '' });
+      return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-600) };
+    };
+    const receiptOf = (prog: string) => JSON.parse(fs.readFileSync(path.join(prog, 'install-receipt.json'), 'utf8').replace(/^﻿/, '')) as { pending: Record<string, unknown> | null; owned: Record<string, unknown>[] };
+    const versionOf = (prog: string) => String((JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['version']);
+    const ended = (prog: string, label: string) => {
+      const receipt = receiptOf(prog);
+      check(receipt.pending === null && receipt.owned.some((item) => item['kind'] === 'version'), `${label}: the receipt is not committed: ${JSON.stringify(receipt).slice(0, 300)}`);
+      check(!fs.existsSync(path.join(prog, '.pending')), `${label}: .pending is left`);
+      equal(versionOf(prog), releaseB.version, `${label}: current.json does not name B`);
+    };
+
+    // 1. BEGUN BY THE 1.3.4 SCRIPT, FAULTED AFTER `staged`, FINISHED BY THE KERNEL.
+    const prog1 = path.join(root, 'prog1');
+    equal(kernel(prog1, path.join(treeA, 'bin', 'library.exe'), releaseA.folder, []).exit, 0, 'the kernel did not install A for the first cross-finish');
+    const begun = script(prog1, releaseB.folder, [], { DESKPOST_INSTALL_FAULT_AFTER: 'staged' });
+    const pending1 = receiptOf(prog1).pending;
+    check(begun.exit !== 0 && pending1?.['phase'] === 'staged' && pending1?.['operation'] === 'upgrade', `the 1.3.4 script's upgrade did not stop after 'staged': ${begun.said}`);
+    const finished = kernel(prog1, path.join(prog1, 'current', 'bin', 'library.exe'), releaseB.folder, ['--resume', 'finish']);
+    equal(finished.exit, 0, `library install --resume finish did not finish the 1.3.4 script's upgrade: ${finished.said}`);
+    ended(prog1, 'begun by the 1.3.4 script, finished by the kernel');
+
+    // 2. BEGUN BY THE KERNEL, FAULTED AFTER `activated`, FINISHED BY THE 1.3.4 SCRIPT RUN NON-JSON.
+    const prog2 = path.join(root, 'prog2');
+    equal(kernel(prog2, path.join(treeA, 'bin', 'library.exe'), releaseA.folder, []).exit, 0, 'the kernel did not install A for the second cross-finish');
+    const faulted = kernel(prog2, path.join(prog2, 'current', 'bin', 'library.exe'), releaseB.folder, [], { DESKPOST_INSTALL_FAULT_AFTER: 'activated' });
+    const pending2 = receiptOf(prog2).pending;
+    check(faulted.exit !== 0 && pending2?.['phase'] === 'activated', `the kernel's upgrade did not stop after 'activated': ${faulted.said}`);
+    if (pending2?.['path_change'] !== false) throw new Error(`the kernel's pending transaction records path_change ${String(pending2?.['path_change'])}; the 1.3.4 script is not run over it, since it would write HKCU\\Environment`);
+    const byScript = script(prog2, releaseB.folder, ['-Resume', 'finish']);
+    equal(byScript.exit, 0, `the 1.3.4 script did not finish the kernel's upgrade: ${byScript.said}`);
+    ended(prog2, 'begun by the kernel, finished by the 1.3.4 script');
+    check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+  } catch (error) {
+    failures.push(`section 137 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 138. THE BOOTSTRAP NAMES ITS OWN FOLDER (kickoffs/s91 ruling 2; PLAN-install-without-powershell.md D3). The
+// Command Prompt line leaves a bootstrap in %TEMP%\deskpost-setup, so when the bootstrap's program folder is outside
+// the install root, the closing text names it as safe to delete and --json gives it as `setup_folder`. Against a
+// compiled release tree (itself outside every fixture root): a JSON install by its dry run's plan_id and a text
+// install each name the tree; a repair run by the installed `current\bin\library.exe` names nothing, in either form.
+if (selected(138) && releaseTreeUnderTest() !== null) {
+  const treeA = releaseTreeUnderTest()!;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-setup-folder-')));
+  try {
+    const processesBefore = libraryProcessCount();
+    const releaseA = releaseFolderOf(treeA, path.join(root, 'rel-a'));
+    fs.mkdirSync(path.join(root, 'reg'));
+    const run = (exe: string, args: string[]) => {
+      const ran = spawnSync(exe, args, { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+      return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-600) };
+    };
+    const lastJson = (stdout: string): Record<string, unknown> => {
+      const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
+      try {
+        return lines.length === 1 ? (JSON.parse(lines[0]!) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+    const norm = (value: unknown) => (typeof value === 'string' ? path.resolve(value).replace(/[\\/]+$/, '').toLowerCase() : value);
+    const bootstrap = path.join(treeA, 'bin', 'library.exe');
+    const named = 'only started this install';
+
+    // 1. A JSON INSTALL FROM OUTSIDE THE ROOT: setup_folder IS THE TREE.
+    const prog1 = path.join(root, 'prog1');
+    const base1 = ['install', '--release', releaseA.folder, '--install-root', prog1, '--library', 'none', '--no-path-change'];
+    const dry = lastJson(run(bootstrap, [...base1, '--dry-run', '--json']).stdout);
+    check(dry['status'] === 'dry-run', `the bootstrap's JSON dry run did not show a plan: ${JSON.stringify(dry).slice(0, 300)}`);
+    const json1 = run(bootstrap, [...base1, '--json', '--plan-id', String(dry['plan_id'] ?? '')]);
+    const result1 = lastJson(json1.stdout);
+    check(json1.exit === 0 && result1['status'] === 'installed', `the JSON install did not complete: ${json1.said}`);
+    equal(norm(result1['setup_folder']), norm(treeA), 'the JSON install did not give the bootstrap\'s folder as setup_folder');
+
+    // 2. A TEXT INSTALL FROM OUTSIDE THE ROOT: THE CLOSING TEXT NAMES THE TREE.
+    const prog2 = path.join(root, 'prog2');
+    const text2 = run(bootstrap, ['install', '--release', releaseA.folder, '--install-root', prog2, '--library', 'none', '--no-path-change', '--yes']);
+    check(text2.exit === 0, `the text install did not complete: ${text2.said}`);
+    const line2 = text2.stdout.split(/\r?\n/).find((line) => line.includes(named)) ?? '';
+    check(line2 !== '' && line2.toLowerCase().includes(path.resolve(treeA).toLowerCase()), `the text install did not name the bootstrap's folder: ${text2.said}`);
+
+    // 3. A REPAIR RUN FROM INSIDE THE ROOT (current\bin): NOTHING NAMED, IN TEXT OR JSON.
+    const installed = path.join(prog1, 'current', 'bin', 'library.exe');
+    const base3 = ['install', '--release', releaseA.folder, '--install-root', prog1, '--library', 'none', '--no-path-change', '--repair'];
+    const text3 = run(installed, [...base3, '--yes']);
+    check(text3.exit === 0 && !text3.stdout.includes(named), `the repair from current\\bin named a folder, or failed: ${text3.said}`);
+    const dry3 = lastJson(run(installed, [...base3, '--dry-run', '--json']).stdout);
+    const json3 = run(installed, [...base3, '--json', '--plan-id', String(dry3['plan_id'] ?? '')]);
+    const result3 = lastJson(json3.stdout);
+    check(json3.exit === 0 && result3['status'] === 'repaired', `the JSON repair from current\\bin did not complete: ${json3.said}`);
+    check('setup_folder' in result3 && result3['setup_folder'] === null, `the JSON repair from current\\bin gave setup_folder ${JSON.stringify(result3['setup_folder'])}`);
+    check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+  } catch (error) {
+    failures.push(`section 138 stopped early: ${(error as Error).message}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

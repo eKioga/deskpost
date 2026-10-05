@@ -39,7 +39,9 @@ $env:LIBRARY_WORKSPACE = ''; $env:LIBRARY_SEAT = ''; $env:LIBRARY_SEAT_CLAIM = '
 Push-Location $Work
 try {
 $R = "$Work\prog"; $L = "$Work\lib"; $installer = if ($Installer) { $Installer } else { Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'install.ps1' }
-try { & $installer -Release $ReleaseA -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "A: $($_.Exception.Message)" }
+# EVERY RELEASE'S OWN SCRIPT INSTALLS THAT RELEASE (PLAN-install-without-powershell.md D9): a ReleaseA before 1.3.5 has no
+# `library install` for the forwarder under test to run. The upgrade to ReleaseB and the -Resume calls use $installer.
+try { & (Join-Path $ReleaseA 'install.ps1') -Release $ReleaseA -InstallRoot $R -Library $L -Yes -NoPathChange | Out-Null; $ok = $true } catch { $ok = $false; "A: $($_.Exception.Message)" }
 Check $ok "install $versionA"
 $hooks = Get-FileHash "$L\.claude\settings.local.json"
 # AN UPGRADE INTERRUPTED AFTER current SWITCHED, THEN UNDONE: current, current.json and the hooks as they were.

@@ -139,7 +139,7 @@ trap 'rm -rf "$incoming"' EXIT
 extract_zip "$DOWNLOADS/$archive" "$incoming"
 [ "$(ls "$incoming" | wc -l | tr -d ' ')" = 1 ] || fail "$archive does not hold exactly one top-level folder."
 extracted="$incoming/$(ls "$incoming")"
-chmod 0755 "$extracted/bin/library" "$extracted/library"
+chmod 0755 "$extracted/bin/library"
 [ "$(json_field platform < "$extracted/release.json")" = "$PLATFORM" ] || fail "$archive is not built for $PLATFORM."
 version="$(json_field plugin_version < "$extracted/release.json")"
 printf '%s' "$version" | grep -Eq '^[0-9A-Za-z.+-]+$' || fail "release.json's version cannot name a directory."

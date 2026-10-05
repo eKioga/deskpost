@@ -129,6 +129,20 @@ export const VERBS: Record<string, VerbDeclaration> = {
     ported: true,
     row: 'S83',
   },
+  install: {
+    summary: 'Install, upgrade or repair Deskpost from a release, or finish or undo an interrupted install, with no PowerShell: what install.ps1 did.',
+    usage:
+      'library install [--release <folder|url>] [--install-root <dir>] [--library <dir|none>] [--platform win-x64|win-arm64] [--yes] [--dry-run] [--json] [--plan-id <id>] ' +
+      '[--allow-overlap] [--repair] [--keep-libraries] [--no-path-change] [--plugin|--skip-plugin] [--resume finish|undo] [--librarian claude|codex]',
+    actions: [],
+    positional: false,
+    // PLAN-install-without-powershell.md D1-D8 (S89, ADR-0066). Run by a reader it is the bootstrap: it reads and checks
+    // the release, then runs that release's own binary with --extracted <folder> --archive-sha256 <hex>, which installs.
+    // install.ps1 is a forwarder onto the same, passing --forwarded, --refusal-file, --script-sha, --script-path and
+    // --run-as-file. Windows only; install.sh installs on macOS and Linux.
+    ported: true,
+    row: 'S89',
+  },
   hook: {
     summary: "The Library's hooks: a harness payload on stdin, a decision or context on stdout.",
     usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',

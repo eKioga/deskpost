@@ -47,13 +47,28 @@ Librarian starts. [`llms-install.md`](llms-install.md) is the page it follows, w
 
 ### Install from a terminal
 
-In PowerShell, from the folder you want your Library in:
+On Windows, open **Command Prompt**: press Start, type `cmd`, and press Enter. It is Command Prompt, not
+PowerShell. Go to the folder you want your Library in (`cd /d D:\Notes`, for example), then paste this one line
+and press Enter:
+
+```bat
+(if not exist "%TEMP%\deskpost-setup\release" mkdir "%TEMP%\deskpost-setup\release") && (if not exist "%TEMP%\deskpost-setup\program" mkdir "%TEMP%\deskpost-setup\program") && curl.exe -fLo "%TEMP%\deskpost-setup\release\SHA256SUMS" https://github.com/eKioga/deskpost/releases/latest/download/SHA256SUMS && curl.exe -fLo "%TEMP%\deskpost-setup\release\deskpost-win-x64.zip" https://github.com/eKioga/deskpost/releases/latest/download/deskpost-win-x64.zip && tar -xf "%TEMP%\deskpost-setup\release\deskpost-win-x64.zip" -C "%TEMP%\deskpost-setup\program" --strip-components=1 && "%TEMP%\deskpost-setup\program\bin\library.exe" install --release "%TEMP%\deskpost-setup\release"
+```
+
+It downloads the release and its checksums with the `curl.exe` and `tar.exe` Windows already has, checks the
+download against the checksums, and installs. Nothing in it needs PowerShell.
+
+You can paste it again at any time: if an install was interrupted, running the line again is how it finishes.
+Afterwards the folder `%TEMP%\deskpost-setup` is no longer needed, and you can delete it. `deskpost` works in a
+**new** terminal; the window you ran the line in keeps its old PATH.
+
+Or, in PowerShell, from the folder you want your Library in:
 
 ```powershell
 & ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1)))
 ```
 
-It asks one question, **where your Library should live**, with the answer already filled in: the
+Either line asks one question, **where your Library should live**, with the answer already filled in: the
 folder you ran it from, or a `Library` folder inside it when that folder already holds other files.
 Type another folder, or `none` to install only the program. Then it shows one screen with everything
 it will do, and does it when you press Enter:
@@ -86,37 +101,44 @@ into `~/.local/bin`. Make your Library with `deskpost init ~/Library`, then run 
 
 ### Install options
 
-Options go after the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1))) -Library D:\Notes`.
+Each option has two spellings. On the Command Prompt line, add it to the end of the line:
+`... install --release "%TEMP%\deskpost-setup\release" --library D:\Notes`. On the PowerShell line, add it after
+the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1))) -Library D:\Notes`.
 
-| Option | What it does |
-| --- | --- |
-| `-InstallRoot <folder>` (`DESKPOST_INSTALL_ROOT`) | Where the program goes; `%LOCALAPPDATA%\deskpost` by default. It must be new, empty, or an existing Deskpost install. |
-| `-Library <folder>` or `-Library none` (`DESKPOST_LIBRARY`) | Answers the question; `none` installs the program only, and `deskpost setup <folder>` makes a Library later. |
-| `-Yes` (`DESKPOST_YES=1`) | No prompts: the defaults, and the plan screen is still printed. It never launches an assistant; it ends with `Next: deskpost`. |
-| `-DryRun` | Shows the plan and changes nothing. |
-| `-AllowOverlap` | Lets the Library and the program folder contain each other, which is otherwise refused without a prompt. |
-| `-Repair` | Reinstalls the same version over itself, and brings an existing Library's managed files up to date. |
-| `-KeepLibraries` | On an upgrade, keeps the Libraries the install serves as they are, rather than bringing them up to date; each lags the program until `deskpost init <folder>`. |
-| `-Resume finish` / `-Resume undo` | Finishes or undoes an install, upgrade or uninstall that was interrupted. Running the one-liner again offers the same choice. |
-| `-NoPathChange` | Leaves PATH alone; run `<program>\bin\deskpost.cmd` instead. |
-| `-Plugin` | Also installs the Claude Code plugin. Opt-in, because each Library registers its own guards. |
-| `-Rollback` | Switches back to the version installed before this one, as `deskpost rollback` does. |
-| `-Json` | Prints one JSON result on stdout; everything else goes to stderr. |
+| Command Prompt | PowerShell | What it does |
+| --- | --- | --- |
+| `--install-root <folder>` | `-InstallRoot <folder>` | Where the program goes (or `DESKPOST_INSTALL_ROOT`); `%LOCALAPPDATA%\deskpost` by default. It must be new, empty, or an existing Deskpost install. |
+| `--library <folder>` or `--library none` | `-Library <folder>` or `-Library none` | Answers the question (or `DESKPOST_LIBRARY`); `none` installs the program only, and `deskpost setup <folder>` makes a Library later. |
+| `--yes` | `-Yes` | No prompts (or `DESKPOST_YES=1`): the defaults, and the plan screen is still printed. It never launches an assistant; it ends with `Next: deskpost`. |
+| `--dry-run` | `-DryRun` | Shows the plan and changes nothing. |
+| `--allow-overlap` | `-AllowOverlap` | Lets the Library and the program folder contain each other, which is otherwise refused without a prompt. |
+| `--repair` | `-Repair` | Reinstalls the same version over itself, and brings an existing Library's managed files up to date. |
+| `--keep-libraries` | `-KeepLibraries` | On an upgrade, keeps the Libraries the install serves as they are, rather than bringing them up to date; each lags the program until `deskpost init <folder>`. |
+| `--resume finish` / `--resume undo` | `-Resume finish` / `-Resume undo` | Finishes or undoes an install, upgrade or uninstall that was interrupted. Running the line again offers the same choice. |
+| `--no-path-change` | `-NoPathChange` | Leaves PATH alone; run `<program>\bin\deskpost.cmd` instead. |
+| `--plugin` | `-Plugin` | Also installs the Claude Code plugin. Opt-in, because each Library registers its own guards. |
+| `deskpost rollback` | `-Rollback` | Switches back to the version installed before this one. |
+| `--json` | `-Json` | Prints one JSON result on stdout; everything else goes to stderr. |
 
-**Upgrading** is the same one line: it upgrades in place, and refuses while a session is open at a
+**Upgrading** is the same line, either one: it upgrades in place, and refuses while a session is open at a
 seat of a Library it serves, naming it (close it and press Enter to look again). It asks no Library
 question: the same run brings the Libraries the install serves up to date, so no second command is
-needed (`[k]` on the screen, or `-KeepLibraries`, keeps them as they are). A Library that cannot be
+needed (`[k]` on the screen, or `--keep-libraries` / `-KeepLibraries`, keeps them as they are). A Library that cannot be
 brought up to date, such as one holding hooks Deskpost did not write, is kept, named, and given the
 `deskpost init <folder>` line that finishes it. If Deskpost is installed somewhere
 other than the default folder, the bare line offers to upgrade that install, and when nobody can be
-asked it prints this line instead, naming that folder:
+asked it prints the line to use instead, naming that folder. For an install outside the default folder, add
+`--install-root` with that folder to the end of the Command Prompt line, or `-InstallRoot` to the PowerShell line:
+
+```bat
+... install --release "%TEMP%\deskpost-setup\release" --install-root D:\path\to\Deskpost
+```
 
 ```powershell
 & ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1))) -InstallRoot D:\path\to\Deskpost
 ```
 
-The same version is not reinstalled unless you add `-Repair`. `deskpost rollback` switches back. **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
+The same version is not reinstalled unless you add `--repair` (`-Repair`). `deskpost rollback` switches back. **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
 -- its entries in your Libraries, its PATH entry and its program files -- and never your Libraries.
 
 The checkout of this repository is the program, not a Library: cloning it gives you the source, and
@@ -167,7 +189,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.4**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.5**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
 - **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,

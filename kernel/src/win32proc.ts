@@ -324,3 +324,35 @@ export function nativeStartDetached(application: string, commandLine: string, di
   if ('pid' in second) return { pid: second.pid, breakaway: false };
   throw new Error(`CreateProcessW failed with Windows error ${second.error}`);
 }
+
+// --- THE ENVIRONMENT BROADCAST (PLAN-install-without-powershell.md D4, kickoffs/s89 row 2) ------------------------------
+
+interface User32 {
+  symbols: {
+    SendMessageTimeoutW(window: number, message: number, wParam: number, lParam: Uint8Array, flags: number, timeout: number, result: Uint8Array): number;
+  };
+}
+
+let user32: User32 | null = null;
+
+const HWND_BROADCAST = 0xffff;
+const WM_SETTINGCHANGE = 0x1a;
+const SMTO_ABORTIFHUNG = 0x2;
+
+/**
+ * WM_SETTINGCHANGE "Environment" to every top-level window, bounded at 3 s per window, as install.ps1's
+ * `Send-EnvironmentChange` did (step 0, measurement 3): Explorer and what it starts read the new user PATH; Windows
+ * Terminal builds a new tab's environment from the registry itself; terminals already open keep theirs. Returns
+ * whether the call answered; a window that does not is skipped by SMTO_ABORTIFHUNG.
+ */
+export function nativeBroadcastEnvironment(): boolean {
+  if (user32 === null) {
+    const ffi = ffiOrRefuse('the environment broadcast');
+    const { FFIType } = ffi;
+    user32 = ffi.dlopen('user32.dll', {
+      SendMessageTimeoutW: { args: [FFIType.i64_fast, FFIType.u32, FFIType.u64_fast, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i64_fast },
+    }) as User32;
+  }
+  const result = new Uint8Array(8);
+  return user32!.symbols.SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, wide('Environment'), SMTO_ABORTIFHUNG, 3000, result) !== 0;
+}

@@ -1115,15 +1115,24 @@ export function refreshServed(rootGiven: string, program: string, registryRoot: 
   if (doctor.refusal !== null) throw new Error(doctor.refusal);
   const report = doctor.value as Record<string, unknown>;
   const value: Record<string, unknown> = { ...report, refresh: { approved: approval !== null, libraries: outcomes } };
+  return { value, exitCode: doctor.exitCode, humanText: refreshServedText(value) };
+}
+
+/**
+ * `setup --refresh-served`'s report as lines for a person: each Library's refresh, then doctor. The installer renders
+ * the same report it read as JSON with this (kickoffs/s89 row 3), so a closing check reads alike either way.
+ */
+export function refreshServedText(value: Record<string, unknown>): string {
+  const refresh = value['refresh'] as { libraries?: RefreshOutcome[] } | undefined;
   const lines: string[] = [];
-  for (const outcome of outcomes) {
+  for (const outcome of refresh?.libraries ?? []) {
     if (outcome.status === 'refreshed') lines.push(`Brought up to date: ${outcome.workspace} (${outcome.detail}).`);
     else if (outcome.status === 'kept') lines.push(`Kept as it is: ${outcome.workspace}. Run ${outcome.finish} to bring it up to date.`);
     else if (outcome.status === 'refused') lines.push(`Kept as it is: ${outcome.workspace}, because ${outcome.detail} Run ${outcome.finish} once that is fixed.`);
     else lines.push(`Partly refreshed: ${outcome.workspace}: ${outcome.detail}. Run ${outcome.finish} to finish it.`);
     if (outcome.codex) lines.push(`  Codex will ask you to review ${outcome.workspace}'s hooks again on its next start.`);
   }
-  return { value, exitCode: doctor.exitCode, humanText: [...lines, ...(lines.length ? [''] : []), doctorText(report)].join('\n') };
+  return [...lines, ...(lines.length ? [''] : []), doctorText(value)].join('\n');
 }
 
 function setupLibraryApply(plan: SetupPlan): Record<string, unknown> {
@@ -1141,7 +1150,7 @@ function keptText(kept: string[]): string {
   return `${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept as ${kept.length === 1 ? 'it is' : 'they are'}: nothing inside ${kept.length === 1 ? 'it' : 'them'} is written. Run ${COMMAND_NAME} init <folder> to bring ${kept.length === 1 ? 'it' : 'each'} up to date.`;
 }
 
-function planText(plan: SetupPlan): string {
+export function planText(plan: SetupPlan): string {
   const kept = plan.answers.kept_libraries ?? [];
   const refresh = refreshPlanLines(plan.refresh ?? []);
   if (plan.library === null && plan.register === null) return [...(refresh.length ? refresh : []), ...(kept.length ? [keptText(kept)] : []), ...(!refresh.length && !kept.length ? ['No Library is set up: the program only.'] : [])].join('\n');

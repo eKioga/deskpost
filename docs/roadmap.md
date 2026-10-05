@@ -25,8 +25,7 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet: the next milestone is being planned. First in line are
-installing without PowerShell (about 1 session) and seats that work as a team (below).
+Nothing is scoped into a session yet. Seats that work as a team (below) are next in line.
 
 ## Next
 
@@ -45,8 +44,8 @@ installing without PowerShell (about 1 session) and seats that work as a team (b
 - **A Book's source text has a named home**, so material compiled out of `raw/` has somewhere
   durable to go.
 
-After 1.3.2: installing without PowerShell (about 1 session, planned first), and then, once 1.4.0's
-plans are done, the development tools themselves.
+After 1.3.5 (installing without PowerShell, released), and once 1.4.0's plans are done: the
+development tools themselves.
 
 ### 1.5.0: A Library card (planning)
 
@@ -253,6 +252,16 @@ A Book that changes often can be kept in one place without paper cuts: a refresh
 approve and keeps its summary on the Shelf, the reader says when a Book was archived, Discovery says
 when a Shelf Book's index is stale and `shelf rebuild` repairs it, and `hub edit replace-item` keeps a
 nested list with its item.
+
+### 1.3.5: Install without PowerShell (2 of 2 sessions; released 2026-10-05)
+
+- **`library install`** installs, upgrades, repairs and recovers Deskpost with no PowerShell running:
+  the program does what `install.ps1` did, on the same receipt and lock, so either can finish what the
+  other began.
+- **One Command Prompt line** for a new reader, using the `curl.exe` and `tar.exe` Windows ships.
+- **`install.ps1` becomes a thin forwarder**, so every existing one-liner keeps working.
+- **The installer's closing check no longer ends in a PowerShell error** after an install that worked,
+  and says whether the program or a Library needs the fix.
 
 ### Earlier releases
 

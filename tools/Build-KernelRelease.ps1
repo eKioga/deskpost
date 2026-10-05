@@ -306,10 +306,12 @@ try {
 
         $archivePath = Join-Path $Destination "$rootName.zip"
         $executables = @("bin/$($spec.exe)")
-        if ($spec.exe -eq 'library') { $executables += 'library' }
         $binaryBytes = (Get-Item -LiteralPath $binary).Length
         New-ReleaseArchive -StageRoot $stage -RootName $rootName -ArchivePath $archivePath -Executables $executables
         Remove-Item -LiteralPath $stage -Recurse -Force
+        # THE UNVERSIONED TWIN (PLAN-install-without-powershell.md D3, S91): releases/latest/download/ needs a name that
+        # does not change per release, so the same bytes also ship as deskpost-<platform>.zip, listed in SHA256SUMS.
+        Copy-Item -LiteralPath $archivePath -Destination (Join-Path $Destination "deskpost-$platform.zip")
 
         $built.Add([pscustomobject]@{
             platform     = $platform
@@ -347,8 +349,9 @@ if (Test-Path -LiteralPath $page) {
     Copy-Item -LiteralPath $page -Destination (Join-Path $Destination 'llms-install.md')
 }
 
-# sha256sum's own format, so `sha256sum -c` and install.sh read the same file install.ps1 does.
-$sums = ($built | ForEach-Object { "$($_.sha256)  $($_.archive)" }) -join "`n"
+# sha256sum's own format, so `sha256sum -c` and install.sh read the same file install.ps1 does. The versioned lines
+# come first, as before 1.3.5; each unversioned twin follows with the same hash (D3).
+$sums = (@($built | ForEach-Object { "$($_.sha256)  $($_.archive)" }) + @($built | ForEach-Object { "$($_.sha256)  deskpost-$($_.platform).zip" })) -join "`n"
 Write-LfFile (Join-Path $Destination 'SHA256SUMS') ($sums + "`n")
 
 # THE ARCHIVE AUDIT: every entry and every loose file against the blobs at the commit release.json names.

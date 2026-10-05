@@ -52,6 +52,7 @@ import { runSetupVerb } from './setup.ts';
 import { rollbackVerb, uninstallVerb } from './lifecycle.ts';
 import { runProcessVerb } from './processverb.ts';
 import { runFinishUninstall } from './finisher.ts';
+import { installVerb } from './install.ts';
 import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
 
 
@@ -425,6 +426,13 @@ async function main(argv: string[]): Promise<number> {
       if (result.refusal !== null) refuse(result.refusal);
       if (result.value !== null) emit(result.value, result.asJson, result.humanText);
       else if (result.humanText) writeStdout(result.humanText);
+      return result.exitCode;
+    }
+
+    // INSTALL WITHOUT POWERSHELL (PLAN-install-without-powershell.md, ADR-0066): the bootstrap, or with --extracted the installer.
+    case 'install': {
+      const result = await installVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
       return result.exitCode;
     }
 

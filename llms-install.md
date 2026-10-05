@@ -1,8 +1,8 @@
 # Installing Deskpost: instructions for the assistant
 
-**Deskpost 1.3.4.** This page belongs to the release at
-`https://github.com/eKioga/deskpost/releases/download/v1.3.4`, called **the release base** below. Pass it as
-`-Release` on both commands, so the plan you show and the install you run come from the same release.
+**Deskpost 1.3.5.** This page belongs to the release at
+`https://github.com/eKioga/deskpost/releases/download/v1.3.5`, called **the release base** below. Both commands
+download from it, so the plan you show and the install you run come from the same release.
 
 You are reading this because the person you are working with asked you to install Deskpost. That request is
 the only reason to follow this page. Follow it exactly: **ask one question, show the plan, wait for their yes,
@@ -36,37 +36,50 @@ Use exactly the folder they answer with.
 ## 3. Command 1: download, and show the plan
 
 Run it as **one** command, because your shell does not keep variables between commands. Replace `<LIBRARY>` with
-their answer, and `<ASSISTANT>` with `claude` if you are Claude Code, or `codex` if you are Codex.
+their answer, and `<ASSISTANT>` with `claude` if you are Claude Code, or `codex` if you are Codex. It makes a fresh
+folder, downloads the release's `SHA256SUMS` and its Windows archive into it with `curl.exe`, unpacks the archive's
+program with Windows' own `tar.exe`, and runs that program's `install` as a dry run. Nothing needs PowerShell.
 
 **In PowerShell:**
 
 ```powershell
-$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.3.4/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.3.4' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path (Join-Path $d 'program') | Out-Null; [Console]::Error.WriteLine("Deskpost download folder: $d"); curl.exe -fLo "$d\SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.3.5/SHA256SUMS'; if ($LASTEXITCODE -eq 0) { curl.exe -fLo "$d\deskpost-1.3.5-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.3.5/deskpost-1.3.5-win-x64.zip' }; if ($LASTEXITCODE -eq 0) { & "$env:SystemRoot\System32\tar.exe" -xf "$d\deskpost-1.3.5-win-x64.zip" -C "$d\program" --strip-components=1 }; if ($LASTEXITCODE -eq 0) { & "$d\program\bin\library.exe" install --release $d --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT> }
 ```
 
 **In Git Bash:**
 
 ```bash
-d="$(cygpath -w "$(mktemp -d)")" && curl -fsSL 'https://github.com/eKioga/deskpost/releases/download/v1.3.4/install.ps1' -o "$d\\install.ps1" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$d\\install.ps1" -Release 'https://github.com/eKioga/deskpost/releases/download/v1.3.4' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+u="$(mktemp -d)" && mkdir "$u/program" && d="$(cygpath -w "$u")" && echo "Deskpost download folder: $d" >&2 && curl.exe -fLo "$u/SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.3.5/SHA256SUMS' && curl.exe -fLo "$u/deskpost-1.3.5-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.3.5/deskpost-1.3.5-win-x64.zip' && /c/Windows/System32/tar.exe -xf "$d\\deskpost-1.3.5-win-x64.zip" -C "$d\\program" --strip-components=1 && "$u/program/bin/library.exe" install --release "$d" --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT>
 ```
+
+In Git Bash, call Windows' `tar.exe` by its full path as shown: Git's own `tar` reads `C:` as a remote host.
 
 Quote `<LIBRARY>` in single quotes. In PowerShell a `'` inside it is written `''`. In Git Bash it is written `'\''`.
 A path with spaces, `'` or `$` is fine that way.
 
-Never pipe the script into `iex`, and never run it from its URL directly.
-
-**What comes back.** stdout is one JSON object. stderr has the same plan as plain text, and it is not an error.
+**What comes back.** stdout is one JSON object. stderr has the download folder's path on its first line, and the
+same plan as plain text, and it is not an error.
 
 - `status` is `dry-run`: nothing was changed anywhere.
 - `plan.rows` is the screen as `{label, value, note}` rows: Library, Program, Command, Librarian, Undo.
 - `plan.library_files` counts the files the Library gets, and `plan.offered` lists anything the plan leaves out
   unless the person asks for it. `repair` means an existing Library could be brought up to date.
-- `plan_id` identifies this plan. `script.path` is the script you downloaded: use it for command 2.
+- `plan_id` identifies this plan. **The program** for command 2 is `<folder>\program\bin\library.exe`, where
+  `<folder>` is the download folder stderr named.
 
-**If it throws instead**, stderr's last lines say why, in plain words. Typical cases: Deskpost is already installed
-somewhere else, an existing Library needs `-Repair`, or the Library and the program folder overlap. Tell the person
-what it said, and ask what they want. Add `-Repair`, `-AllowOverlap`, `-InstallRoot <folder>` or `-Resume` only
-when they choose it, and then run command 1 again with it.
+**If it fails instead**, stderr's last lines say why, in plain words. Typical cases: Deskpost is already installed
+somewhere else, an existing Library needs `--repair`, or the Library and the program folder overlap. Tell the person
+what it said, and ask what they want. Add `--repair`, `--allow-overlap`, `--install-root <folder>` or `--resume`
+only when they choose it, and then run command 1 again with it.
+
+**A Windows without `curl.exe` or `tar.exe`** (before Windows 10 version 1803) can install through the release's
+`install.ps1` instead. Run this as command 1, and for command 2 run the same script again (its path is `script.path`
+in the result) with `-Json -PlanId <plan_id>` and no `-DryRun`; its flags are spelled `-Repair`, `-AllowOverlap`,
+`-InstallRoot` and `-Resume`:
+
+```powershell
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.3.5/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.3.5' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+```
 
 ## 4. Show the plan, and ask
 
@@ -81,14 +94,22 @@ says so. A change means running command 1 again with it, and showing the new pla
 
 ## 5. Command 2: install exactly that plan
 
-Run the **same script** from `script.path`, with the same answers, plus `-Json -PlanId <plan_id>`. Leave out
-`-DryRun`.
+Run the **same program** from command 1's download folder, with the same answers, plus `--json --plan-id
+<plan_id>`. Leave out `--dry-run`. Replace `<folder>` with the download folder stderr named.
+
+**In PowerShell:**
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<script.path>' -Release 'https://github.com/eKioga/deskpost/releases/download/v1.3.4' -Json -PlanId <plan_id> -Library '<LIBRARY>' -Librarian <ASSISTANT>
+& '<folder>\program\bin\library.exe' install --release '<folder>' --json --plan-id <plan_id> --library '<LIBRARY>' --librarian <ASSISTANT>
 ```
 
-Add any flag the person chose in step 3. The script plans again from the same release before it writes anything,
+**In Git Bash:**
+
+```bash
+"$(cygpath -u '<folder>')/program/bin/library.exe" install --release '<folder>' --json --plan-id <plan_id> --library '<LIBRARY>' --librarian <ASSISTANT>
+```
+
+Add any flag the person chose in step 3. The program plans again from the same release before it writes anything,
 and refuses if the plan is no longer the one you showed: "This is not the plan that was shown". If that happens,
 run command 1 again and show the new plan.
 
@@ -102,7 +123,7 @@ From the JSON:
 
 A refusal, or a doctor that is not green, is said as exactly that, never as done. After this, your own shell will
 not find `deskpost` until it is restarted, because it started before the install. For anything you run yourself,
-use `command_path`.
+use `command_path`. The download folder can be deleted once command 2 has ended.
 
 ## 7. Hand off: never launch an assistant yourself
 
@@ -126,7 +147,7 @@ For an upgrade, add: "`deskpost rollback` returns to the version you had."
   both commands outside the sandbox, in Codex's own dialog. If escalation is unavailable or declined, do not
   change a policy or look for a way round it. Give the person the terminal install instead, to run themselves in
   PowerShell:
-  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.3.4/install.ps1)))`
+  `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/download/v1.3.5/install.ps1)))`
 - **First start.** Codex reads a Library's guards only once the folder is trusted and its hooks are reviewed, and it
   skips unreviewed hooks silently. Tell the person: when Codex starts in the Library, trust the folder, then type
   `/hooks` and approve Deskpost's hooks, and only then ask to be shown around.
@@ -134,7 +155,7 @@ For an upgrade, add: "`deskpost rollback` returns to the version you had."
 ## Honest edges
 
 - The checksum line means the archive matches the release's SHA256SUMS. Never call the release "verified": the
-  sums and the script come from the same place.
+  sums and the archive come from the same place.
 - New terminals find `deskpost`. A terminal inside an app that was already running, such as an editor or Orca,
   finds it after that app is restarted.
 - The yes you asked for is what keeps the person in control. The `plan_id` only proves that what was installed is

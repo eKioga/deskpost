@@ -51,8 +51,9 @@ created can be proved and nothing else is touched.
 
      On `completed` it clears everything. On `failed` it leaves `pending` and the receipt, owned by nobody.
 - **Retry never needs the program.** Re-running the installer finds `pending: uninstall` and finishes it
-  (`-Resume finish`), through the same removal block. install.ps1 carries that block byte for byte, and kernel
-  self-test section 50 holds the two equal. Before the Library edits began, `-Resume undo` just clears it.
+  (`-Resume finish`), through the same removal rules. Since 1.3.5 (ADR-0066) that is the kernel's own removal, run
+  by `library install --resume finish`, and install.ps1, a forwarder, carries no copy; kernel self-test section 50
+  holds the rules. Before the Library edits began, `-Resume undo` just clears it.
 - **`deskpost rollback [--yes]`** switches `current` to the previous version in the four named substeps. It runs
   under the lifecycle rule and the close-your-sessions rule, and keeps ADR-0054's shared-Desk preflight. It checks the
   switched version answers through `current`, and switches back if not.

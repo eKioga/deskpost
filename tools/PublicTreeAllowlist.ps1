@@ -117,10 +117,10 @@ $script:PublicTreeIncludeFiles = @(
     # THE SOURCE CHECKOUT'S ENTRY POINT: three names for one command, each the only one its shell
     # resolves -- library.cmd for cmd.exe and PowerShell, the extensionless library for a POSIX
     # shell, and library.ps1, the dispatcher both of them exec. They travel together in the public
-    # tree. A RELEASE DROPS library.cmd AND library.ps1 (PLAN-no-powershell-runtime.md D9, S83): an
-    # install's shims call current\bin\library.exe, and kernel/src/releasefiles.ts filters them, with
-    # every .ps1 outside the installer and the reader adapter's closure, out of the archive only. The
-    # extensionless library stays, because install.sh chmods it in the extracted tree.
+    # tree. A RELEASE DROPS ALL THREE (PLAN-no-powershell-runtime.md D9, S83; the extensionless library
+    # since S90, PLAN-install-without-powershell.md D10): an install's shims call current\bin\library.exe,
+    # and kernel/src/releasefiles.ts's DROPPED_LAUNCHERS filters them, with every .ps1 outside the
+    # installer and the reader adapter's closure, out of the archive only. The source tree keeps them.
     'library',
     'library.cmd',
     'library.ps1',
