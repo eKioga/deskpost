@@ -32,6 +32,7 @@ import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from 
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
+import { hubSlug } from './hubslug.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -469,7 +470,9 @@ function pageSizeStatus(body: string, pagePath: string): Record<string, PsJsonVa
   const size = utf8Length(body);
   const exempt = sizeExempt(pagePath);
   const oversized = size > PAGE_SIZE_THRESHOLD;
-  return { size_bytes: size, threshold_bytes: PAGE_SIZE_THRESHOLD, oversized, exempt, warn: oversized && !exempt };
+  // THE SIZE AFTER THE EDIT, SAID AS SUCH (PLAN-one-step-upgrade.md small fix 7): a preflight's `size_bytes` read as the
+  // page's size now. `size_after_bytes` names it; `size_bytes` stays as its alias for this release.
+  return { size_after_bytes: size, size_bytes: size, threshold_bytes: PAGE_SIZE_THRESHOLD, oversized, exempt, warn: oversized && !exempt };
 }
 
 function sectionSizes(body: string): { section: string; size_bytes: number }[] {
@@ -547,10 +550,10 @@ function entrySizeStatus(body: string, pagePath: string, previousBody: string): 
   };
 }
 
-function sizeWarningLines(warnings: Record<string, PsJsonValue>[], pagePath: string): string[] {
+function sizeWarningLines(warnings: Record<string, PsJsonValue>[], pagePath: string, written: boolean): string[] {
   const out: string[] = [];
   const [page, section, entry] = warnings as [Record<string, PsJsonValue>, Record<string, PsJsonValue>, Record<string, PsJsonValue>];
-  if (page['warn']) out.push(`Project Hub page '${pagePath}' is ${page['size_bytes']} bytes. ${pageSizeRemedy(pagePath)}`);
+  if (page['warn']) out.push(`Project Hub page '${pagePath}' ${written ? 'is' : 'would be'} ${page['size_after_bytes']} bytes after this edit. ${pageSizeRemedy(pagePath)}`);
   if (section['warn']) {
     for (const oversized of section['warned_sections'] as { section: string; size_bytes: number }[]) {
       out.push(
@@ -669,13 +672,13 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
 
 async function hubEditUnwarned(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'seat', 'plan-id', 'workspace', 'lock-timeout', 'title']);
-  const slug = parsed.positional[0] ?? '';
+  // ONE SLUG HELPER FOR EVERY HUB WRITER (PLAN-one-step-upgrade.md small fix 2): `projects/<slug>` is taken, and a
+  // refusal names `<slug>`, not the PowerShell parameter. The oracle's order is kept: a blank slug, then the mode.
+  const { slug, problem: slugProblem } = hubSlug(parsed.positional[0] ?? '');
   const modeWord = parsed.options.get('mode') ?? '';
-  if (isBlank(slug)) refuse('ProjectSlug is required.');
+  if (isBlank(slug)) refuse(slugProblem!);
   if (isBlank(modeWord)) refuse('Mode is required: AddSection, AppendSection, CheckItem, RemoveSection, ReplaceItem, ReplaceSection, ReplaceBody, or new-page.');
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && ['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
-    refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
-  }
+  if (slugProblem !== null && ['new-page', 'newpage'].includes(modeWord.toLowerCase())) refuse(slugProblem);
   // A NEW PAGE ON A LOCAL HUB (S67, PLAN-local-collection-writers.md step B): a mode of this verb with a write half of
   // its own, because the edit store below overwrites and a creation must never replace a page.
   if (['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
@@ -698,7 +701,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (mode === undefined) {
     refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}, new-page.`);
   }
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
+  if (slugProblem !== null) refuse(slugProblem);
 
   // THE FENCE, THEN THE COLLECTION ID, before anything about the page: the oracle's order, so a
   // workspace that may not write learns that first.
@@ -740,11 +743,11 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   }
   if (usedContentPath) {
     contentFull = path.resolve(path.isAbsolute(contentPath) ? contentPath : path.join(workspace, contentPath));
-    if (!fs.existsSync(contentFull) || !fs.statSync(contentFull).isFile()) refuse(`ContentPath '${contentPath}' is not a file.`);
+    if (!fs.existsSync(contentFull) || !fs.statSync(contentFull).isFile()) refuse(`--content-path '${contentPath}' is not a file (resolved to ${contentFull}).`);
     try {
       content = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(contentFull));
     } catch (error) {
-      refuse(`ContentPath '${contentPath}' is not valid UTF-8: ${(error as Error).message}`);
+      refuse(`--content-path '${contentPath}' (resolved to ${contentFull}) is not valid UTF-8: ${(error as Error).message}`);
     }
   }
 
@@ -862,15 +865,15 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     sectionSizeStatus(proposedBody, pagePath, currentBody),
     entrySizeStatus(proposedBody, pagePath, currentBody),
   ];
-  const warn = (): void => {
-    for (const line of sizeWarningLines(sizeWarnings, pagePath)) process.stderr.write(`WARNING: ${line}\n`);
+  const warn = (written: boolean): void => {
+    for (const line of sizeWarningLines(sizeWarnings, pagePath, written)) process.stderr.write(`WARNING: ${line}\n`);
   };
 
   if (parsed.flags.has('preflight')) {
     plan['page_size_warning'] = sizeWarnings[0]!;
     plan['section_size_warning'] = sizeWarnings[1]!;
     plan['entry_size_warning'] = sizeWarnings[2]!;
-    warn();
+    warn(false);
     return plan;
   }
   if (plan['unchanged']) {
@@ -931,7 +934,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(proposedBody.replace(/\r\n/g, '\n'))) {
       refuse(`Readback of '${pagePath}' did not match the approved text; the previous text is in ${journalPath}.`);
     }
-    warn();
+    warn(true);
     verified = true;
     saveJournal('complete', '');
   } catch (error) {

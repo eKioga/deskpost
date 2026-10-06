@@ -39,6 +39,7 @@ import { doctorText } from './human.ts';
 import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { createHash } from 'node:crypto';
 import { askAtTerminal, Interrupted } from './prompt.ts';
+import { compareVersions } from './versions.ts';
 
 export const SETUP_QUIT = 3;
 
@@ -81,6 +82,10 @@ export interface SetupAnswers {
    * `setup --refresh-served <root>` and no program transaction; this is the kernel's decision, read off the receipt.
    */
   refresh_only?: boolean;
+  /** The route that asked (D6): the screen and its advice name flags in that route's spelling. Not hashed. */
+  spelling?: Spelling;
+  /** The plan screen's PATH row (D5): what this run does to the user PATH, and why. Not hashed; path_change is. */
+  path_row?: string;
 }
 
 /** The approved refresh an install's receipt still carries (`refresh_pending`, r9 amendment 2), parsed, or null. */
@@ -195,7 +200,7 @@ export function programFolderState(folder: string): { state: 'new' | 'installed'
   }
   const entries = fs.readdirSync(folder);
   // AN INTERRUPTED INSTALL IS NOT "NOT EMPTY" (round 2, #2): a root holding only its receipt, its lock and staging.
-  const ours = new Set(['install-receipt.json', '.lifecycle.lock', '.pending', 'versions']);
+  const ours = new Set(['install-receipt.json', '.lifecycle.lock', '.pending', 'versions', 'update-check.json']);
   if (entries.every((name) => ours.has(name))) return { state: 'new', version: null, reason: null };
   return { state: 'refused', version: null, reason: `${folder} is not empty. Choose an empty folder; Deskpost removes only what it put there.` };
 }
@@ -331,11 +336,64 @@ export function defaultInstallRoot(): string {
   return process.platform === 'win32' ? path.join(process.env['LOCALAPPDATA'] ?? os.homedir(), 'deskpost') : path.join(os.homedir(), '.local', 'share', 'deskpost');
 }
 
-/** The exact line that upgrades the install at `root` in place, as README "Upgrading" gives it. */
-export function upgradeLine(root: string): string {
-  return process.platform === 'win32'
-    ? `& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1))) -InstallRoot ${root}`
-    : `curl -fsSL https://github.com/eKioga/deskpost/releases/latest/download/install.sh | DESKPOST_INSTALL_ROOT=${root} sh`;
+/**
+ * THE SPELLING OF THE ROUTE THAT ASKED (PLAN-one-step-upgrade.md D6). install.ps1 forwards its run (`--forwarded`) and
+ * the 1.3.4 install.ps1 calls `setup --ask` itself, so those read PowerShell's `-Repair`; the kernel's own routes (the
+ * Command Prompt line, the bootstrap, `deskpost install`, `deskpost upgrade`) read `--repair`.
+ */
+export type Spelling = 'kernel' | 'powershell';
+
+const POWERSHELL_FLAGS: Record<string, string> = {
+  resume: '-Resume',
+  'dry-run': '-DryRun',
+  json: '-Json',
+  'plan-id': '-PlanId',
+  'install-root': '-InstallRoot',
+  repair: '-Repair',
+  library: '-Library',
+  librarian: '-Librarian',
+  'no-path-change': '-NoPathChange',
+};
+
+/** The spelling of a route: the forwarder's (install.ps1 passes `--forwarded`) or the kernel's own. */
+export function spellingOfRoute(forwarded: boolean): Spelling {
+  return forwarded ? 'powershell' : 'kernel';
+}
+
+/** A flag as the caller types it: `-Repair` for the PowerShell route, `--repair` for the kernel's. */
+export function flagFor(spelling: Spelling, name: string): string {
+  return spelling === 'powershell' ? (POWERSHELL_FLAGS[name] ?? `--${name}`) : `--${name}`;
+}
+
+const RELEASE_DOWNLOAD = 'https://github.com/eKioga/deskpost/releases/latest/download';
+
+/** The README's Command Prompt line, which downloads the release into %TEMP%\deskpost-setup and runs its bootstrap. */
+const COMMAND_PROMPT_LINE =
+  '(if not exist "%TEMP%\\deskpost-setup\\release" mkdir "%TEMP%\\deskpost-setup\\release") && ' +
+  '(if not exist "%TEMP%\\deskpost-setup\\program" mkdir "%TEMP%\\deskpost-setup\\program") && ' +
+  `curl.exe -fLo "%TEMP%\\deskpost-setup\\release\\SHA256SUMS" ${RELEASE_DOWNLOAD}/SHA256SUMS && ` +
+  `curl.exe -fLo "%TEMP%\\deskpost-setup\\release\\deskpost-win-x64.zip" ${RELEASE_DOWNLOAD}/deskpost-win-x64.zip && ` +
+  'tar -xf "%TEMP%\\deskpost-setup\\release\\deskpost-win-x64.zip" -C "%TEMP%\\deskpost-setup\\program" --strip-components=1 && ' +
+  '"%TEMP%\\deskpost-setup\\program\\bin\\library.exe" install --release "%TEMP%\\deskpost-setup\\release"';
+
+/**
+ * THE EXACT LINE THAT UPGRADES THE INSTALL AT `root` IN PLACE (D6), for the install's own version and the route that
+ * asked. An install of 1.3.6 or later upgrades itself: its shim's full path, since the install may be on the stored
+ * PATH and not this shell's. An older one takes the route's line: the Command Prompt line for the kernel's routes, the
+ * `irm` scriptblock for PowerShell's, `install.sh` on Linux, each naming the root.
+ */
+export function upgradeLine(root: string, version: string | null, spelling: Spelling): string {
+  const order = version === null ? 'unknown' : compareVersions(version, '1.3.6');
+  const upgrades = order === 'newer' || order === 'equal' || order === 'different';
+  if (process.platform !== 'win32') {
+    return upgrades
+      ? `${path.join(root, 'current', 'bin', 'library')} upgrade`
+      : `curl -fsSL ${RELEASE_DOWNLOAD}/install.sh | DESKPOST_INSTALL_ROOT=${root} sh`;
+  }
+  if (upgrades) return `${path.join(root, 'bin', `${COMMAND_NAME}.cmd`)} upgrade`;
+  return spelling === 'powershell'
+    ? `& ([scriptblock]::Create((irm ${RELEASE_DOWNLOAD}/install.ps1))) -InstallRoot ${root}`
+    : `${COMMAND_PROMPT_LINE} --install-root "${root}"`;
 }
 
 /**
@@ -358,7 +416,11 @@ export interface AskOptions {
   json: boolean;
   allowOverlap: boolean;
   repair: boolean;
-  pathChange: boolean;
+  /**
+   * `'receipt'` (D5): an upgrade keeps the install's own answer, read from its receipt once the root is judged; a new
+   * install, or a 1.0 install with no receipt, means on. `--path-change` and `--no-path-change` give it outright.
+   */
+  pathChange: boolean | 'receipt';
   checksumNote: string;
   registryRoot?: string;
   /** The user PATH as stored (HKCU, raw), handed in by install.ps1 so an install this shell cannot see is found. */
@@ -368,6 +430,8 @@ export interface AskOptions {
   runAsFile?: boolean;
   /** `--keep-libraries` (`install.ps1 -KeepLibraries`): the served Libraries are kept as they are (D4). */
   keepLibraries?: boolean;
+  /** The route that asked (D6): `setup --ask` defaults to PowerShell's, since the 1.3.4 install.ps1 calls it. */
+  spelling?: Spelling;
 }
 
 class Refusal extends Error {}
@@ -388,6 +452,8 @@ export async function setupAsk(options: AskOptions): Promise<number> {
 async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   const version = String(releaseTuple()['plugin_version'] ?? 'unknown');
   let installRoot = path.resolve(options.installRoot);
+  const spelling: Spelling = options.spelling ?? 'powershell';
+  const flag = (name: string) => flagFor(spelling, name);
 
   const findOthers = (root: string) => {
     try {
@@ -397,27 +463,20 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     }
   };
 
-  // THE BARE ONE-LINER UPGRADES THE ONE INSTALL IT FINDS (S74 row 1, the Report "the bare install one-liner refuses to
-  // upgrade an install outside the default folder"). install.ps1 always passes a root, so "no -InstallRoot" is read as
-  // the default root holding nothing. With exactly one install elsewhere on PATH, a person is offered that install, and
-  // nobody-to-ask is refused with the exact line; two or more keep the refusal below.
+  // THE BARE ONE-LINER GOES AHEAD ON THE ONE INSTALL IT FINDS (PLAN-one-step-upgrade.md D4; ADR-0068 decision 5). A
+  // root that is the default and holds nothing reads as "none given" (install.ps1 and install.sh pass the default).
+  // With exactly one install elsewhere on PATH the run is about that install: said on its first line, and bound by the
+  // plan id, which hashes the root; the run's one existing yes covers it. No downgrade by a found install; the same
+  // version gets the same-version answer naming that root; two or more are refused below, each with its own line.
   if (sameFolder(installRoot, defaultInstallRoot()) && programFolderState(installRoot).state === 'new') {
     const others = findOthers(installRoot);
     if (others.length === 1) {
       const other = others[0]!;
-      const otherVersion = programFolderState(other.root).version ?? '?';
-      if (!talk.interactive) {
-        refuseWith(`Deskpost ${otherVersion} is already installed at ${other.root} (found on ${other.via}), not in the default folder. To upgrade it in place, run:\n  ${upgradeLine(other.root)}\nNothing was installed.`);
+      const otherVersion = programFolderState(other.root).version;
+      if (otherVersion !== null && compareVersions(otherVersion, version) === 'newer') {
+        refuseWith(`Deskpost ${otherVersion} at ${other.root} is newer than this release ${version}; nothing was changed.`);
       }
-      talk.say(`Deskpost ${otherVersion} is installed at ${other.root} (found on ${other.via}).`);
-      for (;;) {
-        const key = (await talk.ask(`[Enter] upgrade it in place to ${version}   [q] quit › `)).toLowerCase();
-        if (key === 'q') {
-          talk.say('Nothing was installed.');
-          return SETUP_QUIT;
-        }
-        if (key === '') break;
-      }
+      talk.say(`Deskpost ${otherVersion ?? '?'} is installed at ${other.root} (found on ${other.via}).`);
       installRoot = path.resolve(other.root);
     }
   }
@@ -426,11 +485,20 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   const judgeRoot = (root: string) => {
     const characters = programFolderCharacterRefusal(root);
     if (characters) refuseWith(characters);
-    const other = findOthers(root)[0] ?? null;
-    if (other) {
+    const others = findOthers(root);
+    if (others.length === 1) {
+      const other = others[0]!;
       refuseWith(
         `Deskpost is already installed at ${other.root} (found on ${other.via}). Two installs would race for the ` +
-          `\`${COMMAND_NAME}\` command, so a second is refused. Upgrade that one in place (run the installer with -InstallRoot ${other.root}), or run \`${COMMAND_NAME} uninstall\` first.`,
+          `\`${COMMAND_NAME}\` command, so a second is refused. Upgrade that one in place (${upgradeLine(other.root, programFolderState(other.root).version, spelling)}), or run \`${COMMAND_NAME} uninstall\` first.`,
+      );
+    }
+    // TWO OR MORE, EACH WITH ITS OWN LINE (D4): the run cannot tell which one is meant.
+    if (others.length > 1) {
+      refuseWith(
+        `Deskpost is already installed in ${others.length} places, and this run cannot tell which one is meant:\n` +
+          others.map((other) => `  ${other.root} (found on ${other.via}): ${upgradeLine(other.root, programFolderState(other.root).version, spelling)}`).join('\n') +
+          `\nUpgrade the one you use in place with its line, or run \`${COMMAND_NAME} uninstall\` from the others. Nothing was installed.`,
       );
     }
     const state = programFolderState(root);
@@ -438,6 +506,18 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     return state;
   };
   let folderState = judgeRoot(installRoot);
+  // THE INSTALL'S OWN PATH ANSWER (PLAN-one-step-upgrade.md D5; S91 standing answer 12): resolved after the root is
+  // judged, so after D4's discovery. An install made with -NoPathChange keeps it on upgrade.
+  const pathChangeFor = (root: string): boolean =>
+    options.pathChange === 'receipt' ? readInstallReceipt(root)?.['path_change'] !== false : options.pathChange;
+  const pathRowFor = (root: string): string => {
+    const bin = path.join(root, 'bin');
+    if (!pathChangeFor(root)) {
+      return options.pathChange === 'receipt' ? `${bin}: left alone (chosen at install)` : `${bin}: left alone (${flag('no-path-change')})`;
+    }
+    const there = (options.userPath ?? '').split(';').some((entry) => entry.trim() && sameFolder(entry.trim().replace(/[\\/]+$/, ''), bin));
+    return there ? `${bin}: already there` : `${bin}: added to your user PATH`;
+  };
   const installState: SetupAnswers['install_state'] =
     folderState.state === 'new' ? 'new' : folderState.version === version ? 'repair' : 'upgrade';
   // A REFRESH THAT DID NOT FINISH IS FINISHED, AND NOTHING ELSE (R2b): the same version, with the receipt still carrying
@@ -454,7 +534,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     }
     const answers: SetupAnswers = {
       schema: 1, version, install_root: installRoot, install_state: 'repair', from_version: folderState.version, library: null, library_state: 'none',
-      repair: false, make_default: false, overlap_accepted: false, assistant: null, path_change: options.pathChange, checksum_note: options.checksumNote,
+      repair: false, make_default: false, overlap_accepted: false, assistant: null, path_change: pathChangeFor(installRoot), checksum_note: options.checksumNote,
       run_as_file: options.runAsFile === true, refresh_only: true, refresh_libraries: libraries, kept_libraries: unfinished.kept ?? [],
     };
     fs.mkdirSync(path.dirname(path.resolve(options.answersFile)), { recursive: true });
@@ -463,7 +543,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   }
   // THE SAME VERSION IS SAID AS SUCH, to a person as to a script (S74 row 1): a repair is only ever asked for.
   if (installState === 'repair' && !options.repair) {
-    refuseWith(`Deskpost is already at ${version} at ${installRoot}; -Repair reinstalls it. Nothing was changed.`);
+    refuseWith(`Deskpost is already at ${version} at ${installRoot}; nothing to upgrade. ${flag('repair')} reinstalls it. Nothing was changed.`);
   }
 
   const given = options.library?.trim();
@@ -558,8 +638,8 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     if ((options.assistant === 'claude' ? claude : codex) === null) {
       refuseWith(
         options.assistant === 'claude'
-          ? 'Claude Code was named as the Librarian (-Librarian claude) and is not on this machine. Install it (https://claude.ai/install.ps1), or name codex. Nothing was installed.'
-          : 'Codex was named as the Librarian (-Librarian codex) and is not on this machine. Install it (npm install -g @openai/codex), or name claude. Nothing was installed.',
+          ? `Claude Code was named as the Librarian (${flag('librarian')} claude) and is not on this machine. Install it (https://claude.ai/install.ps1), or name codex. Nothing was installed.`
+          : `Codex was named as the Librarian (${flag('librarian')} codex) and is not on this machine. Install it (npm install -g @openai/codex), or name claude. Nothing was installed.`,
       );
     }
     assistant = options.assistant;
@@ -571,7 +651,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     if (gone !== null && !sameFolder(gone, installRoot)) {
       refuseWith(
         `The Library at ${library} has guards that name Deskpost at ${gone}, which is not installed. Install it there ` +
-          `(-InstallRoot ${gone}), and the guards work again. Nothing was installed.`,
+          `(${flag('install-root')} ${gone}), and the guards work again. Nothing was installed.`,
       );
     }
   }
@@ -580,7 +660,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   if (unguarded && !options.repair && !talk.interactive) {
     refuseWith(
       `The Library at ${library} has no Deskpost guards registered (an uninstall removes them), so using it as it is would leave ` +
-        'every session there unguarded. Pass -Repair to register them again, or -Library <another folder>. Nothing was installed.',
+        `every session there unguarded. Pass ${flag('repair')} to register them again, or ${flag('library')} <another folder>. Nothing was installed.`,
     );
   }
   let repairLibrary = (options.repair || unguarded) && state === 'existing';
@@ -604,7 +684,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
 
   // THE ONE SCREEN, AND THE ONE KEYPRESS.
   for (;;) {
-    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: options.pathChange, overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview() }));
+    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot) }));
     if (!talk.interactive) break;
     const keys = ['[Enter] install'];
     if (installState === 'new') keys.push('[p] other program folder');
@@ -663,7 +743,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     make_default: makeDefault,
     overlap_accepted: overlapAccepted,
     assistant,
-    path_change: options.pathChange,
+    path_change: pathChangeFor(installRoot),
     checksum_note: options.checksumNote,
     unguarded,
     both_assistants: claude !== null && codex !== null,
@@ -672,6 +752,8 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     refresh_libraries: keepLibraries ? [] : refreshTargets(),
     keep_libraries: keepLibraries,
     offered: state === 'existing' && !(repairLibrary && state === 'existing') ? ['repair'] : [],
+    spelling,
+    path_row: pathRowFor(installRoot),
   };
   fs.mkdirSync(path.dirname(path.resolve(options.answersFile)), { recursive: true });
   fs.writeFileSync(options.answersFile, psConvertToJson(answers as unknown as PsJsonValue) + '\n');
@@ -697,6 +779,10 @@ export interface ScreenView {
   runAsFile?: boolean;
   /** The Libraries an upgrade or repair keeps as they are (`--keep-libraries`, `[k]`). */
   keptLibraries?: string[];
+  /** The route that asked (D6), for the flags the rows name. */
+  spelling?: Spelling;
+  /** The PATH row (D5): what this run does to the user PATH. */
+  pathRow?: string;
   /** Each served Library's refresh, beside the program plan (ADR-0063 decision 1). */
   refresh?: RefreshPreview[];
 }
@@ -746,12 +832,11 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
         ? `Upgrade ${view.fromVersion ?? '?'} ${arrow()} ${view.version} · undo: ${COMMAND_NAME} rollback`
         : `Repair ${view.version} over itself`;
   rows.push(['Program', view.installRoot, programNote]);
-  if (view.installState !== 'new') rows.push(['', '', 'installed here; moving it comes in a later version']);
   rows.push([
     'Command',
     COMMAND_NAME,
     !view.pathChange
-      ? `not added to PATH (-NoPathChange): run ${path.join(view.installRoot, 'bin', `${COMMAND_NAME}.cmd`)}`
+      ? `not added to PATH (${flagFor(view.spelling ?? 'powershell', 'no-path-change')}): run ${path.join(view.installRoot, 'bin', `${COMMAND_NAME}.cmd`)}`
       : view.runAsFile
         ? 'new terminals; restart an app to refresh its built-in terminal'
         : 'ready in this window; other open terminals after a restart',
@@ -762,6 +847,13 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
       : view.assistant === 'claude'
         ? 'Claude Code' + (view.both ? '   (Codex also found)' : '')
         : 'Codex' + (view.both ? '   (Claude Code also found)' : '');
+  // THE PATH ROW (D5), a view row like the Command row, outside what canonicalPlan hashes; path_change is hashed.
+  if (view.pathRow) {
+    const split = view.pathRow.lastIndexOf(': ');
+    rows.push(['PATH', view.pathRow.substring(0, split), view.pathRow.substring(split + 2)]);
+  }
+  // THE UPDATE CHECK IS SAID WHERE THE INSTALL IS ASKED (D2; ADR-0068): the kernel's one call the reader did not ask for.
+  rows.push(['Updates', 'once a day', 'the menu checks GitHub for a newer release; DESKPOST_UPDATE_CHECK=0 turns it off']);
   rows.push(['Librarian', librarian, '']);
   if (view.assistant === 'codex') rows.push(['', '', 'Codex will ask you to trust this folder and approve its hooks on first start.']);
   rows.push(['Undo', `${COMMAND_NAME} uninstall`, 'shows what it removes first']);
@@ -796,6 +888,8 @@ export function viewOfAnswers(answers: SetupAnswers): ScreenView {
     overlapAccepted: answers.overlap_accepted,
     runAsFile: answers.run_as_file === true,
     keptLibraries: answers.kept_libraries ?? [],
+    spelling: answers.spelling ?? 'powershell',
+    pathRow: answers.path_row,
   };
 }
 

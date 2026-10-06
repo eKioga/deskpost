@@ -53,6 +53,7 @@ import { rollbackVerb, uninstallVerb } from './lifecycle.ts';
 import { runProcessVerb } from './processverb.ts';
 import { runFinishUninstall } from './finisher.ts';
 import { installVerb } from './install.ts';
+import { upgradeVerb } from './upgrade.ts';
 import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
 
 
@@ -212,7 +213,14 @@ async function main(argv: string[]): Promise<number> {
         }
         const location = locationWord?.toLowerCase() as 'shared' | 'shelf' | 'collection' | undefined;
         const shelf = (parsed.options.get('shelf') ?? 'active') as 'active' | 'archive';
-        const kind = (parsed.positional[1] ?? 'book') as 'book' | 'project';
+        // A KIND OTHER THAN book OR project IS REFUSED BY NAME (PLAN-one-step-upgrade.md small fix 1): `desk open widget
+        // foo` opened Project `foo`, silently on Basic Memory, because every word but `book` read as a Project.
+        const kindWord = parsed.positional[1];
+        if (action !== 'clear' && kindWord !== undefined && !['book', 'project'].includes(kindWord)) {
+          const slugWord = parsed.positional[2] ?? kindWord;
+          refuse(`library desk ${action} takes book or project, not '${kindWord}'. Did you mean \`deskpost desk ${action} book ${slugWord}\`? Nothing was changed.`);
+        }
+        const kind = (kindWord ?? 'book') as 'book' | 'project';
         const result = deskWrite({
           workspace,
           action: action as 'open' | 'close' | 'clear',
@@ -432,6 +440,12 @@ async function main(argv: string[]): Promise<number> {
     // INSTALL WITHOUT POWERSHELL (PLAN-install-without-powershell.md, ADR-0066): the bootstrap, or with --extracted the installer.
     case 'install': {
       const result = await installVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      return result.exitCode;
+    }
+
+    case 'upgrade': {
+      const result = await upgradeVerb(rest);
       if (result.refusal !== null) refuse(result.refusal);
       return result.exitCode;
     }

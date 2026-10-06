@@ -35,13 +35,15 @@ import { writeAtomicText } from './fsx.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { COMMAND_NAME, resolveOnPath } from './machine.ts';
-import { ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_TEXT, sessionsVerb, withLifecycleLock, writeReceipt } from './lifecycle.ts';
-import { addUserPath, handOffLeftovers, lastPathBroadcast, LEFTOVER, removeTreeMovingRunning, removeUninstallList, removeUserPath, sweepLeftovers, userPathKey } from './finisher.ts';
+import { liveSessions, ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_TEXT, sessionsText, waitForSessionsToClose, withLifecycleLock, writeReceipt } from './lifecycle.ts';
+import { addUserPath, handOffLeftovers, lastPathBroadcast, LEFTOVER, pruneVersions, removeTreeMovingRunning, removeUninstallList, removeUserPath, sweepLeftovers, userPathKey } from './finisher.ts';
 import { nativeUserPathRead } from './win32proc.ts';
 import { doctorText } from './human.ts';
 import { PROGRAM_WIDE_CHECKS } from './doctor.ts';
 import {
   defaultInstallRoot,
+  flagFor as flagIn,
+  spellingOfRoute,
   planId,
   planText,
   planView,
@@ -51,13 +53,15 @@ import {
   SETUP_QUIT,
   type SetupAnswers,
   type SetupPlan,
+  type Spelling,
 } from './setup.ts';
 import { DEFAULT_RELEASE, WINDOWS_PLATFORMS, defaultPlatform, newTempFolder, runBootstrap, sha256File, assertTuple, treeExecutable } from './bootstrap.ts';
 
 export const INSTALL_VALUED = [
   'release', 'install-root', 'library', 'platform', 'plan-id', 'resume', 'librarian', 'script-sha', 'script-path', 'refusal-file', 'extracted', 'archive-sha256', 'bootstrap-folder',
+  'wait',
 ];
-const INSTALL_FLAGS = ['yes', 'dry-run', 'json', 'allow-overlap', 'repair', 'keep-libraries', 'no-path-change', 'plugin', 'skip-plugin', 'run-as-file', 'forwarded'];
+const INSTALL_FLAGS = ['yes', 'dry-run', 'json', 'allow-overlap', 'repair', 'keep-libraries', 'no-path-change', 'path-change', 'plugin', 'skip-plugin', 'run-as-file', 'forwarded'];
 
 /** What `library install` was asked, with install.ps1's defaults and environment fallbacks (`:123-126`). */
 export interface InstallArgs {
@@ -74,6 +78,10 @@ export interface InstallArgs {
   repair: boolean;
   keepLibraries: boolean;
   noPathChange: boolean;
+  /** `--path-change` (D5): the PATH entry is added even where the install's receipt says it was declined. */
+  pathChange: boolean;
+  /** `--wait <seconds>` (D3): a run with nobody to ask looks again for open sessions up to this long. */
+  waitSeconds: number | null;
   plugin: boolean;
   skipPlugin: boolean;
   resume: '' | 'finish' | 'undo';
@@ -100,6 +108,8 @@ export function parseInstallArgs(argv: string[]): InstallArgs {
   const librarian = (parsed.options.get('librarian') ?? '').trim().toLowerCase();
   if (!['', 'claude', 'codex'].includes(librarian)) throw new Error(`--librarian is claude or codex, not '${librarian}'. Nothing was changed.`);
   const planIdGiven = (parsed.options.get('plan-id') ?? '').trim().toLowerCase();
+  const waitWord = parsed.options.get('wait');
+  if (waitWord !== undefined && !/^[1-9][0-9]{0,5}$/.test(waitWord.trim())) throw new Error(`--wait takes a number of seconds, not '${waitWord}'. Nothing was changed.`);
   const env = process.env;
   return {
     release: parsed.options.get('release') ?? DEFAULT_RELEASE,
@@ -114,6 +124,8 @@ export function parseInstallArgs(argv: string[]): InstallArgs {
     repair: parsed.flags.has('repair'),
     keepLibraries: parsed.flags.has('keep-libraries'),
     noPathChange: parsed.flags.has('no-path-change'),
+    pathChange: parsed.flags.has('path-change'),
+    waitSeconds: waitWord === undefined ? null : Number(waitWord.trim()),
     plugin: parsed.flags.has('plugin'),
     skipPlugin: parsed.flags.has('skip-plugin'),
     resume: resume as InstallArgs['resume'],
@@ -129,10 +141,22 @@ export function parseInstallArgs(argv: string[]): InstallArgs {
   };
 }
 
+/**
+ * THE PATH ANSWER AN INSTALL ASKS WITH (PLAN-one-step-upgrade.md D5): `--no-path-change` wins, `--path-change` turns it
+ * on, and with neither an upgrade keeps the install's own answer from its receipt.
+ */
+export function pathAnswerOf(args: Pick<InstallArgs, 'noPathChange' | 'pathChange'>): boolean | 'receipt' {
+  return args.noPathChange ? false : args.pathChange ? true : 'receipt';
+}
+
+/** The route that asked (PLAN-one-step-upgrade.md D6): install.ps1's when it forwarded the run, the kernel's otherwise. */
+function spellingOf(args: InstallArgs): Spelling {
+  return spellingOfRoute(args.forwarded);
+}
+
 /** A flag as the caller types it: install.ps1's `-Resume` when it forwarded the run, `--resume` otherwise. */
-const POWERSHELL_FLAGS: Record<string, string> = { resume: '-Resume', 'dry-run': '-DryRun', json: '-Json', 'plan-id': '-PlanId' };
 function flagFor(args: InstallArgs, name: string): string {
-  return args.forwarded ? (POWERSHELL_FLAGS[name] ?? `--${name}`) : `--${name}`;
+  return flagIn(spellingOf(args), name);
 }
 
 export interface InstallResult {
@@ -320,6 +344,8 @@ interface RunState {
   ownsPending: boolean;
   /** Whether this run's Place added the PATH entry (kickoffs/s90 row 5: the install's JSON says so, with the broadcast). */
   pathAdded?: boolean;
+  /** The old versions a committed upgrade pruned, and the ones it could not (D7). */
+  pruned?: { removed: string[]; warned: string[] };
 }
 
 function step(state: RunState, text: string): void {
@@ -432,6 +458,7 @@ function place(state: RunState, root: string, pending: Pending): void {
 
 /** Pass 6: the Library from the frozen plan, then the transaction moves into `owned` (`:493-525`). */
 function apply(state: RunState, root: string, pending: Pending): void {
+  const moved: string[] = [];
   const plan = path.join(root, '.pending', 'plan.json');
   const code = runShown(state.args.json, path.join(root, 'current', 'bin', 'library.exe'), ['setup', '--apply', '--plan-file', plan]);
   if (code !== 0) throw new Error(`writing the Library from the plan failed (exit ${code}); its refusal is above. Re-run the installer to finish or undo.`);
@@ -463,7 +490,19 @@ function apply(state: RunState, root: string, pending: Pending): void {
     faultAfter('committed');
     // .pending GOES BEFORE THE LOCK IS RELEASED (the Report of 2026-10-02).
     removePendingFolder(root);
+    // OLD VERSIONS ARE PRUNED AFTER A COMMITTED UPGRADE, INSIDE ITS LOCK (D7): the two current.json names stay.
+    if (pending['operation'] === 'upgrade') {
+      const record = readJsonFile(path.join(root, 'current.json'));
+      state.pruned = pruneVersions(root, [text(record['version']) ?? '', text(record['previous']) ?? ''], moved);
+      if (state.pruned.removed.length) {
+        const gone = new Set(state.pruned.removed.map((name) => `versions\\${name}`.toLowerCase()));
+        const after = readReceipt(root);
+        after.owned = after.owned.filter((item) => !(item['kind'] === 'version' && gone.has(String(item['path']).toLowerCase())));
+        writeReceipt(root, after);
+      }
+    }
   });
+  handOffLeftovers(root, moved, false);
 }
 
 /**
@@ -860,12 +899,13 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
     json: args.json,
     allowOverlap: args.allowOverlap,
     repair: args.repair,
-    pathChange: !args.noPathChange,
+    pathChange: pathAnswerOf(args),
     checksumNote: "checksum matches the release's SHA256SUMS",
     userPath: storedUserPath || undefined,
     assistant: args.librarian || undefined,
     runAsFile: args.runAsFile,
     keepLibraries: args.keepLibraries,
+    spelling: spellingOf(args),
   });
   if (asked === SETUP_QUIT) {
     if (args.json) emitJson({ status: 'quit' });
@@ -892,18 +932,23 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
   // CLOSE YOUR SESSIONS FIRST (#7, #10): an upgrade or repair switches the program they are running. Best effort. A
   // REPAIRED LIBRARY COUNTS WHATEVER ITS PROGRAM (S58 post-build inspection #2).
   const repairsLibrary = answers.library_state === 'existing' && answers.repair === true;
-  if ((['upgrade', 'repair'].includes(answers.install_state) || repairsLibrary) && !args.dryRun) {
+  const switches = ['upgrade', 'repair'].includes(answers.install_state) || repairsLibrary;
+  const lookSessions = () => liveSessions(root, { library: repairsLibrary && answers.library ? answers.library : undefined });
+  // THE ONE WAIT (PLAN-one-step-upgrade.md D3): it looks again by itself until they close, or `q`; with nobody to ask it
+  // refuses, or waits `--wait <seconds>`. The dry run never waits; it names what is open beside the plan.
+  if (switches && !args.dryRun) {
     const what = ['upgrade', 'repair'].includes(answers.install_state) ? `this ${answers.install_state} switches the program they are running` : 'this repair rewrites the guards they are running under';
-    for (;;) {
-      const live = sessionsVerb(root, repairsLibrary && answers.library ? answers.library : undefined);
-      if (live['clear'] === true) break;
-      const message = `Close your sessions first: ${what}.\n${text(live['text'])}`;
-      if (!interactive) throw new Error(`${message}\nEnd those sessions, then run the installer again.`);
-      state.say(message);
-      if ((await prompt('[Enter] look again   [q] quit › ')) === 'q') {
-        state.say('Nothing was changed.');
-        return SETUP_QUIT;
-      }
+    const clear = await waitForSessionsToClose({
+      look: lookSessions,
+      header: `Close your sessions first: ${what}.`,
+      interactive,
+      waitSeconds: args.waitSeconds,
+      advice: 'End those sessions, then run the installer again.',
+      say: (line) => state.say(line),
+    });
+    if (!clear) {
+      state.say('Nothing was changed.');
+      return SETUP_QUIT;
     }
   }
 
@@ -925,6 +970,10 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
     if (args.dryRun) state.say(planText(tempPlan));
   }
   if (args.dryRun) {
+    // THE SESSIONS ROW (D3), beside the plan and outside what its id hashes, so the id does not move as sessions open.
+    const open = switches ? lookSessions() : { seats: [], processes: [], unreadable: [] };
+    const openCount = open.seats.length + open.processes.length;
+    state.say(openCount ? `  Sessions    ${openCount} open: they must close before the switch\n${sessionsText(open)}` : '  Sessions    none open');
     step(state, 'Dry run: nothing was changed.');
     if (args.json) {
       emitJson({
@@ -934,6 +983,7 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
         library: answers.library,
         plan_id: tempPlan!.plan_id,
         plan: tempPlan!.view,
+        sessions: { open: openCount, seats: open.seats, processes: open.processes, text: sessionsText(open) } as unknown as PsJsonValue,
         script: { path: args.scriptPath, sha256: args.scriptSha },
         command_path: path.join(root, 'bin', `${COMMAND_NAME}.cmd`),
       });
@@ -989,7 +1039,7 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
       phase: 'staging',
       candidate: null,
       created_version: false,
-      path_change: !args.noPathChange,
+      path_change: answers.path_change,
       path_adopted: legacyPath,
       previous_target: previousTarget,
       previous_record: previousRecord,
@@ -1103,10 +1153,13 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
   if (args.json) {
     // THE PATH ENTRY, AS THIS RUN LEFT IT (kickoffs/s90 row 5): whether it was added, and whether its broadcast answered.
     const pathEntry = answers.path_change ? { added: state.pathAdded === true, broadcast: state.pathAdded === true ? lastPathBroadcast : null } : null;
-    emitJson({ status, version, install_root: root, library: answers.library, command, command_path: shim, plan_id: args.planId || null, opens: stagedPlan?.view?.opens ?? null, plugin: pluginResult, path_entry: pathEntry, setup_folder: setupFolder, doctor_exit: closing.exit, doctor: closing.report, closing: closingField(closing, message) });
+    emitJson({ status, version, install_root: root, library: answers.library, command, command_path: shim, plan_id: args.planId || null, opens: stagedPlan?.view?.opens ?? null, plugin: pluginResult, path_entry: pathEntry, setup_folder: setupFolder, removed_versions: state.pruned?.removed ?? [], prune_warnings: state.pruned?.warned ?? [], doctor_exit: closing.exit, doctor: closing.report, closing: closingField(closing, message) });
     return message === null ? { welcome: null } : 1;
   }
   const setupLine = setupFolder !== null ? `  Setup    ${setupFolder} only started this install; delete it once this command has ended.` : null;
+  // THE PRUNE, SAID (D7): what went, and a WARN per folder that could not.
+  if (state.pruned?.removed.length) state.say(`Removed old versions: ${state.pruned.removed.join(', ')}`);
+  for (const warning of state.pruned?.warned ?? []) state.say(`WARN: ${warning}`);
   if (message !== null) {
     state.say(message);
     if (setupLine !== null) state.say(setupLine);

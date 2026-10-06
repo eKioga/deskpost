@@ -27,6 +27,7 @@ import { newShelfCatalogEntryText, testShelfCatalogEntryText } from '../src/shel
 import { toWorkspaceRoot, findWorkspaceByMarker } from '../src/workspace.ts';
 import { VERBS, READER_TOOLS } from '../src/verbs.ts';
 import { discoverInstalls } from '../src/installs.ts';
+import { hubSlug } from '../src/hubslug.ts';
 import { isCompiled, locateProgramRoot } from '../src/programroot.ts';
 import { auditRelease, gitBlobId, readCommitBlobIds, readZipEntries } from '../src/releaseaudit.ts';
 import { isRepositoryLocalGitVariable, repositoryNeutralEnv } from '../src/gitenv.ts';
@@ -504,6 +505,8 @@ if (selected(8)) {
       'finish-uninstall': ['finish-uninstall'],
       // S89. A flag it does not take refuses in its own branch, before anything is read.
       install: ['install', '--no-such-flag'],
+      // S92. A flag it does not take refuses in its own branch, before the install root is read.
+      upgrade: ['upgrade', '--no-such-flag'],
       // S55. With no terminal and no answers the menu refuses in its own branch; an unknown action stops `library`'s.
       menu: ['menu'],
       library: ['library', 'no-such-action'],
@@ -6996,9 +6999,9 @@ if (selected(77)) {
     check(minted.ran.exit === 0 && /^claude --session-id [0-9a-f-]{36} /.test(lastLine('claude')) && lastLine('claude').endsWith(` ${folders} --x`), `a new Claude Code conversation did not get the folders after its id and before the passthrough: ${lastLine('claude')} ${minted.ran.stderr}`);
     check(minted.result['added_dirs_applied'] === true && listed(minted.result['added_dirs']) === `${a}|${b}`, `the start result did not say which folders it applied: ${JSON.stringify(minted.result)}`);
     start('alpha', ['--command', 'claude', '--resume', id]);
-    equal(lastLine('claude'), `claude --resume ${id} ${folders}`, 'a resumed Claude Code conversation did not get the folders after --resume');
+    equal(lastLine('claude'), `claude --resume ${id} --name alpha ${folders}`, 'a resumed Claude Code conversation did not get the folders after --resume');
     start('alpha', ['--command', 'claude', '--session-id', id, '--', '--x']);
-    equal(lastLine('claude'), `claude --session-id ${id} ${folders} --x`, 'a named Claude Code conversation did not get the folders between --session-id and the passthrough');
+    equal(lastLine('claude'), `claude --session-id ${id} --name alpha ${folders} --x`, 'a named Claude Code conversation did not get the folders between --session-id and the passthrough');
     start('alpha', ['--command', 'codex', '--resume', id]);
     equal(lastLine('codex'), `codex resume ${id} ${folders}`, 'a resumed Codex conversation did not get the folders after resume <id>');
     start('alpha', ['--command', 'codex']);
@@ -7009,17 +7012,17 @@ if (selected(77)) {
 
     fs.rmSync(b, { recursive: true });
     const gone = start('alpha', ['--command', 'claude', '--resume', id]);
-    check(gone.ran.exit === 0 && lastLine('claude') === `claude --resume ${id} --add-dir ${a}`, `a folder gone from disk was not skipped, or the seat did not start: ${lastLine('claude')} ${gone.ran.stderr}`);
+    check(gone.ran.exit === 0 && lastLine('claude') === `claude --resume ${id} --name alpha --add-dir ${a}`, `a folder gone from disk was not skipped, or the seat did not start: ${lastLine('claude')} ${gone.ran.stderr}`);
     check(listed(gone.result['added_dirs_missing']) === b && gone.ran.stderr.includes(b), `the start did not name the missing folder: ${JSON.stringify(gone.result)} ${gone.ran.stderr}`);
 
     const plain = start('beta', ['--command', 'claude', '--session-id', id, '--', '--x']);
-    equal(lastLine('claude'), `claude --session-id ${id} --x`, 'a seat with no record did not launch exactly as before');
+    equal(lastLine('claude'), `claude --session-id ${id} --name beta --x`, 'a seat with no record did not launch exactly as before');
     check(!('added_dirs' in plain.result) && !('added_dirs_applied' in plain.result) && 'command_args' in plain.result, `a seat with no record reported added folders: ${JSON.stringify(plain.result)}`);
     // A RECORD THAT DOES NOT PARSE IS SAID, AND THE SEAT STILL STARTS.
     const betaRecord = path.join(lib, '.claude', 'seats', 'beta', 'added-dirs.json');
     fs.writeFileSync(betaRecord, '{ not json');
     const unreadable = start('beta', ['--command', 'claude', '--session-id', id]);
-    check(unreadable.ran.exit === 0 && unreadable.result['added_dirs_applied'] === false && String(unreadable.result['added_dirs_reason']).includes('could not be read') && lastLine('claude') === `claude --session-id ${id}`, `an unreadable record stopped the seat, or was not said: ${JSON.stringify(unreadable.result)} ${unreadable.ran.stderr}`);
+    check(unreadable.ran.exit === 0 && unreadable.result['added_dirs_applied'] === false && String(unreadable.result['added_dirs_reason']).includes('could not be read') && lastLine('claude') === `claude --session-id ${id} --name beta`, `an unreadable record stopped the seat, or was not said: ${JSON.stringify(unreadable.result)} ${unreadable.ran.stderr}`);
     fs.rmSync(betaRecord);
 
     // THE MENU'S RESUME GOES THROUGH `launch`, AND SO THROUGH `seat start`: no second route to forget the folders.
@@ -7059,7 +7062,7 @@ if (selected(78)) {
     };
 
     const declined = run(['f1', 'a', repo, 'n', '', 'q']);
-    const preview = declined.stdout.indexOf(`Launch line  claude --add-dir ${repo}`);
+    const preview = declined.stdout.indexOf(`Launch line  claude --name alpha --add-dir ${repo}`);
     check(declined.exit === 0 && preview >= 0 && preview < declined.stdout.indexOf('Save this?'), `f1 did not show the launch line before asking to save: ${declined.stdout.slice(-900)} ${declined.stderr}`);
     check(declined.stdout.includes("Nothing was saved: the answer was 'n'") && !fs.existsSync(record), `a declined folder was saved: ${declined.stdout.slice(-400)}`);
 
@@ -8149,10 +8152,12 @@ if (selected(90)) {
     const answers = () => JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
     const ask = (extra: string[]) => runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--cwd', home, ...extra], { cwd: home, env });
 
-    // 1. The bare line: no -InstallRoot, the default root empty, one install elsewhere. The exact line, nothing written.
+    // 1. The bare line: no -InstallRoot, the default root empty, one install elsewhere. SINCE 1.3.6 IT GOES AHEAD ON THAT
+    // INSTALL (PLAN-one-step-upgrade.md D4, section 147): said on its first line, the answers about that root.
     const bare = ask([]);
-    check(bare.exit !== 0 && bare.stderr.includes(`-InstallRoot ${prog}`) && bare.stderr.includes('releases/latest/download/install') && bare.stderr.includes('1.1.0'), `the bare line did not refuse with the exact upgrade line: ${bare.stderr.trim()}`);
-    check(!fs.existsSync(answersFile) && !fs.existsSync(path.join(appData, 'deskpost')), 'the refused bare line wrote answers or made the default root');
+    check(bare.exit === 0 && bare.stdout.includes(`Deskpost 1.1.0 is installed at ${prog} (found on`) && answers()['install_root'] === prog && answers()['install_state'] === 'upgrade', `the bare line did not go ahead on the one install found: ${bare.stdout.slice(0, 300)} ${bare.stderr.trim()}`);
+    check(!fs.existsSync(path.join(appData, 'deskpost')), 'the bare line made the default root');
+    fs.rmSync(answersFile);
     const explicitNew = ask(['--install-root', path.join(root, 'side-by-side')]);
     check(explicitNew.exit !== 0 && explicitNew.stderr.includes('Two installs would race'), `a named new root beside the install lost the second-install refusal: ${explicitNew.stderr.trim()}`);
 
@@ -9284,11 +9289,11 @@ if (selected(105)) {
     // A VALID FILE AGAIN: resume and --session-id each get it once.
     fs.writeFileSync(seatFile, '{"crossSessionInbound":"refuse"}');
     start('alpha', ['--command', 'claude', '--resume', id]);
-    equal(lastLine('claude'), `claude --resume ${id} ${passed.replace('hold', 'refuse')}`, 'a resumed conversation did not get the value once');
+    equal(lastLine('claude'), `claude --resume ${id} --name alpha ${passed.replace('hold', 'refuse')}`, 'a resumed conversation did not get the value once');
     if (process.platform === 'win32') equal(lastLaunchFile(), '{"crossSessionInbound":"refuse"}', 'the launcher\'s own file was not rewritten for this launch');
     fs.writeFileSync(seatFile, '{"crossSessionInbound":"hold"}');
     start('alpha', ['--command', 'claude', '--session-id', id, '--', '--x']);
-    equal(lastLine('claude'), `claude --session-id ${id} ${passed} --x`, 'a named conversation did not get the value once');
+    equal(lastLine('claude'), `claude --session-id ${id} --name alpha ${passed} --x`, 'a named conversation did not get the value once');
     // THE MENU'S LAUNCH GOES THROUGH `seat start` TOO (as section 77).
     fs.writeFileSync(seatFile, '{"crossSessionInbound":"hold"}');
     const script = path.join(root, 'answers.txt');
@@ -9305,7 +9310,7 @@ if (selected(105)) {
     check(settingsCount(lastLine('orca')) === 0 && neither.result['inbound_passed'] === false, `a command that is neither assistant was handed an inbound policy: ${lastLine('orca')}`);
     // A SEAT WITH NO FILE launches exactly as before, and says nothing.
     const plain = start('beta', ['--command', 'claude', '--session-id', id]);
-    check(lastLine('claude') === `claude --session-id ${id}` && !('inbound_policy' in plain.result), `a seat with no file did not launch as before: ${lastLine('claude')} ${JSON.stringify(plain.result)}`);
+    check(lastLine('claude') === `claude --session-id ${id} --name beta` && !('inbound_policy' in plain.result), `a seat with no file did not launch as before: ${lastLine('claude')} ${JSON.stringify(plain.result)}`);
     // THE INLINE ROUTE (any agent that is not a command script): the value itself, and no file.
     fs.rmSync(launchFile, { force: true });
     equal(JSON.stringify(inboundSettingsArguments({ stateDirectory: path.join(lib, '.claude'), seat: 'alpha', value: 'accept', commandScript: false, write: true })), JSON.stringify(['--settings', '{"crossSessionInbound":"accept"}']), 'the inline route did not pass the value itself');
@@ -10920,7 +10925,7 @@ if (selected(126)) {
     fs.rmSync(path.join(lib, 'collection', 'books', 'demo', 'wiki', '_book.md'));
     const gone = read('nowhere');
     check(
-      gone.error && gone.text.includes('This Book is no longer in the collection (archived or removed).') && gone.text.includes('place: archive') && !gone.text.includes('That page is not in this Book.'),
+      gone.error && gone.text.includes('This Book is not in the collection: it was never added there, or it was archived or removed.') && gone.text.includes('place: archive') && !gone.text.includes('That page is not in this Book.'),
       `a page of a Book that left the collection was not refused as such: ${gone.text.slice(0, 300)}`,
     );
   } catch (error) {
@@ -11238,10 +11243,10 @@ function releaseTreeUnderTest(): string | null {
   return fs.existsSync(path.join(tree, 'release.json')) ? tree : null;
 }
 
-function reversionedTree(tree: string, into: string, suffix: string): { tree: string; version: string } {
+function reversionedTree(tree: string, into: string, suffix: string, exact?: string): { tree: string; version: string } {
   fs.cpSync(tree, into, { recursive: true });
   const release = JSON.parse(fs.readFileSync(path.join(into, 'release.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
-  const version = `${String(release['plugin_version'])}+${suffix}`;
+  const version = exact ?? `${String(release['plugin_version'])}+${suffix}`;
   const edited: string[] = [];
   for (const [file, field] of [['release.json', 'plugin_version'], ['.codex-plugin/plugin.json', 'version'], ['.claude-plugin/plugin.json', 'version']] as const) {
     const full = path.join(into, ...file.split('/'));
@@ -12130,6 +12135,968 @@ if (selected(138) && releaseTreeUnderTest() !== null) {
     failures.push(`section 138 stopped early: ${(error as Error).message}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 139. THE REFUSALS NAME WHAT THE READER TYPED (kickoffs/s92 row 0; PLAN-one-step-upgrade.md small fixes 1-5).
+// `desk open <kind>` refuses a kind other than book or project, naming `desk open book <slug>`; every Hub writer takes
+// `projects/<slug>` and its refusal names `<slug>`, not `ProjectSlug` (the Basic Memory writers by the helper's text
+// and their source, with no connection); the Project reader reads `projects/<slug>/<page>` for its own slug and names
+// the form for another, and its page refusal says Project; a Book that was never in the collection is refused as such,
+// naming a Shelf Book of the same slug when there is one; and Discovery's empty answer to a phrase says it was matched
+// whole. One case each.
+if (selected(139)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-refusal-words-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    const call = (tool: string, args: string[]) => {
+      const ran = cli(['mcp', 'call', tool, ...args, '--seat', 'first']);
+      try {
+        const envelope = JSON.parse(ran.stdout) as { result: { content: { text: string }[]; isError: boolean } };
+        return { error: envelope.result.isError, text: envelope.result.content[0]?.text ?? '' };
+      } catch {
+        return { error: true, text: `unparseable: ${ran.stdout.slice(0, 200)} ${ran.stderr.trim()}` };
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the refusal-words fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the refusal-words fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the refusal-words fixture seat was not made');
+    const seatDir = path.join(lib, '.claude', 'seats', 'first');
+    fs.writeFileSync(path.join(seatDir, '.open-projects'), 'projects/work\n');
+
+    // 1. `desk open widget foo`: refused by name, nothing opened.
+    const widget = cli(['desk', 'open', 'widget', 'foo']);
+    check(widget.exit !== 0 && said(widget).includes("not 'widget'") && said(widget).includes('deskpost desk open book foo'), `desk open widget was not refused by name: ${said(widget).slice(0, 300)}`);
+    equal(fs.readFileSync(path.join(seatDir, '.open-projects'), 'utf8'), 'projects/work\n', 'a refused desk open changed the Desk');
+
+    // 2. The Hub writers: `projects/<slug>` taken, a malformed slug refused as `<slug>`.
+    const note = path.join(root, 'note.md');
+    fs.writeFileSync(note, '- [ ] A line added through projects/work.\n');
+    const prefixed = cli(['hub', 'edit', 'projects/work', '--mode', 'append-section', '--section', 'Next', '--content-path', note]);
+    check(prefixed.exit === 0 && fs.readFileSync(path.join(lib, 'collection', 'projects', 'work', '_project.md'), 'utf8').includes('added through projects/work'), `hub edit projects/work was refused: ${said(prefixed).slice(0, 300)}`);
+    const made = cli(['hub', 'new', 'projects/second', '--title', 'Second']);
+    check(made.exit === 0 && fs.existsSync(path.join(lib, 'collection', 'projects', 'second', '_project.md')), `hub new projects/second was refused: ${said(made).slice(0, 300)}`);
+    for (const [label, args] of [
+      ['hub edit', ['hub', 'edit', 'Bad_Slug', '--mode', 'append-section', '--section', 'Next', '--content-path', note]],
+      ['hub edit new-page', ['hub', 'edit', 'Bad_Slug', '--mode', 'new-page', '--page', 'notes/x', '--content-path', note]],
+      ['hub new', ['hub', 'new', 'Bad_Slug', '--title', 'Bad']],
+      ['hub rename', ['hub', 'rename', 'projects/work', 'Bad_Slug', '--title', 'Bad', '--preflight']],
+    ] as const) {
+      const ran = cli([...args]);
+      check(ran.exit !== 0 && said(ran).includes("<slug> 'Bad_Slug' is not a Project slug") && !said(ran).includes('ProjectSlug'), `${label} did not refuse a malformed slug as <slug>: ${said(ran).slice(0, 300)}`);
+    }
+    const blank = cli(['hub', 'edit', '', '--mode', 'append-section', '--section', 'Next', '--content-path', note]);
+    check(blank.exit !== 0 && said(blank).includes('<slug> is required') && !said(blank).includes('ProjectSlug'), `hub edit with no slug did not name <slug>: ${said(blank).slice(0, 300)}`);
+    const helper = hubSlug('projects/work');
+    check(helper.slug === 'work' && helper.problem === null, `hubSlug did not take projects/work: ${JSON.stringify(helper)}`);
+    check((hubSlug('Bad_Slug').problem ?? '').startsWith("<slug> 'Bad_Slug'"), 'hubSlug did not refuse a malformed slug as <slug>');
+    if (KERNEL_COMMAND.length === 0) {
+      for (const file of ['sharedwriters.ts', 'hubcopy.ts', 'hubedit.ts', 'collection.ts', 'hubrename.ts']) {
+        const source = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'src', file), 'utf8');
+        check(!source.includes("'ProjectSlug ") && source.includes('hubSlug('), `${file} still refuses as ProjectSlug, or does not use hubSlug`);
+      }
+    }
+
+    // 3. The Project reader: its own slug's link form reads, another's is refused naming the form, and a bad page says Project.
+    const own = call('read_open_project_page', ['--slug', 'work', '--page', 'projects/work/_project']);
+    check(!own.error && own.text.includes('# Work'), `a projects/<slug>/<page> read was refused: ${own.text.slice(0, 300)}`);
+    const other = call('read_open_project_page', ['--slug', 'work', '--page', 'projects/second/_project']);
+    check(other.error && other.text.includes("names Project 'second'") && other.text.includes('slug second, page _project'), `another Project's page form was not named: ${other.text.slice(0, 300)}`);
+    const badPage = call('read_open_project_page', ['--slug', 'work', '--page', '_project.md']);
+    check(badPage.error && badPage.text.includes('canonical Project page path'), `a Project page refusal does not say Project: ${badPage.text.slice(0, 300)}`);
+    const bookPage = call('read_open_book_page', ['--slug', 'demo', '--page', 'x.md']);
+    check(bookPage.error && bookPage.text.includes('canonical Book page path'), `a Book page refusal no longer says Book: ${bookPage.text.slice(0, 300)}`);
+
+    // 4. A Book never in the collection: with a Shelf Book of that slug, and without one.
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A Shelf Book.']).exit, 0, 'the fixture Shelf Book was not made');
+    fs.writeFileSync(path.join(seatDir, '.open-books'), 'books/demo\nbooks/ghost\n');
+    const shelved = call('read_open_book_page', ['--slug', 'demo', '--page', 'alpha']);
+    check(shelved.error && shelved.text.includes('never added there') && shelved.text.includes('deskpost desk open book demo --location shelf'), `a never-added Book with a Shelf twin did not name it: ${shelved.text.slice(0, 300)}`);
+    const ghost = call('read_open_book_page', ['--slug', 'ghost', '--page', 'alpha']);
+    check(ghost.error && ghost.text.includes('never added there') && ghost.text.includes('place: archive') && !ghost.text.includes('--location shelf'), `a never-added Book was not refused as such: ${ghost.text.slice(0, 300)}`);
+    fs.writeFileSync(path.join(seatDir, '.open-books'), '');
+
+    // 5. Discovery: a phrase is said to be matched whole; one word is not.
+    const phrase = call('discover_book_pages', ['--query', 'zebra quokka']);
+    check(phrase.text.includes('carries that term') && phrase.text.includes("The phrase 'zebra quokka' was matched whole") && phrase.text.includes("Try one word, such as 'quokka'"), `Discovery's empty phrase answer did not say it was matched whole: ${phrase.text.slice(-300)}`);
+    const word = call('discover_book_pages', ['--query', 'quokka']);
+    check(word.text.includes('carries that term') && !word.text.includes('matched whole'), `Discovery's one-word answer named a phrase: ${word.text.slice(-300)}`);
+  } catch (error) {
+    failures.push(`section 139 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 140. THE WORDING (kickoffs/s92 row 1; PLAN-one-step-upgrade.md small fixes 6-10). A `--content-path` refusal
+// names the option and the resolved path (hub edit, hub edit new-page, capture; compile by its source); a Hub edit's
+// `page_size_warning` gives `size_after_bytes` with `size_bytes` as its alias, and its warning says "would be ... after
+// this edit" on a preflight and "is ... after this edit" on the write; a capture titled by `--title` says so in
+// `title_source`; a launcher-held seat's Desk moves an earlier binding under `previous_binding`, while a bound seat keeps
+// its fields; and `hub edit --help` says what `replace-item` does on a paragraph line.
+if (selected(140)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-wording-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+    const json = (ran: { stdout: string }) => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the wording fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the wording fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the wording fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+
+    // 1. --content-path: missing, and not UTF-8, each naming the option and the resolved path.
+    const missing = path.join(root, 'nowhere.md');
+    const bad = path.join(root, 'bad.md');
+    fs.writeFileSync(bad, Buffer.from([0x2d, 0x20, 0xff, 0xfe, 0x0a]));
+    for (const [label, args] of [
+      ['hub edit (missing)', ['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', missing]],
+      ['hub edit (not UTF-8)', ['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', bad]],
+      ['new-page (missing)', ['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/x', '--content-path', missing]],
+      ['new-page (not UTF-8)', ['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/x', '--content-path', bad]],
+      ['capture (missing)', ['capture', 'reports', '--title', 'A defect', '--content-path', missing]],
+    ] as const) {
+      const ran = cli([...args]);
+      const target = label.includes('UTF-8') ? bad : missing;
+      check(ran.exit !== 0 && said(ran).includes('--content-path') && said(ran).includes(`resolved to ${target}`) && !said(ran).includes('ContentPath'), `${label} did not name --content-path and the resolved path: ${said(ran).slice(0, 300)}`);
+    }
+    if (KERNEL_COMMAND.length === 0) {
+      const compileSource = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'src', 'compile.ts'), 'utf8');
+      check(compileSource.includes('`--content-path ${request.contentPath} is not a file (resolved to') && !compileSource.includes('ContentPath is not'), 'compile.ts does not name --content-path and the resolved path');
+    }
+
+    // 2. page_size_warning: the size after the edit, on the preflight and on the write.
+    const big = path.join(root, 'big.md');
+    fs.writeFileSync(big, `${Array.from({ length: 900 }, (_, i) => `- [ ] Item ${i} carries a line long enough to grow the page.`).join('\n')}\n`);
+    const pre = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', big, '--preflight']);
+    const warning = (json(pre)['page_size_warning'] ?? {}) as Record<string, unknown>;
+    check(typeof warning['size_after_bytes'] === 'number' && warning['size_after_bytes'] === warning['size_bytes'] && Number(warning['size_after_bytes']) > 40000, `page_size_warning does not give size_after_bytes with its alias: ${JSON.stringify(warning).slice(0, 300)}`);
+    check(pre.stderr.includes(`would be ${warning['size_after_bytes']} bytes after this edit`), `the preflight's warning does not say the size after the edit: ${pre.stderr.slice(0, 300)}`);
+    const wrote = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', big]);
+    check(wrote.exit === 0 && wrote.stderr.includes(`is ${warning['size_after_bytes']} bytes after this edit`), `the write's warning does not say the size after the edit: ${said(wrote).slice(0, 300)}`);
+
+    // 3. title_source says --title.
+    const captured = json(cli(['capture', 'reports', '--title', 'A titled defect', '--body', 'x', '--json']));
+    equal(captured['title_source'], '--title', 'a capture titled by --title does not say so in title_source');
+
+    // 4. hub edit --help: replace-item on a paragraph line.
+    const help = cli(['hub', 'edit', '--help']);
+    check(said(help).includes('replace-item on a paragraph line replaces that line only'), `hub edit --help does not say what replace-item does on a paragraph: ${said(help).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 140 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // 5. previous_binding: a seat bound by `seat enter`, then read from its agent (fields kept) and from a launcher that
+  // holds it (fields moved). The launcher read runs the kernel as a copy of node named claude.exe, as section 123 does.
+  if (KERNEL_COMMAND.length === 0) {
+    const w = await seatClaimWorkspace('previous-binding', { pin: false });
+    try {
+      const agent = w.startAgent();
+      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the previous-binding seat could not be created');
+      const ws = w.workspace;
+      const thisSeatOf = (stdout: string) => {
+        try {
+          return ((JSON.parse(stdout) as Record<string, unknown>)['this_seat'] ?? {}) as Record<string, unknown>;
+        } catch {
+          return {} as Record<string, unknown>;
+        }
+      };
+      const bound = thisSeatOf(w.as(agent, ['desk', '--workspace', ws, '--json']).stdout);
+      check(bound['binding_state'] === 'committed' && !('previous_binding' in bound), `a bound seat's Desk moved its own binding: ${JSON.stringify(bound).slice(0, 400)}`);
+      const image = path.join(w.root, 'claude-image', process.platform === 'win32' ? 'claude.exe' : 'claude');
+      fs.mkdirSync(path.dirname(image), { recursive: true });
+      try {
+        fs.linkSync(process.execPath, image);
+      } catch {
+        fs.copyFileSync(process.execPath, image);
+      }
+      const ran = spawnSync(image, [CLI, 'desk', '--workspace', ws, '--json'], {
+        cwd: w.root,
+        encoding: 'utf8',
+        env: { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: w.claimToken('first'), DESKPOST_LAUNCHER_PID: String(process.pid), CLAUDE_PID: '', CLAUDE_CODE_SESSION_ID: '' },
+      });
+      const held = thisSeatOf(ran.stdout ?? '');
+      const previous = (held['previous_binding'] ?? {}) as Record<string, unknown>;
+      check(String(held['state_note'] ?? '').includes('held for this session by the deskpost launcher'), `the launcher read was not launcher-held: ${JSON.stringify(held).slice(0, 400)}`);
+      check(previous['binding_state'] === 'committed' && typeof previous['note'] === 'string' && 'binding_stale' in previous && 'this_agent' in previous, `a launcher-held seat's earlier binding is not under previous_binding: ${JSON.stringify(held).slice(0, 400)}`);
+      check(held['binding_state'] === null && held['binding_stale'] === null && held['this_agent'] === null && held['bound_utc'] === null, `a launcher-held seat still reports the earlier binding at the top level: ${JSON.stringify(held).slice(0, 400)}`);
+    } catch (error) {
+      failures.push(`section 140 stopped early (previous_binding): ${(error as Error).message}`);
+    } finally {
+      w.dispose();
+    }
+  }
+}
+
+// SECTION 141. VERSIONS COMPARED, AND REFUSALS IN THE CALLER'S SPELLING (kickoffs/s92 row 2; PLAN-one-step-upgrade.md
+// D0, D6). D0: newer, older, equal (a missing component is 0), a suffix (different, not newer), unparsable; the latest
+// version a SHA256SUMS names (versioned, unversioned only, two versioned). D6: `flagFor` in both spellings; `upgradeLine`
+// for an install of 1.3.6 or later (its shim's full path) and an older one (the route's line naming the root); the
+// same-version answer and the second-install refusal in both spellings (the kernel's in process, PowerShell's through
+// `setup --ask`, whose default it is); the screen's PATH row in the route's spelling, and no "moving it" row.
+if (selected(141)) {
+  const { compareVersions, latestVersionIn } = await import('../src/versions.ts');
+  const { flagFor, upgradeLine, screenRows, setupAsk } = await import('../src/setup.ts');
+  for (const [a, b, expected] of [
+    ['1.3.7', '1.3.6', 'newer'],
+    ['1.3.6', '1.3.7', 'older'],
+    ['1.10.0', '1.9.9', 'newer'],
+    ['1.3.6', '1.3.6.0', 'equal'],
+    ['1.3.6', '1.3.6', 'equal'],
+    ['1.3.6+upgrade', '1.3.6', 'different'],
+    ['unknown', '1.3.6', 'unknown'],
+    ['1.3.6', '', 'unknown'],
+  ] as const) {
+    equal(compareVersions(a, b), expected, `compareVersions(${a}, ${b})`);
+  }
+  const hash = 'a'.repeat(64);
+  equal(latestVersionIn(`${hash}  deskpost-1.3.7-win-x64.zip\n${hash}  deskpost-1.3.7-linux-x64.zip\n${hash}  deskpost-win-x64.zip\n`, 'win-x64'), '1.3.7', 'the versioned line did not name the latest version');
+  equal(latestVersionIn(`${hash}  deskpost-win-x64.zip\n`, 'win-x64'), null, 'an unversioned-only SHA256SUMS named a version');
+  equal(latestVersionIn(`${hash}  deskpost-1.3.7-win-x64.zip\n${hash}  deskpost-1.3.8-win-x64.zip\n`, 'win-x64'), null, 'two versioned lines named a version');
+  equal(latestVersionIn(`${hash} *deskpost-1.3.7-win-x64.zip\n`, 'win-x64'), '1.3.7', 'a binary-mode line was not read');
+
+  equal(flagFor('kernel', 'repair'), '--repair', 'the kernel spelling of repair');
+  equal(flagFor('powershell', 'repair'), '-Repair', 'the PowerShell spelling of repair');
+  equal(flagFor('powershell', 'no-path-change'), '-NoPathChange', 'the PowerShell spelling of no-path-change');
+  equal(flagFor('powershell', 'install-root'), '-InstallRoot', 'the PowerShell spelling of install-root');
+  const fixtureRoot = process.platform === 'win32' ? 'C:\\Fixture\\Deskpost' : '/opt/fixture/deskpost';
+  if (process.platform === 'win32') {
+    equal(upgradeLine(fixtureRoot, '1.3.6', 'kernel'), 'C:\\Fixture\\Deskpost\\bin\\deskpost.cmd upgrade', 'a 1.3.6 install was not upgraded by its own shim');
+    equal(upgradeLine(fixtureRoot, '1.4.0', 'powershell'), 'C:\\Fixture\\Deskpost\\bin\\deskpost.cmd upgrade', 'a 1.4.0 install was not upgraded by its own shim from PowerShell');
+    const cmdLine = upgradeLine(fixtureRoot, '1.3.5', 'kernel');
+    check(cmdLine.startsWith('(if not exist "%TEMP%\\deskpost-setup\\release"') && cmdLine.endsWith('--install-root "C:\\Fixture\\Deskpost"') && !cmdLine.includes('irm'), `a 1.3.5 install did not get the Command Prompt line from the kernel: ${cmdLine}`);
+    const psLine = upgradeLine(fixtureRoot, '1.3.5', 'powershell');
+    check(psLine.includes('irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1') && psLine.endsWith('-InstallRoot C:\\Fixture\\Deskpost'), `a 1.3.5 install did not get the irm line from PowerShell: ${psLine}`);
+  } else {
+    check(upgradeLine(fixtureRoot, '1.3.6', 'kernel').endsWith('/current/bin/library upgrade'), 'a 1.3.6 install was not upgraded by its own program');
+    check(upgradeLine(fixtureRoot, '1.3.5', 'kernel').includes(`DESKPOST_INSTALL_ROOT=${fixtureRoot} sh`), 'a 1.3.5 install did not get the install.sh line');
+  }
+
+  const view = { version: '1.3.6', checksumNote: '', installRoot: fixtureRoot, installState: 'upgrade' as const, fromVersion: '1.3.5', library: null, state: 'none' as const, repairLibrary: false, assistant: null, both: false, pathChange: false, overlapAccepted: false };
+  const kernelRows = screenRows({ ...view, spelling: 'kernel' }).rows.map((row) => row.join(' ')).join('\n');
+  const psRows = screenRows({ ...view, spelling: 'powershell' }).rows.map((row) => row.join(' ')).join('\n');
+  check(kernelRows.includes('(--no-path-change)') && psRows.includes('(-NoPathChange)'), `the screen's PATH row is not in the route's spelling: ${kernelRows} | ${psRows}`);
+  check(!kernelRows.includes('moving it comes in a later version'), `the screen still says moving an install comes later: ${kernelRows}`);
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-spelling-')));
+  const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  const savedPath = process.env[pathKey];
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const answersFile = path.join(root, 'answers.json');
+    const version = String((JSON.parse(runCli(['--version']).stdout) as Record<string, unknown>)['plugin_version']);
+    const installed = path.join(root, 'installed');
+    fs.mkdirSync(installed);
+    fs.writeFileSync(path.join(installed, 'current.json'), JSON.stringify({ schema: 1, version }));
+    // An in-process ask reads this process's PATH for other installs: the machine's own Deskpost is left off it.
+    process.env[pathKey] = (savedPath ?? '').split(path.delimiter).filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost'))).join(path.delimiter);
+    const askKernel = async (installRoot: string): Promise<string> => {
+      try {
+        await setupAsk({ answersFile, installRoot, installRootGiven: true, library: 'none', cwd: root, yes: true, json: false, allowOverlap: false, repair: false, pathChange: true, checksumNote: '', registryRoot: path.join(root, 'reg'), spelling: 'kernel' });
+        return '';
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+
+    // 1. The same version: the kernel's spelling in process, PowerShell's through `setup --ask`.
+    const sameKernel = await askKernel(installed);
+    check(sameKernel.includes(`already at ${version}`) && sameKernel.includes('nothing to upgrade') && sameKernel.includes('--repair reinstalls it') && !sameKernel.includes('-Repair'), `the same-version answer to the kernel's route is not in its spelling: ${sameKernel}`);
+    const samePs = runCli(['setup', '--ask', '--answers', answersFile, '--yes', '--install-root', installed, '--library', 'none'], { cwd: root, env });
+    check(samePs.exit !== 0 && samePs.stderr.includes('nothing to upgrade') && samePs.stderr.includes('-Repair reinstalls it'), `the same-version answer to setup --ask is not in PowerShell's spelling: ${samePs.stderr.trim()}`);
+
+    // 2. A second install found on PATH: the line that upgrades it, for its version and the route.
+    const other = path.join(root, 'other');
+    fs.mkdirSync(path.join(other, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(other, 'bin', process.platform === 'win32' ? 'deskpost.cmd' : 'deskpost'), '');
+    process.env[pathKey] = `${path.join(other, 'bin')}${path.delimiter}${process.env[pathKey]}`;
+    const target = path.join(root, 'target');
+    if (process.platform === 'win32') {
+      fs.writeFileSync(path.join(other, 'current.json'), JSON.stringify({ schema: 1, version: '1.3.5' }));
+      const olderKernel = await askKernel(target);
+      check(olderKernel.includes('already installed at') && olderKernel.includes(`--install-root "${other}"`) && !olderKernel.includes('-InstallRoot'), `a 1.3.5 install found by the kernel's route was not given the Command Prompt line: ${olderKernel.slice(0, 400)}`);
+      fs.writeFileSync(path.join(other, 'current.json'), JSON.stringify({ schema: 1, version: '1.3.6' }));
+      const newerKernel = await askKernel(target);
+      check(newerKernel.includes(`${path.join(other, 'bin', 'deskpost.cmd')} upgrade`), `a 1.3.6 install found was not given its own upgrade: ${newerKernel.slice(0, 400)}`);
+    }
+  } catch (error) {
+    failures.push(`section 141 stopped early: ${(error as Error).message}`);
+  } finally {
+    process.env[pathKey] = savedPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 142. AN UPGRADE KEEPS THE INSTALL'S PATH ANSWER (kickoffs/s92 row 3; PLAN-one-step-upgrade.md D5; S91 standing
+// answer 12). `install` asks with `'receipt'` unless `--no-path-change` (which wins) or `--path-change` is given; the ask
+// resolves it from the install's receipt once the root is judged (no receipt means on); the answers carry the resolved
+// value and a PATH view row; and the plan id changes with the resolved answer. In process against a fixture root holding
+// 1.3.4 and a receipt, with the machine's own Deskpost off PATH.
+if (selected(142)) {
+  const { parseInstallArgs, pathAnswerOf } = await import('../src/install.ts');
+  const { setupAsk, setupPlan, planId, planView } = await import('../src/setup.ts');
+  const both = parseInstallArgs(['--path-change', '--no-path-change']);
+  equal(pathAnswerOf(parseInstallArgs([])), 'receipt', 'install with neither flag did not ask with the receipt');
+  equal(pathAnswerOf(parseInstallArgs(['--path-change'])), true, '--path-change did not turn the PATH entry on');
+  equal(pathAnswerOf(parseInstallArgs(['--no-path-change'])), false, '--no-path-change did not turn the PATH entry off');
+  equal(pathAnswerOf(both), false, '--no-path-change did not win over --path-change');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-path-answer-')));
+  const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  const savedPath = process.env[pathKey];
+  try {
+    process.env[pathKey] = (savedPath ?? '').split(path.delimiter).filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost'))).join(path.delimiter);
+    const prog = path.join(root, 'prog');
+    fs.mkdirSync(prog);
+    fs.writeFileSync(path.join(prog, 'current.json'), JSON.stringify({ schema: 1, version: '1.3.4', previous: '1.3.3' }));
+    const receipt = (pathChange: boolean | null) => {
+      const file = path.join(prog, 'install-receipt.json');
+      if (pathChange === null) fs.rmSync(file, { force: true });
+      else fs.writeFileSync(file, JSON.stringify({ schema: 1, path_change: pathChange }));
+    };
+    const answersFile = path.join(root, 'answers.json');
+    const ask = async (pathChange: boolean | 'receipt') => {
+      await setupAsk({ answersFile, installRoot: prog, installRootGiven: true, cwd: root, yes: true, json: false, allowOverlap: false, repair: false, pathChange, checksumNote: '', registryRoot: path.join(root, 'reg'), userPath: ';', spelling: 'kernel' });
+      return JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    };
+
+    receipt(false);
+    const kept = await ask('receipt');
+    check(kept['install_state'] === 'upgrade' && kept['path_change'] === false && String(kept['path_row']).endsWith('left alone (chosen at install)'), `an upgrade over a -NoPathChange install did not keep it: ${JSON.stringify(kept).slice(0, 400)}`);
+    const turnedOn = await ask(true);
+    check(turnedOn['path_change'] === true && String(turnedOn['path_row']).endsWith('added to your user PATH'), `--path-change did not turn the entry on over the receipt: ${JSON.stringify(turnedOn).slice(0, 400)}`);
+    receipt(true);
+    const off = await ask(false);
+    check(off['path_change'] === false && String(off['path_row']).endsWith('left alone (--no-path-change)'), `--no-path-change did not win over a receipt that said on: ${JSON.stringify(off).slice(0, 400)}`);
+    receipt(null);
+    const noReceipt = await ask('receipt');
+    equal(noReceipt['path_change'], true, 'an install with no receipt did not mean on');
+
+    // The plan id hashes the resolved answer; the PATH row is a view row.
+    const planOf = (answers: Record<string, unknown>) => {
+      const made = setupPlan({ answers: answers as never, resources: PROGRAM_ROOT, registerAs: path.join(prog, 'current') });
+      return { id: planId(made, { archiveSha256: 'a'.repeat(64), scriptSha256: '' }), rows: planView(made).rows };
+    };
+    const keptPlan = planOf(kept);
+    const onPlan = planOf(turnedOn);
+    check(keptPlan.id !== onPlan.id, 'the plan id did not change with the resolved PATH answer');
+    check(JSON.stringify(keptPlan.rows).includes('"PATH"') && JSON.stringify(keptPlan.rows).includes('left alone (chosen at install)'), `the plan's rows carry no PATH row: ${JSON.stringify(keptPlan.rows).slice(0, 400)}`);
+    const sameRows = planOf({ ...kept, path_row: 'elsewhere: something else' });
+    equal(sameRows.id, keptPlan.id, 'the PATH view row changed the plan id');
+  } catch (error) {
+    failures.push(`section 142 stopped early: ${(error as Error).message}`);
+  } finally {
+    process.env[pathKey] = savedPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 143. WAITING FOR THE LAST SESSION TO CLOSE (kickoffs/s92 row 4; PLAN-one-step-upgrade.md D3). The key
+// handler stops on q, Q and Ctrl+C only; held and orphaned seats are labelled with what to close, and a held seat blocks
+// with its label in `setup --sessions`; a `library.exe` under the root blocks, named as a hook or mcp serve; the wait
+// with nobody to ask refuses at once, `--wait` looks again and refuses with the list at its limit, and returns once the
+// session closes. Raw mode is judged by this non-TTY path and the key handler (it never runs against this terminal).
+// Against a compiled release tree, the dry run names the open sessions beside the plan, and the plan id does not move.
+if (selected(143)) {
+  const { waitKeyStops, seatSessionLabel, liveSessions, sessionsText, waitForSessionsToClose } = await import('../src/lifecycle.ts');
+  for (const key of ['q', 'Q', '\x03']) check(waitKeyStops(key) && waitKeyStops(Buffer.from(key, 'latin1')), `the wait's key handler did not stop on ${JSON.stringify(key)}`);
+  for (const key of ['a', '\r', ' ', '\x1b']) check(!waitKeyStops(key), `the wait's key handler stopped on ${JSON.stringify(key)}`);
+  equal(seatSessionLabel({ state: 'held', bindingState: 'committed', bindingStale: false, agentPid: 42 }), 'held: its session is open (agent process 42)', 'a held seat with a live session');
+  equal(seatSessionLabel({ state: 'held', bindingState: '', bindingStale: false, agentPid: 0 }), 'held: its launcher holds it, no session bound yet', 'a held seat with no session bound');
+  equal(seatSessionLabel({ state: 'held', bindingState: 'committed', bindingStale: true, agentPid: 42 }), 'held: its launcher holds it, no session bound yet', 'a held seat whose binding is stale');
+  check(seatSessionLabel({ state: 'orphaned', bindingState: 'committed', bindingStale: false, agentPid: 7 }).startsWith('orphaned: its launcher is gone but its Claude Code or Codex session is still running (process 7); end that session'), 'an orphaned seat is not labelled with what to end');
+
+  // 1. A held seat blocks, labelled, in process and through `setup --sessions`.
+  {
+    const w = await seatClaimWorkspace('wait-held', { pin: false });
+    const savedRegistry = process.env['LIBRARY_WORKSPACES'];
+    try {
+      const agent = w.startAgent();
+      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the wait fixture seat could not be created');
+      process.env['LIBRARY_WORKSPACES'] = path.join(w.root, 'reg');
+      const found = liveSessions(path.join(w.root, 'prog'), { library: w.workspace });
+      const seat = found.seats.find((entry) => entry.seat === 'first');
+      check(seat !== undefined && seat.state === 'held' && seat.label === `held: its session is open (agent process ${agent})`, `a held seat was not listed with its label: ${JSON.stringify(found.seats)}`);
+      check(sessionsText(found).includes(`seat 'first' in ${w.workspace}: held: its session is open`), `sessionsText does not carry the label: ${sessionsText(found)}`);
+      const listed = w.as(process.pid, ['setup', '--sessions', '--install-root', path.join(w.root, 'prog'), '--library', w.workspace]);
+      check(listed.stdout.includes("seat 'first'") && listed.stdout.includes('held: its session is open'), `setup --sessions does not label the held seat: ${listed.stdout.trim()} ${listed.stderr.trim()}`);
+    } catch (error) {
+      failures.push(`section 143 stopped early (held): ${(error as Error).message}`);
+    } finally {
+      if (savedRegistry === undefined) delete process.env['LIBRARY_WORKSPACES'];
+      else process.env['LIBRARY_WORKSPACES'] = savedRegistry;
+      w.dispose();
+    }
+  }
+
+  // 2. A library.exe under the root blocks; the wait refuses at once, at its --wait limit, or returns once it closes.
+  if (process.platform === 'win32' && KERNEL_COMMAND.length === 0) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-wait-')));
+    const savedRegistry = process.env['LIBRARY_WORKSPACES'];
+    let sleeper: ReturnType<typeof spawn> | null = null;
+    try {
+      process.env['LIBRARY_WORKSPACES'] = path.join(root, 'reg');
+      const prog = path.join(root, 'prog');
+      const image = path.join(prog, 'versions', '9.9.9', 'bin', 'library.exe');
+      fs.mkdirSync(path.dirname(image), { recursive: true });
+      fs.copyFileSync(process.execPath, image);
+      const start = () => spawn(image, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true });
+      sleeper = start();
+      check(waitFor(() => liveSessions(prog).processes.some((entry) => entry.pid === sleeper!.pid), 30000), 'a library.exe under the root was not seen');
+      const named = sessionsText(liveSessions(prog));
+      check(named.includes(`process ${sleeper.pid}: `) && named.includes('(a hook or mcp serve of an open session)'), `the process under the root is not named as such: ${named}`);
+      const said: string[] = [];
+      const wait = (waitSeconds: number | null) =>
+        waitForSessionsToClose({ look: () => liveSessions(prog), header: 'Close your sessions first: this upgrade switches the program they are running.', interactive: false, waitSeconds, advice: 'End those sessions, then run the installer again.', say: (line) => said.push(line) });
+      const refusal = async (waitSeconds: number | null) => {
+        const began = Date.now();
+        try {
+          await wait(waitSeconds);
+          return { message: '', took: Date.now() - began };
+        } catch (error) {
+          return { message: (error as Error).message, took: Date.now() - began };
+        }
+      };
+      const atOnce = await refusal(null);
+      check(atOnce.message.startsWith('Close your sessions first') && atOnce.message.includes(`process ${sleeper.pid}`) && atOnce.message.endsWith('run the installer again.'), `the wait with nobody to ask did not refuse with the list: ${atOnce.message}`);
+      const limited = await refusal(3);
+      check(limited.message.includes(`process ${sleeper.pid}`) && limited.took >= 2900, `--wait 3 did not look again up to its limit and refuse with the list (${limited.took} ms): ${limited.message}`);
+      const closing = sleeper;
+      setTimeout(() => closing.kill(), 1500);
+      const began = Date.now();
+      const cleared = await wait(60);
+      check(cleared === true && Date.now() - began < 45000, `the wait did not return once the session closed (${Date.now() - began} ms)`);
+      equal(said.length, 0, 'the non-interactive wait wrote to the terminal');
+    } catch (error) {
+      failures.push(`section 143 stopped early (process): ${(error as Error).message}`);
+    } finally {
+      try {
+        sleeper?.kill();
+      } catch {
+        // already gone
+      }
+      if (savedRegistry === undefined) delete process.env['LIBRARY_WORKSPACES'];
+      else process.env['LIBRARY_WORKSPACES'] = savedRegistry;
+      waitFor(() => {
+        try {
+          fs.rmSync(root, { recursive: true, force: true });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 10000);
+    }
+  }
+
+  // 3. The dry run's sessions row, against a compiled release tree: none, then one, with the same plan id.
+  if (releaseTreeUnderTest() !== null) {
+    const tree = releaseTreeUnderTest()!;
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-dry-sessions-')));
+    let sleeper: ReturnType<typeof spawn> | null = null;
+    try {
+      const release = releaseFolderOf(tree, path.join(root, 'rel'));
+      fs.mkdirSync(path.join(root, 'reg'));
+      const prog = path.join(root, 'prog');
+      const run = (args: string[]) => spawnSync(path.join(tree, 'bin', 'library.exe'), args, { cwd: root, env: fixtureInstallEnv(root), encoding: 'utf8', timeout: 300000, input: '' });
+      const installed = run(['install', '--release', release.folder, '--install-root', prog, '--library', 'none', '--no-path-change', '--yes']);
+      check(installed.status === 0, `the dry-run fixture did not install: ${(installed.stdout ?? '').slice(-300)} ${(installed.stderr ?? '').slice(-300)}`);
+      const dry = () => {
+        const ran = run(['install', '--release', release.folder, '--install-root', prog, '--library', 'none', '--no-path-change', '--repair', '--dry-run', '--json']);
+        try {
+          return JSON.parse((ran.stdout ?? '').trim().split(/\r?\n/).pop() ?? '') as Record<string, unknown>;
+        } catch {
+          return {} as Record<string, unknown>;
+        }
+      };
+      const quiet = dry();
+      const quietSessions = (quiet['sessions'] ?? {}) as Record<string, unknown>;
+      check(quiet['status'] === 'dry-run' && quietSessions['open'] === 0, `the dry run with nothing open does not say none: ${JSON.stringify(quiet).slice(0, 400)}`);
+      const image = path.join(prog, 'versions', 'sleeper', 'bin', 'library.exe');
+      fs.mkdirSync(path.dirname(image), { recursive: true });
+      fs.copyFileSync(process.execPath, image);
+      sleeper = spawn(image, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true });
+      const busy = dry();
+      const busySessions = (busy['sessions'] ?? {}) as Record<string, unknown>;
+      check(busy['status'] === 'dry-run' && Number(busySessions['open']) >= 1 && String(busySessions['text']).includes(`process ${sleeper.pid}`), `the dry run did not name the open session: ${JSON.stringify(busySessions).slice(0, 400)}`);
+      check(typeof quiet['plan_id'] === 'string' && quiet['plan_id'] === busy['plan_id'], 'the plan id moved as a session opened');
+    } catch (error) {
+      failures.push(`section 143 stopped early (dry run): ${(error as Error).message}`);
+    } finally {
+      try {
+        sleeper?.kill();
+      } catch {
+        // already gone
+      }
+      waitFor(() => {
+        try {
+          fs.rmSync(root, { recursive: true, force: true });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 10000);
+    }
+  }
+}
+
+// SECTION 144. `deskpost upgrade` (kickoffs/s92 row 5; PLAN-one-step-upgrade.md D1, D9). `--check` from fixture
+// SHA256SUMS files (newer, same, older, unversioned only, offline, no SHA256SUMS), its text and JSON; `upgrade` refusing
+// outside an install, inside a seat, and an unknown flag, each with nothing changed. Against a compiled release tree
+// (kickoffs/s92 ruling 5): the tree installed in a fixture root with a twin PATH key and a fenced TEMP, and a copy
+// re-versioned to 1.3.7 as Test-KernelUpgrade.ps1 does; the installed `current\bin\library.exe upgrade --check` names
+// 1.3.7, `--dry-run --json` shows the plan and `sessions`, and `--yes` switches to 1.3.7 with the build's version as
+// `previous`.
+if (selected(144)) {
+  const { checkForUpgrade, checkText } = await import('../src/upgrade.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-upgrade-check-')));
+  try {
+    const prog = path.join(root, 'prog');
+    fs.mkdirSync(prog);
+    fs.writeFileSync(path.join(prog, 'current.json'), JSON.stringify({ schema: 1, version: '1.3.6', previous: '1.3.5' }));
+    const hash = 'b'.repeat(64);
+    const releaseWith = (name: string, lines: string[] | null) => {
+      const folder = path.join(root, name);
+      fs.mkdirSync(folder, { recursive: true });
+      if (lines !== null) fs.writeFileSync(path.join(folder, 'SHA256SUMS'), lines.map((line) => `${hash}  ${line}`).join('\n') + '\n');
+      return folder;
+    };
+    const platform = 'win-x64';
+    const newer = await checkForUpgrade(prog, releaseWith('newer', ['deskpost-1.3.7-win-x64.zip', 'deskpost-1.3.7-linux-x64.zip', 'deskpost-win-x64.zip']), platform);
+    check(newer.newer === true && newer.latest === '1.3.7' && newer.installed === '1.3.6' && newer.error === null && !Number.isNaN(Date.parse(newer.checked_utc)), `--check did not find the newer release: ${JSON.stringify(newer)}`);
+    equal(checkText(newer), 'Deskpost 1.3.7 is ready (you have 1.3.6). Run `deskpost upgrade`.', '--check text for a newer release');
+    const same = await checkForUpgrade(prog, releaseWith('same', ['deskpost-1.3.6-win-x64.zip']), platform);
+    check(same.newer === false && checkText(same) === 'Deskpost 1.3.6 is up to date.', `--check did not call the same version up to date: ${JSON.stringify(same)}`);
+    const older = await checkForUpgrade(prog, releaseWith('older', ['deskpost-1.3.5-win-x64.zip']), platform);
+    check(older.newer === false && older.latest === '1.3.5', `--check called an older release newer: ${JSON.stringify(older)}`);
+    const twinOnly = await checkForUpgrade(prog, releaseWith('twin-only', ['deskpost-win-x64.zip']), platform);
+    check(twinOnly.newer === null && (twinOnly.error ?? '').includes('names no versioned'), `--check read a version from an unversioned-only SHA256SUMS: ${JSON.stringify(twinOnly)}`);
+    const offline = await checkForUpgrade(prog, 'http://127.0.0.1:9/download', platform);
+    check(offline.newer === null && (offline.error ?? '') !== '' && checkText(offline).startsWith('Could not tell whether a newer Deskpost is ready:'), `--check offline did not say why it could not tell: ${JSON.stringify(offline)}`);
+    const none = await checkForUpgrade(prog, releaseWith('empty', null), platform);
+    check(none.newer === null && (none.error ?? '').includes('SHA256SUMS'), `--check against a folder with no SHA256SUMS did not say why: ${JSON.stringify(none)}`);
+
+    // The refusals, through the front door: from this checkout (no install), inside a seat, an unknown flag.
+    const outside = runCli(['upgrade', '--yes'], { cwd: root });
+    check(outside.exit !== 0 && outside.stderr.includes('not an installed Deskpost') && outside.stderr.includes('Nothing was changed.'), `upgrade outside an install did not refuse by name: ${outside.stderr.trim()}`);
+    const seated = runCli(['upgrade', '--yes'], { cwd: root, env: { LIBRARY_SEAT: 'first' } });
+    check(seated.exit !== 0 && seated.stderr.includes("not from a seat's session") && seated.stderr.includes('including this one'), `upgrade inside a seat did not refuse: ${seated.stderr.trim()}`);
+    const bogus = runCli(['upgrade', '--install-root', prog], { cwd: root });
+    check(bogus.exit !== 0 && bogus.stderr.includes('has no --install-root'), `upgrade took an argument it does not have: ${bogus.stderr.trim()}`);
+    const help = runCli(['upgrade', '--help'], { cwd: root });
+    check(help.exit === 0 && help.stdout.includes('upgrade [--check]') && help.stdout.includes('cannot wait'), `upgrade --help does not give its usage: ${help.stdout.trim()}`);
+  } catch (error) {
+    failures.push(`section 144 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // THE BUILT-RELEASE FIXTURE (ruling 5), against a compiled release tree.
+  if (releaseTreeUnderTest() !== null) {
+    const treeA = releaseTreeUnderTest()!;
+    const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-upgrade-fixture-')));
+    const twinKey = `Software\\Deskpost-s92-upgrade-${process.pid}`;
+    const processesBefore = libraryProcessCount();
+    try {
+      const temp = path.join(fixture, 'temp');
+      fs.mkdirSync(temp);
+      fs.mkdirSync(path.join(fixture, 'reg'));
+      // THE TWIN PATH KEY (kickoffs/s91 ruling 6), made first with a user PATH of its own, as S91's fixtures made theirs.
+      const made = spawnSync('reg.exe', ['add', `HKCU\\${twinKey}`, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', '%USERPROFILE%\\tools', '/f'], { encoding: 'utf8', windowsHide: true });
+      equal(made.status, 0, `the twin PATH key could not be made: ${made.stderr ?? ''}`);
+      const env = fixtureInstallEnv(fixture, { DESKPOST_PATH_KEY: twinKey, TEMP: temp, TMP: temp });
+      const releaseA = releaseFolderOf(treeA, path.join(fixture, 'rel-a'));
+      const treeB = reversionedTree(treeA, path.join(fixture, 'tree-b'), '', '1.3.7');
+      const releaseB = releaseFolderOf(treeB.tree, path.join(fixture, 'rel-b'));
+      equal(releaseB.version, '1.3.7', 'the re-versioned release is not 1.3.7');
+      const prog = path.join(fixture, 'prog');
+      const run = (exe: string, args: string[]) => {
+        const ran = spawnSync(exe, args, { cwd: fixture, env, encoding: 'utf8', timeout: 300000, input: '' });
+        return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-700) };
+      };
+      const lastJson = (stdout: string): Record<string, unknown> => {
+        try {
+          return JSON.parse(stdout.trim().split(/\r?\n/).pop() ?? '') as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      };
+      const installed = run(path.join(treeA, 'bin', 'library.exe'), ['install', '--release', releaseA.folder, '--install-root', prog, '--library', 'none', '--yes']);
+      check(installed.exit === 0, `the fixture did not install the build: ${installed.said}`);
+      const current = path.join(prog, 'current', 'bin', 'library.exe');
+
+      const checked = run(current, ['upgrade', '--check', '--release', releaseB.folder]);
+      check(checked.exit === 0 && checked.stdout.includes(`Deskpost 1.3.7 is ready (you have ${releaseA.version})`), `upgrade --check did not name 1.3.7: ${checked.said}`);
+      const checkedJson = lastJson(run(current, ['upgrade', '--check', '--json', '--release', releaseB.folder]).stdout);
+      check(checkedJson['latest'] === '1.3.7' && checkedJson['newer'] === true && checkedJson['installed'] === releaseA.version && checkedJson['error'] === null, `upgrade --check --json is not the record: ${JSON.stringify(checkedJson)}`);
+
+      const dry = run(current, ['upgrade', '--dry-run', '--json', '--release', releaseB.folder]);
+      const shown = lastJson(dry.stdout);
+      const sessions = (shown['sessions'] ?? {}) as Record<string, unknown>;
+      check(dry.exit === 0 && shown['status'] === 'dry-run' && typeof shown['plan_id'] === 'string' && shown['plan'] !== undefined && sessions['open'] === 0, `upgrade --dry-run --json did not show the plan and sessions: ${dry.said}`);
+      equal(JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, ''))['version'], releaseA.version, 'the dry run changed the install');
+
+      const upgraded = run(current, ['upgrade', '--yes', '--release', releaseB.folder]);
+      const record = JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+      check(upgraded.exit === 0 && record['version'] === '1.3.7' && record['previous'] === releaseA.version, `upgrade --yes did not switch to 1.3.7 with ${releaseA.version} as previous: ${JSON.stringify(record)} ${upgraded.said}`);
+      const again = run(path.join(prog, 'current', 'bin', 'library.exe'), ['upgrade', '--yes', '--release', releaseB.folder]);
+      check(again.exit === 0 && again.said.includes('is up to date'), `a second upgrade was not up to date: ${again.said}`);
+      // THE PRUNE (kickoffs/s92 row 10, D7): an upgrade to 1.3.8 keeps 1.3.8 and 1.3.7 and removes the build's version.
+      const treeC = reversionedTree(treeA, path.join(fixture, 'tree-c'), '', '1.3.8');
+      const releaseC = releaseFolderOf(treeC.tree, path.join(fixture, 'rel-c'));
+      const pruned = run(path.join(prog, 'current', 'bin', 'library.exe'), ['upgrade', '--yes', '--release', releaseC.folder]);
+      const versionsLeft = fs.readdirSync(path.join(prog, 'versions')).filter((name) => !name.startsWith('.')).sort().join(',');
+      check(pruned.exit === 0 && pruned.said.includes(`Removed old versions: ${releaseA.version}`) && versionsLeft === '1.3.7,1.3.8', `the upgrade to 1.3.8 did not prune to two versions: ${versionsLeft} ${pruned.said}`);
+      check(fs.readdirSync(temp).length === 0, `the upgrade left files in the fenced TEMP: ${fs.readdirSync(temp).join(', ')}`);
+      check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+    } catch (error) {
+      failures.push(`section 144 stopped early (built release): ${(error as Error).message}`);
+    } finally {
+      spawnSync('reg.exe', ['delete', `HKCU\\${twinKey}`, '/f'], { encoding: 'utf8', windowsHide: true });
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+}
+
+// SECTION 145. THE LAUNCHER NAMES EACH SEAT'S SESSION (kickoffs/s92 row 7; PLAN-one-step-upgrade.md small fix 11, Step
+// 0). Claude Code gets `--name <seat>` for a new and a resumed conversation; Codex and a command that is neither get
+// nothing; a reader's own `--name`, `-n` or `--name=` in the passthrough is theirs. Section 77 checks the whole launch
+// line (`--name <seat>` after the conversation arguments, before the folders and the passthrough), and section 78 the
+// preview `seat dirs` shows.
+if (selected(145)) {
+  const { nameArguments } = await import('../src/seatdirs.ts');
+  equal(JSON.stringify(nameArguments('claude', 'alpha', [])), '["--name","alpha"]', 'a Claude Code seat was not named at launch');
+  equal(JSON.stringify(nameArguments('claude', 'alpha', ['--x'])), '["--name","alpha"]', 'a passthrough without a name stopped the seat being named');
+  equal(JSON.stringify(nameArguments('codex', 'alpha', [])), '[]', 'a Codex seat was given --name');
+  equal(JSON.stringify(nameArguments(null, 'alpha', [])), '[]', 'a command that is neither assistant was given --name');
+  for (const own of [['--name', 'mine'], ['-n', 'mine'], ['--name=mine']]) {
+    equal(JSON.stringify(nameArguments('claude', 'alpha', own)), '[]', `the launcher named a seat over the reader's own ${own[0]}`);
+  }
+}
+
+// SECTION 146. THE MENU SAYS WHEN A NEW VERSION IS READY (kickoffs/s92 row 8; PLAN-one-step-upgrade.md D2). In
+// process: the once-a-day gate (no record, a recent one, a day old); a check against a fixture release written to
+// `update-check.json` with its `release`; a check against a server that never answers ends when aborted and records
+// the error; the line only when the record is newer than the running program, never under DESKPOST_UPDATE_CHECK=0 or
+// inside a seat; `u` only while the line shows; the root's file known to the empty-root rule. Against a compiled
+// release tree, through the installed menu: the line from a fixture record, absent with DESKPOST_UPDATE_CHECK=0, `q`
+// ending at once while a forced check waits on a server that never answers, and a scripted `u` upgrading the fixture
+// to 1.3.7 from the record's `release` and ending with "run `deskpost` again".
+if (selected(146)) {
+  const { updateCheckDue, recordUpdateCheck, readUpdateRecord, readyVersion, updateLineText } = await import('../src/upgrade.ts');
+  const { resolveChoice } = await import('../src/menu.ts');
+  const { programFolderState } = await import('../src/setup.ts');
+  const net = await import('node:net');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-update-line-')));
+  // A SERVER THAT NEVER ANSWERS: it accepts and holds every connection.
+  const held: import('node:net').Socket[] = [];
+  const silent = net.createServer((socket) => held.push(socket));
+  await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+  const silentUrl = `http://127.0.0.1:${(silent.address() as import('node:net').AddressInfo).port}/download`;
+  const saved = { check: process.env['DESKPOST_UPDATE_CHECK'], release: process.env['DESKPOST_UPDATE_RELEASE'], seat: process.env['LIBRARY_SEAT'] };
+  try {
+    const prog = path.join(root, 'prog');
+    fs.mkdirSync(prog);
+    fs.writeFileSync(path.join(prog, 'current.json'), JSON.stringify({ schema: 1, version: '1.3.6' }));
+    check(updateCheckDue(prog), 'a root with no record was not due a check');
+    const release = path.join(root, 'rel');
+    fs.mkdirSync(release);
+    fs.writeFileSync(path.join(release, 'SHA256SUMS'), `${'c'.repeat(64)}  deskpost-1.3.7-win-x64.zip\n${'c'.repeat(64)}  deskpost-1.3.7-linux-x64.zip\n`);
+    process.env['DESKPOST_UPDATE_RELEASE'] = release;
+    delete process.env['DESKPOST_UPDATE_CHECK'];
+    delete process.env['LIBRARY_SEAT'];
+    const recorded = await recordUpdateCheck(prog);
+    const onDisk = readUpdateRecord(prog);
+    check(recorded.latest === '1.3.7' && onDisk !== null && onDisk.release === release && onDisk.installed === '1.3.6' && onDisk.error === null, `the check was not recorded with its release: ${JSON.stringify(onDisk)}`);
+    check(!updateCheckDue(prog), 'a record made now was due again');
+    check(updateCheckDue(prog, Date.now() + 25 * 60 * 60 * 1000), 'a record a day old was not due');
+    equal(readyVersion(prog, '1.3.6'), '1.3.7', 'the record did not say 1.3.7 is ready');
+    equal(readyVersion(prog, '1.3.7'), null, 'the record offered the running version');
+    equal(updateLineText('1.3.7', '1.3.6'), '  Update   Deskpost 1.3.7 is ready (you have 1.3.6)   u upgrade', 'the update line');
+    process.env['DESKPOST_UPDATE_CHECK'] = '0';
+    equal(readyVersion(prog, '1.3.6'), null, 'the line showed under DESKPOST_UPDATE_CHECK=0');
+    delete process.env['DESKPOST_UPDATE_CHECK'];
+    process.env['LIBRARY_SEAT'] = 'first';
+    equal(readyVersion(prog, '1.3.6'), null, 'the line showed inside a seat');
+    delete process.env['LIBRARY_SEAT'];
+    equal(resolveChoice('u', 2, true).action, 'upgrade', 'u did not upgrade while the line shows');
+    const hidden = resolveChoice('u', 2, false);
+    check(hidden.action === 'invalid' && !hidden.reason.includes(', u '), `u was offered with no line: ${hidden.reason}`);
+    check(resolveChoice('x', 2, true).reason.includes('b, u or q'), 'the invalid-key text does not name u while the line shows');
+
+    // A server that never answers: the check ends when aborted, and records why.
+    process.env['DESKPOST_UPDATE_RELEASE'] = silentUrl;
+    const aborting = new AbortController();
+    setTimeout(() => aborting.abort(), 300);
+    const began = Date.now();
+    const stalled = await recordUpdateCheck(prog, aborting.signal);
+    check(Date.now() - began < 5000 && stalled.latest === null && (stalled.error ?? '') !== '' && readUpdateRecord(prog)?.error === stalled.error, `an aborted check did not end and record its error (${Date.now() - began} ms): ${JSON.stringify(stalled)}`);
+
+    // The empty-root rule knows the file.
+    const lone = path.join(root, 'lone');
+    fs.mkdirSync(lone);
+    fs.writeFileSync(path.join(lone, 'update-check.json'), '{}');
+    equal(programFolderState(lone).state, 'new', 'a root holding only update-check.json was not empty');
+  } catch (error) {
+    failures.push(`section 146 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const [key, value] of [['DESKPOST_UPDATE_CHECK', saved.check], ['DESKPOST_UPDATE_RELEASE', saved.release], ['LIBRARY_SEAT', saved.seat]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // THROUGH THE INSTALLED MENU, against a compiled release tree.
+  if (releaseTreeUnderTest() !== null) {
+    const treeA = releaseTreeUnderTest()!;
+    const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-update-menu-')));
+    const processesBefore = libraryProcessCount();
+    try {
+      const temp = path.join(fixture, 'temp');
+      fs.mkdirSync(temp);
+      fs.mkdirSync(path.join(fixture, 'reg'));
+      const releaseA = releaseFolderOf(treeA, path.join(fixture, 'rel-a'));
+      const treeB = reversionedTree(treeA, path.join(fixture, 'tree-b'), '', '1.3.7');
+      const releaseB = releaseFolderOf(treeB.tree, path.join(fixture, 'rel-b'));
+      const prog = path.join(fixture, 'prog');
+      const lib = path.join(fixture, 'lib');
+      const env = (extra: Record<string, string> = {}) => fixtureInstallEnv(fixture, { TEMP: temp, TMP: temp, ...extra });
+      const run = (exe: string, args: string[], extra: Record<string, string> = {}) => {
+        const began = Date.now();
+        const ran = spawnSync(exe, args, { cwd: fixture, env: env(extra), encoding: 'utf8', timeout: 300000, input: '' });
+        return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', took: Date.now() - began, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim().slice(-700) };
+      };
+      const installed = run(path.join(treeA, 'bin', 'library.exe'), ['install', '--release', releaseA.folder, '--install-root', prog, '--library', lib, '--no-path-change', '--yes']);
+      check(installed.exit === 0, `the menu fixture did not install: ${installed.said}`);
+      const current = path.join(prog, 'current', 'bin', 'library.exe');
+      const script = (name: string, answers: string[]) => {
+        const file = path.join(fixture, `${name}.txt`);
+        fs.writeFileSync(file, answers.join('\n') + '\n');
+        return file;
+      };
+      const record = { checked_utc: new Date().toISOString(), installed: releaseA.version, latest: '1.3.7', release: releaseB.folder, error: null };
+      fs.writeFileSync(path.join(prog, 'update-check.json'), JSON.stringify(record));
+      const line = `Deskpost 1.3.7 is ready (you have ${releaseA.version})`;
+
+      // The line from the record (the no-seats screen), and not under DESKPOST_UPDATE_CHECK=0.
+      const shown = run(current, ['menu', '--workspace', lib, '--script', script('quit', ['q'])]);
+      check(shown.exit === 0 && shown.stdout.includes(line) && shown.stdout.includes('[u]'), `the menu did not show the line from the record: ${shown.said}`);
+      const off = run(current, ['menu', '--workspace', lib, '--script', script('quit', ['q'])], { DESKPOST_UPDATE_CHECK: '0' });
+      check(off.exit === 0 && !off.stdout.includes('is ready'), `the line showed under DESKPOST_UPDATE_CHECK=0: ${off.said}`);
+
+      // `q` ends at once while a forced check waits on a server that never answers.
+      const pendingServer = (await import('node:net')).createServer(() => {});
+      await new Promise<void>((resolve) => pendingServer.listen(0, '127.0.0.1', () => resolve()));
+      const pendingUrl = `http://127.0.0.1:${(pendingServer.address() as import('node:net').AddressInfo).port}/download`;
+      try {
+        const quit = run(current, ['menu', '--workspace', lib, '--script', script('quit', ['q'])], { DESKPOST_UPDATE_CHECK: '1', DESKPOST_UPDATE_RELEASE: pendingUrl });
+        check(quit.exit === 0 && quit.took < 4000, `q did not end the menu at once with a check pending (${quit.took} ms): ${quit.said}`);
+      } finally {
+        pendingServer.close();
+      }
+
+      // A scripted `u` upgrades from the record's release, and says to start the menu again.
+      fs.writeFileSync(path.join(prog, 'update-check.json'), JSON.stringify(record));
+      const upgraded = run(current, ['menu', '--workspace', lib, '--script', script('upgrade', ['u'])]);
+      const after = JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+      check(upgraded.exit === 0 && after['version'] === '1.3.7' && upgraded.stdout.includes('Upgraded to 1.3.7; run `deskpost` again.'), `a scripted u did not upgrade to 1.3.7: ${JSON.stringify(after)} ${upgraded.said}`);
+      check(waitFor(() => libraryProcessCount() <= processesBefore, 30000), `library.exe processes left running: ${libraryProcessCount()} after, ${processesBefore} before`);
+    } catch (error) {
+      failures.push(`section 146 stopped early (menu): ${(error as Error).message}`);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+  for (const socket of held) socket.destroy();
+  silent.close();
+}
+
+// SECTION 147. THE OPTION-FREE ONE-LINERS FIND THE INSTALL (kickoffs/s92 row 9; PLAN-one-step-upgrade.md D4). The
+// kernel, in process with the default root empty and the machine's own Deskpost off PATH: one install found goes ahead
+// (said on the first line, the answers about that root), a newer one is refused (no downgrade), the same version gets
+// the same-version answer naming that root, and two are refused each with its own line. `install.sh`'s lookup, its own
+// block run by `sh` in a fixture with `readlink` stood in for (Windows makes no symlinks without a privilege): a link to
+// <root>/current/bin/library, a resolved versions/<v> form, no current.json, no `deskpost` at all, and
+// DESKPOST_INSTALL_ROOT winning.
+if (selected(147)) {
+  const { setupAsk } = await import('../src/setup.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-found-install-')));
+  const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  const saved = { path: process.env[pathKey], localAppData: process.env['LOCALAPPDATA'], home: process.env['HOME'] };
+  try {
+    const version = String((JSON.parse(runCli(['--version']).stdout) as Record<string, unknown>)['plugin_version']);
+    const appData = path.join(root, 'appdata');
+    fs.mkdirSync(appData);
+    process.env['LOCALAPPDATA'] = appData;
+    process.env['HOME'] = appData;
+    const machine = (saved.path ?? '').split(path.delimiter).filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost')));
+    const install = (name: string, at: string) => {
+      const prog = path.join(root, name);
+      fs.mkdirSync(path.join(prog, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(prog, 'bin', process.platform === 'win32' ? 'deskpost.cmd' : 'deskpost'), '');
+      fs.writeFileSync(path.join(prog, 'current.json'), JSON.stringify({ schema: 1, version: at }));
+      return prog;
+    };
+    const answersFile = path.join(root, 'answers.json');
+    const ask = async (installs: string[]): Promise<{ refusal: string; answers: Record<string, unknown> | null }> => {
+      process.env[pathKey] = [...installs.map((prog) => path.join(prog, 'bin')), ...machine].join(path.delimiter);
+      fs.rmSync(answersFile, { force: true });
+      try {
+        await setupAsk({ answersFile, installRoot: path.join(appData, 'deskpost'), installRootGiven: false, cwd: root, yes: true, json: false, allowOverlap: false, repair: false, pathChange: 'receipt', checksumNote: '', registryRoot: path.join(root, 'reg'), spelling: 'kernel' });
+        return { refusal: '', answers: JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown> };
+      } catch (error) {
+        return { refusal: (error as Error).message, answers: null };
+      }
+    };
+    const older = install('older', '1.0.0');
+    const one = await ask([older]);
+    check(one.answers !== null && one.answers['install_root'] === older && one.answers['install_state'] === 'upgrade', `one install found did not go ahead on that install: ${one.refusal} ${JSON.stringify(one.answers)}`);
+    const newer = install('newer', '99.0.0');
+    const downgrade = await ask([newer]);
+    check(downgrade.refusal.includes(`Deskpost 99.0.0 at ${newer} is newer than this release ${version}; nothing was changed.`), `a newer install found was not refused: ${downgrade.refusal}`);
+    const same = install('same', version);
+    const sameAnswer = await ask([same]);
+    check(sameAnswer.refusal.includes(`already at ${version} at ${same}; nothing to upgrade`) && sameAnswer.refusal.includes('--repair'), `the same version found did not get the same-version answer naming its root: ${sameAnswer.refusal}`);
+    const two = await ask([older, same]);
+    check(two.refusal.includes('already installed in 2 places') && two.refusal.includes(older) && two.refusal.includes(same) && (two.refusal.match(/found on/g) ?? []).length === 2, `two installs found were not refused each with its own line: ${two.refusal}`);
+  } catch (error) {
+    failures.push(`section 147 stopped early (kernel): ${(error as Error).message}`);
+  } finally {
+    process.env[pathKey] = saved.path;
+    for (const [key, value] of [['LOCALAPPDATA', saved.localAppData], ['HOME', saved.home]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // install.sh's lookup, by `sh`, when a POSIX shell is here (Git Bash on Windows).
+  const sh = spawnSync('sh', ['-c', 'echo ok'], { encoding: 'utf8' });
+  if (sh.status === 0) {
+    const shRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-install-sh-')));
+    try {
+      const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.sh'), 'utf8').replace(/\r\n/g, '\n');
+      const block = text.substring(text.indexOf('# --- find the install'), text.indexOf('# --- end of find the install'));
+      check(block.length > 100 && !/readlink -f/.test(block), 'install.sh has no lookup block, or it uses readlink -f');
+      const posix = (value: string) => value.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive: string) => `/${drive.toLowerCase()}`);
+      const fixtureRoot = posix(path.join(shRoot, 'prog'));
+      fs.mkdirSync(path.join(shRoot, 'prog'), { recursive: true });
+      fs.writeFileSync(path.join(shRoot, 'prog', 'current.json'), '{}');
+      fs.mkdirSync(path.join(shRoot, 'bin'));
+      fs.writeFileSync(path.join(shRoot, 'bin', 'deskpost'), '#!/bin/sh\n', { mode: 0o755 });
+      fs.mkdirSync(path.join(shRoot, 'empty'));
+      const lookup = (target: string, extra: string, bin = 'bin') => {
+        // The fixture PATH is set inside the script: Windows finds sh.exe itself on this process's PATH.
+        const script = `set -eu\nPATH='${posix(path.join(shRoot, bin))}:/usr/bin:/bin'\nunset DESKPOST_INSTALL_ROOT\nreadlink() { printf '%s\\n' '${target}'; }\n${extra}\n${block}\nprintf 'ROOT=%s\\n' "$FOUND_ROOT"\n`;
+        const ran = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+        return { exit: ran.status, found: /ROOT=(.*)/.exec(ran.stdout ?? '')?.[1] ?? null, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.trim() };
+      };
+      const link = lookup(`${fixtureRoot}/current/bin/library`, '');
+      check(link.exit === 0 && link.found === fixtureRoot, `install.sh did not find the install from its link: ${JSON.stringify(link)}`);
+      const resolved = lookup(`${fixtureRoot}/versions/1.3.6/bin/library`, '');
+      check(resolved.exit === 0 && resolved.found === fixtureRoot, `install.sh did not find the install from a resolved link: ${JSON.stringify(resolved)}`);
+      fs.rmSync(path.join(shRoot, 'prog', 'current.json'));
+      const noRecord = lookup(`${fixtureRoot}/current/bin/library`, '');
+      check(noRecord.exit === 0 && noRecord.found === '', `install.sh took a root with no current.json: ${JSON.stringify(noRecord)}`);
+      const none = lookup('', '', 'empty');
+      check(none.exit === 0 && none.found === '', `install.sh failed or found something with no deskpost on PATH: ${JSON.stringify(none)}`);
+      fs.writeFileSync(path.join(shRoot, 'prog', 'current.json'), '{}');
+      const given = lookup(`${fixtureRoot}/current/bin/library`, 'DESKPOST_INSTALL_ROOT=/elsewhere');
+      check(given.exit === 0 && given.found === '', `install.sh looked although DESKPOST_INSTALL_ROOT was given: ${JSON.stringify(given)}`);
+    } catch (error) {
+      failures.push(`section 147 stopped early (install.sh): ${(error as Error).message}`);
+    } finally {
+      fs.rmSync(shRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+// SECTION 148. OLD VERSIONS ARE PRUNED (kickoffs/s92 row 10; PLAN-one-step-upgrade.md D7). In process: two kept, the
+// rest removed, a dot-named folder and a stray file untouched, an image still running from a pruned version moved
+// aside into `.leftover` (ADR-0067), and a folder that cannot go a warning, not a failure. `install.sh`'s block, run by
+// `sh` in a fixture: the current and previous versions kept, the rest and `downloads/` emptied, a dot-named one
+// untouched. Section 144's built-release fixture proves the kernel's prune end to end (an upgrade to 1.3.8 removes the
+// build's version).
+if (selected(148)) {
+  const { pruneVersions } = await import('../src/finisher.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-prune-')));
+  let sleeper: ReturnType<typeof spawn> | null = null;
+  try {
+    const versions = path.join(root, 'versions');
+    for (const name of ['1.0.0', '1.1.0', '1.2.0', '.incoming-7']) fs.mkdirSync(path.join(versions, name, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(versions, 'notes.txt'), 'not a version');
+    fs.writeFileSync(path.join(versions, '1.0.0', 'bin', 'release.json'), '{}');
+    const running = process.platform === 'win32' && KERNEL_COMMAND.length === 0;
+    if (running) {
+      const image = path.join(versions, '1.0.0', 'bin', 'library.exe');
+      fs.copyFileSync(process.execPath, image);
+      sleeper = spawn(image, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true });
+      waitFor(() => false, 1000);
+    }
+    const moved: string[] = [];
+    const pruned = pruneVersions(root, ['1.2.0', '1.1.0'], moved);
+    equal(JSON.stringify(pruned.removed), '["1.0.0"]', 'the prune did not remove exactly the version neither current.json name keeps');
+    equal(pruned.warned.length, 0, `the prune warned: ${pruned.warned.join('; ')}`);
+    equal(fs.readdirSync(versions).sort().join(','), '.incoming-7,1.1.0,1.2.0,notes.txt', 'the prune touched what it keeps');
+    if (running) check(moved.length === 1 && moved[0]!.includes('.leftover') && fs.existsSync(moved[0]!), `a running image in a pruned version was not moved aside: ${JSON.stringify(moved)}`);
+    const refused = pruneVersions(root, ['1.2.0'], [], () => {
+      throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    });
+    check(refused.removed.length === 0 && refused.warned.length === 1 && refused.warned[0]!.startsWith('versions\\1.1.0 could not be removed (EPERM)'), `a folder that could not go was not a warning: ${JSON.stringify(refused)}`);
+    equal(fs.existsSync(path.join(versions, '1.1.0')), true, 'a refused prune removed the folder anyway');
+  } catch (error) {
+    failures.push(`section 148 stopped early: ${(error as Error).message}`);
+  } finally {
+    try {
+      sleeper?.kill();
+    } catch {
+      // already gone
+    }
+    waitFor(() => {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+        return true;
+      } catch {
+        return false;
+      }
+    }, 10000);
+  }
+
+  // install.sh's block, by `sh`, when a POSIX shell is here.
+  if (spawnSync('sh', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0) {
+    const shRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-prune-sh-')));
+    try {
+      const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.sh'), 'utf8').replace(/\r\n/g, '\n');
+      const block = text.substring(text.indexOf('# --- keep two versions'), text.indexOf('# --- end of keep two versions'));
+      check(block.length > 100, 'install.sh has no keep-two block');
+      const posix = (value: string) => value.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive: string) => `/${drive.toLowerCase()}`);
+      for (const name of ['1.0.0', '1.1.0', '1.2.0', '.incoming-9']) fs.mkdirSync(path.join(shRoot, 'versions', name), { recursive: true });
+      fs.mkdirSync(path.join(shRoot, 'downloads'));
+      fs.writeFileSync(path.join(shRoot, 'downloads', 'deskpost-1.2.0-linux-x64.zip'), 'zip');
+      fs.writeFileSync(path.join(shRoot, 'downloads', 'SHA256SUMS'), 'sums');
+      const script = `set -eu\nsay() { printf '  %s\\n' "$1"; }\nVERSIONS='${posix(path.join(shRoot, 'versions'))}'\nDOWNLOADS='${posix(path.join(shRoot, 'downloads'))}'\nversion=1.2.0\nprevious=1.1.0\n${block}\nprintf 'DONE\\n'\n`;
+      const ran = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+      check(ran.status === 0 && (ran.stdout ?? '').includes('Removed old versions: 1.0.0') && (ran.stdout ?? '').includes('DONE'), `install.sh's block did not prune and say so: ${ran.stdout ?? ''} ${ran.stderr ?? ''}`);
+      equal(fs.readdirSync(path.join(shRoot, 'versions')).sort().join(','), '.incoming-9,1.1.0,1.2.0', "install.sh's block kept the wrong versions");
+      equal(fs.readdirSync(path.join(shRoot, 'downloads')).length, 0, "install.sh's block did not empty downloads/");
+    } catch (error) {
+      failures.push(`section 148 stopped early (install.sh): ${(error as Error).message}`);
+    } finally {
+      fs.rmSync(shRoot, { recursive: true, force: true });
+    }
   }
 }
 

@@ -28,7 +28,10 @@ import { parseArguments } from './argv.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { findWorkspaceByMarker, markerField, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot } from './workspace.ts';
 import { registerWorkspace } from './init.ts';
-import { COMMAND_NAME, findAssistant } from './machine.ts';
+import { COMMAND_NAME, findAssistant, installRootOf } from './machine.ts';
+import { spawnSync } from 'node:child_process';
+import { programRoot, releaseTuple } from './programroot.ts';
+import { installedVersion, readUpdateRecord, readyVersion, recordUpdateCheck, updateCheckDue, updateCheckSetting, updateLineText, upgradeVerb } from './upgrade.ts';
 import { getSeatClaimState, readSeatActivity } from './seatclaim.ts';
 import { deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { activeProjects, newSeatVerdict, retireSeat, SeatPlanChanged, seatRegistryRows, startSeat } from './seat.ts';
@@ -391,7 +394,7 @@ export const FIRST_HINT = 'Pick a seat to continue its last session, or n<number
 // --- the choice grammar ---------------------------------------------------------------------------------------------
 
 export interface Choice {
-  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'switch' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
+  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'switch' | 'upgrade' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
   index: number;
   reason: string;
 }
@@ -400,9 +403,11 @@ export interface Choice {
  * What one typed line means. EVERY REFUSAL HAS ITS OWN REASON, because they need different next moves. Case does not
  * matter: `N1` and `Q` are a person typing, not a rule about stored state.
  */
-export function resolveChoice(typed: string, rowCount: number): Choice {
+export function resolveChoice(typed: string, rowCount: number, updateReady = false): Choice {
   const text = typed.trim();
   if (!text) return { action: 'reprompt', index: 0, reason: 'nothing was typed' };
+  // `u` ONLY WHILE THE UPDATE LINE SHOWS (D2), and the invalid-key text names it only then.
+  if (updateReady && /^u$/i.test(text)) return { action: 'upgrade', index: 0, reason: '' };
   if (/^q(uit)?$/i.test(text)) return { action: 'quit', index: 0, reason: '' };
   if (text === '+') return { action: 'create', index: 0, reason: '' };
   if (/^b$/i.test(text)) return { action: 'basic-memory', index: 0, reason: '' };
@@ -420,7 +425,7 @@ export function resolveChoice(typed: string, rowCount: number): Choice {
     action = 'folders';
     digits = text.substring(1).trim();
   } else if (!/^\d+$/.test(text)) {
-    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, b or q` };
+    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, b${updateReady ? ', u' : ''} or q` };
   }
   const number = Number(digits);
   if (rowCount <= 0) return { action: 'invalid', index: 0, reason: 'no seat exists in this Library yet, so no number applies; type + to create one' };
@@ -447,6 +452,12 @@ interface MenuState {
   claude: boolean;
   codex: boolean;
   assistant: Assistant | null;
+  /** The install this program runs from, for the update line (D2); null from a checkout. */
+  installRoot: string | null;
+  /** The running program's version. */
+  running: string;
+  /** Whether the update line has been shown in this menu. */
+  updateShown: boolean;
 }
 
 function write(state: { talk: Talk }, plan: RenderPlan, line: string): void {
@@ -484,7 +495,26 @@ export async function runMenu(options: MenuOptions, talk: Talk): Promise<number>
     return 0;
   }
   const found = assistants(options.assistant);
-  const state: MenuState = { workspace, talk, options, ...found };
+  const installRoot = (() => {
+    try {
+      return installRootOf(programRoot());
+    } catch {
+      return null;
+    }
+  })();
+  const state: MenuState = { workspace, talk, options, ...found, installRoot, running: String(releaseTuple()['plugin_version'] ?? ''), updateShown: false };
+  // THE ONCE-A-DAY CHECK (D2; ADR-0068), in this process and never in the way: it starts before the first draw, waits
+  // for nothing, gives up after 5 seconds, and is aborted when the menu returns, so `q` ends at once.
+  const checking = new AbortController();
+  const setting = updateCheckSetting();
+  const person = !talk.scripted && interactive() && !(process.env['CI'] ?? '').trim();
+  if (installRoot !== null && setting !== 'off' && !(process.env['LIBRARY_SEAT'] ?? '').trim() && (setting === 'forced' || (person && updateCheckDue(installRoot)))) {
+    const timer = setTimeout(() => checking.abort(), 5000);
+    timer.unref?.();
+    recordUpdateCheck(installRoot, checking.signal)
+      .catch(() => null)
+      .finally(() => clearTimeout(timer));
+  }
   try {
     return await menuLoop(state);
   } catch (error) {
@@ -493,7 +523,58 @@ export async function runMenu(options: MenuOptions, talk: Talk): Promise<number>
       return 0;
     }
     throw error;
+  } finally {
+    checking.abort();
   }
+}
+
+/**
+ * `u` (D2): the upgrade runs in this terminal from the release the check read, so a fixture's record can point it at a
+ * local folder. The menu is an ancestor, so the wait does not count it, and no seat it launched is running. On success a
+ * person gets the new program's menu with this one's options; a scripted menu is told to start it again.
+ */
+async function upgradeFromMenu(state: MenuState): Promise<number | null> {
+  const { talk } = state;
+  const record = state.installRoot === null ? null : readUpdateRecord(state.installRoot);
+  if (state.installRoot === null || record === null) {
+    talk.say('No newer Deskpost is on record here. Run `deskpost upgrade --check` to look.');
+    return null;
+  }
+  const result = await upgradeVerb(['--release', record.release, ...(talk.scripted ? ['--yes'] : [])]);
+  if (result.refusal !== null) {
+    talk.say(result.refusal);
+    return null;
+  }
+  const now = installedVersion(state.installRoot);
+  if (result.exitCode !== 0 || now === null || now === state.running) {
+    talk.say(result.exitCode === 0 ? 'Nothing was upgraded.' : `The upgrade did not finish (exit ${result.exitCode}); what it said is above.`);
+    return null;
+  }
+  if (talk.scripted) {
+    talk.say(`Upgraded to ${now}; run \`${COMMAND_NAME}\` again.`);
+    return 0;
+  }
+  const options = state.options;
+  const forwarded = [
+    ...(options.explicit ? ['--workspace', options.explicit] : []),
+    ...(options.registryRoot ? ['--registry-root', options.registryRoot] : []),
+    ...(options.transcriptRoot ? ['--transcript-root', options.transcriptRoot] : []),
+    ...(options.width !== undefined ? ['--width', String(options.width)] : []),
+    ...(options.plain ? ['--plain'] : []),
+    ...(options.assistant ? ['--assistant', options.assistant] : []),
+  ];
+  const exe = path.join(state.installRoot, 'current', 'bin', process.platform === 'win32' ? 'library.exe' : 'library');
+  const started = spawnSync(exe, ['menu', ...forwarded], { stdio: 'inherit', windowsHide: false });
+  return started.status ?? 1;
+}
+
+/** The update line, when the record says a newer version is ready and this menu has not shown it yet. */
+function updateLineDue(state: MenuState): string | null {
+  if (state.updateShown) return null;
+  const latest = readyVersion(state.installRoot, state.running);
+  if (latest === null) return null;
+  state.updateShown = true;
+  return updateLineText(latest, state.running);
 }
 
 async function menuLoop(state: MenuState): Promise<number> {
@@ -511,9 +592,16 @@ async function menuLoop(state: MenuState): Promise<number> {
       // offers Show me around on, so the first screen teaches the key that keeps working.
       talk.say(`  [h, Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
       talk.say('  [+]        Your first seat  name a project, and start working in it');
+      const ready = readyVersion(state.installRoot, state.running);
+      if (ready !== null) talk.say(`  [u]        Upgrade          Deskpost ${ready} is ready (you have ${state.running})`);
       talk.say('  [q]        Later');
       for (;;) {
         const key = (await talk.ask('› ')).toLowerCase();
+        if (key === 'u' && ready !== null) {
+          const upgraded = await upgradeFromMenu(state);
+          if (upgraded !== null) return upgraded;
+          continue;
+        }
         if (key === 'q') {
           talk.say(`Nothing was created. Type \`${COMMAND_NAME}\` whenever you are ready.`);
           return 0;
@@ -537,6 +625,8 @@ async function menuLoop(state: MenuState): Promise<number> {
     if (!bannerDrawn) {
       for (const line of bannerLines(plan.width, plan.glyphs, plan.palette, rows.length, rows.filter((row) => row.state === 'held').length)) write(state, plan, line);
       write(state, plan, `  Library  ${workspace}`);
+      const update = updateLineDue(state);
+      if (update !== null) write(state, plan, update);
       if (!helpSeatExists) write(state, plan, `  h  Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
       bannerDrawn = true;
     }
@@ -548,12 +638,15 @@ async function menuLoop(state: MenuState): Promise<number> {
       for (const line of tableLines(rows, plan.glyphs)) write(state, plan, line);
       write(state, plan, '');
     }
+    // A CHECK THAT FINISHED AFTER THE FIRST DRAW shows its line here, once.
+    const lateUpdate = updateLineDue(state);
+    if (lateUpdate !== null) write(state, plan, lateUpdate);
     for (const line of footerLines(state.claude && state.codex, state.assistant)) write(state, plan, line);
     if (!hinted) {
       write(state, plan, FIRST_HINT);
       hinted = true;
     }
-    const choice = resolveChoice(await talk.ask('Seat › '), rows.length);
+    const choice = resolveChoice(await talk.ask('Seat › '), rows.length, readyVersion(state.installRoot, state.running) !== null);
     const target = choice.index > 0 ? rows[choice.index - 1]! : null;
     switch (choice.action) {
       case 'quit':
@@ -576,6 +669,11 @@ async function menuLoop(state: MenuState): Promise<number> {
       case 'help': {
         const shown = await showMeAround(state);
         if (shown !== null) return shown;
+        break;
+      }
+      case 'upgrade': {
+        const upgraded = await upgradeFromMenu(state);
+        if (upgraded !== null) return upgraded;
         break;
       }
       case 'switch':
@@ -942,7 +1040,7 @@ function firstStartLine(assistant: Assistant | null): string | null {
 export async function runWelcome(options: { workspace: string; assistant?: Assistant; registryRoot?: string }, talk: Talk): Promise<number> {
   const workspace = requireWorkspace({ explicit: options.workspace });
   const found = assistants(options.assistant);
-  const state: MenuState = { workspace, talk, options: { cwd: workspace, registryRoot: options.registryRoot }, ...found };
+  const state: MenuState = { workspace, talk, options: { cwd: workspace, registryRoot: options.registryRoot }, ...found, installRoot: null, running: '', updateShown: false };
   talk.say('');
   if (state.assistant === null) {
     talk.say(`  [m]     Main menu        your seats; type \`${COMMAND_NAME}\` any time to come back here`);

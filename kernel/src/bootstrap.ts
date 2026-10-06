@@ -87,10 +87,13 @@ export function extraCertificates(): string | undefined {
   }
 }
 
-/** Download `url` to `to` with this runtime's `fetch`, handing Bun the extra roots as `tls.ca`. */
-export async function fetchToFile(url: string, to: string): Promise<void> {
+/**
+ * Download `url` to `to` with this runtime's `fetch`, handing Bun the extra roots as `tls.ca`. A signal ends it early:
+ * the menu's update check aborts its read when the menu returns (PLAN-one-step-upgrade.md D2).
+ */
+export async function fetchToFile(url: string, to: string, signal?: AbortSignal): Promise<void> {
   const ca = extraCertificates();
-  const init: Record<string, unknown> = {};
+  const init: Record<string, unknown> = signal ? { signal } : {};
   if (ca !== undefined && typeof (globalThis as { Bun?: unknown }).Bun === 'object') init['tls'] = { ca };
   let response: Response;
   try {
@@ -104,9 +107,9 @@ export async function fetchToFile(url: string, to: string): Promise<void> {
 }
 
 /** A release file into `temp`: copied from a local release folder, or downloaded from a release URL. */
-export async function readReleaseFile(release: string, name: string, temp: string): Promise<string> {
+export async function readReleaseFile(release: string, name: string, temp: string, signal?: AbortSignal): Promise<string> {
   const to = path.join(temp, name);
-  if (isReleaseUrl(release)) await fetchToFile(release.replace(/\/+$/, '') + '/' + name, to);
+  if (isReleaseUrl(release)) await fetchToFile(release.replace(/\/+$/, '') + '/' + name, to, signal);
   else {
     const from = path.join(release, name);
     if (!fs.existsSync(from)) throw new Error(`${release} holds no ${name}, so it is not a release folder. Nothing was installed.`);

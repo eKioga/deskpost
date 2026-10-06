@@ -297,6 +297,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const thisClaim = getSeatClaimState(stateDirectory, seat);
   const thisActivity = readSeatActivity(stateDirectory, seat);
   const conversation = seatConversationView(stateDirectory, seat);
+  const launcherHeld = resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat);
   const thisSeat: Record<string, PsJsonValue> = {
     seat,
     // WHICH OF THE THREE SOURCES ANSWERED. A seat named by LIBRARY_SEAT is a name and not a verified
@@ -309,7 +310,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     state_note:
       thisClaim.state === 'orphaned'
         ? `agent ${thisClaim.agentPid} alive, claim holder gone; re-enter this seat to repair it`
-        : resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat)
+        : launcherHeld
           ? 'held for this session by the deskpost launcher that started it; there is nothing to bind'
           : '',
     agent_pid: thisClaim.agentPid,
@@ -374,11 +375,24 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // A LAUNCHER-HELD SEAT HAS NO BINDING (S85 row 4, ruling 5), so the binding rule said false of the very conversation
   // that ran this. There the recorded conversation is matched by session id against Claude Code's own
   // CLAUDE_CODE_SESSION_ID; a bound seat keeps the binding rule. The field keeps its name: the dashboard reads it.
-  const launcherHeld = resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat);
   const thisSessionId = (process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
   thisSeat['is_this_conversation'] = launcherHeld
     ? thisSessionId !== '' && conversation.session_id === thisSessionId
     : thisClaim.thisAgent && conversation.conversation_source === 'binding';
+  // AN EARLIER BINDING ON A LAUNCHER-HELD SEAT IS LABELLED (PLAN-one-step-upgrade.md small fix 9; the Report "the Desk
+  // calls a launcher-held seat's binding stale and not this agent's"). The launcher's claim makes the seat this
+  // session's, so a binding record left by an earlier conversation is not used: its fields move under
+  // `previous_binding`, and the top-level ones read null rather than "stale, not this agent".
+  if (launcherHeld && thisClaim.bindingState !== '') {
+    thisSeat['previous_binding'] = {
+      bound_utc: thisSeat['bound_utc'] ?? null,
+      binding_state: thisSeat['binding_state'] ?? null,
+      binding_stale: thisSeat['binding_stale'] ?? null,
+      this_agent: thisSeat['this_agent'] ?? null,
+      note: "an earlier conversation's binding record; not used while the deskpost launcher holds this seat",
+    };
+    for (const key of ['bound_utc', 'binding_state', 'binding_stale', 'this_agent']) thisSeat[key] = null;
+  }
 
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,

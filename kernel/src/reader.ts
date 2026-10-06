@@ -37,6 +37,7 @@ import { deskFileEntries, deskFileName, deskStateDirectory, resolveSeatName } fr
 import { resolveAgentClientProcess } from './procstart.ts';
 import { findOpenBookLines, formatFullTextResult } from './fulltext.ts';
 import { findBookPages, formatDiscoveryResult } from './discovery.ts';
+import { projectSlugArgument } from './hubslug.ts';
 import { deskPin, markerConnection, McpSession, readValidatedRecord, resolveMcpUrl } from './basicmemory.ts';
 import {
   BOOK_ROOT_ACCEPT_PATTERN,
@@ -103,7 +104,7 @@ function assertBookSlug(slug: string): void {
   refuse(`Slug '${slug}' is malformed: lowercase letters, digits and hyphens only, starting with a letter or a digit.`);
 }
 
-function assertPage(page: string): void {
+function assertPage(page: string, kind: 'Book' | 'Project' = 'Book'): void {
   if (
     !page ||
     !page.trim() ||
@@ -113,8 +114,27 @@ function assertPage(page: string): void {
     /(^|\/)\.{1,2}($|\/)/.test(page) ||
     page.endsWith('.md')
   ) {
-    refuse('Page must be a canonical Book page path without the .md extension.');
+    // A PROJECT'S REFUSAL SAYS PROJECT (PLAN-one-step-upgrade.md small fix 3), and names the form it takes.
+    refuse(
+      kind === 'Project'
+        ? 'Page must be a canonical Project page path below the Project root, without the .md extension, such as _project or notes/<name>.'
+        : 'Page must be a canonical Book page path without the .md extension.',
+    );
   }
+}
+
+/**
+ * A PROJECT PAGE WRITTEN AS A LINK WRITES IT (PLAN-one-step-upgrade.md small fix 3): `projects/<slug>/<page>` is read
+ * as `<page>` when the slug is this Project's; another Project's slug is refused naming the form that reads it.
+ */
+function projectPageArgument(slug: string, page: string): string {
+  const linked = /^projects\/([^/]+)\/(.+)$/.exec(page);
+  if (linked === null) return page;
+  if (linked[1] === slug) return linked[2]!;
+  refuse(
+    `Page '${page}' names Project '${linked[1]}', not '${slug}'. Give the page below its Project's root with that Project's slug: ` +
+      `slug ${linked[1]}, page ${linked[2]}.`,
+  );
 }
 
 // --- the Desk, as the adapter reads it (S36) ---------------------------------------------------------
@@ -361,7 +381,15 @@ async function readValidatedBookPageContent(context: ReaderContext, slug: string
       book = null;
     }
     if (book === 'absent') {
-      refuse('This Book is no longer in the collection (archived or removed). Close it, or read it from the archive with `place: archive`.');
+      // NEVER THERE, AND A SHELF BOOK OF THE SAME NAME (PLAN-one-step-upgrade.md small fix 4): a Desk entry can name a
+      // Book that never reached the collection, and the reader's copy is often on the Shelf, so that route is named.
+      const onShelf = fs.existsSync(path.join(context.workspace, 'shelf', slug, 'wiki', '_book.md'));
+      refuse(
+        'This Book is not in the collection: it was never added there, or it was archived or removed. ' +
+          (onShelf
+            ? `A Shelf Book '${slug}' exists: open it with \`deskpost desk open book ${slug} --location shelf\`. Otherwise close this one, or read it from the archive with \`place: archive\`.`
+            : 'Close it, or read it from the archive with `place: archive`.'),
+      );
     }
     refuse('That page is not in this Book.');
   }
@@ -470,10 +498,9 @@ async function readSharedProjectCatalog(context: ReaderContext, shelf: 'active' 
 /**
  * A PROJECT SLUG AS A READER WRITES ONE (S85 row 2, backlog Row B): the Desk and the Hub's own links say
  * `projects/<slug>`, and that form was refused as malformed. The prefix is dropped; anything else is checked as before.
+ * The helper lives in `hubslug.ts` since 1.3.6, where the Hub writers share it.
  */
-export function projectSlugArgument(slug: string): string {
-  return slug.startsWith('projects/') ? slug.substring('projects/'.length) : slug;
-}
+export { projectSlugArgument };
 
 /** The prefix a refused reader call carries: a Project tool's says Project, every other tool's says Book (S85 row 2). */
 export function readerRejectionPrefix(tool: string): string {
@@ -484,7 +511,8 @@ export function readerRejectionPrefix(tool: string): string {
 async function readSharedProjectPage(context: ReaderContext, slug: string, page: string): Promise<{ path: string; content: string }> {
   slug = projectSlugArgument(slug);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) refuse('Project slug is malformed.');
-  assertPage(page);
+  page = projectPageArgument(slug, page);
+  assertPage(page, 'Project');
   const state = deskState(context);
   // CASE-INSENSITIVE, as the oracle's `-match` is. Carried, not corrected: every root on a Desk has
   // already passed the lowercase pattern, so no spelling reaches here that it would change.

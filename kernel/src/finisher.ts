@@ -232,6 +232,38 @@ export function handOffLeftovers(root: string, moved: string[], removeRoot: bool
   }
 }
 
+/**
+ * OLD VERSIONS ARE PRUNED (PLAN-one-step-upgrade.md D7). After a committed upgrade, every `versions\<v>` but the two
+ * `current.json` names (`version`, and `previous`, which rollback switches to) goes; a `.`-prefixed name (`.incoming-*`)
+ * is never touched. Each removal goes through `removeTreeMovingRunning`, so an image still running from a pruned
+ * version is moved aside and its delete handed on (ADR-0067). A folder that cannot go is a warning, never a failed
+ * upgrade. `remove` is the remover, for a fixture that needs one to fail.
+ */
+export function pruneVersions(
+  root: string,
+  keep: string[],
+  moved: string[],
+  remove: (root: string, tree: string, tag: string, moved: string[]) => void = removeTreeMovingRunning,
+): { removed: string[]; warned: string[] } {
+  const versions = path.join(root, 'versions');
+  const removed: string[] = [];
+  const warned: string[] = [];
+  if (!fs.existsSync(versions)) return { removed, warned };
+  const kept = new Set(keep.filter((name) => name).map((name) => name.toLowerCase()));
+  for (const name of fs.readdirSync(versions).sort()) {
+    if (name.startsWith('.') || kept.has(name.toLowerCase())) continue;
+    const tree = path.join(versions, name);
+    try {
+      if (!fs.lstatSync(tree).isDirectory()) continue;
+      remove(root, tree, `pruned-${name}`, moved);
+      removed.push(name);
+    } catch (error) {
+      warned.push(`versions\\${name} could not be removed (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); it is left, and the next upgrade tries again.`);
+    }
+  }
+  return { removed, warned };
+}
+
 /** What an earlier hand-off left in `.leftover`, removed where it can be (the next install run, under the lock). */
 export function sweepLeftovers(root: string): void {
   const folder = path.join(root, LEFTOVER);

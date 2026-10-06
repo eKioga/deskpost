@@ -67,7 +67,7 @@ import { nativeProcessCalls, nativeWaitForExit } from './win32proc.ts';
 import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
-import { addedDirArguments, addedDirsPath, addedDirsStatus, seatDirsResult } from './seatdirs.ts';
+import { addedDirArguments, addedDirsPath, addedDirsStatus, nameArguments, seatDirsResult } from './seatdirs.ts';
 import { seatStatusText } from './human.ts';
 import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
 
@@ -1217,7 +1217,13 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     assistant === 'claude' && inbound.state === 'valid'
       ? inboundSettingsArguments({ stateDirectory, seat, value: inbound.value, commandScript: inboundCommandScript, write: false })
       : [];
-  const agentArguments = [...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })), ...addedDirArguments(appliedDirs), ...inboundArguments, ...passthrough];
+  const agentArguments = [
+    ...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })),
+    ...nameArguments(assistant, seat, passthrough),
+    ...addedDirArguments(appliedDirs),
+    ...inboundArguments,
+    ...passthrough,
+  ];
   const conversationId = resumeId || sessionId;
   // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';

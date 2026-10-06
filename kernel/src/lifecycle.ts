@@ -143,7 +143,11 @@ function clearPending(root: string, id: string): void {
 // --- close your sessions (#7, #10) ----------------------------------------------------------------------------
 
 export interface LiveSessions {
-  seats: { library: string; seat: string; agent_pid: number | null }[];
+  /**
+   * HELD OR ORPHANED, LABELLED (PLAN-one-step-upgrade.md D3): both are a running session and both block; the label says
+   * what to close.
+   */
+  seats: { library: string; seat: string; agent_pid: number | null; state: 'held' | 'orphaned'; label: string }[];
   processes: { pid: number; path: string }[];
   unreadable: string[];
 }
@@ -198,7 +202,8 @@ export function liveSessions(root: string, options: { excludePids?: number[]; li
     try {
       for (const row of readSeatRegistry(state)) {
         const claim = getSeatClaimState(state, row.seat);
-        if (claim.state !== 'free') found.seats.push({ library, seat: row.seat, agent_pid: claim.agentPid || null });
+        if (claim.state === 'free') continue;
+        found.seats.push({ library, seat: row.seat, agent_pid: claim.agentPid || null, state: claim.state, label: seatSessionLabel(claim) });
       }
     } catch (error) {
       found.unreadable.push(`${library}: ${(error as Error).message}`);
@@ -224,6 +229,14 @@ export function liveSessions(root: string, options: { excludePids?: number[]; li
   return found;
 }
 
+/** What to close for a held or orphaned seat (D3): its open session, its launcher, or its orphaned session. */
+export function seatSessionLabel(claim: { state: string; bindingState: string; bindingStale: boolean; agentPid: number }): string {
+  if (claim.state === 'orphaned') return `orphaned: its launcher is gone but its Claude Code or Codex session is still running (process ${claim.agentPid}); end that session`;
+  return claim.bindingState === 'committed' && !claim.bindingStale && claim.agentPid > 0
+    ? `held: its session is open (agent process ${claim.agentPid})`
+    : 'held: its launcher holds it, no session bound yet';
+}
+
 /** Whether any of a Library's registration files names a path under `root`, in either slash style. */
 export function libraryNamesInstall(library: string, root: string): boolean {
   const needles = [path.resolve(root), path.resolve(root).replace(/\\/g, '/'), path.resolve(root).replace(/\\/g, '\\\\')].map((needle) => needle.toLowerCase());
@@ -238,22 +251,116 @@ export function libraryNamesInstall(library: string, root: string): boolean {
 
 export function sessionsText(found: LiveSessions): string {
   const lines: string[] = [];
-  for (const seat of found.seats) lines.push(`  seat '${seat.seat}' in ${seat.library}${seat.agent_pid ? ` (agent process ${seat.agent_pid})` : ''}`);
-  for (const process of found.processes) lines.push(`  process ${process.pid}: ${process.path}`);
+  for (const seat of found.seats) lines.push(`  seat '${seat.seat}' in ${seat.library}: ${seat.label}`);
+  for (const process of found.processes) lines.push(`  process ${process.pid}: ${process.path} (a hook or mcp serve of an open session)`);
   return lines.join('\n');
 }
 
-/** Refuse, or wait for Enter and look again, while anything in `liveSessions` is open. */
-async function requireSessionsClosed(root: string, verb: string, interactive: boolean): Promise<void> {
-  for (;;) {
-    const found = liveSessions(root);
-    if (!found.seats.length && !found.processes.length) return;
-    const text = `Close your sessions first: ${verb} changes the program they are running.\n${sessionsText(found)}`;
-    if (!interactive) throw new Error(`${text}\nClose them (end each Claude Code or Codex session at those seats; an orphaned claim, whose holder is gone, clears when its agent process ends), then run ${verb} again.`);
-    process.stdout.write(text + '\n');
-    const key = await prompt('[Enter] look again   [q] quit › ');
-    if (key.toLowerCase() === 'q') throw new Error(`${verb} stopped; nothing was changed.`);
+/** Whether a wait meets anything open. */
+function sessionsOpen(found: LiveSessions): boolean {
+  return found.seats.length > 0 || found.processes.length > 0;
+}
+
+/** A key in the wait's raw mode: `q`, `Q` or Ctrl+C (byte 0x03 in raw mode) stops it; any other key is ignored. */
+export function waitKeyStops(chunk: Buffer | string): boolean {
+  return /[qQ\x03]/.test(typeof chunk === 'string' ? chunk : chunk.toString('latin1'));
+}
+
+export interface SessionWait {
+  /** What is open now; called again every 2 seconds. */
+  look: () => LiveSessions;
+  /** The first line, which keeps `Close your sessions first` (Test-InstallProof.ps1:93 matches it). */
+  header: string;
+  interactive: boolean;
+  /** `--wait <seconds>`: a non-interactive run looks again up to this long before it refuses. */
+  waitSeconds?: number | null;
+  /** The refusal's last sentence, for a run with nobody to wait for. */
+  advice: string;
+  say: (text: string) => void;
+}
+
+/**
+ * THE ONE WAIT FOR OPEN SESSIONS (PLAN-one-step-upgrade.md D3; ADR-0068), for install, upgrade, uninstall and rollback.
+ * Interactive, it lists what is open and looks again by itself every 2 seconds in raw mode: `q` or Ctrl+C stops it
+ * with no Enter needed, and the terminal is restored however it ends. A terminal that refuses raw mode (a
+ * pseudo-terminal that reports a TTY) falls back to the Enter loop. Non-interactive, it refuses at once, or with
+ * `--wait <seconds>` looks every 2 seconds up to that limit and refuses with the list. True when nothing is open; false
+ * when the reader stopped it.
+ */
+export async function waitForSessionsToClose(wait: SessionWait): Promise<boolean> {
+  let found = wait.look();
+  if (!sessionsOpen(found)) return true;
+  const text = (now: LiveSessions) => `${wait.header}\n${sessionsText(now)}`;
+  if (!wait.interactive) {
+    const deadline = Date.now() + Math.max(0, wait.waitSeconds ?? 0) * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2000, deadline - Date.now())));
+      found = wait.look();
+      if (!sessionsOpen(found)) return true;
+    }
+    throw new Error(`${text(found)}\n${wait.advice}`);
   }
+  wait.say(text(found));
+  const stdin = process.stdin;
+  let raw = false;
+  try {
+    stdin.setRawMode(true);
+    raw = true;
+  } catch {
+    raw = false;
+  }
+  if (!raw) {
+    for (;;) {
+      if ((await prompt('[Enter] look again   [q] quit › ')).toLowerCase() === 'q') return false;
+      found = wait.look();
+      if (!sessionsOpen(found)) return true;
+      wait.say(text(found));
+    }
+  }
+  wait.say('Looking again every 2 seconds as they close.   [q] quit');
+  try {
+    return await new Promise<boolean>((resolve) => {
+      let shown = sessionsText(found);
+      const finish = (clear: boolean) => {
+        clearInterval(timer);
+        stdin.off('data', onData);
+        resolve(clear);
+      };
+      const onData = (chunk: Buffer | string) => {
+        if (waitKeyStops(chunk)) finish(false);
+      };
+      const timer = setInterval(() => {
+        const now = wait.look();
+        if (!sessionsOpen(now)) return finish(true);
+        const listed = sessionsText(now);
+        if (listed !== shown) {
+          shown = listed;
+          wait.say(text(now));
+        }
+      }, 2000);
+      stdin.on('data', onData);
+      stdin.resume();
+    });
+  } finally {
+    try {
+      stdin.setRawMode(false);
+    } catch {
+      // A terminal that took raw mode gives it back; nothing else to restore.
+    }
+    stdin.pause();
+  }
+}
+
+/** Refuse, or wait for the sessions to close, while anything in `liveSessions` is open. */
+async function requireSessionsClosed(root: string, verb: string, interactive: boolean): Promise<void> {
+  const clear = await waitForSessionsToClose({
+    look: () => liveSessions(root),
+    header: `Close your sessions first: ${verb} changes the program they are running.`,
+    interactive,
+    advice: `Close them (end each Claude Code or Codex session at those seats; an orphaned claim, whose holder is gone, clears when its agent process ends), then run ${verb} again.`,
+    say: (text) => process.stdout.write(text + '\n'),
+  });
+  if (!clear) throw new Error(`${verb} stopped; nothing was changed.`);
 }
 
 // --- the terminal ------------------------------------------------------------------------------------------------
@@ -460,6 +567,8 @@ export function programRemoval(root: string): RemovalList {
   }
   list.folders.push('bin');
   addFile(path.join(root, 'current.json'));
+  // THE MENU'S UPDATE RECORD (D2) is Deskpost's, so an uninstall removes it and an empty root stays empty.
+  addFile(path.join(root, 'update-check.json'));
   if (fs.existsSync(downloads)) {
     for (const name of adoptedArchives) addFile(path.join(downloads, name));
     const sums = path.join(downloads, 'SHA256SUMS');

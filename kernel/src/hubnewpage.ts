@@ -132,12 +132,12 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
   let sourceBytes: Buffer | null = null;
   if (hasPath) {
     sourceFile = path.resolve(path.isAbsolute(options.contentPath) ? options.contentPath : path.join(workspace, options.contentPath));
-    if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) refuse(`ContentPath '${options.contentPath}' is not a file.`);
+    if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) refuse(`--content-path '${options.contentPath}' is not a file (resolved to ${sourceFile}).`);
     try {
       sourceBytes = fs.readFileSync(sourceFile);
       raw = new TextDecoder('utf-8', { fatal: true }).decode(sourceBytes).replace(/^﻿/, '');
     } catch (error) {
-      refuse(`ContentPath '${options.contentPath}' is not valid UTF-8: ${(error as Error).message}`);
+      refuse(`--content-path '${options.contentPath}' (resolved to ${sourceFile}) is not valid UTF-8: ${(error as Error).message}`);
     }
   }
   if (!raw.trim()) refuse('The page body is empty; nothing was written.');

@@ -98,7 +98,7 @@ export function renderPageBody(body: string, title: string): RenderedPage {
   if (keepsOwn) rendered = normalised + '\n';
   else if (!head) rendered = `# ${pageTitle}\n\n` + normalised + '\n';
   else rendered = head + (/\n$/.test(head) ? '' : '\n') + '\n' + `# ${pageTitle}\n` + (rest ? '\n' + rest : '') + '\n';
-  return { title: pageTitle, titleSource: keepsOwn ? 'body H1' : '-Title', body: rendered };
+  return { title: pageTitle, titleSource: keepsOwn ? 'body H1' : '--title', body: rendered };
 }
 
 /** Whether a path exists AS ITSELF: a dangling link is something, which `existsSync` would call nothing. */

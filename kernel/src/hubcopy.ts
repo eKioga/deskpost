@@ -36,6 +36,7 @@ import { assertShelfBookOpen, getCaptureBook, splitNoteFrontmatter } from './tri
 import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
+import { hubSlug } from './hubslug.ts';
 
 class HubCopyRefusal extends Error {}
 
@@ -138,7 +139,7 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   const parsed = parseArguments(argv, [
     'source', 'title', 'purpose', 'next-action', 'include-page', 'destination-directory', 'plan-id', 'journal-path', 'workspace',
   ]);
-  const slug = parsed.positional[0] ?? '';
+  let slug = parsed.positional[0] ?? '';
   const sourcePath = parsed.options.get('source') ?? '';
   const title = parsed.options.get('title') ?? '';
   const purpose = parsed.options.get('purpose') ?? '';
@@ -163,7 +164,9 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   resolveMcpUrl(workspace);
   assertCollectionWriteAllowed(workspace, 'copying local pages to a Project Hub');
   const projectId = resolveCollectionId(workspace);
-  if (!SLUG.test(slug)) refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
+  const checked = hubSlug(slug);
+  if (checked.problem !== null) refuse(checked.problem);
+  slug = checked.slug;
 
   let destination = '';
   if (parsed.options.has('destination-directory')) {

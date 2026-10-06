@@ -36,13 +36,13 @@ import { hubCopyPages } from './hubcopy.ts';
 import { hubRename } from './hubrename.ts';
 import { localSharedArchive } from './localarchive.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
+import { hubSlug } from './hubslug.ts';
 
 /** `--purpose` has no file form: a longer Purpose goes in afterwards through the Hub edit's file route (S70 row 2). */
 const PURPOSE_REMEDY =
   'keep --purpose to one line, and set the full Purpose afterwards with deskpost hub edit <slug> --mode replace-section ' +
   '--section Purpose --content-path <file>.';
 
-const PROJECT_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ACTIVE_CATALOG = ['projects', 'README.md'];
 const ARCHIVE_CATALOG = ['archive', 'projects', 'README.md'];
 
@@ -313,9 +313,9 @@ async function hubNewShared(
 
 async function hubNew(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, ['title', 'purpose', 'next-action', 'workspace']);
-  const slug = parsed.positional[0] ?? '';
-  if (!slug) refuse('library hub new needs the Project slug: library hub new <slug> --title <title>.');
-  if (!PROJECT_SLUG.test(slug)) refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
+  if (!(parsed.positional[0] ?? '')) refuse('library hub new needs the Project slug: library hub new <slug> --title <title>.');
+  const { slug, problem } = hubSlug(parsed.positional[0]!);
+  if (problem !== null) refuse(problem);
   const title = (parsed.options.get('title') ?? '').trim();
   if (!title) refuse('Title is required.');
   const nextAction = parsed.options.get('next-action');

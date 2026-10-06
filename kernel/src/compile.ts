@@ -182,7 +182,7 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
   if (/[\r\n|[\]]/.test(topicTitle)) throw new Error('TopicTitle must be one wikilink-safe line without brackets or a pipe.');
   if (/[\r\n]/.test(topicOverview)) throw new Error('TopicOverview must be one concise line.');
   if (!fs.existsSync(request.contentPath) || !fs.statSync(request.contentPath).isFile()) {
-    throw new Error(`ContentPath is not a file: ${request.contentPath}`);
+    throw new Error(`--content-path ${request.contentPath} is not a file (resolved to ${path.resolve(request.contentPath)}).`);
   }
   if (!request.sourceFiles.length) throw new Error('At least one --source-file is required.');
 

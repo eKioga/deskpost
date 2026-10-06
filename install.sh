@@ -23,13 +23,34 @@
 
 set -eu
 
+# --- find the install (PLAN-one-step-upgrade.md D4) ---
+# With no DESKPOST_INSTALL_ROOT, the `deskpost` on PATH names the install: this script writes it as a link to the literal
+# $INSTALL_ROOT/current/bin/library. One level of readlink, no -f, which would also resolve `current`; a resolved
+# versions/<v> form is read too. Accepted only where current.json is; otherwise the default. Safe under set -eu when
+# no `deskpost` is on PATH, the fresh install.
+FOUND_ROOT=''
+FOUND_FROM=''
+if [ -z "${DESKPOST_INSTALL_ROOT:-}" ]; then
+  p=$(command -v deskpost 2>/dev/null || true)
+  t=''
+  [ -n "$p" ] && t=$(readlink "$p" 2>/dev/null || true)
+  if [ -n "$t" ]; then
+    root=${t%/current/bin/library}
+    [ "$root" = "$t" ] && root=${t%/versions/*/bin/library}
+    if [ "$root" != "$t" ] && [ -f "$root/current.json" ]; then FOUND_ROOT=$root; FOUND_FROM=$p; fi
+  fi
+fi
+# --- end of find the install ---
+
 RELEASE="${DESKPOST_RELEASE:-https://github.com/eKioga/deskpost/releases/latest/download}"
-INSTALL_ROOT="${DESKPOST_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/deskpost}"
+INSTALL_ROOT="${DESKPOST_INSTALL_ROOT:-${FOUND_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/deskpost}}"
 BIN_DIR="${DESKPOST_BIN_DIR:-$HOME/.local/bin}"
 VERSIONS="$INSTALL_ROOT/versions"
 
 fail() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
 say() { printf '  %s\n' "$1"; }
+
+[ -n "$FOUND_ROOT" ] && say "Deskpost is installed at $FOUND_ROOT (found from $FOUND_FROM); upgrading it in place."
 
 replace_link() {
   # A new link beside the old one, then one rename over it: whatever is started at any instant sees
@@ -159,6 +180,22 @@ now="$(current_field version)"
 if [ -n "$now" ] && [ "$now" != "$version" ]; then previous="$now"; else previous="$(current_field previous)"; fi
 switch_link "$version" "$previous" "$actual"
 say "library now runs $version ($BIN_DIR/library)"
+
+# --- keep two versions (PLAN-one-step-upgrade.md D7) ---
+# The version now current and the previous one, which DESKPOST_ROLLBACK switches to, stay; every other versions/<v>
+# goes, and a dot-named one (.incoming-*) is never touched. One that cannot go is a warning. downloads/ is emptied.
+removed=''
+for dir in "$VERSIONS"/*/; do
+  [ -d "$dir" ] || continue
+  name=$(basename "$dir")
+  [ "$name" = "$version" ] && continue
+  [ -n "${previous:-}" ] && [ "$name" = "$previous" ] && continue
+  if rm -rf "$VERSIONS/$name" 2>/dev/null && [ ! -e "$VERSIONS/$name" ]; then removed="$removed $name"
+  else say "WARN: $VERSIONS/$name could not be removed; it is left, and the next upgrade tries again."; fi
+done
+[ -z "$removed" ] || say "Removed old versions:$removed"
+rm -f "$DOWNLOADS"/* 2>/dev/null || true
+# --- end of keep two versions ---
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "$BIN_DIR is not on PATH; add it to your shell profile." ;; esac
 
 if [ "${DESKPOST_PLUGIN:-0}" = 1 ]; then

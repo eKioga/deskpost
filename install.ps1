@@ -35,11 +35,16 @@ param(
     [string]$Workspace   # accepted for 1.0's callers, and ignored
 )
 
+# A CHILD SCOPE (PLAN-one-step-upgrade.md D4): `irm ... | iex` runs this text in the caller's scope, where strict mode,
+# 'Stop' and these functions would outlive the install. Two automatic variables change inside the block, so first:
+$libraryGiven = $PSBoundParameters.ContainsKey('Library')
+$dotSourced = ($MyInvocation.InvocationName -eq '.')
+& {
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if (-not $InstallRoot) { $InstallRoot = if ($env:DESKPOST_INSTALL_ROOT) { $env:DESKPOST_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA 'deskpost' } }
-if (-not $PSBoundParameters.ContainsKey('Library') -and $env:DESKPOST_LIBRARY) { $Library = $env:DESKPOST_LIBRARY }
+if (-not $libraryGiven -and $env:DESKPOST_LIBRARY) { $Library = $env:DESKPOST_LIBRARY }
 # AN INSTALL ASKED FOR AS JSON MUST NAME THE PLAN IT WAS SHOWN (PLAN-assistant-onboarding.md step 2), before any download.
 if ($Json -and -not $DryRun -and -not $PlanId -and -not $Rollback) {
     throw 'An install asked for as JSON must name the plan it was shown: run with -DryRun -Json first, then again with -PlanId <plan_id>. Nothing was changed.'
@@ -120,7 +125,7 @@ try {
     $refusal = Join-Path $temp 'refusal.txt'
     $arguments = @('install', '--extracted', $extracted, '--archive-sha256', $actualSha, '--release', $Release, '--install-root', $InstallRoot,
         '--platform', $Platform, '--forwarded', '--refusal-file', $refusal, '--script-sha', $scriptSha)
-    if ($PSBoundParameters.ContainsKey('Library') -or $Library) { $arguments += @('--library', $Library) }
+    if ($libraryGiven -or $Library) { $arguments += @('--library', $Library) }
     if ($scriptPath) { $arguments += @('--script-path', $scriptPath, '--run-as-file') }
     if ($Resume) { $arguments += @('--resume', $Resume) }
     if ($PlanId) { $arguments += @('--plan-id', $PlanId) }
@@ -143,8 +148,9 @@ try {
         $said = if (Test-Path -LiteralPath $refusal) { [IO.File]::ReadAllText($refusal).Trim() } else { '' }
         if ($said) { throw $said }
         $global:LASTEXITCODE = $ran.exit
-        if ($scriptPath -and $MyInvocation.InvocationName -ne '.') { exit $ran.exit }
+        if ($scriptPath -and -not $dotSourced) { exit $ran.exit }
     }
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+}
 }

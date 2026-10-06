@@ -121,12 +121,24 @@ function quoted(argument: string): string {
  * resumed in the assistant that owns it, or a new Claude Code conversation when there is none. The folders come after
  * the conversation arguments, as `seat start` puts them.
  */
+/**
+ * THE SEAT'S NAME AT LAUNCH (PLAN-one-step-upgrade.md small fix 11, Step 0 of "Seats that work as a team"): Claude Code
+ * names the session after its seat from the first prompt (`--name`, `claude --help` 2.1.290), new or resumed (S92's
+ * spike: `--resume <id> --name <seat>` keeps the conversation and records its title). Codex has no such flag, and a
+ * reader's own `--name` or `-n` in the passthrough is theirs.
+ */
+export function nameArguments(assistant: Assistant | null, seat: string, passthrough: string[]): string[] {
+  if (assistant !== 'claude') return [];
+  if (passthrough.some((arg) => arg === '--name' || arg === '-n' || arg.startsWith('--name='))) return [];
+  return ['--name', seat];
+}
+
 export function launchLine(stateDirectory: string, seat: string, dirs: string[]): string {
   const activity = readSeatActivity(stateDirectory, seat);
   const session = typeof activity?.['session_id'] === 'string' ? (activity['session_id'] as string) : '';
   const assistant: Assistant = activity?.['assistant'] === 'codex' ? 'codex' : 'claude';
   const conversation = session ? (assistant === 'codex' ? ['resume', session] : ['--resume', session]) : [];
-  return [assistant, ...conversation, ...addedDirArguments(dirs)].map(quoted).join(' ');
+  return [assistant, ...conversation, ...nameArguments(assistant, seat, []), ...addedDirArguments(dirs)].map(quoted).join(' ');
 }
 
 /** The seat, named and live. A retired seat and an unknown one are refused, each by name. */

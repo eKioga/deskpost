@@ -133,7 +133,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     summary: 'Install, upgrade or repair Deskpost from a release, or finish or undo an interrupted install, with no PowerShell: what install.ps1 did.',
     usage:
       'library install [--release <folder|url>] [--install-root <dir>] [--library <dir|none>] [--platform win-x64|win-arm64] [--yes] [--dry-run] [--json] [--plan-id <id>] ' +
-      '[--allow-overlap] [--repair] [--keep-libraries] [--no-path-change] [--plugin|--skip-plugin] [--resume finish|undo] [--librarian claude|codex]',
+      '[--allow-overlap] [--repair] [--keep-libraries] [--path-change|--no-path-change] [--wait <seconds>] [--plugin|--skip-plugin] [--resume finish|undo] [--librarian claude|codex]',
     actions: [],
     positional: false,
     // PLAN-install-without-powershell.md D1-D8 (S89, ADR-0066). Run by a reader it is the bootstrap: it reads and checks
@@ -142,6 +142,24 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // --run-as-file. Windows only; install.sh installs on macOS and Linux.
     ported: true,
     row: 'S89',
+  },
+  upgrade: {
+    summary: 'Upgrade the install this program runs from to the latest release, or say whether one is ready (--check).',
+    usage:
+      'library upgrade [--check] [--dry-run] [--json] [--plan-id <id>] [--yes] [--wait <seconds>] [--path-change|--no-path-change] [--release <url|folder>]',
+    details: {
+      '*': [
+        'It upgrades the install it runs from; it takes no --install-root. --check reads the release\'s SHA256SUMS only.',
+        'It waits for open sessions to close; --wait <seconds> waits that long when nobody is there to ask. The install.ps1',
+        'line cannot wait: run `deskpost upgrade` from a terminal or the main menu instead.',
+      ],
+    },
+    actions: [],
+    positional: false,
+    // PLAN-one-step-upgrade.md D1 (S92, ADR-0068): the check reads SHA256SUMS; an upgrade runs `install` as the
+    // bootstrap with --install-root <this install>, so the new release does its own install.
+    ported: true,
+    row: 'S92',
   },
   hook: {
     summary: "The Library's hooks: a harness payload on stdin, a decision or context on stdout.",
@@ -181,6 +199,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
         '',
         "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line.",
+        'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
         "Gated means --preflight first, then --user-confirmed --plan-id <id> with the reader's yes.",
       ],
     },

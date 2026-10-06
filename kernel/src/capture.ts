@@ -310,7 +310,7 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
   // only a relative one is resolved against the workspace.
   const candidate = path.isAbsolute(contentPath!) ? contentPath! : path.join(workspace, contentPath!);
   const full = path.resolve(candidate);
-  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`ContentPath was not found: ${contentPath}`);
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`--content-path ${contentPath} was not found (resolved to ${full}).`);
   return { body: readUtf8(full), source: contentPath! };
 }
 
@@ -524,7 +524,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       book_title: book.title,
       note_page: `${book.bookRoot}/wiki/${selected.page}`,
       note_title: pageTitle,
-      title_source: keepsOwnHeading ? 'body H1' : '-Title',
+      title_source: keepsOwnHeading ? 'body H1' : '--title',
       ...(titleNote !== null ? { title_note: titleNote } : {}),
       body_characters: body.length,
       ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),

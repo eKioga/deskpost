@@ -37,6 +37,7 @@ import { readMarker } from './workspace.ts';
 import { readSeatRegistry } from './desk.ts';
 import { deskFilePath } from './seatdesk.ts';
 import { getSeatClaimState } from './seatclaim.ts';
+import { hubSlug } from './hubslug.ts';
 import { ensureHeading, insertUnderHeading, ownedLines, splitLocalFrontmatter, writeCatalog } from './localcatalog.ts';
 
 class HubRenameRefusal extends Error {}
@@ -45,7 +46,6 @@ function refuse(message: string): never {
   throw new HubRenameRefusal(message);
 }
 
-const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const STEPS = ['copy', 'catalog', 'desks', 'archive', 'listed'] as const;
 const NEW_HUB_MENTIONS_NOTE =
   "The new Hub's own current pages that still name the old slug or title; the rename changed only their permalinks and the root's title. Change them with library hub edit. notes/ is history and is not listed.";
@@ -429,9 +429,13 @@ function runStep(context: Context, plan: RenamePlan, step: Step): void {
 
 export function hubRename(argv: string[], workspace: string): Record<string, PsJsonValue> {
   const parsed = parseArguments(argv, ['title', 'plan-id', 'lock-timeout', 'workspace']);
-  const [oldSlug = '', newSlug = ''] = parsed.positional;
-  if (!oldSlug || !newSlug) refuse('library hub rename needs both names: library hub rename <old-slug> <new-slug> --title "<new title>" --preflight.');
-  for (const slug of [oldSlug, newSlug]) if (!SLUG.test(slug)) refuse(`'${slug}' is not a Project slug: lowercase letters, digits, and single hyphens.`);
+  const [oldWord = '', newWord = ''] = parsed.positional;
+  if (!oldWord || !newWord) refuse('library hub rename needs both names: library hub rename <old-slug> <new-slug> --title "<new title>" --preflight.');
+  const [oldSlug, newSlug] = [oldWord, newWord].map((word) => {
+    const checked = hubSlug(word);
+    if (checked.problem !== null) refuse(checked.problem);
+    return checked.slug;
+  }) as [string, string];
   if (oldSlug === newSlug) refuse('The old and new names are the same; there is nothing to rename.');
   const newTitle = (parsed.options.get('title') ?? '').trim();
   if (!newTitle) refuse('A rename needs the new title: --title "<new title>".');

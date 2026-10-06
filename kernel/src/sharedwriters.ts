@@ -27,6 +27,7 @@ import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpU
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed, isSharedCollectionRoot } from './ownership.ts';
 import { localDate } from './localdate.ts';
+import { hubSlug } from './hubslug.ts';
 
 class SharedWriterRefusal extends Error {}
 
@@ -137,12 +138,13 @@ async function readDirectoryListing(session: McpSession, projectId: string, dire
 
 export async function hubArchive(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, ['workspace']);
-  const slug = parsed.positional[0] ?? '';
+  const raw = parsed.positional[0] ?? '';
   // The fence and the collection id come BEFORE the slug is checked: the oracle's order.
   const url = resolveMcpUrl(workspace);
   assertCollectionWriteAllowed(workspace, 'archiving a Project Hub');
   const projectId = resolveCollectionId(workspace);
-  if (!SLUG.test(slug)) refuse('ProjectSlug must use lowercase letters, digits, and single hyphens.');
+  const { slug, problem } = hubSlug(raw);
+  if (problem !== null) refuse(problem);
 
   const activeDirectory = `projects/${slug}`;
   const archiveDirectory = `archive/projects/${slug}`;

@@ -263,6 +263,18 @@ nested list with its item.
 - **The installer's closing check no longer ends in a PowerShell error** after an install that worked,
   and says whether the program or a Library needs the fix.
 
+### 1.3.6: Upgrade in one step (1 of 1 sessions; released 2026-10-05)
+
+- **`deskpost upgrade`** checks GitHub for a newer release and installs it, and the main menu says
+  when one is ready (`u` upgrades from there). The check runs at most once a day and can be turned off.
+- **An upgrade waits for open sessions to close** instead of refusing, and names what to close.
+- **The one-liners need no options**, even for an install outside the default folder: the installer
+  finds that install itself.
+- **An upgrade keeps the install's answers** (the PATH choice too), removes program versions older than
+  the one it could roll back to, and every refusal names the line and spelling the reader used.
+- **Small fixes:** clearer refusals for `desk open`, Hub writers and the readers, and each seat's
+  session named after its seat from the moment it starts.
+
 ### Earlier releases
 
 - **1.0.** One binary for Windows and Linux

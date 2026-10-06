@@ -709,6 +709,12 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
   lines.push('');
   if (!result.results.length) {
     lines.push('No manifest in the Books this query could read carries that term.');
+    // A PHRASE IS MATCHED WHOLE (PLAN-one-step-upgrade.md small fix 5), so a reader typing several words learns why
+    // nothing came back. Matching stays literal; the line only suggests the query's longest word.
+    if (result.query.includes(' ')) {
+      const longest = result.query.split(' ').reduce((best, word) => (word.length > best.length ? word : best), '');
+      lines.push(`The phrase '${result.query}' was matched whole, as written. Try one word, such as '${longest}'.`);
+    }
   } else {
     // Grouped on the ROOT, not the slug: `shelf/notes` and `shelf/_archive/notes` are two different
     // Books that share a name, and one heading over both would attribute an archived Book's pages

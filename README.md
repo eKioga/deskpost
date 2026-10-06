@@ -65,6 +65,13 @@ Afterwards the folder `%TEMP%\deskpost-setup` is no longer needed, and you can d
 Or, in PowerShell, from the folder you want your Library in:
 
 ```powershell
+irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1 | iex
+```
+
+To add an option (see [Install options](#install-options)), use this form of the same line, with the option at its
+end:
+
+```powershell
 & ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1)))
 ```
 
@@ -102,8 +109,8 @@ into `~/.local/bin`. Make your Library with `deskpost init ~/Library`, then run 
 ### Install options
 
 Each option has two spellings. On the Command Prompt line, add it to the end of the line:
-`... install --release "%TEMP%\deskpost-setup\release" --library D:\Notes`. On the PowerShell line, add it after
-the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1))) -Library D:\Notes`.
+`... install --release "%TEMP%\deskpost-setup\release" --library D:\Notes`. In PowerShell, options go after the
+scriptblock form, not the `| iex` line: `& ([scriptblock]::Create((irm …/install.ps1))) -Library D:\Notes`.
 
 | Command Prompt | PowerShell | What it does |
 | --- | --- | --- |
@@ -116,29 +123,35 @@ the scriptblock: `& ([scriptblock]::Create((irm …/install.ps1))) -Library D:\N
 | `--keep-libraries` | `-KeepLibraries` | On an upgrade, keeps the Libraries the install serves as they are, rather than bringing them up to date; each lags the program until `deskpost init <folder>`. |
 | `--resume finish` / `--resume undo` | `-Resume finish` / `-Resume undo` | Finishes or undoes an install, upgrade or uninstall that was interrupted. Running the line again offers the same choice. |
 | `--no-path-change` | `-NoPathChange` | Leaves PATH alone; run `<program>\bin\deskpost.cmd` instead. |
+| `--path-change` | (not available) | On an upgrade of an install made with `--no-path-change`, puts its `bin` folder on PATH after all. |
+| `--wait <seconds>` | (not available) | When nobody can be asked, how long an upgrade waits for open sessions to close. Also taken by `deskpost upgrade`. |
 | `--plugin` | `-Plugin` | Also installs the Claude Code plugin. Opt-in, because each Library registers its own guards. |
 | `deskpost rollback` | `-Rollback` | Switches back to the version installed before this one. |
 | `--json` | `-Json` | Prints one JSON result on stdout; everything else goes to stderr. |
 
-**Upgrading** is the same line, either one: it upgrades in place, and refuses while a session is open at a
-seat of a Library it serves, naming it (close it and press Enter to look again). It asks no Library
-question: the same run brings the Libraries the install serves up to date, so no second command is
-needed (`[k]` on the screen, or `--keep-libraries` / `-KeepLibraries`, keeps them as they are). A Library that cannot be
-brought up to date, such as one holding hooks Deskpost did not write, is kept, named, and given the
-`deskpost init <folder>` line that finishes it. If Deskpost is installed somewhere
-other than the default folder, the bare line offers to upgrade that install, and when nobody can be
-asked it prints the line to use instead, naming that folder. For an install outside the default folder, add
-`--install-root` with that folder to the end of the Command Prompt line, or `-InstallRoot` to the PowerShell line:
+**Upgrading.** From 1.3.6 on, type `deskpost upgrade` in a terminal, or press `u` in the main menu when it says a
+new version is ready.
 
-```bat
-... install --release "%TEMP%\deskpost-setup\release" --install-root D:\path\to\Deskpost
-```
+To reach 1.3.6, and at any time after, the line you installed with also upgrades, either one, with **no options**,
+even when Deskpost is installed somewhere other than the default folder: the line finds the install and upgrades it
+in place. If it finds two installs, it names both and changes nothing; add `--install-root` (`-InstallRoot`) with
+the one you mean. On Linux, the same `install.sh` line upgrades, and finds an install outside the default folder
+through its `deskpost` link.
 
-```powershell
-& ([scriptblock]::Create((irm https://github.com/eKioga/deskpost/releases/latest/download/install.ps1))) -InstallRoot D:\path\to\Deskpost
-```
+While a session is open at a seat of a Library the install serves, the upgrade lists what to close and waits,
+looking again by itself every 2 seconds; press `q` to stop with nothing changed. An upgrade keeps the PATH answer
+the install was made with. It keeps the version it replaced, so `deskpost rollback` switches back, and removes
+versions older than that.
 
-The same version is not reinstalled unless you add `--repair` (`-Repair`). `deskpost rollback` switches back. **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
+An upgrade asks no Library question: the same run brings the Libraries the install serves up to date, so no second
+command is needed (`[k]` on the screen, or `--keep-libraries` / `-KeepLibraries`, keeps them as they are). A Library
+that cannot be brought up to date, such as one holding hooks Deskpost did not write, is kept, named, and given the
+`deskpost init <folder>` line that finishes it.
+
+**Updates.** The main menu checks GitHub for a newer release at most once a day, by downloading the release's public
+`SHA256SUMS` file, and says so in one line when there is one. Set `DESKPOST_UPDATE_CHECK=0` to turn the check off.
+
+The same version is not reinstalled unless you add `--repair` (`-Repair`). **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
 -- its entries in your Libraries, its PATH entry and its program files -- and never your Libraries.
 
 The checkout of this repository is the program, not a Library: cloning it gives you the source, and
@@ -189,7 +202,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.5**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.6**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
 - **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,

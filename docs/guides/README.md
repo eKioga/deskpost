@@ -60,8 +60,10 @@ deleting it, and asking **"what survived the reset?"** works even in a session w
 
 ## Upgrading
 
-Upgrading is the same one line you installed with (the README's
-[Upgrading](../../README.md#install-options)). Close every seat's session first. From 1.3.2, that one
+From 1.3.6, `deskpost upgrade` upgrades Deskpost, or `u` in the main menu when it says a new version is ready.
+The one line you installed with also upgrades, with no options, even for an install outside the default folder (the
+README's [Upgrading](../../README.md#install-options)). An open seat session no longer stops it: the upgrade names
+what to close and waits until it is closed. From 1.3.2, that one
 upgrade also brings each Library the install serves up to date, in the same plan and on the same
 yes, and it names any Library it left behind. Only a Library the install does not serve still needs
 `deskpost init <folder>` afterwards. `deskpost rollback` switches the program back and names the
