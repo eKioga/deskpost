@@ -1,6 +1,6 @@
 {
   "name": "@deskpost/library-kernel",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "private": true,
   "description": "The TypeScript kernel of the Library: the implementation PLAN-public-release.md step 24 ports the PowerShell tools into, judged row by row by tools/Invoke-AcceptanceMatrix.ps1.",
   "type": "module",
@@ -8,5 +8,9 @@
   "bin": { "library": "./src/cli.ts" },
   "scripts": {
     "selftest": "node test/selftest.ts"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
   }
 }

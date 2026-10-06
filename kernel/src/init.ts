@@ -1676,5 +1676,5 @@ function hasLiveDefaultLibrary(root?: string): boolean {
 }
 
 function randomGuid(): string {
-  return (globalThis.crypto as Crypto).randomUUID();
+  return (globalThis.crypto as { randomUUID(): string }).randomUUID();
 }

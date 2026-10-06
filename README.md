@@ -60,7 +60,8 @@ download against the checksums, and installs. Nothing in it needs PowerShell.
 
 You can paste it again at any time: if an install was interrupted, running the line again is how it finishes.
 Afterwards the folder `%TEMP%\deskpost-setup` is no longer needed, and you can delete it. `deskpost` works in a
-**new** terminal; the window you ran the line in keeps its old PATH.
+**new** terminal; the window you ran the line in keeps its old PATH. On Windows, `deskpost` and `library` run from
+Git Bash as well as from the Command Prompt and PowerShell.
 
 Or, in PowerShell, from the folder you want your Library in:
 
@@ -202,14 +203,15 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.6**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.7**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
+- **Next: 1.3.8, seats that work as a team**: a directory of who does what, letters to a department,
+  and one seat that decides where each goes.
+- **Then: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
   a browse mode in the main menu, and an unknown flag refused by every verb.
-- **Then: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
-- **Exploring:** seats that work as a team, with a directory of who does what and mail sorted between
-  them; seats on more than one computer, so the seats you run share the load of the
+- **After that: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
+- **Exploring:** seats on more than one computer, so the seats you run share the load of the
   computers you already have and still talk to each other; and two Libraries in one household,
   sharing a collection on the home network with no accounts, database or server.
 

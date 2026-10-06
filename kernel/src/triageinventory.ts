@@ -215,8 +215,12 @@ function sortedUnique(values: string[]): string[] {
  * `notebookRelative` is the Notebook root to read: `notebook` for the shared tree, `notebook/<seat>`
  * for a seat's own under ADR-0029. Every path it reports is under that root, so a reset's advisory
  * describes the Notebook that reset would take rather than every seat's at once.
+ *
+ * `pendingOnly` (`--pending`, kickoffs/s94 row 4) lists only the capture notes still waiting (review not done) in
+ * `holding_notes`, and says so in `holding_notes_listed`; every count stays the whole inventory's, so a filtered list is
+ * never read as the whole.
  */
-export function triageInventory(workspace: string, notebookRelative = 'notebook'): Record<string, PsJsonValue> {
+export function triageInventory(workspace: string, notebookRelative = 'notebook', options: { pendingOnly?: boolean } = {}): Record<string, PsJsonValue> {
   const root = path.resolve(workspace);
   const notebookRoot = path.join(root, ...notebookRelative.split('/'));
   const journalRoot = path.join(root, 'internal', 'publication-journals');
@@ -339,6 +343,9 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
         title: note.title,
         review: note.review,
         captured: note.captured,
+        // WHO WROTE IT AND WHOM IT IS FOR (kickoffs/s94 row 4): a letter's two seats, null when the note names none.
+        from_seat: note.fromSeat,
+        for_seat: note.forSeat,
         sha256: hash,
         copy_status: records.copyStatus,
         known_books: records.knownBooks,
@@ -377,7 +384,8 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
     holding_no_known_copy_record_count: holdingNotes.filter((note) => note.copy_status === 'no-known-copy-record').length,
     unreadable_journals: journalErrors,
     pages: pages as unknown as PsJsonValue,
-    holding_notes: holdingNotes as unknown as PsJsonValue,
+    holding_notes: (options.pendingOnly ? holdingPending : holdingNotes) as unknown as PsJsonValue,
+    holding_notes_listed: options.pendingOnly ? 'pending' : 'all',
     shared_library_write: false,
   };
 }

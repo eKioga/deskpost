@@ -196,7 +196,6 @@ done
 [ -z "$removed" ] || say "Removed old versions:$removed"
 rm -f "$DOWNLOADS"/* 2>/dev/null || true
 # --- end of keep two versions ---
-case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "$BIN_DIR is not on PATH; add it to your shell profile." ;; esac
 
 if [ "${DESKPOST_PLUGIN:-0}" = 1 ]; then
   if command -v claude >/dev/null 2>&1; then
@@ -211,9 +210,18 @@ if [ "${DESKPOST_PLUGIN:-0}" = 1 ]; then
   say "Codex has no non-interactive plugin install yet. In Codex, run /plugins and add the marketplace at $INSTALL_ROOT/current."
 fi
 
+# --- the closing check (kickoffs/s94 row 0) ---
+# A first install on a login whose PATH does not hold $BIN_DIR yet is accepted: doctor runs with $BIN_DIR first on PATH
+# for that one call, so its PATH check judges the install and not this shell, and the PATH step is the last line said.
+# Any other doctor failure still fails the install.
+doctor_path=$PATH
+on_path=1
+case ":$PATH:" in *":$BIN_DIR:"*) ;; *) doctor_path="$BIN_DIR:$PATH"; on_path=0 ;; esac
 say 'Running library doctor'
 if [ -n "${DESKPOST_WORKSPACE:-}" ]; then
-  "$INSTALL_ROOT/current/bin/library" doctor --workspace "$DESKPOST_WORKSPACE"
+  PATH="$doctor_path" "$INSTALL_ROOT/current/bin/library" doctor --workspace "$DESKPOST_WORKSPACE"
 else
-  "$INSTALL_ROOT/current/bin/library" doctor
+  PATH="$doctor_path" "$INSTALL_ROOT/current/bin/library" doctor
 fi || fail 'library doctor is not green, so this install is not accepted. It is in place; DESKPOST_ROLLBACK=1 switches back.'
+[ "$on_path" = 1 ] || say "$BIN_DIR is not on PATH; add it to your shell profile."
+# --- end of the closing check ---

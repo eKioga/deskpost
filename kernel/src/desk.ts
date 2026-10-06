@@ -351,7 +351,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // THE LETTERS WAITING FOR THIS SEAT (kickoffs/s79 row 2, ADR-0062), only while it is held: its pending notes whose
   // `for_seat` names it, in any capture Book, and no other seat's. Counts and the oldest date only, as the capture
   // Books above are said: a letter's title and text still need its Book opened.
-  const lettersForThisSeat: PsJsonValue | null = (() => {
+  const lettersForThisSeat: PsJsonValue | null = ((): PsJsonValue | null => {
     if (thisClaim.state !== 'held') return null;
     const books: Record<string, PsJsonValue> = {};
     let count = 0;

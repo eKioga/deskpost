@@ -50,6 +50,7 @@ import {
   topicHeadingFromText,
 } from './notebook.ts';
 import { notebookScope, prepareNotebookScopeForWrite, type NotebookScope } from './notebooklayout.ts';
+import { strayControlRefusal } from './controlchars.ts';
 
 export interface CompileResult {
   refusal: string | null;
@@ -190,6 +191,9 @@ function compilationPlan(request: CompileRequest, scope: NotebookScope): Compila
   if (!resolved.recognised) throw new Error(`Raw batch '${request.batch}' was refused: ${resolved.reason}`);
 
   const draft = readStrictUtf8(request.contentPath);
+  // NO STRAY CONTROL CHARACTER REACHES A NOTEBOOK ARTICLE (kickoffs/s94 row 3).
+  const stray = strayControlRefusal(draft, `--content-path ${request.contentPath}`);
+  if (stray !== null) throw new Error(stray);
   const heading = /^# ([^\r\n]+)(?:\r?\n|$)/.exec(draft);
   if (!heading || heading.index !== 0) throw new Error('The compiled article must begin with one H1 heading.');
   if (!/^## Key Takeaways\s*$/m.test(draft)) throw new Error('The compiled article must contain a ## Key Takeaways section.');

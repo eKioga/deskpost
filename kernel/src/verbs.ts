@@ -392,13 +392,15 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   triage: {
     summary: 'The triage inventory, plan validation, and the resumable batch.',
-    usage: 'library triage <inventory|validate|batch> [--actions <json>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
+    usage: 'library triage <inventory [--pending]|validate|batch> [--actions <json>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
     // THE SOURCES, AND HOW A LETTER IS CLOSED (S85 row 5, backlog Row C): `source_slug` was nowhere in the help.
     details: {
       '*': [
         'Sources:',
         "  holding    a note in a capture Book: the Holding Shelf, or the Book source_slug names (reports, letters).",
         '  notebook   a Notebook article.',
+        '',
+        'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting.',
         '',
         'Marking a letter read (the seat it is for may close it):',
         `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,

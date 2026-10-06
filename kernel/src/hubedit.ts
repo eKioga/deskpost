@@ -33,6 +33,7 @@ import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
+import { strayControlRefusal } from './controlchars.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -697,7 +698,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       workspace,
     );
   }
-  const mode = MODE_WORDS[modeWord] ?? (EDIT_MODES as readonly string[]).find((name) => name.toLowerCase() === modeWord.toLowerCase());
+  const mode = MODE_WORDS[modeWord] ?? EDIT_MODES.find((name) => name.toLowerCase() === modeWord.toLowerCase());
   if (mode === undefined) {
     refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}, new-page.`);
   }
@@ -749,6 +750,11 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     } catch (error) {
       refuse(`--content-path '${contentPath}' (resolved to ${contentFull}) is not valid UTF-8: ${(error as Error).message}`);
     }
+  }
+  // NO STRAY CONTROL CHARACTER REACHES A PAGE (kickoffs/s94 row 3), from a file or inline, refused before any write.
+  if (usedContent || usedContentPath) {
+    const stray = strayControlRefusal(content, usedContentPath ? `--content-path '${contentPath}'` : '--content');
+    if (stray !== null) refuse(stray);
   }
 
   // COPY EVIDENCE, AND ONLY FOR ReplaceBody FROM notebook/ -- the oracle's rule and its reasons: only

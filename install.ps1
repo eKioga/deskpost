@@ -36,10 +36,10 @@ param(
 )
 
 # A CHILD SCOPE (PLAN-one-step-upgrade.md D4): `irm ... | iex` runs this text in the caller's scope, where strict mode,
-# 'Stop' and these functions would outlive the install. Two automatic variables change inside the block, so first:
-$libraryGiven = $PSBoundParameters.ContainsKey('Library')
-$dotSourced = ($MyInvocation.InvocationName -eq '.')
+# 'Stop', these functions and any variable would outlive the install. Two automatic variables change inside the block, so
+# they are passed into it as its arguments, evaluated here, and nothing is set in the caller's scope (kickoffs/s94 row 2).
 & {
+param($libraryGiven, $dotSourced)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -153,4 +153,4 @@ try {
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
-}
+} ($PSBoundParameters.ContainsKey('Library')) ($MyInvocation.InvocationName -eq '.')

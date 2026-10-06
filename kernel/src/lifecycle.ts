@@ -31,6 +31,7 @@ import { isCompiled, programRoot } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { basicMemoryRollbackCheck } from './bmopen.ts';
 import { librariesServedByRoot } from './installs.ts';
+import { compareVersions } from './versions.ts';
 
 // --- the receipt and the lock -----------------------------------------------------------------------------
 
@@ -378,6 +379,46 @@ function prompt(question: string): Promise<string> {
 
 export const SHIM_TEXT = '@"%~dp0..\\current\\bin\\library.exe" %*\r\n';
 
+/**
+ * THE GIT BASH SHIM (kickoffs/s94 row 1; three Reports, the latest "library is not runnable from Git Bash: bin has only
+ * .cmd shims"). Git Bash runs no `.cmd` by its bare name, so `deskpost` and `library` there found nothing. Beside each
+ * `.cmd` shim is an extensionless `sh` script with LF endings, as npm writes beside its own: cmd.exe and PowerShell
+ * resolve the bare name through PATHEXT and never run it, and Git Bash runs it through its shebang.
+ */
+export const SH_SHIM_TEXT = '#!/bin/sh\nexec "$(dirname "$0")/../current/bin/library.exe" "$@"\n';
+
+/** The first release that writes the Git Bash shims. */
+export const SH_SHIMS_SINCE = '1.3.7';
+
+/**
+ * A ROLLBACK TO A VERSION OLDER THAN THE GIT BASH SHIMS TAKES THEM AWAY (kickoffs/s94 row 1): that version neither writes
+ * nor removes them, so its own uninstall would leave `bin` and the install folder behind. Only a file holding exactly
+ * the shim Deskpost writes is removed; the next upgrade writes the pair again.
+ */
+export function dropShimsNewerThan(root: string, version: string): string[] {
+  if (compareVersions(version, SH_SHIMS_SINCE) !== 'older') return [];
+  const dropped: string[] = [];
+  for (const shim of SHIM_FILES.filter((entry) => entry.text === SH_SHIM_TEXT)) {
+    const file = path.join(root, 'bin', shim.name);
+    try {
+      if (fs.readFileSync(file, 'utf8') !== shim.text) continue;
+      fs.rmSync(file, { force: true });
+      dropped.push(shim.name);
+    } catch {
+      // Not there, or not readable: left as it is.
+    }
+  }
+  return dropped;
+}
+
+/** Every shim an install writes in `<root>\bin`, with its text: written, owned, listed and removed as one set. */
+export const SHIM_FILES: readonly { name: string; text: string }[] = [
+  { name: 'deskpost.cmd', text: SHIM_TEXT },
+  { name: 'library.cmd', text: SHIM_TEXT },
+  { name: 'deskpost', text: SH_SHIM_TEXT },
+  { name: 'library', text: SH_SHIM_TEXT },
+];
+
 function sha256File(file: string): string {
   let bytes: Buffer;
   try {
@@ -559,11 +600,11 @@ export function programRemoval(root: string): RemovalList {
   for (const name of fs.existsSync(root) ? fs.readdirSync(root) : []) {
     if (/^current(\.(new|old)-.+)?$/.test(name) && isLink(path.join(root, name))) list.links.push(name);
   }
-  for (const name of ['bin/deskpost.cmd', 'bin/library.cmd']) {
-    const file = path.join(root, ...name.split('/'));
+  for (const shim of SHIM_FILES) {
+    const file = path.join(root, 'bin', shim.name);
     if (!fs.existsSync(file)) continue;
-    if (fs.readFileSync(file, 'utf8') === SHIM_TEXT) addFile(file);
-    else list.kept.push(`${name} (not the shim Deskpost writes)`);
+    if (fs.readFileSync(file, 'utf8') === shim.text) addFile(file);
+    else list.kept.push(`bin/${shim.name} (not the shim Deskpost writes)`);
   }
   list.folders.push('bin');
   addFile(path.join(root, 'current.json'));
@@ -930,11 +971,12 @@ function rollbackSwitch(root: string, id: string, record: Record<string, unknown
       throw new Error(`${previous} did not answer through current after the switch (exit ${ran.status}), so current points at ${String(record['version'])} again.`);
     }
     clearPending(root, id);
+    dropShimsNewerThan(root, previous);
     const libraries = rollbackLibraryLines(root, previous);
     return {
       refusal: null,
       exitCode: 0,
-      value: { status: 'rolled-back', version: previous, from: record['version'], install_root: root, libraries: libraries.libraries as unknown as PsJsonValue, unreached: libraries.unreached },
+      value: { status: 'rolled-back', version: previous, from: record['version'] as PsJsonValue, install_root: root, libraries: libraries.libraries as unknown as PsJsonValue, unreached: libraries.unreached },
       humanText: `Rolled back to ${previous} (from ${String(record['version'])}). The plugin, if you installed one, is not rolled back by this switch.` + (libraries.text ? `\n${libraries.text}` : ''),
       asJson: json,
     };

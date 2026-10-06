@@ -61,6 +61,7 @@ import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedP
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { localDate } from './localdate.ts';
+import { strayControlRefusal } from './controlchars.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -305,13 +306,19 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
   if (!hasPath && !hasInline) {
     refuse(`A ${what} needs a body: pass --content-path <file> (preferred for prose) or --body <text>.`);
   }
-  if (!hasPath) return { body: inline!, source: '(inline)' };
+  // NO STRAY CONTROL CHARACTER REACHES A NOTE OR A PAGE (kickoffs/s94 row 3): capture and book add-page, before any write.
+  const clean = (body: string, given: string) => {
+    const stray = strayControlRefusal(body, given);
+    if (stray !== null) refuse(stray);
+    return body;
+  };
+  if (!hasPath) return { body: clean(inline!, '--body'), source: '(inline)' };
   // A body is often a scratch file outside the workspace, so an absolute path is taken as given and
   // only a relative one is resolved against the workspace.
   const candidate = path.isAbsolute(contentPath!) ? contentPath! : path.join(workspace, contentPath!);
   const full = path.resolve(candidate);
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`--content-path ${contentPath} was not found (resolved to ${full}).`);
-  return { body: readUtf8(full), source: contentPath! };
+  return { body: clean(readUtf8(full), `--content-path ${contentPath}`), source: contentPath! };
 }
 
 /** A `--body` the Windows shim may have cut short (S66, the S64 Report): `inlinecut.ts` says how it is seen. */

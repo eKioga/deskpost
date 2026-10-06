@@ -869,7 +869,7 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
       };
     }
     if (action === 'inventory') {
-      return { refusal: null, value: triageInventory(workspace) as PsJsonValue };
+      return { refusal: null, value: triageInventory(workspace, 'notebook', { pendingOnly: parsed.flags.has('pending') }) as PsJsonValue };
     }
     if (action === 'batch') {
       // THE BATCH RUNNER (S43, src/triagebatch.ts): preflight, confirmed run, and resume from its journal --

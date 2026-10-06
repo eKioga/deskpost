@@ -198,7 +198,8 @@ export function discoverInstalls(options: { searchPaths: { text: string; via: st
     for (const raw of text.split(path.delimiter)) {
       const folder = expandEnvironment(raw.trim().replace(/^"|"$/g, ''));
       if (!folder || path.basename(folder.replace(/[\\/]+$/, '')).toLowerCase() !== 'bin') continue;
-      const shims = process.platform === 'win32' ? ['deskpost.cmd', 'library.cmd'] : ['deskpost', 'library'];
+      // A WINDOWS bin HOLDS THE GIT BASH PAIR TOO (kickoffs/s94 row 1), so either shim names the install.
+      const shims = process.platform === 'win32' ? ['deskpost.cmd', 'library.cmd', 'deskpost', 'library'] : ['deskpost', 'library'];
       if (!shims.some((name) => fs.existsSync(path.join(folder, name)))) continue;
       add(path.dirname(folder.replace(/[\\/]+$/, '')), via);
     }

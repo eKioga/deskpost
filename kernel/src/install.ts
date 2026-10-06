@@ -35,7 +35,7 @@ import { writeAtomicText } from './fsx.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { COMMAND_NAME, resolveOnPath } from './machine.ts';
-import { liveSessions, ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_TEXT, sessionsText, waitForSessionsToClose, withLifecycleLock, writeReceipt } from './lifecycle.ts';
+import { liveSessions, ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_FILES, sessionsText, waitForSessionsToClose, withLifecycleLock, writeReceipt } from './lifecycle.ts';
 import { addUserPath, handOffLeftovers, lastPathBroadcast, LEFTOVER, pruneVersions, removeTreeMovingRunning, removeUninstallList, removeUserPath, sweepLeftovers, userPathKey } from './finisher.ts';
 import { nativeUserPathRead } from './win32proc.ts';
 import { doctorText } from './human.ts';
@@ -385,13 +385,16 @@ function writeCurrentRecord(root: string, version: string, previous: string | nu
   writeAtomicText(path.join(root, 'current.json'), psConvertToJson(record as PsJsonValue) + '\n');
 }
 
-/** `deskpost` IS THE COMMAND, `library` ITS ALIAS THROUGH 1.x (ADR-0055): two shims, one binary, the same text. */
+/**
+ * `deskpost` IS THE COMMAND, `library` ITS ALIAS THROUGH 1.x (ADR-0055): one binary, a `.cmd` shim for cmd.exe and
+ * PowerShell and an `sh` one for Git Bash (kickoffs/s94 row 1), each rewritten only when its text differs.
+ */
 function setShims(root: string): void {
-  for (const name of ['deskpost.cmd', 'library.cmd']) {
-    const file = path.join(root, 'bin', name);
-    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === SHIM_TEXT) continue;
+  for (const shim of SHIM_FILES) {
+    const file = path.join(root, 'bin', shim.name);
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === shim.text) continue;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    writeAtomicText(file, SHIM_TEXT);
+    writeAtomicText(file, shim.text);
   }
 }
 
@@ -468,7 +471,7 @@ function apply(state: RunState, root: string, pending: Pending): void {
     const owned = [...receipt.owned];
     const stamp = utcRoundTripNow();
     if (pending['created_version'] === true) owned.push({ kind: 'version', path: `versions\\${text(pending['version'])}`, archive_sha256: pending['archive_sha256'], utc: stamp });
-    for (const name of ['current', 'current.json', 'bin\\deskpost.cmd', 'bin\\library.cmd', 'install-receipt.json', '.lifecycle.lock']) {
+    for (const name of ['current', 'current.json', ...SHIM_FILES.map((shim) => `bin\\${shim.name}`), 'install-receipt.json', '.lifecycle.lock']) {
       if (!owned.some((item) => item['kind'] === 'file' && item['path'] === name)) owned.push({ kind: 'file', path: name, utc: stamp });
     }
     // ADOPTED IS NOT ADDED (post-build inspection #2): 1.0's entry becomes Deskpost's to remove at uninstall, but an undo
@@ -563,7 +566,7 @@ function undo(root: string, pending: Pending, keepPath: boolean): { left: string
   } else {
     if (present(current)) removeLink(current);
     fs.rmSync(path.join(root, 'current.json'), { force: true });
-    for (const name of ['deskpost.cmd', 'library.cmd']) fs.rmSync(path.join(root, 'bin', name), { force: true });
+    for (const shim of SHIM_FILES) fs.rmSync(path.join(root, 'bin', shim.name), { force: true });
     const bin = path.join(root, 'bin');
     if (fs.existsSync(bin) && !fs.readdirSync(bin).length) fs.rmdirSync(bin);
   }
@@ -629,6 +632,18 @@ export function closingMessage(part: Exclude<ClosingPart, null>, done: string, c
   if (part === 'library') return `${lead}Doctor found a problem inside a Library, not in the program: the lines marked as failed under that Library above say how to fix it. Rolling back would not change it.`;
   if (part === 'refresh') return `${lead}Its Libraries were not brought up to date${detail ? `: ${detail}` : '.'} Run the installer again to finish the refresh.`;
   return `${lead}But the program's own check failed${detail ? ` (${detail})` : ''}: the Program lines marked as failed above say what to fix.${canRollBack ? ` ${COMMAND_NAME} rollback switches back to the version before.` : ' Run the installer again with --repair once that is fixed.'}`;
+}
+
+/**
+ * WHAT THE CLOSING CHECK COVERS (kickoffs/s94 row 2; the Report "Suspected: a program-only install's closing doctor judges
+ * the Library of the folder it was run from"). The approved refresh when the receipt carries one; the Library this run
+ * was given; otherwise the program and every Library the install serves (`doctor --served-by`, a kept one as WARNs),
+ * never the Library of the folder the installer was started in. Exported for self-test section 151.
+ */
+export function closingArgsFor(root: string, answers: Partial<Pick<SetupAnswers, 'library' | 'kept_libraries'>>, refreshPending: boolean): string[] {
+  if (refreshPending) return ['setup', '--refresh-served', root];
+  if (answers.library) return ['doctor', '--workspace', answers.library];
+  return ['doctor', '--served-by', root, ...(answers.kept_libraries ?? []).filter((folder) => folder).flatMap((folder) => ['--kept', folder])];
 }
 
 export interface Closing {
@@ -1142,7 +1157,7 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
   // --- doctor: its result is the install's result ----------------------------------------------------------------
   // THE APPROVED REFRESH, THEN DOCTOR OVER EVERY LIBRARY THIS INSTALL SERVES (ADR-0063 decisions 1 and 8), in one kernel
   // call, when the receipt carries one.
-  const closingArgs = 'refresh_pending' in readReceipt(root) ? ['setup', '--refresh-served', root] : ['doctor', ...(answers.library ? ['--workspace', answers.library] : [])];
+  const closingArgs = closingArgsFor(root, answers, 'refresh_pending' in readReceipt(root));
   const kept = [...(answers.kept_libraries ?? []), ...(answers.refresh_libraries ?? [])].filter((folder) => folder);
   // THE TRANSACTION IS COMMITTED: a closing check that is not green is said in one plain message and exit 1, never thrown,
   // and names a rollback only when the program itself failed and there is a version to go back to (D7).

@@ -35,6 +35,7 @@ import { parseBookRoot } from './places.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
+import { strayControlRefusal } from './controlchars.ts';
 
 /** The valued options `collection add-page` takes, which the CLI's `collection` parser must know too. */
 export const COLLECTION_ADD_PAGE_OPTIONS = ['body', 'content-path', 'title', 'plan-id', 'lock-timeout', 'seat', 'workspace'];
@@ -183,6 +184,9 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
     source = '(inline)';
   }
   if (!raw.trim()) refuse('The page body is empty; nothing was added.');
+  // NO STRAY CONTROL CHARACTER REACHES A PAGE (kickoffs/s94 row 3), refused before the preview as before the run.
+  const stray = strayControlRefusal(raw, source === '(inline)' ? '--body' : `--content-path '${contentPath}'`);
+  if (stray !== null) refuse(stray);
   const rendered = renderPageBody(raw, parsed.options.get('title') ?? '');
 
   // THE READER MAP, appended to and never regenerated.

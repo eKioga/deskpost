@@ -248,13 +248,9 @@ export function pruneVersions(
   const versions = path.join(root, 'versions');
   const removed: string[] = [];
   const warned: string[] = [];
-  if (!fs.existsSync(versions)) return { removed, warned };
-  const kept = new Set(keep.filter((name) => name).map((name) => name.toLowerCase()));
-  for (const name of fs.readdirSync(versions).sort()) {
-    if (name.startsWith('.') || kept.has(name.toLowerCase())) continue;
+  for (const name of versionsToPrune(root, keep)) {
     const tree = path.join(versions, name);
     try {
-      if (!fs.lstatSync(tree).isDirectory()) continue;
       remove(root, tree, `pruned-${name}`, moved);
       removed.push(name);
     } catch (error) {
@@ -262,6 +258,25 @@ export function pruneVersions(
     }
   }
   return { removed, warned };
+}
+
+/**
+ * THE KEEP RULE, ONCE (kickoffs/s94 row 2): the `versions\<v>` folders a prune keeping `keep` removes, in its order, so
+ * the upgrade's plan names before the run exactly what the run removes after it. Dot-named folders and files are never
+ * among them.
+ */
+export function versionsToPrune(root: string, keep: string[]): string[] {
+  const versions = path.join(root, 'versions');
+  if (!fs.existsSync(versions)) return [];
+  const kept = new Set(keep.filter((name) => name).map((name) => name.toLowerCase()));
+  return fs.readdirSync(versions).sort().filter((name) => {
+    if (name.startsWith('.') || kept.has(name.toLowerCase())) return false;
+    try {
+      return fs.lstatSync(path.join(versions, name)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** What an earlier hand-off left in `.leftover`, removed where it can be (the next install run, under the lock). */

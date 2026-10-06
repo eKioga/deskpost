@@ -40,6 +40,7 @@ import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { createHash } from 'node:crypto';
 import { askAtTerminal, Interrupted } from './prompt.ts';
 import { compareVersions } from './versions.ts';
+import { versionsToPrune } from './finisher.ts';
 
 export const SETUP_QUIT = 3;
 
@@ -684,18 +685,14 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
 
   // THE ONE SCREEN, AND THE ONE KEYPRESS.
   for (;;) {
-    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot) }));
+    const removesVersions = installState === 'upgrade' ? versionsToPrune(installRoot, [version, folderState.version ?? '']) : [];
+    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot), removesVersions }));
     if (!talk.interactive) break;
-    const keys = ['[Enter] install'];
-    if (installState === 'new') keys.push('[p] other program folder');
-    if (state === 'existing') keys.push(repairLibrary ? (unguarded ? '[r] leave it unguarded' : '[r] leave the Library as it is') : '[r] repair this Library');
-    if (refreshTargets().length) keys.push(keepLibraries ? '[k] bring the Libraries up to date' : '[k] keep the Libraries as they are');
-    if (claude !== null && codex !== null) keys.push(`[a] use ${assistant === 'claude' ? 'Codex' : 'Claude Code'}`);
-    keys.push('[q] quit');
+    const keys = screenKeys({ installState, state, repairLibrary, unguarded, refreshing: refreshTargets().length > 0, keepLibraries, both: claude !== null && codex !== null, assistant });
     const key = (await talk.ask('\n' + keys.join('   ') + ' › ')).toLowerCase();
     if (key === '') break;
     if (key === 'q') {
-      talk.say('Nothing was installed.');
+      talk.say(quitText(installState));
       return SETUP_QUIT;
     }
     if (key === 'k' && refreshTargets().length) keepLibraries = !keepLibraries;
@@ -785,6 +782,41 @@ export interface ScreenView {
   pathRow?: string;
   /** Each served Library's refresh, beside the program plan (ADR-0063 decision 1). */
   refresh?: RefreshPreview[];
+  /** An upgrade: the old `versions\<v>` folders it removes once it commits, by the prune's keep rule (kickoffs/s94 row 2). */
+  removesVersions?: string[];
+}
+
+/** What the screen's keys depend on. */
+export interface ScreenKeyView {
+  installState: SetupAnswers['install_state'];
+  state: 'new' | 'existing' | 'none';
+  repairLibrary: boolean;
+  unguarded: boolean;
+  /** Served Libraries the run would bring up to date, so `[k]` has something to keep. */
+  refreshing: boolean;
+  keepLibraries: boolean;
+  both: boolean;
+  assistant: 'claude' | 'codex' | null;
+}
+
+/**
+ * THE ONE KEYPRESS, SAID FOR WHAT IT DOES (kickoffs/s94 row 2; the Report "The 1.3.6 upgrade screen says \"[Enter]
+ * install\" ..."): Enter upgrades on an upgrade and repairs on a repair; a new install keeps `[Enter] install`, which
+ * the release fixtures match. The other keys are as before. Exported for self-test section 151.
+ */
+export function screenKeys(view: ScreenKeyView): string[] {
+  const keys = [view.installState === 'upgrade' ? '[Enter] upgrade' : view.installState === 'repair' ? '[Enter] repair' : '[Enter] install'];
+  if (view.installState === 'new') keys.push('[p] other program folder');
+  if (view.state === 'existing') keys.push(view.repairLibrary ? (view.unguarded ? '[r] leave it unguarded' : '[r] leave the Library as it is') : '[r] repair this Library');
+  if (view.refreshing) keys.push(view.keepLibraries ? '[k] bring the Libraries up to date' : '[k] keep the Libraries as they are');
+  if (view.both) keys.push(`[a] use ${view.assistant === 'claude' ? 'Codex' : 'Claude Code'}`);
+  keys.push('[q] quit');
+  return keys;
+}
+
+/** What `q` on the screen says: a new install installed nothing; an upgrade or repair changed nothing. */
+export function quitText(installState: SetupAnswers['install_state']): string {
+  return installState === 'new' ? 'Nothing was installed.' : 'Nothing was changed.';
 }
 
 /** One served Library's refresh as the screen says it: how many files, or why it is kept as it is. */
@@ -832,6 +864,9 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
         ? `Upgrade ${view.fromVersion ?? '?'} ${arrow()} ${view.version} · undo: ${COMMAND_NAME} rollback`
         : `Repair ${view.version} over itself`;
   rows.push(['Program', view.installRoot, programNote]);
+  // THE OLD VERSIONS AN UPGRADE REMOVES, NAMED BEFORE IT RUNS (kickoffs/s94 row 2): the run said them only afterwards.
+  const removes = view.installState === 'upgrade' ? (view.removesVersions ?? []) : [];
+  if (removes.length) rows.push(['', '', `removes ${removes.length === 1 ? 'an older version' : `${removes.length} older versions`}: ${removes.join(', ')}`]);
   rows.push([
     'Command',
     COMMAND_NAME,
@@ -890,6 +925,7 @@ export function viewOfAnswers(answers: SetupAnswers): ScreenView {
     keptLibraries: answers.kept_libraries ?? [],
     spelling: answers.spelling ?? 'powershell',
     pathRow: answers.path_row,
+    removesVersions: answers.install_state === 'upgrade' && answers.install_root ? versionsToPrune(answers.install_root, [answers.version, answers.from_version ?? '']) : [],
   };
 }
 
@@ -1351,13 +1387,17 @@ export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
   }
 }
 
-function applyText(result: Record<string, unknown>): string {
+/**
+ * `setup --apply`'s result as lines. Exported for self-test section 151. Its refresh line is the plan, said before the
+ * switch; "Brought up to date" is the refresh's own line after it, once per Library (kickoffs/s94 row 2).
+ */
+export function applyText(result: Record<string, unknown>): string {
   const library = result['library'] as Record<string, unknown> | null;
   const refreshing = Array.isArray(result['refresh_libraries']) ? (result['refresh_libraries'] as unknown[]).map(String) : [];
   const refused = Array.isArray(result['refused_libraries']) ? (result['refused_libraries'] as { workspace: string; reason: string }[]) : [];
   // THE REFUSED LIST REACHES THE APPLY'S TEXT (D2): under -PlanId an outcome was approved, and this one is part of it.
   const tail = [
-    ...(refreshing.length ? [`Brought up to date once the program switches: ${refreshing.join(', ')}.`] : []),
+    ...(refreshing.length ? [`Will bring up to date once the program switches: ${refreshing.join(', ')}.`] : []),
     ...refused.map((entry) => `Kept as it is: ${entry.workspace}, because ${entry.reason} Run ${COMMAND_NAME} init ${entry.workspace} once that is fixed.`),
   ];
   if (library === null) {

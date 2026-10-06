@@ -25,9 +25,24 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet. Seats that work as a team (below) are next in line.
+Nothing is scoped into a session yet. 1.3.8, Seats that work as a team (below), is next in line; its
+first session is being written.
 
 ## Next
+
+### 1.3.8: Seats that work as a team (0 of 4 sessions; plan approved 2026-10-06)
+
+- **Every seat gets a one-line card** saying what it does, an optional department and a role
+  (performer or orchestrator), and a seat can see who does what in its department.
+- **The main menu's `+` offers a template** for a new seat.
+- **A letter can be addressed to a department.** It reaches that department's orchestrator, which
+  answers it or passes it on to the right seat, and the Desk counts what waits.
+- **The release.**
+
+Each seat can say what it does, and may belong to a department, such as development, IT or
+marketing. A seat can write to a department rather than to a named seat, and one seat decides where
+each letter goes. Letters between seats are kept apart from the Report Inbox, have a status (open,
+answered, closed), and are never taken as an order.
 
 ### 1.4.0: Correct and find (0 of 3 sessions, planning first)
 
@@ -54,14 +69,6 @@ development tools themselves.
   `collection owner --status` names the holder by card instead of by id.
 
 ## Exploring
-
-### Seats that work as a team (the next to be shaped)
-
-Each seat can say what it does, and may belong to a department, such as development, IT or
-marketing. A seat can write to a department rather than to a named seat, and one seat sorts that
-mail into the right hands. Mail between seats is kept apart from the Report Inbox, has a status
-(open, answered, closed), and is never taken as an order. It is the priority among these ideas
-(2026-10-03), and no design is signed off yet.
 
 ### Seats on more than one computer
 
@@ -263,7 +270,7 @@ nested list with its item.
 - **The installer's closing check no longer ends in a PowerShell error** after an install that worked,
   and says whether the program or a Library needs the fix.
 
-### 1.3.6: Upgrade in one step (1 of 1 sessions; released 2026-10-05)
+### 1.3.6: Upgrade in one step (1 of 1 sessions; released 2026-10-06)
 
 - **`deskpost upgrade`** checks GitHub for a newer release and installs it, and the main menu says
   when one is ready (`u` upgrades from there). The check runs at most once a day and can be turned off.
@@ -274,6 +281,18 @@ nested list with its item.
   the one it could roll back to, and every refusal names the line and spelling the reader used.
 - **Small fixes:** clearer refusals for `desk open`, Hub writers and the readers, and each seat's
   session named after its seat from the moment it starts.
+
+### 1.3.7: Fixes from the 1.3.6 run (1 of 1 sessions; released 2026-10-06)
+
+- **A first Linux install is accepted** when `~/.local/bin` is not on PATH yet; the installer says to
+  add it instead of failing.
+- **`deskpost` and `library` run from Git Bash** on Windows, beside the Command Prompt and PowerShell.
+- **Install and upgrade say what they do:** the upgrade screen says upgrade, names the old versions it
+  will remove and says "brought up to date" once; an install without a Library never checks the folder
+  it was run from; the PowerShell line leaves nothing behind in the reader's shell.
+- **Small fixes:** Hub and capture writes refuse stray control characters; `triage inventory` names
+  each note's sender and recipient and can list only waiting notes; `hub edit new-page` advises
+  `--content-path`; the kernel type-checks in the commit gate.
 
 ### Earlier releases
 

@@ -26,6 +26,7 @@ import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { assertInsideRoot, lexists, renderPageBody } from './pagepath.ts';
+import { strayControlRefusal } from './controlchars.ts';
 
 class HubNewPageRefusal extends Error {}
 
@@ -141,6 +142,9 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     }
   }
   if (!raw.trim()) refuse('The page body is empty; nothing was written.');
+  // NO STRAY CONTROL CHARACTER REACHES A PAGE (kickoffs/s94 row 3).
+  const stray = strayControlRefusal(raw, hasPath ? `--content-path '${options.contentPath}'` : '--content');
+  if (stray !== null) refuse(stray);
   const rendered = renderPageBody(raw, options.title);
   const proposedSha = sha256OfText(rendered.body);
 
@@ -267,6 +271,18 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     journal: path.relative(workspace, journalPath).replace(/\\/g, '/'),
     next:
       `Read it with mcp__validated-book-reader__read_open_project_page (${options.slug}, ${page}). To link it from the Hub, ` +
-      `add a line under Next: deskpost hub edit ${options.slug} --mode append-section --section Next --content "- [[${pagePath.replace(/\.md$/, '')}]]"`,
+      `write this line to a file and add it under Next with deskpost hub edit ${options.slug} --mode append-section --section Next ` +
+      `--content-path <file>: ${nextLine(options.slug, page)}`,
   };
+}
+
+/**
+ * THE Next LINE FOR A NEW PAGE, ADVISED BY FILE (kickoffs/s94 row 5; the Report "Suspected: hub edit new-page's `next`
+ * advice suggests an inline --content pointer line"): an inline value is cut at the shim's first line break, and the
+ * dev session loop takes every Hub write from a file. A `kickoffs/sNN` page's line is the loop's pointer
+ * (`docs/dev-session-loop.md`, "The Kickoff"); any other page's is its link.
+ */
+function nextLine(slug: string, page: string): string {
+  const kickoff = /^kickoffs\/(s[0-9a-z-]+)$/.exec(page);
+  return kickoff ? `- [ ] Run ${kickoff[1]}: [[projects/${slug}/${page}]]` : `- [[projects/${slug}/${page}]]`;
 }

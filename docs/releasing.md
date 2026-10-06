@@ -53,6 +53,7 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
 
 ## After the publish
 
-- If the publish slipped a day, correct the release date in `docs/roadmap.md` on `master`.
+- If the publish slipped a day, B corrects the release date in `docs/roadmap.md` on the next `desk/sNN`, which
+  reaches `master` at that Kickoff's MERGE (B never commits on `master`). The public copy follows at the next release.
 - Only once `releases/latest` names the new version, and it is newer than the installed one, is anyone given an
   upgrade line.
