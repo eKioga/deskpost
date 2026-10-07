@@ -630,9 +630,14 @@ ownership rather than by the seatless rule.
 .claude/seats/<seat>/.open-books
 .claude/seats/<seat>/.open-projects
 .claude/seats/<seat>/.claim              the exclusive session claim
+.claude/seats/<seat>/.claim.lock         the kernel holder's share-nothing half of the claim
+.claude/seats/<seat>/holder-attempt.json which launch attempt is taking the claim: pending, committed or abandoned
 .claude/seats/<seat>/binding.json        which agent holds this seat NOW, by verified identity
 .claude/seats/<seat>/conversations.json  every conversation that has sat here; registry-locked
 .claude/seats/<seat>/activity.json       advisory, and never a gate
+.claude/seats/<seat>/added-dirs.json     the folders the seat's sessions start with (seat dirs)
+.claude/seats/<seat>/settings.json       the seat's own crossSessionInbound, one key (seat settings --inbound)
+.claude/seats/<seat>/launch-settings.json  that key as the launcher writes it for one launch on the claude.cmd route
 .claude/seats/_registry.json             which seats exist, and the Project each is bound to
 ```
 

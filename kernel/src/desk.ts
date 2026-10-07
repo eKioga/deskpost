@@ -23,7 +23,8 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
 import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
-import { growingState, shelfNotes, WHY_CATEGORIES } from './shelfnote.ts';
+import { growingState, isAddressedTo, isStartedBy, isStuckLetter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
+import { readSeatIds, seatIncarnation } from './seatincarnation.ts';
 import {
   deskFileEntries,
   deskFilePath,
@@ -37,7 +38,7 @@ import {
   assertNoMaintenanceBarrier,
   assertSeatClaimHeld,
   getSeatClaimState,
-  launcherHoldsSeatForThisAgent,
+  launcherProofForThisAgent,
   readSeatActivity,
   readSeatBinding,
   writeSeatActivity,
@@ -52,6 +53,7 @@ import { markerConnection } from './basicmemory.ts';
 import { addedDirsStatus } from './seatdirs.ts';
 import { seatMessageAddress } from './conversation.ts';
 import { seatInboundPolicy } from './seatinbound.ts';
+import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -222,6 +224,8 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // happened to remember them. ONLY COUNTS AND THE OLDEST PENDING DATE: note titles and bodies still
   // require opening the Book, exactly as any other Shelf Book's pages do.
   const openShelfSlugs = openBooks.filter((book) => book.location === 'shelf').map((book) => book.slug);
+  // THIS SEAT AS THE RECIPIENT RULE SEES IT (kickoffs/s98 row 0): its slug and its registry row's seat_id, read once.
+  const self = seatIncarnation(stateDirectory, seat);
   const captureBooks = captureBookRows(workspace).map((book) => {
     const notes = shelfNotes(book);
     const pending = notes.filter((note) => note.review !== 'done');
@@ -246,7 +250,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       // GROWING (S77 row 2): past the Book's pending count or age, from its own `Growing at:` line or 5 and 7. Then
       // the route, and how many of the pending notes this seat may close. Counts only.
       ...((): Record<string, PsJsonValue> => {
-        const state = growingState(book, notes, seat);
+        const state = growingState(book, notes, self);
         return state.growing
           ? { growing: true, growing_route: `library desk open book ${book.slug} --location shelf, then library triage batch`, pending_this_seat_may_close: state.mayClose }
           : { growing: false };
@@ -254,6 +258,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     };
   });
 
+  // ONE READ OF THE REGISTRY'S FIELDS AND OF THE LETTERS (1.3.8, kickoffs/s96 rows 1 and 4), used for every row below.
+  const projection = readSeatMetadata(stateDirectory);
+  const letterCounts = pendingLetterCounts(workspace);
   const otherSeats = seatDirectoryNames(stateDirectory)
     .filter((other) => other !== seat)
     .map((other) => {
@@ -289,6 +296,8 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         ...(seatMessageAddress(stateDirectory, other, claim.state) as Record<string, PsJsonValue>),
         // ITS INBOUND POLICY, while held (1.3.1, kickoffs/s79 row 3), in its own file's words.
         ...(claim.state === 'held' ? { inbound_policy: seatInboundPolicy(stateDirectory, other) } : {}),
+        // ITS PENDING LETTERS, AS A NUMBER (1.3.8, kickoffs/s96 row 4), by today's recipient rule; never a title.
+        pending_letters: letterCounts.get(other) ?? 0,
       };
     });
 
@@ -297,7 +306,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const thisClaim = getSeatClaimState(stateDirectory, seat);
   const thisActivity = readSeatActivity(stateDirectory, seat);
   const conversation = seatConversationView(stateDirectory, seat);
-  const launcherHeld = resolved.source === 'environment' && thisClaim.state === 'held' && launcherHoldsSeatForThisAgent(stateDirectory, seat);
+  // THE LAUNCHER PROOF, READ ONCE (kickoffs/s98 row G): `unchecked` is a run whose own walk and CLAUDE_PID both left
+  // nothing to look at, which the note below says rather than leaving it blank.
+  const launcherProof = resolved.source === 'environment' && thisClaim.state === 'held' ? launcherProofForThisAgent(stateDirectory, seat) : 'not-held';
+  const launcherHeld = launcherProof === 'held';
   const thisSeat: Record<string, PsJsonValue> = {
     seat,
     // WHICH OF THE THREE SOURCES ANSWERED. A seat named by LIBRARY_SEAT is a name and not a verified
@@ -312,7 +324,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         ? `agent ${thisClaim.agentPid} alive, claim holder gone; re-enter this seat to repair it`
         : launcherHeld
           ? 'held for this session by the deskpost launcher that started it; there is nothing to bind'
-          : '',
+          : launcherProof === 'unchecked'
+            ? 'could not check the launcher from this process: no agent above it and none named by CLAUDE_PID, so this seat reads as named by LIBRARY_SEAT'
+            : '',
     agent_pid: thisClaim.agentPid,
     agent_start_utc: thisClaim.agentStartUtc,
     bound_utc: thisClaim.boundUtc,
@@ -348,24 +362,33 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // ITS INBOUND POLICY, only while held (1.3.1, kickoffs/s79 row 3, ruling 3): what the seat's own file says, never the
   // effective value, which managed and user settings and both sessions' permission modes also decide.
   if (thisClaim.state === 'held') thisSeat['inbound_policy'] = seatInboundPolicy(stateDirectory, seat);
-  // THE LETTERS WAITING FOR THIS SEAT (kickoffs/s79 row 2, ADR-0062), only while it is held: its pending notes whose
-  // `for_seat` names it, in any capture Book, and no other seat's. Counts and the oldest date only, as the capture
+  // THE LETTERS WAITING FOR THIS SEAT (kickoffs/s79 row 2, ADR-0062), only while it is held: its pending notes addressed
+  // to it by the recipient predicate (kickoffs/s98 row 0), in any capture Book, and no other seat's. Counts and the oldest date only, as the capture
   // Books above are said: a letter's title and text still need its Book opened.
+  const pendingNotes = pendingCaptureNotes(workspace);
   const lettersForThisSeat: PsJsonValue | null = ((): PsJsonValue | null => {
     if (thisClaim.state !== 'held') return null;
-    const books: Record<string, PsJsonValue> = {};
-    let count = 0;
-    let oldest: string | null = null;
-    for (const book of captureBookRows(workspace)) {
-      const mine = shelfNotes(book).filter((note) => note.review !== 'done' && note.forSeat === seat);
-      if (!mine.length) continue;
-      books[book.slug] = mine.length;
-      count += mine.length;
-      for (const note of mine) if (note.captured !== 'unknown' && (oldest === null || note.captured < oldest)) oldest = note.captured;
-    }
-    return count
-      ? { count, by_book: books, oldest_pending: oldest, route: `library desk open book ${Object.keys(books)[0]} --location shelf, then read its letters` }
+    const mine = pendingNotes.filter(({ note }) => isAddressedTo(note, self));
+    const tally = letterTally(mine);
+    return tally.count
+      ? {
+          count: tally.count,
+          by_book: tally.byBook,
+          oldest_pending: tally.oldest,
+          // WHERE THEY ARE LISTED (kickoffs/s99 row 4, ruling 2): the reader map's group for this seat, or the inventory.
+          route: `library desk open book ${Object.keys(tally.byBook)[0]} --location shelf, then read its letters under '### For ${seat}' in its reader map, or list them with library triage inventory --pending`,
+          // STUCK (kickoffs/s99 row 4, ruling 2), the last key: its department letters older than their own Book's age.
+          stuck: mine.filter(({ book, note }) => isStuckLetter(note, book)).length,
+        }
       : { count: 0 };
+  })();
+  // THE LETTERS THIS SEAT SENT THAT ARE STILL PENDING (kickoffs/s99 row 4, ruling 2), only while it is held, in the same
+  // shape with no route: the ones it started (`isStartedBy`; a route stays its first asker's). A letter also addressed
+  // to this seat is counted above only, so `letters_for_this_seat.count` keeps meaning the letters this seat may close.
+  const lettersFromThisSeat: PsJsonValue | null = ((): PsJsonValue | null => {
+    if (thisClaim.state !== 'held') return null;
+    const tally = letterTally(pendingNotes.filter(({ note }) => note.forSeat !== null && isStartedBy(note, self) && !isAddressedTo(note, self)));
+    return tally.count ? { count: tally.count, by_book: tally.byBook, oldest_pending: tally.oldest } : { count: 0 };
   })();
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.
@@ -382,17 +405,54 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // AN EARLIER BINDING ON A LAUNCHER-HELD SEAT IS LABELLED (PLAN-one-step-upgrade.md small fix 9; the Report "the Desk
   // calls a launcher-held seat's binding stale and not this agent's"). The launcher's claim makes the seat this
   // session's, so a binding record left by an earlier conversation is not used: its fields move under
-  // `previous_binding`, and the top-level ones read null rather than "stale, not this agent".
-  if (launcherHeld && thisClaim.bindingState !== '') {
-    thisSeat['previous_binding'] = {
-      bound_utc: thisSeat['bound_utc'] ?? null,
-      binding_state: thisSeat['binding_state'] ?? null,
-      binding_stale: thisSeat['binding_stale'] ?? null,
-      this_agent: thisSeat['this_agent'] ?? null,
-      note: "an earlier conversation's binding record; not used while the deskpost launcher holds this seat",
-    };
-    for (const key of ['bound_utc', 'binding_state', 'binding_stale', 'this_agent']) thisSeat[key] = null;
+  // `previous_binding`, and the top-level ones read null rather than "stale, not this agent". NULL WHETHER OR NOT ONE
+  // EXISTS (kickoffs/s98 row G, ruling 3): with none they read 0, "" and false, a binding's values for a seat that has
+  // none; and the agent's pid and start time are the binding's too, so they go with it (after the older keys).
+  if (launcherHeld) {
+    if (thisClaim.bindingState !== '') {
+      thisSeat['previous_binding'] = {
+        bound_utc: thisSeat['bound_utc'] ?? null,
+        binding_state: thisSeat['binding_state'] ?? null,
+        binding_stale: thisSeat['binding_stale'] ?? null,
+        this_agent: thisSeat['this_agent'] ?? null,
+        note: "an earlier conversation's binding record; not used while the deskpost launcher holds this seat",
+        agent_pid: thisSeat['agent_pid'] ?? null,
+        agent_start_utc: thisSeat['agent_start_utc'] ?? null,
+      };
+    }
+    for (const key of ['agent_pid', 'agent_start_utc', 'bound_utc', 'binding_state', 'binding_stale', 'this_agent']) thisSeat[key] = null;
   }
+  // ITS CARD, DEPARTMENT, ROLE AND TEMPLATE (1.3.8, kickoffs/s96 row 1, ADR-0069), through the one validated projection,
+  // after every existing key: null where absent, and a value that does not validate reads as absent (doctor names it).
+  const own = metadataFor(projection, seat);
+  Object.assign(thisSeat, metadataJson(own));
+  // THIS SEAT'S DIRECTORY FACTS (1.3.8, kickoffs/s96 row 4, ruling 6): its department and role, the department's
+  // orchestrator with its liveness, and the department's seat and open counts. Numbers and liveness, the cosmetic tier;
+  // `seat cards` has the cards.
+  const ownDepartment = own.department === null ? null : projection.departments.find((view) => view.department === own.department) ?? null;
+  const claimStateOf = (name: string): string => (name === seat ? thisClaim.state : getSeatClaimState(stateDirectory, name).state);
+  const directory: Record<string, PsJsonValue> = {
+    department: own.department,
+    role: own.role,
+    orchestrator:
+      ownDepartment?.orchestrator
+        ? ((): Record<string, PsJsonValue> => {
+            const name = ownDepartment.orchestrator!;
+            const state = claimStateOf(name);
+            const address = seatMessageAddress(stateDirectory, name, state);
+            return { seat: name, open: state === 'held', message_name: state === 'held' && 'message_name' in address ? address.message_name ?? null : null };
+          })()
+        : null,
+    seats: ownDepartment ? ownDepartment.seats.length : null,
+    open: ownDepartment ? ownDepartment.seats.filter((name) => claimStateOf(name) === 'held').length : null,
+    // THE DEPARTMENT'S STUCK LETTERS (kickoffs/s99 row 4, ruling 2), the last key, for its orchestrator only: its pending
+    // letters in every Book that takes letters, past their own Book's age, whatever seat they now name (a route keeps
+    // `for_department`). Null for any other seat, as `seats` and `open` are with no department.
+    stuck_letters:
+      ownDepartment !== null && ownDepartment.orchestrator === seat
+        ? pendingNotes.filter(({ book, note }) => book.takesLetters === true && note.forDepartment === own.department && isStuckLetter(note, book)).length
+        : null,
+  };
 
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
@@ -401,7 +461,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     seat,
     this_seat: thisSeat,
     ...(lettersForThisSeat !== null ? { letters_for_this_seat: lettersForThisSeat } : {}),
+    ...(lettersFromThisSeat !== null ? { letters_from_this_seat: lettersFromThisSeat } : {}),
     other_seats: otherSeats,
+    directory,
     seat_consistency: seatRegistryConsistency(workspace, stateDirectory),
     open_books: openBooks,
     open_projects: openProjects,
@@ -527,7 +589,7 @@ type CaptureBookRow = ShelfBook;
  * Every capture-enabled Book the catalog names, whose pages directory exists. Read by the one entry grammar
  * (`convertFromShelfCatalogEntry`, S77 row 2), so its seat rule and `Growing at:` thresholds come with it.
  */
-function captureBookRows(workspace: string): CaptureBookRow[] {
+export function captureBookRows(workspace: string): CaptureBookRow[] {
   const catalogFile = shelfCatalogPath(workspace);
   if (!fs.existsSync(catalogFile)) return [];
   const books: CaptureBookRow[] = [];
@@ -541,6 +603,49 @@ function captureBookRows(workspace: string): CaptureBookRow[] {
     books.push(convertFromShelfCatalogEntry({ workspace, slug, title: section.title, body: section.body, bookRoot: `shelf/${slug}` }));
   }
   return books.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
+}
+
+/** A pending note of a capture Book, beside its Book (kickoffs/s99 row 4). */
+export interface PendingNote {
+  book: CaptureBookRow;
+  note: ShelfNoteRow;
+}
+
+/** Every pending note of every capture Book, read once: the Desk's letter counts and `seat retire`'s check ask it. */
+export function pendingCaptureNotes(workspace: string): PendingNote[] {
+  return captureBookRows(workspace).flatMap((book) => shelfNotes(book).filter((note) => note.review !== 'done').map((note) => ({ book, note })));
+}
+
+/**
+ * THE LETTERS GIVEN, AS COUNTS (kickoffs/s99 rows 4 and 5): how many, how many in each Book in the Books' order, and the
+ * oldest `captured` among them (`unknown` is no date). The Desk and `seat retire` say these, and never a title.
+ */
+export function letterTally(letters: PendingNote[]): { count: number; byBook: Record<string, number>; oldest: string | null } {
+  const byBook: Record<string, number> = {};
+  let oldest: string | null = null;
+  for (const { book, note } of letters) {
+    byBook[book.slug] = (byBook[book.slug] ?? 0) + 1;
+    if (note.captured !== 'unknown' && (oldest === null || note.captured < oldest)) oldest = note.captured;
+  }
+  return { count: letters.length, byBook, oldest };
+}
+
+/**
+ * EVERY SEAT'S PENDING LETTERS, AS A COUNT (1.3.8, kickoffs/s96 rows 3 and 4): the pending notes in any capture Book
+ * addressed to the seat by the one recipient predicate (kickoffs/s98 row 0), as `letters_for_this_seat` counts them: a
+ * letter stamped for an earlier incarnation of the slug, or with a malformed address, counts for no seat. Numbers only.
+ */
+export function pendingLetterCounts(workspace: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  const ids = readSeatIds(path.join(workspace, '.claude'));
+  for (const book of captureBookRows(workspace)) {
+    for (const note of shelfNotes(book)) {
+      if (note.review === 'done' || !note.forSeat) continue;
+      if (!isAddressedTo(note, { seat: note.forSeat, seatId: ids.get(note.forSeat) ?? '' })) continue;
+      counts.set(note.forSeat, (counts.get(note.forSeat) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 /**

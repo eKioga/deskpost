@@ -32,6 +32,7 @@
  */
 
 import * as fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
@@ -47,7 +48,9 @@ import {
 import { sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
 import { getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
-import { assertSeatMayClose, setNoteField, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
+import { assertSeatMayClose, isAddressedTo, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
+import { readSeatIds, seatIncarnation } from './seatincarnation.ts';
+import { departmentProblem, readSeatMetadata } from './seatmeta.ts';
 
 /** Said by a capture that records no why (S73 row 3), word for word as Add-ShelfNote.ps1 says it. */
 const WHY_MISSING_NEXT =
@@ -61,7 +64,7 @@ import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedP
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { localDate } from './localdate.ts';
-import { strayControlRefusal } from './controlchars.ts';
+import { controlCharacterInLine, strayControlRefusal } from './controlchars.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -242,11 +245,106 @@ function addShelfBookIndexLink(book: ShelfBook, page: string, label: string): vo
 }
 
 /** The note `--supersedes` names, which must exist and which the seat rule must let this seat close (row 4). */
-function supersededNote(book: ShelfBook, page: string, seat: string): ShelfNoteRow {
+function supersededNote(book: ShelfBook, page: string, seat: SeatIncarnation): ShelfNoteRow {
   const note = shelfNotes(book).find((row) => row.page === page);
   if (!note) refuse(`--supersedes names ${page}, and Book '${book.slug}' has no such note. Nothing was captured.`);
   assertSeatMayClose(note, { slug: book.slug, closedBy: book.closedBy ?? 'any' }, seat, null, refuse);
   return note;
+}
+
+/**
+ * THE LETTER `--answers` OR `--routes` NAMES (kickoffs/s98 rows 1 and 2; PLAN-seats-team.md session 3 items 1 and 2): it
+ * exists, its frontmatter is whole, it is addressed to this seat by the recipient predicate, and it is still pending
+ * with no closing link. Checked before the lock and again under it, so a letter answered or routed in between is
+ * refused, never closed twice. Mutation is strict where display is tolerant: a malformed letter is refused here.
+ */
+function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes'): ShelfNoteRow {
+  const act = flag === '--answers' ? 'answer' : 'route';
+  const note = shelfNotes(book).find((row) => row.page === page);
+  if (!note) refuse(`${flag} names ${page}, and Book '${book.slug}' has no such note. Nothing was captured.`);
+  if (note.malformed.length) {
+    refuse(
+      `${page} carries frontmatter this program does not trust (${note.malformed.join(', ')}), so ${flag} refuses it: ` +
+        "repair the note's frontmatter by hand, or close it with triage. Nothing was captured.",
+    );
+  }
+  if (!isAddressedTo(note, seat)) {
+    refuse(
+      note.forSeat === seat.seat
+        ? `${page} was addressed to an earlier seat named '${seat.seat}' (its for_seat_id is not this seat's), so this seat cannot ${act} it. Nothing was captured.`
+        : note.forSeat
+          ? `${page} is a letter for seat '${note.forSeat}', not for this seat '${seat.seat}', so this seat cannot ${act} it. Nothing was captured.`
+          : `${page} is addressed to no seat, so it is not a letter ${flag} can ${act}. Nothing was captured.`,
+    );
+  }
+  if (note.review === 'done') refuse(`${page} is already closed (review: done), so ${flag} refuses it. Nothing was captured.`);
+  if (note.answeredBy || note.routedTo) {
+    refuse(`${page} was reopened and still carries ${note.answeredBy ? 'answered_by' : 'routed_to'}: reopen is for triage, not for a second ${act}; write a new letter. Nothing was captured.`);
+  }
+  return note;
+}
+
+/**
+ * WHOM AN ANSWER REACHES, KNOWN OR REFUSED (kickoffs/s98 row 1): the letter's `origin_seat`, the first asker, through any
+ * number of routes, and only while the registry still names that incarnation: the letter carries `origin_seat_id` and
+ * the row of `origin_seat` has that `seat_id`. The reply's `for_seat_id` is this validated id, never a later lookup.
+ */
+function knownAsker(note: ShelfNoteRow, ids: Map<string, string>): SeatIncarnation {
+  const fallbacks = `Write a plain letter --for <seat> that names ${note.page}, or close it with a triage review. Nothing was captured.`;
+  if (!note.originSeat || !note.originSeatId) {
+    refuse(`${note.page} records no asker's seat_id (a letter written before 1.3.8, or by no seat), so --answers cannot know whom its answer reaches. ${fallbacks}`);
+  }
+  if (ids.get(note.originSeat) !== note.originSeatId) {
+    refuse(`${note.page}'s asker, seat '${note.originSeat}', is not the seat this Library's registry now names: it was retired, or retired and created again under that name. ${fallbacks}`);
+  }
+  return { seat: note.originSeat, seatId: note.originSeatId };
+}
+
+/**
+ * SELF-TEST ONLY (`LIBRARY_CAPTURE_ASKER_FAULT=recreate`, as `LIBRARY_SEAT_START_FAULT` is): the asker is retired and
+ * created again between the check and the write, as a race with `seat retire` would leave it. Its registry row keeps its
+ * slug and gets a new `seat_id`, so the reply's validated id is the stale delivery doctor names (plan, Risks).
+ */
+function recreateAskerForTest(workspace: string, seat: string): void {
+  const file = path.join(stateDirectory(workspace), 'seats', '_registry.json');
+  const parsed = JSON.parse(readUtf8(file)) as { seats: Record<string, unknown>[] };
+  for (const row of parsed.seats) if (row['seat'] === seat) row['seat_id'] = randomUUID().replace(/-/g, '');
+  writeAtomicText(file, JSON.stringify(parsed, null, 4) + '\n');
+}
+
+/** HOP LIMIT 3 (kickoffs/s98 row 2): a letter routed three times goes to the reader, never a fourth seat. */
+function assertHopsLeft(note: ShelfNoteRow): void {
+  const hops = note.hops ?? 0;
+  if (hops + 1 > 3) {
+    refuse(`${note.page} has been routed ${hops} times already, and a letter is routed at most 3 times: ask the reader where it should go. Nothing was captured.`);
+  }
+}
+
+/**
+ * THE FIRST ASKER OF A ROUTED LETTER, AS RECORDED (kickoffs/s98 row 2): its `origin_seat` and `origin_seat_id`, or for a
+ * letter written before 1.3.8 its `from_seat` and no id. A value that is not a seat name is recorded as missing.
+ */
+function routedOrigin(note: ShelfNoteRow): SeatIncarnation {
+  const seat = note.originSeat ?? note.fromSeat ?? '';
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(seat)) return { seat: '', seatId: '' };
+  return { seat, seatId: note.originSeat ? note.originSeatId ?? '' : '' };
+}
+
+/**
+ * A ROUTED LETTER'S BODY (kickoffs/s98 row 2; PLAN-seats-team.md session 3 item 2): a provenance line the PROGRAM writes,
+ * from validated fields with the letter preface's own sanitizing (`seatNameForText`), so it can carry no writer's text;
+ * then the router's own text; then the original's body, verbatim, under `## Original letter`.
+ */
+function routedBody(original: ShelfNoteRow, page: string, router: string, origin: string, body: string): string {
+  const text = readUtf8(original.fullPath).replace(/\r\n/g, '\n');
+  const close = text.startsWith('---\n') ? text.indexOf('\n---\n', 3) : -1;
+  const originalBody = (close >= 0 ? text.slice(close + 5) : text).replace(/^\n+/, '').replace(/\s+$/, '');
+  const link = /^notes\/[a-z0-9][a-z0-9.-]*$/.test(page) ? `\`${page}\`` : '(a letter of this Book)';
+  const to = original.forDepartment
+    ? `to department ${seatNameForText(original.forDepartment)}, resolved to ${seatNameForText(original.forSeat)}`
+    : `to seat ${seatNameForText(original.forSeat)}`;
+  const provenance = `Originally from seat ${seatNameForText(origin)} (claimed by its capture, not proof), ${to}; routed by ${seatNameForText(router)} from ${link}.`;
+  return `${provenance}\n\n${body.replace(/\s+$/, '')}\n\n## Original letter\n\n${originalBody}\n`;
 }
 
 /** The `wiki/reviewed/<yyyy-mm>` folders that hold a month map, oldest first. */
@@ -371,12 +469,48 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     'why',
     'supersedes',
     'for',
+    'for-department',
+    'answers',
+    'routes',
   ]);
   try {
     // THE AUTHOR IS RESOLVED, NEVER TYPED (ADR-0062): a seat a caller could type would let any shell file under
     // another seat's name. Refused for every Book, before anything is read.
     if (parsed.options.has('seat') || parsed.flags.has('seat')) {
       refuse("library capture does not take --seat: the writing seat is resolved from this session's binding or launcher, never typed, so no shell can file under another seat's name. Nothing was captured.");
+    }
+    // ONE LINE EACH (kickoffs/s98 row 0; PLAN-seats-team.md session 3 item 0): every option but --body's text lands in the
+    // note's frontmatter or its heading, where a line break would start a field no writer wrote, so a control character
+    // in any of them is refused before anything is read, as a seat card's is (S96 ruling 3).
+    for (const [name, value] of parsed.options) {
+      if (name === 'body') continue;
+      const stray = controlCharacterInLine(value);
+      if (stray !== null) {
+        refuse(`--${name} holds ${stray.name} (${stray.codePoint}): every capture option is one line of text with no control character, since it is written into the note's frontmatter or heading. Nothing was captured.`);
+      }
+    }
+    // A LETTER TAKES ONE ADDRESS (kickoffs/s98 row 0): a seat and a department may share a name, so the two never share a flag.
+    const given = (name: string): boolean => parsed.options.has(name) || parsed.flags.has(name);
+    if (given('for') && given('for-department')) {
+      refuse('--for and --for-department are two addresses, and a letter takes one: --for <seat> names a seat, --for-department <department> reaches its orchestrator. Nothing was captured.');
+    }
+    // AN ANSWER IS ADDRESSED BY THE LETTER IT ANSWERS, and closes it (kickoffs/s98 row 1, PLAN-seats-team.md's flag matrix).
+    if (given('answers') && (given('for') || given('for-department'))) {
+      refuse("--answers addresses the reply to the letter's first asker, so it takes neither --for nor --for-department. Nothing was captured.");
+    }
+    if (given('answers') && given('supersedes')) {
+      refuse('--answers and --supersedes each close a note, and one capture closes one: use one of them. Nothing was captured.');
+    }
+    // A ROUTE HANDS A LETTER ON TO ONE SEAT (kickoffs/s98 row 2): `--for <seat>` only, so `for_department` always means
+    // the department a letter was addressed to; a hand-off to another department is a new letter that names the page.
+    if (given('routes') && given('for-department')) {
+      refuse('--routes takes --for <seat> only: a hand-off to another department is a new letter --for-department <department> that names the page, with no link. Nothing was captured.');
+    }
+    if (given('routes') && (given('answers') || given('supersedes'))) {
+      refuse(`--routes and ${given('answers') ? '--answers' : '--supersedes'} each close a note, and one capture closes one: use one of them. Nothing was captured.`);
+    }
+    if (given('routes') && !given('for')) {
+      refuse('--routes hands a letter on to one seat, named with --for: library capture letters --for <seat> --routes notes/<page> --title <t> --content-path <file>. Nothing was captured.');
     }
     const slug = parsed.positional[0] ?? 'holding';
     const title = (parsed.options.get('title') ?? '').trim();
@@ -417,19 +551,41 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
 
     // A LETTER (S77 row 3, ADR-0062): `--for <seat>` addresses the note, writing `for_seat:`, and implies
     // `why: for-seat` unless an explicit --why says otherwise. Only a Book whose entry says `Letters: yes` takes it.
-    const forSeat = (parsed.options.get('for') ?? '').trim();
+    let forSeat = (parsed.options.get('for') ?? '').trim();
+    const refuseNoLetters = (flag: string): never =>
+      refuse(
+        `Shelf Book '${slug}' does not take letters (its catalog entry has no '- **Letters:** yes'), so it refuses ${flag}. ` +
+          `A note for another seat is a letter: library capture letters --for <seat> --title <t> --content-path <file>. Nothing was captured.`,
+      );
     if (parsed.options.has('for') || parsed.flags.has('for')) {
-      if (!book.takesLetters) {
-        refuse(
-          `Shelf Book '${slug}' does not take letters (its catalog entry has no '- **Letters:** yes'), so it refuses --for. ` +
-            `A note for another seat is a letter: library capture letters --for <seat> --title <t> --content-path <file>. Nothing was captured.`,
-        );
-      }
+      if (!book.takesLetters) refuseNoLetters('--for');
       if (!forSeat) refuse('--for names the seat a letter is for: --for <seat>. Nothing was captured.');
       const seats = seatDirectoryNames(stateDirectory(workspace));
       if (!seats.includes(forSeat)) {
         refuse(`--for '${forSeat}' names no seat in this Library. Seats: ${seats.length ? seats.join(', ') : '(none)'}. Nothing was captured.`);
       }
+      if (!why) why = 'for-seat';
+    }
+
+    // A LETTER TO A DEPARTMENT (kickoffs/s98 row 0; PLAN-seats-team.md session 3 item 0; ADR-0069): resolved NOW, when the
+    // letter is written, to the department's one orchestrator, so `for_seat` names a seat as on every other letter and
+    // the reader's preface, the Desk count and the close rule need no second path. `for_department` keeps the address.
+    let forDepartment = (parsed.options.get('for-department') ?? '').trim();
+    if (given('for-department')) {
+      if (!book.takesLetters) refuseNoLetters('--for-department');
+      if (!forDepartment) refuse('--for-department names the department a letter is for: --for-department <department>. Nothing was captured.');
+      const problem = departmentProblem(forDepartment);
+      if (problem !== null) refuse(`--for-department '${forDepartment}' is not a department name: ${problem}. Nothing was captured.`);
+      const departments = readSeatMetadata(stateDirectory(workspace)).departments;
+      const orchestrator = departments.find((view) => view.department === forDepartment)?.orchestrator ?? null;
+      if (orchestrator === null) {
+        const reachable = departments.filter((view) => view.orchestrator !== null).map((view) => `${view.department} (${view.orchestrator})`);
+        refuse(
+          `Department '${forDepartment}' has no orchestrator in this Library, so a letter to it reaches no seat. ` +
+            `Departments with one: ${reachable.length ? reachable.join(', ') : '(none)'}. Write to a seat with --for <seat>. Nothing was captured.`,
+        );
+      }
+      forSeat = orchestrator;
       if (!why) why = 'for-seat';
     }
 
@@ -467,6 +623,53 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       }
     }
 
+    // AN ANSWER (kickoffs/s98 row 1; PLAN-seats-team.md session 3 item 1): `--answers notes/<page>` writes a reply to the
+    // letter's first asker and closes the letter `answered_by` the reply, as `--supersedes` closes and links. The Book is
+    // open on this seat's Desk, this seat is the letter's recipient, the letter is pending with no link, and its asker is
+    // the same incarnation the registry names now; the reply is stamped with that validated id.
+    const answers = (parsed.options.get('answers') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
+    let asker: SeatIncarnation | null = null;
+    if (given('answers')) {
+      if (!book.takesLetters) refuseNoLetters('--answers');
+      if (!/^notes\/[^/]+$/.test(answers)) refuse('--answers must name a letter of this Book as notes/<page>, for example notes/2026-10-07-a-question. Nothing was captured.');
+      if (!fromSeat) refuse(`--answers names a letter, so it needs a seat. ${seatState.message ?? ''} Nothing was captured.`.replace(/ +/g, ' '));
+      assertShelfBookOpen(workspace, slug, 'answering one of its letters with --answers', fromSeat);
+      const ids = readSeatIds(stateDirectory(workspace));
+      asker = knownAsker(closableLetter(book, answers, seatIncarnation(stateDirectory(workspace), fromSeat, ids), '--answers'), ids);
+      forSeat = asker.seat;
+      if (!why) why = 'for-seat';
+      if ((process.env['LIBRARY_CAPTURE_ASKER_FAULT'] ?? '') === 'recreate') recreateAskerForTest(workspace, asker.seat);
+    }
+
+    // A ROUTE (kickoffs/s98 row 2; PLAN-seats-team.md session 3 item 2): `--for <seat> --routes notes/<page>` hands a
+    // letter on, in its own Book (the page names a note of this Book, so material never crosses into a Book with another
+    // audience), and closes it `routed_to` the new letter. The new letter keeps the department addressed and the first
+    // asker AS RECORDED (nothing is looked up for it: routing certifies nothing about the asker), counts one more hop,
+    // and carries a provenance line the program writes from validated fields, then the router's text, then the original.
+    const routes = (parsed.options.get('routes') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
+    let routed: ShelfNoteRow | null = null;
+    if (given('routes')) {
+      if (!book.takesLetters) refuseNoLetters('--routes');
+      if (!/^notes\/[^/]+$/.test(routes)) refuse('--routes must name a letter of this Book as notes/<page>, for example notes/2026-10-07-a-question. Nothing was captured.');
+      if (!fromSeat) refuse(`--routes names a letter, so it needs a seat. ${seatState.message ?? ''} Nothing was captured.`.replace(/ +/g, ' '));
+      assertShelfBookOpen(workspace, slug, 'routing one of its letters with --routes', fromSeat);
+      routed = closableLetter(book, routes, seatIncarnation(stateDirectory(workspace), fromSeat), '--routes');
+      assertHopsLeft(routed);
+      forDepartment = routed.forDepartment ?? '';
+    }
+
+    // BOTH ENDS OF A LETTER, AS THE REGISTRY READS NOW (kickoffs/s98 row 0; PLAN-seats-team.md session 3 item 0): the
+    // writer's `seat_id` and the recipient's, at the moment of writing. MISSING IDENTITY IS RECORDED AS MISSING, never
+    // manufactured: a seatless capture records no origin, a pre-identity row gives its slug and no id, and nothing fills
+    // an id in later. Not a lock: a retire in the same second is the stale delivery doctor names (plan, Risks).
+    const letter = forSeat !== '';
+    const seatIds = letter || parsed.options.has('supersedes') ? readSeatIds(stateDirectory(workspace)) : new Map<string, string>();
+    const self = fromSeat ? seatIncarnation(stateDirectory(workspace), fromSeat, seatIds) : null;
+    // A ROUTE COPIES THE FIRST ASKER AS IT IS RECORDED: a letter written before 1.3.8 gives its from_seat and no id.
+    const originSeat = routed !== null ? routedOrigin(routed).seat : fromSeat;
+    const originSeatId = routed !== null ? routedOrigin(routed).seatId : letter && fromSeat ? seatIds.get(fromSeat) ?? '' : '';
+    const forSeatId = asker !== null ? asker.seatId : letter ? seatIds.get(forSeat) ?? '' : '';
+
     // A NEWER NOTE CLOSES AN OLDER ONE (S73 row 4): `--supersedes notes/<page>` names a note of this Book, so it needs
     // the Book open and a seat, where a capture without it stays seatless-capable. The note must exist, and the seat
     // rule must let this seat close it; both are checked again under the lock, with the note still pending.
@@ -475,14 +678,14 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       if (!/^notes\/[^/]+$/.test(supersedes)) refuse('--supersedes must name a note of this Book as notes/<page>, for example notes/2026-09-29-a-draft.');
       if (!fromSeat) refuse(`--supersedes names a note, so it needs a seat. ${seatState.message ?? ''}`.trim());
       assertShelfBookOpen(workspace, slug, 'closing one of its notes with --supersedes', fromSeat);
-      supersededNote(book, supersedes, fromSeat);
+      supersededNote(book, supersedes, self!);
     } else {
       supersedes = '';
     }
 
     // A body that already leads with its own H1 keeps it, so that heading -- not --title -- is what
     // the page, the reader map, the validated reader and triage's -MatchText all call this note.
-    const normalisedBody = body.replace(/\s+$/, '');
+    const normalisedBody = (routed ? routedBody(routed, routes, fromSeat, originSeat, body) : body).replace(/\s+$/, '');
     const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalisedBody);
     const keepsOwnHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
     if (!keepsOwnHeading && !title) refuse('Title is required: the body has no leading H1 to name the note, so pass --title.');
@@ -551,7 +754,16 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
         'manifest generation in the same locked window. ' +
         (supersedes
           ? `It also closes ${supersedes} (review: done, reviewed:, superseded_by:), journalled with the new note. Nothing is removed.`
-          : 'No existing page is read, changed, or removed.'),
+          : answers
+            ? `It also closes ${answers} (review: done, reviewed:, answered_by:), journalled with the new note. Nothing is removed.`
+            : routes
+              ? `It also closes ${routes} (review: done, reviewed:, routed_to:), journalled with the new note. Nothing is removed.`
+            : 'No existing page is read, changed, or removed.'),
+      // A LETTER'S ADDRESS AND BOTH INCARNATIONS (kickoffs/s98 row 0), after every older key; null where none was read.
+      ...(forDepartment ? { for_department: forDepartment } : {}),
+      ...(letter ? { for_seat_id: forSeatId || null, origin_seat: originSeat || null, origin_seat_id: originSeatId || null } : {}),
+      ...(answers ? { answers } : {}),
+      ...(routed ? { routes, hops: (routed.hops ?? 0) + 1 } : {}),
     };
     if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -569,6 +781,13 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     if (why) frontmatter.push(`why: ${why}`);
     // ALWAYS WRITTEN WHEN GIVEN, so the relation is recorded even when the older note was already closed.
     if (supersedes) frontmatter.push(`supersedes: ${supersedes}`);
+    // A LETTER'S DEPARTMENT AND INCARNATIONS (kickoffs/s98 row 0), after every older line, and only what was read.
+    if (forDepartment) frontmatter.push(`for_department: ${forDepartment}`);
+    if (letter && forSeatId) frontmatter.push(`for_seat_id: ${forSeatId}`);
+    if (letter && originSeat) frontmatter.push(`origin_seat: ${originSeat}`);
+    if (letter && originSeatId) frontmatter.push(`origin_seat_id: ${originSeatId}`);
+    if (answers) frontmatter.push(`answers: ${answers}`);
+    if (routed) frontmatter.push(`routed_from: ${routes}`, `hops: ${(routed.hops ?? 0) + 1}`);
     frontmatter.push('---');
 
     const page = keepsOwnHeading
@@ -590,7 +809,12 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       plan['note_page'] = `${book.bookRoot}/wiki/${selected.page}`;
       // THE OLDER NOTE, AGAIN UNDER THE LOCK: it exists, and this seat may close it. Its prior bytes are journalled
       // with the new note's, so a failure restores both.
-      const older = supersedes ? supersededNote(book, supersedes, fromSeat) : null;
+      const older = supersedes ? supersededNote(book, supersedes, self!) : null;
+      // THE LETTER AN ANSWER CLOSES, AGAIN UNDER THE LOCK: still pending, still unlinked, still this seat's.
+      const answered = answers ? closableLetter(book, answers, self!, '--answers') : null;
+      // THE LETTER A ROUTE CLOSES, AGAIN UNDER THE LOCK, with its hop count.
+      const routedAgain = routes ? closableLetter(book, routes, self!, '--routes') : null;
+      if (routedAgain) assertHopsLeft(routedAgain);
 
       mutation = enterBookMutation({
         workspace,
@@ -603,7 +827,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
         workspace,
         bookRoot: book.bookRoot,
         operation: `Capture note ${selected.name}`,
-        paths: older ? [selected.full, mapPath, older.fullPath] : [selected.full, mapPath],
+        paths: [selected.full, mapPath, ...(older ? [older.fullPath] : []), ...(answered ? [answered.fullPath] : []), ...(routedAgain ? [routedAgain.fullPath] : [])],
       }).journalPath;
 
       // `wx` is CreateNew: a collision fails rather than overwrites, which is what makes the name
@@ -624,6 +848,22 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
           writeAtomicText(older.fullPath, closed);
           plan['superseded'] = { page: older.page, status: 'closed' };
         }
+      }
+      // ANSWERED BY THE REPLY: `review: done`, the stamp, and `answered_by:` (kickoffs/s98 row 1).
+      if (answered) {
+        const text = readUtf8(answered.fullPath);
+        const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'answered_by', selected.page);
+        if (!/^review: done/m.test(closed)) refuse(`${answered.page} has no review field to close.`);
+        writeAtomicText(answered.fullPath, closed);
+        plan['answered'] = { page: answered.page, status: 'closed' };
+      }
+      // ROUTED ON: `review: done`, the stamp, and `routed_to:` (kickoffs/s98 row 2).
+      if (routedAgain) {
+        const text = readUtf8(routedAgain.fullPath);
+        const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'routed_to', selected.page);
+        if (!/^review: done/m.test(closed)) refuse(`${routedAgain.page} has no review field to close.`);
+        writeAtomicText(routedAgain.fullPath, closed);
+        plan['routed'] = { page: routedAgain.page, status: 'closed' };
       }
       // Regenerated inside the same lock. An unlocked rewrite works from a listing that may already
       // be stale, dropping another session's note from the map while leaving its file on disk.

@@ -52,7 +52,19 @@ const RESERVED_ROOT_PAGES = ['_project', 'connections', 'readme'];
  * New-ProjectHub, handed in by collection.ts so this file does not import it back: its preflight's `action`,
  * or with `preflight` false the creation itself, whose result the oracle discards.
  */
-export type HubPlanAction = (slug: string, title: string, purpose: string, nextActions: string[], preflight?: boolean) => Promise<string>;
+/**
+ * THE STALE PLAN'S REFUSAL (kickoffs/s99 row K2, ruling 7): the first sentence word for word, then what a different id
+ * usually means, by what the plan covers, with the source pages' digest now (the preflight's `source_digest_sha256`).
+ * An id never issued reads the same: telling the two apart would need stored previews.
+ */
+export function staleCopyPlanRefusal(sourceDigest: string): string {
+  return (
+    'Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. ' +
+    `A different plan_id means the source pages, where they land, or the Project's details changed since the preview; the source pages read ${sourceDigest} now.`
+  );
+}
+
+export type HubPlanAction =(slug: string, title: string, purpose: string, nextActions: string[], preflight?: boolean) => Promise<string>;
 
 function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim().length === 0;
@@ -257,9 +269,7 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   };
   if (parsed.flags.has('preflight')) return plan;
   if (!parsed.flags.has('user-confirmed')) refuse('Project copy is not yet performed: review the plan and rerun with --user-confirmed.');
-  if ((parsed.options.get('plan-id') ?? '') !== planId) {
-    refuse('Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.');
-  }
+  if ((parsed.options.get('plan-id') ?? '') !== planId) refuse(staleCopyPlanRefusal(sourceDigest));
 
   // THE CONFIRMED HALF (S39), in the oracle's order. KEYED ON THE MANIFEST DIGEST, as the oracle keys it.
   const journalOption = parsed.options.get('journal-path') ?? '';

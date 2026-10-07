@@ -25,8 +25,9 @@ import { withBookLocks } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
-import { readUtf8 } from './shelfbook.ts';
+import { listFilesRecursive, readUtf8 } from './shelfbook.ts';
 import { localDate } from './localdate.ts';
+import { sha256OfBytes, sha256OfText } from './sha.ts';
 import {
   ensureHeading,
   insertUnderHeading,
@@ -72,11 +73,32 @@ function relinked(text: string, slug: string): string {
   return match[1]! + frontmatter + match[3]! + text.substring(match[0].length).replace(pattern, `archive/${slug}`);
 }
 
+/**
+ * THE APPROVAL BINDS TO WHAT THE READER SAW (S97 row A, home-lab-admin's Report: an apply with a plan id no preflight
+ * had issued moved a whole Book). The id covers the slug, the kind, the active path and every file under the active
+ * Book's root, each by its path below the root and its bytes' sha256, sorted: a page changed, added or removed after
+ * the preview gives another id, and the apply refuses it, as `hub edit` and `shelf recall` refuse theirs.
+ */
+function archivePlanId(slug: string, kind: string, activeDirectory: string, activeFull: string): string {
+  const files = listFilesRecursive(activeFull)
+    .map((file) => `${path.relative(activeFull, file).split(path.sep).join('/')}|${sha256OfBytes(fs.readFileSync(file))}`)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  const manifest = sha256OfText(files.join('\n'));
+  return 'shared-archive-' + sha256OfText([`slug=${slug}`, `kind=${kind}`, `active_path=${activeDirectory}`, `manifest=${manifest}`].join('\n'));
+}
+
+const STALE_PLAN_ID =
+  'The Book was not archived: rerun the current preflight and pass its exact plan_id. A different plan_id means the Book ' +
+  'changed since you approved it. Nothing was moved.';
+
 export function localSharedArchive(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, ['workspace', 'plan-id', 'kind']);
   const slug = parsed.positional[0] ?? '';
   if (!slug.trim()) refuse('BookSlug is required.');
   if (!SLUG.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
+  // A LOCAL LIBRARY'S ARCHIVER MOVES A BOOK ONLY; a Project Hub is not archived here (`hub archive` is Basic Memory's).
+  const kind = parsed.options.get('kind') ?? 'book';
+  if (kind !== 'book') refuse(`This Library's own archiver moves a Book only, and --kind ${kind} names something else. Nothing was archived.`);
 
   const collection = path.join(workspace, 'collection');
   const activeDirectory = `books/${slug}`;
@@ -100,11 +122,18 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
     source_tree_removal: `the emptied ${activeDirectory}/ is moved whole, so none is left behind`,
     confirmation_required: true,
     shared_library_write: false,
+    plan_id: archivePlanId(slug, kind, activeDirectory, activeFull),
   };
   if (parsed.flags.has('preflight')) return plan;
   if (!parsed.flags.has('user-confirmed')) refuse('Archiving is not yet performed: review the move plan and rerun with --user-confirmed.');
+  const approved = parsed.options.get('plan-id') ?? '';
+  if (!approved) refuse('Archiving is not yet performed: rerun --preflight and pass its plan_id with --user-confirmed --plan-id <id>. Nothing was moved.');
+  if (approved !== plan['plan_id']) refuse(STALE_PLAN_ID);
 
   return withBookLocks(workspace, [activeDirectory, archiveDirectory, 'collection/books', 'collection/archive'], 20, (locks) => {
+    // THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move.
+    if (!fs.existsSync(activeRoot) || !fs.existsSync(activeIndex)) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
+    if (archivePlanId(slug, kind, activeDirectory, activeFull) !== approved) refuse(STALE_PLAN_ID);
     const activeLock = locks.find((lock) => lock.bookRoot === activeDirectory)!;
     const archiveLock = locks.find((lock) => lock.bookRoot === archiveDirectory)!;
     let mutation: BookMutation | null = null;

@@ -42,7 +42,8 @@ import {
   setDeskEntryForSeat,
 } from './seatdesk.ts';
 import { assertSeatRegistered, psSortCompare, readNotebookTopicOwners, seatIncarnationStatus } from './notebook.ts';
-import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
+import { letterTally, pendingCaptureNotes, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
+import { isAddressedTo } from './shelfnote.ts';
 import { openCollection } from './collection.ts';
 import { activateFreshNotebookLayout, migratingRefusal, readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import {
@@ -69,6 +70,22 @@ import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, 
 import { isCompiled, programRoot } from './programroot.ts';
 import { addedDirArguments, addedDirsPath, addedDirsStatus, nameArguments, seatDirsResult } from './seatdirs.ts';
 import { seatStatusText } from './human.ts';
+import { carriesMetadata, metadataFor, metadataJson, rawMetadata, seatMetadata } from './seatmeta.ts';
+import { readRegistryRows, writeSeatRegistry } from './seatregistry.ts';
+import { appendHistoryCommit, appendHistoryRecords, newAttemptId, readSeatHistory, seatHistoryState } from './seathistory.ts';
+import { seatDescribeResult } from './seatdescribe.ts';
+import {
+  isWrappedPlanId,
+  planFields,
+  planSetsFields,
+  registryFileDigest,
+  SEAT_START_OPTIONS,
+  seatCreationPlanId,
+  seatStartPlan,
+  SeatStartPlanRefusal,
+  type SeatStartPlan,
+} from './seatstartplan.ts';
+import { seatCardsResult, seatCardsText } from './seatcards.ts';
 import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -611,12 +628,8 @@ function assertNewSeatIsCreatable(options: {
   }
 }
 
-/** Get-SeatCreationPlanId: this seat, this Project, and the registry as it stands. The same bytes as PowerShell's. */
-function seatCreationPlanId(rows: Record<string, PsJsonValue>[], seat: string, project: string): string {
-  const lines = rows.map((row) => `${String(row['seat'])}=${String(row['project'])}`).sort(psSortCompare);
-  const digest = crypto.createHash('sha256').update(lines.join('\n'), 'utf8').digest('hex');
-  return crypto.createHash('sha256').update(`${seat}|${project}|${digest}`, 'utf8').digest('hex').substring(0, 16);
-}
+// Get-SeatCreationPlanId is `seatCreationPlanId` in seatstartplan.ts since S97 row 1, unchanged: the planner and this
+// file share one copy.
 
 /**
  * THE ACTIVE PROJECT CATALOG, OUTSIDE EVERY LOCK (D10), from the collection the workspace is attached
@@ -796,7 +809,17 @@ async function seatCreate(options: {
 // --- seat enter -------------------------------------------------------------------------------------
 
 async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'agent-pid', 'session-id', 'deadline-seconds', 'project', 'plan-id']);
+  const parsed = parseArguments(argv, ['workspace', 'agent-pid', 'session-id', 'deadline-seconds', 'project', 'plan-id', 'department', 'role', 'card', 'template', 'open-book']);
+  // THE FIVE OPTIONS ARE `seat start`'s (S97 row 1): this route has no planner for them, so it refuses them by name.
+  const given = SEAT_START_OPTIONS.filter((option) => parsed.options.has(option));
+  if (given.length) {
+    const name = parsed.positional[0] ?? '<seat>';
+    refuse(
+      `seat enter does not take ${given.map((option) => `--${option}`).join(', ')}: a seat with a department, role, card, template or ` +
+        `Books is created with deskpost seat start ${name} --project <slug> ${given.map((option) => `--${option} <value>`).join(' ')} --preflight, ` +
+        'then the same with its --plan-id. Nothing was created.',
+    );
+  }
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   // A SEAT START CLEARS THE LIBRARY'S STALE STAGING FILES (PLAN-basic-memory.md step 4a): a crashed write's debris.
   clearStaleStaging(workspace);
@@ -1121,6 +1144,39 @@ function renameTab(handle: string, seat: string): void {
   }
 }
 
+/** The planner, with its refusals as this verb's (S97 row 1). */
+function plannedStart(
+  rows: Record<string, PsJsonValue>[],
+  seat: string,
+  project: string,
+  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[] },
+  registryFile: string,
+  workspace: string,
+): SeatStartPlan {
+  try {
+    return seatStartPlan(rows, seat, project, { ...options, programRoot: programRoot(), workspace, registryDigest: registryFileDigest(registryFile) });
+  } catch (error) {
+    if (error instanceof SeatStartPlanRefusal) refuse(error.message);
+    throw error;
+  }
+}
+
+/** What a plan's options set, as `seat start` reports it: the four fields, then the Books. */
+function planJson(plan: SeatStartPlan): Record<string, PsJsonValue> {
+  return { ...planFields(plan), open_books: plan.books };
+}
+
+/**
+ * A FAULT FOR THE SELF-TEST ONLY: `LIBRARY_SEAT_START_FAULT=book-open` fails a creation while it opens a chosen Book, and
+ * `registry-write` in place of its registry replace; both before the row, so the creation must leave no seat. A real
+ * run never sets it.
+ */
+function seatStartFault(phase: 'book-open' | 'registry-write'): void {
+  if ((process.env['LIBRARY_SEAT_START_FAULT'] ?? '').trim() === phase) {
+    throw new Error(`FAULT INJECTED ${phase === 'book-open' ? 'while opening a chosen Book' : 'in place of the registry replace'} (a real run never reaches this).`);
+  }
+}
+
 /**
  * `library seat start <name> [--project <slug>] [--command <agent>] [--session-id <id> | --resume <id>] [--plan-id <id>]
  * [--no-launch] [--preflight] [-- <agent args>]`: tools/Start-LibrarySeat.ps1 with a seat named, and since 1.1 THE ONE
@@ -1143,7 +1199,11 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   const split = argv.indexOf('--');
   const own = split >= 0 ? argv.slice(0, split) : argv;
   const passthrough = split >= 0 ? argv.slice(split + 1) : [];
-  const parsed = parseArguments(own, ['workspace', 'project', 'command', 'deadline-seconds', 'restore-desk-from-archive', 'session-id', 'resume', 'plan-id', 'assistant']);
+  const parsed = parseArguments(
+    own,
+    ['workspace', 'project', 'command', 'deadline-seconds', 'restore-desk-from-archive', 'session-id', 'resume', 'plan-id', 'assistant', 'department', 'role', 'card', 'template'],
+    ['open-book'],
+  );
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   // A SEAT START CLEARS THE LIBRARY'S STALE STAGING FILES (PLAN-basic-memory.md step 4a): a crashed write's debris.
   clearStaleStaging(workspace);
@@ -1171,6 +1231,30 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   const command = parsed.options.get('command') ?? 'claude';
   const noLaunch = parsed.flags.has('no-launch');
   const planId = parsed.options.get('plan-id') ?? '';
+  // THE FIVE OPTIONS ONLY A PREVIEW CAN SET (S97 row 1, PLAN-seats-team.md session 2 item 2): `seat start` otherwise
+  // creates a seat with no approval step, so a department, role, card, template or Book is never set outside one.
+  const startOptions = {
+    department: parsed.options.get('department'),
+    role: parsed.options.get('role'),
+    card: parsed.options.get('card'),
+    template: parsed.options.get('template'),
+    openBooks: parsed.lists.get('open-book') ?? [],
+  };
+  const withOptions = SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
+  if (withOptions && !parsed.flags.has('preflight')) {
+    if (!planId) {
+      refuse(
+        'No seat was created: --department, --role, --card, --template and --open-book are set only through a preview. Run with ' +
+          '--preflight, show the reader what it reports, and rerun with its exact --plan-id after one clear yes.',
+      );
+    }
+    if (!isWrappedPlanId(planId)) {
+      refuse(
+        'No seat was created: with --department, --role, --card, --template or --open-book, only the plan_id seat start --preflight ' +
+          'issued for them applies, not the plain creation id. Rerun the preflight and pass its plan_id.',
+      );
+    }
+  }
   const assistant = commandAssistant(command, parsed.options.get('assistant'));
   const resumeId = parsed.options.get('resume') ?? '';
   let sessionId = parsed.options.get('session-id') ?? '';
@@ -1237,19 +1321,27 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   }
 
   const registryFile = path.join(seatsDirectory(stateDirectory), '_registry.json');
+  // WHETHER THIS RUN MADE THE SEAT'S FOLDER, read before the claim (which lives in it): a creation that fails before its
+  // registry row removes only a folder it made.
+  const folderExisted = fs.existsSync(deskDirectory);
+  let rowWritten = false;
   const lock = enterSeatRegistryLock(workspace, Math.ceil(deadlineSeconds));
   let claim: HeldClaim | null = null;
   let existing: Record<string, PsJsonValue> | null = null;
   let bound = '';
   let otherSeats: string[] = [];
+  let plan: SeatStartPlan | null = null;
   try {
     const rows = readRegistryRows(registryFile);
     existing = rows.find((row) => String(row['seat']) === seat) ?? null;
     otherSeats = rows.map((row) => String(row['seat'])).filter((other) => other !== seat);
     if (existing === null) {
       assertNewSeatIsCreatable({ workspace, stateDirectory, rows, seat, project, activeProjects: activeProjectSlugs(workspace) });
-      // THE PREVIEW'S APPROVAL, REVALIDATED UNDER THE LOCK THIS CREATION COMMITS UNDER (Start-LibrarySeat.ps1:283).
-      if (planId && planId !== seatCreationPlanId(rows, seat, project)) {
+      // ONE PLANNER, under the lock, from the registry this creation commits against (S97 row 1).
+      plan = plannedStart(rows, seat, project, startOptions, registryFile, workspace);
+      // THE PREVIEW'S APPROVAL, REVALIDATED UNDER THE LOCK THIS CREATION COMMITS UNDER (Start-LibrarySeat.ps1:283). The
+      // plain creation id as before; the wrapped one also binds the whole registry file and the options.
+      if (planId && planId !== (isWrappedPlanId(planId) ? plan.planId : seatCreationPlanId(rows, seat, project))) {
         throw new SeatPlanChanged(
           `Seat '${seat}' was not created: the seats changed between the plan you were shown and this write, so that ` +
             'approval no longer describes it. Nothing was written; look at the new plan and confirm it.',
@@ -1262,6 +1354,12 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         throw new SeatPlanChanged(
           `Seat '${seat}' was not created: it was created by another session while the plan was open. Nothing was written; ` +
             'look at the seats again.',
+        );
+      }
+      if (withOptions) {
+        refuse(
+          `Seat '${seat}' already exists, so --department, --role, --card, --template and --open-book do not apply to it: its department, ` +
+            `role and card change with deskpost seat describe ${seat}, and a Book opens with deskpost desk open book <slug>. Nothing was changed.`,
         );
       }
       bound = String(existing['project']);
@@ -1300,6 +1398,9 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
           // What a launch would do to the Notebook's layout (S67), read and never written here.
           notebook_activation: noLaunch ? 'none' : notebookActivationPreview(workspace),
           shared_library_write: false,
+          // S97 ROW 1, AFTER EVERY EXISTING KEY: what the options set, and the WRAPPED plan id (null for an existing seat).
+          ...(plan !== null && plan.options ? planJson(plan) : {}),
+          plan_id: plan !== null ? plan.planId : null,
         },
         exitCode: 0,
       };
@@ -1313,6 +1414,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     }
     claim = enterSeatClaim(stateDirectory, seat);
     if (existing === null) {
+      // THE WRITES, IN ORDER, AFTER EVERY CHECK (S97 row 1): the Desk files, the Project open, the chosen Books, the
+      // history record, the registry row. Nothing before this point writes.
       // BOTH Desk files, always, and the seat's own Project Hub open on it, as seat creation does.
       fs.mkdirSync(deskDirectory, { recursive: true });
       for (const kind of ['books', 'projects'] as const) {
@@ -1320,7 +1423,40 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         if (!fs.existsSync(file)) writeAtomicText(file, '');
       }
       setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'projects', entry: `projects/${bound}`, action: 'Add' });
-      writeSeatRegistry(stateDirectory, [...rows, { seat, project: bound, created_utc: utcRoundTrip(), seat_id: newId() }]);
+      // THE BOOKS OPEN BEFORE ANY LAUNCH: `seat start` blocks until its agent exits, so nothing could open them after.
+      for (const slug of plan!.books) {
+        seatStartFault('book-open');
+        setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'books', entry: `shelf/${slug}`, action: 'Add' });
+      }
+      const created = utcRoundTrip();
+      const seatId = newId();
+      const fields = planFields(plan!);
+      // THE ROW, as it always was with no field; the fields after its four keys, in the registry's order, only when set.
+      const row: Record<string, PsJsonValue> = { seat, project: bound, created_utc: created, seat_id: seatId };
+      for (const [field, value] of Object.entries(fields)) if (value !== null) row[field] = value;
+      // THE ATTEMPT LOG (S96 ruling 4): a record only when a field is set, before the one atomic replace, then the commit.
+      let attempt: string | null = null;
+      if (planSetsFields(plan!)) {
+        attempt = newAttemptId();
+        const caller = resolveSeatName({ stateDirectory });
+        appendHistoryRecords(workspace, [
+          {
+            attempt,
+            when: created,
+            verb: 'start',
+            seat,
+            seat_id: seatId,
+            from_seat: caller.status === 'named' ? caller.seat! : null,
+            plan_id: planId,
+            before: { department: null, role: null, card: null, template: null },
+            after: fields,
+          },
+        ]);
+      }
+      seatStartFault('registry-write');
+      writeSeatRegistry(stateDirectory, [...rows, row]);
+      rowWritten = true;
+      if (attempt !== null) appendHistoryCommit(workspace, attempt);
     }
     // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
     // lock this block already holds, and only when a conversation is actually started. `source` is `launcher`: a
@@ -1333,6 +1469,13 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     }
   } catch (error) {
     exitSeatClaim(claim);
+    if (existing === null && !rowWritten && !folderExisted) {
+      // A CREATION THAT FAILED BEFORE ITS REGISTRY ROW LEAVES NO HALF SEAT: the folder this run made goes, Desk and all.
+      fs.rmSync(deskDirectory, { recursive: true, force: true });
+    } else if (existing === null && rowWritten) {
+      // AFTER THE ROW, THE SEAT EXISTS, and is reported as created rather than as a failed creation.
+      throw new SeatRefusal(`Seat '${seat}' was created and stays: its registry row, Desk and Books are written. Then: ${(error as Error).message}`);
+    }
     throw error;
   } finally {
     exitBookLock(lock);
@@ -1408,6 +1551,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
                 }),
           }),
       shared_library_write: false,
+      // S97 ROW 1: what the options set, after every existing key, and only when one was given.
+      ...(existing === null && plan !== null && plan.options ? planJson(plan) : {}),
     };
     if (noLaunch) return { result, exitCode: 0 };
     if (unreadableDirs) process.stderr.write(`Seat '${seat}' was started without its added folders: ${unreadableDirs}\n`);
@@ -1448,6 +1593,10 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       agent.on('error', (error) => {
         const looked = process.platform === 'win32' && executable.userBin !== null ? ` It is not on PATH, nor at ${executable.userBin}.` : '';
         process.stderr.write(`The agent '${command}' could not be started: ${error.message}${looked}\n`);
+        // A SEAT CREATED BEFORE ITS AGENT FAILED IS A CREATED SEAT (S97 row 1), and says so.
+        if (existing === null) {
+          process.stderr.write(`Seat '${seat}' was created and stays: its registry row, Desk and Books are written. Start it again with deskpost seat start ${seat}.\n`);
+        }
         resolve(127);
       });
     });
@@ -1480,6 +1629,10 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
   const stateDirectory = path.join(workspace, '.claude');
   const rows = readRegistryRows(path.join(seatsDirectory(stateDirectory), '_registry.json'));
   const named = resolveSeatName({ seat: parsed.options.get('seat') ?? '', stateDirectory });
+  // ONE VALIDATED PROJECTION OVER THE WHOLE REGISTRY (1.3.8, kickoffs/s96 row 1): the raw rows above are a writer's.
+  const projection = seatMetadata(rows);
+  // AND THE REGISTRY'S HISTORY (kickoffs/s96 row 2): each row's last confirmed change, and its unconfirmed attempts.
+  const history = readSeatHistory(workspace);
   const seats = rows
     .map((row) => String(row['seat']))
     .sort(psSortCompare)
@@ -1498,6 +1651,12 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
         ...seatMessageAddress(stateDirectory, seat, state.state),
         // AND ITS INBOUND POLICY, ONLY WHILE HELD (1.3.1, ruling 3), worded as its own file's, never as the effective value.
         ...(state.state === 'held' ? { inbound_policy: seatInboundPolicy(stateDirectory, seat) } : {}),
+        // ITS CARD, DEPARTMENT, ROLE AND TEMPLATE (1.3.8, ADR-0069), after every existing key, null where absent.
+        ...metadataJson(metadataFor(projection, seat)),
+        ...((): Record<string, PsJsonValue> => {
+          const state = seatHistoryState(history, seat, String(row['seat_id'] ?? ''));
+          return { last_change: state.lastConfirmed as unknown as PsJsonValue, ...(state.unconfirmed ? { unconfirmed_attempts: state.unconfirmed } : {}) };
+        })(),
       } as Record<string, PsJsonValue>;
     });
   return {
@@ -1560,9 +1719,35 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     const projectLines = readDeskFileLines(projectsPath).filter((line) => line.trim());
     // THE NOTEBOOK IS BOUND ONLY WHEN THERE IS ONE to archive, so a seat with none fingerprints exactly
     // as it did before ADR-0029 -- and an approval cannot move a Notebook that grew since it was given.
+    // THE ROW'S INCARNATION AND ITS FOUR FIELDS ARE BOUND TOO (1.3.8, kickoffs/s96 row 2, ruling 4): an approval taken for
+    // a performer cannot apply after that seat became its department's orchestrator, nor to a later seat of the name.
+    const rawRows = readRegistryRows(registryFile);
+    const rawRow = rawRows.find((row) => String(row['seat']) === seat);
+    const fields = rawMetadata(rawRow);
+    const leaving = seatMetadata(rawRows).seats.get(seat);
+    const losesOrchestrator = leaving?.role === 'orchestrator' ? leaving.department : null;
+    // A SEAT WITH LETTERS WAITING IS NOT RETIRED (kickoffs/s99 row 5, ruling 3; PLAN-seats-team.md session 3 item 5),
+    // preflight and apply alike, and decided before a plan id is issued, as the claim is: a letter to a retired seat
+    // reaches no one. Counted by the recipient predicate, so a letter the seat sent, or one stamped for an earlier
+    // incarnation of its slug, does not hold it. Best effort: capture takes its Book's lock and not this one (the plan's
+    // Risks), so the apply counts again here, under the registry lock, and doctor names a letter that lands after.
+    const waiting = letterTally(pendingCaptureNotes(workspace).filter(({ note }) => isAddressedTo(note, { seat, seatId: entry.seatId })));
+    if (waiting.count) {
+      const books = Object.entries(waiting.byBook).map(([slug, count]) => `${slug}: ${count}`).join(', ');
+      refuse(
+        `Seat '${seat}' has ${waiting.count} pending letter${waiting.count === 1 ? '' : 's'} addressed to it (${books}; the oldest captured ${waiting.oldest ?? 'on no recorded date'}), ` +
+          'and cannot be retired while any is pending: a letter to a retired seat reaches no one. ' +
+          'First the seat answers each one (deskpost capture letters --answers notes/<page>), routes it (deskpost capture letters --for <seat> --routes notes/<page>) or closes it. ' +
+          (losesOrchestrator !== null
+            ? `As the orchestrator of department '${losesOrchestrator}', it first hands the role over with deskpost seat describe <new seat> --role orchestrator --from ${seat}, and routes the department's letters to the new one. `
+            : '') +
+          "The reader's override is a triage review close that names the letter's writer in other_seat. Nothing was retired.",
+      );
+    }
     const material =
       `${seat}|${entry.project}|${bookLines.join(';')}|${projectLines.join(';')}` +
-      (notebookEntries.length ? `|notebook=${notebookEntries.join(';')}` : '');
+      (notebookEntries.length ? `|notebook=${notebookEntries.join(';')}` : '') +
+      `|seat_id=${entry.seatId}|fields=${JSON.stringify(fields)}`;
     const planId = crypto.createHash('sha256').update(material, 'utf8').digest('hex').substring(0, 16);
 
     // WHAT WILL TRAVEL BESIDE THE DESK, read now -- and deliberately NOT in the plan id: a conversation
@@ -1591,6 +1776,13 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
         open_projects: projectLines,
         records_to_archive: recordsPresent,
         ...(seatOwned ? { notebook_to_archive: notebookEntries.map((name) => `${notebookRelative}/${name}`) } : {}),
+        // WHEN A DEPARTMENT LOSES ITS ORCHESTRATOR (kickoffs/s96 row 2), said before the yes, and nothing otherwise.
+        ...(losesOrchestrator !== null
+          ? {
+              department_loses_orchestrator: losesOrchestrator,
+              department_note: `After this, department '${losesOrchestrator}' has no orchestrator: letters to it reach no one until another seat takes the role with deskpost seat describe <seat> --role orchestrator.`,
+            }
+          : {}),
         archive_destination: path.join(archiveRoot, `${seat}-<timestamp>`),
         recoverable: true,
         note: seatOwned
@@ -1650,7 +1842,18 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     );
 
     const rows = readRegistryRows(registryFile).filter((row) => String(row['seat']) !== seat);
+    // THE ROW IT ARCHIVES GOES INTO THE REGISTRY'S HISTORY when it carries one of the four fields (kickoffs/s96 ruling 4):
+    // the record, the replace, the commit line. A row with none writes no history, as at 1.3.7.
+    const recorded = rawRow !== undefined && carriesMetadata(rawRow);
+    const attempt = recorded ? newAttemptId() : '';
+    if (recorded) {
+      const caller = resolveSeatName({ stateDirectory });
+      appendHistoryRecords(workspace, [
+        { attempt, when: utcRoundTrip(), verb: 'retire', seat, seat_id: entry.seatId, from_seat: caller.status === 'named' ? caller.seat! : null, plan_id: planId, before: fields, after: rawMetadata(undefined) },
+      ]);
+    }
     writeSeatRegistry(stateDirectory, rows);
+    if (recorded) appendHistoryCommit(workspace, attempt);
 
     const deskDirectory = deskStateDirectory(stateDirectory, seat);
     if (fs.existsSync(deskDirectory)) fs.rmSync(deskDirectory, { recursive: true, force: true });
@@ -1675,19 +1878,8 @@ function isFile(file: string): boolean {
   return fs.existsSync(file) && fs.statSync(file).isFile();
 }
 
-/** The registry's rows AS WRITTEN, every field kept, for a writer. `readSeatRegistry` validated them already. */
-function readRegistryRows(file: string): Record<string, PsJsonValue>[] {
-  if (!fs.existsSync(file)) return [];
-  const parsed = JSON.parse(strictUtf8(file)) as { seats?: unknown };
-  const seats = parsed.seats;
-  return (Array.isArray(seats) ? seats : seats === null || seats === undefined ? [] : [seats]) as Record<string, PsJsonValue>[];
-}
-
-/** Replace the registry atomically, sorted by seat so the same seats are the same bytes. Lock held. */
-function writeSeatRegistry(stateDirectory: string, rows: Record<string, PsJsonValue>[]): void {
-  const ordered = [...rows].sort((left, right) => psSortCompare(String(left['seat']), String(right['seat'])));
-  writeAtomicText(path.join(seatsDirectory(stateDirectory), '_registry.json'), psConvertToJson({ schema: 1, seats: ordered }) + '\n');
-}
+// THE REGISTRY'S RAW ROWS AND ITS ONE WRITER live in `seatregistry.ts` since S96 row 2, unchanged, so `seat describe`
+// writes the registry the same way without importing this file.
 
 // --- what the main menu composes (ADR-0059) -----------------------------------------------------------
 //
@@ -1710,21 +1902,53 @@ export function activeProjects(workspace: string): string[] {
  * Test-NewSeatIsCreatable: the gate as a value, so a wizard can re-ask rather than end. The rules stay in
  * assertNewSeatIsCreatable; this catches its refusal. `plan_id` is issued only for a creatable seat and Project.
  */
-export function newSeatVerdict(workspace: string, seat: string, project: string, projects: string[], seatOnly = false): { creatable: boolean; reason: string; plan_id: string } {
+export function newSeatVerdict(
+  workspace: string,
+  seat: string,
+  project: string,
+  projects: string[],
+  seatOnly = false,
+  choices?: SeatStartChoices,
+): { creatable: boolean; reason: string; plan_id: string; plan: SeatStartPlan | null } {
   const stateDirectory = path.join(workspace, '.claude');
   const lock = enterSeatRegistryLock(workspace, 5);
   try {
     const rows = seatRegistryRows(workspace);
+    let plan: SeatStartPlan | null = null;
     try {
       assertNewSeatIsCreatable({ workspace, stateDirectory, rows, seat, project, activeProjects: projects, seatOnly });
+      // THE WIZARD'S PREVIEW, THROUGH THE ONE PLANNER (S97 row 2): its plan_id is the wrapped id `seat start` rechecks.
+      if (!seatOnly && choices !== undefined) {
+        plan = plannedStart(rows, seat, project, choices, path.join(seatsDirectory(stateDirectory), '_registry.json'), workspace);
+      }
     } catch (error) {
-      if (error instanceof SeatRefusal) return { creatable: false, reason: error.message, plan_id: '' };
+      if (error instanceof SeatRefusal) return { creatable: false, reason: error.message, plan_id: '', plan: null };
       throw error;
     }
-    return { creatable: true, reason: '', plan_id: seatOnly ? '' : seatCreationPlanId(rows, seat, project) };
+    return { creatable: true, reason: '', plan_id: seatOnly ? '' : plan !== null ? plan.planId : seatCreationPlanId(rows, seat, project), plan };
   } finally {
     exitBookLock(lock);
   }
+}
+
+/** What the `+` wizard chose for a new seat, as `seat start`'s options spell them (S97 row 2). */
+export interface SeatStartChoices {
+  department?: string | undefined;
+  role?: string | undefined;
+  card?: string | undefined;
+  template?: string | undefined;
+  openBooks: string[];
+}
+
+/** The `seat start` arguments that carry a wizard's choices, in one order. */
+export function seatStartChoiceArguments(choices: SeatStartChoices): string[] {
+  return [
+    ...(choices.template !== undefined ? ['--template', choices.template] : []),
+    ...(choices.department !== undefined ? ['--department', choices.department] : []),
+    ...(choices.role !== undefined ? ['--role', choices.role] : []),
+    ...(choices.card !== undefined ? ['--card', choices.card] : []),
+    ...choices.openBooks.flatMap((slug) => ['--open-book', slug]),
+  ];
 }
 
 /**
@@ -1813,8 +2037,40 @@ export async function runSeatVerb(
         );
         return 0;
       }
+      case 'cards': {
+        // UNGATED AND READ ONLY (kickoffs/s96 row 3, ruling 5): the directory, computed. Text for a person by default, opening
+        // with the data-not-instructions line; `--json` for the document.
+        const parsed = parseArguments(rest, ['workspace', 'seat']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        const value = seatCardsResult({ workspace, seat: parsed.options.get('seat'), all: parsed.flags.has('all') });
+        emitResult(value, parsed.flags.has('json') ? undefined : seatCardsText(value));
+        return 0;
+      }
+      case 'describe': {
+        // GATED (kickoffs/s96 row 2, ruling 4): a seat's department, role and card change only under the reader's yes.
+        const parsed = parseArguments(rest, ['workspace', 'department', 'role', 'card', 'from', 'plan-id']);
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        emitResult(
+          seatDescribeResult({
+            workspace,
+            seat: parsed.positional[0] ?? '',
+            request: {
+              department: parsed.options.get('department'),
+              role: parsed.options.get('role'),
+              card: parsed.options.get('card'),
+              clearDepartment: parsed.flags.has('clear-department'),
+              clearRole: parsed.flags.has('clear-role'),
+              clearCard: parsed.flags.has('clear-card'),
+              from: parsed.options.get('from'),
+            },
+            preflight: parsed.flags.has('preflight'),
+            planId: parsed.options.get('plan-id') ?? '',
+          }),
+        );
+        return 0;
+      }
       default:
-        onRefusal(`library seat has no action '${action}'. It has: dirs, enter, retire, settings, start, status.`);
+        onRefusal(`library seat has no action '${action}'. It has: cards, describe, dirs, enter, retire, settings, start, status.`);
     }
   } catch (error) {
     onRefusal((error as Error).message);

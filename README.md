@@ -203,15 +203,14 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.7**. The full roadmap, with what each milestone carries and how far
+The current release is **1.3.8**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Next: 1.3.8, seats that work as a team**: a directory of who does what, letters to a department,
-  and one seat that decides where each goes.
-- **Then: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
-  a browse mode in the main menu, and an unknown flag refused by every verb.
-- **After that: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
-- **Exploring:** seats on more than one computer, so the seats you run share the load of the
+- **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
+  a browse mode in the main menu, an unknown flag refused by every verb, and a list of the
+  sources each Book was compiled from.
+- **Then: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
+- **Exploring:** refreshing a Book from its sources; seats on more than one computer, so the seats you run share the load of the
   computers you already have and still talk to each other; and two Libraries in one household,
   sharing a collection on the home network with no accounts, database or server.
 

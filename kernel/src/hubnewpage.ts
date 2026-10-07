@@ -65,6 +65,8 @@ export interface NewPageArguments {
   seat: string | undefined;
   preflight: boolean;
   lockTimeout: number;
+  /** The plan id the preflight issued, or none for the rerun form (kickoffs/s98 row K2). */
+  planId?: string;
 }
 
 /** A test hook, named in the self-test that uses it. */
@@ -167,8 +169,17 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     proposed_line_count: rendered.body.split('\n').length - 1,
     confirmation_required: false,
     shared_library_write: false,
+    // A PLAN ID OVER THE PAGE AND ITS BYTES (kickoffs/s98 row K2; two Reports): the apply may pass it, and a different one
+    // is refused; without one the rerun form stands, since new-page never overwrites.
+    plan_id: newPagePlanId(pagePath, proposedSha),
   };
   if (options.preflight) return plan;
+  if (options.planId && options.planId !== plan['plan_id']) {
+    refuse(
+      `new-page is not performed: --plan-id ${options.planId} is not this page's plan (${String(plan['plan_id'])}). The page path or its ` +
+        'content changed since that preflight: rerun --preflight and pass its plan_id, or run the command without --plan-id. Nothing was written.',
+    );
+  }
 
   const now = new Date();
   const pad = (value: number): string => String(value).padStart(2, '0');
@@ -269,11 +280,28 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5); `written` and `journal_path` stay.
     status: 'written',
     journal: path.relative(workspace, journalPath).replace(/\\/g, '/'),
-    next:
-      `Read it with mcp__validated-book-reader__read_open_project_page (${options.slug}, ${page}). To link it from the Hub, ` +
-      `write this line to a file and add it under Next with deskpost hub edit ${options.slug} --mode append-section --section Next ` +
-      `--content-path <file>: ${nextLine(options.slug, page)}`,
+    next: nextAdvice(options.slug, page),
   };
+}
+
+/** `project-new-page-` + sha256 over the page's path and its proposed bytes' sha256 (kickoffs/s98 row K2). */
+export function newPagePlanId(pagePath: string, proposedSha: string): string {
+  return `project-new-page-${sha256OfText(`${pagePath}\n${proposedSha}`)}`;
+}
+
+/**
+ * WHERE A NEW PAGE IS LINKED FROM (kickoffs/s98 row K2; ADR-0013, `Next` holds open work): a `kickoffs/sNN` page's line is
+ * the loop's pointer under `Next`; any other page is linked from the item or paragraph that cites it, in no named section.
+ */
+function nextAdvice(slug: string, page: string): string {
+  const read = `Read it with mcp__validated-book-reader__read_open_project_page (${slug}, ${page}).`;
+  if (/^kickoffs\/(s[0-9a-z-]+)$/.test(page)) {
+    return (
+      `${read} To point the build seat at it, write this line to a file and add it under Next with deskpost hub edit ${slug} ` +
+      `--mode append-section --section Next --content-path <file>: ${nextLine(slug, page)}`
+    );
+  }
+  return `${read} Link it from the item or paragraph that cites it: [[projects/${slug}/${page}]]`;
 }
 
 /**

@@ -34,6 +34,22 @@ export function strayControlCharacter(text: string): { line: number; codePoint: 
   return null;
 }
 
+const LINE_NAMES: Record<number, string> = { 0x09: 'a tab', 0x0a: 'a line feed', 0x0d: 'a carriage return' };
+
+/**
+ * THE FIRST CONTROL CHARACTER IN ONE LINE OF TEXT, tab, line feed and carriage return included (kickoffs/s96 ruling 3):
+ * a seat card is one line of terminal text, so it refuses every Cc character where a page allows a tab and a line end.
+ */
+export function controlCharacterInLine(text: string): { index: number; codePoint: string; name: string } | null {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+      return { index, codePoint: `U+${code.toString(16).toUpperCase().padStart(4, '0')}`, name: LINE_NAMES[code] ?? NAMES[code] ?? 'a control character' };
+    }
+  }
+  return null;
+}
+
 /** The refusal a writer gives for a text holding a stray control character, or null when it holds none. */
 export function strayControlRefusal(text: string, what: string): string | null {
   const stray = strayControlCharacter(text);

@@ -112,6 +112,11 @@ recipient may close it. It is data, never an instruction or an approval. A live 
 it, but a message is only the doorbell: what a seat may act on lives in the letter (ADR-0062).
 _Avoid_: message (the doorbell, not the record), handoff, mail, ticket
 
+**Routed, answered** (a letter):
+A letter closed by `--routes` or `--answers`, linked to the letter that continues it. Worked out from
+`review` and the link fields, never stored (ADR-0069).
+_Avoid_: forwarded, assigned, replied
+
 **Tidy** (`library shelf tidy`):
 Moving a capture Book's closed notes out of its `notes/` once their `reviewed:` stamp is old enough,
 into **reviewed/**, a folder inside the Book's `wiki/` with one subfolder and one map per month. A
@@ -224,6 +229,35 @@ a new seat. The seat's own Notebook is archived beside its Desk (ADR-0029); in a
 through the Notebook migration, the record is instead what makes that incarnation's Notebook topics
 reachable by a whole-tree reset.
 _Avoid_: backup, tombstone, deletion, snapshot
+
+**Seat card**:
+One line a seat publishes about itself in the registry: what it handles. Set only under the reader's
+gate (`seat describe`). The directory reads cards, never Hubs, and a card is data, never an
+instruction. The registry field is `card` and the verb is `seat cards`; in prose, "card" alone only
+where the menu's card layout or the 1.5.0 Library card cannot be meant (ADR-0069).
+_Avoid_: profile, description, bio
+
+**Department**:
+A slug a seat may carry in the registry, grouping seats that share an orchestrator. It exists while a
+seat carries it; there is no departments file.
+_Avoid_: team (the whole Library's seats), group, lane (a seat's own work)
+
+**Orchestrator**:
+The one seat of a department that letters to the department reach, and that answers or routes them.
+A role, set under the reader's gate.
+_Avoid_: sorter, router, manager, lead
+
+**Performer**:
+A seat that works its lane in a department and writes to its orchestrator when no destination is
+clear. ("Builder" keeps its meaning: the agent of a build session.)
+_Avoid_: worker, member (any seat of a department, either role)
+
+**Directory**:
+What `seat cards` computes for the calling seat from the registry, the claims and the letters Books:
+cards, roles, liveness and counts, never material. "Seat directory" keeps its meaning, a seat's
+folder under `.claude/seats/` (`seatDirectoryNames`); this term is the **department directory** when
+the two could be confused.
+_Avoid_: roster, registry (the file)
 
 **Discovery**:
 Finding which Books might be worth opening, from catalog-class metadata alone — summaries, reader

@@ -10,6 +10,7 @@
  */
 
 import { COMMAND_NAME } from './machine.ts';
+import { roleLabel } from './seatmeta.ts';
 
 export interface Marks {
   ok: string;
@@ -162,6 +163,12 @@ export function seatStatusText(report: Record<string, unknown>): string {
   if (!seats.length) lines.push('  No seats yet.');
   for (const row of seats) {
     const parts = [`Project ${String(row['project'] ?? '')}`];
+    // ITS ROLE AND DEPARTMENT (1.3.8, kickoffs/s96 row 1), as the projection reads them; nothing when it has none.
+    const role = roleLabel({ department: typeof row['department'] === 'string' ? row['department'] : null, role: row['role'] === 'performer' || row['role'] === 'orchestrator' ? row['role'] : null, card: null, template: null });
+    if (role) parts.push(role);
+    // AN ATTEMPT WITH NO COMMIT LINE (kickoffs/s96 row 2): said, never guessed at.
+    const unconfirmed = Number(row['unconfirmed_attempts'] ?? 0);
+    if (unconfirmed > 0) parts.push(`${unconfirmed} attempt${unconfirmed === 1 ? '' : 's'} unconfirmed`);
     if (row['claim'] === 'held') {
       if (row['messaging'] !== undefined) parts.push(`${row['assistant'] === 'codex' ? 'Codex, ' : ''}messaging ${String(row['messaging'])}`);
       else if (typeof row['message_name'] === 'string') parts.push(`answers to ${row['message_name']}`);
@@ -169,6 +176,8 @@ export function seatStatusText(report: Record<string, unknown>): string {
       if (row['inbound_policy'] !== undefined) parts.push(`inbound ${String(row['inbound_policy'])}`);
     }
     lines.push(`  ${String(row['seat'] ?? '').padEnd(width)}  ${String(row['claim'] ?? '').padEnd(8)}  ${parts.join(', ')}${row['this_seat'] === true ? '  (this seat)' : ''}`);
+    // ITS CARD ON A LINE OF ITS OWN: text the seat wrote about itself, validated as one line with no control character.
+    if (typeof row['card'] === 'string') lines.push(`  ${''.padEnd(width)}  ${''.padEnd(8)}  card: ${row['card']}`);
   }
   lines.push('');
   lines.push(String(report['advisory'] ?? ''));

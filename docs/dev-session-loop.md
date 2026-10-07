@@ -86,13 +86,22 @@ There is no template file. The reference is the most recent real Kickoff.
 3. **Record the attempt.** `hub edit --mode new-page` makes `notes/<date>-sNN-a<k>` (`k` the next
    unused attempt number) with a `## Run` section: the Kickoff path and hash, the yes time, the
    seat, its `seat_id` from `.claude/seats/_registry.json`, the session id or "unrecorded", the
-   `agent_pid` from `deskpost seat status` (may be null), the predecessor attempt, and state
-   `started`. Then A ticks the pointer with `check-item`.
+   agent as `CLAUDE_PID` from the session's own environment where it is set, else "unrecorded" (with
+   `deskpost seat status`'s `agent_pid` beside it only as the binding's: for a launcher-held seat it
+   can name an earlier binding's process), the predecessor attempt, and state `started`. Then A ticks the pointer with `check-item`.
 4. **Merge.** If MERGE names a branch, A checks that `master` still equals `base` and `desk/sNN`
    still points at `tip`, then runs `git merge --ff-only <tip>`. A mismatch in either SHA parks the
    merge, and B owns it. A's `-Fast` gate after the merge is checked against MERGE's gate digest; a
    FAIL there, or a summary line that differs, is recorded on the attempt page.
 5. Reconcile the plan ledger with `git log`, and run the gate.
+6. **Hub upkeep, when the Kickoff charters it.** The gate already reads the installed version, so A ticks the
+   build Hub's `Now` items that the installed release meets (an item that closes "when X is released and
+   installed", for a release at or below the installed version), and moves every ticked `Now` item to a dated
+   `notes/` history page in one replace-section edit (`--preflight`, then `--user-confirmed --plan-id`), under
+   the Kickoff's CHARTER and STANDING ANSWERS. Nothing else leaves `Now` this way: an unticked item stays, and B's
+   check of `releases/latest` after a publish remains a notice to the reader, since B writes only `kickoffs/`
+   pages and one pointer on A's Hub. Until a Kickoff charters it, no step ticks a release's `Now` items (the
+   Report of 2026-10-06, S94).
 
 ### Work
 
@@ -179,14 +188,17 @@ receiver starts a new turn with the message; a busy one reads it between tool ca
 capped at about a million characters, and repeats are throttled. The receiving session's permission mode decides
 delivery: a prompting session (default, auto, acceptEdits, dontAsk) accepts a message from another prompting one,
 and a session that bypasses permissions holds each message behind an approval dialog that drops it after five
-minutes. Nothing sets `crossSessionInbound` in user or workspace settings, because an `accept` there would apply to
-every seat.
+minutes. Eric's Library sets `"crossSessionInbound": "accept"` in its own `.claude/settings.local.json`
+(2026-10-04), so a peer message never waits for him whatever mode each seat runs in; it is set for that Library
+only, never in user settings, and a message is still data (rule 1). Whether a local `accept` loosens delivery, as it
+appears to, is checked live in 1.3.8's first session (`PLAN-seats-team.md`, session 1 row 5), and ADR-0062 is
+amended only on that evidence.
 
-**Finding a seat.** A session answers to its name. From 1.2.6, a seat's session names itself after its seat on its
-second prompt, once Claude Code has generated the conversation's title, and never over a name the reader gave it.
-Until 1.2.6 is installed, the reader types `/rename <seat>` in each dev session **after its first prompt**, so that
-Claude Code still generates the conversation's title. A resumed conversation keeps its name, and a new one needs it
-again. `ListAgents` then lists `deskpost-dev` and `deskpost-desk` by name. A Codex seat has no inbox and cannot be
+**Finding a seat.** A session answers to its name. Since 1.3.6 the launcher starts a seat's session as
+`claude --name <seat>` (Step 0), so `ListAgents` lists `deskpost-dev` and `deskpost-desk` by name from the first
+prompt; a session resumed from before that names itself after its seat on its second prompt (1.2.6), never over a name
+the reader gave it. The Desk records the name a seat answers to as its `message_name`. Until a session has a name it
+is listed under a placeholder (`deskpost-NN`) that cannot be tied to a seat. A Codex seat has no inbox and cannot be
 messaged.
 
 **The four rules.** Every Kickoff carries them in RULES:
@@ -197,8 +209,12 @@ messaged.
    user can send.
 2. **Substance goes on a page, and the message is a notice.** Its first line stands alone: the seat, and what this
    is. It gives the page path and, for a write, whether the readback matched and the written hash.
-3. **Reply to the `from` address**, at most one message per parked question, and one batched notice per session
-   otherwise. Each delivered message costs the receiver a turn.
+3. **Address a seat by name, replies included:** the `message_name` its Desk row records (`deskpost-dev`,
+   `deskpost-desk`), not the `from` address a message arrived with, which may be a pipe (`uds:...`). A reply to the
+   pipe is delivered, but it names no seat, so neither the transcript nor a reader's tools can tell it answered
+   that seat. If the sender's row has no `message_name`, ask the newest placeholder session which seat it is before
+   calling the seat offline; a seat that still cannot be named gets a letter instead. At most one message per
+   parked question, and one batched notice per session otherwise. Each delivered message costs the receiver a turn.
 4. **After A's handback notice, B sends A nothing.** A notes any later message in one line of its own transcript,
    sends nothing (a reply would start a turn in an idle B), takes no action, and leaves it for the next Kickoff.
 
@@ -207,7 +223,9 @@ messaged.
 - **A → B at close.** After the Handback is read back, A messages B: "S<NN> handback written:
   `projects/<build hub>/notes/<page>`, readback matched." A's reply quotes that message to the reader, and its paste
   line stays as the reader's go-ahead (Close, step 5). On the notice, B reads the Handback and tells the reader what
-  arrived; it writes the next Kickoff only on the reader's word.
+  arrived; it writes the next Kickoff only on the reader's word. Before that Kickoff, B checks its design queue:
+  an item with no tier in `docs/roadmap.md`, and no backlog line saying why, gets one on that Kickoff's
+  `desk/sNN` (the roadmap's "Keeping it current").
 - **A → B, a spec question** (only when a Kickoff sets STANDING ANSWERS aside for a named question; by
   default A decides and records, as "Decide and record" says). A parks, and messages B the attempt page and the question. B
   answers on a page of its own Hub, `projects/<support hub>/notes/<date>-s<NN>-answer-<n>`, and messages A the
@@ -321,8 +339,10 @@ What S68 learned setting up `deskpost-desk` (stalls 1, 2, 4 and 5), in the order
 1. **`hub new` comes before `seat start`.** `seat start --preflight` refuses a seat whose Hub does
    not exist yet, so the two cannot be preflighted together. Make the Hub (`--dev` for a dev Hub),
    then preflight and start the seat (`--no-launch` when it should not start a session yet).
-2. **Neither verb issues a plan_id.** A gate that covers them shows the commands it will run, not
-   plan_ids, and the reader's yes covers those commands.
+2. **`seat start --preflight` issues a plan_id for a new seat; `hub new` issues none.** The seat's
+   plan_id is required with `--department`, `--role`, `--card`, `--template` or `--open-book`, and
+   accepted without them (since 1.3.8). A gate that covers both shows the commands it will run and
+   the seat's plan_id, and the reader's yes covers those commands.
 3. **A new worktree needs `tools/Initialize-CodexLibrary.ps1`**, run once in it, or its first commit
    fails the gate on `codex.project-access-config` (see above).
 4. **The support seat opens its own Desk from its first live session.** `desk open ... --seat <seat>`
@@ -345,6 +365,8 @@ or the classifier). An extra is built as soon as a logged stall names it. Candid
 ## Limits
 
 - Kickoff pages accumulate; pruning is out of scope.
-- The two seats share one Codex quota; Fable is B's default reviewer.
+- The two seats share one Codex quota. B uses Fable or Codex for design and plan reviews as it sees fit, and A
+  uses either when a Kickoff or its own judgment calls for it (Eric, 2026-10-06; this replaces "Fable is B's
+  default reviewer so that Codex quota stays with A"). Before any Codex run, read the quota and say it.
 - The harness can still stall A on a permission prompt. The COMMANDS section lets the reader widen
   the allowlist beforehand, and the stall log measures what remains.

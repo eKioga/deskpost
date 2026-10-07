@@ -33,6 +33,7 @@ outside this repository; Deskpost behaves the same without it.
 | U6 | Reports are triaged, not left: a Report is a claim to verify, never a task. | `templates/workspace-instructions.md`: `A report is a claim to verify`; `docs/library-triage-design.md` | prose | `library desk` `capture_books[]` `pending_count` and `oldest_pending` |
 | U7 | Closed capture notes leave `notes/` after 14 days. | `kernel/src/shelftidy.ts`: `export const DEFAULT_TIDY_DAYS = 14` | kernel verb, `shelf tidy`, run by hand | not seen: its preflight needs the Book open at this seat |
 | U8 | `raw/` is ingestion staging, not storage. | `templates/workspace-instructions.md`: `ingestion staging` | prose | not seen |
+| U9 | Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. | `.claude/skills/library-help/references/letters-and-departments.md`: `Reports, letters and Hubs never carry a secret`; `templates/seats/orchestrator.json`: `Reports, letters and Hubs never carry a secret` | prose (the role text and triage carry it) | not seen |
 
 ## Adding or moving a row
 

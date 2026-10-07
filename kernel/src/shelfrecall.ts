@@ -336,7 +336,8 @@ export function shelfRecallVerb(argv: string[], programRoot: string, workspace: 
         document['journal'] = path.relative(workspace, journalPath).replace(/\\/g, '/');
         document['next'] =
           `Change the pages in shelf/${shelfSlug}, then return them: deskpost publish refresh ${shelfSlug} --preflight keeps the Shelf copy, ` +
-          `deskpost publish ${shelfSlug} --preflight publishes it and deletes the Shelf copy. Both take --book-slug ${bookSlug} from the record.`;
+          `deskpost publish ${shelfSlug} --preflight publishes it and deletes the Shelf copy. Both take --book-slug ${bookSlug} from the record. ` +
+          `Or make the Book Shelf-only: deskpost shared archive ${bookSlug} --kind book --preflight retires the collection copy.`;
         return { refusal: null, value: document };
       } catch (error) {
         // ROLLBACK, IN REVERSE, the registry lock still held. The collection was never written.

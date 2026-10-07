@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.7/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.8/docs/seats.md).
 
 ## Books
 
@@ -61,6 +61,10 @@ library shelf rebuild [<slug>]                                         # Discove
 
 A page corrected in place on the Shelf leaves its Discovery manifest behind. Discovery then lists the Book in
 `books_stale` and still searches it; `library shelf rebuild <slug>` brings the manifest up to date.
+
+**Making a Book Shelf-only:** `shelf recall <slug>`, then `shared archive <slug> --kind book`. The recall copies the
+collection Book to the Shelf; the archive then retires the collection copy. The archive previews first, and applies
+only with `--user-confirmed --plan-id <id>`, the id its preflight issued; a Book changed since that preview is refused.
 
 ### When two Books cover the same thing
 

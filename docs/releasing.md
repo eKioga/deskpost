@@ -5,7 +5,8 @@ How a release goes from `master` to the public download, and the exact commands 
 
 ## The path
 
-1. **Bump the version** on `master` in its own commit: `kernel/package.json`, `.codex-plugin/plugin.json`,
+1. **Bump the version** on `master` in its own commit: `kernel/package.json` and the two root `version` lines of
+   `kernel/package-lock.json` (the package's own and its `packages[""]` entry), `.codex-plugin/plugin.json`,
    `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` (two lines), `llms-install.md` (its release base
    and every `download/v<version>` URL), and the `blob/v<version>` links in `.claude/skills/library-help/SKILL.md`
    and its reference files. There is no CHANGELOG.

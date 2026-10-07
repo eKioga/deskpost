@@ -498,7 +498,10 @@ function sectionSizeStatus(body: string, pagePath: string, previousBody: string)
   const oversized = sectionSizes(body).filter((entry) => entry.size_bytes > SECTION_SIZE_THRESHOLD);
   const before = sectionTotals(previousBody);
   const after = sectionTotals(body);
-  const warned = oversized.filter((entry) => (after.get(entry.section) ?? 0) > (before.get(entry.section) ?? 0));
+  // ITS SIZE BEFORE THE EDIT, BESIDE IT (kickoffs/s98 row K1), so the warning says how much it grew.
+  const warned = oversized
+    .filter((entry) => (after.get(entry.section) ?? 0) > (before.get(entry.section) ?? 0))
+    .map((entry) => ({ ...entry, size_before_bytes: before.get(entry.section) ?? 0 }));
   return {
     threshold_bytes: SECTION_SIZE_THRESHOLD,
     exempt,
@@ -527,10 +530,20 @@ function entrySizes(body: string): { section: string; key: string; label: string
     const sectionEnd = h + 1 < level2.length ? level2[h + 1]!.index : lines.length;
     const entries = topLevelEntries(lines, heading.index + 1, sectionEnd);
     entries.forEach((entry, e) => {
-      const end = e + 1 < entries.length ? entries[e + 1]!.index : sectionEnd;
+      // AN ENTRY ENDS AT THE NEXT LIST LINE OR AT THE NEXT UNINDENTED PARAGRAPH (kickoffs/s98 row K1; three Reports): a
+      // paragraph after a list, such as `Now`'s orientation text, is no part of the list's last item.
+      let end = e + 1 < entries.length ? entries[e + 1]!.index : sectionEnd;
+      for (let j = entry.index + 1; j < end; j++) {
+        if (isBlank(lines[j - 1]!) && !isBlank(lines[j]!) && !/^[ \t]/.test(lines[j]!)) {
+          end = j;
+          break;
+        }
+      }
+      while (end - 1 > entry.index && isBlank(lines[end - 1]!)) end--;
       let bytes = 0;
       for (let j = entry.index; j < end; j++) bytes += utf8Length(lines[j]!) + 1;
-      sizes.push({ section: heading.text, key: `${heading.text}\n${entry.line}`, label: entryLabel(entry.line), size_bytes: bytes });
+      // A SHORT, STABLE KEY: the section and a sha256 prefix of the entry's first line, never the line itself.
+      sizes.push({ section: heading.text, key: `${heading.text}#${sha256OfText(entry.line).substring(0, 16)}`, label: entryLabel(entry.line), size_bytes: bytes });
     });
   });
   return sizes;
@@ -556,9 +569,14 @@ function sizeWarningLines(warnings: Record<string, PsJsonValue>[], pagePath: str
   const [page, section, entry] = warnings as [Record<string, PsJsonValue>, Record<string, PsJsonValue>, Record<string, PsJsonValue>];
   if (page['warn']) out.push(`Project Hub page '${pagePath}' ${written ? 'is' : 'would be'} ${page['size_after_bytes']} bytes after this edit. ${pageSizeRemedy(pagePath)}`);
   if (section['warn']) {
-    for (const oversized of section['warned_sections'] as { section: string; size_bytes: number }[]) {
+    for (const oversized of section['warned_sections'] as { section: string; size_bytes: number; size_before_bytes: number }[]) {
+      // SAID AS WHAT IT IS (kickoffs/s98 row K1): a preflight's section WOULD grow; an apply's grew, and the first sentence
+      // stays as it was, since deskpost-mods reads it.
+      const grew = written
+        ? `grew to ${oversized.size_bytes} bytes. It was ${oversized.size_before_bytes} bytes before this edit.`
+        : `would grow to ${oversized.size_bytes} bytes (from ${oversized.size_before_bytes}).`;
       out.push(
-        `Section '${oversized.section}' on '${pagePath}' grew to ${oversized.size_bytes} bytes. Usually this section is holding items it cannot close rather than verbose ones: send a limit whose proof needs an event you cannot cause to the limits page with a disposition, a settled question to ## Decisions and its record, and a standing practice to the subject's own rules. Sort before you shorten (ADR-0013).`,
+        `Section '${oversized.section}' on '${pagePath}' ${grew} Usually this section is holding items it cannot close rather than verbose ones: send a limit whose proof needs an event you cannot cause to the limits page with a disposition, a settled question to ## Decisions and its record, and a standing practice to the subject's own rules. Sort before you shorten (ADR-0013).`,
       );
     }
   }
@@ -662,6 +680,9 @@ const MODE_WORDS: Record<string, EditMode> = {
   'replace-item': 'ReplaceItem',
 };
 
+/** The quote characters a `new-page --title` may not start or end with: straight, typographic and guillemets. */
+const QUOTE_CHARACTERS = '"\'`“”‘’„«»';
+
 function nullable(value: string): PsJsonValue {
   return isBlank(value) ? null : value;
 }
@@ -679,16 +700,35 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const modeWord = parsed.options.get('mode') ?? '';
   if (isBlank(slug)) refuse(slugProblem!);
   if (isBlank(modeWord)) refuse('Mode is required: AddSection, AppendSection, CheckItem, RemoveSection, ReplaceItem, ReplaceSection, ReplaceBody, or new-page.');
+  // ONE POSITIONAL WORD, THE HUB'S SLUG, IN EVERY MODE (S97 row 4, deskpost-prompts-dev's Report). No mode reads a second,
+  // so one is a value the shell split or a quote left open: refused before anything is read or written.
+  if (parsed.positional.length > 1) {
+    refuse(
+      `hub edit takes one Hub slug and its --options, and nothing else: unexpected argument: ${parsed.positional[1]}. A value with ` +
+        'spaces goes in quotes right after its option. Nothing was written.',
+    );
+  }
   if (slugProblem !== null && ['new-page', 'newpage'].includes(modeWord.toLowerCase())) refuse(slugProblem);
   // A NEW PAGE ON A LOCAL HUB (S67, PLAN-local-collection-writers.md step B): a mode of this verb with a write half of
   // its own, because the edit store below overwrites and a creation must never replace a page.
   if (['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
+    // A TITLE THAT STARTS OR ENDS WITH A QUOTE is almost always one the shell left in place (S97 row 4), and a page's H1
+    // is written once: until 1.4.0 nothing changes it, so it is refused rather than written.
+    const title = (parsed.options.get('title') ?? '').trim();
+    const edge = title ? [title[0]!, title[title.length - 1]!].find((character) => QUOTE_CHARACTERS.includes(character)) : undefined;
+    if (edge !== undefined) {
+      refuse(
+        `--title starts or ends with a quote character (${edge}), which is usually a quote the shell left in place. A page's H1 is ` +
+          'written once and cannot be changed until 1.4.0, so remove the quote and run the command again. Nothing was written.',
+      );
+    }
     const timeout = Number(parsed.options.get('lock-timeout') ?? '20');
     return hubNewPage(
       {
         slug,
         page: parsed.options.get('page') ?? '',
         content: parsed.options.get('content') ?? '',
+        planId: (parsed.options.get('plan-id') ?? '').trim(),
         contentPath: parsed.options.get('content-path') ?? '',
         title: parsed.options.get('title') ?? '',
         seat: parsed.options.get('seat'),
@@ -888,7 +928,11 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   }
   if (isReplacing) {
     if (!parsed.flags.has('user-confirmed')) refuse(`${mode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
-    if ((parsed.options.get('plan-id') ?? '') !== planId) refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id.`);
+    // THE SECOND SENTENCE SAYS WHAT A STALE ID USUALLY MEANS (kickoffs/s99 row K2, ruling 7), with the page's hash now; the
+    // first stays word for word. An id never issued reads the same: telling the two apart would need stored previews.
+    if ((parsed.options.get('plan-id') ?? '') !== planId) {
+      refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page changed since the preview; it reads ${currentHash} now.`);
+    }
   }
 
   const pageLabel = pageName.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();

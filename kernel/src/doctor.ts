@@ -29,12 +29,14 @@ import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { homeDirectory, resolveWorkspace } from './workspace.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
-import { readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
+import { captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
+import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
+import { readSeatHistory, seatHistoryState } from './seathistory.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
-import { growingState, shelfNotes } from './shelfnote.ts';
+import { growingState, noteFrontmatter, shelfNotes } from './shelfnote.ts';
 import {
   masterIndexDrift,
   scopeIndexDrift,
@@ -928,6 +930,98 @@ function seatInboundFiles(workspace: string): string {
 }
 
 /**
+ * A SEAT'S CARD, DEPARTMENT, ROLE AND TEMPLATE (1.3.8, kickoffs/s96 rows 1 and 2, rulings 3 and 4; ADR-0069): every value
+ * the one projection reads as absent, named with its repair and never printed, since a malformed card may hold what the
+ * rule keeps off a terminal; and the registry history's lines that do not parse and its unconfirmed attempts (an attempt
+ * with no commit line after the seat's last confirmed change), each naming the file. A WARN, never a FAIL.
+ */
+function seatRegistryFields(workspace: string): string {
+  const stateDirectory = path.join(workspace, '.claude');
+  const projection = readSeatMetadata(stateDirectory);
+  const problems = [...projection.problems];
+  const history = readSeatHistory(workspace);
+  for (const line of history.unparsable) {
+    problems.push(line === 0 ? `${history.file} cannot be read` : `line ${line} of ${history.file} does not parse and is ignored; remove it by hand once you have read it`);
+  }
+  let registry: ReturnType<typeof readSeatRegistry> = [];
+  try {
+    registry = readSeatRegistry(stateDirectory);
+  } catch {
+    // the registry's own checks say why; the projection above already read what it could
+  }
+  for (const row of registry) {
+    const unconfirmed = seatHistoryState(history, row.seat, row.seatId).unconfirmed;
+    if (unconfirmed) {
+      problems.push(
+        `seat '${row.seat}' has ${unconfirmed} unconfirmed attempt${unconfirmed === 1 ? '' : 's'} in ${history.file}: a change whose commit line was never written, so whether it reached the registry cannot be said; ` +
+          `check the seat with deskpost seat status, and set it again with deskpost seat describe if it is not as intended`,
+      );
+    }
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  const carrying = [...projection.seats.values()].filter((meta) => METADATA_FIELDS.some((field) => meta[field] !== null)).length;
+  return carrying
+    ? `${carrying} seat${carrying === 1 ? ' carries' : 's carry'} a card, department, role or template, each valid`
+    : 'no seat carries a card, department, role or template';
+}
+
+/**
+ * EVERY LETTER'S LINKS AND IDENTITY FIELDS ARE WHOLE (kickoffs/s98 row 2; PLAN-seats-team.md session 3 item 2): a WARN
+ * naming each note of a Book that takes letters which carries a reserved key twice, or `answers`, `answered_by`,
+ * `routed_to`, `routed_from`, `hops`, `origin_seat`, `for_department`, `origin_seat_id` or `for_seat_id` of the wrong
+ * shape. Such a letter is shown with no links and its status from `review` alone; `--answers` and `--routes` refuse it.
+ * Never a write: the repair is by hand, or a triage close.
+ */
+function lettersRelationshipFields(workspace: string): string {
+  const problems: string[] = [];
+  let letters = 0;
+  for (const book of captureBookRows(workspace)) {
+    if (!book.takesLetters) continue;
+    for (const note of shelfNotes(book)) {
+      letters += 1;
+      if (note.malformed.length) problems.push(`${book.slug} ${note.page} carries ${note.malformed.join(', ')} twice or of the wrong shape; repair its frontmatter by hand, or close it with triage`);
+    }
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  return letters ? `${letters} letter${letters === 1 ? "'s" : "s'"} links and identity fields are whole` : 'no letter to check';
+}
+
+/**
+ * EVERY PENDING LETTER IS FOR A SEAT THAT IS STILL THERE (1.3.8, kickoffs/s96 row 1, ruling 3; PLAN-seats-team.md Risks,
+ * "What a stale delivery means"): a WARN for a pending letter whose `for_seat` is no longer in the registry, or whose
+ * `for_seat_id` (written from session 3) names another incarnation of that slug. A letter with no `for_seat_id` matches
+ * by slug, the legacy rule. Its writer closes it, or the reader with `other_seat`. Never a write.
+ */
+function lettersRecipientIncarnation(workspace: string): string {
+  let registry: ReturnType<typeof readSeatRegistry>;
+  try {
+    registry = readSeatRegistry(path.join(workspace, '.claude'));
+  } catch (error) {
+    return `SKIP: the seat registry cannot be read, so no letter's recipient can be checked: ${(error as Error).message}`;
+  }
+  const problems: string[] = [];
+  let pending = 0;
+  for (const book of captureBookRows(workspace)) {
+    for (const note of shelfNotes(book)) {
+      if (note.review === 'done' || !note.forSeat) continue;
+      pending += 1;
+      const closes = `${note.fromSeat ? `its writer '${note.fromSeat}' closes it` : 'the reader closes it'}, or the reader with other_seat`;
+      const row = registry.find((candidate) => candidate.seat === note.forSeat);
+      if (!row) {
+        problems.push(`${book.slug} ${note.page} is a pending letter for seat '${note.forSeat}', which is not in the registry; ${closes}`);
+        continue;
+      }
+      const forSeatId = (noteFrontmatter(readUtf8(note.fullPath)).get('for_seat_id') ?? '').trim();
+      if (forSeatId && forSeatId !== row.seatId) {
+        problems.push(`${book.slug} ${note.page} is a pending letter for seat '${note.forSeat}' that was addressed to another incarnation of it (for_seat_id ${forSeatId}); ${closes}`);
+      }
+    }
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}`;
+  return pending ? `${pending} pending letter${pending === 1 ? ' is' : 's are'} each for a seat in the registry` : 'no pending letter is addressed to a seat';
+}
+
+/**
  * A USER-LEVEL `crossSessionInbound` (ADR-0062): Claude Code reads it for every session this user runs, every seat's
  * included, so it is the one place the Library never writes the value. A WARN naming the per-seat route. Read only.
  */
@@ -946,6 +1040,49 @@ function userInboundSetting(): string {
     `WARN: ${file} sets crossSessionInbound to ${value}, which applies to every session you run, every seat's included. ` +
     'Remove it there and set each seat its own with deskpost seat settings <seat> --inbound accept|hold|refuse'
   );
+}
+
+/**
+ * WHERE `crossSessionInbound` IS SET, AND TO WHAT (1.3.8, kickoffs/s96 row 5, rulings 7 and 8; PLAN-seats-team.md session
+ * 1 row 5; ADR-0069's open question): this Library's `.claude/settings.local.json` and `.claude/settings.json`, each
+ * seat's own file, and the user level, in their own words. Informational: it never WARNs on `hold` (a stricter choice),
+ * never writes, and names the per-seat route only (the workspace route waits on ADR-0062:28's live check).
+ */
+function inboundOverview(workspace: string): string {
+  const read = (file: string): string | null => {
+    if (!fs.existsSync(file)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || !(INBOUND_KEY in parsed)) return null;
+      return JSON.stringify((parsed as Record<string, unknown>)[INBOUND_KEY]);
+    } catch {
+      return 'unreadable (not valid JSON)';
+    }
+  };
+  const set: string[] = [];
+  if (workspace) {
+    const stateDirectory = path.join(workspace, '.claude');
+    for (const name of ['settings.local.json', 'settings.json']) {
+      const value = read(path.join(stateDirectory, name));
+      if (value !== null) set.push(`this Library's .claude/${name}: ${value}`);
+    }
+    let registry: ReturnType<typeof readSeatRegistry> = [];
+    try {
+      registry = readSeatRegistry(stateDirectory);
+    } catch {
+      // the registry's own checks say why; the Library's files above are still reported
+    }
+    for (const row of registry) {
+      const seatFile = readInboundSettings(stateDirectory, row.seat);
+      if (seatFile.state === 'valid') set.push(`seat '${row.seat}''s own file: "${seatFile.value}"`);
+      if (seatFile.state === 'invalid') set.push(`seat '${row.seat}''s own file: invalid, never passed`);
+    }
+  }
+  const user = read(userSettingsPath());
+  if (user !== null) set.push(`user settings ${userSettingsPath()}: ${user}`);
+  const route = 'A seat accepts its peers\' messages with deskpost seat settings <seat> --inbound accept.';
+  if (!set.length) return `nothing sets crossSessionInbound, so Claude Code's own default applies: two sessions that prompt for permission deliver each other's messages at once, and a session that bypasses permissions holds every message from a prompting one behind an approval dialog. ${route}`;
+  return `crossSessionInbound is set in ${set.length} place${set.length === 1 ? '' : 's'}: ${set.join('; ')}. ${route}`;
 }
 
 /**
@@ -1153,6 +1290,13 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     // AND THESE TWO (S79 row 3): the PowerShell runner has no inbound policy. WARNs, never FAILs.
     workspace ? runCheck('seats.inbound-policy', () => seatInboundFiles(workspace)) : { check: 'seats.inbound-policy', status: 'skipped', detail: 'no Library here, so no seats whose inbound files to check' },
     runCheck('settings.user-inbound', userInboundSetting),
+    // AND THESE TWO (1.3.8, kickoffs/s96 row 1): the PowerShell runner has no seat cards or letters' recipients. WARNs.
+    workspace ? runCheck('seats.registry-fields', () => seatRegistryFields(workspace)) : { check: 'seats.registry-fields', status: 'skipped', detail: 'no Library here, so no seats whose cards and roles to check' },
+    workspace ? runCheck('letters.recipient-incarnation', () => lettersRecipientIncarnation(workspace)) : { check: 'letters.recipient-incarnation', status: 'skipped', detail: 'no Library here, so no letters to check' },
+    // AND THIS ONE (kickoffs/s98 row 2): a letter whose relationship fields do not validate. A WARN; never a write.
+    workspace ? runCheck('letters.relationship-fields', () => lettersRelationshipFields(workspace)) : { check: 'letters.relationship-fields', status: 'skipped', detail: 'no Library here, so no letters to check' },
+    // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
+    runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
     ...refreshUnfinished(program),
   ];
   return { results, programChecks };

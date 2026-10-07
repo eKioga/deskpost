@@ -76,6 +76,31 @@ deskpost seat start fallout --project fallout-settlements
 That makes the seat, binds it to the Project, opens the Hub on its Desk, and starts your assistant
 there. Add `--command codex` for Codex. Next time, `deskpost seat start fallout` is enough, or type `deskpost` and pick its number.
 
+**Or from the menu, in one go.** Type `deskpost`, then `+`, and name the project. The menu makes the Hub
+and the seat together and asks four more things, each with `[Enter]` for "none":
+
+- **A template**: `[p]` performer, a seat that works its own lane, or `[o]` orchestrator, the one seat
+  of a department that answers and routes letters to it. The template's role text becomes the new
+  Hub's Purpose, with your project's name filled in. An existing Hub keeps its own Purpose.
+- **A department**: a short slug that groups seats, such as `engineering`. The menu lists the ones
+  that exist, says when yours is new, and tells a performer who its orchestrator is. A role needs a
+  department, and a department has one orchestrator; the menu says so and offers the way round.
+- **A seat card**: one line on what this seat handles, which other seats read in `deskpost seat cards`.
+- **Shelf Books** to have open from the start, by number.
+
+Then it shows **one preview** of everything it is about to do, with one `plan_id`, and waits for
+`[Enter]`. If anything about the seats changed while the preview was open, it shows you the new one
+instead of going ahead.
+
+The same choices work from a terminal, previewed first:
+
+```
+deskpost seat start fallout --project fallout-settlements --template performer --department mods --card "Tracks which settlement mods work together." --open-book recipes --preflight
+```
+
+and then the same line with `--plan-id <id>` from that preview in place of `--preflight`. A
+department, role, card, template or Book is only ever set through a preview like that.
+
 **Three things worth knowing:**
 
 - **The binding is permanent, in both directions.** One seat works on one Project, and one Project

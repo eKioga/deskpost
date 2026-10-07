@@ -35,7 +35,7 @@ import { repositoryNeutralEnv } from './gitenv.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
 import { listFilesRecursive, readUtf8, shelfCatalogSections, type ShelfBook } from './shelfbook.ts';
-import { shelfNotes } from './shelfnote.ts';
+import { letterStatus, shelfNotes } from './shelfnote.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -200,6 +200,8 @@ function captureBooks(workspace: string): ShelfBook[] {
       wikiPath,
       notesPath: path.join(wikiPath, 'notes'),
       isCapture: true,
+      // WHETHER IT TAKES LETTERS (kickoffs/s98 row 3), as its catalog entry says: only its notes carry `letter_status`.
+      takesLetters: /^[ \t]*-[ \t]+\*\*Letters:\*\*[ \t]+yes[ \t]*$/m.test(section.body),
       summary: '',
       topics: [],
     });
@@ -351,6 +353,9 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
         known_books: records.knownBooks,
         known_projects: records.knownProjects,
         journals: records.journals,
+        // A LETTER'S STATUS, WORKED OUT (kickoffs/s98 row 3, ruling 5): the last key, on every note of a Book that takes
+        // letters and on no other note.
+        ...(book.takesLetters ? { letter_status: letterStatus(note) } : {}),
       };
     }),
   );
@@ -383,9 +388,13 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
     holding_oldest_pending: holdingDates.length ? holdingDates[0]! : '',
     holding_no_known_copy_record_count: holdingNotes.filter((note) => note.copy_status === 'no-known-copy-record').length,
     unreadable_journals: journalErrors,
-    pages: pages as unknown as PsJsonValue,
+    // WITH --pending THE NOTEBOOK'S PAGES ARE LEFT OUT (kickoffs/s99 row K1, ruling 6): the flag asks for what waits for
+    // triage, and a large Notebook buried the letters under its pages. Every count above stays whole, and
+    // `pages_listed`, the last key, says which list this is, as `holding_notes_listed` does.
+    pages: (options.pendingOnly ? [] : pages) as unknown as PsJsonValue,
     holding_notes: (options.pendingOnly ? holdingPending : holdingNotes) as unknown as PsJsonValue,
     holding_notes_listed: options.pendingOnly ? 'pending' : 'all',
     shared_library_write: false,
+    pages_listed: options.pendingOnly ? 'none' : 'all',
   };
 }

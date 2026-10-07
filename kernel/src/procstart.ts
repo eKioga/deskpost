@@ -331,6 +331,50 @@ export function launcherDirectAgent(launcherPid: number, records: AncestryRecord
   return null;
 }
 
+/** The agent `CLAUDE_PID` names, or 0 when it names none: Claude Code sets it in its tool and hook children. */
+export function environmentClaudePid(): number {
+  const raw = (process.env['CLAUDE_PID'] ?? '').trim();
+  return /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : 0;
+}
+
+export interface LauncherAgentProof {
+  /** The launcher's direct agent, or null. */
+  agent: { pid: number; assistant: 'claude' | 'codex' } | null;
+  /** False when neither route could look: no agent client above this process, and none live at CLAUDE_PID. */
+  checked: boolean;
+  /** `process` (the walk from this process), `environment-pid` (the walk from CLAUDE_PID's agent) or `none`. */
+  route: 'process' | 'environment-pid' | 'none';
+}
+
+/**
+ * THE LAUNCHER'S DIRECT AGENT, PROVED FROM THIS PROCESS, OR FROM `CLAUDE_PID` WHEN THIS PROCESS'S OWN WALK MEETS NO AGENT
+ * (kickoffs/s98 row G, ruling 3). Run through Git Bash's `sh` shim, the kernel's parent is the `sh` that forked and then
+ * exec'd it, already gone, so the walk from `process.pid` stops before it reaches `claude.exe` and the launcher, and a
+ * launcher-held seat read as merely named. Claude Code names its agent in `CLAUDE_PID` for every tool child, which
+ * `resolveCurrentAgentProcess` already prefers, so the proof is then made from that agent's own ancestry: the agent, and
+ * the launcher above it with no other agent between. A walk that DOES meet an agent still answers alone, since a Codex
+ * run under a Claude seat inherits CLAUDE_PID and its own walk meets Codex first, which is not the launcher's direct
+ * agent (S55 inspection #1). So the walk from this process stays for Codex, and wherever CLAUDE_PID is unset.
+ */
+export function launcherAgentProof(
+  launcherPid: number,
+  records: AncestryRecord[] = readProcessAncestry(process.pid),
+  claudePid: number = environmentClaudePid(),
+  readAncestry: (pid: number) => AncestryRecord[] = readProcessAncestry,
+): LauncherAgentProof {
+  if (!Number.isInteger(launcherPid) || launcherPid <= 0) return { agent: null, checked: false, route: 'none' };
+  if (records.some((record) => isAgentClientProcessName(record.name))) {
+    return { agent: launcherDirectAgent(launcherPid, records), checked: true, route: 'process' };
+  }
+  if (claudePid > 0) {
+    const fromAgent = readAncestry(claudePid);
+    if (fromAgent[0]?.pid === claudePid && isAgentClientProcessName(fromAgent[0].name)) {
+      return { agent: launcherDirectAgent(launcherPid, fromAgent), checked: true, route: 'environment-pid' };
+    }
+  }
+  return { agent: null, checked: false, route: 'none' };
+}
+
 let currentAgentCache: { pid: number; route: string; name?: string } | null = null;
 
 /**
@@ -338,8 +382,7 @@ let currentAgentCache: { pid: number; route: string; name?: string } | null = nu
  * Claude Code's tool and hook children, and otherwise the walk's process name says `claude` or `codex`.
  */
 export function currentAgentAssistant(): 'claude' | 'codex' | null {
-  const raw = (process.env['CLAUDE_PID'] ?? '').trim();
-  if (/^\d+$/.test(raw) && Number(raw) > 0) return 'claude';
+  if (environmentClaudePid() > 0) return 'claude';
   const answer = resolveCurrentAgentProcess();
   const name = (currentAgentCache?.name ?? '').toLowerCase().replace(/\.exe$/, '');
   if (answer.pid > 0 && name === 'codex') return 'codex';
@@ -354,8 +397,8 @@ export function currentAgentAssistant(): 'claude' | 'codex' | null {
  * fixed at creation.
  */
 export function resolveCurrentAgentProcess(): { pid: number; route: string } {
-  const raw = (process.env['CLAUDE_PID'] ?? '').trim();
-  if (/^\d+$/.test(raw) && Number(raw) > 0) return { pid: Number(raw), route: 'environment-pid' };
+  const claudePid = environmentClaudePid();
+  if (claudePid > 0) return { pid: claudePid, route: 'environment-pid' };
   if (currentAgentCache) return currentAgentCache;
   const walked = resolveAgentClientProcess();
   currentAgentCache = walked.agentPid > 0 ? { pid: walked.agentPid, route: 'parent-chain', name: walked.agentName } : { pid: 0, route: 'none' };

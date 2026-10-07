@@ -31,6 +31,11 @@ import { hubSlug } from '../src/hubslug.ts';
 import { isCompiled, locateProgramRoot } from '../src/programroot.ts';
 import { auditRelease, gitBlobId, readCommitBlobIds, readZipEntries } from '../src/releaseaudit.ts';
 import { isRepositoryLocalGitVariable, repositoryNeutralEnv } from '../src/gitenv.ts';
+import { fillSeatTemplate, loadSeatTemplate, seatTemplateId, seatTemplateNames } from '../src/seattemplates.ts';
+import { releaseFiles } from '../src/releasefiles.ts';
+import { seatCreationPlanId } from '../src/seatstartplan.ts';
+import { launcherAgentProof } from '../src/procstart.ts';
+import type { PsJsonValue } from '../src/psjson.ts';
 
 /**
  * A COMPILED SELF-TEST HANDED `-e` IS A STAND-IN, NEVER A SECOND RUN (S85 row 6, stall 2). The stand-in agents and the
@@ -3643,7 +3648,7 @@ if (selected(41)) {
     // ARCHIVE: moved within collection/, relinked, catalogued, and Discovery follows it into the archive.
     const archivePlan = json(cli(['shared', 'archive', 'guide', '--preflight', '--json']), 'the local archive preflight');
     equal(archivePlan['destination'], 'collection', 'the local archive preflight did not name the Local collection');
-    const archived = cli(['shared', 'archive', 'guide', '--user-confirmed', '--json']);
+    const archived = cli(['shared', 'archive', 'guide', '--user-confirmed', '--plan-id', String(archivePlan['plan_id'] ?? ''), '--json']);
     equal(archived.exit, 0, `a local archive failed: ${archived.stderr.trim().slice(0, 400)}`);
     const archivedRoot = path.join(collection, 'archive', 'guide', 'wiki');
     check(fs.existsSync(path.join(archivedRoot, 'start.md')) && !fs.existsSync(path.join(collection, 'books', 'guide')), 'the archived Book did not move whole into collection/archive/');
@@ -4533,7 +4538,8 @@ if (selected(49)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-setup-')));
   try {
     const registry = path.join(root, 'reg');
-    const env = { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    // HERMETIC (kickoffs/s96 row 6): fixtureInstallEnv's environment, so no install on the machine's PATH reaches setup.
+    const env = fixtureCliEnv(root, { LIBRARY_WORKSPACES: registry, DESKPOST_YES: '1' });
     const answersFile = path.join(root, 'answers.json');
     const askWith = (args: string[], cwd = root) => runCli(['setup', '--ask', '--answers', answersFile, '--yes', ...args], { cwd, env });
     const answers = () => JSON.parse(fs.readFileSync(answersFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
@@ -4847,9 +4853,10 @@ if (selected(51)) {
     // confirmation, bound to a plan_id; the Hub and the seat are made; Claude Code starts.
     const declined = menu(['no'], ['--workspace', library]);
     check(declined.stdout.includes('This Library has no seats yet.') && !fs.existsSync(path.join(library, 'collection', 'projects', 'deskpost-help')), `the no-seat fork was missing, or an answer that is not a key created something: ${declined.stdout.slice(0, 400)}`);
-    const first = menu(['+', 'Home Lab', ''], ['--workspace', library]);
+    // THE BLANK PATH (S97 row 2): [Enter] at the template, department, card and Shelf Books steps, then at the preview.
+    const first = menu(['+', 'Home Lab', '', '', '', '', ''], ['--workspace', library]);
     check(first.exit === 0 && first.stdout.includes('[h, Enter] Show me around') && first.stdout.includes('Your first seat.') && !first.stdout.includes('Seats in this Library'), `the first run was not the fork, then the wizard: ${first.stdout.slice(0, 400)} ${first.stderr}`);
-    check(/plan_id\s+[0-9a-f]{16}/.test(first.stdout) && first.stdout.includes('seat start home-lab --project home-lab --plan-id'), `the wizard did not show its plan_id and the commands it ran: ${first.stdout}`);
+    check(/plan_id\s+seat-start-[0-9a-f]{64}/.test(first.stdout) && first.stdout.includes('seat start home-lab --project home-lab --plan-id'), `the wizard did not show its plan_id and the commands it ran: ${first.stdout}`);
     check(fs.existsSync(path.join(library, 'collection', 'projects', 'home-lab', '_project.md')), 'the wizard did not create the Hub named after the project');
     const registryRows = () => (JSON.parse(fs.readFileSync(path.join(library, '.claude', 'seats', '_registry.json'), 'utf8').replace(/^﻿/, '')) as { seats: unknown }).seats;
     check(JSON.stringify(registryRows()).includes('"project":"home-lab"') || JSON.stringify(registryRows()).includes('"home-lab"'), 'the wizard did not register seat home-lab');
@@ -4941,7 +4948,7 @@ if (selected(51)) {
     check(taken.stdout.includes("Project 'home-lab' already has a seat, 'home-lab'"), `a second seat for a bound project was not refused: ${taken.stdout.slice(-400)}`);
     const basic = menu(['b', 's', 'q'], ['--workspace', library]);
     check(basic.stdout.includes('Basic Memory is optional: it shares your Books across machines.') && basic.stdout.includes('basic-memory setup --url'), `the b slot did not say what Basic Memory is for: ${basic.stdout.slice(-400)}`);
-    const second = menu(['+', 'Garden', '', ], ['--workspace', library]);
+    const second = menu(['+', 'Garden', '', '', '', '', ''], ['--workspace', library]);
     check(second.exit === 0 && second.stdout.includes("Create seat 'garden' for Project 'garden'."), `+ did not run the wizard: ${second.stdout.slice(-400)}`);
     const retired = menu(['r1', 'yes', 'q'], ['--workspace', library]);
     check(retired.stdout.includes("Retire seat 'garden'") && retired.stdout.includes("Seat 'garden' retired."), `r<number> did not retire through its preflight: ${retired.stdout.slice(-500)}`);
@@ -5117,7 +5124,8 @@ if (selected(52)) {
 if (selected(53)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-unguarded-')));
   try {
-    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    // HERMETIC (kickoffs/s96 row 6): fixtureInstallEnv's environment, so no install on the machine's PATH reaches setup.
+    const env = fixtureCliEnv(root, { DESKPOST_YES: '1' });
     const library = path.join(root, 'lib');
     equal(runCli(['init', library, '--json'], { env }).exit, 0, 'init of the unguarded fixture failed');
     const answersFile = path.join(root, 'answers.json');
@@ -5797,7 +5805,8 @@ if (selected(60)) {
     check(ran.exit === 0 && (JSON.parse(ran.stdout || '{}') as { written?: boolean }).written === true, `the new page was not made: ${ran.stdout.slice(0, 300)} ${ran.stderr.trim()}`);
     equal(fs.readFileSync(path.join(hub, 'notes', '2026-09-28-parked.md'), 'utf8'), '# The parked design\n\nWhat we decided, and why.\n', 'the new page was not written as given');
     equal(lastJournal()['state'], 'complete', 'the new page\'s journal did not end complete');
-    check(String((JSON.parse(ran.stdout || '{}') as { next?: string }).next).includes('--mode append-section --section Next'), 'the result does not suggest linking the page from Next');
+    // SINCE S98 ROW K2 a page that is no kickoff is linked from what cites it, and no section is named (ADR-0013).
+    check(String((JSON.parse(ran.stdout || '{}') as { next?: string }).next).includes('Link it from the item or paragraph that cites it: [[projects/'), 'the result does not suggest linking the page from what cites it');
     refused(make('notes/2026-09-28-parked', ['--preflight']), 'already exists', 'a new page over an existing one');
     const read = cli(['mcp', 'call', 'read_open_project_page', '--slug', 'work', '--page', 'notes/2026-09-28-parked', '--seat', 'first']);
     check(read.stdout.includes('The parked design'), `the new page cannot be read through the reader: ${read.stdout.slice(0, 200)} ${read.stderr.trim()}`);
@@ -7340,18 +7349,20 @@ if (selected(82)) {
     const raise = (message: string): never => {
       throw new Error(message);
     };
-    const theirs = { page: 'notes/n', fromSeat: 'alpha', forSeat: null };
+    const theirs = { page: 'notes/n', fromSeat: 'alpha', forSeat: null, forSeatId: null, malformed: [] as string[] };
+    // A SEAT AS THE RULE SEES IT (kickoffs/s98 row 0): its slug and a seat_id; '' here, as a pre-identity row reads.
+    const seatOf = (seat: string) => ({ seat, seatId: '' });
     const writer = { slug: 'holding', closedBy: 'writer' as const };
     const anySeat = { slug: 'reports', closedBy: 'any' as const };
-    check(/written by seat 'alpha'/.test(refused(() => assertSeatMayClose(theirs, writer, 'beta', null, raise))), 'a writer-only Book let another seat close a note');
-    equal(refused(() => assertSeatMayClose(theirs, anySeat, 'beta', null, raise)), '', 'an any-seat Book refused another seat');
-    equal(refused(() => assertSeatMayClose(theirs, writer, 'alpha', null, raise)), '', 'the writing seat was refused its own note');
-    equal(refused(() => assertSeatMayClose({ ...theirs, fromSeat: null }, writer, 'beta', null, raise)), '', 'a seatless note was refused');
-    equal(refused(() => assertSeatMayClose({ ...theirs, forSeat: 'beta' }, writer, 'beta', null, raise)), '', 'a message for this seat was refused');
-    equal(refused(() => assertSeatMayClose(theirs, writer, 'beta', 'alpha', raise)), '', 'other_seat naming the writer was refused');
-    check(/does not name the writer/.test(refused(() => assertSeatMayClose(theirs, writer, 'beta', 'gamma', raise))), 'a wrong other_seat was accepted');
-    check(/does not name the writer/.test(refused(() => assertSeatMayClose(theirs, anySeat, 'beta', 'gamma', raise))), 'a wrong other_seat was accepted in an any-seat Book');
-    equal(refused(() => assertSeatMayClose(theirs, writer, 'alpha', 'alpha', raise)), '', 'a correct but unneeded other_seat was refused');
+    check(/written by seat 'alpha'/.test(refused(() => assertSeatMayClose(theirs, writer, seatOf('beta'), null, raise))), 'a writer-only Book let another seat close a note');
+    equal(refused(() => assertSeatMayClose(theirs, anySeat, seatOf('beta'), null, raise)), '', 'an any-seat Book refused another seat');
+    equal(refused(() => assertSeatMayClose(theirs, writer, seatOf('alpha'), null, raise)), '', 'the writing seat was refused its own note');
+    equal(refused(() => assertSeatMayClose({ ...theirs, fromSeat: null }, writer, seatOf('beta'), null, raise)), '', 'a seatless note was refused');
+    equal(refused(() => assertSeatMayClose({ ...theirs, forSeat: 'beta' }, writer, seatOf('beta'), null, raise)), '', 'a message for this seat was refused');
+    equal(refused(() => assertSeatMayClose(theirs, writer, seatOf('beta'), 'alpha', raise)), '', 'other_seat naming the writer was refused');
+    check(/does not name the writer/.test(refused(() => assertSeatMayClose(theirs, writer, seatOf('beta'), 'gamma', raise))), 'a wrong other_seat was accepted');
+    check(/does not name the writer/.test(refused(() => assertSeatMayClose(theirs, anySeat, seatOf('beta'), 'gamma', raise))), 'a wrong other_seat was accepted in an any-seat Book');
+    equal(refused(() => assertSeatMayClose(theirs, writer, seatOf('alpha'), 'alpha', raise)), '', 'a correct but unneeded other_seat was refused');
 
     // A leaf: nothing it imports, however far, reaches triage.ts.
     const reached = new Set<string>();
@@ -9151,7 +9162,8 @@ if (selected(104)) {
     equal(JSON.stringify(mine['letters_for_this_seat']?.['by_book']), '{"letters":1}', `first's letters were not counted as its own only: ${JSON.stringify(mine['letters_for_this_seat'])}`);
     equal(mine['letters_for_this_seat']?.['count'], 1, 'a letter for another seat, or a closed one, was counted');
     check(/^\d{4}-\d{2}-\d{2}/.test(String(mine['letters_for_this_seat']?.['oldest_pending'] ?? '')), `the oldest pending letter had no date: ${JSON.stringify(mine['letters_for_this_seat'])}`);
-    check(!String(JSON.stringify(mine['letters_for_this_seat']) ?? '').includes('For first'), 'a letter\'s title reached the Desk');
+    // THE ROUTE NAMES THE READER MAP'S GROUP, '### For first' (kickoffs/s99 row 4), which is the seat's name, not the title.
+    check(!String(JSON.stringify(mine['letters_for_this_seat']) ?? '').replace("'### For first'", '').includes('For first'), 'a letter\'s title reached the Desk');
     equal(desk(b, 'second')['letters_for_this_seat']?.['count'], 1, 'the letter for second was not counted on its Desk');
 
     // PEERS: a held peer's name, a Codex peer's assistant, and nothing for this seat's own row.
@@ -9642,7 +9654,9 @@ if (selected(109)) {
   let holder: ReturnType<typeof spawn> | null = null;
   try {
     const registry = path.join(root, 'reg');
-    const env = { LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_YES: '1' };
+    // HERMETIC (kickoffs/s96 row 6; the Report "Suspected: kernel self-test section 109 is not hermetic against the
+    // installed Deskpost on PATH"): fixtureInstallEnv's environment, so the upgrade never meets the machine's install.
+    const env = fixtureCliEnv(root, { LIBRARY_WORKSPACES: registry, DESKPOST_YES: '1' });
     const version = String((JSON.parse(runCli(['--version']).stdout) as Record<string, unknown>)['plugin_version']);
     const release = (name: string, change: (tree: string) => void): string => {
       const tree = path.join(root, name);
@@ -11276,6 +11290,18 @@ function nextPatchVersion(version: string): string {
   const numbers = (/^\d+(?:\.\d+)*/.exec(version.trim())?.[0] ?? '0').split('.').map(Number);
   numbers[numbers.length - 1] = numbers[numbers.length - 1]! + 1;
   return numbers.join('.');
+}
+
+/**
+ * fixtureInstallEnv FOR runCli (kickoffs/s96 row 6): its values, with EVERY SPELLING OF PATH the parent carries set to its
+ * shim-free PATH, because runCli spreads the parent's environment first and Windows' `Path` would otherwise come back.
+ */
+function fixtureCliEnv(root: string, extra: Record<string, string> = {}): Record<string, string> {
+  const env = fixtureInstallEnv(root, extra);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (value !== undefined) out[key] = value;
+  for (const key of Object.keys(process.env)) if (/^path$/i.test(key)) out[key] = env['PATH'] ?? '';
+  return out;
 }
 
 /** An environment for a fixture install: the machine's own Deskpost and registry out of it, every PATH entry holding a shim dropped. */
@@ -13577,7 +13603,8 @@ if (selected(154)) {
       }
     };
     const notes = next('notes/2026-10-06-a-page');
-    check(notes.includes('--mode append-section --section Next --content-path <file>') && notes.includes('- [[projects/work/notes/2026-10-06-a-page]]') && !notes.includes('--content "'), `a notes page's advice is not the --content-path route with its link line: ${notes}`);
+    // SINCE S98 ROW K2 a page that is no kickoff names no section: it is linked from the item or paragraph that cites it.
+    check(notes.includes('Link it from the item or paragraph that cites it: [[projects/work/notes/2026-10-06-a-page]]') && !notes.includes('--section') && !notes.includes('--content "'), `a notes page's advice does not link it from what cites it: ${notes}`);
     const kickoff = next('kickoffs/s95');
     check(kickoff.includes('--content-path <file>') && kickoff.includes('- [ ] Run s95: [[projects/work/kickoffs/s95]]') && !kickoff.includes('--content "'), `a kickoff page's advice is not the loop doc's pointer line by --content-path: ${kickoff}`);
   } catch (error) {
@@ -13601,6 +13628,2249 @@ if (selected(155) && !isCompiled()) {
     const ran = spawnSync(process.execPath, [tsc, '-p', path.join(kernelRoot, 'tsconfig.json'), '--noEmit', '--pretty', 'false'], { cwd: kernelRoot, encoding: 'utf8', timeout: 600000 });
     const errors = `${ran.stdout ?? ''}\n${ran.stderr ?? ''}`.split(/\r?\n/).filter((line) => /error TS\d+/.test(line));
     check(ran.status === 0 && errors.length === 0, `tsc found ${errors.length} type error(s) in the kernel (exit ${ran.status}): ${errors.slice(0, 8).join(' | ')}`);
+  }
+}
+
+// SECTION 156. A SEAT'S CARD, DEPARTMENT, ROLE AND TEMPLATE, READ THROUGH ONE PROJECTION (kickoffs/s96 row 1, ruling 3;
+// PLAN-seats-team.md session 1 row 1; ADR-0069). Four optional registry fields, hand-written here because row 1 has no
+// writer: `seat status`, the Desk's `this_seat` and the menu's cards show them through `seatMetadata`; a card over 160
+// characters, a role with no department and two orchestrators in one department read as absent, nothing throws across
+// the registry's readers, and doctor's `seats.registry-fields` WARNs with the repair and never prints the bad value. The
+// fields survive `seat start` and `seat retire` of another seat; a registry that never carries one keeps its rows'
+// bytes. `letters.recipient-incarnation` WARNs for a pending letter whose seat is gone, or whose `for_seat_id` names
+// another incarnation, and accepts a letter with no id.
+if (selected(156)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-fields-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], seat = '') => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: seat } });
+    const json = (args: string[], seat = ''): Record<string, unknown> => {
+      const ran = cli([...args, '--json'], seat);
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        throw new Error(`${args.join(' ')} gave no JSON (exit ${ran.exit}): ${ran.stderr.trim().slice(0, 300)}`);
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const [hub, seat] of [['work', 'first'], ['play', 'second'], ['ops', 'third'], ['spare', 'fourth']] as const) {
+      equal(cli(['hub', 'new', hub, '--title', hub]).exit, 0, `the fixture Hub ${hub} was not made`);
+      if (seat !== 'fourth') equal(cli(['seat', 'start', seat, '--project', hub, '--no-launch']).exit, 0, `the fixture seat ${seat} was not made`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const readRows = () => (JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] }).seats;
+    const rowText = (seat: string) => JSON.stringify(readRows().find((row) => row['seat'] === seat));
+
+    // A REGISTRY THAT NEVER CARRIES A FIELD: every row keeps exactly its four keys, in their order, and no history file.
+    check(readRows().every((row) => Object.keys(row).join(',') === 'seat,project,created_utc,seat_id'), `a plain registry's rows are not the four keys in order: ${JSON.stringify(readRows().map((row) => Object.keys(row)))}`);
+    const plainStatus = json(['seat', 'status']);
+    const plainRow = (plainStatus['seats'] as Record<string, unknown>[]).find((row) => row['seat'] === 'first')!;
+    check(plainRow['department'] === null && plainRow['role'] === null && plainRow['card'] === null && plainRow['template'] === null, `a seat with no fields does not read four nulls: ${JSON.stringify(plainRow)}`);
+
+    // A LETTER FROM first FOR second, before any field is set, for the incarnation check below.
+    equal(cli(['capture', 'letters', '--for', 'second', '--title', 'For second', '--body', 'Read this.'], 'first').exit, 0, 'the fixture letter was not written');
+
+    // HAND-WRITTEN FIELDS: first a valid orchestrator; second a performer whose card is too long; third a role with no
+    // department.
+    const longCard = 'x'.repeat(161);
+    const rows = readRows().map((row) => {
+      if (row['seat'] === 'first') return { ...row, department: 'engineering', role: 'orchestrator', card: 'Builds Deskpost and holds master.', template: 'performer@1' };
+      if (row['seat'] === 'second') return { ...row, department: 'engineering', role: 'performer', card: longCard };
+      if (row['seat'] === 'third') return { ...row, role: 'orchestrator' };
+      return row;
+    });
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: rows }, null, 4) + '\n');
+    const before = { first: rowText('first'), second: rowText('second'), third: rowText('third') };
+
+    const status = json(['seat', 'status']);
+    const statusRow = (seat: string) => (status['seats'] as Record<string, unknown>[]).find((row) => row['seat'] === seat)!;
+    const first = statusRow('first');
+    check(first['department'] === 'engineering' && first['role'] === 'orchestrator' && first['card'] === 'Builds Deskpost and holds master.' && first['template'] === 'performer@1', `seat status does not show first's four fields: ${JSON.stringify(first)}`);
+    const second = statusRow('second');
+    check(second['department'] === 'engineering' && second['role'] === 'performer' && second['card'] === null, `a card over 160 characters is not read as absent: ${JSON.stringify(second)}`);
+    const third = statusRow('third');
+    check(third['department'] === null && third['role'] === null, `a role with no department is not read as absent: ${JSON.stringify(third)}`);
+    check(!JSON.stringify(status).includes(longCard), 'seat status printed the malformed card');
+
+    const desk = json(['desk'], 'first');
+    const thisSeat = desk['this_seat'] as Record<string, unknown>;
+    check(thisSeat['department'] === 'engineering' && thisSeat['role'] === 'orchestrator' && thisSeat['card'] === 'Builds Deskpost and holds master.', `the Desk's this_seat does not carry the fields: ${JSON.stringify(thisSeat)}`);
+
+    const doctorCheck = (name: string): Record<string, unknown> | undefined => {
+      const ran = cli(['doctor', '--json']);
+      let report: Record<string, unknown>;
+      try {
+        report = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        throw new Error(`doctor gave no JSON: ${ran.stderr.trim().slice(0, 300)}`);
+      }
+      return (report['program_checks'] as Record<string, unknown>[]).find((row) => row['check'] === name);
+    };
+    const fields = doctorCheck('seats.registry-fields');
+    const fieldsDetail = String(fields?.['detail'] ?? '');
+    check(fields?.['status'] === 'warn' && fieldsDetail.includes("seat 'second' has a card") && fieldsDetail.includes('--clear-card') && fieldsDetail.includes("seat 'third' has a role") && fieldsDetail.includes('a role requires a department'), `doctor does not WARN on the card and the role with their repairs: ${JSON.stringify(fields)}`);
+    check(!fieldsDetail.includes(longCard), 'doctor printed the malformed card');
+
+    // TWO ORCHESTRATORS IN ONE DEPARTMENT read as none: both rows lose the role, the department stays.
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: readRows().map((row) => (row['seat'] === 'second' ? { ...row, role: 'orchestrator', card: 'Designs and triages.' } : row)) }, null, 4) + '\n');
+    const twice = json(['seat', 'status']);
+    const both = (twice['seats'] as Record<string, unknown>[]).filter((row) => row['seat'] === 'first' || row['seat'] === 'second');
+    check(both.length === 2 && both.every((row) => row['department'] === 'engineering' && row['role'] === null), `two orchestrators in one department are not read as none: ${JSON.stringify(both)}`);
+    const twiceDetail = String(doctorCheck('seats.registry-fields')?.['detail'] ?? '');
+    check(twiceDetail.includes("department 'engineering' has 2 orchestrators (first, second)"), `doctor does not name the two orchestrators: ${twiceDetail}`);
+
+    // NOTHING THROWS ACROSS THE REGISTRY'S READERS with these rows.
+    for (const [args, seat] of [[['desk'], 'first'], [['desk'], 'second'], [['seat', 'status', '--text'], ''], [['seat', 'dirs', 'first'], ''], [['seat', 'settings', 'first'], ''], [['triage', 'inventory'], 'first'], [['doctor'], '']] as [string[], string][]) {
+      const ran = cli([...args, ...(args.includes('--text') ? [] : ['--json'])], seat);
+      check(ran.exit === 0 || (args[0] === 'doctor' && ran.exit === 1), `${args.join(' ')} failed with the new fields in the registry (exit ${ran.exit}): ${ran.stderr.trim().slice(0, 300)}`);
+    }
+
+    // THE MENU'S CARDS show a seat's role and card where they have room, and nothing for a seat without them.
+    const { menuRows, cardLines } = await import('../src/menu.ts');
+    const glyphs = { ascii: true, tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|', sep: '-', held: '*', free: 'o', other: '!', ellipsis: '...', dot: '-' };
+    const palette = { reset: '', dim: '', bold: '', held: '', free: '', other: '', frame: '', accent: '' };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: readRows().map((row) => (row['seat'] === 'second' ? { ...row, role: 'performer' } : row)) }, null, 4) + '\n');
+    const menuText = cardLines(menuRows(lib, { skipTitles: true }), 100, glyphs, palette).join('\n');
+    check(menuText.includes('Role     orchestrator of engineering') && menuText.includes('Card     Builds Deskpost and holds master.') && menuText.includes('Role     performer in engineering'), `the menu's cards do not show the role and the card: ${menuText}`);
+    equal((menuText.match(/Role {5}/g) ?? []).length, 2, "the menu's cards show a Role line for a seat with no department");
+
+    // THE FIELDS SURVIVE ANOTHER SEAT'S START AND RETIRE, byte for byte.
+    const kept = { first: rowText('first'), second: rowText('second') };
+    equal(cli(['seat', 'start', 'fourth', '--project', 'spare', '--no-launch']).exit, 0, 'the fourth seat was not started');
+    equal(JSON.stringify({ first: rowText('first'), second: rowText('second') }), JSON.stringify(kept), "starting another seat changed the fields' rows");
+    const retirePlan = json(['seat', 'retire', 'fourth', '--preflight']);
+    equal(cli(['seat', 'retire', 'fourth', '--plan-id', String(retirePlan['plan_id'])]).exit, 0, 'the fourth seat was not retired');
+    equal(JSON.stringify({ first: rowText('first'), second: rowText('second') }), JSON.stringify(kept), "retiring another seat changed the fields' rows");
+    check(before.third === rowText('third'), "a row's invalid field was rewritten by another seat's start or retire");
+
+    // A PENDING LETTER FOR A SEAT NO LONGER IN THE REGISTRY, and one whose for_seat_id names another incarnation.
+    const lettersWiki = path.join(lib, 'shelf', 'letters', 'wiki');
+    const letterNames = listFiles(lettersWiki).filter((name) => /^notes\/.*for-second/.test(name));
+    equal(letterNames.length, 1, 'the fixture letter was not found');
+    const letterFile = path.join(lettersWiki, ...letterNames[0]!.split('/'));
+    const okDetail = String(doctorCheck('letters.recipient-incarnation')?.['detail'] ?? '');
+    check(doctorCheck('letters.recipient-incarnation')?.['status'] === 'pass', `a letter stamped with its registered recipient's own seat_id is not accepted: ${okDetail}`);
+    const original = fs.readFileSync(letterFile, 'utf8');
+    // SINCE S98 ROW 0 capture stamps the recipient's seat_id, so the stale id replaces it rather than standing beside it.
+    fs.writeFileSync(letterFile, original.replace(/^for_seat_id: .*\r?\n/m, '').replace(/^for_seat: second$/m, 'for_seat: second\nfor_seat_id: 0123456789abcdef0123456789abcdef'));
+    const stale = doctorCheck('letters.recipient-incarnation');
+    check(stale?.['status'] === 'warn' && String(stale?.['detail']).includes("for seat 'second'") && String(stale?.['detail']).includes('another incarnation'), `a letter whose for_seat_id names another incarnation is not named: ${JSON.stringify(stale)}`);
+    fs.writeFileSync(letterFile, original);
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: readRows().filter((row) => row['seat'] !== 'second') }, null, 4) + '\n');
+    const gone = doctorCheck('letters.recipient-incarnation');
+    check(gone?.['status'] === 'warn' && String(gone?.['detail']).includes("for seat 'second'") && String(gone?.['detail']).includes('not in the registry'), `a pending letter for a seat not in the registry is not named: ${JSON.stringify(gone)}`);
+  } catch (error) {
+    failures.push(`section 156 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 157. `seat describe`: THE GATE, THE SWAP AND THE ATTEMPT LOG (kickoffs/s96 row 2, ruling 4; PLAN-seats-team.md
+// session 1 row 2; ADR-0069). Each refusal writes nothing; the preview shows before and after per row, a new department
+// and the Purpose-review advice; a stale plan id from a metadata-only change by another writer is refused; `--from` swaps
+// two rows under one plan with two records sharing it and one commit line; `--clear-department` clears the role too; a
+// truncated last line is isolated and the next record is whole; a crash after the replace and before the commit line,
+// and one before the replace, read "unconfirmed" on `seat status` and in doctor; retire's plan id taken for a performer
+// fails after that seat became the orchestrator, its preview names the department it leaves without one, and it records
+// the row it archives; a seat with no fields retires with no history written.
+if (selected(157)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-describe-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_SEAT_HISTORY_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...extra } });
+    const json = (args: string[], extra: Record<string, string> = {}): Record<string, unknown> => {
+      const ran = cli([...args, '--json'], extra);
+      try {
+        return JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        throw new Error(`${args.join(' ')} gave no JSON (exit ${ran.exit}): ${ran.stderr.trim().slice(0, 400)}`);
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const [hub, seat] of [['work', 'first'], ['play', 'second'], ['ops', 'third'], ['spare', 'fourth']] as const) {
+      equal(cli(['hub', 'new', hub, '--title', hub]).exit, 0, `the fixture Hub ${hub} was not made`);
+      equal(cli(['seat', 'start', seat, '--project', hub, '--no-launch']).exit, 0, `the fixture seat ${seat} was not made`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const historyFile = path.join(lib, 'internal', 'seat-registry-history.jsonl');
+    const registry = () => fs.readFileSync(registryFile, 'utf8');
+    const history = () => (fs.existsSync(historyFile) ? fs.readFileSync(historyFile, 'utf8') : '');
+    const row = (seat: string) => (JSON.parse(registry()) as { seats: Record<string, unknown>[] }).seats.find((candidate) => candidate['seat'] === seat)!;
+    const describe = (args: string[], extra: Record<string, string> = {}) => {
+      const plan = json(['seat', 'describe', ...args, '--preflight'], extra);
+      const applied = cli(['seat', 'describe', ...args, '--plan-id', String(plan['plan_id']), '--json'], extra);
+      return { plan, applied };
+    };
+
+    // EVERY REFUSAL WRITES NOTHING.
+    const refusals: [string[], string][] = [
+      [['seat', 'describe', 'nobody', '--department', 'engineering', '--role', 'performer', '--preflight'], "There is no seat named 'nobody'"],
+      [['seat', 'describe', 'first', '--department', 'engineering', '--role', 'boss', '--preflight'], "--role 'boss' is refused"],
+      [['seat', 'describe', 'first', '--department', 'Engineering', '--preflight'], "--department 'Engineering' is refused"],
+      [['seat', 'describe', 'first', '--card', 'y'.repeat(161), '--preflight'], 'a card is at most 160 characters'],
+      [['seat', 'describe', 'first', '--card', 'one\ttwo', '--preflight'], 'no control character'],
+      [['seat', 'describe', 'first', '--role', 'performer', '--preflight'], 'A role requires a department'],
+      [['seat', 'describe', 'first', '--card', 'a', '--clear-card', '--preflight'], '--card and --clear-card contradict'],
+      [['seat', 'describe', 'first', '--department', 'engineering', '--from', 'second', '--preflight'], '--from names the department'],
+      [['seat', 'describe', 'first', '--preflight'], 'Name a change'],
+      [['seat', 'describe', 'first', '--department', 'engineering'], 'Run with --preflight'],
+    ];
+    const quiet = { registry: registry(), history: history() };
+    for (const [args, says] of refusals) {
+      const ran = cli(args);
+      check(ran.exit !== 0 && ran.stderr.includes(says) && ran.stderr.includes('Nothing was changed.'), `seat describe ${args.slice(2).join(' ')} was not refused with "${says}": exit ${ran.exit} ${ran.stderr.trim().slice(0, 300)}`);
+    }
+    check(registry() === quiet.registry && history() === quiet.history && !fs.existsSync(historyFile), 'a refused describe wrote to the registry or the history');
+    check(!cli(['seat', 'describe', 'first', '--card', 'y'.repeat(161), '--preflight']).stderr.includes('y'.repeat(161)), 'a refused card was echoed');
+
+    // THE PREVIEW AND THE APPLY: first becomes engineering's orchestrator, creating the department.
+    const made = describe(['first', '--department', 'engineering', '--role', 'orchestrator', '--card', 'Builds Deskpost and holds master.']);
+    const madeRows = made.plan['rows'] as Record<string, unknown>[];
+    check(
+      madeRows.length === 1 && JSON.stringify(madeRows[0]!['before']) === JSON.stringify({ department: null, role: null, card: null, template: null }) && (madeRows[0]!['after'] as Record<string, unknown>)['role'] === 'orchestrator' && made.plan['creates_department'] === true,
+      `the preview does not show before, after and the new department: ${JSON.stringify(made.plan)}`,
+    );
+    check(made.plan['purpose_review_advised'] === true && JSON.stringify(made.plan['advice']).includes('review it with deskpost hub edit work'), `the preview does not advise the Purpose review: ${JSON.stringify(made.plan['advice'])}`);
+    equal(made.applied.exit, 0, `the describe was not applied: ${made.applied.stderr.trim().slice(0, 300)}`);
+    equal(Object.keys(row('first')).join(','), 'seat,project,created_utc,seat_id,department,role,card', "the described row's keys are not the four, then the new ones in order");
+    const firstLines = history().split('\n').filter((line) => line.trim());
+    check(firstLines.length === 2 && JSON.parse(firstLines[0]!).verb === 'describe' && JSON.parse(firstLines[1]!).committed === true && JSON.parse(firstLines[1]!).attempt === JSON.parse(firstLines[0]!).attempt, `one apply did not write one record and its commit line: ${history()}`);
+    const statusFirst = (json(['seat', 'status'])['seats'] as Record<string, unknown>[]).find((candidate) => candidate['seat'] === 'first')!;
+    check((statusFirst['last_change'] as Record<string, unknown> | null)?.['verb'] === 'describe' && !('unconfirmed_attempts' in statusFirst), `seat status does not show first's last confirmed change: ${JSON.stringify(statusFirst)}`);
+
+    // A SECOND ORCHESTRATOR IS REFUSED, naming the --from route.
+    const second = cli(['seat', 'describe', 'second', '--department', 'engineering', '--role', 'orchestrator', '--preflight']);
+    check(second.exit !== 0 && second.stderr.includes("already has an orchestrator, 'first'") && second.stderr.includes('--from first'), `a second orchestrator was not refused with the --from route: ${second.stderr.trim()}`);
+
+    // A STALE PLAN ID FROM A METADATA-ONLY CHANGE BY ANOTHER WRITER.
+    const pending = json(['seat', 'describe', 'second', '--department', 'engineering', '--role', 'performer', '--preflight']);
+    const other = describe(['fourth', '--card', 'Spare hands.']);
+    equal(other.applied.exit, 0, 'the other writer did not apply its card');
+    const beforeStale = { registry: registry(), history: history() };
+    const stale = cli(['seat', 'describe', 'second', '--department', 'engineering', '--role', 'performer', '--plan-id', String(pending['plan_id'])]);
+    check(stale.exit !== 0 && stale.stderr.includes('does not match') && registry() === beforeStale.registry && history() === beforeStale.history, `a plan id made stale by another seat's card was not refused with nothing written: ${stale.stderr.trim()}`);
+    equal(describe(['second', '--department', 'engineering', '--role', 'performer']).applied.exit, 0, 'second did not become a performer');
+
+    // THE SWAP: one plan, both rows, two records sharing it and one commit line.
+    const swap = describe(['second', '--role', 'orchestrator', '--from', 'first']);
+    const swapRows = swap.plan['rows'] as Record<string, unknown>[];
+    check(swapRows.length === 2 && swapRows.map((change) => change['seat']).join(',') === 'second,first', `the swap's preview does not show both rows: ${JSON.stringify(swapRows)}`);
+    equal(swap.applied.exit, 0, `the swap was not applied: ${swap.applied.stderr.trim().slice(0, 300)}`);
+    check(row('second')['role'] === 'orchestrator' && row('first')['role'] === 'performer', `the swap did not change both rows: ${JSON.stringify([row('first'), row('second')])}`);
+    const swapLines = history().split('\n').filter((line) => line.trim()).slice(-3).map((line) => JSON.parse(line) as Record<string, unknown>);
+    check(
+      swapLines[0]!['attempt'] === swapLines[1]!['attempt'] && swapLines[0]!['plan_id'] === swapLines[1]!['plan_id'] && swapLines[0]!['plan_id'] === swap.plan['plan_id'] && swapLines[2]!['committed'] === true && swapLines[2]!['attempt'] === swapLines[0]!['attempt'] && swapLines.slice(0, 2).every((record) => record['purpose_review_advised'] === true),
+      `the swap did not write two records sharing its plan and one commit line: ${JSON.stringify(swapLines)}`,
+    );
+
+    // --clear-department CLEARS THE ROLE TOO, in the preview.
+    const clearing = json(['seat', 'describe', 'second', '--clear-department', '--preflight']);
+    const clearAfter = (clearing['rows'] as Record<string, unknown>[])[0]!['after'] as Record<string, unknown>;
+    check(clearAfter['department'] === null && clearAfter['role'] === null && clearing['purpose_review_advised'] === true, `--clear-department did not clear the role in the preview: ${JSON.stringify(clearing)}`);
+
+    // A TRUNCATED LAST LINE IS ISOLATED, AND THE NEXT RECORD IS WHOLE.
+    fs.appendFileSync(historyFile, '{"attempt":"truncated","wh');
+    equal(describe(['third', '--department', 'ops', '--role', 'performer']).applied.exit, 0, 'the describe after a truncated line failed');
+    const afterTruncated = history().split('\n');
+    const truncatedAt = afterTruncated.indexOf('{"attempt":"truncated","wh');
+    check(truncatedAt >= 0 && (JSON.parse(afterTruncated[truncatedAt + 1]!) as Record<string, unknown>)['seat'] === 'third', `the record after a truncated line is not whole on its own line: ${JSON.stringify(afterTruncated.slice(-4))}`);
+    const doctorFields = () => {
+      const report = JSON.parse(cli(['doctor', '--json']).stdout) as Record<string, unknown>;
+      return (report['program_checks'] as Record<string, unknown>[]).find((check) => check['check'] === 'seats.registry-fields')!;
+    };
+    const damaged = doctorFields();
+    check(damaged['status'] === 'warn' && String(damaged['detail']).includes(`line ${truncatedAt + 1} of`) && String(damaged['detail']).includes('seat-registry-history.jsonl'), `doctor does not name the unparsable line and the file: ${JSON.stringify(damaged)}`);
+    fs.writeFileSync(historyFile, history().split('\n').filter((line) => line !== '{"attempt":"truncated","wh').join('\n'));
+
+    // A CRASH AFTER THE REPLACE AND BEFORE THE COMMIT LINE: the change is there, unconfirmed.
+    const crashed = describe(['third', '--card', 'Keeps the lab running.'], { LIBRARY_SEAT_HISTORY_FAULT: 'after-replace' });
+    check(crashed.applied.exit !== 0 && row('third')['card'] === 'Keeps the lab running.', `the after-replace fault did not stop after the replace: ${crashed.applied.stderr.trim().slice(0, 200)}`);
+    const unconfirmed = (json(['seat', 'status'])['seats'] as Record<string, unknown>[]).find((candidate) => candidate['seat'] === 'third')!;
+    equal(unconfirmed['unconfirmed_attempts'], 1, `seat status does not count the unconfirmed attempt: ${JSON.stringify(unconfirmed)}`);
+    check(cli(['seat', 'status', '--text']).stdout.includes('1 attempt unconfirmed'), "seat status --text does not say '1 attempt unconfirmed'");
+    const doctorUnconfirmed = doctorFields();
+    check(doctorUnconfirmed['status'] === 'warn' && String(doctorUnconfirmed['detail']).includes("seat 'third'") && String(doctorUnconfirmed['detail']).includes('unconfirmed'), `doctor does not WARN on the unconfirmed attempt: ${JSON.stringify(doctorUnconfirmed)}`);
+    // AND ONE BEFORE THE REPLACE: nothing changed, and a second unconfirmed attempt.
+    const early = describe(['third', '--card', 'Never written.'], { LIBRARY_SEAT_HISTORY_FAULT: 'after-records' });
+    check(early.applied.exit !== 0 && row('third')['card'] === 'Keeps the lab running.', 'the after-records fault changed the registry');
+    equal((json(['seat', 'status'])['seats'] as Record<string, unknown>[]).find((candidate) => candidate['seat'] === 'third')!['unconfirmed_attempts'], 2, 'seat status does not count both unconfirmed attempts');
+    // A LATER CONFIRMED CHANGE says again what the seat's fields are.
+    equal(describe(['third', '--card', 'Keeps the lab running, confirmed.']).applied.exit, 0, 'the confirming describe failed');
+    check(!('unconfirmed_attempts' in (json(['seat', 'status'])['seats'] as Record<string, unknown>[]).find((candidate) => candidate['seat'] === 'third')!), 'a later confirmed change did not settle the unconfirmed attempts');
+
+    // RETIRE'S PLAN ID BINDS THE FIELDS: an approval taken for a performer fails after the seat became the orchestrator.
+    const forPerformer = json(['seat', 'retire', 'third', '--preflight']);
+    equal(describe(['third', '--role', 'orchestrator']).applied.exit, 0, 'third did not become the orchestrator of ops');
+    const lateRetire = cli(['seat', 'retire', 'third', '--plan-id', String(forPerformer['plan_id'])]);
+    check(lateRetire.exit !== 0 && fs.existsSync(path.join(lib, '.claude', 'seats', 'third')), `a retire approved for a performer applied to the orchestrator: ${lateRetire.stderr.trim().slice(0, 200)}`);
+    const forOrchestrator = json(['seat', 'retire', 'third', '--preflight']);
+    check(forOrchestrator['department_loses_orchestrator'] === 'ops' && String(forOrchestrator['department_note'] ?? '').includes("department 'ops' has no orchestrator"), `retire's preview does not say ops loses its orchestrator: ${JSON.stringify(forOrchestrator)}`);
+    const linesBeforeRetire = history().split('\n').filter((line) => line.trim()).length;
+    equal(cli(['seat', 'retire', 'third', '--plan-id', String(forOrchestrator['plan_id'])]).exit, 0, 'third was not retired with its own plan id');
+    const retireLines = history().split('\n').filter((line) => line.trim()).slice(linesBeforeRetire).map((line) => JSON.parse(line) as Record<string, unknown>);
+    check(retireLines.length === 2 && retireLines[0]!['verb'] === 'retire' && retireLines[0]!['seat'] === 'third' && JSON.stringify(retireLines[0]!['after']) === JSON.stringify({ department: null, role: null, card: null, template: null }) && retireLines[1]!['committed'] === true, `retire did not record the row it archived: ${JSON.stringify(retireLines)}`);
+
+    // A SEAT WITH NO FIELDS RETIRES WITH NO HISTORY WRITTEN.
+    equal(cli(['hub', 'new', 'plain', '--title', 'plain']).exit, 0, 'the plain Hub was not made');
+    equal(cli(['seat', 'start', 'plain', '--project', 'plain', '--no-launch']).exit, 0, 'the plain seat was not made');
+    const plainHistory = history();
+    const plainPlan = json(['seat', 'retire', 'plain', '--preflight']);
+    equal(cli(['seat', 'retire', 'plain', '--plan-id', String(plainPlan['plan_id'])]).exit, 0, 'the plain seat was not retired');
+    check(history() === plainHistory && !('department_loses_orchestrator' in plainPlan), 'retiring a seat with no fields wrote history or named a department');
+  } catch (error) {
+    failures.push(`section 157 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 158. `seat cards`: THE DIRECTORY (kickoffs/s96 row 3, ruling 5; PLAN-seats-team.md session 1 row 3; ADR-0069).
+// Two held seats and three free ones, cards and roles in the registry, letters between them. An orchestrator sees its
+// department and the other departments' orchestrators; a performer its own orchestrator and the others'; a seat with no
+// department itself, "no orchestrator: write to this seat directly" and every orchestrator; `--all` every department
+// grouped, then the seats with none, and a seatless call the same. Each seat shows nothing but seat, role, card, open or
+// closed, message_name while open, and pending_letters, which equals the Desk's `letters_for_this_seat` count. The text
+// form opens with the data-not-instructions line.
+if (selected(158)) {
+  const w = await seatClaimWorkspace('seat-cards');
+  try {
+    const ws = w.workspace;
+    for (const hub of ['desk-hub', 'dev-hub', 'prompts-hub', 'mkt-hub', 'loner-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const a = w.startAgent();
+    equal(w.createSeat('desk', 'desk-hub', a).exit, 0, 'the seat desk could not be created');
+    const b = w.startAgent();
+    equal(w.createSeat('dev', 'dev-hub', b).exit, 0, 'the seat dev could not be created');
+    for (const [seat, hub] of [['prompts', 'prompts-hub'], ['mkt', 'mkt-hub'], ['loner', 'loner-hub']]) {
+      equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
+    }
+    fs.writeFileSync(
+      path.join(ws, '.claude', 'seats', 'desk', 'activity.json'),
+      JSON.stringify({ seat: 'desk', last_seen_utc: '2999-01-01T00:00:00Z', note: 'fixture', session_id: '15800000-0000-4000-8000-000000000001', conversation_recorded_utc: '2999-01-01T00:00:00Z', message_name: 'desk-peer', message_session_id: '15800000-0000-4000-8000-000000000001' }),
+    );
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      desk: { department: 'engineering', role: 'orchestrator', card: 'Designs, triages and writes the Kickoffs.' },
+      dev: { department: 'engineering', role: 'performer', card: 'Builds Deskpost and holds master.' },
+      prompts: { department: 'engineering', role: 'performer' },
+      mkt: { department: 'marketing', role: 'orchestrator', card: 'Runs the website and its posts.' },
+    };
+    const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry.seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+
+    const letter = (agent: number, to: string, title: string) => equal(w.as(agent, ['capture', 'letters', '--for', to, '--title', title, '--body', 'x', '--workspace', ws]).exit, 0, `the letter "${title}" was not written`);
+    letter(b, 'desk', 'One for desk');
+    letter(b, 'desk', 'Two for desk');
+    letter(a, 'dev', 'One for dev');
+    letter(a, 'loner', 'One for loner');
+
+    const cards = (agent: number, extra: string[]) => {
+      const ran = w.as(agent, ['seat', 'cards', ...extra, '--workspace', ws, '--json']);
+      try {
+        return JSON.parse(ran.stdout) as Record<string, any>;
+      } catch {
+        throw new Error(`seat cards ${extra.join(' ')} gave no JSON (exit ${ran.exit}): ${ran.stderr.trim().slice(0, 300)}`);
+      }
+    };
+    const shown = (report: Record<string, any>) => Object.fromEntries((report['departments'] as Record<string, any>[]).map((department) => [department['department'], (department['seats'] as Record<string, unknown>[]).map((row) => row['seat']).join(',')]));
+    const allowed = new Set(['seat', 'role', 'card', 'open', 'message_name', 'messaging', 'pending_letters']);
+    const entries = (report: Record<string, any>) => [...(report['departments'] as Record<string, any>[]).flatMap((department) => department['seats'] as Record<string, unknown>[]), ...((report['without_department'] as Record<string, unknown>[] | undefined) ?? [])];
+    const onlyListed = (report: Record<string, any>, label: string) => {
+      const extra = entries(report).flatMap((row) => Object.keys(row).filter((key) => !allowed.has(key)));
+      check(extra.length === 0, `${label}: a seat's line carries more than the listed fields: ${[...new Set(extra)].join(', ')}`);
+    };
+
+    const asDesk = cards(a, ['--seat', 'desk']);
+    equal(asDesk['view'], 'orchestrator', "the orchestrator's view is not 'orchestrator'");
+    equal(JSON.stringify(shown(asDesk)), JSON.stringify({ engineering: 'desk,dev,prompts', marketing: 'mkt' }), "the orchestrator does not see its department and the other's orchestrator");
+    onlyListed(asDesk, 'the orchestrator view');
+    const deskLine = entries(asDesk).find((row) => row['seat'] === 'desk')!;
+    check(deskLine['open'] === true && deskLine['message_name'] === 'desk-peer' && deskLine['card'] === 'Designs, triages and writes the Kickoffs.', `a held seat's line does not say open with its message_name and card: ${JSON.stringify(deskLine)}`);
+    const promptsLine = entries(asDesk).find((row) => row['seat'] === 'prompts')!;
+    check(promptsLine['open'] === false && !('message_name' in promptsLine) && promptsLine['card'] === null, `a free seat's line is not closed with no message_name: ${JSON.stringify(promptsLine)}`);
+
+    const deskCount = (JSON.parse(w.as(a, ['desk', '--seat', 'desk', '--workspace', ws, '--json']).stdout) as Record<string, any>)['letters_for_this_seat']?.['count'];
+    const devCount = (JSON.parse(w.as(b, ['desk', '--seat', 'dev', '--workspace', ws, '--json']).stdout) as Record<string, any>)['letters_for_this_seat']?.['count'];
+    check(deskCount === 2 && devCount === 1 && deskLine['pending_letters'] === deskCount && entries(asDesk).find((row) => row['seat'] === 'dev')!['pending_letters'] === devCount, `pending_letters does not match the Desk's letters_for_this_seat: desk ${deskLine['pending_letters']}/${deskCount}, dev ${entries(asDesk).find((row) => row['seat'] === 'dev')!['pending_letters']}/${devCount}`);
+
+    const asDev = cards(b, ['--seat', 'dev']);
+    equal(asDev['view'], 'performer', "the performer's view is not 'performer'");
+    equal(JSON.stringify(shown(asDev)), JSON.stringify({ engineering: 'desk', marketing: 'mkt' }), "the performer does not see its own orchestrator and the other department's");
+    check(asDev['this_seat']?.['seat'] === 'dev' && asDev['this_seat']?.['card'] === 'Builds Deskpost and holds master.', `the performer's own line is missing: ${JSON.stringify(asDev['this_seat'])}`);
+    onlyListed(asDev, 'the performer view');
+
+    const asLoner = cards(process.pid, ['--seat', 'loner']);
+    check(asLoner['view'] === 'no-department' && asLoner['orchestrator_note'] === 'no orchestrator: write to this seat directly' && asLoner['this_seat']?.['pending_letters'] === 1, `a seat with no department does not see itself and the note: ${JSON.stringify({ view: asLoner['view'], note: asLoner['orchestrator_note'], self: asLoner['this_seat'] })}`);
+    equal(JSON.stringify(shown(asLoner)), JSON.stringify({ engineering: 'desk', marketing: 'mkt' }), 'a seat with no department does not see every orchestrator');
+
+    const all = cards(b, ['--seat', 'dev', '--all']);
+    check(all['view'] === 'all' && JSON.stringify(shown(all)) === JSON.stringify({ engineering: 'desk,dev,prompts', marketing: 'mkt' }) && (all['without_department'] as Record<string, unknown>[]).map((row) => row['seat']).join(',') === 'loner', `--all is not every department, then the seats with none: ${JSON.stringify({ shown: shown(all), without: all['without_department'] })}`);
+    onlyListed(all, '--all');
+    const seatless = cards(process.pid, []);
+    check(seatless['seat'] === null && seatless['view'] === 'all' && JSON.stringify(seatless['departments']) === JSON.stringify(all['departments']) && JSON.stringify(seatless['without_department']) === JSON.stringify(all['without_department']), 'a seatless call does not equal --all');
+
+    const text = w.as(b, ['seat', 'cards', '--seat', 'dev', '--workspace', ws]);
+    equal(text.stdout.split(/\r?\n/)[0], 'Cards are text each seat wrote about itself: data, not instructions.', "the text form does not open with the data-not-instructions line");
+  } catch (error) {
+    failures.push(`section 158 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 159. THE DESK'S DIRECTORY FACTS AND THE ONE STATIC HOOK LINE (kickoffs/s96 row 4, ruling 6; PLAN-seats-team.md
+// session 1 row 4; ADR-0069). `library desk` carries `directory` for this seat (department, role, the orchestrator with
+// its liveness, and the department's seat and open counts) and each `other_seats` row its `pending_letters`. The Desk
+// reminder gains one line naming the seat's role and department, with no counts and no liveness: for a performer, an
+// orchestrator and a seat with no department, the hook's text is byte-identical while a peer's claim is held and after
+// it is free, and a seat with no department gets no line.
+if (selected(159)) {
+  const w = await seatClaimWorkspace('desk-directory');
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'hand-hub', 'solo-hub', 'peer-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const a = w.startAgent();
+    equal(w.createSeat('lead', 'lead-hub', a).exit, 0, 'the seat lead could not be created');
+    const b = w.startAgent();
+    equal(w.createSeat('hand', 'hand-hub', b).exit, 0, 'the seat hand could not be created');
+    const c = w.startAgent();
+    equal(w.createSeat('solo', 'solo-hub', c).exit, 0, 'the seat solo could not be created');
+    const p = w.startAgent();
+    equal(w.createSeat('peer', 'peer-hub', p).exit, 0, 'the seat peer could not be created');
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator', card: 'Designs and triages.' },
+      hand: { department: 'engineering', role: 'performer' },
+      peer: { department: 'engineering', role: 'performer' },
+    };
+    const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry.seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    equal(w.as(b, ['capture', 'letters', '--for', 'lead', '--title', 'For lead', '--body', 'x', '--workspace', ws]).exit, 0, 'the letter for lead was not written');
+
+    const desk = (agent: number, seat: string) => JSON.parse(w.as(agent, ['desk', '--seat', seat, '--workspace', ws, '--json']).stdout) as Record<string, any>;
+    const lead = desk(a, 'lead');
+    const leadDirectory = lead['directory'] as Record<string, any>;
+    check(
+      leadDirectory?.['department'] === 'engineering' && leadDirectory['role'] === 'orchestrator' && leadDirectory['orchestrator']?.['seat'] === 'lead' && leadDirectory['seats'] === 3 && leadDirectory['open'] === 3,
+      `the orchestrator's directory is not its department, role and counts: ${JSON.stringify(leadDirectory)}`,
+    );
+    const hand = desk(b, 'hand');
+    const handDirectory = hand['directory'] as Record<string, any>;
+    check(handDirectory?.['role'] === 'performer' && handDirectory['orchestrator']?.['seat'] === 'lead' && handDirectory['orchestrator']?.['open'] === true && 'message_name' in handDirectory['orchestrator'], `the performer's directory does not name its orchestrator and its liveness: ${JSON.stringify(handDirectory)}`);
+    const leadRow = (hand['other_seats'] as Record<string, unknown>[]).find((row) => row['seat'] === 'lead');
+    check(leadRow?.['pending_letters'] === 1 && (hand['other_seats'] as Record<string, unknown>[]).every((row) => typeof row['pending_letters'] === 'number'), `other_seats rows do not carry pending_letters: ${JSON.stringify(hand['other_seats'])}`);
+    const solo = desk(c, 'solo');
+    const soloDirectory = solo['directory'] as Record<string, any>;
+    check(soloDirectory?.['department'] === null && soloDirectory['orchestrator'] === null && soloDirectory['seats'] === null, `a seat with no department has a directory that names one: ${JSON.stringify(soloDirectory)}`);
+
+    const context = (seat: string) =>
+      String(
+        (JSON.parse(runCli(['hook', 'desk-context', '--workspace', ws, '--seat', seat, '--agent-pid', '0'], { cwd: w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_CONFIG_DIR: path.join(w.root, 'no-config') }, input: '{}' }).stdout) as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput['additionalContext'],
+      );
+    const held = { lead: context('lead'), hand: context('hand'), solo: context('solo') };
+    check(held.lead.includes(' This seat is the orchestrator of engineering; `deskpost seat cards` lists it.'), `the orchestrator's reminder lacks its line: ${held.lead}`);
+    check(held.hand.includes(' This seat is a performer in engineering; its orchestrator is lead.'), `the performer's reminder lacks its line: ${held.hand}`);
+    check(!held.solo.includes('This seat is'), `a seat with no department got a line: ${held.solo}`);
+    // THE PEER'S CLAIM GOES FREE: no reminder's text moves.
+    process.kill(p);
+    check(w.untilFree('peer'), "the peer's claim did not go free");
+    const free = { lead: context('lead'), hand: context('hand'), solo: context('solo') };
+    for (const seat of ['lead', 'hand', 'solo'] as const) equal(free[seat], held[seat], `${seat}'s reminder changed when a peer's claim went free`);
+    check(desk(a, 'lead')['directory']?.['open'] === 2, "the Desk's open count did not follow the peer");
+  } catch (error) {
+    failures.push(`section 159 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 160. DOCTOR'S `settings.inbound-overview` (kickoffs/s96 row 5, rulings 7 and 8; PLAN-seats-team.md session 1
+// row 5). Where `crossSessionInbound` is set, and to what, on four layouts: nothing set (it says so once, with the
+// per-seat route); a seat's own file; the Library's own `.claude/settings.local.json`; the user level. It never WARNs,
+// on `hold` included, names only the per-seat route, and writes nothing: every file under the Library's `.claude/` and
+// the user settings file hash the same after.
+if (selected(160)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-inbound-overview-')));
+  try {
+    const config = path.join(root, 'claude-config');
+    fs.mkdirSync(config, { recursive: true });
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', CLAUDE_CONFIG_DIR: config };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const overview = (): Record<string, unknown> => {
+      const ran = cli(['doctor', '--json']);
+      const report = JSON.parse(ran.stdout) as Record<string, unknown>;
+      return (report['program_checks'] as Record<string, unknown>[]).find((row) => row['check'] === 'settings.inbound-overview') ?? {};
+    };
+    const snapshot = (): string => {
+      const files = [...listFiles(path.join(lib, '.claude')).map((name) => path.join(lib, '.claude', ...name.split('/'))), path.join(config, 'settings.json')].filter((file) => fs.existsSync(file));
+      return files.map((file) => `${file}=${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}`).join('\n');
+    };
+    const route = 'deskpost seat settings <seat> --inbound accept';
+
+    // NOTHING SET.
+    const local = path.join(lib, '.claude', 'settings.local.json');
+    const localBefore = fs.readFileSync(local, 'utf8');
+    check(!localBefore.includes('crossSessionInbound'), 'the fixture Library set crossSessionInbound by itself');
+    let before = snapshot();
+    const none = overview();
+    check(none['status'] === 'pass' && String(none['detail']).startsWith("nothing sets crossSessionInbound, so Claude Code's own default applies: two sessions that prompt for permission deliver each other's messages at once, and a session that bypasses permissions holds every message from a prompting one behind an approval dialog.") && String(none['detail']).includes(route), `nothing set does not say so with the per-seat route: ${JSON.stringify(none)}`);
+    equal(snapshot(), before, 'the overview wrote a file when nothing was set');
+
+    // A SEAT'S OWN FILE, set to hold: reported, never a WARN.
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'settings.json'), '{"crossSessionInbound": "hold"}\n');
+    before = snapshot();
+    const seatFile = overview();
+    check(seatFile['status'] === 'pass' && String(seatFile['detail']).includes(`seat 'first''s own file: "hold"`) && String(seatFile['detail']).includes(route), `a seat's hold is not reported plainly: ${JSON.stringify(seatFile)}`);
+    equal(snapshot(), before, "the overview wrote a file with a seat's file set");
+
+    // THE LIBRARY'S OWN LOCAL SETTINGS, as the reader's own Library has it since 2026-10-04.
+    fs.writeFileSync(local, JSON.stringify({ ...(JSON.parse(localBefore) as Record<string, unknown>), crossSessionInbound: 'accept' }, null, 2) + '\n');
+    before = snapshot();
+    const library = overview();
+    check(library['status'] === 'pass' && String(library['detail']).includes(`this Library's .claude/settings.local.json: "accept"`) && !String(library['detail']).includes('settings.local.json --inbound'), `the Library's local value is not reported, or a workspace route was named: ${JSON.stringify(library)}`);
+    equal(snapshot(), before, "the overview wrote a file with the Library's local value set");
+
+    // THE USER LEVEL.
+    fs.writeFileSync(path.join(config, 'settings.json'), '{"crossSessionInbound": "accept"}\n');
+    before = snapshot();
+    const user = overview();
+    check(user['status'] === 'pass' && String(user['detail']).includes(`user settings ${path.join(config, 'settings.json')}: "accept"`) && String(user['detail']).includes('set in 3 places'), `the user level is not reported beside the others: ${JSON.stringify(user)}`);
+    equal(snapshot(), before, 'the overview wrote a file with the user level set');
+  } catch (error) {
+    failures.push(`section 160 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S97 ROW A: A LOCAL ARCHIVE APPLIES ONLY WITH THE PLAN ID ITS PREFLIGHT ISSUED (home-lab-admin's Report: a made-up
+// id archived a Book). The id binds the slug, the kind, the active path and every file of the active Book, so a page
+// changed after the preview, a made-up id and no id are each refused with nothing moved, and the fresh id applies.
+if (selected(161)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-archive-gate-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    const wiki = path.join(lib, 'collection', 'books', 'atlas', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Atlas\n\nA fixture Book.\n');
+    fs.writeFileSync(path.join(wiki, '_index.md'), '# Atlas\n\n- [[books/atlas/wiki/start|Start]]\n');
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nWhere to begin.\n');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, 'the fixture Book was not rebuilt');
+    const active = path.join(lib, 'collection', 'books', 'atlas');
+    const archivedTo = path.join(lib, 'collection', 'archive', 'atlas');
+    const unmoved = (label: string) => check(fs.existsSync(path.join(wiki, 'start.md')) && !fs.existsSync(archivedTo), `${label}: the Book moved`);
+    const planOf = (): Record<string, unknown> => {
+      const ran = cli(['shared', 'archive', 'atlas', '--kind', 'book', '--preflight', '--json']);
+      equal(ran.exit, 0, `the archive preflight failed: ${ran.stderr.trim().slice(0, 300)}`);
+      return JSON.parse(ran.stdout) as Record<string, unknown>;
+    };
+
+    // THE PREFLIGHT: its existing keys in their order, then plan_id; the same Book gives the same id.
+    const first = planOf();
+    equal(
+      Object.keys(first).join(','),
+      'schema,operation,destination,book_slug,book_title,active_path,archive_path,active_catalog_entry_removed,source_tree_removal,confirmation_required,shared_library_write,plan_id',
+      'the archive preflight keys moved or plan_id is not last',
+    );
+    const planId = String(first['plan_id'] ?? '');
+    check(/^shared-archive-[0-9a-f]{64}$/.test(planId), `the archive preflight issued no plan id: ${planId}`);
+    equal(String(planOf()['plan_id']), planId, 'the same Book gave a different plan id');
+    check(String(cli(['shared', 'archive', 'atlas', '--preflight', '--json']).stdout).includes(planId), 'a preflight without --kind gave a different plan id');
+
+    // NO ID, A MADE-UP ID, AN UNCONFIRMED RUN AND ANOTHER KIND: each refused, nothing moved.
+    const noId = cli(['shared', 'archive', 'atlas', '--user-confirmed', '--json']);
+    check(noId.exit !== 0 && noId.stderr.includes('--plan-id'), `an archive with no plan id was not refused by name: ${noId.stderr.trim()}`);
+    unmoved('no plan id');
+    const madeUp = cli(['shared', 'archive', 'atlas', '--user-confirmed', '--plan-id', 'shared-archive-' + '0'.repeat(64), '--json']);
+    check(madeUp.exit !== 0 && madeUp.stderr.includes('rerun the current preflight'), `a made-up plan id was not refused: ${madeUp.stderr.trim()}`);
+    unmoved('a made-up plan id');
+    const unconfirmed = cli(['shared', 'archive', 'atlas', '--plan-id', planId, '--json']);
+    check(unconfirmed.exit !== 0 && unconfirmed.stderr.includes('--user-confirmed'), `an archive without --user-confirmed was not refused: ${unconfirmed.stderr.trim()}`);
+    unmoved('no --user-confirmed');
+    const project = cli(['shared', 'archive', 'atlas', '--kind', 'project', '--preflight', '--json']);
+    check(project.exit !== 0 && project.stderr.includes('--kind project'), `a local archive of another kind was not refused: ${project.stderr.trim()}`);
+
+    // A STALE ID: one page of the active Book changed after the preview.
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nWhere to begin, changed.\n');
+    const stale = cli(['shared', 'archive', 'atlas', '--user-confirmed', '--plan-id', planId, '--json']);
+    check(stale.exit !== 0 && stale.stderr.includes('rerun the current preflight'), `a stale plan id was not refused: ${stale.stderr.trim()}`);
+    unmoved('a stale plan id');
+    // A new file in the Book, beside the pages, changes the id as well.
+    const changedId = String(planOf()['plan_id']);
+    check(changedId !== planId, 'a changed page gave the same plan id');
+    fs.writeFileSync(path.join(active, 'notes.txt'), 'a file beside wiki/\n');
+    check(String(planOf()['plan_id']) !== changedId, 'a new file in the Book gave the same plan id');
+    fs.rmSync(path.join(active, 'notes.txt'));
+
+    // THE FRESH ID APPLIES.
+    const fresh = String(planOf()['plan_id']);
+    equal(fresh, changedId, 'removing the added file did not restore the plan id');
+    const applied = cli(['shared', 'archive', 'atlas', '--kind', 'book', '--user-confirmed', '--plan-id', fresh, '--json']);
+    equal(applied.exit, 0, `the fresh plan id did not apply: ${applied.stderr.trim().slice(0, 300)}`);
+    check(fs.existsSync(path.join(archivedTo, 'wiki', 'start.md')) && !fs.existsSync(active), 'the fresh plan id did not move the Book');
+
+    // THE USAGE shows the apply form, and the summary names both backends.
+    const usage = cli(['help', 'shared']);
+    check(usage.stdout.includes('--user-confirmed --plan-id <id>') && usage.stdout.includes('`collection/` on a local Library, Basic Memory on one attached to it'), `the shared usage does not show the apply form: ${usage.stdout.slice(0, 600)}`);
+  } catch (error) {
+    failures.push(`section 161 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S97 ROW 0: THE TWO BUILT-IN SEAT TEMPLATES (PLAN-seats-team.md session 2 item 0). Both load from the program tree and
+// fill `{project}`; every other word is appendix B's. An unknown name, an unknown schema and each malformed shape are
+// refused by name; the release file filter keeps templates/seats/*.json.
+if (selected(162)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-templates-')));
+  try {
+    const checkout = path.resolve(HERE, '..', '..');
+    const performerText =
+      'This seat is a performer, working on {project}. It works its own lane and records its work on this Hub. A question with no clear destination goes to its department\'s orchestrator, which `deskpost seat cards` names. Anything to act on later, anything for a closed seat, and anything routed is a letter. A quick question answered within the exchange, a status ping, or the ring for a letter may be a message, and only to a seat that is open and has a `message_name` (a Codex seat has none). A Library defect goes to the Report Inbox. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: performer v1.';
+    const orchestratorText =
+      'This seat is the orchestrator of its department, working on {project}. It answers or routes letters addressed to the department, relays questions and their answers between seats, and triages the department\'s Reports onto its backlog. It does no long builds. Anything to act on later, anything for a closed seat, and anything routed is a letter. A quick question answered within the exchange, a status ping, or the ring for a letter may be a message, and only to a seat that is open and has a `message_name` (a Codex seat has none). When no seat card fits a question, it says so and asks the reader rather than guess. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: orchestrator v1.';
+
+    // BOTH LOAD, AND FILL.
+    equal(seatTemplateNames(checkout).join(','), 'orchestrator,performer', 'the program tree does not carry exactly the two built-in templates');
+    for (const [name, expected] of [['performer', performerText], ['orchestrator', orchestratorText]] as const) {
+      const template = loadSeatTemplate(checkout, name);
+      equal(JSON.stringify(Object.keys(JSON.parse(fs.readFileSync(path.join(checkout, 'templates', 'seats', `${name}.json`), 'utf8')) as object)), '["schema","name","version","role","purpose"]', `${name}.json carries other keys or another order`);
+      equal(template.role, name, `${name}.json's role is not ${name}`);
+      equal(template.version, 1, `${name}.json is not version 1`);
+      equal(seatTemplateId(template), `${name}@1`, `${name}'s registry id is not ${name}@1`);
+      equal(template.purpose, expected, `${name}.json's purpose is not appendix B's text word for word`);
+      const filled = fillSeatTemplate(template, 'atlas-work');
+      check(!filled.includes('{project}') && filled.includes('working on atlas-work.') && filled === expected.replace('{project}', 'atlas-work'), `${name} did not fill {project}: ${filled.slice(0, 120)}`);
+      check(filled.endsWith(`Seat template: ${name} v1.`), `${name}'s filled purpose does not end with its provenance`);
+    }
+
+    // EACH REFUSAL, against a program tree of its own.
+    const program = path.join(root, 'program');
+    const seats = path.join(program, 'templates', 'seats');
+    const refusal = (name: string): string => {
+      try {
+        loadSeatTemplate(program, name);
+        return '<loaded>';
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    check(refusal('performer').includes('none (templates/seats/ is missing'), `a program with no templates/seats/ was not named: ${refusal('performer')}`);
+    fs.mkdirSync(seats, { recursive: true });
+    const good = { schema: 1, name: 'scout', version: 2, role: 'performer', purpose: 'This seat scouts {project}. Seat template: scout v2.' };
+    const write = (value: unknown) => fs.writeFileSync(path.join(seats, 'scout.json'), typeof value === 'string' ? value : JSON.stringify(value));
+    write(good);
+    equal(loadSeatTemplate(program, 'scout').version, 2, 'a well-formed template did not load');
+    const cases: [string, unknown, string][] = [
+      ['an unknown name', null, "Unknown seat template 'builder'. The built-in templates are: scout."],
+      ['an unknown schema', { ...good, schema: 2 }, 'has an unknown schema (2)'],
+      ['invalid JSON', '{"schema": 1,', 'is malformed: it is not valid JSON'],
+      ['an array', '[]', 'is malformed: it is not a JSON object'],
+      ['an extra key', { ...good, books: ['atlas'] }, 'it has keys a template does not carry (books)'],
+      ['another name', { ...good, name: 'ranger' }, 'its name is "ranger", not \'scout\''],
+      ['a version of 0', { ...good, version: 0 }, 'its version must be a whole number from 1, not 0'],
+      ['an unknown role', { ...good, role: 'manager' }, 'its role must be performer or orchestrator, not "manager"'],
+      ['an empty purpose', { ...good, purpose: ' ' }, 'its purpose is missing or empty'],
+      ['a purpose on two lines', { ...good, purpose: 'Line {project}.\nSeat template: scout v2.' }, 'its purpose holds a line feed (U+000A)'],
+      ['no {project}', { ...good, purpose: 'This seat scouts. Seat template: scout v2.' }, 'its purpose does not name {project}'],
+      ['another provenance', { ...good, purpose: 'This seat scouts {project}. Seat template: scout v1.' }, 'its purpose must end with "Seat template: scout v2."'],
+    ];
+    for (const [label, value, words] of cases) {
+      if (value !== null) write(value);
+      const said = refusal(value === null ? 'builder' : 'scout');
+      check(said.includes(words) && (value === null || said.includes('templates/seats/scout.json')), `${label} was not refused by name: ${said}`);
+    }
+    check(refusal('../scout').startsWith("Unknown seat template '../scout'."), `a path was taken for a template name: ${refusal('../scout')}`);
+
+    // THE RELEASE KEEPS THEM: the file filter, and the public tree's include root (read as text, never run).
+    const kept = releaseFiles(['templates/seats/orchestrator.json', 'templates/seats/performer.json', 'templates/workspace-instructions.md', 'tools/Stray.ps1'], () => null);
+    equal(kept.join(','), 'templates/seats/orchestrator.json,templates/seats/performer.json,templates/workspace-instructions.md', 'the release file filter does not keep templates/seats/*.json');
+    check(/^\s*'templates',\s*$/m.test(fs.readFileSync(path.join(checkout, 'tools', 'PublicTreeAllowlist.ps1'), 'utf8')), 'templates is no longer an include root of the public tree');
+  } catch (error) {
+    failures.push(`section 162 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S97 ROW 1: ONE PLANNER FOR A NEW SEAT, AND `seat start`'s FIVE OPTIONS UNDER THE WRAPPED PLAN ID (PLAN-seats-team.md
+// session 2 item 2). With none of the options, the plain creation id route is as it was; with any, only the wrapped id
+// applies. Writes come after every check, in order; a creation that fails before its registry row leaves no seat.
+if (selected(163)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-start-plan-')));
+  try {
+    const env: Record<string, string> = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', LIBRARY_SEAT_START_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...extra } });
+    const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        failures.push(`${label}: no JSON (exit ${result.exit}) ${result.stderr.trim().slice(0, 300)}`);
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const hub of ['alpha', 'beta', 'gamma', 'delta', 'omega', 'plain', 'sigma', 'tau']) equal(cli(['hub', 'new', hub, '--title', hub]).exit, 0, `the fixture Hub ${hub} was not made`);
+    for (const book of ['atlas', 'codex']) equal(cli(['shelf', 'new', book, '--title', book, '--summary', `The ${book} Book.`, '--json']).exit, 0, `the Shelf Book ${book} was not made`);
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const historyFile = path.join(lib, 'internal', 'seat-registry-history.jsonl');
+    // THE REGISTRY IS `{ "seats": [...] }`; one row may be written as an object rather than a one-row array.
+    const registryDocument = (): Record<string, unknown> => JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    const registry = (): Record<string, unknown>[] => {
+      if (!fs.existsSync(registryFile)) return [];
+      const seats = registryDocument()['seats'] as Record<string, unknown> | Record<string, unknown>[] | undefined;
+      return seats === undefined ? [] : Array.isArray(seats) ? seats : [seats];
+    };
+    const seatFolder = (seat: string) => path.join(lib, '.claude', 'seats', seat);
+    const nothingCreated = (seat: string, label: string, before: string) => {
+      check(!fs.existsSync(seatFolder(seat)), `${label}: the seat folder was left behind`);
+      equal(fs.existsSync(registryFile) ? fs.readFileSync(registryFile, 'utf8') : '', before, `${label}: the registry changed`);
+    };
+    const registryText = () => (fs.existsSync(registryFile) ? fs.readFileSync(registryFile, 'utf8') : '');
+
+    // THE CREATION ID IS UNCHANGED: a fixed vector, computed before the planner moved it.
+    equal(seatCreationPlanId([{ seat: 'b', project: 'y' }, { seat: 'a', project: 'x' }], 'c', 'z'), '14cc2429e42399d1', 'the creation id no longer matches its fixed vector');
+
+    // THE PLAIN ROUTE, AS BEFORE: no option, the plain creation id, the same result keys and registry row.
+    const first = cli(['seat', 'start', 'first', '--project', 'alpha', '--no-launch']);
+    equal(first.exit, 0, `a seat with no option and no plan id was not created: ${first.stderr.trim()}`);
+    const plainId = seatCreationPlanId(registry() as Record<string, PsJsonValue>[], 'plainseat', 'plain');
+    const plain = cli(['seat', 'start', 'plainseat', '--project', 'plain', '--plan-id', plainId, '--no-launch']);
+    equal(plain.exit, 0, `the plain creation id did not apply: ${plain.stderr.trim()}`);
+    equal(
+      Object.keys(json(plain, 'the plain route')).join(','),
+      'operation,seat,project,seat_created,desk_directory,desk_migrated,legacy_desk_retired,claim_held,environment,workspace,picked,assistant,conversation,conversation_action,conversation_recorded,command,command_args,shared_library_write',
+      "the plain route's result keys moved",
+    );
+    equal(Object.keys(registry().find((row) => row['seat'] === 'plainseat') ?? {}).join(','), 'seat,project,created_utc,seat_id', "the plain route's registry row moved");
+    check(!fs.existsSync(historyFile), 'a seat started with no field wrote a history file');
+    const wrongPlain = cli(['seat', 'start', 'other', '--project', 'omega', '--plan-id', '0123456789abcdef', '--no-launch']);
+    check(wrongPlain.exit !== 0 && wrongPlain.stderr.includes('the seats changed between the plan you were shown and this write'), `a wrong plain id was not refused as before: ${wrongPlain.stderr.trim()}`);
+    check(!fs.existsSync(seatFolder('other')), 'a refused plain id left a seat folder');
+
+    // THE PREFLIGHT: its keys as before, then the fields and plan_id; the wrapped id also applies with no option.
+    const bare = json(cli(['seat', 'start', 'bare', '--project', 'omega', '--preflight']), 'a preflight with no option');
+    equal(
+      Object.keys(bare).join(','),
+      'operation,seat,project,seat_exists,desk_directory,claim_live,desk_migration,legacy_desk_retired,other_seats,launch,notebook_activation,shared_library_write,plan_id',
+      'the preflight keys moved, or plan_id is not last',
+    );
+    check(/^seat-start-[0-9a-f]{64}$/.test(String(bare['plan_id'])), `the preflight issued no wrapped plan id: ${String(bare['plan_id'])}`);
+    const bareRun = cli(['seat', 'start', 'bare', '--project', 'omega', '--plan-id', String(bare['plan_id']), '--no-launch']);
+    equal(bareRun.exit, 0, `the wrapped id with no option did not apply: ${bareRun.stderr.trim()}`);
+    equal(Object.keys(registry().find((row) => row['seat'] === 'bare') ?? {}).join(','), 'seat,project,created_utc,seat_id', 'a wrapped id with no option wrote fields');
+    const entered = json(cli(['seat', 'start', 'bare', '--preflight']), 'an existing seat');
+    equal(entered['plan_id'], null, 'an existing seat preflight issued a plan id');
+
+    // EVERY OPTION IS REFUSED WITHOUT --plan-id, AND WITH THE PLAIN ID; nothing is written.
+    const optionSets: [string, string[]][] = [
+      ['--department', ['--department', 'eng']],
+      ['--role', ['--role', 'performer']],
+      ['--card', ['--card', 'Builds the thing.']],
+      ['--template', ['--template', 'performer']],
+      ['--open-book', ['--open-book', 'atlas']],
+    ];
+    for (const [label, options] of optionSets) {
+      const before = registryText();
+      const noId = cli(['seat', 'start', 'gamma', '--project', 'gamma', ...options, '--no-launch']);
+      check(noId.exit !== 0 && noId.stderr.includes('only through a preview'), `${label} without --plan-id was not refused: ${noId.stderr.trim()}`);
+      nothingCreated('gamma', `${label} without --plan-id`, before);
+      const plainWith = cli(['seat', 'start', 'gamma', '--project', 'gamma', ...options, '--plan-id', seatCreationPlanId(registry() as Record<string, PsJsonValue>[], 'gamma', 'gamma'), '--no-launch']);
+      check(plainWith.exit !== 0 && plainWith.stderr.includes('only the plan_id seat start --preflight issued'), `${label} with the plain creation id was not refused: ${plainWith.stderr.trim()}`);
+      nothingCreated('gamma', `${label} with the plain id`, before);
+    }
+
+    // THE PLANNER'S OWN REFUSALS.
+    const refused = (args: string[], words: string, label: string) => {
+      const ran = cli(['seat', 'start', 'gamma', '--project', 'gamma', ...args, '--preflight']);
+      check(ran.exit !== 0 && ran.stderr.includes(words) && ran.stderr.includes('Nothing was created.'), `${label} was not refused: ${ran.stderr.trim()}`);
+    };
+    refused(['--template', 'builder', '--department', 'eng'], "Unknown seat template 'builder'.", 'an unknown template');
+    refused(['--template', 'performer', '--role', 'orchestrator', '--department', 'eng'], 'disagrees with template', 'a role disagreeing with the template');
+    refused(['--role', 'performer'], 'A role requires a department', 'a role with no department');
+    refused(['--template', 'performer'], "Template 'performer' gives this seat the role performer", 'a template with no department');
+    refused(['--open-book', 'missing', '--department', 'eng'], "No Shelf Book 'missing' exists", 'a Book that is not on the Shelf');
+    refused(['--department', 'Eng'], "--department 'Eng' is refused", 'a malformed department');
+
+    // A CREATION WITH EVERY OPTION: the row's four fields, both Books, the history record and its commit line.
+    const planArgs = ['--department', 'eng', '--template', 'orchestrator', '--card', 'Routes the engineering letters.', '--open-book', 'codex', '--open-book', 'atlas'];
+    const preview = json(cli(['seat', 'start', 'beta', '--project', 'beta', ...planArgs, '--preflight']), 'a preflight with every option');
+    equal(preview['role'], 'orchestrator', "the template's role was not the default");
+    equal(preview['template'], 'orchestrator@1', 'the preflight did not name the template');
+    equal(JSON.stringify(preview['open_books']), '["atlas","codex"]', 'the repeated --open-book did not keep both Books, sorted');
+    const applied = cli(['seat', 'start', 'beta', '--project', 'beta', ...planArgs, '--plan-id', String(preview['plan_id']), '--no-launch']);
+    equal(applied.exit, 0, `the wrapped id did not apply: ${applied.stderr.trim()}`);
+    const betaRow = registry().find((row) => row['seat'] === 'beta') ?? {};
+    equal(Object.keys(betaRow).join(','), 'seat,project,created_utc,seat_id,department,role,card,template', "the created row's fields are missing or out of order");
+    equal(`${String(betaRow['department'])}|${String(betaRow['role'])}|${String(betaRow['card'])}|${String(betaRow['template'])}`, 'eng|orchestrator|Routes the engineering letters.|orchestrator@1', "the created row's fields are wrong");
+    const books = fs.readFileSync(path.join(seatFolder('beta'), '.open-books'), 'utf8');
+    check(books.includes('shelf/atlas') && books.includes('shelf/codex'), `the chosen Books were not opened: ${books}`);
+    const history = fs.readFileSync(historyFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    const record = history.find((line) => line['verb'] === 'start' && line['seat'] === 'beta');
+    check(record !== undefined && record['plan_id'] === preview['plan_id'] && record['seat_id'] === betaRow['seat_id'], `no history record names the start: ${JSON.stringify(history)}`);
+    check(history.some((line) => line['attempt'] === record?.['attempt'] && line['committed'] === true), 'the start has no commit line');
+    refused(['--department', 'eng', '--role', 'orchestrator'], "Department 'eng' already has an orchestrator, 'beta'", 'a second orchestrator');
+    refused(['--department', 'eng', '--role', 'orchestrator'], 'deskpost seat describe gamma --role orchestrator --from beta', 'the hand-over route');
+
+    // A METADATA-ONLY REGISTRY CHANGE, between the preview and the apply, is refused: the creation id is unchanged.
+    const deltaArgs = ['--department', 'eng', '--template', 'performer'];
+    const deltaPreview = json(cli(['seat', 'start', 'delta', '--project', 'delta', ...deltaArgs, '--preflight']), 'the delta preview');
+    const creationBefore = seatCreationPlanId(registry() as Record<string, PsJsonValue>[], 'delta', 'delta');
+    const rows = registry();
+    rows[0]!['card'] = 'A card set elsewhere.';
+    fs.writeFileSync(registryFile, JSON.stringify({ ...registryDocument(), seats: rows }, null, 4));
+    equal(seatCreationPlanId(registry() as Record<string, PsJsonValue>[], 'delta', 'delta'), creationBefore, 'the metadata-only change moved the creation id');
+    const beforeDelta = registryText();
+    const stale = cli(['seat', 'start', 'delta', '--project', 'delta', ...deltaArgs, '--plan-id', String(deltaPreview['plan_id']), '--no-launch']);
+    check(stale.exit !== 0 && stale.stderr.includes('the seats changed between the plan you were shown and this write'), `a metadata-only change was not refused: ${stale.stderr.trim()}`);
+    nothingCreated('delta', 'a metadata-only change', beforeDelta);
+
+    // THE THREE FAILURE CASES.
+    for (const [fault, label] of [['book-open', 'a Book that cannot be opened'], ['registry-write', 'a registry replace that fails']] as const) {
+      const planned = json(cli(['seat', 'start', 'sigma', '--project', 'sigma', '--department', 'eng', '--open-book', 'atlas', '--preflight']), `the ${fault} preview`);
+      const before = registryText();
+      const failed = cli(['seat', 'start', 'sigma', '--project', 'sigma', '--department', 'eng', '--open-book', 'atlas', '--plan-id', String(planned['plan_id']), '--no-launch'], { LIBRARY_SEAT_START_FAULT: fault });
+      check(failed.exit !== 0 && failed.stderr.includes('FAULT INJECTED'), `${label} did not fail: ${failed.stderr.trim()}`);
+      nothingCreated('sigma', label, before);
+    }
+    const launchPlan = json(cli(['seat', 'start', 'tau', '--project', 'tau', '--department', 'eng', '--open-book', 'atlas', '--preflight']), 'the launch preview');
+    const launched = cli(['seat', 'start', 'tau', '--project', 'tau', '--department', 'eng', '--open-book', 'atlas', '--plan-id', String(launchPlan['plan_id']), '--command', 'no-such-agent-s97']);
+    check(launched.exit !== 0 && launched.stderr.includes("Seat 'tau' was created and stays"), `an agent that failed to launch did not report the created seat: exit ${launched.exit} ${launched.stderr.trim()}`);
+    check(registry().some((row) => row['seat'] === 'tau' && row['department'] === 'eng'), 'the seat whose agent failed to launch has no registry row');
+    check(fs.readFileSync(path.join(seatFolder('tau'), '.open-books'), 'utf8').includes('shelf/atlas'), 'the Books were not open before the launch');
+
+    // `seat enter --create` REFUSES THE FIVE OPTIONS and names `seat start`.
+    for (const [label, options] of optionSets) {
+      const ran = cli(['seat', 'enter', 'omega2', '--create', '--project', 'omega', ...options, '--preflight']);
+      check(ran.exit !== 0 && ran.stderr.includes('deskpost seat start omega2'), `seat enter --create took ${label}: ${ran.stderr.trim()}`);
+    }
+  } catch (error) {
+    failures.push(`section 163 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S97 ROW 2: THE `+` WIZARD'S NEW STEPS AND ITS ONE PREVIEW (PLAN-seats-team.md session 2 item 1), driven through the
+// front door with scripted answers and a fake Claude Code that writes the seat's open Books to its log when it starts.
+// The preview, the Hub's filled Purpose, the registry row's fields, the Books open before the launch, the history record
+// with its commit line; an existing Hub reused with its Purpose kept; a second orchestrator and a role with no
+// department refused; and a metadata-only registry change between the preview and [Enter] looping back to the preview.
+if (selected(164)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-wizard-steps-')));
+  try {
+    const windows = process.platform === 'win32';
+    const lib = path.join(root, 'lib');
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    const log = path.join(root, 'agents.log');
+    const books = (seatVariable: string) => path.join(lib, '.claude', 'seats', seatVariable, '.open-books');
+    fakeAssistant(
+      bin,
+      'claude',
+      log,
+      windows ? `type "${books('%LIBRARY_SEAT%')}" >> "${log}" 2>nul\r\n` : `cat "${books('$LIBRARY_SEAT')}" >> "${log}" 2>/dev/null\n`,
+    );
+    const env: Record<string, string> = {
+      LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '',
+      NO_COLOR: '1', LIBRARY_MENU_TOUCH_REGISTRY: '', PATH: bin + path.delimiter + (process.env['PATH'] ?? ''),
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(runCli(['shelf', 'new', 'aardvark', '--title', 'Aardvark', '--summary', 'The first Book on the Shelf.', '--workspace', lib], { cwd: root, env }).exit, 0, 'the Shelf Book was not made');
+    let turn = 0;
+    const menu = (answers: string[], extra: Record<string, string> = {}) => {
+      turn += 1;
+      const script = path.join(root, `answers-${turn}.txt`);
+      fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['menu', '--workspace', lib, '--script', script, '--width', '200'], { cwd: root, env: { ...env, ...extra } });
+    };
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const rowOf = (seat: string): Record<string, unknown> => {
+      const seats = (JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as { seats: unknown }).seats;
+      return ((Array.isArray(seats) ? seats : [seats]) as Record<string, unknown>[]).find((row) => row['seat'] === seat) ?? {};
+    };
+    const hub = (slug: string) => fs.readFileSync(path.join(lib, 'collection', 'projects', slug, '_project.md'), 'utf8');
+
+    // EVERY STEP: a performer in a new department, with a card and one Shelf Book.
+    const full = menu(['+', 'Atlas Work', 'p', 'eng', 'Builds the atlas pages.', '1', '']);
+    const out = full.stdout;
+    check(full.exit === 0, `the wizard with every step did not finish: ${full.stderr.trim()} ${out.slice(-600)}`);
+    check(/^\s+1\s+aardvark$/m.test(out), `the Shelf Books were not numbered from the catalog: ${out.slice(0, 1200)}`);
+    check(out.includes("'eng' is a new department.") && out.includes("Department 'eng' has no orchestrator yet."), `the department step did not flag a new department or name its orchestrator: ${out.slice(0, 1500)}`);
+    for (const line of [
+      '  Purpose    This seat is a performer, working on atlas-work. It works its own lane',
+      '  Department eng (new)',
+      '  Role       performer',
+      '  Card       Builds the atlas pages.',
+      '  Template   performer@1',
+      '  Books      shelf/aardvark',
+    ]) {
+      check(out.includes(line), `the preview lacks '${line.trim()}': ${out.slice(-2000)}`);
+    }
+    const previewId = /plan_id\s+(seat-start-[0-9a-f]{64})/.exec(out)?.[1] ?? '';
+    check(previewId !== '', `the preview did not show the wrapped plan_id: ${out.slice(-1500)}`);
+    check(out.includes(`--plan-id ${previewId} --template performer --department eng --card "Builds the atlas pages." --open-book aardvark`), `the wizard did not run seat start with its choices: ${out.slice(-1500)}`);
+    check(hub('atlas-work').includes('This seat is a performer, working on atlas-work.') && hub('atlas-work').includes('Seat template: performer v1.'), `the new Hub does not carry the filled Purpose: ${hub('atlas-work').slice(0, 800)}`);
+    const atlas = rowOf('atlas-work');
+    equal(`${String(atlas['department'])}|${String(atlas['role'])}|${String(atlas['card'])}|${String(atlas['template'])}`, 'eng|performer|Builds the atlas pages.|performer@1', "the wizard's registry row lacks its fields");
+    const history = fs.readFileSync(path.join(lib, 'internal', 'seat-registry-history.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    const started = history.find((line) => line['verb'] === 'start' && line['seat'] === 'atlas-work');
+    check(started !== undefined && started['plan_id'] === previewId && history.some((line) => line['attempt'] === started['attempt'] && line['committed'] === true), `the wizard's start has no history record with its commit line: ${JSON.stringify(history)}`);
+    const launched = fs.readFileSync(log, 'utf8');
+    const at = launched.indexOf('claude-env SEAT=atlas-work');
+    check(at >= 0 && launched.indexOf('shelf/aardvark', at) > at, `the chosen Book was not open when the agent started: ${launched}`);
+
+    // AN EXISTING HUB IS REUSED, ITS PURPOSE KEPT: an orchestrator for a new department.
+    equal(runCli(['hub', 'new', 'reuse', '--title', 'Reuse', '--purpose', 'Kept purpose for the reuse case.', '--workspace', lib], { cwd: root, env }).exit, 0, 'the reuse Hub was not made');
+    const reused = menu(['+', 'reuse', 'o', 'ops', '', '', '']);
+    check(reused.exit === 0 && reused.stdout.includes('  Hub        projects/reuse: Hub reused, its Purpose kept') && !reused.stdout.includes('  Purpose    '), `an existing Hub was not shown as reused with its Purpose kept: ${reused.stdout.slice(-1500)}`);
+    check(hub('reuse').includes('Kept purpose for the reuse case.') && !hub('reuse').includes('This seat is the orchestrator'), `the reused Hub's Purpose was written: ${hub('reuse').slice(0, 600)}`);
+    equal(`${String(rowOf('reuse')['role'])}|${String(rowOf('reuse')['department'])}`, 'orchestrator|ops', 'the reused Hub\'s seat is not the orchestrator of ops');
+
+    // A SECOND ORCHESTRATOR IS REFUSED WITH THE ROUTE, AND ANOTHER DEPARTMENT IS ASKED FOR.
+    const second = menu(['+', 'Ops Two', 'o', 'ops', 'ops-two', '', '', '']);
+    check(
+      second.stdout.includes("Department 'ops' already has an orchestrator, 'reuse'") && second.stdout.includes('seat describe ops-two --role orchestrator --from reuse'),
+      `a second orchestrator was not refused with the route: ${second.stdout.slice(-2000)}`,
+    );
+    equal(`${String(rowOf('ops-two')['role'])}|${String(rowOf('ops-two')['department'])}`, 'orchestrator|ops-two', 'the seat after the refusal is not the orchestrator of its own department');
+
+    // A ROLE WITH NO DEPARTMENT IS REFUSED; A SECOND [Enter] DROPS THE TEMPLATE.
+    const lonely = menu(['+', 'Lonely', 'p', '', '', '', '', '']);
+    check(lonely.stdout.includes('A role requires a department') && lonely.stdout.includes('No template, so no role'), `a role with no department was not refused: ${lonely.stdout.slice(-1500)}`);
+    equal(Object.keys(rowOf('lonely')).join(','), 'seat,project,created_utc,seat_id', 'the seat with its template dropped carries fields');
+
+    // A METADATA-ONLY REGISTRY CHANGE BETWEEN THE PREVIEW AND [Enter] LOOPS BACK TO THE PREVIEW.
+    const flag = path.join(root, 'touch.flag');
+    fs.writeFileSync(flag, '');
+    const looped = menu(['+', 'Loop Case', '', '', '', '', '', ''], { LIBRARY_MENU_TOUCH_REGISTRY: flag });
+    const ids = [...looped.stdout.matchAll(/plan_id\s+(seat-start-[0-9a-f]{64})/g)].map((match) => match[1]);
+    check(looped.stdout.includes('the seats changed between the plan you were shown and this write') && ids.length === 2 && ids[0] !== ids[1], `a metadata-only change did not loop back to a new preview: ${looped.stdout.slice(-2500)}`);
+    check(looped.stdout.lastIndexOf('projects/loop-case: Hub reused, its Purpose kept') > looped.stdout.indexOf('the seats changed'), 'the looped preview did not show the Hub it had made as reused');
+    check(!fs.existsSync(flag) && rowOf('loop-case')['seat'] === 'loop-case', 'the looped wizard did not create its seat once the preview was confirmed again');
+  } catch (error) {
+    failures.push(`section 164 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S97 ROW 4: `hub edit` REFUSES A STRAY WORD, AND `new-page` A QUOTE-EDGED --title (deskpost-prompts-dev's Report: a
+// shell left `"Re:` as the title and a stray word beside it, and a page's H1 is write-once until 1.4.0). Every mode reads
+// one positional word, the Hub's slug, so a second is refused for all of them; each mode's own call still works.
+if (selected(165)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-hub-edit-words-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    // A HUB IS WRITTEN FROM THE SEAT WHOSE DESK HOLDS IT: the seat bound to it opens it.
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const hubEdit = (args: string[]) => cli(['hub', 'edit', 'work', ...args, '--seat', 'first']);
+    const hubDir = path.join(lib, 'collection', 'projects', 'work');
+    const snapshot = () => listFiles(hubDir).map((name) => `${name}=${createHash('sha256').update(fs.readFileSync(path.join(hubDir, ...name.split('/')))).digest('hex')}`).join('\n');
+    const content = path.join(root, 'content.md');
+    fs.writeFileSync(content, '- [ ] A thing to do.\n');
+    const page = path.join(root, 'page.md');
+    fs.writeFileSync(page, 'A page body.\n');
+
+    // EVERY MODE'S OWN CALL STILL WORKS (the gated four as preflights), and each refuses a stray word, writing nothing.
+    const calls: [string, string[]][] = [
+      ['add-section', ['--mode', 'add-section', '--section', 'Notes', '--content-path', content]],
+      ['append-section', ['--mode', 'append-section', '--section', 'Next', '--content-path', content]],
+      ['check-item', ['--mode', 'check-item', '--section', 'Next', '--match-text', 'A thing to do.']],
+      ['new-page', ['--mode', 'new-page', '--page', 'notes/first', '--title', 'First page', '--content-path', page]],
+      ['replace-section', ['--mode', 'replace-section', '--section', 'Notes', '--content-path', content, '--preflight']],
+      ['replace-body', ['--mode', 'replace-body', '--content-path', content, '--preflight']],
+      ['replace-item', ['--mode', 'replace-item', '--section', 'Next', '--match-text', 'A thing to do.', '--content-path', content, '--preflight']],
+      ['remove-section', ['--mode', 'remove-section', '--section', 'Notes', '--preflight']],
+    ];
+    for (const [mode, args] of calls) {
+      const before = snapshot();
+      const stray = hubEdit([...args, 'stray']);
+      check(stray.exit !== 0 && stray.stderr.includes('unexpected argument: stray'), `${mode} took a stray word: ${stray.stderr.trim()}`);
+      equal(snapshot(), before, `${mode} wrote something before refusing a stray word`);
+      const ran = hubEdit([...args]);
+      equal(ran.exit, 0, `${mode}'s own call no longer works: ${ran.stderr.trim()}`);
+    }
+
+    // THE REPORT'S SHAPE: a title the shell left a quote on, and a stray word beside it.
+    const before = snapshot();
+    const reported = hubEdit(['--mode', 'new-page', '--page', 'notes/re', '--title', '"Re:', 'subject"', '--content-path', page]);
+    check(reported.exit !== 0 && reported.stderr.includes('unexpected argument: subject"'), `the Report's shape was not refused: ${reported.stderr.trim()}`);
+    for (const title of ['"Re:', "Re: subject'", '“Re: subject”', '`Re`']) {
+      const quoted = hubEdit(['--mode', 'new-page', '--page', 'notes/re', '--title', title, '--content-path', page]);
+      check(quoted.exit !== 0 && quoted.stderr.includes('starts or ends with a quote character'), `the title ${JSON.stringify(title)} was not refused: ${quoted.stderr.trim()}`);
+    }
+    equal(snapshot(), before, 'a refused title or stray word wrote something');
+    const inner = hubEdit(['--mode', 'new-page', '--page', 'notes/re', '--title', 'Re: the "quoted" word', '--content-path', page]);
+    equal(inner.exit, 0, `a title with a quote inside it was refused: ${inner.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section 165 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 166. THE LAUNCHER PROOF THROUGH GIT BASH'S `sh` SHIM (kickoffs/s98 row G, ruling 3; B's triage of 2026-10-07).
+// Since 1.3.7 a bare `library` from Git Bash runs a `#!/bin/sh` shim that execs the program, and the process it leaves
+// has a parent already gone, so the walk from it never met the agent or the launcher: a launcher-held seat read as merely
+// named, `is_this_conversation` false, and `capture` recorded `from_seat_source: environment`. With CLAUDE_PID set the
+// proof is made from that agent; a walk that meets an agent still answers alone; and the Desk says when it could not look.
+if (selected(166)) {
+  // 1. THE ROUTES, ON ANCESTRIES WRITTEN OUT (in process, every platform). The launcher is 500; its agent is 700.
+  const rec = (pid: number, parentPid: number, name: string) => ({ pid, parentPid, name, createdUtc: null });
+  const agentAncestry = new Map<number, ReturnType<typeof rec>[]>([
+    [700, [rec(700, 500, 'claude.exe'), rec(500, 1, 'library.exe')]],
+    [701, [rec(701, 501, 'claude.exe'), rec(501, 1, 'library.exe')]],
+    [600, [rec(600, 500, 'node.exe'), rec(500, 1, 'library.exe')]],
+  ]);
+  const read = (pid: number) => agentAncestry.get(pid) ?? [];
+  const shimmed = [rec(900, 850, 'library.exe')];
+  const proof = (records: ReturnType<typeof rec>[], claudePid: number) => {
+    const answer = launcherAgentProof(500, records, claudePid, read);
+    return `${answer.agent ? `${answer.agent.assistant}@${answer.agent.pid}` : 'none'} ${answer.checked ? 'checked' : 'unchecked'} ${answer.route}`;
+  };
+  equal(proof([rec(900, 800, 'library.exe'), rec(800, 700, 'bash.exe'), rec(700, 500, 'claude.exe'), rec(500, 1, 'library.exe')], 0), 'claude@700 checked process', 'a direct run did not find the launcher by its own walk');
+  equal(proof(shimmed, 700), 'claude@700 checked environment-pid', 'a run through the sh shim with CLAUDE_PID set did not find the launcher from that agent');
+  equal(proof(shimmed, 0), 'none unchecked none', 'a run through the sh shim with no CLAUDE_PID did not say it could not look');
+  equal(
+    proof([rec(900, 880, 'library.exe'), rec(880, 700, 'codex.exe'), rec(700, 500, 'claude.exe'), rec(500, 1, 'library.exe')], 700),
+    'none checked process',
+    'a Codex run under the Claude seat passed as the launcher\'s agent through the CLAUDE_PID it inherited',
+  );
+  equal(proof(shimmed, 600), 'none unchecked none', 'a CLAUDE_PID naming no agent client was taken as an agent');
+  equal(proof(shimmed, 701), 'none checked environment-pid', 'an agent another launcher started passed as this launcher\'s');
+  equal(proof(shimmed, 999), 'none unchecked none', 'a CLAUDE_PID naming no live process was taken as an agent');
+
+  // 2. THROUGH A FIXTURE'S OWN `sh` SHIM (Windows, from source, where Git Bash's `sh` is found; never the installed shim).
+  // The launcher is this judge; the agent is a copy of node named claude.exe that this judge starts, as section 123's is;
+  // the agent runs `sh -c '<shim> desk ...; exit $?'` with CLAUDE_PID naming itself. The command after the shim makes
+  // `sh` FORK for it, as Claude Code's Bash tool does, and the forked child is gone once it has exec'd the shim's `sh`:
+  // that is what leaves the kernel's walk nothing to climb (measured at S98: `node.exe > sh.exe > <gone>` every time,
+  // where a native process starting `sh` with no fork leaves every stub alive and the walk unbroken).
+  const gitShell = ((): string | null => {
+    if (process.platform !== 'win32') return null;
+    const candidates: string[] = [];
+    for (const entry of (process.env['PATH'] ?? '').split(path.delimiter)) if (entry) candidates.push(path.join(entry, 'sh.exe'));
+    const exec = spawnSync('git', ['--exec-path'], { encoding: 'utf8', env: repositoryNeutralEnv() });
+    if (exec.status === 0 && exec.stdout.trim()) {
+      const gitRoot = path.resolve(exec.stdout.trim(), '..', '..', '..');
+      candidates.push(path.join(gitRoot, 'bin', 'sh.exe'), path.join(gitRoot, 'usr', 'bin', 'sh.exe'));
+    }
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  })();
+  if (gitShell !== null && KERNEL_COMMAND.length === 0) {
+    const w = await seatClaimWorkspace('sh-launcher', { pin: false });
+    try {
+      const holder = w.startAgent();
+      equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+      const ws = w.workspace;
+      const token = w.claimToken('first');
+      const conversationId = '12345678-1234-4234-8234-123456789abc';
+      fs.writeFileSync(path.join(ws, '.claude', 'seats', 'first', 'activity.json'), JSON.stringify({ seat: 'first', last_seen_utc: new Date().toISOString(), session_id: conversationId, conversation_recorded_utc: new Date().toISOString() }));
+      const image = path.join(w.root, 'claude-image', 'claude.exe');
+      fs.mkdirSync(path.dirname(image), { recursive: true });
+      try {
+        fs.linkSync(process.execPath, image);
+      } catch {
+        fs.copyFileSync(process.execPath, image);
+      }
+      const forward = (value: string) => value.replace(/\\/g, '/');
+      const shim = path.join(w.root, 'bin', 'library');
+      fs.mkdirSync(path.dirname(shim), { recursive: true });
+      fs.writeFileSync(shim, `#!/bin/sh\nexec "${forward(process.execPath)}" "${forward(CLI)}" "$@"\n`);
+      const agentScript = path.join(w.root, 'stand-in-agent.mjs');
+      fs.writeFileSync(
+        agentScript,
+        [
+          "import { spawnSync } from 'node:child_process';",
+          "import * as fs from 'node:fs';",
+          'const [out, shell, command, claudePid] = process.argv.slice(2);',
+          "const ran = spawnSync(shell, ['-c', command], { encoding: 'utf8', env: { ...process.env, CLAUDE_PID: claudePid === 'self' ? String(process.pid) : '' } });",
+          'fs.writeFileSync(out, JSON.stringify({ status: ran.status, stdout: ran.stdout, stderr: ran.stderr }));',
+          '',
+        ].join('\n'),
+      );
+      const env = { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: token, DESKPOST_LAUNCHER_PID: String(process.pid), CLAUDE_PID: '', CLAUDE_CODE_SESSION_ID: conversationId };
+      let run = 0;
+      const throughShim = (args: string[], claudePid: 'self' | 'none') => {
+        run += 1;
+        const out = path.join(w.root, `agent-${run}.json`);
+        const command = `"${forward(shim)}" ${args.map((arg) => `"${forward(arg)}"`).join(' ')}; exit $?`;
+        spawnSync(image, [agentScript, out, gitShell, command, claudePid], { cwd: w.root, encoding: 'utf8', env });
+        try {
+          const ran = JSON.parse(fs.readFileSync(out, 'utf8')) as { status: number; stdout: string; stderr: string };
+          return { ...ran, json: JSON.parse(ran.stdout) as Record<string, unknown> };
+        } catch (error) {
+          return { status: -1, stdout: '', stderr: (error as Error).message, json: {} as Record<string, unknown> };
+        }
+      };
+      const deskSeat = (claudePid: 'self' | 'none') => (throughShim(['desk', '--workspace', ws, '--json'], claudePid).json['this_seat'] as Record<string, unknown> | undefined) ?? {};
+
+      // THE PROOF HOLDS THROUGH THE SHIM with CLAUDE_PID naming the agent; the earlier binding moves under previous_binding.
+      const held = deskSeat('self');
+      check(held['is_this_conversation'] === true && String(held['state_note']).startsWith('held for this session by the deskpost launcher'), `the launcher proof did not hold through the sh shim with CLAUDE_PID set: ${JSON.stringify(held).slice(0, 500)}`);
+      check(
+        held['agent_pid'] === null && held['agent_start_utc'] === null && held['bound_utc'] === null && held['binding_state'] === null && held['this_agent'] === null,
+        `a launcher-held seat with an earlier binding kept a binding field: ${JSON.stringify(held).slice(0, 500)}`,
+      );
+      const previous = (held['previous_binding'] ?? {}) as Record<string, unknown>;
+      check(previous['binding_state'] === 'committed' && Number(previous['agent_pid']) === holder, `the earlier binding was not kept under previous_binding: ${JSON.stringify(previous)}`);
+
+      // WITH NO CLAUDE_PID THE SHIM LEAVES NOTHING TO WALK, and the Desk says it could not look rather than nothing.
+      const unchecked = deskSeat('none');
+      check(
+        unchecked['is_this_conversation'] === false && String(unchecked['state_note']).startsWith('could not check the launcher from this process'),
+        `the Desk did not say it could not check the launcher: ${JSON.stringify(unchecked).slice(0, 500)}`,
+      );
+
+      // CAPTURE'S from_seat_source FOLLOWS THE SAME PROOF.
+      const captured = (claudePid: 'self' | 'none', title: string) => throughShim(['capture', 'holding', '--title', title, '--body', 'x', '--why', 'no-home', '--workspace', ws, '--json'], claudePid).json['from_seat_source'];
+      equal(captured('self', 'Through the shim'), 'launcher', 'capture through the sh shim with CLAUDE_PID set did not record the launcher');
+      equal(captured('none', 'Through the shim unchecked'), 'environment', 'capture through the sh shim with no CLAUDE_PID claimed the launcher');
+
+      // NO EARLIER BINDING: the binding fields are null all the same, and there is no previous_binding.
+      fs.renameSync(path.join(ws, '.claude', 'seats', 'first', 'binding.json'), path.join(w.root, 'binding.json'));
+      const unbound = deskSeat('self');
+      check(
+        unbound['claim_state'] === 'held' && unbound['is_this_conversation'] === true && !('previous_binding' in unbound),
+        `a launcher-held seat with no binding did not read as this conversation's: ${JSON.stringify(unbound).slice(0, 500)}`,
+      );
+      check(
+        unbound['agent_pid'] === null && unbound['bound_utc'] === null && unbound['this_agent'] === null,
+        `a launcher-held seat with no earlier binding said 0, "" or false for its binding fields: ${JSON.stringify(unbound).slice(0, 500)}`,
+      );
+    } catch (error) {
+      failures.push(`section 166 stopped early: ${(error as Error).message}`);
+    } finally {
+      w.dispose();
+    }
+  }
+}
+
+// SECTION 167. LETTERS TO A DEPARTMENT, THE ONE RECIPIENT PREDICATE AND IDENTITY AT CAPTURE (kickoffs/s98 row 0, ruling
+// 4; PLAN-seats-team.md session 3 item 0). `capture letters --for-department <d>` resolves the department to its one
+// orchestrator when the letter is written; every letter records `origin_seat`, `origin_seat_id` and `for_seat_id` from the
+// registry as it then reads, and nothing it cannot read; `isAddressedTo` replaces the slug comparison at the Desk count,
+// `seat cards`, the close rule and the "may close" count; every capture option is one line; a reserved key twice, or an
+// identity field that does not validate, makes a note malformed, and a malformed address reaches no seat.
+if (selected(167)) {
+  // 1. THE PREDICATE AND THE PARSER, IN PROCESS.
+  const { assertSeatMayClose, growingState, isAddressedTo, parseShelfNote } = await import('../src/shelfnote.ts');
+  const idA = 'a'.repeat(32);
+  const idB = 'b'.repeat(32);
+  const note = (lines: string[]) => parseShelfNote('n.md', 'n.md', ['---', 'captured: 2026-10-07T00:00:00Z', 'review: pending', ...lines, '---', '', '# N', '', 'x', ''].join('\n'));
+  const lead = { seat: 'lead', seatId: idA };
+  const legacy = note(['from_seat: dev', 'for_seat: lead']);
+  const current = note(['from_seat: dev', 'for_seat: lead', `for_seat_id: ${idA}`]);
+  const stale = note(['from_seat: dev', 'for_seat: lead', `for_seat_id: ${idB}`]);
+  const twice = note(['from_seat: dev', 'for_seat: lead', 'for_seat: lead']);
+  const garbled = note(['from_seat: dev', 'for_seat: lead', 'for_seat_id: not-an-id']);
+  check(isAddressedTo(legacy, lead) && isAddressedTo(current, lead), 'a legacy letter or one stamped with the row\'s seat_id was not addressed to it');
+  check(!isAddressedTo(stale, lead), 'a letter stamped with another incarnation\'s seat_id was addressed to the new one');
+  check(!isAddressedTo(current, { seat: 'lead', seatId: '' }), 'a letter carrying a for_seat_id matched a pre-identity row by slug');
+  check(isAddressedTo(legacy, { seat: 'lead', seatId: '' }), 'a legacy letter did not match a pre-identity row by slug');
+  check(!isAddressedTo(current, { seat: 'dev', seatId: idA }) && !isAddressedTo(current, null), 'a letter was addressed to another seat, or to no seat');
+  equal(twice.malformed.join(','), 'for_seat', 'a note with for_seat twice was not read as malformed');
+  check(!isAddressedTo(twice, lead), 'a letter with for_seat twice was addressed to a seat');
+  equal(garbled.malformed.join(','), 'for_seat_id', 'a for_seat_id that is not 32 hex was not read as malformed');
+  check(!isAddressedTo(garbled, lead), 'a letter with a malformed for_seat_id was addressed to a seat');
+  equal(note(['origin_seat: Not A Slug', 'for_department: eng']).malformed.join(','), 'origin_seat', 'an origin_seat that is not a slug was not read as malformed');
+  equal(note(['tags: a', 'tags: b']).malformed.join(','), 'tags', 'a reserved key twice was not read as malformed');
+  equal(note(['from_seat: dev', 'for_seat: lead', 'custom_key: a', 'custom_key: b']).malformed.length, 0, 'a key no writer of this Library uses was read as malformed');
+  const book = { slug: 'letters', closedBy: 'writer' as const };
+  const refused = (row: typeof legacy, seat: { seat: string; seatId: string } | null) => {
+    try {
+      assertSeatMayClose(row, book, seat, null, (message: string): never => {
+        throw new Error(message);
+      });
+      return '';
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  check(refused(legacy, lead) === '' && refused(current, lead) === '', 'the recipient could not close a letter addressed to it');
+  check(refused(stale, lead).includes('a seat closes only its own notes') && refused(stale, { seat: 'dev', seatId: idB }) === '', 'the close rule let a new incarnation close an older one\'s letter, or refused its writer');
+  const mayClose = growingState({ slug: 'letters', closedBy: 'writer', growingPending: 1 } as never, [legacy, current, stale, twice], lead).mayClose;
+  equal(mayClose, 2, 'the "may close" count did not follow the recipient predicate');
+
+  // 2. THROUGH THE FRONT DOOR: four seats, a department with an orchestrator and one without.
+  const w = await seatClaimWorkspace('department-letters', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub', 'mkt-hub', 'solo-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const leadAgent = w.startAgent();
+    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    const devAgent = w.startAgent();
+    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    for (const [seat, hub] of [['mkt', 'mkt-hub'], ['solo', 'solo-hub']]) {
+      equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
+    }
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator' },
+      dev: { department: 'engineering', role: 'performer' },
+      mkt: { department: 'marketing', role: 'performer' },
+    };
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const seatId = (seat: string) => String(registry().seats.find((row) => row['seat'] === seat)!['seat_id']);
+    const notesDir = path.join(ws, 'shelf', 'letters', 'wiki', 'notes');
+    const listing = () => (fs.existsSync(notesDir) ? fs.readdirSync(notesDir).sort().join(',') : '');
+    const capture = (agent: number, args: string[]) => {
+      const ran = w.as(agent, ['capture', ...args, '--body', 'x', '--workspace', ws, '--json']);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        json = {};
+      }
+      const page = String(json['note_page'] ?? '');
+      const file = page ? path.join(ws, ...page.split('/')) + '.md' : '';
+      return { ...ran, json, page: page.replace(/^shelf\/letters\/wiki\//, ''), text: file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '' };
+    };
+    const tail = (text: string) => text.replace(/\r\n/g, '\n').split('\n---\n')[0]!.split('\n').slice(-4).join('|');
+
+    // A DEPARTMENT LETTER reaches its orchestrator, and both ends' incarnations are recorded, after every older key.
+    const department = capture(devAgent, ['letters', '--for-department', 'engineering', '--title', 'For engineering']);
+    equal(department.exit, 0, `the department letter was not written: ${department.stderr.trim()}`);
+    check(
+      department.json['for_seat'] === 'lead' && department.json['for_department'] === 'engineering' && department.json['for_seat_id'] === seatId('lead') && department.json['origin_seat'] === 'dev' && department.json['origin_seat_id'] === seatId('dev'),
+      `the department letter's result does not name its resolution and both incarnations: ${JSON.stringify(department.json).slice(0, 600)}`,
+    );
+    check(/^for_seat: lead$/m.test(department.text), 'the department letter does not carry for_seat');
+    equal(tail(department.text), `for_department: engineering|for_seat_id: ${seatId('lead')}|origin_seat: dev|origin_seat_id: ${seatId('dev')}`, "the department letter's new keys are not its last four, in order");
+
+    // A SEAT LETTER records the same incarnations, and no department.
+    const direct = capture(devAgent, ['letters', '--for', 'lead', '--title', 'For lead']);
+    check(direct.exit === 0 && !('for_department' in direct.json) && direct.json['for_seat_id'] === seatId('lead') && direct.json['origin_seat'] === 'dev', `the --for letter does not record its incarnations: ${JSON.stringify(direct.json).slice(0, 600)}`);
+    equal(tail(direct.text), `why: for-seat|for_seat_id: ${seatId('lead')}|origin_seat: dev|origin_seat_id: ${seatId('dev')}`, "the --for letter's new keys are not its last three, in order");
+
+    // A SEATLESS LETTER records no origin: missing identity is recorded as missing.
+    const seatless = capture(process.pid, ['letters', '--for', 'lead', '--title', 'From nobody']);
+    check(seatless.exit === 0 && seatless.json['origin_seat'] === null && seatless.json['origin_seat_id'] === null && seatless.json['for_seat_id'] === seatId('lead'), `a seatless letter does not record its origin as missing: ${JSON.stringify(seatless.json).slice(0, 600)}`);
+    check(!/^origin_seat/m.test(seatless.text) && /^for_seat_id: /m.test(seatless.text), 'a seatless letter wrote an origin field, or no for_seat_id');
+
+    // A NOTE THAT IS NOT A LETTER records none of them.
+    const kept = capture(devAgent, ['holding', '--title', 'Not a letter', '--why', 'no-home']);
+    check(kept.exit === 0 && !('origin_seat' in kept.json) && !('for_seat_id' in kept.json) && !/^(origin_seat|for_seat_id|for_department)/m.test(kept.text), `a note that is no letter recorded a letter's identity: ${JSON.stringify(kept.json).slice(0, 400)}`);
+
+    // REFUSALS, each writing nothing.
+    const before = listing();
+    const refusals: [string[], string][] = [
+      [['letters', '--for', 'lead', '--for-department', 'engineering', '--title', 'Both'], 'a letter takes one'],
+      [['letters', '--for-department', 'marketing', '--title', 'No orchestrator'], "Department 'marketing' has no orchestrator"],
+      [['letters', '--for-department', 'nowhere', '--title', 'No department'], 'Departments with one: engineering (lead)'],
+      [['letters', '--for-department', 'Engineering', '--title', 'Not a slug'], "--for-department 'Engineering' is not a department name"],
+      [['holding', '--for-department', 'engineering', '--title', 'Not a letters Book'], "does not take letters (its catalog entry has no '- **Letters:** yes'), so it refuses --for-department"],
+      [['letters', '--for', 'lead', '--tags', 'one\ntwo', '--title', 'Tags'], '--tags holds a line feed (U+000A)'],
+      [['letters', '--for', 'lead', '--title', 'Two\r\nlines'], '--title holds a carriage return (U+000D)'],
+      [['letters', '--for', 'lead', '--source-paths', 'a\tb', '--title', 'Tab'], '--source-paths holds a tab (U+0009)'],
+      [['letters', '--for', 'lead', '--supersedes', 'notes/a\nb', '--title', 'Supersedes'], '--supersedes holds a line feed'],
+      [['letters', '--for-department', 'engineering\nmarketing', '--title', 'Department'], '--for-department holds a line feed'],
+    ];
+    for (const [args, expected] of refusals) {
+      const ran = capture(devAgent, args);
+      check(ran.exit !== 0 && ran.stderr.replace(/\s+/g, ' ').includes(expected) && ran.stderr.includes('Nothing was captured.'), `capture ${JSON.stringify(args)} was not refused with "${expected}": ${ran.stderr.trim().slice(0, 300)}`);
+    }
+    equal(listing(), before, 'a refused capture wrote a note');
+
+    // THE COUNTS FOLLOW THE PREDICATE: a legacy letter counts by slug, another incarnation's letter and a malformed one
+    // count for no seat. Written by hand, as a letter of an older program or a hand edit leaves one.
+    const handNote = (name: string, lines: string[]) =>
+      fs.writeFileSync(path.join(notesDir, `${name}.md`), ['---', 'captured: 2026-10-07T00:00:00Z', 'review: pending', 'from_seat: dev', ...lines, '---', '', `# ${name}`, '', 'x', ''].join('\n'));
+    handNote('2026-10-07-legacy', ['for_seat: lead']);
+    handNote('2026-10-07-stale', ['for_seat: lead', `for_seat_id: ${idB}`]);
+    handNote('2026-10-07-twice', ['for_seat: lead', 'for_seat: lead']);
+    const deskOf = (agent: number, seat: string) => JSON.parse(w.as(agent, ['desk', '--seat', seat, '--workspace', ws, '--json']).stdout) as Record<string, any>;
+    const leadCount = () => deskOf(leadAgent, 'lead')['letters_for_this_seat']?.['count'];
+    const seenFromDev = () => (deskOf(devAgent, 'dev')['other_seats'] as Record<string, unknown>[]).find((row) => row['seat'] === 'lead')?.['pending_letters'];
+    const cardsCount = () => {
+      const report = JSON.parse(w.as(process.pid, ['seat', 'cards', '--all', '--workspace', ws, '--json']).stdout) as Record<string, any>;
+      return (report['departments'] as Record<string, any>[]).flatMap((entry) => entry['seats'] as Record<string, unknown>[]).find((row) => row['seat'] === 'lead')?.['pending_letters'];
+    };
+    // the department letter, the --for letter, the seatless one and the legacy one: four.
+    check(leadCount() === 4 && seenFromDev() === 4 && cardsCount() === 4, `the recipient's counts do not follow the predicate: Desk ${leadCount()}, other_seats ${seenFromDev()}, seat cards ${cardsCount()}`);
+
+    // THE CLOSE RULE: the recipient closes the legacy letter, never another incarnation's; its writer closes that one.
+    for (const seat of ['lead', 'dev']) fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\n');
+    const closeStale = capture(leadAgent, ['letters', '--for', 'dev', '--title', 'Closing the stale one', '--supersedes', 'notes/2026-10-07-stale']);
+    check(closeStale.exit !== 0 && closeStale.stderr.includes('a seat closes only its own notes'), `the recipient closed another incarnation's letter: ${closeStale.stderr.trim().slice(0, 300)}`);
+    const closeLegacy = capture(leadAgent, ['letters', '--for', 'dev', '--title', 'Closing the legacy one', '--supersedes', 'notes/2026-10-07-legacy']);
+    check(closeLegacy.exit === 0 && (closeLegacy.json['superseded'] as Record<string, unknown> | undefined)?.['status'] === 'closed', `the recipient could not close a legacy letter addressed to it: ${closeLegacy.stderr.trim().slice(0, 300)}`);
+    const writerCloses = capture(devAgent, ['letters', '--for-department', 'engineering', '--title', 'Closing my stale one', '--supersedes', 'notes/2026-10-07-stale']);
+    check(writerCloses.exit === 0 && writerCloses.json['for_seat'] === 'lead' && writerCloses.json['supersedes'] === 'notes/2026-10-07-stale', `the writer could not close its own letter with a department letter: ${writerCloses.stderr.trim().slice(0, 300)}`);
+    // the legacy one is closed and a new department letter came: still four.
+    equal(leadCount(), 4, 'the count after the closes does not follow the predicate');
+
+    // A PRE-IDENTITY ROW: the letter records the slug and no id, and counts by slug.
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => (row['seat'] === 'solo' ? { seat: row['seat'], project: row['project'], created_utc: row['created_utc'] } : row)) }, null, 4) + '\n');
+    const toSolo = capture(devAgent, ['letters', '--for', 'solo', '--title', 'For solo']);
+    check(toSolo.exit === 0 && toSolo.json['for_seat_id'] === null && !/^for_seat_id/m.test(toSolo.text), `a letter to a pre-identity row manufactured an id: ${JSON.stringify(toSolo.json).slice(0, 400)}`);
+    const soloLine = ((JSON.parse(w.as(process.pid, ['seat', 'cards', '--all', '--workspace', ws, '--json']).stdout) as Record<string, any>)['without_department'] as Record<string, unknown>[]).find((row) => row['seat'] === 'solo');
+    equal(soloLine?.['pending_letters'], 1, 'a letter to a pre-identity row was not counted by slug');
+  } catch (error) {
+    failures.push(`section 167 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 168. A LETTER'S STATUS IS WORKED OUT, NEVER STORED (kickoffs/s98 row 3, ruling 5; PLAN-seats-team.md session 3
+// item 3; Key decision 2). `letterStatus` reads `review` and the two closing links: pending is open, done with
+// `answered_by` answered, done with `routed_to` routed, done alone closed. A note reopened by triage keeps its links and
+// reads open; a malformed one reads from `review` alone. `triage inventory` prints it as `letter_status`, its last key, on
+// every note of a Book that takes letters and on no other note.
+if (selected(168)) {
+  const { letterStatus, parseShelfNote } = await import('../src/shelfnote.ts');
+  const note =(lines: string[]) => parseShelfNote('n.md', 'n.md', ['---', 'captured: 2026-10-07T00:00:00Z', ...lines, '---', '', '# N', '', 'x', ''].join('\n'));
+  const cases: [string[], string][] = [
+    [['review: pending', 'for_seat: lead'], 'open'],
+    [['review: done', 'answered_by: notes/2026-10-07-reply'], 'answered'],
+    [['review: done', 'routed_to: notes/2026-10-07-onward'], 'routed'],
+    [['review: done'], 'closed'],
+    [['review: pending', 'answered_by: notes/2026-10-07-reply'], 'open'],
+    [['review: done', 'answered_by: notes/2026-10-07-reply', 'answered_by: notes/2026-10-07-other'], 'closed'],
+    [['review: done', 'routed_to: not-a-note-link'], 'closed'],
+    [['for_seat: lead'], 'open'],
+  ];
+  for (const [lines, expected] of cases) equal(letterStatus(note(lines)), expected, `letterStatus of ${lines.join(', ')}`);
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-letter-status-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    const notes = (book: string) => path.join(lib, 'shelf', book, 'wiki', 'notes');
+    const write = (book: string, name: string, lines: string[]) => {
+      fs.mkdirSync(notes(book), { recursive: true });
+      fs.writeFileSync(path.join(notes(book), `${name}.md`), ['---', 'captured: 2026-10-07T00:00:00Z', ...lines, '---', '', `# ${name}`, '', 'x', ''].join('\n'));
+    };
+    write('letters', '2026-10-07-open', ['review: pending', 'from_seat: dev', 'for_seat: lead']);
+    write('letters', '2026-10-07-answered', ['review: done', 'from_seat: dev', 'for_seat: lead', 'answered_by: notes/2026-10-07-open']);
+    write('letters', '2026-10-07-routed', ['review: done', 'from_seat: dev', 'for_seat: lead', 'routed_to: notes/2026-10-07-open']);
+    write('letters', '2026-10-07-closed', ['review: done', 'from_seat: dev', 'for_seat: lead']);
+    write('letters', '2026-10-07-reopened', ['review: pending', 'from_seat: dev', 'for_seat: lead', 'answered_by: notes/2026-10-07-open']);
+    write('holding', '2026-10-07-kept', ['review: done', 'answered_by: notes/2026-10-07-open']);
+    const ran = runCli(['triage', 'inventory', '--workspace', lib, '--json'], { cwd: root, env });
+    const report = JSON.parse(ran.stdout) as { holding_notes: Record<string, unknown>[] };
+    const byPage = (book: string, page: string) => report.holding_notes.find((row) => row['book'] === book && row['page'] === page) ?? {};
+    for (const [name, expected] of [['open', 'open'], ['answered', 'answered'], ['routed', 'routed'], ['closed', 'closed'], ['reopened', 'open']] as const) {
+      const row = byPage('letters', `notes/2026-10-07-${name}`);
+      equal(row['letter_status'], expected, `triage inventory's letter_status for the ${name} letter`);
+      equal(Object.keys(row).at(-1), 'letter_status', `letter_status is not the last key of the ${name} letter's row`);
+    }
+    const kept = byPage('holding', 'notes/2026-10-07-kept');
+    check(Object.keys(kept).length > 0 && !('letter_status' in kept), `a note of a Book that takes no letters carries letter_status: ${JSON.stringify(kept).slice(0, 300)}`);
+    const pending = JSON.parse(runCli(['triage', 'inventory', '--pending', '--workspace', lib, '--json'], { cwd: root, env }).stdout) as { holding_notes: Record<string, unknown>[] };
+    equal(
+      pending.holding_notes.filter((row) => row['book'] === 'letters').map((row) => `${String(row['page']).replace('notes/2026-10-07-', '')}=${row['letter_status']}`).sort().join(','),
+      'open=open,reopened=open',
+      'triage inventory --pending does not list the open letters with their status',
+    );
+  } catch (error) {
+    failures.push(`section 168 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 169. ANSWERING A LETTER (kickoffs/s98 row 1, ruling 6; PLAN-seats-team.md session 3 items 1 and 7). `capture
+// letters --answers notes/<page>` writes a reply to the letter's first asker and closes the letter `answered_by` it. The
+// Book must be open on the caller's Desk, the caller the letter's recipient by the predicate, the letter pending with no
+// link and whole; the asker must be the incarnation the registry names now, and the reply carries that validated id.
+if (selected(169)) {
+  const w = await seatClaimWorkspace('answering', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub', 'mkt-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const agents: Record<string, number> = {};
+    for (const [seat, hub] of [['lead', 'lead-hub'], ['dev', 'dev-hub'], ['mkt', 'mkt-hub']] as const) {
+      agents[seat] = w.startAgent();
+      equal(w.createSeat(seat, hub, agents[seat]!).exit, 0, `the seat ${seat} could not be created`);
+    }
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    const fields: Record<string, Record<string, string>> = { lead: { department: 'engineering', role: 'orchestrator' }, dev: { department: 'engineering', role: 'performer' } };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const seatId = (seat: string) => String(registry().seats.find((row) => row['seat'] === seat)!['seat_id']);
+    const notesDir = path.join(ws, 'shelf', 'letters', 'wiki', 'notes');
+    const read = (page: string) => fs.readFileSync(path.join(notesDir, `${page.replace(/^notes\//, '')}.md`), 'utf8');
+    const listing = () => fs.readdirSync(notesDir).sort().map((name) => `${name}=${createHash('sha256').update(fs.readFileSync(path.join(notesDir, name))).digest('hex')}`).join('\n');
+    const capture = (agent: number, args: string[], extra: Record<string, string> = {}) => {
+      const ran = w.as(agent, ['capture', ...args, '--body', 'x', '--workspace', ws, '--json'], extra);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        json = {};
+      }
+      return { ...ran, json, page: String(json['note_page'] ?? '').replace(/^shelf\/letters\/wiki\//, '') };
+    };
+    const openLetters = (seat: string, open: boolean) => fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), open ? 'shelf/letters\n' : '');
+    for (const seat of ['lead', 'dev', 'mkt']) openLetters(seat, true);
+
+    // THE ANSWER: dev asks engineering, lead answers; the reply reaches dev, stamped, and the letter closes answered.
+    const question = capture(agents['dev']!, ['letters', '--for-department', 'engineering', '--title', 'A question']);
+    equal(question.exit, 0, `the question was not written: ${question.stderr.trim()}`);
+    const answer = capture(agents['lead']!, ['letters', '--answers', question.page, '--title', 'An answer']);
+    check(
+      answer.exit === 0 && answer.json['for_seat'] === 'dev' && answer.json['for_seat_id'] === seatId('dev') && answer.json['origin_seat'] === 'lead' && answer.json['answers'] === question.page,
+      `the answer is not addressed to the asker, stamped, and linked: ${answer.stderr.trim()} ${JSON.stringify(answer.json).slice(0, 600)}`,
+    );
+    equal(JSON.stringify(answer.json['answered']), JSON.stringify({ page: question.page, status: 'closed' }), 'the answer does not say it closed the letter');
+    const closedText = read(question.page);
+    check(/^review: done$/m.test(closedText) && /^reviewed: \d{4}-/m.test(closedText) && new RegExp(`^answered_by: ${answer.page}$`, 'm').test(closedText), `the letter was not closed answered_by the reply: ${closedText.slice(0, 400)}`);
+    check(new RegExp(`^answers: ${question.page}$`, 'm').test(read(answer.page)) && /^why: for-seat$/m.test(read(answer.page)), 'the reply does not carry answers: and why: for-seat');
+    const inventory = JSON.parse(w.as(process.pid, ['triage', 'inventory', '--workspace', ws, '--json']).stdout) as { holding_notes: Record<string, unknown>[] };
+    equal(inventory.holding_notes.find((row) => row['page'] === question.page)?.['letter_status'], 'answered', 'triage inventory does not read the letter as answered');
+
+    // AN ANSWER TO A ROUTED LETTER REACHES ITS FIRST ASKER, by origin_seat, written by hand as a route leaves one.
+    const handNote = (name: string, lines: string[]) =>
+      fs.writeFileSync(path.join(notesDir, `${name}.md`), ['---', 'captured: 2026-10-07T00:00:00Z', 'review: pending', ...lines, '---', '', `# ${name}`, '', 'x', ''].join('\n'));
+    handNote('2026-10-07-routed', ['from_seat: lead', 'for_seat: dev', `for_seat_id: ${seatId('dev')}`, 'for_department: engineering', 'origin_seat: mkt', `origin_seat_id: ${seatId('mkt')}`, 'routed_from: notes/2026-10-07-first', 'hops: 1']);
+    const toAsker = capture(agents['dev']!, ['letters', '--answers', 'notes/2026-10-07-routed', '--title', 'To the first asker']);
+    check(toAsker.exit === 0 && toAsker.json['for_seat'] === 'mkt' && toAsker.json['for_seat_id'] === seatId('mkt'), `an answer to a routed letter did not reach its first asker: ${toAsker.stderr.trim()} ${JSON.stringify(toAsker.json).slice(0, 400)}`);
+
+    // REFUSALS, each writing nothing.
+    const toLead = capture(agents['dev']!, ['letters', '--for', 'lead', '--title', 'For lead']);
+    equal(toLead.exit, 0, 'the letter for lead was not written');
+    handNote('2026-10-07-legacy', ['from_seat: dev', 'for_seat: lead']);
+    handNote('2026-10-07-malformed', ['from_seat: dev', 'for_seat: lead', `origin_seat: dev`, `origin_seat_id: ${seatId('dev')}`, 'hops: 9']);
+    handNote('2026-10-07-reopened', ['from_seat: dev', 'for_seat: lead', 'origin_seat: dev', `origin_seat_id: ${seatId('dev')}`, 'answered_by: notes/2026-10-07-earlier']);
+    handNote('2026-10-07-done', ['from_seat: dev', 'for_seat: lead', 'origin_seat: dev', `origin_seat_id: ${seatId('dev')}`]);
+    fs.writeFileSync(path.join(notesDir, '2026-10-07-done.md'), read('notes/2026-10-07-done').replace('review: pending', 'review: done'));
+    const seatless = capture(process.pid, ['letters', '--for', 'lead', '--title', 'Seatless']);
+    equal(seatless.exit, 0, 'the seatless letter was not written');
+    const before = listing();
+    const refusals: [number, string[], string][] = [
+      [agents['lead']!, ['letters', '--answers', toLead.page, '--for', 'dev', '--title', 'R'], 'takes neither --for nor --for-department'],
+      [agents['lead']!, ['letters', '--answers', toLead.page, '--for-department', 'engineering', '--title', 'R'], 'takes neither --for nor --for-department'],
+      [agents['lead']!, ['letters', '--answers', toLead.page, '--supersedes', toLead.page, '--title', 'R'], 'one capture closes one'],
+      [agents['lead']!, ['holding', '--answers', toLead.page, '--title', 'R', '--why', 'no-home'], 'so it refuses --answers'],
+      [agents['lead']!, ['letters', '--answers', 'a-question', '--title', 'R'], '--answers must name a letter of this Book as notes/<page>'],
+      [process.pid, ['letters', '--answers', toLead.page, '--title', 'R'], '--answers names a letter, so it needs a seat'],
+      [agents['dev']!, ['letters', '--answers', toLead.page, '--title', 'R'], "is a letter for seat 'lead', not for this seat 'dev'"],
+      [agents['lead']!, ['letters', '--answers', 'notes/2026-10-07-nothing', '--title', 'R'], 'has no such note'],
+      [agents['lead']!, ['letters', '--answers', 'notes/2026-10-07-done', '--title', 'R'], 'is already closed (review: done)'],
+      [agents['lead']!, ['letters', '--answers', 'notes/2026-10-07-reopened', '--title', 'R'], 'reopen is for triage, not for a second answer; write a new letter'],
+      [agents['lead']!, ['letters', '--answers', 'notes/2026-10-07-malformed', '--title', 'R'], "(hops), so --answers refuses it: repair the note's frontmatter by hand, or close it with triage"],
+      [agents['lead']!, ['letters', '--answers', 'notes/2026-10-07-legacy', '--title', 'R'], 'records no asker\'s seat_id (a letter written before 1.3.8, or by no seat)'],
+      [agents['lead']!, ['letters', '--answers', seatless.page, '--title', 'R'], 'or close it with a triage review'],
+    ];
+    for (const [agent, args, expected] of refusals) {
+      const ran = capture(agent, args);
+      check(ran.exit !== 0 && ran.stderr.replace(/\s+/g, ' ').includes(expected) && ran.stderr.includes('Nothing was captured.'), `capture ${JSON.stringify(args)} was not refused with "${expected}": ${ran.stderr.trim().slice(0, 300)}`);
+    }
+    openLetters('lead', false);
+    const closedBook = capture(agents['lead']!, ['letters', '--answers', toLead.page, '--title', 'R']);
+    check(closedBook.exit !== 0 && closedBook.stderr.includes('deskpost desk open book letters --location shelf'), `--answers did not need the Book open on the caller's Desk: ${closedBook.stderr.trim().slice(0, 300)}`);
+    openLetters('lead', true);
+    equal(listing(), before, 'a refused answer wrote or changed a note');
+
+    // A RE-CREATED ASKER: mkt's slug now names another incarnation, so its letter takes no answer.
+    const fromMkt = capture(agents['mkt']!, ['letters', '--for', 'lead', '--title', 'From mkt']);
+    equal(fromMkt.exit, 0, 'the letter from mkt was not written');
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => (row['seat'] === 'mkt' ? { ...row, seat_id: 'c'.repeat(32) } : row)) }, null, 4) + '\n');
+    const recreated = capture(agents['lead']!, ['letters', '--answers', fromMkt.page, '--title', 'R']);
+    check(recreated.exit !== 0 && recreated.stderr.includes('it was retired, or retired and created again under that name'), `an answer to a re-created asker was not refused: ${recreated.stderr.trim().slice(0, 300)}`);
+
+    // THE INTERLEAVING: the asker is validated, then retired and created again, then the reply is written. The reply
+    // carries the validated id, and doctor names it as a letter for another incarnation.
+    const oldDev = seatId('dev');
+    const reply = capture(agents['lead']!, ['letters', '--answers', toLead.page, '--title', 'Raced'], { LIBRARY_CAPTURE_ASKER_FAULT: 'recreate' });
+    check(reply.exit === 0 && reply.json['for_seat_id'] === oldDev && seatId('dev') !== oldDev, `the raced reply was not stamped with the validated id: ${reply.stderr.trim()} ${JSON.stringify(reply.json).slice(0, 300)}`);
+    const doctor = JSON.parse(w.as(process.pid, ['doctor', '--workspace', ws, '--json']).stdout) as { program_checks?: { check: string; status: string; detail: string }[] };
+    const incarnation = (doctor.program_checks ?? []).find((row) => row.check === 'letters.recipient-incarnation');
+    check(incarnation?.status === 'warn' && incarnation.detail.includes(`${reply.page} is a pending letter for seat 'dev' that was addressed to another incarnation`), `doctor did not name the raced reply: ${JSON.stringify(incarnation)}`);
+  } catch (error) {
+    failures.push(`section 169 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 170. ROUTING A LETTER (kickoffs/s98 row 2, ruling 7; PLAN-seats-team.md session 3 items 2 and 7). `capture
+// letters --for <seat> --routes notes/<page>` hands a letter on in its own Book and closes it `routed_to` the new one. The
+// new letter keeps the department addressed and the first asker as recorded, counts one more hop (at most 3), and opens
+// with a provenance line the program writes from validated fields; doctor's `letters.relationship-fields` names a letter
+// whose fields do not validate, which `--routes` refuses.
+if (selected(170)) {
+  const w = await seatClaimWorkspace('routing', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub', 'ops-hub', 'mkt-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const agents: Record<string, number> = {};
+    for (const [seat, hub] of [['lead', 'lead-hub'], ['dev', 'dev-hub'], ['ops', 'ops-hub'], ['mkt', 'mkt-hub']] as const) {
+      agents[seat] = w.startAgent();
+      equal(w.createSeat(seat, hub, agents[seat]!).exit, 0, `the seat ${seat} could not be created`);
+      fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\n');
+    }
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator' },
+      dev: { department: 'engineering', role: 'performer' },
+      ops: { department: 'it', role: 'orchestrator' },
+    };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const seatId = (seat: string) => String(registry().seats.find((row) => row['seat'] === seat)!['seat_id']);
+    const notesDir = path.join(ws, 'shelf', 'letters', 'wiki', 'notes');
+    const read = (page: string) => fs.readFileSync(path.join(notesDir, `${page.replace(/^notes\//, '')}.md`), 'utf8');
+    const listing = () => fs.readdirSync(notesDir).sort().map((name) => `${name}=${createHash('sha256').update(fs.readFileSync(path.join(notesDir, name))).digest('hex')}`).join('\n');
+    const capture = (agent: number, args: string[], body = 'x') => {
+      const ran = w.as(agent, ['capture', ...args, '--body', body, '--workspace', ws, '--json']);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        json = {};
+      }
+      return { ...ran, json, page: String(json['note_page'] ?? '').replace(/^shelf\/letters\/wiki\//, '') };
+    };
+
+    // THE ROUTE: mkt asks engineering; lead routes it to dev, then dev, across departments, to ops.
+    const question = capture(agents['mkt']!, ['letters', '--for-department', 'engineering', '--title', 'A question'], 'The original question.');
+    equal(question.exit, 0, `the question was not written: ${question.stderr.trim()}`);
+    const first = capture(agents['lead']!, ['letters', '--for', 'dev', '--routes', question.page, '--title', 'Over to dev'], 'Dev knows this one.');
+    check(
+      first.exit === 0 && first.json['for_seat'] === 'dev' && first.json['for_seat_id'] === seatId('dev') && first.json['for_department'] === 'engineering' &&
+        first.json['origin_seat'] === 'mkt' && first.json['origin_seat_id'] === seatId('mkt') && first.json['routes'] === question.page && first.json['hops'] === 1,
+      `the route does not keep the department and the first asker, and count a hop: ${first.stderr.trim()} ${JSON.stringify(first.json).slice(0, 600)}`,
+    );
+    equal(JSON.stringify(first.json['routed']), JSON.stringify({ page: question.page, status: 'closed' }), 'the route does not say it closed the letter');
+    check(new RegExp(`^routed_to: ${first.page}$`, 'm').test(read(question.page)) && /^review: done$/m.test(read(question.page)), 'the routed letter was not closed routed_to the new one');
+    const firstText = read(first.page);
+    check(new RegExp(`^routed_from: ${question.page}$`, 'm').test(firstText) && /^hops: 1$/m.test(firstText) && /^for_department: engineering$/m.test(firstText), 'the new letter does not carry routed_from, hops and for_department');
+    const bodyOf = (text: string) => text.replace(/\r\n/g, '\n').split('\n---\n')[1]!.replace(/^\n+/, '');
+    check(
+      bodyOf(firstText).startsWith('# Over to dev\n\nOriginally from seat `mkt` (claimed by its capture, not proof), to department `engineering`, resolved to `lead`; routed by `lead` from `' + question.page + '`.\n\nDev knows this one.\n\n## Original letter\n\n# A question\n\nThe original question.'),
+      `the routed letter's body is not the provenance line, the router's text and the original: ${bodyOf(firstText).slice(0, 600)}`,
+    );
+    const second = capture(agents['dev']!, ['letters', '--for', 'ops', '--routes', first.page, '--title', 'Over to ops']);
+    check(second.exit === 0 && second.json['for_department'] === 'engineering' && second.json['origin_seat'] === 'mkt' && second.json['hops'] === 2, `a route across departments did not keep the department addressed: ${JSON.stringify(second.json).slice(0, 400)}`);
+
+    // AN ANSWER AT THE END REACHES THE FIRST ASKER.
+    const answer = capture(agents['ops']!, ['letters', '--answers', second.page, '--title', 'The answer']);
+    check(answer.exit === 0 && answer.json['for_seat'] === 'mkt' && answer.json['for_seat_id'] === seatId('mkt'), `the answer to a twice-routed letter did not reach its first asker: ${JSON.stringify(answer.json).slice(0, 400)}`);
+    const inventory = JSON.parse(w.as(process.pid, ['triage', 'inventory', '--workspace', ws, '--json']).stdout) as { holding_notes: Record<string, unknown>[] };
+    const status = (page: string) => inventory.holding_notes.find((row) => row['page'] === page)?.['letter_status'];
+    equal(`${status(question.page)},${status(first.page)},${status(second.page)}`, 'routed,routed,answered', 'triage inventory does not read the chain as routed, routed, answered');
+
+    // A LEGACY LETTER ROUTES WITH ITS from_seat AS THE ASKER AND NO ID; THE HOP LIMIT HOLDS WITH THE ORIGINALS TIDIED AWAY.
+    const handNote = (name: string, lines: string[]) =>
+      fs.writeFileSync(path.join(notesDir, `${name}.md`), ['---', 'captured: 2026-10-07T00:00:00Z', 'review: pending', ...lines, '---', '', `# ${name}`, '', 'x', ''].join('\n'));
+    handNote('2026-10-07-legacy', ['from_seat: mkt', 'for_seat: lead']);
+    const legacy = capture(agents['lead']!, ['letters', '--for', 'dev', '--routes', 'notes/2026-10-07-legacy', '--title', 'Legacy onward']);
+    check(legacy.exit === 0 && legacy.json['origin_seat'] === 'mkt' && legacy.json['origin_seat_id'] === null && !/^origin_seat_id/m.test(read(legacy.page)), `a legacy letter's route looked its asker up: ${JSON.stringify(legacy.json).slice(0, 400)}`);
+    handNote('2026-10-07-third-hop', ['from_seat: dev', 'for_seat: lead', `for_seat_id: ${seatId('lead')}`, 'origin_seat: mkt', `origin_seat_id: ${seatId('mkt')}`, 'routed_from: notes/2026-10-07-gone', 'hops: 3']);
+
+    // REFUSALS, each writing nothing.
+    handNote('2026-10-07-malformed', ['from_seat: dev', 'for_seat: lead', 'hops: 7']);
+    const toLead = capture(agents['dev']!, ['letters', '--for', 'lead', '--title', 'For lead']);
+    const before = listing();
+    const refusals: [number, string[], string][] = [
+      [agents['lead']!, ['letters', '--routes', toLead.page, '--title', 'R'], '--routes hands a letter on to one seat, named with --for'],
+      [agents['lead']!, ['letters', '--for-department', 'it', '--routes', toLead.page, '--title', 'R'], '--routes takes --for <seat> only'],
+      [agents['lead']!, ['letters', '--for', 'dev', '--routes', toLead.page, '--answers', toLead.page, '--title', 'R'], 'takes neither --for nor --for-department'],
+      [agents['lead']!, ['letters', '--for', 'dev', '--routes', toLead.page, '--supersedes', toLead.page, '--title', 'R'], '--routes and --supersedes each close a note'],
+      [agents['lead']!, ['holding', '--for', 'dev', '--routes', toLead.page, '--title', 'R'], 'so it refuses --for'],
+      [agents['dev']!, ['letters', '--for', 'ops', '--routes', toLead.page, '--title', 'R'], "is a letter for seat 'lead', not for this seat 'dev', so this seat cannot route it"],
+      [agents['lead']!, ['letters', '--for', 'dev', '--routes', question.page, '--title', 'R'], 'is already closed (review: done), so --routes refuses it'],
+      [agents['lead']!, ['letters', '--for', 'dev', '--routes', 'notes/2026-10-07-third-hop', '--title', 'R'], 'has been routed 3 times already, and a letter is routed at most 3 times: ask the reader'],
+      [agents['lead']!, ['letters', '--for', 'dev', '--routes', 'notes/2026-10-07-malformed', '--title', 'R'], '(hops), so --routes refuses it'],
+    ];
+    for (const [agent, args, expected] of refusals) {
+      const ran = capture(agent, args);
+      check(ran.exit !== 0 && ran.stderr.replace(/\s+/g, ' ').includes(expected) && ran.stderr.includes('Nothing was captured.'), `capture ${JSON.stringify(args)} was not refused with "${expected}": ${ran.stderr.trim().slice(0, 300)}`);
+    }
+    equal(listing(), before, 'a refused route wrote or changed a note');
+
+    // DOCTOR NAMES THE MALFORMED LETTER; THE PROVENANCE NEVER REPEATS A VALUE THAT IS NOT A SEAT NAME.
+    const doctor = JSON.parse(w.as(process.pid, ['doctor', '--workspace', ws, '--json']).stdout) as { program_checks?: { check: string; status: string; detail: string }[] };
+    const relationship = (doctor.program_checks ?? []).find((row) => row.check === 'letters.relationship-fields');
+    check(relationship?.status === 'warn' && relationship.detail.includes('letters notes/2026-10-07-malformed carries hops twice or of the wrong shape'), `doctor did not name the malformed letter: ${JSON.stringify(relationship)}`);
+    handNote('2026-10-07-odd-writer', ['from_seat: Not A Seat', 'for_seat: lead']);
+    const odd = capture(agents['lead']!, ['letters', '--for', 'dev', '--routes', 'notes/2026-10-07-odd-writer', '--title', 'Odd onward']);
+    check(odd.exit === 0 && odd.json['origin_seat'] === null && bodyOf(read(odd.page)).includes('Originally from seat (none recorded) (claimed by its capture, not proof), to seat `lead`; routed by `lead`'), `a writer's name that is not a seat name reached the provenance line: ${bodyOf(odd.page ? read(odd.page) : '---\n---\n').slice(0, 400)}`);
+  } catch (error) {
+    failures.push(`section 170 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 171. HUB EDIT'S SIZE WARNINGS (kickoffs/s98 row K1, ruling 8; three Reports). An entry ends at the next list line
+// or at the next unindented paragraph, so a paragraph after a list is no part of its last item; an entry's key is its
+// section and a sha256 prefix of its first line; `oversized_entries` stays page-wide; a preflight's section line says
+// "would grow to N bytes (from M)", and an apply's keeps "grew to N bytes." first, then the size before the edit.
+if (selected(171)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-hub-sizes-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const content = (name: string, text: string) => {
+      const file = path.join(root, `${name}.md`);
+      fs.writeFileSync(file, text);
+      return file;
+    };
+    const edit = (args: string[]) => {
+      const ran = cli(['hub', 'edit', 'work', ...args, '--seat', 'first', '--json']);
+      let json: Record<string, any> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, any>;
+      } catch {
+        json = {};
+      }
+      return { ...ran, json };
+    };
+    const paragraph = `${'An orientation paragraph after the list. '.repeat(300).trim()}\n`;
+    equal(edit(['--mode', 'append-section', '--section', 'Now', '--content-path', content('now', `- [ ] A short item.\n\n${paragraph}`)]).exit, 0, 'the Now fixture was not written');
+    equal(edit(['--mode', 'append-section', '--section', 'Next', '--content-path', content('next', `- [ ] A long item.\n  ${'detail '.repeat(200).trim()}\n`)]).exit, 0, 'the Next fixture was not written');
+
+    const preflight = edit(['--mode', 'append-section', '--section', 'Now', '--content-path', content('more', '- [ ] Another item.\n'), '--preflight']);
+    const entries = (preflight.json['entry_size_warning']?.['oversized_entries'] ?? []) as { section: string; key: string; label: string; size_bytes: number }[];
+    check(!entries.some((entry) => entry.label === 'A short item.'), `a paragraph after a list counted toward its last item: ${JSON.stringify(entries).slice(0, 400)}`);
+    const long = entries.find((entry) => entry.label === 'A long item.');
+    check(long !== undefined && long.section === 'Next' && /^Next#[0-9a-f]{16}$/.test(long.key) && long.size_bytes > 1200, `oversized_entries is not page-wide with a short key: ${JSON.stringify(entries).slice(0, 400)}`);
+    const sections = (preflight.json['section_size_warning']?.['warned_sections'] ?? []) as { section: string; size_bytes: number; size_before_bytes: number }[];
+    const now = sections.find((entry) => entry.section === 'Now');
+    check(now !== undefined && now.size_bytes > now.size_before_bytes && now.size_before_bytes > 12000, `the Now section's warning does not carry its size before the edit: ${JSON.stringify(sections)}`);
+    const said = (text: string) => text.replace(/\s+/g, ' ');
+    check(said(preflight.stderr).includes(`Section 'Now' on 'projects/work/_project.md' would grow to ${now?.size_bytes} bytes (from ${now?.size_before_bytes}).`), `the preflight's section line does not say "would grow to N bytes (from M)": ${said(preflight.stderr).slice(0, 400)}`);
+    const applied = edit(['--mode', 'append-section', '--section', 'Now', '--content-path', content('more', '- [ ] Another item.\n')]);
+    check(
+      applied.exit === 0 && said(applied.stderr).includes(`Section 'Now' on 'projects/work/_project.md' grew to ${now?.size_bytes} bytes. It was ${now?.size_before_bytes} bytes before this edit.`),
+      `the apply's section line does not keep "grew to N bytes." first and then the size before: ${said(applied.stderr).slice(0, 400)}`,
+    );
+  } catch (error) {
+    failures.push(`section 171 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 172. HUB EDIT NEW-PAGE'S PLAN ID AND ITS ADVICE (kickoffs/s98 row K2, ruling 9; two Reports). The preflight issues
+// a plan_id over the page path and its proposed bytes; the apply takes it, or runs without one, and refuses another; the
+// `next` advice names a `Run` line under Next only for a kickoffs/ page, and for any other page names no section.
+if (selected(172)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-new-page-plan-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const body = path.join(root, 'page.md');
+    fs.writeFileSync(body, 'A page body.\n');
+    const newPage = (page: string, extra: string[]) => {
+      const ran = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--title', 'A page', '--content-path', body, '--seat', 'first', '--json', ...extra]);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        json = {};
+      }
+      return { ...ran, json };
+    };
+    const pageFile = (page: string) => path.join(lib, 'collection', 'projects', 'work', ...`${page}.md`.split('/'));
+
+    const preflight = newPage('notes/planned', ['--preflight']);
+    const expected = `project-new-page-${createHash('sha256').update(`${preflight.json['page_path']}\n${preflight.json['proposed_sha256']}`, 'utf8').digest('hex')}`;
+    equal(preflight.json['plan_id'], expected, "new-page's preflight does not issue its plan_id over the page path and its bytes");
+    const wrong = newPage('notes/planned', ['--plan-id', `project-new-page-${'0'.repeat(64)}`]);
+    check(wrong.exit !== 0 && wrong.stderr.includes('is not this page\'s plan') && wrong.stderr.includes('Nothing was written.') && !fs.existsSync(pageFile('notes/planned')), `a different plan id was not refused: ${wrong.stderr.trim()}`);
+    const right = newPage('notes/planned', ['--plan-id', expected]);
+    check(right.exit === 0 && right.json['plan_id'] === expected && fs.existsSync(pageFile('notes/planned')), `the preflight's own plan id did not apply: ${right.stderr.trim()}`);
+    const rerun = newPage('notes/unplanned', []);
+    check(rerun.exit === 0 && fs.existsSync(pageFile('notes/unplanned')), `the rerun form without a plan id no longer works: ${rerun.stderr.trim()}`);
+
+    const kickoff = newPage('kickoffs/s01', []);
+    check(String(kickoff.json['next']).includes('--section Next') && String(kickoff.json['next']).includes('- [ ] Run s01: [[projects/work/kickoffs/s01]]'), `a kickoff page's advice does not name its Run line under Next: ${kickoff.json['next']}`);
+    const note = String(rerun.json['next']);
+    check(note.includes('Link it from the item or paragraph that cites it: [[projects/work/notes/unplanned]]') && !note.includes('Next') && !note.includes('--section'), `a page that is no kickoff is advised into a section: ${note}`);
+    check(VERBS['hub']!.details!['edit']!.join('\n').includes('the apply takes it with --plan-id <id>, or runs without one'), "hub edit's usage does not give new-page's two forms");
+  } catch (error) {
+    failures.push(`section 172 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 173. THE LETTER COUNTS ON THE DESK (kickoffs/s99 row 4, ruling 2; PLAN-seats-team.md session 3 items 4 and
+// 7). `letters_for_this_seat` gains `stuck`, its last key: this seat's department letters older than their own Book's
+// `Growing at` age. The orchestrator's `directory` gains `stuck_letters`, its last key: the department's stuck letters in
+// every Book that takes letters, whatever seat they now name; null for any other seat. `letters_from_this_seat`, right
+// after, counts the pending letters this seat started (a route stays its first asker's; a legacy letter by `from_seat`),
+// and the route names the reader map's group and the inventory. Two letters Books, aged 2 and 9 days.
+if (selected(173)) {
+  // 1. THE TWO PREDICATES, IN PROCESS.
+  const { isStartedBy, isStuckLetter, parseShelfNote } = await import('../src/shelfnote.ts');
+  const idA = 'a'.repeat(32);
+  const idB = 'b'.repeat(32);
+  const note = (lines: string[]) => parseShelfNote('n.md', 'n.md', ['---', ...lines, '---', '', '# N', '', 'x', ''].join('\n'));
+  const now = Date.parse('2026-10-10T12:00:00Z');
+  const aged = (captured: string, extra: string[] = []) => note([`captured: ${captured}`, 'review: pending', 'for_seat: lead', 'for_department: eng', ...extra]);
+  check(isStuckLetter(aged('2026-10-06'), { growingDays: 2 }, now) && !isStuckLetter(aged('2026-10-06'), { growingDays: 9 }, now), 'a department letter was not judged by its own Book\'s age');
+  check(!isStuckLetter(aged('2026-10-09'), { growingDays: 2 }, now), 'a letter younger than its Book\'s age was stuck');
+  check(isStuckLetter(aged('2026-10-01'), {}, now) && !isStuckLetter(aged('2026-10-04'), {}, now), 'a Book with no Growing at line was not judged by the 7-day default');
+  check(!isStuckLetter(note(['captured: 2026-10-01', 'review: pending', 'for_seat: lead']), { growingDays: 2 }, now), 'a direct --for letter was stuck');
+  check(!isStuckLetter(note(['review: pending', 'for_seat: lead', 'for_department: eng']), { growingDays: 2 }, now), 'a letter whose captured is unknown was stuck');
+  check(!isStuckLetter(aged('2026-10-01', ['hops: 9']), { growingDays: 2 }, now), 'a malformed letter was stuck');
+  check(!isStuckLetter(note(['captured: 2026-10-01', 'review: done', 'for_seat: lead', 'for_department: eng']), { growingDays: 2 }, now), 'a closed letter was stuck');
+  const dev = { seat: 'dev', seatId: idA };
+  check(isStartedBy(note(['origin_seat: dev', `origin_seat_id: ${idA}`]), dev) && !isStartedBy(note(['origin_seat: dev', `origin_seat_id: ${idB}`]), dev), 'origin_seat_id did not bind the incarnation that started a letter');
+  check(isStartedBy(note(['from_seat: lead', 'origin_seat: dev']), dev) && !isStartedBy(note(['from_seat: dev', 'origin_seat: lead']), dev), 'a route was not its first asker\'s, or was its router\'s');
+  check(isStartedBy(note(['from_seat: dev']), dev) && !isStartedBy(note(['from_seat: lead']), dev), 'a legacy letter was not judged by from_seat');
+  check(!isStartedBy(note(['origin_seat: dev', 'origin_seat: dev']), dev) && !isStartedBy(note(['origin_seat: dev']), null), 'a malformed letter, or no seat, started a letter');
+
+  // 2. THROUGH THE FRONT DOOR.
+  const w = await seatClaimWorkspace('letter-counts', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub', 'qa-hub', 'solo-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const leadAgent = w.startAgent();
+    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    const devAgent = w.startAgent();
+    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    for (const [seat, hub] of [['qa', 'qa-hub'], ['solo', 'solo-hub']]) {
+      equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
+    }
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator' },
+      dev: { department: 'engineering', role: 'performer' },
+      qa: { department: 'engineering', role: 'performer' },
+    };
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const seatId = (seat: string) => String(registry().seats.find((row) => row['seat'] === seat)!['seat_id']);
+
+    // A SECOND BOOK THAT TAKES LETTERS, aged 9 days, and the standard one shortened to 2.
+    equal(w.as(process.pid, ['shelf', 'new', 'notices', '--title', 'Notices', '--summary', 'Department notices.', '--capture', '--workspace', ws]).exit, 0, 'the notices Book could not be made');
+    const catalogFile = path.join(ws, 'shelf', '_catalog.md');
+    const sections = fs.readFileSync(catalogFile, 'utf8').split(/(?=^## )/m);
+    fs.writeFileSync(
+      catalogFile,
+      sections
+        .map((section) =>
+          /\*\*Path:\*\* shelf\/letters\s*$/m.test(section)
+            ? section.replace(/^(- \*\*Growing at:\*\*) .*$/m, '$1 5 pending or 2 days')
+            : /\*\*Path:\*\* shelf\/notices\s*$/m.test(section)
+              ? section.replace(/^(- \*\*Closed by:\*\* .*)$/m, '$1\n- **Letters:** yes\n- **Growing at:** 5 pending or 9 days')
+              : section,
+        )
+        .join(''),
+    );
+    const catalog = fs.readFileSync(catalogFile, 'utf8');
+    check(/Growing at:\*\* 5 pending or 2 days/.test(catalog) && /Growing at:\*\* 5 pending or 9 days/.test(catalog), 'the fixture catalog did not take the two ages');
+
+    const day = (ago: number) => new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10);
+    const capture = (agent: number, args: string[]) => {
+      const ran = w.as(agent, ['capture', ...args, '--body', 'x', '--workspace', ws, '--json']);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(ran.stdout) as Record<string, unknown>;
+      } catch {
+        json = {};
+      }
+      return { ...ran, json, page: String(json['note_page'] ?? '').replace(/^shelf\/letters\/wiki\//, '') };
+    };
+    const old = capture(devAgent, ['letters', '--for-department', 'engineering', '--title', 'Old to engineering']);
+    const fresh = capture(devAgent, ['letters', '--for-department', 'engineering', '--title', 'New to engineering']);
+    const direct = capture(devAgent, ['letters', '--for', 'lead', '--title', 'Old to lead']);
+    check(old.exit === 0 && fresh.exit === 0 && direct.exit === 0, `the fixture letters were not written: ${old.stderr.trim()} ${fresh.stderr.trim()} ${direct.stderr.trim()}`);
+    // AGED THROUGH ITS OWN `captured:` LINE: `--capture-date` names the file only, and `captured:` stays the instant.
+    const backdate = (page: string, ago: number) => {
+      const file = path.join(ws, 'shelf', 'letters', 'wiki', ...`${page}.md`.split('/'));
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^captured: .*$/m, `captured: ${day(ago)}T00:00:00Z`));
+    };
+    backdate(old.page, 4);
+    backdate(direct.page, 4);
+    const hand = (book: string, name: string, lines: string[]) => {
+      const dir = path.join(ws, 'shelf', book, 'wiki', 'notes');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${name}.md`), ['---', 'review: pending', 'from_seat: dev', ...lines, '---', '', `# ${name}`, '', 'x', ''].join('\n'));
+    };
+    const fromDev = () => ['origin_seat: dev', `origin_seat_id: ${seatId('dev')}`];
+    const toLead = () => ['for_seat: lead', `for_seat_id: ${seatId('lead')}`];
+    // a legacy letter (no captured line, no origin), a malformed one, another incarnation's, a routed one now qa's, and
+    // a marketing letter; then two in the 9-day Book on either side of its age.
+    hand('letters', '2026-10-01-legacy', ['for_seat: lead', 'for_department: engineering']);
+    hand('letters', '2026-10-01-malformed', [`captured: ${day(10)}`, ...toLead(), 'for_department: engineering', ...fromDev(), 'hops: 9']);
+    hand('letters', '2026-10-01-earlier-dev', [`captured: ${day(1)}`, 'for_seat: lead', 'origin_seat: dev', `origin_seat_id: ${'c'.repeat(32)}`]);
+    hand('letters', '2026-10-01-routed-to-qa', [`captured: ${day(5)}`, 'for_seat: qa', `for_seat_id: ${seatId('qa')}`, 'for_department: engineering', ...fromDev(), 'routed_from: notes/2026-10-01-gone', 'hops: 1']);
+    hand('letters', '2026-10-01-marketing', [`captured: ${day(10)}`, 'for_seat: solo', 'for_department: marketing', ...fromDev()]);
+    hand('notices', '2026-10-01-young', [`captured: ${day(4)}`, ...toLead(), 'for_department: engineering', ...fromDev()]);
+    hand('notices', '2026-10-01-aged', [`captured: ${day(12)}`, ...toLead(), 'for_department: engineering', ...fromDev()]);
+
+    const desk = (agent: number, seat: string) => JSON.parse(w.as(agent, ['desk', '--seat', seat, '--workspace', ws, '--json']).stdout) as Record<string, any>;
+    const lead = desk(leadAgent, 'lead');
+    const forLead = lead['letters_for_this_seat'] as Record<string, unknown>;
+    equal(JSON.stringify(Object.keys(forLead)), '["count","by_book","oldest_pending","route","stuck"]', 'letters_for_this_seat\'s keys are not the old four and then stuck');
+    // old, fresh, direct, legacy, malformed and the earlier dev's (by slug) in letters; young and aged in notices.
+    equal(JSON.stringify(forLead['by_book']), '{"letters":6,"notices":2}', `the recipient's letters were not counted by the predicate: ${JSON.stringify(forLead)}`);
+    equal(forLead['count'], 8, 'letters_for_this_seat.count changed its meaning');
+    equal(forLead['oldest_pending'], day(12), 'the oldest pending letter is not the aged one');
+    equal(forLead['stuck'], 2, `stuck did not count the old department letter (2-day Book) and the aged one (9-day Book) only: ${JSON.stringify(forLead)}`);
+    equal(forLead['route'], "library desk open book letters --location shelf, then read its letters under '### For lead' in its reader map, or list them with library triage inventory --pending", 'the route does not name where the letters are listed');
+    const leadDirectory = lead['directory'] as Record<string, unknown>;
+    equal(Object.keys(leadDirectory).at(-1), 'stuck_letters', 'stuck_letters is not the last key of the directory');
+    // old (letters), aged (notices) and the one routed to qa; not the legacy (no date), malformed or marketing ones.
+    equal(leadDirectory['stuck_letters'], 3, `the orchestrator's stuck_letters did not count its department's old letters whatever seat they name: ${JSON.stringify(leadDirectory)}`);
+    equal(JSON.stringify(lead['letters_from_this_seat']), '{"count":0}', 'a seat that sent nothing has a sent count');
+    const keys = Object.keys(lead);
+    equal(keys.indexOf('letters_from_this_seat'), keys.indexOf('letters_for_this_seat') + 1, 'letters_from_this_seat is not right after letters_for_this_seat');
+
+    const devDesk = desk(devAgent, 'dev');
+    equal(JSON.stringify(devDesk['letters_for_this_seat']), '{"count":0}', 'the {count: 0} form changed');
+    equal((devDesk['directory'] as Record<string, unknown>)['stuck_letters'], null, 'a performer has stuck_letters');
+    const sent = devDesk['letters_from_this_seat'] as Record<string, unknown>;
+    equal(JSON.stringify(Object.keys(sent)), '["count","by_book","oldest_pending"]', 'letters_from_this_seat is not count, by_book and oldest_pending');
+    // old, fresh, direct, legacy (from_seat), routed-to-qa and marketing in letters; young and aged in notices; not the
+    // earlier incarnation's or the malformed one.
+    equal(JSON.stringify(sent['by_book']), '{"letters":6,"notices":2}', `the sent count is not the letters dev started: ${JSON.stringify(sent)}`);
+    equal(sent['count'], 8, 'the sent count is wrong');
+    equal(sent['oldest_pending'], day(12), 'the oldest sent letter is not the aged one');
+
+    // A ROUTE STAYS ITS FIRST ASKER'S: lead routes the fresh one to qa, so dev's sent count holds and lead's stays 0.
+    fs.writeFileSync(path.join(ws, '.claude', 'seats', 'lead', '.open-books'), 'shelf/letters\n');
+    const routed = capture(leadAgent, ['letters', '--for', 'qa', '--routes', fresh.page, '--title', 'Over to qa']);
+    check(routed.exit === 0 && routed.json['origin_seat'] === 'dev', `the route was not written as dev's: ${routed.stderr.trim()} ${JSON.stringify(routed.json).slice(0, 300)}`);
+    equal((desk(devAgent, 'dev')['letters_from_this_seat'] as Record<string, unknown>)['count'], 8, 'a route did not stay its first asker\'s');
+    equal(JSON.stringify(desk(leadAgent, 'lead')['letters_from_this_seat']), '{"count":0}', 'a route counted as its router\'s');
+    equal((desk(leadAgent, 'lead')['letters_for_this_seat'] as Record<string, unknown>)['count'], 7, 'the routed letter still counts for lead');
+
+    // A FREE SEAT AND A SEAT WITH NO DEPARTMENT: no letter keys, and stuck_letters null.
+    const solo = desk(process.pid, 'solo');
+    check(!('letters_for_this_seat' in solo) && !('letters_from_this_seat' in solo), 'a free seat\'s Desk counted letters');
+    equal((solo['directory'] as Record<string, unknown>)['stuck_letters'], null, 'a seat with no department has stuck_letters');
+  } catch (error) {
+    failures.push(`section 173 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 174. A SEAT WITH LETTERS WAITING IS NOT RETIRED (kickoffs/s99 row 5, ruling 3; PLAN-seats-team.md session 3
+// items 5 and 7). `seat retire`, preflight and apply alike, refuses while a letter addressed to the seat (the recipient
+// predicate) is pending in any capture Book, before any plan id: the refusal gives the count, each Book's count and the
+// oldest `captured`, and names answering, routing and closing, the orchestrator's hand-over, and the reader's override.
+// A letter the seat sent, or one stamped for an earlier incarnation, does not hold it; once its letters are answered,
+// routed and closed, retire runs as before.
+if (selected(174)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-retire-letters-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (seat: string, args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: seat } });
+    const parsed = (result: { stdout: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const seat of ['lead', 'dev', 'qa']) {
+      equal(as('', ['hub', 'new', `${seat}-hub`, '--title', seat]).exit, 0, `the ${seat} Hub was not made`);
+      equal(as('', ['seat', 'start', seat, '--project', `${seat}-hub`, '--no-launch']).exit, 0, `the seat ${seat} was not made`);
+      fs.writeFileSync(path.join(lib, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\n');
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator' },
+      dev: { department: 'engineering', role: 'performer' },
+      qa: { department: 'engineering', role: 'performer' },
+    };
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const notesDir = path.join(lib, 'shelf', 'letters', 'wiki', 'notes');
+    const letter = (seat: string, args: string[]) => {
+      const ran = as(seat, ['capture', 'letters', ...args, '--body', 'x', '--json']);
+      return { ...ran, page: String(parsed(ran)['note_page'] ?? '').replace(/^shelf\/letters\/wiki\//, '') };
+    };
+    const first = letter('dev', ['--for', 'qa', '--title', 'First for qa']);
+    const second = letter('dev', ['--for', 'qa', '--title', 'Second for qa']);
+    const third = letter('dev', ['--for', 'qa', '--title', 'Third for qa']);
+    const sentByQa = letter('qa', ['--for', 'dev', '--title', 'From qa']);
+    const toDepartment = letter('dev', ['--for-department', 'engineering', '--title', 'For engineering']);
+    check([first, second, third, sentByQa, toDepartment].every((ran) => ran.exit === 0 && ran.page), `the fixture letters were not written: ${[first, second, third, sentByQa, toDepartment].map((ran) => ran.stderr.trim()).join(' ')}`);
+    const firstFile = path.join(lib, 'shelf', 'letters', 'wiki', ...`${first.page}.md`.split('/'));
+    fs.writeFileSync(firstFile, fs.readFileSync(firstFile, 'utf8').replace(/^captured: .*$/m, 'captured: 2026-09-01T00:00:00Z'));
+    // A LETTER STAMPED FOR AN EARLIER INCARNATION OF qa holds nothing (stale case (b)).
+    fs.writeFileSync(path.join(notesDir, '2026-09-02-earlier-qa.md'), `---\ncaptured: 2026-08-01T00:00:00Z\nreview: pending\nfrom_seat: dev\nfor_seat: qa\nfor_seat_id: ${'e'.repeat(32)}\n---\n\n# Earlier qa\n\nx\n`);
+
+    // THE REFUSAL, preflight and apply alike, with no plan id issued.
+    const qaPending = (count: number) => `Seat 'qa' has ${count} pending letter${count === 1 ? '' : 's'} addressed to it (letters: ${count}; the oldest captured`;
+    const preflight = as('', ['seat', 'retire', 'qa', '--preflight', '--json']);
+    const refusal = said(preflight);
+    check(preflight.exit !== 0 && !('plan_id' in parsed(preflight)), `retire's preflight issued a plan for a seat with letters waiting: ${refusal.slice(0, 300)}`);
+    check(refusal.includes(`${qaPending(3)} 2026-09-01T00:00:00Z)`), `the refusal does not list qa's three letters, its Book's count and the oldest: ${refusal.slice(0, 400)}`);
+    for (const words of ['deskpost capture letters --answers notes/<page>', 'deskpost capture letters --for <seat> --routes notes/<page>', 'or closes it', "names the letter's writer in other_seat", 'Nothing was retired.']) {
+      check(refusal.includes(words), `the refusal does not name "${words}": ${refusal.slice(0, 600)}`);
+    }
+    check(!refusal.includes('--role orchestrator'), 'a performer\'s refusal names the orchestrator\'s hand-over');
+    const applied = as('', ['seat', 'retire', 'qa', '--plan-id', '0123456789abcdef', '--json']);
+    check(applied.exit !== 0 && said(applied).includes(qaPending(3)) && !said(applied).includes('A different plan_id'), `the apply was not refused for the letters before its plan id: ${said(applied).slice(0, 300)}`);
+    check(registry().seats.some((row) => row['seat'] === 'qa') && fs.existsSync(path.join(lib, '.claude', 'seats', 'qa')), 'a refused retire removed the seat');
+
+    // AN ORCHESTRATOR IS TOLD TO HAND THE ROLE OVER FIRST.
+    const lead = said(as('', ['seat', 'retire', 'lead', '--preflight', '--json']));
+    check(lead.includes("Seat 'lead' has 1 pending letter addressed to it (letters: 1;") && lead.includes("As the orchestrator of department 'engineering', it first hands the role over with deskpost seat describe <new seat> --role orchestrator --from lead"), `the orchestrator's refusal does not name the hand-over: ${lead.slice(0, 600)}`);
+
+    // IT LIFTS as the letters are answered, routed and closed (the last by the reader's override, from another seat).
+    const answered = letter('qa', ['--answers', first.page, '--title', 'Re first']);
+    check(answered.exit === 0, `qa could not answer its letter: ${answered.stderr.trim()}`);
+    check(said(as('', ['seat', 'retire', 'qa', '--preflight', '--json'])).includes(qaPending(2)), 'an answered letter still held the seat');
+    const routed = letter('qa', ['--for', 'lead', '--routes', second.page, '--title', 'Over to lead']);
+    check(routed.exit === 0, `qa could not route its letter: ${routed.stderr.trim()}`);
+    check(said(as('', ['seat', 'retire', 'qa', '--preflight', '--json'])).includes(qaPending(1)), 'a routed letter still held the seat');
+    const actions = JSON.stringify([{ kind: 'review', source: 'holding', source_slug: 'letters', source_match: 'Third for qa', other_seat: 'dev' }]);
+    const planId = String(parsed(as('lead', ['triage', 'batch', '--actions', actions, '--preflight', '--json']))['plan_id'] ?? '');
+    const closed = as('lead', ['triage', 'batch', '--actions', actions, '--user-confirmed', '--plan-id', planId, '--json']);
+    check(closed.exit === 0 && parsed(closed)['status'] === 'complete', `the reader's override could not close the last letter: ${said(closed).slice(0, 300)}`);
+    const free = as('', ['seat', 'retire', 'qa', '--preflight', '--json']);
+    const freePlan = String(parsed(free)['plan_id'] ?? '');
+    check(free.exit === 0 && /^[0-9a-f]{16}$/.test(freePlan), `retire did not lift once qa's letters were answered, routed and closed (its own sent letter and the earlier incarnation's still pending): ${said(free).slice(0, 300)}`);
+    const retired = as('', ['seat', 'retire', 'qa', '--plan-id', freePlan, '--json']);
+    check(retired.exit === 0 && !registry().seats.some((row) => row['seat'] === 'qa'), `qa was not retired with its plan id: ${said(retired).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 174 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 175. THE THREE STALE DELIVERIES (kickoffs/s99 row 7, ruling 4; PLAN-seats-team.md session 3 item 7 and Risks,
+// "What a stale delivery means"), each counted and closed as the plan says. (a) A department letter whose seat has since
+// lost the orchestrator role stays that seat's letter: its Desk count, `seat cards`, `--answers`, `--routes` and a triage
+// close all still work, and once old it counts in the new orchestrator's `stuck_letters`. (b) A letter stamped for an
+// earlier incarnation of its slug is not counted for the new one, not closable by it, does not hold its retire, and
+// doctor names it; its writer, or the reader with `other_seat`, closes it. (c) A letter whose seat is gone is (b) with no
+// row. (The counts against a non-standard age and the sent count are section 173's; retire's list and its lifting, 174's.)
+if (selected(175)) {
+  const w = await seatClaimWorkspace('stale-deliveries', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub', 'qa-hub']) {
+      equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    }
+    const leadAgent = w.startAgent();
+    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    const devAgent = w.startAgent();
+    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    const qaAgent = w.startAgent();
+    equal(w.createSeat('qa', 'qa-hub', qaAgent).exit, 0, 'the seat qa could not be created');
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const fields: Record<string, Record<string, string>> = {
+      lead: { department: 'engineering', role: 'orchestrator' },
+      dev: { department: 'engineering', role: 'performer' },
+      qa: { department: 'engineering', role: 'performer' },
+    };
+    const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry().seats.map((row) => ({ ...row, ...(fields[String(row['seat'])] ?? {}) })) }, null, 4) + '\n');
+    const seatId = (seat: string) => String(registry().seats.find((row) => row['seat'] === seat)?.['seat_id'] ?? '');
+    const openLetters = (seat: string) => fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\n');
+    for (const seat of ['lead', 'dev', 'qa']) openLetters(seat);
+    const json = (ran: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (ran: { stdout: string; stderr: string }) => (ran.stdout + ran.stderr).replace(/\s+/g, ' ');
+    const letter = (agent: number, args: string[]) => {
+      const ran = w.as(agent, ['capture', 'letters', ...args, '--body', 'x', '--workspace', ws, '--json']);
+      return { ...ran, page: String(json(ran)['note_page'] ?? '').replace(/^shelf\/letters\/wiki\//, '') };
+    };
+    const notesDir = path.join(ws, 'shelf', 'letters', 'wiki', 'notes');
+    const fileOf = (page: string) => path.join(ws, 'shelf', 'letters', 'wiki', ...`${page}.md`.split('/'));
+    const edit = (page: string, change: (text: string) => string) => fs.writeFileSync(fileOf(page), change(fs.readFileSync(fileOf(page), 'utf8')));
+    const desk = (agent: number, seat: string) => json(w.as(agent, ['desk', '--seat', seat, '--workspace', ws, '--json']));
+    const cardsCount = (seat: string) => {
+      const report = json(w.as(process.pid, ['seat', 'cards', '--all', '--workspace', ws, '--json']));
+      return [...((report['departments'] as Record<string, any>[] | undefined) ?? []).flatMap((entry) => entry['seats'] as Record<string, unknown>[]), ...((report['without_department'] as Record<string, unknown>[] | undefined) ?? [])].find(
+        (row) => row['seat'] === seat,
+      )?.['pending_letters'];
+    };
+    const triage = (agent: number, match: string, extra: Record<string, unknown> = {}) => {
+      const actions = JSON.stringify([{ kind: 'review', source: 'holding', source_slug: 'letters', source_match: match, ...extra }]);
+      const preflight = w.as(agent, ['triage', 'batch', '--actions', actions, '--preflight', '--json', '--workspace', ws]);
+      if (preflight.exit !== 0) return preflight;
+      return w.as(agent, ['triage', 'batch', '--actions', actions, '--user-confirmed', '--plan-id', String(json(preflight)['plan_id'] ?? ''), '--json', '--workspace', ws]);
+    };
+    const incarnation = () => {
+      const report = json(w.as(process.pid, ['doctor', '--workspace', ws, '--json']));
+      return ((report['program_checks'] as Record<string, unknown>[] | undefined) ?? []).find((row) => row['check'] === 'letters.recipient-incarnation') ?? {};
+    };
+
+    // (a) FOUR DEPARTMENT LETTERS resolve to lead; then dev takes the role over with `seat describe --from`.
+    const answerMe = letter(devAgent, ['--for-department', 'engineering', '--title', 'Answer me']);
+    const routeMe = letter(devAgent, ['--for-department', 'engineering', '--title', 'Route me']);
+    const closeMe = letter(devAgent, ['--for-department', 'engineering', '--title', 'Close me']);
+    const oldOne = letter(devAgent, ['--for-department', 'engineering', '--title', 'Old one']);
+    check([answerMe, routeMe, closeMe, oldOne].every((ran) => ran.exit === 0 && json(ran)['for_seat'] === 'lead'), `the department letters did not resolve to lead: ${[answerMe, routeMe, closeMe, oldOne].map((ran) => ran.stderr.trim()).join(' ')}`);
+    edit(oldOne.page, (text) => text.replace(/^captured: .*$/m, 'captured: 2026-01-01T00:00:00Z'));
+    const swap = ['seat', 'describe', 'dev', '--role', 'orchestrator', '--from', 'lead', '--workspace', ws];
+    const plan = json(w.as(process.pid, [...swap, '--preflight', '--json']));
+    equal(w.as(process.pid, [...swap, '--plan-id', String(plan['plan_id'] ?? ''), '--json']).exit, 0, 'dev could not take the orchestrator role from lead');
+    const leadDesk = desk(leadAgent, 'lead');
+    check(leadDesk['directory']?.['role'] === 'performer' && leadDesk['directory']?.['stuck_letters'] === null, `lead did not lose the role: ${JSON.stringify(leadDesk['directory'])}`);
+    check(leadDesk['letters_for_this_seat']?.['count'] === 4 && leadDesk['letters_for_this_seat']?.['stuck'] === 1 && cardsCount('lead') === 4, `the letters resolved to lead before the swap are not still its own: Desk ${JSON.stringify(leadDesk['letters_for_this_seat'])}, seat cards ${cardsCount('lead')}`);
+    const devDesk = desk(devAgent, 'dev');
+    check(devDesk['directory']?.['role'] === 'orchestrator' && devDesk['directory']?.['stuck_letters'] === 1, `the old letter does not count in the new orchestrator's stuck_letters: ${JSON.stringify(devDesk['directory'])}`);
+    const answered = letter(leadAgent, ['--answers', answerMe.page, '--title', 'Answered by lead']);
+    check(answered.exit === 0 && json(answered)['for_seat'] === 'dev', `the former orchestrator could not answer its letter: ${answered.stderr.trim()}`);
+    const routed = letter(leadAgent, ['--for', 'dev', '--routes', routeMe.page, '--title', 'Routed by lead']);
+    check(routed.exit === 0 && json(routed)['for_department'] === 'engineering', `the former orchestrator could not route its letter: ${routed.stderr.trim()}`);
+    const triaged = triage(leadAgent, 'Close me');
+    check(triaged.exit === 0 && json(triaged)['status'] === 'complete', `the former orchestrator could not close its letter by triage: ${said(triaged).slice(0, 300)}`);
+    equal(desk(leadAgent, 'lead')['letters_for_this_seat']?.['count'], 1, 'the answered, routed and closed letters still count for lead');
+
+    // (b) TWO LETTERS FOR qa, closed by their writer so qa can retire; qa is created again (a new seat_id) and both are
+    // reopened, as triage can reopen a letter after its recipient retired.
+    const forOldQa = letter(devAgent, ['--for', 'qa', '--title', 'For the first qa']);
+    const alsoOldQa = letter(devAgent, ['--for', 'qa', '--title', 'Also for the first qa']);
+    const firstQaId = seatId('qa');
+    check(forOldQa.exit === 0 && json(forOldQa)['for_seat_id'] === firstQaId && alsoOldQa.exit === 0, `the letters for qa were not stamped with its incarnation: ${forOldQa.stderr.trim()}`);
+    for (const match of ['For the first qa', 'Also for the first qa']) check(json(triage(devAgent, match))['status'] === 'complete', `the writer could not close '${match}'`);
+    w.agents.find((agent) => agent.pid === qaAgent)?.kill();
+    check(w.untilFree('qa'), 'qa did not go free when its agent ended');
+    const retirePlan = String(json(w.as(process.pid, ['seat', 'retire', 'qa', '--preflight', '--json', '--workspace', ws]))['plan_id'] ?? '');
+    equal(w.as(process.pid, ['seat', 'retire', 'qa', '--plan-id', retirePlan, '--json', '--workspace', ws]).exit, 0, 'the first qa could not be retired');
+    const newQaAgent = w.startAgent();
+    equal(w.createSeat('qa', 'qa-hub', newQaAgent).exit, 0, 'qa could not be created again');
+    openLetters('qa');
+    check(seatId('qa') !== '' && seatId('qa') !== firstQaId, 'the second qa did not get a seat_id of its own');
+    for (const page of [forOldQa.page, alsoOldQa.page]) edit(page, (text) => text.replace(/^review: done$/m, 'review: pending'));
+    equal(JSON.stringify(desk(newQaAgent, 'qa')['letters_for_this_seat']), '{"count":0}', "the new qa counts the first qa's letters");
+    equal(cardsCount('qa'), 0, "seat cards counts the first qa's letters for the new one");
+    check(((desk(devAgent, 'dev')['other_seats'] as Record<string, unknown>[] | undefined) ?? []).find((row) => row['seat'] === 'qa')?.['pending_letters'] === 0, "another seat's Desk counts the first qa's letters for the new one");
+    const answerStale = letter(newQaAgent, ['--answers', forOldQa.page, '--title', 'Not mine to answer']);
+    check(answerStale.exit !== 0 && answerStale.stderr.includes('was addressed to an earlier seat named'), `the new qa could answer the first qa's letter: ${answerStale.stderr.trim().slice(0, 300)}`);
+    const closeStale = triage(newQaAgent, 'For the first qa');
+    check(closeStale.exit !== 0 && said(closeStale).includes('a seat closes only its own notes'), `the new qa could close the first qa's letter: ${said(closeStale).slice(0, 300)}`);
+    const staleDoctor = incarnation();
+    check(staleDoctor['status'] === 'warn' && String(staleDoctor['detail']).includes(forOldQa.page) && String(staleDoctor['detail']).includes(alsoOldQa.page) && String(staleDoctor['detail']).includes('another incarnation'), `doctor does not name the first qa's letters: ${JSON.stringify(staleDoctor).slice(0, 600)}`);
+    w.agents.find((agent) => agent.pid === newQaAgent)?.kill();
+    check(w.untilFree('qa'), 'the second qa did not go free when its agent ended');
+    const unheld = w.as(process.pid, ['seat', 'retire', 'qa', '--preflight', '--json', '--workspace', ws]);
+    check(unheld.exit === 0 && /^[0-9a-f]{16}$/.test(String(json(unheld)['plan_id'] ?? '')), `the first qa's letters hold the second qa's retire: ${said(unheld).slice(0, 300)}`);
+    check(json(triage(devAgent, 'For the first qa'))['status'] === 'complete', "the writer could not close the first qa's letter");
+    check(json(triage(leadAgent, 'Also for the first qa', { other_seat: 'dev' }))['status'] === 'complete', "the reader could not close the first qa's letter with other_seat");
+
+    // (c) A LETTER WHOSE SEAT IS GONE, with and without an id: no seat counts it, doctor names it, its writer or the reader
+    // with other_seat closes it, and no other seat can without other_seat.
+    const counts = () => [desk(leadAgent, 'lead')['letters_for_this_seat']?.['count'], desk(devAgent, 'dev')['letters_for_this_seat']?.['count'], cardsCount('lead'), cardsCount('dev')].join(',');
+    const before = counts();
+    fs.writeFileSync(path.join(notesDir, '2026-10-07-for-zed.md'), `---\ncaptured: 2026-10-07T00:00:00Z\nreview: pending\nfrom_seat: dev\nfor_seat: zed\nfor_seat_id: ${'f'.repeat(32)}\norigin_seat: dev\norigin_seat_id: ${seatId('dev')}\n---\n\n# For zed\n\nx\n`);
+    fs.writeFileSync(path.join(notesDir, '2026-10-07-also-for-zed.md'), '---\ncaptured: 2026-10-07T00:00:00Z\nreview: pending\nfrom_seat: dev\nfor_seat: zed\n---\n\n# Also for zed\n\nx\n');
+    equal(counts(), before, 'a letter whose seat is gone counted for a seat');
+    const goneDoctor = incarnation();
+    check(goneDoctor['status'] === 'warn' && String(goneDoctor['detail']).includes('notes/2026-10-07-for-zed') && String(goneDoctor['detail']).includes('notes/2026-10-07-also-for-zed') && String(goneDoctor['detail']).includes('not in the registry'), `doctor does not name the letters for a seat that is gone: ${JSON.stringify(goneDoctor).slice(0, 600)}`);
+    const notTheirs = triage(leadAgent, 'Also for zed');
+    check(notTheirs.exit !== 0 && said(notTheirs).includes('a seat closes only its own notes'), `a seat that neither wrote nor received it closed a letter for a seat that is gone: ${said(notTheirs).slice(0, 300)}`);
+    check(json(triage(devAgent, 'For zed'))['status'] === 'complete', 'the writer could not close a letter for a seat that is gone');
+    check(json(triage(leadAgent, 'Also for zed', { other_seat: 'dev' }))['status'] === 'complete', 'the reader could not close a letter for a seat that is gone with other_seat');
+    equal(incarnation()['status'], 'pass', 'doctor still names a stale letter once each is closed');
+  } catch (error) {
+    failures.push(`section 175 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// SECTION 176. `triage inventory --pending` LEAVES OUT THE NOTEBOOK'S PAGES (kickoffs/s99 row K1, ruling 6): `pages` is
+// an empty array and `pages_listed`, the last key, reads `none`; without the flag it reads `all` and the pages are there.
+// Every count, and the topics, stay whole either way.
+if (selected(176)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-inventory-pending-pages-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const [topic, page] of [['alpha', 'one'], ['alpha', 'two'], ['beta', 'three']]) {
+      fs.mkdirSync(path.join(lib, 'notebook', topic!), { recursive: true });
+      fs.writeFileSync(path.join(lib, 'notebook', topic!, `${page}.md`), `# ${page}\n\nA page.\n`);
+    }
+    equal(runCli(['capture', 'holding', '--title', 'Waiting', '--body', 'x', '--workspace', lib, '--json'], { cwd: root, env }).exit, 0, 'the waiting note was not written');
+    const inventory = (extra: string[]) => JSON.parse(runCli(['triage', 'inventory', ...extra, '--workspace', lib, '--json'], { cwd: root, env }).stdout) as Record<string, any>;
+    const all = inventory([]);
+    const pending = inventory(['--pending']);
+    const listed = Array.isArray(all['pages']) ? (all['pages'] as Record<string, unknown>[]).map((page) => String(page['path'])) : [];
+    check(['notebook/alpha/one.md', 'notebook/alpha/two.md', 'notebook/beta/three.md'].every((page) => listed.includes(page)) && all['page_count'] === listed.length, `the whole inventory does not list the Notebook's pages: ${listed.join(', ')}`);
+    equal(Object.keys(all).at(-1), 'pages_listed', 'pages_listed is not the last key');
+    equal(all['pages_listed'], 'all', 'the whole inventory does not say it lists every page');
+    check(Array.isArray(pending['pages']) && pending['pages'].length === 0, `--pending still lists the Notebook's pages: ${JSON.stringify(pending['pages']).slice(0, 300)}`);
+    equal(Object.keys(pending).at(-1), 'pages_listed', 'pages_listed is not the last key with --pending');
+    equal(pending['pages_listed'], 'none', '--pending does not say it lists no page');
+    for (const key of ['page_count', 'known_current_copy_count', 'no_known_copy_record_count', 'holding_note_count', 'holding_pending_count']) {
+      equal(pending[key], all[key], `--pending changed ${key}`);
+    }
+    equal(JSON.stringify(pending['topics']), JSON.stringify(all['topics']), '--pending changed the topics');
+    equal(pending['holding_notes_listed'], 'pending', '--pending no longer says it lists the waiting notes');
+    check(Array.isArray(pending['holding_notes']) && pending['holding_notes'].length === 1, '--pending did not list the waiting note');
+  } catch (error) {
+    failures.push(`section 176 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 177. A STALE PLAN ID SAYS WHAT IT USUALLY MEANS (kickoffs/s99 row K2, ruling 7). `hub edit`'s refusal keeps
+// its sentence word for word and adds "A different plan_id means the page changed since the preview; it reads <sha256>
+// now." with the page's hash as a fresh preflight reports it (`current_sha256`); an id never issued reads the same.
+// `hub copy-pages` runs against Basic Memory only (a local Library refuses it, section 60), so its sentence is judged through
+// `staleCopyPlanRefusal`, the one function its refusal says.
+if (selected(177)) {
+  const { staleCopyPlanRefusal } = await import('../src/hubcopy.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-stale-plan-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const purpose = path.join(root, 'purpose.md');
+    fs.writeFileSync(purpose, 'The purpose, replaced.\n');
+    const item = path.join(root, 'item.md');
+    fs.writeFileSync(item, '- [ ] A new item.\n');
+    const replace = ['hub', 'edit', 'work', '--mode', 'replace-section', '--section', 'Purpose', '--content-path', purpose, '--seat', 'first'];
+    const preflight = () => JSON.parse(cli([...replace, '--preflight', '--json']).stdout) as Record<string, unknown>;
+    const first = preflight();
+    equal(cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', item, '--seat', 'first']).exit, 0, 'the page could not be changed after the preview');
+    const fresh = preflight();
+    check(typeof fresh['current_sha256'] === 'string' && fresh['current_sha256'] !== first['current_sha256'], 'the page did not change after the preview');
+    const expected = `ReplaceSection is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page changed since the preview; it reads ${fresh['current_sha256']} now.`;
+    const stale = cli([...replace, '--user-confirmed', '--plan-id', String(first['plan_id'])]);
+    check(stale.exit !== 0 && stale.stderr.replace(/\s+/g, ' ').includes(expected), `the stale plan id's refusal does not say the page changed and its hash now: ${stale.stderr.trim().slice(0, 400)}`);
+    const never = cli([...replace, '--user-confirmed', '--plan-id', `project-edit-${'0'.repeat(64)}`]);
+    check(never.exit !== 0 && never.stderr.replace(/\s+/g, ' ').includes(expected), `an id never issued does not read the same: ${never.stderr.trim().slice(0, 400)}`);
+    equal(cli([...replace, '--user-confirmed', '--plan-id', String(fresh['plan_id'])]).exit, 0, "the fresh preflight's plan id did not apply");
+
+    equal(
+      staleCopyPlanRefusal('abc123'),
+      "Project copy is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the source pages, where they land, or the Project's details changed since the preview; the source pages read abc123 now.",
+      "hub copy-pages' stale plan refusal is not its first sentence and what its plan covers",
+    );
+  } catch (error) {
+    failures.push(`section 177 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// SECTION 178. A FINISHED TRIAGE BATCH SAYS SO (kickoffs/s99 row K3, ruling 8). Run again with its approved id after it
+// completed, a batch writes nothing and exits 0 with the journal's result and `already_complete: true` last, though its
+// own run changed the notes so that the same --actions now digest to another id. Every other case keeps today's
+// refusal: a different set of requests, an incomplete journal, an action not recorded as succeeded, an id never issued,
+// and no --user-confirmed. The interrupted case (a batch stopped after some actions succeeded) is probed through the one
+// fault point there is, a filing's close (`LIBRARY_TRIAGE_CLOSE_FAULT`), and is not fixed here.
+if (selected(178)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-finished-batch-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_TRIAGE_CLOSE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--json']).exit, 0, 'the curated Book was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/holding\nshelf/demo\n');
+    for (const title of ['One', 'Two', 'Three', 'Four']) equal(as(['capture', 'holding', '--title', title, '--body', `The body of ${title}.`, '--json']).exit, 0, `'${title}' was not captured`);
+    const review = (match: string) => ({ kind: 'review', source: 'holding', source_match: match });
+    const batch = (actions: unknown[], tail: string[], extra: Record<string, string> = {}) => as(['triage', 'batch', '--actions', JSON.stringify(actions), ...tail, '--json'], extra);
+    const confirmed = (actions: unknown[], planId: string, extra: Record<string, string> = {}) => batch(actions, ['--user-confirmed', '--plan-id', planId], extra);
+    const notYet = 'Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the material changed since you approved it.';
+
+    const actions = [review('One'), review('Two')];
+    const planId = String(parsed(batch(actions, ['--preflight']))['plan_id'] ?? '');
+    const first = confirmed(actions, planId);
+    check(first.exit === 0 && parsed(first)['status'] === 'complete' && !('already_complete' in parsed(first)), `the batch did not complete as before: ${said(first).slice(0, 300)}`);
+
+    // THE RERUN: nothing written, the journal's result, already_complete last.
+    const tree = () => listFiles(lib).sort().map((file) => `${file} ${fs.statSync(path.join(lib, ...file.split('/'))).mtimeMs}`).join('\n');
+    const before = tree();
+    const again = confirmed(actions, planId);
+    const report = parsed(again);
+    check(again.exit === 0 && report['already_complete'] === true && Object.keys(report).at(-1) === 'already_complete', `a finished batch run again did not say so: ${said(again).slice(0, 400)}`);
+    check(report['status'] === 'complete' && report['plan_id'] === planId && report['action_count'] === 2 && report['failed_count'] === 0, `the finished batch's result is not the journal's: ${JSON.stringify(report).slice(0, 400)}`);
+    check(((report['outcomes'] as Record<string, unknown>[] | undefined) ?? []).every((row) => row['state'] === 'succeeded' && row['skipped'] === true), 'the finished batch\'s outcomes are not each succeeded and skipped');
+    check(report['shelf_write'] === false && report['shared_library_write'] === false, 'a run that wrote nothing says it wrote');
+    equal(tree(), before, 'a finished batch run again wrote something');
+    check(parsed(confirmed([{ source_match: 'Two', source: 'holding', kind: 'review' }, review('One')], planId))['already_complete'] === true, 'the same requests in another order and key order were not the finished batch');
+
+    // EVERY OTHER CASE KEEPS TODAY'S REFUSAL.
+    const refusedAsToday = (label: string, ran: { exit: number; stdout: string; stderr: string }, words = notYet) =>
+      check(ran.exit !== 0 && said(ran).includes(words) && !said(ran).includes('already_complete'), `${label} did not keep today's refusal: ${said(ran).slice(0, 300)}`);
+    refusedAsToday('a different set of requests', confirmed([review('One')], planId));
+    const journalFile = path.join(lib, 'internal', 'triage-journals', `${planId}.json`);
+    const journalText = fs.readFileSync(journalFile, 'utf8');
+    fs.writeFileSync(journalFile, journalText.replace(/"state":\s*"complete"/, '"state": "incomplete"'));
+    refusedAsToday('an incomplete journal', confirmed(actions, planId));
+    fs.writeFileSync(journalFile, journalText.replace(/"state":\s*"succeeded"/, '"state": "failed"'));
+    refusedAsToday('a journal with an action not succeeded', confirmed(actions, planId));
+    fs.writeFileSync(journalFile, journalText);
+    refusedAsToday('an id never issued', confirmed(actions, `triage-${'0'.repeat(64)}`));
+    refusedAsToday('no --user-confirmed', batch(actions, ['--plan-id', planId]), 'Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
+    check(parsed(confirmed(actions, planId))['already_complete'] === true, 'the restored journal is no longer the finished batch');
+
+    // THE INTERRUPTED CASE, PROBED: a review succeeds and a filing's close fails, so the batch is incomplete; run again
+    // with its approved id, it is refused as today, since the review changed its note (row K3 does not fix this).
+    const mixed = [review('Three'), { kind: 'shelf-book', source: 'holding', source_match: 'Four', slug: 'demo', page_path: 'filed/four', title: 'Four' }];
+    const fault = { LIBRARY_TRIAGE_CLOSE_FAULT: 'after-page' };
+    const mixedId = String(parsed(batch(mixed, ['--preflight'], fault))['plan_id'] ?? '');
+    const stopped = parsed(confirmed(mixed, mixedId, fault));
+    const states = ((stopped['outcomes'] as Record<string, unknown>[] | undefined) ?? []).map((row) => `${row['kind']}=${row['state']}`).sort().join(',');
+    check(stopped['status'] === 'incomplete' && states === 'review=succeeded,shelf-book=failed', `the faulted batch did not stop with its review succeeded and its filing failed: ${JSON.stringify(stopped).slice(0, 400)}`);
+    refusedAsToday('the interrupted batch run again with its approved id', confirmed(mixed, mixedId));
+  } catch (error) {
+    failures.push(`section 178 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 

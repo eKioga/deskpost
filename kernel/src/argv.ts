@@ -17,13 +17,21 @@ export interface ParsedArguments {
   positional: string[];
   options: Map<string, string>;
   flags: Set<string>;
+  /** Every value of each REPEATABLE option, in order (`options` still holds its last). Empty for the rest. */
+  lists: Map<string, string[]>;
 }
 
-export function parseArguments(argv: string[], valued: string[]): ParsedArguments {
+/**
+ * A REPEATED OPTION KEEPS ITS LAST VALUE, unless the verb DECLARES it repeatable (S97 row 1: `seat start --open-book`
+ * takes one Book per use). The declaration is per call, so no other verb's option changes meaning.
+ */
+export function parseArguments(argv: string[], valued: string[], repeatable: string[] = []): ParsedArguments {
   const positional: string[] = [];
   const options = new Map<string, string>();
   const flags = new Set<string>();
-  const wantsValue = new Set(valued);
+  const lists = new Map<string, string[]>();
+  const wantsValue = new Set([...valued, ...repeatable]);
+  const many = new Set(repeatable);
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]!;
     if (item.startsWith('--')) {
@@ -31,6 +39,7 @@ export function parseArguments(argv: string[], valued: string[]): ParsedArgument
       if (wantsValue.has(name)) {
         if (index + 1 >= argv.length) throw new Error(`${item} needs a value after it.`);
         options.set(name, argv[index + 1]!);
+        if (many.has(name)) lists.set(name, [...(lists.get(name) ?? []), argv[index + 1]!]);
         index += 1;
       } else {
         flags.add(name);
@@ -39,5 +48,5 @@ export function parseArguments(argv: string[], valued: string[]): ParsedArgument
     }
     positional.push(item);
   }
-  return { positional, options, flags };
+  return { positional, options, flags, lists };
 }

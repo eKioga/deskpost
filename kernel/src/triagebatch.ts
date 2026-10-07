@@ -127,6 +127,84 @@ export function triageBatch(argv: string[], workspace: string): { refusal: strin
   }
 }
 
+/** A value as canonical JSON, every object's keys in order, so two requests compare by content and not key order. */
+function canonicalJson(value: unknown): string {
+  const sorted = (item: unknown): unknown =>
+    Array.isArray(item)
+      ? item.map(sorted)
+      : item !== null && typeof item === 'object'
+        ? Object.fromEntries(Object.keys(item as object).sort().map((key) => [key, sorted((item as Record<string, unknown>)[key])]))
+        : item;
+  return JSON.stringify(sorted(value));
+}
+
+/**
+ * A FINISHED BATCH, RUN AGAIN WITH ITS APPROVED ID (kickoffs/s99 row K3, ruling 8). The batch's own run changed the notes
+ * it closed, so the same --actions now digest to another batch id and the run said "not yet performed". When the id names
+ * a journal of its own batch whose state is `complete`, whose plan record holds exactly these requests, and which records
+ * every one of its actions as succeeded, nothing is written and the journal's result is said again, with
+ * `already_complete: true` last. Anything else, an unreadable record included, is null and today's refusal stands. An
+ * interrupted batch is not this: it is `incomplete`, and resuming one that skips what succeeded needs its own design.
+ */
+function finishedBatchResult(workspace: string, planId: string, requested: Record<string, unknown>[]): PsJsonValue | null {
+  if (!/^triage-[0-9a-f]{64}$/.test(planId)) return null;
+  const journalPath = path.join(workspace, 'internal', 'triage-journals', `${planId}.json`);
+  const planPath = path.join(workspace, 'internal', 'triage-plans', `${planId}.json`);
+  let journal: Record<string, unknown>;
+  let plan: Record<string, unknown>;
+  try {
+    journal = JSON.parse(fs.readFileSync(journalPath, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    plan = JSON.parse(fs.readFileSync(planPath, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (journal === null || plan === null || typeof journal !== 'object' || typeof plan !== 'object') return null;
+  if (Number(journal['schema']) !== 1 || journal['batch_id'] !== planId || journal['state'] !== 'complete' || plan['batch_id'] !== planId) return null;
+  const planned = (Array.isArray(plan['actions']) ? plan['actions'] : []) as Record<string, unknown>[];
+  const records = new Map(((Array.isArray(journal['actions']) ? journal['actions'] : []) as Record<string, unknown>[]).map((record) => [String(record?.['action_id'] ?? ''), record]));
+  const wanted = requested.map(canonicalJson).sort();
+  const approved = planned.map((action) => canonicalJson(action?.['request'])).sort();
+  if (!planned.length || wanted.length !== approved.length || wanted.some((item, index) => item !== approved[index])) return null;
+  if (records.size !== planned.length || planned.some((action) => String(records.get(String(action['action_id'] ?? ''))?.['state'] ?? '') !== 'succeeded')) return null;
+  const outcomes = planned.map((action) => {
+    const record = records.get(String(action['action_id']))!;
+    return {
+      action_id: String(action['action_id']),
+      kind: (record['kind'] ?? null) as PsJsonValue,
+      source: (record['source'] ?? null) as PsJsonValue,
+      slug: (record['slug'] ?? null) as PsJsonValue,
+      destination: (record['destination'] ?? null) as PsJsonValue,
+      state: 'succeeded',
+      skipped: true,
+      error: '',
+      note: 'Already recorded as succeeded in the batch journal; re-running it would be a no-op.',
+      result: null,
+    };
+  });
+  return {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: 'Library Triage',
+    mode: 'batch',
+    plan_id: planId,
+    plan_path: planPath,
+    status: 'complete',
+    all_succeeded: true,
+    action_count: outcomes.length,
+    succeeded_count: outcomes.length,
+    failed_count: 0,
+    interrupted_count: 0,
+    outcomes,
+    journal_path: journalPath,
+    // THIS RUN WROTE NOTHING, so it says no write; the journal is the record of the run that did.
+    shelf_write: false,
+    shared_collection_write: false,
+    notebook_write: false,
+    shared_library_write: false,
+    next: 'This batch was already complete: its journal records every action as succeeded, so this run wrote nothing.',
+    already_complete: true,
+  };
+}
+
 function runBatch(argv: string[], workspace: string): PsJsonValue {
   const parsed = parseArguments(argv, ['actions', 'capture-date', 'seat', 'plan-id', 'plan-path', 'lock-timeout', 'workspace']);
   if (parsed.options.has('plan-path')) {
@@ -146,6 +224,12 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   const lockTimeout = Number(parsed.options.get('lock-timeout') ?? '20');
   const stateDirectory = path.join(workspace, '.claude');
   const preflight = parsed.flags.has('preflight');
+
+  // A FINISHED BATCH SAYS SO (kickoffs/s99 row K3, ruling 8), before anything is resolved: see `finishedBatchResult`.
+  if (!preflight && parsed.flags.has('user-confirmed')) {
+    const finished = finishedBatchResult(workspace, parsed.options.get('plan-id') ?? '', requested);
+    if (finished !== null) return finished;
+  }
 
   // THE ACTING SEAT, resolved once and never refusing here: only the Notebook route needs one, and that
   // route is where its absence is refused.

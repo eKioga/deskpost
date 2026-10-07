@@ -48,7 +48,9 @@ answer in the conversation, and it lists the seats your Library has.
 
 Seats can reach each other. One seat can leave another a **letter**, which waits in the `letters`
 Book even while that seat is closed, and the Desk counts the letters waiting for you. In Claude Code,
-one seat's session can also message another's by its seat's name. A letter or a message is
+one seat's session can also message another's by its seat's name. A letter can also go to a
+department, whose orchestrator answers it or passes it on to the right seat, and `deskpost seat
+cards` lists who does what. A letter or a message is
 information, never an approval: anything that needs your yes still comes to you. Ask the Librarian
 "how do seats message each other?" for the details.
 

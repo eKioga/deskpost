@@ -41,7 +41,9 @@ Your first seat. A seat is a place to work, with its own Desk and one Project.
 Name your project (empty to cancel) › Home lab
 ```
 
-It shows what it will make and waits for Enter:
+Then it asks four more questions, each skipped with Enter: a template (performer or orchestrator), a
+department, a one-line card saying what the seat handles, and the Shelf Books to open at its first
+launch. It shows what it will make and waits for Enter:
 
 - a **Project Hub**, `home-lab`: the durable record of one piece of work, what it is for, what is
   open, what was decided. An existing Hub of that name is reused.

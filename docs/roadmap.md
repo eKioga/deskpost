@@ -25,26 +25,12 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet. 1.3.8, Seats that work as a team (below), is next in line; its
-first session is being written.
+Nothing is scoped into a session yet. 1.4.0, Correct and find (below), is next in line; its plan is
+approved and its first session is being written.
 
 ## Next
 
-### 1.3.8: Seats that work as a team (0 of 4 sessions; plan approved 2026-10-06)
-
-- **Every seat gets a one-line card** saying what it does, an optional department and a role
-  (performer or orchestrator), and a seat can see who does what in its department.
-- **The main menu's `+` offers a template** for a new seat.
-- **A letter can be addressed to a department.** It reaches that department's orchestrator, which
-  answers it or passes it on to the right seat, and the Desk counts what waits.
-- **The release.**
-
-Each seat can say what it does, and may belong to a department, such as development, IT or
-marketing. A seat can write to a department rather than to a named seat, and one seat decides where
-each letter goes. Letters between seats are kept apart from the Report Inbox, have a status (open,
-answered, closed), and are never taken as an order.
-
-### 1.4.0: Correct and find (0 of 3 sessions, planning first)
+### 1.4.0: Correct and find (0 of 4 sessions; plan approved 2026-10-06)
 
 - **Correct a page in a Shelf Book or a collection Book** without archiving and rebuilding the whole
   Book: a gated page replace that previews old against new and keeps the previous text in a journal.
@@ -58,6 +44,10 @@ answered, closed), and are never taken as an order.
   among dozens of source pages.
 - **A Book's source text has a named home**, so material compiled out of `raw/` has somewhere
   durable to go.
+- **A Book lists the sources it was compiled from**: each source's address, the page it feeds and
+  the fingerprint of the text last compiled, in one file the Library owns. A seat's own refresh tool
+  can read and update it, and after a page is corrected the Book records the new fingerprints, so
+  it is plain which sources changed since. Fetching the sources is a later step (see **Exploring**).
 
 After 1.3.5 (installing without PowerShell, released), and once 1.4.0's plans are done: the
 development tools themselves.
@@ -69,6 +59,21 @@ development tools themselves.
   `collection owner --status` names the holder by card instead of by id.
 
 ## Exploring
+
+### Refresh a Book from its sources
+
+Several Books are kept current today by a seat's own script: fetch each source, compare it with what
+the Book was compiled from, and report which pages need a new look. Deskpost would do this itself,
+on top of 1.4.0's list of sources.
+
+- **`book refresh --check`** fetches each source into `raw/`, compares its text with the recorded
+  fingerprint, and names the pages whose sources changed. It writes nothing to the Book.
+- **Text taken the right way for each kind of source**: the main content of a web page, a Markdown
+  or text file, a file in a git repository at a named version. A changed page layout should not
+  read as changed content.
+- **A version pin per Book**, so a refresh never drifts to a newer product's documentation unnoticed.
+- **Settled first:** the program going out to the network (certificates, proxies) and what a seat
+  may fetch.
 
 ### Seats on more than one computer
 
@@ -294,6 +299,20 @@ nested list with its item.
   each note's sender and recipient and can list only waiting notes; `hub edit new-page` advises
   `--content-path`; the kernel type-checks in the commit gate.
 
+### 1.3.8: Seats that work as a team (4 of 4 sessions; released 2026-10-07)
+
+- **Every seat gets a one-line card** saying what it does, an optional department and a role
+  (performer or orchestrator), and a seat can see who does what in its department.
+- **The main menu's `+` offers a template** for a new seat.
+- **A letter can be addressed to a department.** It reaches that department's orchestrator, which
+  answers it or passes it on to the right seat, and the Desk counts what waits, and what each seat
+  has sent; a seat with letters waiting is not retired.
+
+Each seat can say what it does, and may belong to a department, such as development, IT or
+marketing. A seat can write to a department rather than to a named seat, and one seat decides where
+each letter goes. Letters between seats are kept apart from the Report Inbox, have a status (open,
+answered, routed, closed), and are never taken as an order.
+
 ### Earlier releases
 
 - **1.0.** One binary for Windows and Linux
@@ -316,6 +335,9 @@ work:
 
 - **At each handback**, a milestone's count moves to the sessions that actually ran, and an item a
   handback parks says where it went.
+- **At each triage**, a design item added to the backlog gets a tier here in the same change, or the
+  backlog says why it stays off this page. At each handback, the support seat also checks its
+  design queue for an item with neither.
 - **At each release**, its version-bump commit moves the milestones it carries to **Released**, and
   the README names the new current release and the next milestones. A release's public README is then
   true on the day it ships.

@@ -197,6 +197,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         '  check-item       --match-text <t> [--section <s>] [--uncheck]: ticks or unticks one checkbox item.',
         '  replace-item     --match-text <t> [--section <s>] --content-path <f>: one item replaced. Gated.',
         "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
+        '                   Its --preflight issues a plan_id: the apply takes it with --plan-id <id>, or runs without one.',
         '',
         "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line.",
         'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
@@ -311,15 +312,20 @@ export const VERBS: Record<string, VerbDeclaration> = {
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
     usage:
-      'library seat <dirs|enter|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      'library seat <cards|describe|dirs|enter|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
       '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
+      'library seat start <name> --project <slug> [--template performer|orchestrator] [--department <slug>] [--role performer|orchestrator] ' +
+      '[--card "<one line>"] [--open-book <shelf-slug>]... [--preflight | --plan-id <id>] (a new seat; any of these needs the plan_id its preflight issued); ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
+      'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--clear-department] [--clear-role] [--clear-card] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
+      'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
       'library seat status [--seat <name>] [--text] [--workspace <path>]',
-    // All six answer; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
+    // Every one answers; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
     // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), and `settings` its
-    // inbound policy (1.3.1, ADR-0062), both applied by `start`.
-    actions: ['dirs', 'enter', 'hold', 'retire', 'settings', 'start', 'status'],
+    // inbound policy (1.3.1, ADR-0062), both applied by `start`. `describe` sets a seat's department, role and card under
+    // the reader's gate (1.3.8, ADR-0069), and `cards` lists them as the directory, computed and read only.
+    actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'retire', 'settings', 'start', 'status'],
     positional: false,
     ported: true,
     row: 'S14',
@@ -357,8 +363,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S54',
   },
   shared: {
-    summary: "The shared collection's own Catalog: list an entry, archive a Book.",
-    usage: 'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight',
+    summary: "The collection's Catalog: `collection/` on a local Library, Basic Memory on one attached to it. List an entry, archive a Book.",
+    usage:
+      'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight; ' +
+      "library shared archive <slug> [--kind book] --user-confirmed --plan-id <id> (a local Library: the plan_id its preflight issued)",
     actions: ['archive', 'list-entry'],
     positional: false,
     // Both preflights, against Basic Memory (S34); a confirmed run names the PowerShell helper.
@@ -400,7 +408,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  holding    a note in a capture Book: the Holding Shelf, or the Book source_slug names (reports, letters).",
         '  notebook   a Notebook article.',
         '',
-        'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting.',
+        'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting, and no Notebook page.',
         '',
         'Marking a letter read (the seat it is for may close it):',
         `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,

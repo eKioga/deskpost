@@ -34,6 +34,26 @@ import { isLocalBackend } from './basicmemory.ts';
 import { readNotebookLayout } from './notebooklayout.ts';
 import { sha256OfText } from './sha.ts';
 import { asList, hookEntryText, isObject } from './hookregistry.ts';
+import { departmentOf, metadataFor, readSeatMetadata } from './seatmeta.ts';
+
+/**
+ * ONE STATIC LINE FOR A SEAT IN A DEPARTMENT (1.3.8, kickoffs/s96 row 4, ruling 6; ADR-0069): its role and its
+ * orchestrator's name, with no counts and no liveness, because the block is sent again whenever its text changes and
+ * ADR-0062 forbids a per-prompt letter line. A seat with no department gets none, so its text is as it was.
+ */
+export function directoryLine(stateDirectory: string, seat: string): string {
+  const projection = readSeatMetadata(stateDirectory);
+  const own = metadataFor(projection, seat);
+  if (own.department === null) return '';
+  if (own.role === 'orchestrator') return ` This seat is the orchestrator of ${own.department}; \`deskpost seat cards\` lists it.`;
+  if (own.role === 'performer') {
+    const orchestrator = departmentOf(projection, seat)?.orchestrator ?? null;
+    return orchestrator
+      ? ` This seat is a performer in ${own.department}; its orchestrator is ${orchestrator}.`
+      : ` This seat is a performer in ${own.department}, which has no orchestrator yet; \`deskpost seat cards\` lists who does what.`;
+  }
+  return ` This seat is in ${own.department}; \`deskpost seat cards\` lists it.`;
+}
 
 const EVENT = 'UserPromptSubmit';
 /**
@@ -325,7 +345,13 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     } catch {
       // swallowed: a name, and a prompt must not wait on it
     }
-    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${seatWarning}${notebookWarning}`;
+    let roleLine = '';
+    try {
+      roleLine = directoryLine(stateDirectory, seat);
+    } catch {
+      // swallowed: a static line, and a prompt must not wait on it
+    }
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${seatWarning}${notebookWarning}`;
     // ONCE PER SESSION, KEYED ON THE TEXT ITSELF (kickoffs/s77 row 0, the desk-context Report): an identical block
     // already served into this conversation is still in it, so it is not sent again. A changed Desk, seat or warning
     // is a different text and is sent. Only where the ledger clear is proven to reach this ledger (above), only for

@@ -35,6 +35,7 @@ import { parseArguments } from './argv.ts';
 import { sha256OfText } from './sha.ts';
 import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
+import { seatIncarnation } from './seatincarnation.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { notebookScope } from './notebooklayout.ts';
@@ -311,7 +312,8 @@ function resolveNoteSource(workspace: string, slug: string, page: string, matchT
   const note = targets[0]!;
   // THE SEAT RULE, per Book from its catalog entry (S73 row 4, Q4). A wrong other_seat is refused whatever the kind.
   if (rule.closes || rule.otherSeat !== null) {
-    assertSeatMayClose(note, { slug: book.slug, closedBy: book.closedBy ?? 'any' }, rule.seat, rule.otherSeat, refuse);
+    const self = rule.seat === null ? null : seatIncarnation(path.join(workspace, '.claude'), rule.seat);
+    assertSeatMayClose(note, { slug: book.slug, closedBy: book.closedBy ?? 'any' }, self, rule.otherSeat, refuse);
   }
   const content = readUtf8(note.fullPath);
   const relative = `${book.bookRoot}/wiki/${note.page}.md`;
