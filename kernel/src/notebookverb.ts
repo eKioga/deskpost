@@ -12,6 +12,7 @@
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { invokeNotebookRender, scopeIndexDrift } from './notebook.ts';
 import { notebookScope, prepareNotebookScopeForWrite } from './notebooklayout.ts';
@@ -27,7 +28,7 @@ export interface NotebookResult {
  * repaired is indistinguishable from a no-op.
  */
 function renderVerb(workspace: string, argv: string[]): PsJsonValue {
-  const parsed = parseArguments(argv, ['seat', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('notebook', 'render'));
   const seatState = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
   const scope = notebookScope(workspace, seatState.status === 'named' ? seatState.seat! : null, 'write', 'Rendering the Notebook index');
   const driftBefore = scopeIndexDrift(scope);

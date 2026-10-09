@@ -92,6 +92,15 @@ export function doctorText(report: Record<string, unknown>, glyphs: Marks = mark
         ? 'Nothing failed.'
         : `Nothing failed. To check a Library, run ${COMMAND_NAME} doctor inside it, or pass --workspace <folder>.`,
   );
+  // --report (D6): what was filed into the Report Inbox, what was already there, and what could not be filed.
+  const filing = report['report'] as Record<string, unknown> | undefined;
+  if (filing) {
+    const list = (key: string) => (Array.isArray(filing[key]) ? (filing[key] as Record<string, unknown>[]) : []);
+    lines.push(`Reports: ${list('filed').length} filed, ${list('skipped').length} already filed, ${list('not_filed').length} not filed.`);
+    for (const row of list('filed')) lines.push(`  filed    ${String(row['check'])}  ${String(row['page'])}`);
+    for (const row of list('skipped')) lines.push(`  skipped  ${String(row['check'])}  already in ${String(row['page'])}`);
+    for (const row of list('not_filed')) lines.push(`  not filed  ${String(row['check'])}: ${String(row['reason'])}`);
+  }
   return lines.join('\n');
 }
 

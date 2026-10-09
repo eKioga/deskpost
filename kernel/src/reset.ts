@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock, type BookLock } from './locks.ts';
 import { deskFileEntries, deskFilePath, resolveSeatName } from './seatdesk.ts';
@@ -171,7 +172,7 @@ const NO_SWEEP_MESSAGE =
   "Not requested. This reset takes only this seat's own topics. Under ADR-0029 there is no sweep: every seat's Notebook is its own, and an idle seat's is reset from that seat.";
 
 function resetVerb(workspace: string, argv: string[]): PsJsonValue {
-  const parsed = parseArguments(argv, ['seat', 'plan-id', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('reset'));
   const clearDesk = parsed.flags.has('clear-desk');
   const preflight = parsed.flags.has('preflight');
   const approvedPlanId = parsed.options.get('plan-id') ?? '';
@@ -478,7 +479,7 @@ function unknownQuarantine(workspace: string, name: string): Error {
 }
 
 function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
-  const parsed = parseArguments(argv, ['seat', 'plan-id', 'workspace', 'quarantine', 'topic']);
+  const parsed = parseArguments(argv, argumentTable('reset', 'restore'));
   const quarantineName = parsed.options.get('quarantine') ?? '';
   const topicFilter = (parsed.options.get('topic') ?? '').split(',').map((item) => item.trim()).filter((item) => item);
   const adopt = parsed.flags.has('adopt');

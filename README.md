@@ -1,6 +1,6 @@
 # Deskpost
 
-**Status: 1.3, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
+**Status: 1.4, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -203,16 +203,16 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.3.8**. The full roadmap, with what each milestone carries and how far
+The current release is **1.4.0**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Next: 1.4.0, correct and find.** Correct a Shelf Book's page in place, `library doctor --report`,
-  a browse mode in the main menu, an unknown flag refused by every verb, and a list of the
-  sources each Book was compiled from.
+- **Next: seats you can rename.** A seat keeps its id when it is renamed, so it keeps its letters,
+  Notebook and history, and an old name still points the way to the new one.
 - **Then: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
-- **Exploring:** refreshing a Book from its sources; seats on more than one computer, so the seats you run share the load of the
-  computers you already have and still talk to each other; and two Libraries in one household,
-  sharing a collection on the home network with no accounts, database or server.
+- **Exploring:** refreshing a Book from its sources; and Libraries on more than one computer, being
+  planned: the seats you run share the load of the computers you already have and still talk to
+  each other, and two Libraries in one household can share a collection on the home network with no
+  accounts, database or server.
 
 What each earlier release carried is under **Released** in the roadmap.
 

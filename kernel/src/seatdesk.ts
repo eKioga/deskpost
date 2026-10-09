@@ -32,7 +32,7 @@ import { currentAgentProcessId } from './procstart.ts';
 export type DeskKind = 'books' | 'projects';
 
 const SEATS_DIRECTORY_NAME = 'seats';
-const SEAT_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export const SEAT_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export function seatsDirectory(stateDirectory: string): string {
   return path.join(stateDirectory, SEATS_DIRECTORY_NAME);

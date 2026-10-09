@@ -36,6 +36,8 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { resolveContentPath } from './contentpath.ts';
+import { argumentTable } from './verbs.ts';
 import { inlineCutWarning } from './inlinecut.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
@@ -45,11 +47,25 @@ import {
   undoBookMutation,
   type BookMutation,
 } from './mutation.ts';
-import { sha256OfText } from './sha.ts';
+import { pageComparisonSha256, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
-import { getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
+import { changeCounts } from './hubedit.ts';
+import { foldedMapLines, linkLabel, planTopicIndexLine, topicIndexPage, type MapPage, type TopicIndexPlan } from './maplines.ts';
+import {
+  ABSENT,
+  markCompiled,
+  readCompiledMap,
+  renderSourceList,
+  SOURCE_LIST_FILE,
+  sourceListBlock,
+  sourceListSha256,
+  validateSourceList,
+  type SourceList,
+} from './booksources.ts';
+import { rawBatchOwner } from './rawowners.ts';
+import { archiveRecordPath, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, isAddressedTo, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
-import { readSeatIds, seatIncarnation } from './seatincarnation.ts';
+import { idsOf, incarnationOf, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
 import { departmentProblem, readSeatMetadata } from './seatmeta.ts';
 
 /** Said by a capture that records no why (S73 row 3), word for word as Add-ShelfNote.ps1 says it. */
@@ -208,17 +224,26 @@ function readerMapLabel(content: string, relative: string): string {
   return relative.substring(0, relative.length - 3);
 }
 
+/**
+ * The generated map's text, from the pages on disk: a topic's reached pages folded under its index (D4, `maplines.ts`).
+ * `folded_topics` counts the topic lines that stand for pages.
+ */
+function shelfBookIndexText(book: ShelfBook): { text: string; pageCount: number; foldedTopics: number } {
+  const relatives = bookPageRelatives(book.wikiPath);
+  const pages: MapPage[] = relatives.map((relative) => {
+    const text = readUtf8(path.join(book.wikiPath, ...relative.split('/')));
+    return { page: relative.substring(0, relative.length - 3), label: readerMapLabel(text, relative), text };
+  });
+  const folded = foldedMapLines(pages, (page) => page);
+  const links = ['- [[_book|Book metadata and limits]]'].concat(folded.lines);
+  return { text: `# ${book.title} - Reader Map\n\n` + links.join('\n') + '\n', pageCount: relatives.length, foldedTopics: folded.foldedTopics };
+}
+
 /** Regenerated from the pages on disk, so a generated map can never drift from what the Book holds. */
 export function updateShelfBookIndex(book: ShelfBook): { pageCount: number } {
-  const relatives = bookPageRelatives(book.wikiPath);
-  const links = ['- [[_book|Book metadata and limits]]'].concat(
-    relatives.map((relative) => {
-      const label = readerMapLabel(readUtf8(path.join(book.wikiPath, ...relative.split('/'))), relative);
-      return `- [[${relative.substring(0, relative.length - 3)}|${label}]]`;
-    }),
-  );
-  writeUtf8(path.join(book.wikiPath, '_index.md'), `# ${book.title} - Reader Map\n\n` + links.join('\n') + '\n');
-  return { pageCount: relatives.length };
+  const built = shelfBookIndexText(book);
+  writeUtf8(path.join(book.wikiPath, '_index.md'), built.text);
+  return { pageCount: built.pageCount };
 }
 
 /**
@@ -289,15 +314,18 @@ function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, fl
  * number of routes, and only while the registry still names that incarnation: the letter carries `origin_seat_id` and
  * the row of `origin_seat` has that `seat_id`. The reply's `for_seat_id` is this validated id, never a later lookup.
  */
-function knownAsker(note: ShelfNoteRow, ids: Map<string, string>): SeatIncarnation {
+function knownAsker(note: ShelfNoteRow, view: SeatIdentityView): SeatIncarnation {
   const fallbacks = `Write a plain letter --for <seat> that names ${note.page}, or close it with a triage review. Nothing was captured.`;
   if (!note.originSeat || !note.originSeatId) {
     refuse(`${note.page} records no asker's seat_id (a letter written before 1.3.8, or by no seat), so --answers cannot know whom its answer reaches. ${fallbacks}`);
   }
-  if (ids.get(note.originSeat) !== note.originSeatId) {
+  // THE ASKER BY THE IDENTITY PROJECTION (kickoffs/s103 row 3): found by its `origin_seat_id`, and the reply addressed to
+  // its CURRENT name with that id, which is the recorded name until a rename.
+  const asker = incarnationOf(view, note.originSeat, note.originSeatId, 'letters');
+  if (asker.outcome !== 'live') {
     refuse(`${note.page}'s asker, seat '${note.originSeat}', is not the seat this Library's registry now names: it was retired, or retired and created again under that name. ${fallbacks}`);
   }
-  return { seat: note.originSeat, seatId: note.originSeatId };
+  return { seat: asker.current_name!, seatId: note.originSeatId, view };
 }
 
 /**
@@ -370,12 +398,21 @@ export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } 
   else if (!book.takesLetters) for (const note of pending) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
   else {
     // A BOOK THAT TAKES LETTERS GROUPS THEM BY RECIPIENT (S77 row 3, ADR-0062), seats in name order and then any note
-    // addressed to no seat, so a recipient finds its own at once. `Update-ShelfNoteIndex` writes the same lines.
-    const recipients = [...new Set(pending.map((note) => note.forSeat ?? ''))].sort((left, right) => (left === '' ? 1 : right === '' ? -1 : left < right ? -1 : left > right ? 1 : 0));
+    // addressed to no seat, so a recipient finds its own at once. `Update-ShelfNoteIndex` writes the same lines. THE
+    // GROUP IS THE RECIPIENT'S CURRENT NAME by the identity projection (kickoffs/s103 row 3), which is the recorded name
+    // until a rename; a letter it finds no live seat for stays under the name it was written to.
+    const workspace = path.resolve(book.wikiPath, ...book.bookRoot.split('/').map(() => '..'), '..');
+    const view = readSeatIdentityView(stateDirectory(workspace));
+    const groupOf = (note: ShelfNoteRow): string => {
+      if (!note.forSeat) return '';
+      const found = incarnationOf(view, note.forSeat, note.malformed.length ? null : note.forSeatId, 'letters');
+      return found.outcome === 'live' && !note.malformed.length ? found.current_name! : note.forSeat;
+    };
+    const recipients = [...new Set(pending.map(groupOf))].sort((left, right) => (left === '' ? 1 : right === '' ? -1 : left < right ? -1 : left > right ? 1 : 0));
     recipients.forEach((recipient, index) => {
       if (index) lines.push('');
       lines.push(recipient ? `### For ${recipient}` : '### For no seat', '');
-      for (const note of pending.filter((row) => (row.forSeat ?? '') === recipient)) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
+      for (const note of pending.filter((row) => groupOf(row) === recipient)) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
     });
   }
   lines.push('', '## Reviewed', '');
@@ -411,10 +448,9 @@ function resolveBody(workspace: string, contentPath: string | undefined, inline:
     return body;
   };
   if (!hasPath) return { body: clean(inline!, '--body'), source: '(inline)' };
-  // A body is often a scratch file outside the workspace, so an absolute path is taken as given and
-  // only a relative one is resolved against the workspace.
-  const candidate = path.isAbsolute(contentPath!) ? contentPath! : path.join(workspace, contentPath!);
-  const full = path.resolve(candidate);
+  // A body is often a scratch file outside the workspace, so an absolute path is taken as given and a relative one is
+  // read by the one rule every writer shares (contentpath.ts): the working directory first, then the Library's folder.
+  const full = resolveContentPath(workspace, contentPath!);
   if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`--content-path ${contentPath} was not found (resolved to ${full}).`);
   return { body: clean(readUtf8(full), `--content-path ${contentPath}`), source: contentPath! };
 }
@@ -452,27 +488,19 @@ function runRollback(journalPath: string | null, extra?: () => void): string {
  * its manifest cannot be written, which leaves the Book reading dirty and Discovery refusing to
  * describe it -- a rebuild rather than a lost note.
  */
-export function captureVerb(argv: string[], workspace: string): WriterResult {
-  const parsed = parseArguments(argv, [
-    'title',
-    'body',
-    'content-path',
-    'tags',
-    'source-paths',
-    'source-project',
-    'require-note-file',
-    'capture-date',
-    'workspace',
-    // KEPT VALUED SO IT CAN BE REFUSED (S77 row 3, the capture --seat Report): unlisted, `--seat x` would parse as a
-    // flag and a stray positional, and `x` would become the Book slug (argv.ts).
-    'seat',
-    'why',
-    'supersedes',
-    'for',
-    'for-department',
-    'answers',
-    'routes',
-  ]);
+export function captureVerb(
+  argv: string[],
+  workspace: string,
+  // INTERNAL, NEVER A CLI FLAG (kickoffs/s104 row 3, D6): lines a caller in this program adds to the note's frontmatter,
+  // after every line capture writes itself. `doctor --report` records `doctor_check` and `doctor_digest` with it.
+  internal: { extraFrontmatter?: [string, string][] } = {},
+): WriterResult {
+  for (const [key, value] of internal.extraFrontmatter ?? []) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key) || /[\r\n]/.test(value) || controlCharacterInLine(value) !== null) {
+      return { refusal: `An internal frontmatter line '${key}' is not one plain line; nothing was captured.`, value: null };
+    }
+  }
+  const parsed = parseArguments(argv, argumentTable('capture'));
   try {
     // THE AUTHOR IS RESOLVED, NEVER TYPED (ADR-0062): a seat a caller could type would let any shell file under
     // another seat's name. Refused for every Book, before anything is read.
@@ -634,8 +662,8 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
       if (!/^notes\/[^/]+$/.test(answers)) refuse('--answers must name a letter of this Book as notes/<page>, for example notes/2026-10-07-a-question. Nothing was captured.');
       if (!fromSeat) refuse(`--answers names a letter, so it needs a seat. ${seatState.message ?? ''} Nothing was captured.`.replace(/ +/g, ' '));
       assertShelfBookOpen(workspace, slug, 'answering one of its letters with --answers', fromSeat);
-      const ids = readSeatIds(stateDirectory(workspace));
-      asker = knownAsker(closableLetter(book, answers, seatIncarnation(stateDirectory(workspace), fromSeat, ids), '--answers'), ids);
+      const view = readSeatIdentityView(stateDirectory(workspace));
+      asker = knownAsker(closableLetter(book, answers, seatIncarnation(stateDirectory(workspace), fromSeat, view), '--answers'), view);
       forSeat = asker.seat;
       if (!why) why = 'for-seat';
       if ((process.env['LIBRARY_CAPTURE_ASKER_FAULT'] ?? '') === 'recreate') recreateAskerForTest(workspace, asker.seat);
@@ -663,8 +691,9 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     // manufactured: a seatless capture records no origin, a pre-identity row gives its slug and no id, and nothing fills
     // an id in later. Not a lock: a retire in the same second is the stale delivery doctor names (plan, Risks).
     const letter = forSeat !== '';
-    const seatIds = letter || parsed.options.has('supersedes') ? readSeatIds(stateDirectory(workspace)) : new Map<string, string>();
-    const self = fromSeat ? seatIncarnation(stateDirectory(workspace), fromSeat, seatIds) : null;
+    const identity: SeatIdentityView = letter || parsed.options.has('supersedes') ? readSeatIdentityView(stateDirectory(workspace)) : { live: [], retired: [] };
+    const seatIds = idsOf(identity);
+    const self = fromSeat ? seatIncarnation(stateDirectory(workspace), fromSeat, identity) : null;
     // A ROUTE COPIES THE FIRST ASKER AS IT IS RECORDED: a letter written before 1.3.8 gives its from_seat and no id.
     const originSeat = routed !== null ? routedOrigin(routed).seat : fromSeat;
     const originSeatId = routed !== null ? routedOrigin(routed).seatId : letter && fromSeat ? seatIds.get(fromSeat) ?? '' : '';
@@ -788,6 +817,7 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
     if (letter && originSeatId) frontmatter.push(`origin_seat_id: ${originSeatId}`);
     if (answers) frontmatter.push(`answers: ${answers}`);
     if (routed) frontmatter.push(`routed_from: ${routes}`, `hops: ${(routed.hops ?? 0) + 1}`);
+    for (const [key, value] of internal.extraFrontmatter ?? []) frontmatter.push(`${key}: ${value}`);
     frontmatter.push('---');
 
     const page = keepsOwnHeading
@@ -907,7 +937,9 @@ export function captureVerb(argv: string[], workspace: string): WriterResult {
 // --- book add-page ---------------------------------------------------------------------------------
 
 function addPage(argv: string[], workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['title', 'body', 'content-path', 'workspace', 'seat']);
+  const parsed = parseArguments(argv, argumentTable('book', 'add-page'));
+  // THE SECOND FORM (D8): a raw/ batch as the Book's sources/ pages, with no <page> positional.
+  if (parsed.options.has('from-folder') || parsed.flags.has('from-folder')) return addFromFolder(parsed, workspace);
   const slug = parsed.positional[0] ?? '';
   const pagePath = parsed.positional[1] ?? '';
 
@@ -949,11 +981,23 @@ function addPage(argv: string[], workspace: string): WriterResult {
   const rendered = convertToShelfPageBody(body, parsed.options.get('title') ?? '');
   const mapPath = path.join(book.wikiPath, '_index.md');
   const mapIsGenerated = testGeneratedReaderMap(mapPath);
-  // THE TOPIC INDEX THIS WRITER LEAVES ALONE, named as `collection add-page` names it (S85 row 1): a page added under a
-  // folder whose `_index.md` exists is not linked from it, and the reader should know to add the line.
-  const folder = page.includes('/') ? page.substring(0, page.lastIndexOf('/')) : '';
-  const topicIndexFull = folder ? path.join(book.wikiPath, ...folder.split('/'), '_index.md') : '';
-  const topicIndex = folder && fs.existsSync(topicIndexFull) && `${folder}/_index` !== page ? `${book.bookRoot}/wiki/${folder}/_index.md` : null;
+  // THE TOPIC INDEX GAINS THE PAGE'S LINE (kickoffs/s101 row 3; PLAN-correct-and-find.md D3): a page added under a folder
+  // whose `_index.md` does not already link it gets one line at that index's end. Appending removes no text, so this
+  // writer stays ungated; the index is planned again under the lock and journaled with the page.
+  const topicPage = topicIndexPage(page);
+  const topicIndexFull = topicPage ? path.join(book.wikiPath, ...`${topicPage}.md`.split('/')) : null;
+  const planTopicIndex = (): TopicIndexPlan | null => {
+    if (topicIndexFull === null || !fs.existsSync(topicIndexFull)) return null;
+    const planned = planTopicIndexLine(fs.readFileSync(topicIndexFull, 'utf8'), slug, page, rendered.title);
+    if (planned === 'open-fence') {
+      refuse(
+        `The topic index shelf/${slug}/wiki/${topicPage}.md ends inside an unclosed code fence, so a link added at its end ` +
+          'would show as code, not a link. Close the fence in the topic index first. Nothing was added.',
+      );
+    }
+    return planned;
+  };
+  const topicPlan = planTopicIndex();
 
   const plan: Record<string, PsJsonValue> = {
     schema: LIBRARY_OUTPUT_SCHEMA,
@@ -970,12 +1014,15 @@ function addPage(argv: string[], workspace: string): WriterResult {
       ? 'regenerate from the pages on disk'
       : 'append the link; this map is curated, so it is not regenerated',
     reader_map_unlisted: getUnlistedBookPages(book).length,
-    topic_index_not_updated: topicIndex,
+    topic_index: topicPlan === null ? null : topicPlan.status,
     confirmation_required: false,
     shared_library_write: false,
     scope:
       'Creates one new page in this open Shelf Book, regenerates its reader map, and commits a new Discovery ' +
-      'manifest generation in the same locked window. No existing page is read, changed, or removed.',
+      'manifest generation in the same locked window. ' +
+      (topicPlan !== null && topicPlan.status === 'updated'
+        ? `The topic index ${topicPage}.md gains one line at its end; no other existing page is changed, and none is removed.`
+        : 'No existing page is read, changed, or removed.'),
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -1000,11 +1047,12 @@ function addPage(argv: string[], workspace: string): WriterResult {
       reason: `Add page ${relative}`,
       lock,
     });
+    const topicNow = planTopicIndex();
     journalPath = writeBookJournal({
       workspace,
       bookRoot: book.bookRoot,
       operation: `Add page ${relative}`,
-      paths: [fullPath, mapPath],
+      paths: [fullPath, mapPath, ...(topicNow !== null && topicNow.newText !== null ? [topicIndexFull!] : [])],
     }).journalPath;
 
     let parent = path.dirname(fullPath);
@@ -1018,14 +1066,21 @@ function addPage(argv: string[], workspace: string): WriterResult {
     if (readUtf8(fullPath) !== rendered.body) {
       refuse(`The page was written but did not read back identically: ${book.bookRoot}/wiki/${relative}`);
     }
+    // THE TOPIC INDEX BEFORE THE READBACK, so the reach check below sees it.
+    if (topicNow !== null && topicNow.newText !== null) {
+      writeAtomicText(topicIndexFull!, topicNow.newText);
+      if (fs.readFileSync(topicIndexFull!, 'utf8') !== topicNow.newText) refuse(`The topic index ${topicPage}.md was written but did not read back identically.`);
+    }
+    plan['topic_index'] = topicNow === null ? null : topicNow.status;
 
     // A generated map is regenerated, so it can never drift. A curated one is appended to, because
     // regenerating it would destroy sections and annotations a reader wrote -- and an additive
     // write that can destroy text is not additive.
     if (mapIsGenerated) plan['reader_map_pages'] = updateShelfBookIndex(book).pageCount;
     else addShelfBookIndexLink(book, page, rendered.title);
-    if (!readUtf8(mapPath).includes(`[[${page}|`)) {
-      refuse(`The reader map was updated but does not list ${relative}.`);
+    // REACHED, NOT LISTED (kickoffs/s101 ruling 4): the root map or a topic index it links reaches the new page.
+    if (getUnlistedBookPages(book).includes(relative)) {
+      refuse(`The reader map was updated but does not reach ${relative}.`);
     }
 
     plan['manifest'] = completeBookMutation(mutation).summary;
@@ -1056,6 +1111,752 @@ function addPage(argv: string[], workspace: string): WriterResult {
   return { refusal: null, value: plan };
 }
 
+// --- book add-page --from-folder: the source home ---------------------------------------------------
+
+const FROM_FOLDER_USAGE = 'deskpost book add-page <slug> --from-folder raw/<batch> [--preflight]';
+const SOURCES_TOPIC = 'sources';
+
+/**
+ * A source file's page name (D8): its stem lowercased, every run of characters outside `[a-z0-9]` turned to one hyphen,
+ * and the ends trimmed. Empty when nothing is left, which refuses the batch.
+ */
+function sourcePageName(fileName: string): string {
+  const stem = fileName.replace(/\.[^.]*$/, '');
+  return stem.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+interface SourceFile {
+  file: string;
+  name: string;
+  page: string;
+  fullPath: string;
+  rendered: RenderedPage;
+}
+
+/**
+ * `deskpost book add-page <slug> --from-folder raw/<batch>` (kickoffs/s104 row 1; PLAN-correct-and-find.md D8): a flat
+ * batch directly under `raw/`, each `.md` or `.txt` file a page `sources/<name>` of an open curated Shelf Book, in one
+ * lock, one journal, one manifest generation and one reader-map update.
+ *
+ * THE WHOLE BATCH OR NONE OF IT. Any file that cannot become a page -- a name two files reach, a name the Book already
+ * has, an empty name, an unreadable or empty file, a refused character, a file that is neither `.md` nor `.txt`, a
+ * subfolder -- refuses the batch, naming each, and nothing is written. A batch partly compiled would read as compiled.
+ *
+ * NOTHING IN `raw/` IS TOUCHED: eviction is offered and never performed, so the result's `next` names the batch as
+ * ready to evict, with its owner when `internal/raw-batch-owners.json` records one.
+ */
+function addFromFolder(parsed: ReturnType<typeof parseArguments>, workspace: string): WriterResult {
+  const slug = parsed.positional[0] ?? '';
+  if (!slug) refuse(`book add-page --from-folder needs a Book slug: ${FROM_FOLDER_USAGE}.`);
+  // D7 IS NOT BUILT, SO THIS FORM CHECKS ITS OWN ARITY, in words the declared tables can keep.
+  if (parsed.positional.length > 1) {
+    refuse(`book add-page --from-folder takes no <page>: each file in the batch names its own page under sources/. Nothing was added. Usage: ${FROM_FOLDER_USAGE}.`);
+  }
+  for (const option of ['content-path', 'body', 'title']) {
+    if (parsed.options.has(option) || parsed.flags.has(option)) {
+      refuse(`book add-page --from-folder takes no --${option}: each file is a page's text and names its own title. Nothing was added.`);
+    }
+  }
+  const folderArgument = (parsed.options.get('from-folder') ?? '').trim();
+  if (!folderArgument) refuse(`--from-folder needs the batch folder: ${FROM_FOLDER_USAGE}.`);
+
+  const book = getShelfBook(workspace, slug);
+  if (book.isCapture) {
+    refuse(`Shelf Book '${slug}' is a capture Book. Capture into it with deskpost capture ${slug}; book add-page is for adding pages to a curated Book.`);
+  }
+  if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
+  assertShelfBookOpen(workspace, slug, 'adding pages to it');
+
+  // A BATCH DIRECTLY UNDER raw/, named plainly or as a path: not raw/ itself, nothing deeper, nothing outside.
+  const rawRoot = path.resolve(workspace, 'raw');
+  const folder = path.resolve(path.isAbsolute(folderArgument) ? folderArgument : path.join(workspace, folderArgument));
+  const inRaw = path.relative(rawRoot, folder);
+  if (!inRaw || inRaw.startsWith('..') || path.isAbsolute(inRaw) || /[\\/]/.test(inRaw)) {
+    refuse(`--from-folder ${folderArgument} is not a batch directly under raw/ (resolved to ${folder}). Name a batch folder such as raw/<batch>. Nothing was added.`);
+  }
+  const batch = `raw/${inRaw}`;
+  if (!fs.existsSync(folder) || !fs.lstatSync(folder).isDirectory()) {
+    refuse(`${batch} is not a folder${fs.existsSync(folder) ? ' (a link or a file)' : ''}. Nothing was added.`);
+  }
+
+  const faults: string[] = [];
+  const files: SourceFile[] = [];
+  const entries = fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const entry of entries) {
+    const where = `${batch}/${entry.name}`;
+    if (entry.isDirectory()) {
+      faults.push(`${where}/ is a subfolder; a batch compiled with --from-folder is flat`);
+      continue;
+    }
+    if (!entry.isFile()) {
+      faults.push(`${where} is not a plain file`);
+      continue;
+    }
+    const extension = path.extname(entry.name).toLowerCase();
+    if (extension !== '.md' && extension !== '.txt') {
+      faults.push(`${where} is neither .md nor .txt`);
+      continue;
+    }
+    const name = sourcePageName(entry.name);
+    if (!name) {
+      faults.push(`${where} leaves no page name (its name has no letter or digit)`);
+      continue;
+    }
+    let body: string;
+    try {
+      body = readUtf8(path.join(folder, entry.name));
+    } catch (error) {
+      faults.push(`${where} could not be read: ${(error as Error).message}`);
+      continue;
+    }
+    const stray = strayControlRefusal(body, where);
+    if (stray !== null) {
+      faults.push(stray.replace(/\s*Nothing was (?:added|written)\.?\s*$/i, ''));
+      continue;
+    }
+    if (!body.trim()) {
+      faults.push(`${where} is empty`);
+      continue;
+    }
+    const page = `${SOURCES_TOPIC}/${name}`;
+    const fullPath = path.join(book.wikiPath, SOURCES_TOPIC, `${name}.md`);
+    if (fs.existsSync(fullPath)) {
+      faults.push(`${where} would be the page ${page}, which shelf/${slug} already has`);
+      continue;
+    }
+    // A .txt FILE, OR AN .md WITHOUT A LEADING H1, IS TITLED BY ITS STEM.
+    const rendered = renderPageBody(body, entry.name.replace(/\.[^.]*$/, ''));
+    files.push({ file: entry.name, name, page, fullPath, rendered });
+  }
+  const byName = new Map<string, string[]>();
+  for (const source of files) byName.set(source.name, [...(byName.get(source.name) ?? []), source.file]);
+  for (const [name, named] of byName) {
+    if (named.length > 1) faults.push(`${named.map((file) => `${batch}/${file}`).join(' and ')} would all be the page ${SOURCES_TOPIC}/${name}`);
+  }
+  if (!faults.length && !files.length) faults.push(`${batch} holds no .md or .txt file`);
+  if (faults.length) {
+    refuse(`The batch ${batch} was not added: ${faults.length} problem(s), and a batch is added whole or not at all. ${faults.join('; ')}. Nothing was added.`);
+  }
+
+  // THE TOPIC INDEX: created with `# Sources` and one line per page, or gaining D3's line for each page it does not list.
+  const topicIndexFull = path.join(book.wikiPath, SOURCES_TOPIC, '_index.md');
+  const planTopicIndex = (): { status: 'created' | 'updated' | 'already-listed'; newText: string | null } => {
+    const lines = files.map((source) => `- [[${source.page}|${linkLabel(source.rendered.title)}]]`);
+    if (!fs.existsSync(topicIndexFull)) return { status: 'created', newText: `# Sources\n\n${lines.join('\n')}\n` };
+    let text = fs.readFileSync(topicIndexFull, 'utf8');
+    let changed = false;
+    for (const source of files) {
+      const planned = planTopicIndexLine(text, slug, source.page, source.rendered.title);
+      if (planned === 'open-fence') {
+        refuse(
+          `The topic index shelf/${slug}/wiki/${SOURCES_TOPIC}/_index.md ends inside an unclosed code fence, so a link added at its end ` +
+            'would show as code, not a link. Close the fence in the topic index first. Nothing was added.',
+        );
+      }
+      if (planned.newText !== null) {
+        text = planned.newText;
+        changed = true;
+      }
+    }
+    return changed ? { status: 'updated', newText: text } : { status: 'already-listed', newText: null };
+  };
+  const topicPlan = planTopicIndex();
+  const mapPath = path.join(book.wikiPath, '_index.md');
+  const mapIsGenerated = testGeneratedReaderMap(mapPath);
+  let owner: { project: string } | null = null;
+  let ownerUnread: string | null = null;
+  try {
+    owner = rawBatchOwner(workspace, inRaw);
+  } catch (error) {
+    ownerUnread = (error as Error).message;
+  }
+
+  const plan: Record<string, PsJsonValue> = {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: 'Add a batch of source pages to a Shelf Book',
+    book: book.bookRoot,
+    book_title: book.title,
+    batch,
+    batch_owner: owner === null ? null : owner.project,
+    ...(ownerUnread !== null ? { batch_owner_unread: ownerUnread } : {}),
+    pages: files.map((source) => ({ file: source.file, page: `${book.bookRoot}/wiki/${source.page}.md`, page_title: source.rendered.title })),
+    page_count: files.length,
+    topic_index: topicPlan.status,
+    reader_map_action: mapIsGenerated
+      ? 'regenerate from the pages on disk'
+      : `append the ${SOURCES_TOPIC}/_index link if the map does not reach it; this map is curated, so it is not regenerated`,
+    confirmation_required: false,
+    shared_library_write: false,
+    scope:
+      `Creates ${files.length} new page(s) under ${SOURCES_TOPIC}/ in this open Shelf Book, ` +
+      `${topicPlan.status === 'created' ? 'creates' : topicPlan.status === 'updated' ? 'adds their lines to' : 'leaves'} the topic index ${SOURCES_TOPIC}/_index.md, ` +
+      'updates the reader map, and commits one Discovery manifest generation in the same locked window. Nothing under raw/ is read ' +
+      'after this, changed, moved or removed.',
+  };
+  if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
+
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  let mutation: BookMutation | null = null;
+  const createdDirectories: string[] = [];
+  try {
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    // Re-checked under the lock: a page named here may have been created while the batch was being read.
+    for (const source of files) {
+      assertInsideRoot(book.wikiPath, `${source.page}.md`, `shelf/${slug}/wiki`);
+      if (fs.existsSync(source.fullPath)) refuse(`shelf/${slug}/wiki/${source.page}.md was created while this batch was being prepared. Nothing was written.`);
+    }
+    mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Add ${files.length} source page(s) from ${batch}`, lock });
+    const topicNow = planTopicIndex();
+    journalPath = writeBookJournal({
+      workspace,
+      bookRoot: book.bookRoot,
+      operation: `Add ${files.length} source page(s) from ${batch}`,
+      paths: [...files.map((source) => source.fullPath), mapPath, topicIndexFull],
+    }).journalPath;
+
+    let parent = path.join(book.wikiPath, SOURCES_TOPIC);
+    while (!fs.existsSync(parent)) {
+      createdDirectories.push(parent);
+      parent = path.dirname(parent);
+    }
+    if (createdDirectories.length) fs.mkdirSync(path.join(book.wikiPath, SOURCES_TOPIC), { recursive: true });
+
+    for (const source of files) {
+      fs.writeFileSync(source.fullPath, source.rendered.body, { encoding: 'utf8', flag: 'wx' });
+      if (readUtf8(source.fullPath) !== source.rendered.body) refuse(`The page was written but did not read back identically: ${book.bookRoot}/wiki/${source.page}.md`);
+    }
+    if (fromFolderFault() === 'after-pages') refuse('FAULT INJECTED after the pages were written (a real run never reaches this)');
+    if (topicNow.newText !== null) {
+      writeAtomicText(topicIndexFull, topicNow.newText);
+      if (fs.readFileSync(topicIndexFull, 'utf8') !== topicNow.newText) refuse(`The topic index ${SOURCES_TOPIC}/_index.md was written but did not read back identically.`);
+    }
+    plan['topic_index'] = topicNow.status;
+
+    if (mapIsGenerated) plan['reader_map_pages'] = updateShelfBookIndex(book).pageCount;
+    else if (getUnlistedBookPages(book).some((relative) => relative.startsWith(`${SOURCES_TOPIC}/`))) {
+      addShelfBookIndexLink(book, `${SOURCES_TOPIC}/_index`, 'Sources');
+    }
+    // REACHED, NOT LISTED: the root map, or the topic index it links, reaches every new page.
+    const unreached = files.filter((source) => getUnlistedBookPages(book).includes(`${source.page}.md`)).map((source) => source.page);
+    if (unreached.length) refuse(`The reader map was updated but does not reach ${unreached.join(', ')}.`);
+
+    plan['manifest'] = completeBookMutation(mutation).summary;
+    mutation = null;
+  } catch (error) {
+    const failure = (error as Error).message;
+    const rollback = runRollback(journalPath, () => {
+      for (const directory of createdDirectories) {
+        if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) fs.rmdirSync(directory);
+      }
+    });
+    settle(mutation, rollback);
+    return { refusal: `The batch was not added. ${failure}. Rollback: ${rollback}.`, value: null };
+  } finally {
+    exitBookLock(lock);
+  }
+
+  plan['status'] = 'added';
+  plan['reader_map'] = `${book.bookRoot}/wiki/_index.md`;
+  plan['reader_map_unlisted'] = getUnlistedBookPages(book).length;
+  plan['journal'] = workspaceRelative(workspace, journalPath!);
+  plan['next'] =
+    `${batch} is compiled into ${book.bookRoot}/wiki/${SOURCES_TOPIC}/ and is ready to evict` +
+    (owner !== null ? ` (its owner is the Project ${owner.project})` : '') +
+    '. Nothing under raw/ was deleted: remove the batch folder by hand once nothing else needs it. ' +
+    `To record where these pages came from, keep the Book's source list with deskpost book sources ${slug} --set --content-path <json> --preflight.`;
+  return { refusal: null, value: plan };
+}
+
+/** A test hook, named in the self-test that uses it: where to stop a --from-folder batch after its pages are written. */
+function fromFolderFault(): string {
+  return (process.env['LIBRARY_BOOK_FROM_FOLDER_FAULT'] ?? '').trim();
+}
+
+// --- book sources: the source list -----------------------------------------------------------------
+
+const SOURCES_USAGE =
+  'deskpost book sources <slug> [--json]; ' +
+  'deskpost book sources <slug> (--set --content-path <list.json> | --mark-compiled --content-path <id-to-sha256.json>) (--preflight | --base-sha256 <current_sha256 or absent>)';
+
+/** The Book's source list file, `shelf/<slug>/_sources.md`, beside `_catalog-entry.md`. */
+function sourceListFile(book: ShelfBook): string {
+  return path.join(path.dirname(book.wikiPath), SOURCE_LIST_FILE);
+}
+
+/** A page of this Book, by its Book-relative path: its canonical form when it exists, else null. */
+function bookPageFinder(book: ShelfBook): (page: string) => string | null {
+  return (page: string) => {
+    let canonical: string;
+    try {
+      canonical = convertToBookPagePath(page);
+    } catch {
+      return null;
+    }
+    const full = path.join(book.wikiPath, ...`${canonical}.md`.split('/'));
+    return fs.existsSync(full) && fs.statSync(full).isFile() ? canonical : null;
+  };
+}
+
+/** The list on disk, validated; refused, naming each problem, when it is there and unreadable. */
+function readSourceList(book: ShelfBook, slug: string): { text: string | null; list: SourceList | null } {
+  const file = sourceListFile(book);
+  if (!fs.existsSync(file)) return { text: null, list: null };
+  const text = readUtf8(file);
+  const block = sourceListBlock(text);
+  const problems = 'problem' in block ? [block.problem] : validateSourceList(block.value, bookPageFinder(book)).problems;
+  if (problems.length) {
+    refuse(
+      `shelf/${slug}/${SOURCE_LIST_FILE} cannot be read as a source list: ${problems.join('; ')}. Replace it whole with ` +
+        `deskpost book sources ${slug} --set --content-path <json> --preflight. Nothing was written.`,
+    );
+  }
+  return { text, list: validateSourceList((block as { value: unknown }).value, bookPageFinder(book)).list };
+}
+
+/** A JSON file given with --content-path (or --sources-compiled), parsed, or refused by name. */
+function readJsonFile(workspace: string, given: string, option: string): unknown {
+  const full = resolveContentPath(workspace, given, option);
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`${option} ${given} was not found (resolved to ${full}). Nothing was written.`);
+  try {
+    return JSON.parse(readUtf8(full));
+  } catch (error) {
+    refuse(`${option} ${given} is not JSON: ${(error as Error).message}. Nothing was written.`);
+  }
+}
+
+/**
+ * The mark `--sources-compiled <file>` makes inside a page replace (D1, D8): the list as it will be written, or a
+ * refusal that names `--sources-compiled`. Refused before anything else about the replace, so a Book with no list
+ * says so first.
+ */
+function plannedSourcesMark(workspace: string, book: ShelfBook, slug: string, given: string): { list: SourceList; ids: string[] } {
+  if (!fs.existsSync(sourceListFile(book))) {
+    refuse(
+      `--sources-compiled needs a source list, and shelf/${slug}/${SOURCE_LIST_FILE} does not exist. Create it with ` +
+        `deskpost book sources ${slug} --set --content-path <json> --preflight first. Nothing was written.`,
+    );
+  }
+  const map = readCompiledMap(readJsonFile(workspace, given, '--sources-compiled'));
+  if (map.marks === null) refuse(`--sources-compiled ${given} is not a map of source id to sha256: ${map.problems.join('; ')}. Nothing was written.`);
+  const current = readSourceList(book, slug).list!;
+  const marked = markCompiled(current, map.marks, utcStamp());
+  if (marked.problems.length) refuse(`--sources-compiled ${given} names a source the list does not hold: ${marked.problems.join('; ')}. Nothing was written.`);
+  return { list: marked.list, ids: [...map.marks.keys()] };
+}
+
+/**
+ * `deskpost book sources <slug>` (kickoffs/s104 row 2; PLAN-correct-and-find.md D8): reads a Shelf Book's source list,
+ * seated, with the Book open. `--set` replaces the list whole after validating it, and is the only form that creates
+ * the file; `--mark-compiled` records new fingerprints with the UTC instant. Each write is BOUND, NOT APPROVED, as a page
+ * replace is: `--preflight` gives the file's `current_sha256` (or `absent`), and the apply requires it as `--base-sha256`,
+ * under the Book lock and journal. The list is not a page, so no Discovery generation is committed for it.
+ */
+function sourcesVerb(argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('book', 'sources'));
+  const slug = parsed.positional[0] ?? '';
+  if (!slug) refuse(`book sources needs a Book slug: ${SOURCES_USAGE}.`);
+  if (parsed.positional.length > 1) refuse(`book sources takes one Book slug, not '${parsed.positional.slice(1).join(' ')}': ${SOURCES_USAGE}.`);
+  const set = parsed.flags.has('set');
+  const mark = parsed.flags.has('mark-compiled');
+  if (set && mark) refuse(`book sources takes --set or --mark-compiled, not both: ${SOURCES_USAGE}.`);
+
+  const book = getShelfBook(workspace, slug);
+  if (book.isCapture) refuse(`Shelf Book '${slug}' is a capture Book; a source list belongs to a curated Book, whose pages it feeds. Nothing was written.`);
+  const file = sourceListFile(book);
+  const relative = `${book.bookRoot}/${SOURCE_LIST_FILE}`;
+
+  if (!set && !mark) {
+    for (const option of ['content-path', 'base-sha256']) {
+      if (parsed.options.has(option) || parsed.flags.has(option)) refuse(`book sources takes --${option} only with --set or --mark-compiled: ${SOURCES_USAGE}.`);
+    }
+    if (parsed.flags.has('preflight')) refuse(`book sources takes --preflight only with --set or --mark-compiled: ${SOURCES_USAGE}.`);
+    assertShelfBookOpen(workspace, slug, 'reading its source list');
+    const { text, list } = readSourceList(book, slug);
+    return {
+      refusal: null,
+      value: {
+        schema: LIBRARY_OUTPUT_SCHEMA,
+        operation: 'Read a Shelf Book source list',
+        book: book.bookRoot,
+        book_title: book.title,
+        path: relative,
+        present: text !== null,
+        current_sha256: sourceListSha256(text),
+        pin: list === null ? null : list.pin,
+        source_count: list === null ? 0 : list.sources.length,
+        sources: (list === null ? [] : list.sources) as unknown as PsJsonValue,
+        next:
+          text === null
+            ? `This Book keeps no source list yet. Write one with deskpost book sources ${slug} --set --content-path <json> --preflight.`
+            : `Change it with --set (the whole list) or --mark-compiled (new fingerprints), each --preflight first.`,
+      },
+    };
+  }
+
+  const preflight = parsed.flags.has('preflight');
+  const base = (parsed.options.get('base-sha256') ?? '').trim().toLowerCase();
+  if (preflight === (base !== '')) refuse(`book sources --${set ? 'set' : 'mark-compiled'} needs exactly one of --preflight or --base-sha256 <the preflight's current_sha256>: ${SOURCES_USAGE}.`);
+  if (base && base !== ABSENT && !/^[0-9a-f]{64}$/.test(base)) {
+    refuse(`--base-sha256 must be the 64 hex characters the preflight gave as current_sha256, or ${ABSENT} for a Book with no source list yet. Nothing was written.`);
+  }
+  const contentPath = (parsed.options.get('content-path') ?? '').trim();
+  if (!contentPath) refuse(`book sources --${set ? 'set' : 'mark-compiled'} needs --content-path <file>: ${SOURCES_USAGE}.`);
+  assertShelfBookOpen(workspace, slug, 'changing its source list');
+
+  const verb = set ? '--set' : '--mark-compiled';
+  // THE PROPOSED LIST, from the file on disk as it is now. Planned again under the lock.
+  const propose = (): { current: string; list: SourceList; marked: string[] } => {
+    const onDisk = fs.existsSync(file) ? readUtf8(file) : null;
+    const current = sourceListSha256(onDisk);
+    const given = readJsonFile(workspace, contentPath, '--content-path');
+    if (set) {
+      const checked = validateSourceList(given, bookPageFinder(book));
+      if (checked.list === null) refuse(`The source list in ${contentPath} is not valid: ${checked.problems.join('; ')}. Nothing was written.`);
+      return { current, list: checked.list, marked: [] };
+    }
+    if (onDisk === null) {
+      refuse(`shelf/${slug} has no source list yet, so there is nothing to mark. Create it with deskpost book sources ${slug} --set --content-path <json> --preflight. Nothing was written.`);
+    }
+    const map = readCompiledMap(given);
+    if (map.marks === null) refuse(`${contentPath} is not a map of source id to sha256: ${map.problems.join('; ')}. Nothing was written.`);
+    const marked = markCompiled(readSourceList(book, slug).list!, map.marks, utcStamp());
+    if (marked.problems.length) refuse(`${contentPath} names a source the list does not hold: ${marked.problems.join('; ')}. Nothing was written.`);
+    return { current, list: marked.list, marked: [...map.marks.keys()] };
+  };
+  const proposed = propose();
+  const proposedText = renderSourceList(proposed.list);
+  const proposedSha256 = sourceListSha256(proposedText);
+  const applyLine = `deskpost book sources ${slug} ${verb} --content-path ${contentPath} --base-sha256 ${proposed.current}`;
+  const plan: Record<string, PsJsonValue> = {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: set ? 'Replace a Shelf Book source list' : 'Mark sources of a Shelf Book compiled',
+    book: book.bookRoot,
+    book_title: book.title,
+    path: relative,
+    current_sha256: proposed.current,
+    proposed_sha256: proposedSha256,
+    source_count: proposed.list.sources.length,
+    ...(mark ? { marked: proposed.marked } : {}),
+    confirmation_required: false,
+    shared_library_write: false,
+    scope:
+      `${set ? (proposed.current === ABSENT ? 'Creates' : 'Replaces') : 'Records new fingerprints in'} this open Shelf Book's source list, ` +
+      'bound to the file the preflight read and kept in the Book journal. It is not a page, so no page, reader map or Discovery generation changes.',
+  };
+  if (set && proposed.current !== ABSENT && proposed.current === proposedSha256) {
+    plan['status'] = 'unchanged';
+    plan['next'] = 'The source list already holds this; nothing was written.';
+    return { refusal: null, value: plan };
+  }
+  if (preflight) {
+    plan['next'] = applyLine;
+    return { refusal: null, value: plan };
+  }
+  const stale = `${relative} changed after the preflight (its hash is not --base-sha256), so nothing was written. Run --preflight again.`;
+  if (base !== proposed.current) refuse(stale);
+
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  try {
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    // RE-READ UNDER THE LOCK: the hash check above happened before anyone was excluded, and a mark takes its instant now.
+    const now = propose();
+    if (now.current !== base) refuse(stale);
+    const text = renderSourceList(now.list);
+    journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: `${set ? 'Set' : 'Mark'} the source list`, paths: [file] }).journalPath;
+    writeAtomicText(file, text);
+    if (readUtf8(file) !== text) refuse(`The source list was written but did not read back identically: ${relative}`);
+    plan['proposed_sha256'] = sourceListSha256(text);
+  } catch (error) {
+    const failure = (error as Error).message;
+    const rollback = runRollback(journalPath);
+    return { refusal: `The source list was not written. ${failure}. Rollback: ${rollback}.`, value: null };
+  } finally {
+    exitBookLock(lock);
+  }
+  delete plan['next'];
+  plan['status'] = 'written';
+  plan['current_sha256'] = plan['proposed_sha256']!;
+  delete plan['proposed_sha256'];
+  plan['journal'] = workspaceRelative(workspace, journalPath!);
+  plan['next'] = `Read it with deskpost book sources ${slug}.`;
+  return { refusal: null, value: plan };
+}
+
+// --- book replace-page -----------------------------------------------------------------------------
+
+const REPLACE_PAGE_USAGE =
+  'deskpost book replace-page <slug> <page> --content-path <file> [--sources-compiled <id-to-sha256.json>] (--preflight | --base-sha256 <the preflight\'s current_sha256>)';
+
+/** A test hook, named in the self-test that uses it: where to stop a replace after its journal is written. */
+function replacePageFault(): string {
+  return (process.env['LIBRARY_BOOK_REPLACE_PAGE_FAULT'] ?? '').trim();
+}
+
+/**
+ * `deskpost book replace-page <slug> <page> --content-path <file> (--preflight | --base-sha256 <h>)` (ADR-0070, D1).
+ *
+ * BOUND, NOT APPROVED (the reader's Q1): the preflight returns the page's hash and the apply requires it, so a write is
+ * never blind to the page it replaces, and the previous text is kept twice, in the journal and as a restore file beside
+ * it. No yes is asked: the Book is this seat's working copy, open on its Desk, and the restore is one command away.
+ */
+function replacePage(argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('book', 'replace-page'));
+  const slug = parsed.positional[0] ?? '';
+  const pagePath = parsed.positional[1] ?? '';
+  if (!slug || !pagePath) refuse(`book replace-page needs a Book slug and a page path: ${REPLACE_PAGE_USAGE}.`);
+  if (parsed.flags.has('sources-compiled')) refuse('--sources-compiled needs a file: a JSON map of source id to sha256. Nothing was written.');
+  const sourcesCompiled = (parsed.options.get('sources-compiled') ?? '').trim();
+  if (parsed.options.has('body') || parsed.flags.has('body')) refuse(`book replace-page takes its text from --content-path only: ${REPLACE_PAGE_USAGE}.`);
+  if (parsed.options.has('title') || parsed.flags.has('title')) {
+    refuse('book replace-page takes no --title: the page keeps or changes its own H1 in the text you give. Nothing was written.');
+  }
+  const preflight = parsed.flags.has('preflight');
+  const base = (parsed.options.get('base-sha256') ?? '').trim().toLowerCase();
+  if (preflight === (base !== '')) {
+    refuse(`book replace-page needs exactly one of --preflight or --base-sha256 <the preflight's current_sha256>: ${REPLACE_PAGE_USAGE}.`);
+  }
+  if (base && !/^[0-9a-f]{64}$/.test(base)) refuse('--base-sha256 must be the 64 hex characters the preflight gave as current_sha256. Nothing was written.');
+
+  let book: ReturnType<typeof getShelfBook>;
+  try {
+    book = getShelfBook(workspace, slug);
+  } catch (error) {
+    if (/^[a-z0-9][a-z0-9-]*$/.test(slug) && isLocalBackend(workspace) && collectionBookSlugs(workspace, 'active').includes(slug)) {
+      refuse(`'${slug}' is a Book in this Library's own collection, not on the Shelf. Nothing was written.`);
+    }
+    throw error;
+  }
+  if (book.isCapture) {
+    refuse(`Shelf Book '${slug}' is a capture Book; its notes have their own writers. book replace-page corrects a page of a curated Book. Nothing was written.`);
+  }
+  if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
+  assertShelfBookOpen(workspace, slug, 'correcting a page of it');
+
+  const page = convertToBookPagePath(pagePath);
+  const relative = `${page}.md`;
+  const fullPath = path.join(book.wikiPath, ...relative.split('/'));
+  assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    refuse(`shelf/${slug}/wiki/${relative} does not exist, so there is nothing to correct. Add a new page with deskpost book add-page ${slug} ${page} --content-path <file>.`);
+  }
+  // THE SOURCE LIST'S MARK (D1, D8), checked before anything else about the write, so a Book with no list says so first.
+  const sourcesPlan = sourcesCompiled ? plannedSourcesMark(workspace, book, slug, sourcesCompiled) : null;
+
+  const contentPath = parsed.options.get('content-path');
+  if (contentPath === undefined || !contentPath.trim()) refuse(`book replace-page needs --content-path <file>: ${REPLACE_PAGE_USAGE}.`);
+  const { body } = resolveBody(workspace, contentPath, undefined, 'page');
+  if (!body.trim()) refuse('The page body is empty; nothing was written.');
+  const rendered = renderPageBody(body, '');
+
+  const currentText = readUtf8(fullPath);
+  const currentSha256 = pageComparisonSha256(fs.readFileSync(fullPath, 'utf8'));
+  const proposedSha256 = pageComparisonSha256(rendered.body);
+  const titleBefore = readerMapLabel(currentText, relative);
+  const titleAfter = rendered.title;
+  const mapPath = path.join(book.wikiPath, '_index.md');
+  const mapIsGenerated = testGeneratedReaderMap(mapPath);
+  const counts = changeCounts(currentText.replace(/\r\n/g, '\n'), rendered.body.replace(/\r\n/g, '\n'));
+  const lineCount = (text: string) => (text.replace(/\r\n/g, '\n').replace(/\n$/, '') === '' ? 0 : text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length);
+  const applyLine =
+    `deskpost book replace-page ${slug} ${page} --content-path ${contentPath}` +
+    (sourcesPlan !== null ? ` --sources-compiled ${sourcesCompiled}` : '') +
+    ` --base-sha256 ${currentSha256}`;
+
+  const plan: Record<string, PsJsonValue> = {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: 'Replace a page of a Shelf Book',
+    book: book.bookRoot,
+    book_title: book.title,
+    page: `${book.bookRoot}/wiki/${relative}`,
+    current_sha256: currentSha256,
+    proposed_sha256: proposedSha256,
+    current_lines: lineCount(currentText),
+    proposed_lines: lineCount(rendered.body),
+    added_lines: counts.added_lines,
+    removed_lines: counts.removed_lines,
+    title_before: titleBefore,
+    title_after: titleAfter,
+    reader_map: mapIsGenerated ? 'regenerated' : 'curated: unchanged',
+    ...(sourcesPlan !== null ? { sources_compiled: sourcesPlan.ids } : {}),
+    confirmation_required: false,
+    shared_library_write: false,
+    scope:
+      (sourcesPlan !== null ? `Marks ${sourcesPlan.ids.length} source(s) of shelf/${slug}/${SOURCE_LIST_FILE} compiled in the same write. ` : '') +
+      'Replaces the text of one existing page of this open Shelf Book, bound to the page the preflight read: the previous ' +
+      'text is kept in the Book journal and as a restore file beside it, a generated reader map is regenerated (a curated ' +
+      'one is left alone), and a new Discovery manifest generation is committed in the same locked window.',
+  };
+
+  if (currentSha256 === proposedSha256) {
+    plan['status'] = 'unchanged';
+    plan['next'] =
+      'The page already holds this text; nothing was written' +
+      (sourcesPlan !== null ? `, and no source was marked. Mark them with deskpost book sources ${slug} --mark-compiled --content-path ${sourcesCompiled} --preflight.` : '.');
+    return { refusal: null, value: plan };
+  }
+  if (preflight) {
+    plan['next'] = applyLine;
+    return { refusal: null, value: plan };
+  }
+  if (base !== currentSha256) {
+    refuse(`shelf/${slug}/wiki/${relative} changed after the preflight (its hash is not --base-sha256), so nothing was written. Run --preflight again.`);
+  }
+
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  let previousPath: string | null = null;
+  let mutation: BookMutation | null = null;
+  const reachedBefore = !getUnlistedBookPages(book).includes(relative);
+  try {
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+
+    // RE-READ UNDER THE LOCK: the hash check above happened before anyone was excluded.
+    assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
+    if (!fs.existsSync(fullPath) || pageComparisonSha256(fs.readFileSync(fullPath, 'utf8')) !== base) {
+      refuse(`shelf/${slug}/wiki/${relative} changed after the preflight (its hash is not --base-sha256), so nothing was written. Run --preflight again.`);
+    }
+
+    // The mark planned again under the lock: the list may have changed, and the instant is now.
+    const sourcesNow = sourcesCompiled ? plannedSourcesMark(workspace, book, slug, sourcesCompiled) : null;
+    const listFile = sourceListFile(book);
+    mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Replace page ${relative}`, lock });
+    journalPath = writeBookJournal({
+      workspace,
+      bookRoot: book.bookRoot,
+      operation: `Replace page ${relative}`,
+      paths: [fullPath, mapPath, ...(sourcesNow !== null ? [listFile] : [])],
+    }).journalPath;
+    // THE RESTORE FILE: the previous page's own bytes, `.txt` so Obsidian indexes no second copy of the page.
+    previousPath = journalPath.replace(/\.json$/, '') + '.previous.txt';
+    fs.writeFileSync(previousPath, fs.readFileSync(fullPath), { flag: 'wx' });
+
+    if (replacePageFault() === 'after-journal') refuse('FAULT INJECTED after the journal was written (a real run never reaches this)');
+    // ATOMIC: outside the journal, the page is the only copy of its text.
+    writeAtomicText(fullPath, rendered.body);
+    if (readUtf8(fullPath) !== rendered.body) refuse(`The page was written but did not read back identically: ${book.bookRoot}/wiki/${relative}`);
+    if (sourcesNow !== null) {
+      const listText = renderSourceList(sourcesNow.list);
+      writeAtomicText(listFile, listText);
+      if (readUtf8(listFile) !== listText) refuse(`The source list was written but did not read back identically: ${book.bookRoot}/${SOURCE_LIST_FILE}`);
+      plan['sources_compiled'] = sourcesNow.ids;
+    }
+    if (replacePageFault() === 'after-write') refuse('FAULT INJECTED after the page was written (a real run never reaches this)');
+
+    // A generated map is regenerated, so a changed H1 changes its label; a curated one is a reader's and is left alone.
+    if (mapIsGenerated) updateShelfBookIndex(book);
+    if (reachedBefore && getUnlistedBookPages(book).includes(relative)) {
+      refuse(`The reader map no longer reaches ${relative} after the replace.`);
+    }
+
+    plan['manifest'] = completeBookMutation(mutation).summary;
+    mutation = null;
+  } catch (error) {
+    const failure = (error as Error).message;
+    const rollback = runRollback(journalPath, () => {
+      if (previousPath !== null && fs.existsSync(previousPath)) fs.rmSync(previousPath);
+    });
+    settle(mutation, rollback);
+    return { refusal: `The page was not replaced. ${failure}. Rollback: ${rollback}.`, value: null };
+  } finally {
+    exitBookLock(lock);
+  }
+
+  const previousRelative = workspaceRelative(workspace, previousPath!);
+  delete plan['next'];
+  plan['status'] = 'written';
+  plan['journal'] = workspaceRelative(workspace, journalPath!);
+  plan['previous_body_path'] = previousRelative;
+  plan['title_changed'] = titleBefore !== titleAfter;
+  plan['restore'] = `deskpost book replace-page ${slug} ${page} --content-path ${previousRelative} --base-sha256 ${proposedSha256}`;
+  plan['next'] = 'The Book is open; read the corrected page with mcp__validated-book-reader__read_open_book_page. To undo, run the restore line.';
+  return { refusal: null, value: plan };
+}
+
+// --- book reader-map -------------------------------------------------------------------------------
+
+const READER_MAP_USAGE = 'deskpost book reader-map <slug>';
+
+/**
+ * `deskpost book reader-map <slug>` (D4): the generated reader map of a curated Shelf Book open on this seat's Desk,
+ * built again by the folding rule, so an existing Book's topic pages fold under their topic index as a new page's do.
+ *
+ * UNGATED, because the map is derived: it is rebuilt from the pages on disk and a curated map is refused, never
+ * rewritten. Under the Book's lock and journal, with a Discovery manifest generation in the same window, since the map is
+ * part of the page digest Discovery compares. A map that would leave a page unreached is rolled back. `shelf rebuild`
+ * is unchanged: it writes manifests only.
+ */
+function readerMapVerb(argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('book', 'reader-map'));
+  const slug = parsed.positional[0] ?? '';
+  if (!slug) refuse(`book reader-map needs a Book slug: ${READER_MAP_USAGE}.`);
+  if (parsed.positional.length > 1) refuse(`book reader-map takes one Book slug, not '${parsed.positional.slice(1).join(' ')}': ${READER_MAP_USAGE}. Nothing was written.`);
+  if (/^[a-z0-9][a-z0-9-]*$/.test(slug) && fs.existsSync(archiveRecordPath(workspace, slug))) {
+    refuse(`Shelf Book '${slug}' is archived. Restore it with deskpost shelf restore ${slug} first. Nothing was written.`);
+  }
+  const book = getShelfBook(workspace, slug);
+  if (book.isCapture) refuse(`Shelf Book '${slug}' is a capture Book; its map is its notes' own. book reader-map rebuilds a curated Book's map. Nothing was written.`);
+  if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
+  assertShelfBookOpen(workspace, slug, 'rebuilding its reader map');
+  const mapPath = path.join(book.wikiPath, '_index.md');
+  const mapRelative = `${book.bookRoot}/wiki/_index.md`;
+  if (!testGeneratedReaderMap(mapPath)) {
+    refuse(`${mapRelative} is curated (a line in it is not a heading or a bare link), so it is a reader's and is never rebuilt. Fold its topics by hand. Nothing was written.`);
+  }
+
+  const built = shelfBookIndexText(book);
+  const plan: Record<string, PsJsonValue> = {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: "Rebuild a Shelf Book's reader map",
+    book: book.bookRoot,
+    book_title: book.title,
+    reader_map: mapRelative,
+    reader_map_pages: built.pageCount,
+    folded_topics: built.foldedTopics,
+  };
+  if (fs.existsSync(mapPath) && readUtf8(mapPath) === built.text) {
+    plan['status'] = 'unchanged';
+    plan['reader_map_unlisted'] = getUnlistedBookPages(book).length;
+    plan['next'] = 'The reader map is already built by the folding rule; nothing was written.';
+    return { refusal: null, value: plan };
+  }
+
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  let mutation: BookMutation | null = null;
+  try {
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    // RE-READ UNDER THE LOCK: a page added since the text above was built is in the map written.
+    if (!testGeneratedReaderMap(mapPath)) refuse(`${mapRelative} became curated before the lock was taken. Nothing was written.`);
+    const unlistedBefore = getUnlistedBookPages(book).length;
+    mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: 'Rebuild the reader map', lock });
+    journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: 'Rebuild the reader map', paths: [mapPath] }).journalPath;
+    const written = shelfBookIndexText(book);
+    writeUtf8(mapPath, written.text);
+    if (readUtf8(mapPath) !== written.text) refuse(`The reader map was written but did not read back identically: ${mapRelative}`);
+    const unlistedAfter = getUnlistedBookPages(book).length;
+    if (unlistedAfter > unlistedBefore) refuse(`The rebuilt map reaches fewer pages (${unlistedAfter} unreached, ${unlistedBefore} before)`);
+    plan['reader_map_pages'] = written.pageCount;
+    plan['folded_topics'] = written.foldedTopics;
+    plan['reader_map_unlisted'] = unlistedAfter;
+    plan['manifest'] = completeBookMutation(mutation).summary;
+    mutation = null;
+  } catch (error) {
+    const failure = (error as Error).message;
+    const rollback = runRollback(journalPath);
+    settle(mutation, rollback);
+    return { refusal: `The reader map was not rebuilt. ${failure}. Rollback: ${rollback}.`, value: null };
+  } finally {
+    exitBookLock(lock);
+  }
+
+  plan['status'] = 'written';
+  plan['journal'] = workspaceRelative(workspace, journalPath!);
+  plan['next'] = `Read the map with mcp__validated-book-reader__read_open_book_page (${slug}, _index).`;
+  return { refusal: null, value: plan };
+}
+
 // --- book graduate ---------------------------------------------------------------------------------
 
 interface GraduateEntry {
@@ -1078,7 +1879,7 @@ interface GraduateEntry {
  * row compares.
  */
 function graduate(argv: string[], workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['topic', 'source-path', 'page-prefix', 'workspace', 'seat']);
+  const parsed = parseArguments(argv, argumentTable('book', 'graduate'));
   const slug = parsed.positional[0] ?? '';
 
   const book = getShelfBook(workspace, slug);
@@ -1272,8 +2073,11 @@ export function runBookVerb(argv: string[], workspace: string): WriterResult {
   const action = argv[0] ?? '';
   try {
     if (action === 'add-page') return addPage(argv.slice(1), workspace);
+    if (action === 'replace-page') return replacePage(argv.slice(1), workspace);
+    if (action === 'reader-map') return readerMapVerb(argv.slice(1), workspace);
+    if (action === 'sources') return sourcesVerb(argv.slice(1), workspace);
     if (action === 'graduate') return graduate(argv.slice(1), workspace);
-    return { refusal: `library book has no action '${action}'. It has: add-page, graduate.`, value: null };
+    return { refusal: `library book has no action '${action}'. It has: add-page, graduate, reader-map, replace-page, sources.`, value: null };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };
   }

@@ -33,6 +33,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { tableFor } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { splitBookRoot } from './desk.ts';
 import { deskFileEntries, deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
@@ -1250,7 +1251,7 @@ export function runHookVerb(argv: string[]): { stdout: string; refusal: string |
   if (action === 'compact-clear') return { stdout: runCompactClearVerb(argv.slice(1), stdinText), refusal: null };
   if (action === 'search-hit') return { stdout: runSearchHitVerb(argv.slice(1), stdinText), refusal: null };
   if (action === 'seat-start') return { stdout: runSeatStartVerb(argv.slice(1), stdinText), refusal: null };
-  const parsed = parseArguments(argv.slice(1), ['workspace', 'seat', 'state-directory', 'reader-tool-prefix']);
+  const parsed = parseArguments(argv.slice(1), tableFor('hook', action));
   return {
     stdout: runGuard(
       action,

@@ -43,7 +43,7 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { assertNoCollectionExport } from './locks.ts';
 import { deskStateDirectory } from './seatdesk.ts';
-import { agentProcessIdentity, currentAgentProcessId, launcherAgentProof, testSeatAgentAlive } from './procstart.ts';
+import { agentProcessIdentity, currentAgentProcessId, launcherAgentProof, launcherChildAgent, testSeatAgentAlive } from './procstart.ts';
 
 export type ClaimState = 'free' | 'held' | 'orphaned';
 export type SeatOperation = 'enter' | 'mutate' | 'retire' | 'sweep';
@@ -332,15 +332,29 @@ export function launcherHoldsSeatForThisAgent(stateDirectory: string, seat: stri
  * `not-held` for everything else, the launcher variables unset among them.
  */
 export function launcherProofForThisAgent(stateDirectory: string, seat: string): 'held' | 'not-held' | 'unchecked' {
+  const detail = launcherProofDetail(stateDirectory, seat);
+  return detail.outcome === 'other-agent' ? 'not-held' : detail.outcome;
+}
+
+/**
+ * THE PROOF WITH ITS FOURTH ANSWER (kickoffs/s104 row 4): `other-agent` when the claim's token is the live claim's own and
+ * the walk could look, but the launcher's direct agent is not this one -- the launcher holds the seat for someone else.
+ * `not-held` used to stand for that as well as for no launcher at all, so the Desk said nothing. `agentPid` is the
+ * launcher's own agent (`launcherChildAgent`), read only in that case, or null when it cannot be found. Every caller that
+ * asks only "is it this agent's" keeps `launcherProofForThisAgent`, which still answers `not-held` there.
+ */
+export function launcherProofDetail(stateDirectory: string, seat: string): { outcome: 'held' | 'other-agent' | 'not-held' | 'unchecked'; agentPid: number | null } {
   const token = (process.env['LIBRARY_SEAT_CLAIM'] ?? '').trim();
   const launcherPid = Number(process.env['DESKPOST_LAUNCHER_PID'] ?? '');
-  if (!token || !Number.isInteger(launcherPid) || launcherPid <= 0) return 'not-held';
+  if (!token || !Number.isInteger(launcherPid) || launcherPid <= 0) return { outcome: 'not-held', agentPid: null };
   try {
-    if (!testSeatClaim(stateDirectory, seat) || seatClaimField(stateDirectory, seat, 'token') !== token) return 'not-held';
+    if (!testSeatClaim(stateDirectory, seat) || seatClaimField(stateDirectory, seat, 'token') !== token) return { outcome: 'not-held', agentPid: null };
     const proof = launcherAgentProof(launcherPid);
-    return proof.agent !== null ? 'held' : proof.checked ? 'not-held' : 'unchecked';
+    if (proof.agent !== null) return { outcome: 'held', agentPid: proof.agent.pid };
+    if (!proof.checked) return { outcome: 'unchecked', agentPid: null };
+    return { outcome: 'other-agent', agentPid: launcherChildAgent(launcherPid)?.pid ?? null };
   } catch {
-    return 'not-held';
+    return { outcome: 'not-held', agentPid: null };
   }
 }
 

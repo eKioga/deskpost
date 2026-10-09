@@ -31,6 +31,22 @@ done
 IFS=$old_ifs
 set +f
 
+# A DOCS-ONLY COMMIT RUNS ONLY THE DOCUMENT CHECKS (S104 row 0b; Eric, 2026-10-08: "do we need this gate?").
+# tools/docs-gate.ts decides from the staged paths: 0 is its checks passed, 3 is one failed, 4 is "not docs only".
+# Anything else -- node missing, the file missing, a crash -- is never a pass: the full runner below runs, as it
+# did before this gate existed. The rule for what counts as a document is in the file's header.
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= PATH="$clean_path" node tools/docs-gate.ts
+docs_status=$?
+if [ $docs_status -eq 0 ]; then
+    exit 0
+fi
+if [ $docs_status -eq 3 ]; then
+    echo ""
+    echo "pre-commit: the docs gate failed. Commit aborted."
+    echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
+    exit 1
+fi
+
 LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= PATH="$clean_path" \
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
 status=$?

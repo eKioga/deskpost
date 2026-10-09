@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { writeAtomicText } from './fsx.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
@@ -56,12 +57,6 @@ import {
   type Spelling,
 } from './setup.ts';
 import { DEFAULT_RELEASE, WINDOWS_PLATFORMS, defaultPlatform, newTempFolder, runBootstrap, sha256File, assertTuple, treeExecutable } from './bootstrap.ts';
-
-export const INSTALL_VALUED = [
-  'release', 'install-root', 'library', 'platform', 'plan-id', 'resume', 'librarian', 'script-sha', 'script-path', 'refusal-file', 'extracted', 'archive-sha256', 'bootstrap-folder',
-  'wait',
-];
-const INSTALL_FLAGS = ['yes', 'dry-run', 'json', 'allow-overlap', 'repair', 'keep-libraries', 'no-path-change', 'path-change', 'plugin', 'skip-plugin', 'run-as-file', 'forwarded'];
 
 /** What `library install` was asked, with install.ps1's defaults and environment fallbacks (`:123-126`). */
 export interface InstallArgs {
@@ -99,8 +94,8 @@ export interface InstallArgs {
 }
 
 export function parseInstallArgs(argv: string[]): InstallArgs {
-  const parsed = parseArguments(argv, INSTALL_VALUED);
-  const unknown = [...parsed.flags].filter((name) => !INSTALL_FLAGS.includes(name));
+  const parsed = parseArguments(argv, argumentTable('install'));
+  const unknown = [...parsed.flags].filter((name) => !(argumentTable('install').boolean ?? []).includes(name));
   if (unknown.length) throw new Error(`library install has no ${unknown.map((name) => `--${name}`).join(', ')}. Nothing was changed. Run \`library install --help\` for what it takes.`);
   if (parsed.positional.length) throw new Error(`library install takes no ${parsed.positional.length === 1 ? 'word' : 'words'} '${parsed.positional.join(' ')}'; name a release with --release. Nothing was changed.`);
   const resume = (parsed.options.get('resume') ?? '').trim().toLowerCase();
@@ -921,6 +916,7 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
     runAsFile: args.runAsFile,
     keepLibraries: args.keepLibraries,
     spelling: spellingOf(args),
+    dryRun: args.dryRun,
   });
   if (asked === SETUP_QUIT) {
     if (args.json) emitJson({ status: 'quit' });

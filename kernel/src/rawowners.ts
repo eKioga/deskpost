@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { getRawBatchRoster, getRawProvenance, resolveRawBatch } from './rawsearch.ts';
 
 const OWNER_SCHEMA = 1;
@@ -110,6 +111,15 @@ function ownerRecordFor(records: OwnerRecord[], batch: string): OwnerRecord | nu
     }
   }
   return best;
+}
+
+/**
+ * The Project that owns one batch, as `internal/raw-batch-owners.json` records it (longest declared prefix), or null
+ * when none does. Throws when the record cannot be read; `book add-page --from-folder` names the batch's owner with it.
+ */
+export function rawBatchOwner(workspace: string, batch: string): { project: string } | null {
+  const owner = ownerRecordFor(readOwnerFile(workspace), batch);
+  return owner === null ? null : { project: owner.project };
 }
 
 /**
@@ -374,7 +384,7 @@ export interface RawOwnersResult {
 }
 
 export function runRawOwners(argv: string[], workspace: string): RawOwnersResult {
-  parseArguments(argv, ['workspace', 'mcp-url', 'collection-id']);
+  parseArguments(argv, argumentTable('raw', 'owners'));
   try {
     // Tier 0 has no backend, so the catalog set is null rather than empty: the join reports
     // `undetermined` for a missing set, and inventing an empty one would answer `unlisted` for

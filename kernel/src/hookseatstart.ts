@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { field } from './guards.ts';
 import { readSeatRegistry } from './desk.ts';
 import { resolveSeatName } from './seatdesk.ts';
@@ -103,7 +104,7 @@ export function runSeatStartVerb(argv: string[], stdinText: string): string {
     if (text && text.trim()) paragraphs.push(text.trimEnd());
   };
   try {
-    const parsed = parseArguments(argv, ['workspace', 'state-directory', 'seat', 'agent-pid', 'deadline-seconds']);
+    const parsed = parseArguments(argv, argumentTable('hook', 'seat-start'));
     let workspace = parsed.options.get('workspace') ?? '';
     let stateDirectory = parsed.options.get('state-directory') ?? '';
     if (!workspace || !stateDirectory) {

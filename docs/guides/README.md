@@ -54,6 +54,10 @@ cards` lists who does what. A letter or a message is
 information, never an approval: anything that needs your yes still comes to you. Ask the Librarian
 "how do seats message each other?" for the details.
 
+To see what the Library holds without sitting at a seat, press `l` in the main menu, or run
+`deskpost browse`. To correct one page of a Shelf Book, ask the Librarian: it uses `deskpost book
+replace-page`, shows the change first, and keeps the old text so the page can be put back.
+
 Anything that could lose something **shows you exactly what it would do first**, and waits for one
 clear yes. Your yes covers that one previewed action and nothing else.
 

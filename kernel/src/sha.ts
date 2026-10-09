@@ -23,3 +23,12 @@ export function sha256OfBytes(bytes: Uint8Array): string {
 export function sha256OfText(text: string): string {
   return crypto.createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
 }
+
+/**
+ * A PAGE'S COMPARISON FORM (ADR-0070): the BOM stripped and CRLF folded to LF, so a page saved with other line endings
+ * is still the page a preflight described. `book replace-page`'s and `collection replace-page`'s `current_sha256` and
+ * the validated reader's `sha256` (S102 row 1) are this one value.
+ */
+export function pageComparisonSha256(text: string): string {
+  return sha256OfText(text.replace(/^﻿/, '').replace(/\r\n/g, '\n'));
+}

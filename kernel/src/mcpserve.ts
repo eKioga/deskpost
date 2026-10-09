@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import type { McpResult, ReaderArguments } from './reader.ts';
 import { answerReaderTool, readerContext, readerEnvelope, readerRejectionPrefix } from './reader.ts';
 import { homeDirectory, markerField, readMarker, resolveWorkspace, toWorkspaceRoot } from './workspace.ts';
@@ -36,14 +37,48 @@ import { enabledClaudePluginHooks, HOOK_VERB_FOR_SCRIPT, hookEntryText, namesHoo
 
 const TOOLS: PsJsonValue[] = [
   { name: 'read_book_catalog', description: "Read the AI Library Book Catalog: the shared collection, the local Shelf, both, or the shared ARCHIVE. The adapter returns shared content only when the response is the exact canonical catalog record. discover_book_pages covers archived Books and labels every archived hit ARCHIVED, so this listing is the archive's own index rather than the only way to find one; each Discovery answer states which archives it searched.", inputSchema: { type: 'object', additionalProperties: false, properties: { location: { type: 'string', enum: ['shared', 'shelf', 'all', 'archive', 'collection', 'shared-archive'], description: "Which collection to list. Defaults to all. Use archive to list Books retired from the shared collection. On a local Library collection is its own collection, and shared and shared-archive are its Basic Memory connection's, once one is set up." } } } },
-  { name: 'read_open_book_page', description: 'Read one exact page from an open AI Library Book, shared or Shelf. The adapter rejects closed Books and any page whose canonical file path differs from the requested path.', inputSchema: { type: 'object', additionalProperties: false, required: ['slug', 'page'], properties: { slug: { type: 'string', description: 'Open Book slug.' }, page: { type: 'string', description: 'Canonical page path below wiki/, without .md.' }, place: { type: 'string', enum: ['shelf', 'collection', 'shared'], description: "Where the open Book is, when the same slug is open in two places: shelf, collection (the Library's own), or shared." } } } },
+  { name: 'read_open_book_page', description: 'Read one exact page from an open AI Library Book, shared or Shelf. The adapter rejects closed Books and any page whose canonical file path differs from the requested path. A second item gives its sha256; section reads one ## section.', inputSchema: { type: 'object', additionalProperties: false, required: ['slug', 'page'], properties: { slug: { type: 'string', description: 'Open Book slug.' }, page: { type: 'string', description: 'Canonical page path below wiki/, without .md.' }, place: { type: 'string', enum: ['shelf', 'collection', 'shared'], description: "Where the open Book is, when the same slug is open in two places: shelf, collection (the Library's own), or shared." }, section: { type: 'string', description: 'Exact ## heading text.' } } } },
   { name: 'read_project_catalog', description: 'Read the exact active or archived AI Library Project Catalog.', inputSchema: { type: 'object', additionalProperties: false, properties: { shelf: { type: 'string', enum: ['active', 'archive'], description: 'Project shelf. Defaults to active.' } } } },
   { name: 'suggest_active_projects', description: 'Search concise summaries of active AI Library Project Hubs using reader-provided words. Returns up to five ranked suggestions and never opens or changes a Project.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', description: 'Words describing the work or Project to find.' } } } },
-  { name: 'read_open_project_page', description: 'Read one exact page from an open active or archived AI Library Project Hub.', inputSchema: { type: 'object', additionalProperties: false, required: ['slug', 'page'], properties: { slug: { type: 'string', description: 'Open Project slug.' }, page: { type: 'string', description: 'Canonical Project page path below the Project root, without .md. For example _project or research/Finding.' } } } },
+  { name: 'read_open_project_page', description: 'Read one exact page from an open active or archived AI Library Project Hub. A second item gives its sha256; section reads one ## section.', inputSchema: { type: 'object', additionalProperties: false, required: ['slug', 'page'], properties: { slug: { type: 'string', description: 'Open Project slug.' }, page: { type: 'string', description: 'Canonical Project page path below the Project root, without .md. For example _project or research/Finding.' }, section: { type: 'string', description: 'Exact ## heading text.' } } } },
   { name: 'read_open_project_briefing', description: "Give a short return briefing using an open Project Hub's explicit Connected knowledge and Connected tools sections, whether recorded on the Hub root or its companion connections page. It does not search, infer missing dependencies, or open Books.", inputSchema: { type: 'object', additionalProperties: false, required: ['slug'], properties: { slug: { type: 'string', description: 'Open Project slug.' } } } },
   { name: 'search_open_books', description: 'Search the FULL TEXT of Shelf Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. An open SHARED Book is named in the answer as out of scope rather than searched, because its pages arrive one network read at a time. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', description: 'A literal term to look for in page text. Matching is literal, case-insensitive, and Unicode-normalised; regular expressions are not interpreted.' }, max_results: { type: 'integer', description: 'Maximum matching lines to return. Defaults to 50; the answer reports the total when it truncates.' }, place: { type: 'string', enum: ['shelf', 'collection', 'shared'], description: 'Search only the open Books in this place: shelf, collection or shared.' } } } },
   { name: 'discover_book_pages', description: 'Find which Books and pages mention a term, across the local Shelf and the shared collection, from closed-readable metadata manifests only. Covers closed Books, opens nothing, reaches no network, and returns Book slug, canonical page path, the heading that matched, and the Book overlap status -- never page text. A hit licenses "shall I open it?", never an answer about what the page says. Every answer states its own coverage: which Books were searched, and any it could not read.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', description: 'A literal term to look for in Book titles, summaries, topics, reader-map links, page titles, and headings. Matching is literal and case-insensitive; regular expressions are not interpreted.' }, max_results: { type: 'integer', description: 'Maximum hits to return. Defaults to 50; the answer reports the total when it truncates.' } } } },
 ];
+
+/** `a`, `a and b`, `a, b and c`: a list as a refusal says it. */
+function spoken(names: string[], last: string): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} ${last} ${names[names.length - 1]}`;
+}
+
+/**
+ * AN ARGUMENT A TOOL DOES NOT DECLARE IS REFUSED, AND SO IS A VALUE OUTSIDE ITS LIST (kickoffs/s106 row 4; Eric's ruling
+ * (a), 2026-10-08). Every schema says `additionalProperties: false` and nothing enforced it: a `section` sent to a reader
+ * that did not know it returned the whole page, and an unknown `location` read the whole catalog, so a caller could not
+ * tell it got more than it asked for. `workspace` is exempt by name: no schema declares it, and `assertBoundWorkspace`,
+ * which runs first, refuses one naming another workspace in its own words. Null for a tool this server does not list,
+ * which the dispatch refuses by name.
+ */
+export function toolArgumentRefusal(tool: string, given: unknown): string | null {
+  const declared = TOOLS.find((entry) => String((entry as Record<string, unknown>)['name']).toLowerCase() === tool.toLowerCase()) as Record<string, unknown> | undefined;
+  if (declared === undefined || given === null || typeof given !== 'object' || Array.isArray(given)) return null;
+  const name = String(declared['name']);
+  const properties = ((declared['inputSchema'] as Record<string, unknown>)['properties'] ?? {}) as Record<string, { enum?: string[] }>;
+  const names = Object.keys(properties);
+  for (const [key, value] of Object.entries(given as Record<string, unknown>)) {
+    if (key.toLowerCase() === 'workspace') continue;
+    const known = names.find((candidate) => candidate.toLowerCase() === key.toLowerCase());
+    if (known === undefined) {
+      return `${name} takes ${names.length ? spoken(names, 'and') : 'no arguments'}; it does not take '${key}'. Nothing was read.`;
+    }
+    // `place` REFUSES A VALUE IN ITS OWN WORDS (`parsePlaceArgument`), which say where an archived Book is read.
+    const allowed = known === 'place' ? undefined : properties[known]!.enum;
+    if (allowed && value !== null && value !== undefined && !allowed.includes(String(value).toLowerCase())) {
+      return `${name} takes ${known} ${spoken(allowed, 'or')}; it does not take '${String(value)}'. Nothing was read.`;
+    }
+  }
+  return null;
+}
 
 /** `ConvertTo-AsciiJson`: every character above U+007F escaped, so no console code page can bend a response. */
 function asciiLine(value: unknown): string {
@@ -267,8 +302,10 @@ export async function answerLine(line: string, binding: Binding, seat: string | 
         // under a server that is already running.
         const context = readerContext(binding.workspace, binding.stateDirectory, seat);
         assertBoundWorkspace(binding, args);
-        const text = await answerReaderTool(context, callName, args);
-        return asciiLine(readerEnvelope(id as PsJsonValue, text, false));
+        const argumentRefusal = toolArgumentRefusal(callName, callArguments);
+        if (argumentRefusal !== null) throw new Error(argumentRefusal);
+        const answer = await answerReaderTool(context, callName, args);
+        return asciiLine(readerEnvelope(id as PsJsonValue, answer.text, false, answer.sha256));
       } catch (error) {
         return asciiLine(readerEnvelope(id as PsJsonValue, `${readerRejectionPrefix(callName)}: ${(error as Error).message}`, true));
       }
@@ -281,7 +318,7 @@ export async function answerLine(line: string, binding: Binding, seat: string | 
 
 /** `library mcp serve [--workspace <p>] [--state-directory <d>] [--seat <s>]`: until stdin closes. */
 export async function runMcpServe(argv: string[]): Promise<McpResult> {
-  const parsed = parseArguments(argv, ['workspace', 'state-directory', 'seat']);
+  const parsed = parseArguments(argv, argumentTable('mcp', 'serve'));
   const binding = bindWorkspace(parsed.options.get('workspace'), parsed.options.get('state-directory'));
   const faults = launchSettingsFaults(binding.stateDirectory);
   if (faults.length) {

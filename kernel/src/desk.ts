@@ -24,7 +24,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
 import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
 import { growingState, isAddressedTo, isStartedBy, isStuckLetter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
-import { readSeatIds, seatIncarnation } from './seatincarnation.ts';
+import { incarnationOf, readSeatIdentityView, seatIncarnation, seatNameHistory, type SeatNameSpan } from './seatincarnation.ts';
 import {
   deskFileEntries,
   deskFilePath,
@@ -38,7 +38,7 @@ import {
   assertNoMaintenanceBarrier,
   assertSeatClaimHeld,
   getSeatClaimState,
-  launcherProofForThisAgent,
+  launcherProofDetail,
   readSeatActivity,
   readSeatBinding,
   writeSeatActivity,
@@ -197,7 +197,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // `yyyy-MM-dd` in a directory named `<seat>-yyyyMMdd-HHmmss`, and spelled the fallback source
   // `name` where PowerShell spells it `directory-name` -- three defects no row could see, because
   // no Desk row runs over a fixture holding a quarantine.
-  const quarantineRows = notebookQuarantineInventory(workspace);
+  // THIS SEAT'S QUARANTINES ONLY, by the journal's `seat` (kickoffs/s106 row 7c): a Desk is one seat's, and every seat's
+  // count read as this seat's. `reset restore --list` still lists them all.
+  const quarantineRows = notebookQuarantineInventory(workspace).filter((row) => row.seat === seat);
   const dated = quarantineRows.filter((row) => row.stamp_source !== 'unknown').sort((left, right) =>
     left.stamped_utc < right.stamped_utc ? -1 : left.stamped_utc > right.stamped_utc ? 1 : 0,
   );
@@ -217,6 +219,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     // NAMED EVEN WHEN THE COUNT IS ZERO. A reader who has just been told there is nothing in
     // quarantine is the one most likely to want to check that for themselves.
     list_route: 'deskpost reset restore --list',
+    scope: `seat ${seat}: its own quarantines only; reset restore --list lists every seat's`,
     note: 'Set aside by a reset and still recoverable. Both reads need no seat, unlike this overview.',
   };
 
@@ -308,7 +311,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const conversation = seatConversationView(stateDirectory, seat);
   // THE LAUNCHER PROOF, READ ONCE (kickoffs/s98 row G): `unchecked` is a run whose own walk and CLAUDE_PID both left
   // nothing to look at, which the note below says rather than leaving it blank.
-  const launcherProof = resolved.source === 'environment' && thisClaim.state === 'held' ? launcherProofForThisAgent(stateDirectory, seat) : 'not-held';
+  // AND `other-agent` (kickoffs/s104 row 4): the launcher holds this seat for an agent that is not this one, named by pid.
+  const launcherDetail =
+    resolved.source === 'environment' && thisClaim.state === 'held' ? launcherProofDetail(stateDirectory, seat) : { outcome: 'not-held' as const, agentPid: null };
+  const launcherProof = launcherDetail.outcome;
   const launcherHeld = launcherProof === 'held';
   const thisSeat: Record<string, PsJsonValue> = {
     seat,
@@ -326,11 +332,15 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           ? 'held for this session by the deskpost launcher that started it; there is nothing to bind'
           : launcherProof === 'unchecked'
             ? 'could not check the launcher from this process: no agent above it and none named by CLAUDE_PID, so this seat reads as named by LIBRARY_SEAT'
-            : '',
+            : launcherProof === 'other-agent'
+              ? `held by the deskpost launcher for another agent (pid ${launcherDetail.agentPid ?? 'unknown: the launcher has no agent child this process can see'})`
+              : '',
     agent_pid: thisClaim.agentPid,
     agent_start_utc: thisClaim.agentStartUtc,
     bound_utc: thisClaim.boundUtc,
-    seat_id: thisClaim.seatId,
+    // THE REGISTRY ROW'S ID, IN EVERY CLAIM STATE (kickoffs/s106 row 7a): the binding's was null for a free seat and could
+    // name an earlier incarnation's; the claim's stays only where the registry carries no valid id.
+    seat_id: self.seatId || thisClaim.seatId,
     binding_state: thisClaim.bindingState,
     binding_stale: thisClaim.bindingStale,
     this_agent: thisClaim.thisAgent,
@@ -634,18 +644,22 @@ export function letterTally(letters: PendingNote[]): { count: number; byBook: Re
  * EVERY SEAT'S PENDING LETTERS, AS A COUNT (1.3.8, kickoffs/s96 rows 3 and 4): the pending notes in any capture Book
  * addressed to the seat by the one recipient predicate (kickoffs/s98 row 0), as `letters_for_this_seat` counts them: a
  * letter stamped for an earlier incarnation of the slug, or with a malformed address, counts for no seat. Numbers only.
+ * SINCE S103 (row 3) COUNTED BY IDENTITY: each letter is joined to a seat by the identity projection, counted under the
+ * seat's key (its `seat_id`, or `name:<seat>` for a row without a valid one), and shown under its current name.
  */
 export function pendingLetterCounts(workspace: string): Map<string, number> {
-  const counts = new Map<string, number>();
-  const ids = readSeatIds(path.join(workspace, '.claude'));
+  const view = readSeatIdentityView(path.join(workspace, '.claude'));
+  const byKey = new Map<string, number>();
   for (const book of captureBookRows(workspace)) {
     for (const note of shelfNotes(book)) {
       if (note.review === 'done' || !note.forSeat) continue;
-      if (!isAddressedTo(note, { seat: note.forSeat, seatId: ids.get(note.forSeat) ?? '' })) continue;
-      counts.set(note.forSeat, (counts.get(note.forSeat) ?? 0) + 1);
+      if (note.malformed.includes('for_seat') || note.malformed.includes('for_seat_id')) continue;
+      const found = incarnationOf(view, note.forSeat, note.forSeatId, 'letters');
+      const row = found.outcome === 'live' ? view.live.find((candidate) => candidate.seat === found.current_name) : undefined;
+      if (row) byKey.set(row.key, (byKey.get(row.key) ?? 0) + 1);
     }
   }
-  return counts;
+  return new Map(view.live.filter((row) => byKey.has(row.key)).map((row) => [row.seat, byKey.get(row.key)!]));
 }
 
 /**
@@ -715,6 +729,12 @@ export interface SeatRegistryEntry {
   seat: string;
   seatId: string;
   project: string;
+  /** `created_utc` as written, '' when absent. */
+  createdUtc: string;
+  /** Every name the seat has had (kickoffs/s103 row 1): its `names`, or the one name it carries since its creation. */
+  names: SeatNameSpan[];
+  /** Why a written `names` was read as the one implied name, or null. Doctor's identity check names it. */
+  namesProblem: string | null;
 }
 
 /**
@@ -747,7 +767,11 @@ export function readSeatRegistry(stateDirectory: string): SeatRegistryEntry[] {
     if (!SLUG_PATTERN.test(seat)) throw new Error(`The seat registry names a malformed seat '${seat}'.`);
     const project = String(row['project']);
     if (!SLUG_PATTERN.test(project)) throw new Error(`Seat '${seat}' is bound to a malformed project slug.`);
-    seats.push({ seat, seatId: 'seat_id' in row ? String(row['seat_id']) : '', project });
+    const createdUtc = typeof row['created_utc'] === 'string' ? row['created_utc'] : '';
+    // A NAME HISTORY THAT DOES NOT PARSE READS AS THE ONE NAME, never as a refusal: the registry has many readers, and
+    // doctor's identity check names it (kickoffs/s103 row 1).
+    const history = seatNameHistory(seat, createdUtc, row['names']);
+    seats.push({ seat, seatId: 'seat_id' in row ? String(row['seat_id']) : '', project, createdUtc, names: history.names, namesProblem: history.problem });
   }
   if (new Set(seats.map((entry) => entry.seat)).size !== seats.length) {
     throw new Error(`The seat registry at ${file} names the same seat twice.`);
@@ -767,12 +791,12 @@ export function readSeatRegistry(stateDirectory: string): SeatRegistryEntry[] {
  * over a directory nobody is asking about.
  */
 export function readSeatRetirementRecords(workspace: string): {
-  records: { seat: string; seat_id: string; retired_utc: string; directory: string }[];
+  records: { seat: string; seat_id: string; retired_utc: string; directory: string; names: SeatNameSpan[] }[];
   faults: string[];
 } {
   const root = path.join(workspace, 'internal', 'seat-archive');
   if (!fs.existsSync(root)) return { records: [], faults: [] };
-  const records: { seat: string; seat_id: string; retired_utc: string; directory: string }[] = [];
+  const records: { seat: string; seat_id: string; retired_utc: string; directory: string; names: SeatNameSpan[] }[] = [];
   const faults: string[] = [];
   for (const name of listDirectories(root)) {
     const file = path.join(root, name, 'seat.json');
@@ -793,6 +817,13 @@ export function readSeatRetirementRecords(workspace: string): {
       faults.push(`internal/seat-archive/${name}/seat.json names no seat`);
       continue;
     }
+    // EVERY NAME THE SEAT HAD (kickoffs/s103 row 2): a record written before S103, or for a seat never renamed, has had
+    // the one name it retired under. A history that does not parse is a fault, so a caller that checks names refuses
+    // rather than reading a reserved name as free; the record itself still says the seat is retired.
+    const history = seatNameHistory(String(parsed['seat']), '', parsed['names']);
+    if (history.problem !== null) {
+      faults.push(`internal/seat-archive/${name}/seat.json carries a names history that does not parse (${history.problem}); repair it by hand`);
+    }
     records.push({
       seat: String(parsed['seat']),
       // ABSENT IS '' AND MEANS THE PRE-IDENTITY INCARNATION. A retirement archived before
@@ -800,6 +831,7 @@ export function readSeatRetirementRecords(workspace: string): {
       seat_id: 'seat_id' in parsed ? String(parsed['seat_id']) : '',
       retired_utc: 'retired_utc' in parsed ? String(parsed['retired_utc']) : '',
       directory: name,
+      names: history.names,
     });
   }
   return { records, faults };

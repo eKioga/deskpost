@@ -11,6 +11,7 @@
 
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { getShelfBook, SLUG_PATTERN } from './shelfbook.ts';
 import { shelfCatalogEntryInventory } from './shelfcatalog.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
@@ -38,7 +39,7 @@ function rebuildOne(workspace: string, slug: string): Record<string, PsJsonValue
 }
 
 export function shelfRebuildVerb(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'rebuild'));
   const only = (parsed.positional[0] ?? '').trim();
   if (only && !SLUG_PATTERN.test(only)) refuse(`'${only}' is not a Shelf Book slug: lowercase letters, digits and hyphens. Nothing was rebuilt.`);
   if (only) {

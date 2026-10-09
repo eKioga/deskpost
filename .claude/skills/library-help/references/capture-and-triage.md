@@ -153,6 +153,10 @@ Triage names individual notes, so it requires the Book open:
 library desk open book holding --location shelf
 ```
 
+To list the notes still waiting, run `library triage inventory --pending`: it names each one's title and page.
+Never read a capture Book's map `_index` for that list, since a map listing every closed note can be too large
+for one reader call.
+
 Then read `notes/…` pages through `read_open_book_page` and act. A triage action is JSON, validated
 first and then run as a batch on one approval:
 
@@ -261,12 +265,17 @@ Write the failing command, its arguments and its output **into the note**. That 
 makes a report worth more than a summary: it is written while the context is still live, by the only
 party that has it.
 
+**Doctor files its own.** `library doctor --report` files each FAIL as one Report (`doctor: <check> failed`), and
+`--warnings` adds each WARN. A finding already filed, pending, done or tidied into `reviewed/`, is skipped and its
+Report named; a finding whose text changes is filed again. A finding that cannot be filed is listed, and doctor's
+exit code is the same with or without `--report`.
+
 **A report is a claim, not a finding.** It is another agent's account of what the Library should do,
 so whoever reads it verifies it against the code before acting. It licenses an investigation, and
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.3.8/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

@@ -23,6 +23,8 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { resolveContentPath } from './contentpath.ts';
+import { argumentTable } from './verbs.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
@@ -36,9 +38,7 @@ import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { strayControlRefusal } from './controlchars.ts';
-
-/** The valued options `collection add-page` takes, which the CLI's `collection` parser must know too. */
-export const COLLECTION_ADD_PAGE_OPTIONS = ['body', 'content-path', 'title', 'plan-id', 'lock-timeout', 'seat', 'workspace'];
+import { linkLabel, mapLinksPage, mapWithLink, planTopicIndexLine, readMap, topicIndexPage } from './maplines.ts';
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const USAGE =
@@ -53,50 +53,6 @@ function refuse(message: string): never {
 
 function readUtf8(file: string): string {
   return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
-}
-
-// --- the reader map ---------------------------------------------------------------------------------------------
-
-interface MapReading {
-  /** The link targets found OUTSIDE frontmatter and fenced code. */
-  text: string;
-  /** True when the map ends inside a fence, where an appended line would render as code. */
-  unclosedFence: boolean;
-}
-
-function readMap(content: string): MapReading {
-  const withoutFront = content.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '');
-  const kept: string[] = [];
-  let fence: string | null = null;
-  for (const line of withoutFront.split(/\r?\n/)) {
-    const marker = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
-    if (fence === null) {
-      if (marker) {
-        fence = marker[1]!;
-        continue;
-      }
-      kept.push(line);
-    } else if (marker && marker[1]![0] === fence[0] && marker[1]!.length >= fence.length && line.trim() === marker[1]) {
-      fence = null;
-    }
-  }
-  return { text: kept.join('\n'), unclosedFence: fence !== null };
-}
-
-function mapLinksPage(reading: MapReading, slug: string, page: string): boolean {
-  const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const targets = [`books/${slug}/wiki/${page}`, page].map(escaped).join('|');
-  return new RegExp(`\\[\\[(?:${targets})(?:\\||\\]\\])`).test(reading.text);
-}
-
-/** The Shelf's end-of-file rule (capture.ts, addShelfBookIndexLink): the whole map kept, one line added at its end. */
-function mapWithLink(content: string, line: string): string {
-  const lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
-  const trimmed = content.replace(/(?:\r?\n[ \t]*)+$/, '');
-  if (!trimmed) return line + lineEnding;
-  const lastLine = /[^\r\n]*$/.exec(trimmed)![0];
-  const separator = /^-[ \t]/.test(lastLine) ? lineEnding : lineEnding + lineEnding;
-  return trimmed + separator + line + lineEnding;
 }
 
 // --- the plan ---------------------------------------------------------------------------------------------------
@@ -118,12 +74,15 @@ interface AddPagePlan {
   /** The source's bytes as read for this plan, so its evidence hash is of exactly what was stored (inspection). */
   sourceBytes: Buffer | null;
   planId: string;
-  topicIndex: string | null;
+  /** The topic index beside the page, its text's hash as planned, and its new text (null: none, or already listed). */
+  topicIndexFull: string | null;
+  topicSha256: string | null;
+  newTopicIndex: string | null;
   value: Record<string, PsJsonValue>;
 }
 
 function planAddPage(argv: string[], workspace: string): AddPagePlan {
-  const parsed = parseArguments(argv, COLLECTION_ADD_PAGE_OPTIONS);
+  const parsed = parseArguments(argv, argumentTable('collection', 'add-page'));
   const slug = parsed.positional[0] ?? '';
   const pageArgument = parsed.positional[1] ?? '';
   if (!slug || !pageArgument) refuse(`library collection add-page needs a Book slug and a page path: ${USAGE}.`);
@@ -156,7 +115,7 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
   if (lexists(pageFull)) {
     refuse(`collection/books/${slug}/wiki/${page}.md already exists. This writer only ever adds a page; choose another page path. ` +
         `To change that page, recall the Book (deskpost shelf recall ${slug}), edit the Shelf copy, and return it with ` +
-        `deskpost publish refresh <shelf-slug>; 1.4.0 brings an in-place page edit.`);
+        `deskpost publish refresh <shelf-slug>, or correct it in place with deskpost collection replace-page ${slug} ${page} --content-path <file> --preflight.`);
   }
 
   // THE BODY: a file (preferred for prose) or inline text, never both.
@@ -168,7 +127,7 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
   let sourceFile: string | null = null;
   let sourceBytes: Buffer | null = null;
   if (contentPath) {
-    const full = path.resolve(path.isAbsolute(contentPath) ? contentPath : path.join(workspace, contentPath));
+    const full = resolveContentPath(workspace, contentPath);
     if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`--content-path was not found: ${contentPath}`);
     try {
       sourceBytes = fs.readFileSync(full);
@@ -200,17 +159,29 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
         'would show as code, not a link. Close the fence in the map first. Nothing was changed.',
     );
   }
-  const label = rendered.title.replace(/[\r\n]+/g, ' ').replace(/\]\]/g, '] ]').replace(/\|/g, '-');
+  const label = linkLabel(rendered.title);
   const mapLine = `- [[books/${slug}/wiki/${page}|${label}]]`;
   const listed = mapLinksPage(reading, slug, page);
   const newMap = listed ? null : mapWithLink(mapText, mapLine);
 
-  const folder = page.includes('/') ? page.substring(0, page.lastIndexOf('/')) : '';
-  const topicIndexFull = folder ? path.join(wiki, ...folder.split('/'), '_index.md') : '';
-  const topicIndex = folder && fs.existsSync(topicIndexFull) && `${folder}/_index` !== page ? `collection/books/${slug}/wiki/${folder}/_index.md` : null;
+  // THE TOPIC INDEX GAINS THE PAGE'S LINE (kickoffs/s101 row 3; PLAN-correct-and-find.md D3): one line at its end when it
+  // does not already link the page in either form, its hash bound into the plan_id and rechecked under the lock.
+  const topicPage = topicIndexPage(page);
+  const topicIndexFull = topicPage ? path.join(wiki, ...`${topicPage}.md`.split('/')) : null;
+  const topicText = topicIndexFull !== null && fs.existsSync(topicIndexFull) ? fs.readFileSync(topicIndexFull, 'utf8') : null;
+  const topicPlan = topicText === null ? null : planTopicIndexLine(topicText, slug, page, rendered.title);
+  if (topicPlan === 'open-fence') {
+    refuse(
+      `The topic index collection/books/${slug}/wiki/${topicPage}.md ends inside an unclosed code fence, so a link added at its end ` +
+        'would show as code, not a link. Close the fence in the topic index first. Nothing was changed.',
+    );
+  }
+  const topicSha256 = topicText === null ? null : sha256OfText(topicText);
 
   const mapSha256 = sha256OfText(mapText);
-  const planId = 'collection-page-' + sha256OfText([slug, page, sha256OfText(rendered.body), mapExists ? mapSha256 : 'absent-map', 'page-absent'].join('|'));
+  const planId =
+    'collection-page-' +
+    sha256OfText([slug, page, sha256OfText(rendered.body), mapExists ? mapSha256 : 'absent-map', 'page-absent', ...(topicSha256 === null ? [] : [`topic-index:${topicSha256}`])].join('|'));
   const value: Record<string, PsJsonValue> = {
     schema: 1,
     operation: 'Add a page to a collection Book',
@@ -223,14 +194,17 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
     reader_map: `collection/books/${slug}/wiki/_index.md`,
     reader_map_action: listed ? 'already links this page; left unchanged' : mapExists ? 'append one line at its end' : 'create it with one line',
     reader_map_line: listed ? null : mapLine,
-    topic_index_not_updated: topicIndex,
+    topic_index: topicPlan === null ? null : topicPlan.status,
     plan_id: planId,
     confirmation_required: true,
     shared_library_write: false,
     scope:
       "Creates one new page in this Book of the Library's own collection and adds one line at the end of its reader map, " +
-      'then commits a new Discovery manifest generation, all under the Book lock. No existing page is changed or removed; ' +
-      '_book.md and any topic index are left as they are. Nothing is written to Basic Memory.',
+      'then commits a new Discovery manifest generation, all under the Book lock. ' +
+      (topicPlan !== null && topicPlan.status === 'updated'
+        ? `The topic index ${topicPage}.md gains one line at its end; no other existing page is changed, and none is removed; _book.md is left as it is. `
+        : 'No existing page is changed or removed; _book.md and any topic index are left as they are. ') +
+      'Nothing is written to Basic Memory.',
   };
   return {
     slug,
@@ -248,7 +222,9 @@ function planAddPage(argv: string[], workspace: string): AddPagePlan {
     sourceFile,
     sourceBytes,
     planId,
-    topicIndex,
+    topicIndexFull: topicText === null ? null : topicIndexFull,
+    topicSha256,
+    newTopicIndex: topicPlan === null ? null : topicPlan.newText,
     value,
   };
 }
@@ -267,18 +243,32 @@ function injectedFault(): string {
  */
 function writeEvidence(workspace: string, plan: AddPagePlan, claim: (relative: string) => void): string | null {
   if (plan.sourceFile === null || plan.sourceBytes === null || plan.titleSource !== 'body H1') return null;
+  return writePublicationEvidence(
+    workspace,
+    { slug: plan.slug, page: plan.page, planId: plan.planId, sourceFile: plan.sourceFile, sourceBytes: plan.sourceBytes, operation: 'collection-add-page' },
+    claim,
+  );
+}
+
+/** The evidence record itself, shared with `collection replace-page` (kickoffs/s101 row 4): a Notebook source only. */
+export function writePublicationEvidence(
+  workspace: string,
+  plan: { slug: string; page: string; planId: string; sourceFile: string; sourceBytes: Buffer; operation: 'collection-add-page' | 'collection-replace-page' },
+  claim: (relative: string) => void,
+): string | null {
   const relative = path.relative(path.resolve(workspace), plan.sourceFile).replace(/\\/g, '/');
   if (!/^notebook\/.+\.md$/i.test(relative)) return null;
   const directory = path.join(workspace, 'internal', 'publication-journals');
   fs.mkdirSync(directory, { recursive: true });
-  const file = path.join(directory, `collection-page-${plan.slug}-${plan.planId.substring(plan.planId.length - 12)}.json`);
+  const prefix = plan.operation === 'collection-add-page' ? 'collection-page' : 'collection-replace';
+  const file = path.join(directory, `${prefix}-${plan.slug}-${plan.planId.substring(plan.planId.length - 12)}.json`);
   // CLAIMED BEFORE IT IS WRITTEN (inspection round 2), so a write that fails part-way is still removed by the rollback.
   claim(path.relative(workspace, file).replace(/\\/g, '/'));
   const journal: PsJsonValue = {
     state: 'complete',
     timestamp_utc: new Date().toISOString(),
     destination: 'collection',
-    operation: 'collection-add-page',
+    operation: plan.operation,
     book_slug: plan.slug,
     approved_plan_id: plan.planId,
     planned_records: [{ path: `books/${plan.slug}/wiki/${plan.page}.md`, source: relative, sha256: sha256OfBytes(plan.sourceBytes) }],
@@ -294,7 +284,7 @@ export function collectionAddPage(argv: string[], workspace: string): Record<str
 }
 
 function collectionAddPageUnwarned(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, COLLECTION_ADD_PAGE_OPTIONS);
+  const parsed = parseArguments(argv, argumentTable('collection', 'add-page'));
   const plan = planAddPage(argv, workspace);
   if (parsed.flags.has('preflight')) return plan.value;
   if (!parsed.flags.has('user-confirmed')) {
@@ -325,9 +315,13 @@ function collectionAddPageUnwarned(argv: string[], workspace: string): Record<st
     if (mapNow !== plan.mapSha256) {
       refuse(`The reader map changed after the preview, so the line this run would add is no longer what was approved. Rerun --preflight. Nothing was written.`);
     }
+    const topicNow = plan.topicIndexFull !== null && fs.existsSync(plan.topicIndexFull) ? sha256OfText(fs.readFileSync(plan.topicIndexFull, 'utf8')) : null;
+    if (topicNow !== plan.topicSha256) {
+      refuse(`The topic index changed after the preview, so the line this run would add is no longer what was approved. Rerun --preflight. Nothing was written.`);
+    }
 
     mutation = enterBookMutation({ workspace, slug: plan.slug, bookRoot, reason, lock, collection: 'collection' });
-    journalPath = writeBookJournal({ workspace, bookRoot, operation: reason, paths: [plan.pageFull, plan.mapPath] }).journalPath;
+    journalPath = writeBookJournal({ workspace, bookRoot, operation: reason, paths: [plan.pageFull, plan.mapPath, ...(plan.newTopicIndex !== null ? [plan.topicIndexFull!] : [])] }).journalPath;
 
     let parent = path.dirname(plan.pageFull);
     while (!fs.existsSync(parent)) {
@@ -340,6 +334,10 @@ function collectionAddPageUnwarned(argv: string[], workspace: string): Record<st
     if (plan.newMap !== null) {
       writeAtomicText(plan.mapPath, plan.newMap);
       if (readUtf8(plan.mapPath) !== plan.newMap) refuse('The reader map was written but did not read back identically.');
+    }
+    if (plan.newTopicIndex !== null) {
+      writeAtomicText(plan.topicIndexFull!, plan.newTopicIndex);
+      if (fs.readFileSync(plan.topicIndexFull!, 'utf8') !== plan.newTopicIndex) refuse('The topic index was written but did not read back identically.');
     }
 
     const fault = injectedFault();
@@ -372,8 +370,7 @@ function collectionAddPageUnwarned(argv: string[], workspace: string): Record<st
       journal: path.relative(workspace, journalPath).replace(/\\/g, '/'),
       publication_evidence: evidence,
       next:
-        `Read the new page with mcp__validated-book-reader__read_open_book_page (slug ${plan.slug}, page ${plan.page}, place collection).` +
-        (plan.topicIndex ? ` ${plan.topicIndex} was not edited; add a link there with care if the page belongs in its list.` : ''),
+        `Read the new page with mcp__validated-book-reader__read_open_book_page (slug ${plan.slug}, page ${plan.page}, place collection).`,
     };
   } catch (error) {
     const failure = (error as Error).message;

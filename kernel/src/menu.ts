@@ -25,6 +25,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable, verbTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { findWorkspaceByMarker, markerField, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot } from './workspace.ts';
 import { registerWorkspace } from './init.ts';
@@ -44,6 +45,7 @@ import { runHubVerb } from './collection.ts';
 import { markerConnection } from './basicmemory.ts';
 import { psSortCompare } from './notebook.ts';
 import { askAtTerminal, Interrupted } from './prompt.ts';
+import { browseData, browseEntries, browseEntryLines, browseLines, filterBrowse } from './browse.ts';
 import { changeSeatDirs, launchLine, planSeatDirs, readAddedDirs, seatDirsSentence } from './seatdirs.ts';
 import { cardProblem, departmentProblem, metadataFor, roleLabel, seatMetadata } from './seatmeta.ts';
 
@@ -399,7 +401,8 @@ export function bannerLines(width: number, glyphs: Glyphs, palette: Palette, sea
 export function footerLines(both: boolean, assistant: Assistant | null): string[] {
   // `h` IS PERMANENT (PLAN-assistant-onboarding.md step 5; Codex #13): no state decides whether it is offered, so an
   // aborted first start -- trust refused, a launch that failed, an empty conversation -- never loses it.
-  const lines = ['  +  new seat     h  Show me around     b  Basic Memory     q  quit'];
+  // `l` BROWSES THE LIBRARY (PLAN-correct-and-find.md D5), within 80 columns with the four keys beside it.
+  const lines = ['  +  new seat    h  Show me around    l  browse    b  Basic Memory    q  quit'];
   const second = ['  n<number>  new conversation', '   r<number>  retire', '   f<number>  folders'];
   if (both && assistant) second.push(`   a  new conversations use ${ASSISTANT_LABEL[assistant]}; a switches to ${ASSISTANT_LABEL[assistant === 'claude' ? 'codex' : 'claude']}`);
   lines.push(second.join(''));
@@ -411,7 +414,7 @@ export const FIRST_HINT = 'Pick a seat to continue its last session, or n<number
 // --- the choice grammar ---------------------------------------------------------------------------------------------
 
 export interface Choice {
-  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'switch' | 'upgrade' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
+  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'browse' | 'switch' | 'upgrade' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
   index: number;
   reason: string;
 }
@@ -429,6 +432,7 @@ export function resolveChoice(typed: string, rowCount: number, updateReady = fal
   if (text === '+') return { action: 'create', index: 0, reason: '' };
   if (/^b$/i.test(text)) return { action: 'basic-memory', index: 0, reason: '' };
   if (/^h$/i.test(text)) return { action: 'help', index: 0, reason: '' };
+  if (/^l$/i.test(text)) return { action: 'browse', index: 0, reason: '' };
   if (/^a$/i.test(text)) return { action: 'switch', index: 0, reason: '' };
   let action: Choice['action'] = 'resume';
   let digits = text;
@@ -442,7 +446,7 @@ export function resolveChoice(typed: string, rowCount: number, updateReady = fal
     action = 'folders';
     digits = text.substring(1).trim();
   } else if (!/^\d+$/.test(text)) {
-    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, b${updateReady ? ', u' : ''} or q` };
+    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, l, b${updateReady ? ', u' : ''} or q` };
   }
   const number = Number(digits);
   if (rowCount <= 0) return { action: 'invalid', index: 0, reason: 'no seat exists in this Library yet, so no number applies; type + to create one' };
@@ -609,6 +613,7 @@ async function menuLoop(state: MenuState): Promise<number> {
       // offers Show me around on, so the first screen teaches the key that keeps working.
       talk.say(`  [h, Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
       talk.say('  [+]        Your first seat  name a project, and start working in it');
+      talk.say('  [l]        Browse           what the Library holds, without a seat');
       const ready = readyVersion(state.installRoot, state.running);
       if (ready !== null) talk.say(`  [u]        Upgrade          Deskpost ${ready} is ready (you have ${state.running})`);
       talk.say('  [q]        Later');
@@ -627,6 +632,10 @@ async function menuLoop(state: MenuState): Promise<number> {
           const shown = await showMeAround(state);
           if (shown !== null) return shown;
           return 0;
+        }
+        if (key === 'l') {
+          await browse(state);
+          continue;
         }
         if (key === '+') {
           const started = await wizard(state, true);
@@ -682,6 +691,9 @@ async function menuLoop(state: MenuState): Promise<number> {
         break;
       case 'basic-memory':
         await basicMemory(state);
+        break;
+      case 'browse':
+        await browse(state);
         break;
       case 'help': {
         const shown = await showMeAround(state);
@@ -1145,6 +1157,32 @@ async function folders(state: MenuState, row: MenuRow): Promise<void> {
  * `b`, A RESERVED SLOT (step 5a). In 1.1 it says what Basic Memory is for, or, with one set up, which server; everything
  * behind it -- import, copying out, opening shared, the set-up conversation -- is its own plan.
  */
+/**
+ * `l`: WHAT THE LIBRARY HOLDS, as `deskpost browse` lists it (PLAN-correct-and-find.md D5). Under the list, words filter it by
+ * title, slug, summary and topics; a number shows that entry's catalog text, page count and the line that opens it from a
+ * seat; Enter returns to the menu. Line by line like the menu, no raw mode and no pager. It opens nothing, starts no agent,
+ * claims no seat and writes nothing.
+ */
+async function browse(state: MenuState): Promise<void> {
+  const data = browseData(state.workspace, false);
+  const all = browseEntries(data);
+  for (const line of browseLines(data)) state.talk.say(line);
+  for (;;) {
+    state.talk.say('Words filter the list; a number shows one entry; Enter goes back to the menu.');
+    const typed = (await state.talk.ask('Browse › ')).trim();
+    if (!typed) return;
+    if (/^\d+$/.test(typed)) {
+      const entry = all[Number(typed) - 1];
+      if (entry === undefined) state.talk.say(all.length ? `There is no entry ${typed}; the list offers 1 to ${all.length}.` : 'The list is empty, so no number applies.');
+      else for (const line of browseEntryLines(entry)) state.talk.say(line);
+      continue;
+    }
+    const shown = filterBrowse(all, typed);
+    if (!shown.length) state.talk.say(`Nothing in the list matches '${typed}'.`);
+    else for (const line of browseLines(data, 80, shown)) state.talk.say(line);
+  }
+}
+
 async function basicMemory(state: MenuState): Promise<void> {
   const { talk, workspace } = state;
   const connection = markerConnection(workspace);
@@ -1345,7 +1383,7 @@ function nonInteractiveRefusal(options: MenuOptions): string {
 
 /** `deskpost menu [--workspace <p>] [--registry-root <d>] [--width <n>] [--plain] [--transcript-root <d>] [--assistant <a>] [--script <file>]`. */
 export async function runMenuVerb(argv: string[]): Promise<MenuVerbResult> {
-  const parsed = parseArguments(argv, ['workspace', 'registry-root', 'width', 'transcript-root', 'assistant', 'script', 'cwd']);
+  const parsed = parseArguments(argv, argumentTable('menu'));
   const options: MenuOptions = {
     explicit: parsed.options.get('workspace'),
     cwd: parsed.options.get('cwd') ?? process.cwd(),
@@ -1366,7 +1404,7 @@ export async function runMenuVerb(argv: string[]): Promise<MenuVerbResult> {
 
 /** `deskpost setup --welcome --workspace <Library> [--assistant <a>] [--script <file>]`: the fork install.ps1 ends on. */
 export async function runWelcomeVerb(argv: string[]): Promise<MenuVerbResult> {
-  const parsed = parseArguments(argv, ['workspace', 'assistant', 'script', 'registry-root']);
+  const parsed = parseArguments(argv, argumentTable('setup'));
   const workspace = parsed.options.get('workspace');
   if (!workspace) return { refusal: 'setup --welcome needs --workspace <Library>.', exitCode: 1 };
   try {
@@ -1388,7 +1426,7 @@ export function menuIsInteractive(): boolean {
 
 /** `deskpost library [list | default <folder>]`: the registered Libraries, and which one bare `deskpost` opens. */
 export function runLibraryVerb(argv: string[]): { refusal: string | null; value: PsJsonValue | null; humanText?: string } {
-  const parsed = parseArguments(argv, ['registry-root']);
+  const parsed = parseArguments(argv, verbTable('library'));
   const action = parsed.positional[0] ?? 'list';
   const registryRoot = parsed.options.get('registry-root');
   if (action === 'list') {

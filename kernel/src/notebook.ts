@@ -35,6 +35,7 @@ import { enterBookLock, exitBookLock, isBookLockHeld, assertSeatRegistryLockHeld
 import { SLUG_PATTERN } from './shelfbook.ts';
 import { getSeatClaimState, getSeatStateDecision } from './seatclaim.ts';
 import { readSeatRegistry, readSeatRetirementRecords, type SeatRegistryEntry } from './desk.ts';
+import { identityView, incarnationOf, type SeatNameSpan } from './seatincarnation.ts';
 import { triageInventory } from './triageinventory.ts';
 import { SEAT_INDEX_NAME, type NotebookScope } from './notebooklayout.ts';
 
@@ -401,17 +402,19 @@ export function assertSeatRegistered(stateDirectory: string, seat: string): Seat
   return entry;
 }
 
-/** `live`, `retired` or `unaccounted`, with live checked FIRST so a reused slug is never read off an archive. */
+/**
+ * `live`, `retired` or `unaccounted`, with live checked FIRST so a reused slug is never read off an archive. SINCE S103
+ * (row 3) THE IDENTITY PROJECTION'S STRICT RULE: name and recorded id, an empty id included, then a name the seat gave up
+ * by a rename with the same non-empty id; an invalid registry id never matches.
+ */
 export function seatIncarnationStatus(
   registry: SeatRegistryEntry[],
-  retirements: { seat: string; seat_id: string }[],
+  retirements: { seat: string; seat_id: string; names?: SeatNameSpan[] }[],
   seat: string,
   seatId: string,
 ): 'live' | 'retired' | 'unaccounted' {
-  const entry = registry.find((row) => row.seat === seat);
-  if (entry && entry.seatId === seatId) return 'live';
-  if (retirements.some((record) => record.seat === seat && record.seat_id === seatId)) return 'retired';
-  return 'unaccounted';
+  const outcome = incarnationOf(identityView(registry, retirements), seat, seatId, 'strict').outcome;
+  return outcome === 'unknown' ? 'unaccounted' : outcome;
 }
 
 // --- Reproducibility evidence (ADR-0022, ADR-0025) --------------------------------------------------

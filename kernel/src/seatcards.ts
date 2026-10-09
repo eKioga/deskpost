@@ -85,7 +85,14 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
       seats: shown.map(entry),
     };
   });
-  const withoutDepartment = view === 'all' ? names.filter((name) => meta(name).department === null).map(entry) : [];
+  // A SEAT WITH NO DEPARTMENT SEES THE OTHER SEATS WITH NONE (kickoffs/s106 row 7b): they are the seats it would write to
+  // directly, and its view hid them, so their cards were only in `--all`.
+  const withoutDepartment =
+    view === 'all'
+      ? names.filter((name) => meta(name).department === null).map(entry)
+      : view === 'no-department'
+        ? names.filter((name) => name !== seat && meta(name).department === null).map(entry)
+        : [];
   return {
     schema: 1,
     operation: 'Seat cards',
@@ -100,7 +107,7 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
         }
       : {}),
     departments: departments as unknown as PsJsonValue,
-    ...(view === 'all' ? { without_department: withoutDepartment as unknown as PsJsonValue } : {}),
+    ...(view === 'all' || view === 'no-department' ? { without_department: withoutDepartment as unknown as PsJsonValue } : {}),
     ...(projection.problems.length ? { read_as_absent: projection.problems.length, read_as_absent_note: 'Some seats carry a value read as absent; deskpost doctor names each.' } : {}),
     shared_library_write: false,
   };
@@ -133,8 +140,8 @@ export function seatCardsText(report: Record<string, unknown>): string {
     lines.push(`${String(department['department'])}${department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
     for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width));
   }
-  if (report['view'] === 'all') {
-    lines.push('No department');
+  if (report['view'] === 'all' || report['view'] === 'no-department') {
+    lines.push(report['view'] === 'all' ? 'No department' : 'Other seats with no department');
     if (!without.length) lines.push('  (none)');
     for (const row of without) lines.push(...entryLine(row, width));
   }

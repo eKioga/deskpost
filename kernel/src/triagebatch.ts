@@ -33,7 +33,9 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
-import { parseArguments } from './argv.ts';
+import { parseArguments, type ParsedArguments } from './argv.ts';
+import { resolveContentPath } from './contentpath.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { completeBookMutation, enterBookMutation, type BookMutation } from './mutation.ts';
@@ -205,20 +207,44 @@ function finishedBatchResult(workspace: string, planId: string, requested: Recor
   };
 }
 
+/**
+ * THE ACTIONS, INLINE OR FROM A FILE (kickoffs/s106 row 6b): Windows PowerShell 5.1 strips the quotes inside an inline
+ * JSON value on its way to a native program, so `--actions` arrived as bad JSON and was refused as "ActionJson must be
+ * valid JSON", naming a PowerShell parameter. `--actions-path <file>` reads the same array as UTF-8 JSON, by the one
+ * `--content-path` rule; the two are exclusive, and the bad-JSON refusal names the one given.
+ */
+export function triageActions(parsed: ParsedArguments, workspace: string, verb: 'validate' | 'batch'): Record<string, unknown>[] {
+  const inline = parsed.options.get('actions');
+  const file = parsed.options.get('actions-path');
+  if (inline !== undefined && file !== undefined) refuse(`library triage ${verb} takes --actions <json> or --actions-path <file>, not both. Nothing was run.`);
+  if (inline === undefined && file === undefined) {
+    refuse(`library triage ${verb} needs --actions <json> or --actions-path <file>: ${verb === 'batch' ? 'the batch' : 'the plan to judge'}, as a JSON array of actions.`);
+  }
+  let json = inline ?? '';
+  if (file !== undefined) {
+    const full = resolveContentPath(workspace, file, '--actions-path');
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) refuse(`--actions-path ${file} is not a file (resolved to ${full}). Nothing was run.`);
+    json = fs.readFileSync(full, 'utf8').replace(/^﻿/, '');
+  }
+  try {
+    const parsedJson: unknown = JSON.parse(json);
+    return Array.isArray(parsedJson) ? (parsedJson as Record<string, unknown>[]) : [parsedJson as Record<string, unknown>];
+  } catch {
+    refuse(
+      file !== undefined
+        ? `--actions-path ${file} must hold valid JSON: a JSON array of actions. Nothing was run.`
+        : '--actions must be valid JSON: a JSON array of actions. Windows PowerShell strips the quotes inside an inline value; ' +
+            'put the array in a file and pass --actions-path <file>. Nothing was run.',
+    );
+  }
+}
+
 function runBatch(argv: string[], workspace: string): PsJsonValue {
-  const parsed = parseArguments(argv, ['actions', 'capture-date', 'seat', 'plan-id', 'plan-path', 'lock-timeout', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('triage', 'batch'));
   if (parsed.options.has('plan-path')) {
     refuse('library triage batch does not re-run a stored plan by path yet; pass the same --actions again, which resumes the same batch. tools/Invoke-LibraryTriage.ps1 -PlanPath reads a stored plan.');
   }
-  const actionsJson = parsed.options.get('actions');
-  if (actionsJson === undefined) refuse('library triage batch needs --actions <json>: the batch, as a JSON array of actions.');
-  let requested: Record<string, unknown>[];
-  try {
-    const parsedJson: unknown = JSON.parse(actionsJson);
-    requested = Array.isArray(parsedJson) ? (parsedJson as Record<string, unknown>[]) : [parsedJson as Record<string, unknown>];
-  } catch {
-    refuse('ActionJson must be valid JSON.');
-  }
+  const requested = triageActions(parsed, workspace, 'batch');
   if (!requested.length) refuse('A Library Triage plan needs at least one action.');
   const captureDate = (parsed.options.get('capture-date') ?? '').trim() || localDate();
   const lockTimeout = Number(parsed.options.get('lock-timeout') ?? '20');

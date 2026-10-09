@@ -234,7 +234,8 @@ the Book's, not any one helper's — a lock applied to a single writer is not a 
 prior body of every page the operation will change and the prior **absence** of every page it will
 create, so a rollback deletes rather than resurrects, and verify the rollback by readback.
 
-Anything consequential or destructive takes a preflight, an exact `plan_id`, and one approval.
+Anything consequential or destructive takes a preflight, an exact `plan_id`, and one approval. One
+exception (ADR-0070): a Shelf page replace is bound to the page it previewed, and the previous text kept.
 Check the destination for a collision **before** issuing that `plan_id`: an approval for an
 operation already certain to fail is worse than no approval.
 

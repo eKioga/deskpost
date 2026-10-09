@@ -33,17 +33,20 @@ import { runResetVerb } from './reset.ts';
 import { runCompileVerb } from './compile.ts';
 import { runMigrateVerb } from './migrate.ts';
 import { runDoctor } from './doctor.ts';
+import { runBrowseVerb } from './browse.ts';
 import { runSeatVerb } from './seat.ts';
 import { runHubVerb, runPublishVerb, runSharedVerb } from './collection.ts';
 import { runCollectionVerb } from './ownership.ts';
-import { COLLECTION_ADD_PAGE_OPTIONS, collectionAddPage } from './collectionpage.ts';
+import { collectionAddPage } from './collectionpage.ts';
+import { collectionReplacePage } from './collectionreplace.ts';
 import { runMcpVerb } from './reader.ts';
 import { runHookVerb } from './guards.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
-import { parseArguments } from './argv.ts';
+import { checkArguments, parseArguments, quoteWarnings } from './argv.ts';
+import { takeContentPathNote } from './contentpath.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
-import { notPortedRefusal, usageText, verbInventory, verbUsageText, VERBS } from './verbs.ts';
+import { argumentTable, commandAction, globalTable, notPortedRefusal, usageText, verbInventory, verbUsageText, VERBS } from './verbs.ts';
 import { hostRemedies, hostRemedyFields, REMEDY_HOST } from './remedy.ts';
 import { runBasicMemoryVerb } from './bmconnection.ts';
 import { BASIC_MEMORY_ACTIONS } from './bmactions.ts';
@@ -72,6 +75,11 @@ export function asciiJson(document: string): string {
 }
 
 export function emit(value: PsJsonValue, asJson: boolean, humanText?: string): void {
+  // A RELATIVE --content-path FOUND IN BOTH PLACES SAYS WHICH WAS READ (kickoffs/s106 row 6c, contentpath.ts).
+  const note = takeContentPathNote();
+  if (note !== null && value !== null && typeof value === 'object' && !Array.isArray(value) && !('content_path_resolved' in value)) {
+    value = { ...value, content_path_resolved: note };
+  }
   // ON POSIX, AND FROM A COMPILED KERNEL ON WINDOWS, A REMEDY NAMES A COMMAND THE MACHINE CAN RUN (S42, S47, remedy.ts).
   if (asJson || humanText === undefined) writeStdout(asciiJson(psConvertToJson(hostRemedyFields(value))));
   else writeStdout(hostRemedies(humanText));
@@ -132,9 +140,25 @@ async function main(argv: string[]): Promise<number> {
   // `--help` ON ANY VERB OR ACTION PRINTS ITS USAGE AND EXITS 0, before any parser can take it for a slug or a flag
   // to act on (S67: `hub edit --help` failed, `book add-page --help` was read as a Book slug). `-h` counts wherever
   // `--help` does (S69): after a verb's other arguments it was a stray positional, and `hub new x ... -h` made the Hub.
-  if (rest.includes('--help') || rest.includes('-h')) {
+  // EVERYTHING AFTER `seat start`'s BARE `--` IS THE AGENT'S (S106): `-- --help` asks the agent, not this program.
+  const { action, argv: tail } = commandAction(verb, rest);
+  const ownTable = VERBS[verb]!.arguments[action];
+  const ours = ownTable?.passthrough && rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest;
+  if (ours.includes('--help') || ours.includes('-h')) {
     writeStdout(verbUsageText(verb, VERBS[verb]!.actions.includes(rest[0] ?? '') ? rest[0] : undefined));
     return 0;
+  }
+
+  // WHAT A VERB DOES NOT DECLARE IS REFUSED BEFORE IT RUNS (PLAN-correct-and-find.md D7, kickoffs/s106 row 1): until
+  // 1.4.0 an unknown flag was ignored, so a typo ran the verb without it and said nothing. An action the verb does not
+  // have has no table, and the verb refuses it in its own words; so does an unported verb and a retired action.
+  // THE TABLE EVERY BRANCH BELOW PARSES WITH: the action's own, or the global flags alone for an action the verb lacks.
+  const table = ownTable ? argumentTable(verb, action) : globalTable(verb);
+  if (VERBS[verb]!.ported && ownTable) {
+    const command = `deskpost ${verb}${action ? ` ${action}` : ''}`;
+    const refusal = checkArguments(command, tail, table);
+    if (refusal !== null) refuse(refusal);
+    for (const warning of quoteWarnings(command, tail, table)) process.stderr.write(warning + '\n');
   }
 
   switch (verb) {
@@ -144,7 +168,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'init': {
-      const parsed = parseArguments(rest, ['registry-root', 'collection-id', 'mcp-url', 'workspace']);
+      const parsed = parseArguments(rest, table);
       // `--force` IS GONE (F9): it was parsed and did nothing, while its name promised an overwrite init never does.
       if (parsed.flags.has('force')) {
         refuse('library init has no --force: init already brings a Library\'s managed files up to date, and refuses, naming the file, whatever it cannot merge. Run it again without --force.');
@@ -156,7 +180,7 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(`${VERBS.init!.summary}\n\nUsage: ${VERBS.init!.usage}\n`);
         return 0;
       }
-      const unknown = [...parsed.flags].filter((name) => !['writable', 'json'].includes(name));
+      const unknown = [...parsed.flags].filter((name) => !(table.boolean ?? []).includes(name));
       if (unknown.length) {
         refuse(`library init has no ${unknown.map((name) => `--${name}`).join(', ')}; nothing has been written. It takes: ${VERBS.init!.usage}`);
       }
@@ -181,7 +205,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'desk': {
-      const parsed = parseArguments(rest, ['seat', 'workspace', 'location', 'shelf', 'claim-token']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -258,7 +282,7 @@ async function main(argv: string[]): Promise<number> {
     // front of it exactly as `library.ps1` writes it: it already names the three routes to a
     // workspace, and a second wording of that would drift from it.
     case 'capture': {
-      const parsed = parseArguments(rest, ['title', 'body', 'content-path', 'tags', 'source-paths', 'source-project', 'require-note-file', 'workspace', 'seat']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -271,14 +295,14 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
-    // THE VALUED NAMES ARE EVERY ACTION'S, so `--workspace` is found wherever it sits: a `--section Now`
-    // read as a flag would make `Now` positional and move nothing else, but a value that happened to be
-    // the word `--workspace` would be taken for the option.
+    // THE VALUED NAMES ARE THE ACTION'S OWN (its table), so `--workspace` is found wherever it sits: a value
+    // that happened to be the word `--workspace` is never taken for the option.
     case 'collection': {
       // `add-page` takes values of its own (S67), which a parser valuing only `--workspace` would turn into flags
       // and stray positionals, so it is dispatched to its own module with its own names.
       const addingPage = rest[0] === 'add-page';
-      const parsed = parseArguments(rest, addingPage ? COLLECTION_ADD_PAGE_OPTIONS : ['workspace']);
+      const replacingPage = rest[0] === 'replace-page';
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -293,6 +317,14 @@ async function main(argv: string[]): Promise<number> {
         }
         return 0;
       }
+      if (replacingPage) {
+        try {
+          emit(collectionReplacePage(rest.slice(1), workspace), true);
+        } catch (error) {
+          refuse((error as Error).message);
+        }
+        return 0;
+      }
       const result = runCollectionVerb(rest, workspace);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
@@ -301,7 +333,7 @@ async function main(argv: string[]): Promise<number> {
 
     // A LOCAL LIBRARY'S BASIC MEMORY CONNECTION (PLAN-basic-memory.md): set-up, status, import, open-shared.
     case 'basic-memory': {
-      const parsed = parseArguments(rest.slice(1), ['url', 'collection', 'storage', 'workspace', 'seat', 'plan-id', 'lock-timeout', 'claim-token', 'shelf', 'registry-root']);
+      const parsed = parseArguments(rest.slice(1), table);
       let workspace = '';
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -318,11 +350,7 @@ async function main(argv: string[]): Promise<number> {
     case 'hub':
     case 'shared':
     case 'publish': {
-      const parsed = parseArguments(rest.slice(verb === 'publish' ? 0 : 1), [
-        'title', 'purpose', 'next-action', 'workspace', 'mode', 'section', 'match-text', 'content', 'content-path', 'page',
-        'seat', 'plan-id', 'lock-timeout', 'summary', 'kind', 'collection', 'book-slug', 'topics', 'plan',
-        'source', 'include-page', 'destination-directory', 'book-version', 'reason',
-      ]);
+      const parsed = parseArguments(rest.slice(verb === 'publish' ? 0 : 1), table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -337,7 +365,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'book': {
-      const parsed = parseArguments(rest, ['title', 'body', 'content-path', 'topic', 'source-path', 'page-prefix', 'workspace', 'seat']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -351,7 +379,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'raw': {
-      const parsed = parseArguments(rest, ['max-results', 'workspace', 'mcp-url', 'collection-id']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -371,7 +399,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'triage': {
-      const parsed = parseArguments(rest, ['actions', 'capture-date', 'workspace']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -385,7 +413,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'notebook': {
-      const parsed = parseArguments(rest, ['seat', 'scope', 'workspace']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -405,6 +433,14 @@ async function main(argv: string[]): Promise<number> {
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, rest.includes('--json'), doctorText(result.value as Record<string, unknown>));
       return result.exitCode;
+    }
+
+    // WHAT THE LIBRARY HOLDS, seatless and offline (PLAN-correct-and-find.md D5): the data the menu's `l` renders.
+    case 'browse': {
+      const result = runBrowseVerb(rest);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, rest.includes('--json'), result.humanText);
+      return 0;
     }
 
     // THE INSTALLER'S CONVERSATION, ITS PLANNER AND ITS APPLY, and a Library made later (PLAN-install-onboarding.md, ADR-0057).
@@ -476,9 +512,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'compile': {
-      const parsed = parseArguments(rest, [
-        'topic', 'topic-title', 'topic-overview', 'article-slug', 'content-path', 'source-file', 'seat', 'allow-host', 'plan-id', 'workspace',
-      ]);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -492,7 +526,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'reset': {
-      const parsed = parseArguments(rest, ['seat', 'plan-id', 'workspace', 'quarantine', 'topic']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -506,7 +540,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'migrate': {
-      const parsed = parseArguments(rest, ['assign', 'set-aside', 'plan-id', 'seat', 'workspace', 'fault-after']);
+      const parsed = parseArguments(rest, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });

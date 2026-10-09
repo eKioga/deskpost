@@ -35,6 +35,8 @@ import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { resolveContentPath } from './contentpath.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
@@ -358,11 +360,11 @@ function readbackMatches(file: string, text: string): boolean {
 }
 
 function compileVerb(workspace: string, argv: string[]): PsJsonValue {
-  const parsed = parseArguments(argv, [
-    'topic', 'topic-title', 'topic-overview', 'article-slug', 'content-path', 'source-file', 'seat', 'allow-host', 'plan-id', 'workspace',
-  ]);
+  const parsed = parseArguments(argv, argumentTable('compile'));
   const batch = parsed.positional[0] ?? '';
-  const contentPath = parsed.options.get('content-path') ?? '';
+  // THE ONE --content-path RULE (contentpath.ts, kickoffs/s106 row 6c): the working directory first, then the Library's
+  // folder. An absolute path, or none, keeps the oracle's sentence.
+  const contentPath = parsed.options.get('content-path') ? resolveContentPath(workspace, parsed.options.get('content-path')!) : '';
   if (!contentPath || !fs.existsSync(contentPath)) {
     throw new Error(`Cannot find path '${path.resolve(contentPath)}' because it does not exist.`);
   }

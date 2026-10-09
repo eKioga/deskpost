@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.3.8/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/seats.md).
 
 ## Books
 
@@ -47,6 +47,14 @@ rather than assuming coverage.
 `wiki/`, without `.md`, for example `_index` or `working-practices/Check Design`. Start with
 `_index` (the reader map) or `_book` (metadata and limits).
 
+Each page read answers with the page, then a second item, `sha256: <hex>`: the whole page with the BOM
+stripped and CRLF read as LF, the same value `book replace-page --preflight` calls `current_sha256`.
+For a large page, pass `section` (both page readers take it): the exact text of one `##` heading,
+without the `## `, returns that section alone, and `sha256` stays the whole page's. A heading not on
+the page is refused with the page's `##` headings, and nothing else is read. A page asked for without
+its folder is refused with "Did you mean ...?", naming up to five pages that end in that name; read
+the one you mean.
+
 Do not read `shelf/<slug>/wiki/` with `Read` or `Grep`, and do not reach for a Basic Memory content
 reader or search for ordinary reader requests.
 
@@ -83,6 +91,11 @@ installed Deskpost does not ship them: they are helpers in the Deskpost source c
 (`Get-BookCurrency`, `Sync-RawUpstream` and `Restore-BookSource`). A **Currency check is not a Source check** in any case: a matching pin
 proves the source has not moved, and never that an article reflects it.
 
+**A Shelf Book's Summary lives in `_catalog-entry.md`**, not in `_book.md`'s Purpose, which only `shelf new` and
+`shelf recall` set alongside it. To change the Summary, edit `_catalog-entry.md`, then run `library shelf render
+<slug>` and `library shelf rebuild <slug>`. `shelf rebuild` alone rewrites only the manifest, and an edit to the
+entry does not mark the Book stale.
+
 ## Project Hubs
 
 A Project Hub is orientation for ongoing work, not a second task system. It holds Purpose, Now,
@@ -96,7 +109,7 @@ dated history page, never in `Now`. That split is why there is no length rule to
 ```
 read_project_catalog        { shelf: "active" | "archive" }
 suggest_active_projects     { query }
-read_open_project_page      { slug, page }
+read_open_project_page      { slug, page, section? }     # e.g. section "Now"; answers with sha256
 read_open_project_briefing  { slug }
 ```
 
@@ -114,8 +127,8 @@ library hub edit <slug> --mode <mode> ...
 
 **Linking a Hub page to a Book.** A collection Book's page is `[[books/<slug>/wiki/<page>|label]]`, and a Shelf
 Book's is `[[shelf/<slug>/wiki/<page>|label]]`. A Book that changes often is best kept on the Shelf and linked
-there, because its pages can be corrected in place; a collection Book's pages change only by recall and refresh
-until 1.4.0 brings an in-place edit.
+there, because its pages are corrected in place with no yes (`book replace-page`); changing an existing page of a
+collection Book is `collection replace-page`, which takes a yes.
 
 ### A Hub for development work
 
@@ -163,6 +176,25 @@ history keeps the words it was written in. Pages elsewhere that mention the old 
 are the new Hub's own current pages that still name the old slug or title (`mentions_in_new_hub`), for `hub edit`;
 its `notes/` are history and are not listed. It
 refuses while a seat is bound to the old Hub, or while a session holds a seat that has it open.
+
+### Editing a Hub page: habits that hold
+
+- **Text comes from a file** written as UTF-8 with LF line endings (`--content-path`). A script that builds Hub text
+  stays plain ASCII: Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark as ANSI, so an em dash in it
+  arrives as `â€”`. Python on Windows writes CRLF in text mode unless told `newline='\n'`.
+- **One edit at a time.** Every edit changes the page's hash, so preview and apply one before planning the next.
+- **What `replace-item` replaces:** on a paragraph line, that one line; on a list item, the item with its nested
+  sub-items. `check-item` ticks the item's first line only.
+- **`## Now` takes checkboxes or paragraphs.** A list entry at column zero without `- [ ]` or `- [x]` is refused.
+- **Removing text needs the reader's yes** (`--user-confirmed`). To change the state of an item without one, append a
+  new item that says it updates the one above.
+- **Preview an append to `## Decisions` with `--preflight`**: it reports `entry_size_warning` from the proposed text
+  before anything is written, where an apply without it only warns afterwards.
+- **Never filter `hub edit`'s output** through `grep`, `head` or a redirect: tools read its size warnings
+  (`page_size_warning`, `section_size_warning`, `entry_size_warning`) from the whole result.
+- **Read the page back through the validated reader.** For a page too large for one read, `library mcp call
+  read_open_project_page --slug <s> --page <p>` prints the reader's answer, which a script can compare with the
+  content file.
 
 ## Why "closed" matters
 

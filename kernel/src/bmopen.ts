@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { isLocalBackend, markerConnection, readExactOrNull } from './basicmemory.ts';
 import { openServer } from './bmconnection.ts';
 import { deskWrite } from './desk.ts';
@@ -63,7 +64,7 @@ function connectionOrRefuse(workspace: string) {
 }
 
 export async function basicMemoryOpen(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'seat', 'claim-token', 'shelf']);
+  const parsed = parseArguments(argv, argumentTable('basic-memory', 'open'));
   const connection = connectionOrRefuse(workspace);
   const shelf = (parsed.options.get('shelf') ?? 'active') === 'archive' ? 'archive' : 'active';
   let session: Awaited<ReturnType<typeof openServer>>;
@@ -152,7 +153,7 @@ function sharedDeskEntries(workspace: string): { seats: { seat: string; entries:
 }
 
 export async function basicMemoryRollbackCheck(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'registry-root']);
+  const parsed = parseArguments(argv, argumentTable('basic-memory', 'rollback-check'));
   const libraries = new Set<string>();
   if (workspace) libraries.add(path.resolve(workspace));
   let registryProblem: string | null = null;

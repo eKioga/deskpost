@@ -52,6 +52,7 @@ import { createHash } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { resolveSeatName } from './seatdesk.ts';
@@ -616,7 +617,7 @@ function progress(journal: Record<string, unknown>): Record<string, PsJsonValue>
 }
 
 function migrateVerb(workspace: string, argv: string[]): PsJsonValue {
-  const parsed = parseArguments(argv, ['assign', 'set-aside', 'plan-id', 'seat', 'workspace', 'fault-after']);
+  const parsed = parseArguments(argv, argumentTable('migrate'));
   const preflight = parsed.flags.has('preflight');
   const resume = parsed.flags.has('resume');
   const rollingBack = parsed.flags.has('rollback');

@@ -32,6 +32,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { tableFor } from './verbs.ts';
 import { sha256OfText } from './sha.ts';
 import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
@@ -40,7 +41,7 @@ import { isLocalBackend } from './basicmemory.ts';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { triageInventory } from './triageinventory.ts';
-import { triageBatch } from './triagebatch.ts';
+import { triageActions, triageBatch } from './triagebatch.ts';
 import { convertToBookPagePath } from './pagepath.ts';
 import { localDate } from './localdate.ts';
 
@@ -824,20 +825,10 @@ export interface TriageResult {
 /** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
 export function runTriageVerb(argv: string[], workspace: string): TriageResult {
   const action = argv[0] ?? '';
-  const parsed = parseArguments(argv.slice(1), ['actions', 'capture-date', 'seat', 'workspace']);
+  const parsed = parseArguments(argv.slice(1), tableFor('triage', action));
   try {
     if (action === 'validate') {
-      const actionsJson = parsed.options.get('actions');
-      if (actionsJson === undefined) {
-        refuse('library triage validate needs --actions <json>: the plan to judge, as a JSON array of actions.');
-      }
-      let requested: Record<string, unknown>[];
-      try {
-        const parsedJson: unknown = JSON.parse(actionsJson);
-        requested = Array.isArray(parsedJson) ? (parsedJson as Record<string, unknown>[]) : [parsedJson as Record<string, unknown>];
-      } catch {
-        refuse('ActionJson must be valid JSON.');
-      }
+      const requested = triageActions(parsed, workspace, 'validate');
       if (!requested.length) refuse('A Library Triage plan needs at least one action.');
       const captureDate = (parsed.options.get('capture-date') ?? '').trim() || localDate();
       // THE NOTEBOOK A PLAN READS FROM OR WRITES TO IS THE SEAT'S (ADR-0029), resolved only when an
@@ -871,7 +862,24 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
       };
     }
     if (action === 'inventory') {
-      return { refusal: null, value: triageInventory(workspace, 'notebook', { pendingOnly: parsed.flags.has('pending') }) as PsJsonValue };
+      // THIS SEAT'S NOTEBOOK ONLY (kickoffs/s106 row 7c): every seat's notebook/<seat>/ folder was read as this seat's.
+      // A seated session on the seat-owned layout reads its own; a seatless one, or the shared layout, reads the tree
+      // as before, and only a scoped read says so.
+      const named = resolveSeatName({ stateDirectory: path.join(workspace, '.claude') });
+      let relative = 'notebook';
+      let scopedSeat: string | null = null;
+      if (named.status === 'named') {
+        try {
+          const scope = notebookScope(workspace, named.seat!, 'read', 'Triage inventory');
+          relative = scope.relative;
+          scopedSeat = scope.seat;
+        } catch {
+          // A migrating Notebook reads as the whole tree, as before; the reset and the migration name the state.
+        }
+      }
+      const inventory = triageInventory(workspace, relative, { pendingOnly: parsed.flags.has('pending') });
+      if (scopedSeat !== null) inventory['notebook_scope'] = `seat ${scopedSeat}: ${relative}/ only; another seat's Notebook is its own`;
+      return { refusal: null, value: inventory as PsJsonValue };
     }
     if (action === 'batch') {
       // THE BATCH RUNNER (S43, src/triagebatch.ts): preflight, confirmed run, and resume from its journal --

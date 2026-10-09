@@ -191,21 +191,25 @@ To be placed at `.forgejo/workflows/publish.yml` **in the private `ops` reposito
 ```yaml
 name: publish-mirror
 on:
-  # THE SCHEDULE WAS HELD UNTIL THE SCANNER HAD ACTUALLY RUN, and restored on
-  # 2026-09-20 (S10) once it had. The condition the hold was written against --
-  # "a ten-minute cron makes the FIRST run automatic, and the first successful
-  # run IS the first public release, of a scanner that has never executed" -- is
-  # retired: run #5 is green, `eKioga/deskpost` carries main, the tag, the
-  # attestations branch and the published-state note, and the REFUSAL path has
-  # been exercised against a planted denylisted identity with the target branch
-  # provably unchanged.
+  # THE SCHEDULE WAS HELD UNTIL THE SCANNER HAD ACTUALLY RUN, restored on
+  # 2026-09-20 (S10) once run #5 was green, and ran every ten minutes until S105.
   #
-  # Restoring it was the reader's decision, not a cleanup, and the same is true
-  # of removing it again. Export-MirrorOpsRepo.ps1 REPORTS this block's state on
-  # every run -- reported, never asserted -- so which of the two is in force can
-  # never change quietly in a generated file nobody reads.
+  # ONCE A DAY, AND ONLY AS THE BACKSTOP (2026-10-08, S105). The ten-minute run
+  # was the biggest constant load on the host that runs this instance: measured
+  # at about a quarter of its two cores, with a peak every ten minutes and CPU
+  # alerts daily, while about 140 of the 144 daily runs found nothing to publish.
+  # The reader chose to run it once a day and at each publish: the release
+  # session starts this job (workflow_dispatch) right after the publish push, and
+  # this daily run only catches a missed start. Forgejo reads the cron in UTC
+  # (nothing here sets another zone), so 12:00 UTC is 05:00 PDT and 04:00 PST,
+  # clear of the host's nightly jobs (01:00-03:00 and 03:00 Pacific).
+  #
+  # Changing the schedule is the reader's decision, not a cleanup.
+  # Export-MirrorOpsRepo.ps1 REPORTS this block's state on every run -- reported,
+  # never asserted -- so it can never change quietly in a generated file nobody
+  # reads.
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 12 * * *'
   workflow_dispatch:
 
 # One run at a time. Two runs racing could scan one snapshot and push another.

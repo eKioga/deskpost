@@ -22,6 +22,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
@@ -137,7 +138,7 @@ async function readDirectoryListing(session: McpSession, projectId: string, dire
 // --- library hub archive --------------------------------------------------------------------------------
 
 export async function hubArchive(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, argumentTable('hub', 'archive'));
   const raw = parsed.positional[0] ?? '';
   // The fence and the collection id come BEFORE the slug is checked: the oracle's order.
   const url = resolveMcpUrl(workspace);
@@ -362,7 +363,7 @@ function sharedHuskCleanup(workspace: string, relativePath: string): { source_tr
 // --- library shared archive -----------------------------------------------------------------------------
 
 export async function sharedArchive(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, argumentTable('shared', 'archive'));
   const slug = parsed.positional[0] ?? '';
   const url = resolveMcpUrl(workspace);
   assertCollectionWriteAllowed(workspace, 'archiving a shared Book');
@@ -633,7 +634,7 @@ async function removeActiveBookCatalogEntry(session: McpSession, projectId: stri
 // --- library shared list-entry --------------------------------------------------------------------------
 
 export async function sharedListEntry(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['title', 'summary', 'kind', 'collection', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('shared', 'list-entry'));
   const url = resolveMcpUrl(workspace);
   assertCollectionWriteAllowed(workspace, 'listing a Catalog entry');
   const projectId = resolveCollectionId(workspace);

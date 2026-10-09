@@ -29,6 +29,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 
 export const RAW_SEARCH_SCHEMA = 1;
 
@@ -641,7 +642,7 @@ export interface RawResult {
  * the word `search` would otherwise have their command cut in the wrong place.
  */
 export function runRawSearch(argv: string[], workspace: string): RawResult {
-  const parsed = parseArguments(argv, ['max-results', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('raw', 'search'));
   const batch = parsed.positional[1];
   const query = parsed.positional[2];
   try {

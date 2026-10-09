@@ -27,6 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { sha256OfText } from './sha.ts';
 import { psConvertToJson } from './psjson.ts';
@@ -148,9 +149,7 @@ interface CopyRecord {
 }
 
 export async function hubCopyPages(argv: string[], workspace: string, hubPlanAction: HubPlanAction): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, [
-    'source', 'title', 'purpose', 'next-action', 'include-page', 'destination-directory', 'plan-id', 'journal-path', 'workspace',
-  ]);
+  const parsed = parseArguments(argv, argumentTable('hub', 'copy-pages'));
   let slug = parsed.positional[0] ?? '';
   const sourcePath = parsed.options.get('source') ?? '';
   const title = parsed.options.get('title') ?? '';

@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { markerPath, readMarker } from './workspace.ts';
 import { isLocalBackend, markerConnection, McpSession, mcpTimeoutMs, type BasicMemoryConnection } from './basicmemory.ts';
@@ -113,7 +114,7 @@ function strayConnectionFiles(workspace: string): string[] {
 // --- setup ---------------------------------------------------------------------------------------------------
 
 async function setup(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['url', 'collection', 'storage', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('basic-memory', 'setup'));
   assertLocalLibrary(workspace, 'setup');
   const current = markerConnection(workspace);
   const url = (parsed.options.get('url') ?? current?.url ?? '').trim();
@@ -186,7 +187,7 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
 // --- disconnect ----------------------------------------------------------------------------------------------
 
 function disconnect(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  parseArguments(argv, ['workspace']);
+  parseArguments(argv, argumentTable('basic-memory', 'disconnect'));
   assertLocalLibrary(workspace, 'disconnect');
   const current = markerConnection(workspace);
   if (current === null) return { schema: 1, operation: 'Disconnect Basic Memory', workspace, disconnected: false, note: 'This Library has no Basic Memory connection.', shared_library_write: false };

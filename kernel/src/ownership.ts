@@ -20,6 +20,7 @@ import { markerField, readMarker } from './workspace.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { parseArguments } from './argv.ts';
+import { verbTable } from './verbs.ts';
 import { rebuildAllCollectionManifests } from './collectionbooks.ts';
 import { configuredCollectionId, configuredMcpUrl, configuredSharedRoot, isLocalBackend } from './basicmemory.ts';
 
@@ -498,7 +499,7 @@ function exitCollectionOwnership(collectionRoot: string, workspaceId: string, wo
 /** `Set-CollectionOwner.ps1`: `library collection owner [--status | --acquire [--force [--user-confirmed]] | --release]`. */
 export function runCollectionVerb(argv: string[], workspace: string): { refusal: string | null; value: Record<string, PsJsonValue> | null } {
   try {
-    const parsed = parseArguments(argv, ['workspace']);
+    const parsed = parseArguments(argv, verbTable('collection'));
     const action = parsed.positional[0] ?? '';
     // THE LOCAL COLLECTION'S DISCOVERY MANIFESTS (PLAN-basic-memory.md step 1): the repair Discovery names for a Book
     // it could not read, and the route for a Book copied into collection/ by hand.
@@ -512,7 +513,7 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
       return { refusal: null, value: rebuildAllCollectionManifests(workspace) };
     }
     if (action !== 'owner') {
-      return { refusal: `library collection has no action '${action}'. It has: add-page, owner, rebuild.`, value: null };
+      return { refusal: `library collection has no action '${action}'. It has: add-page, owner, rebuild, replace-page.`, value: null };
     }
     const acquire = parsed.flags.has('acquire');
     const release = parsed.flags.has('release');

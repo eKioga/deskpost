@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { applyLibraryInit, planLibraryInit, registerWorkspace, type LibraryInitPlan } from './init.ts';
 import { findWorkspaceByMarker, markerField, readMarker, registryPath, toWorkspaceRoot } from './workspace.ts';
@@ -41,6 +42,7 @@ import { createHash } from 'node:crypto';
 import { askAtTerminal, Interrupted } from './prompt.ts';
 import { compareVersions } from './versions.ts';
 import { versionsToPrune } from './finisher.ts';
+import { updateCheckSetting } from './updatecheck.ts';
 
 export const SETUP_QUIT = 3;
 
@@ -433,6 +435,8 @@ export interface AskOptions {
   keepLibraries?: boolean;
   /** The route that asked (D6): `setup --ask` defaults to PowerShell's, since the 1.3.4 install.ps1 calls it. */
   spelling?: Spelling;
+  /** `--dry-run` (kickoffs/s102 K2): the screen's Enter shows the plan. */
+  dryRun?: boolean;
 }
 
 class Refusal extends Error {}
@@ -688,7 +692,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     const removesVersions = installState === 'upgrade' ? versionsToPrune(installRoot, [version, folderState.version ?? '']) : [];
     talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot), removesVersions }));
     if (!talk.interactive) break;
-    const keys = screenKeys({ installState, state, repairLibrary, unguarded, refreshing: refreshTargets().length > 0, keepLibraries, both: claude !== null && codex !== null, assistant });
+    const keys = screenKeys({ installState, state, repairLibrary, unguarded, refreshing: refreshTargets().length > 0, keepLibraries, both: claude !== null && codex !== null, assistant, dryRun: options.dryRun === true });
     const key = (await talk.ask('\n' + keys.join('   ') + ' › ')).toLowerCase();
     if (key === '') break;
     if (key === 'q') {
@@ -797,6 +801,8 @@ export interface ScreenKeyView {
   keepLibraries: boolean;
   both: boolean;
   assistant: 'claude' | 'codex' | null;
+  /** A dry run (kickoffs/s102 K2): Enter shows the plan and changes nothing, so it says so. */
+  dryRun?: boolean;
 }
 
 /**
@@ -805,7 +811,7 @@ export interface ScreenKeyView {
  * the release fixtures match. The other keys are as before. Exported for self-test section 151.
  */
 export function screenKeys(view: ScreenKeyView): string[] {
-  const keys = [view.installState === 'upgrade' ? '[Enter] upgrade' : view.installState === 'repair' ? '[Enter] repair' : '[Enter] install'];
+  const keys = [view.dryRun ? '[Enter] show the plan' : view.installState === 'upgrade' ? '[Enter] upgrade' : view.installState === 'repair' ? '[Enter] repair' : '[Enter] install'];
   if (view.installState === 'new') keys.push('[p] other program folder');
   if (view.state === 'existing') keys.push(view.repairLibrary ? (view.unguarded ? '[r] leave it unguarded' : '[r] leave the Library as it is') : '[r] repair this Library');
   if (view.refreshing) keys.push(view.keepLibraries ? '[k] bring the Libraries up to date' : '[k] keep the Libraries as they are');
@@ -887,8 +893,16 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
     const split = view.pathRow.lastIndexOf(': ');
     rows.push(['PATH', view.pathRow.substring(0, split), view.pathRow.substring(split + 2)]);
   }
-  // THE UPDATE CHECK IS SAID WHERE THE INSTALL IS ASKED (D2; ADR-0068): the kernel's one call the reader did not ask for.
-  rows.push(['Updates', 'once a day', 'the menu checks GitHub for a newer release; DESKPOST_UPDATE_CHECK=0 turns it off']);
+  // THE UPDATE CHECK IS SAID WHERE THE INSTALL IS ASKED (D2; ADR-0068): the kernel's one call the reader did not ask for,
+  // as this shell's DESKPOST_UPDATE_CHECK sets it (kickoffs/s102 K3). A view row, outside what canonicalPlan hashes.
+  const updates = updateCheckSetting();
+  rows.push(
+    updates === 'off'
+      ? ['Updates', 'off', 'DESKPOST_UPDATE_CHECK=0 is set in this shell, so the menu does not check for a newer release']
+      : updates === 'forced'
+        ? ['Updates', 'every menu', 'DESKPOST_UPDATE_CHECK=1 is set in this shell, so the menu checks GitHub each time it opens']
+        : ['Updates', 'once a day', 'the menu checks GitHub for a newer release; DESKPOST_UPDATE_CHECK=0 turns it off'],
+  );
   rows.push(['Librarian', librarian, '']);
   if (view.assistant === 'codex') rows.push(['', '', 'Codex will ask you to trust this folder and approve its hooks on first start.']);
   rows.push(['Undo', `${COMMAND_NAME} uninstall`, 'shows what it removes first']);
@@ -1311,8 +1325,6 @@ export interface SetupVerbResult {
   asJson: boolean;
 }
 
-const VALUED = ['answers', 'install-root', 'library', 'cwd', 'resources', 'register-as', 'out', 'plan-file', 'checksum-note', 'registry-root', 'workspace', 'release-sha', 'script-sha', 'user-path', 'assistant', 'refresh-served'];
-
 function assistantOption(value: string | undefined): 'claude' | 'codex' | undefined {
   if (value === undefined) return undefined;
   const lower = value.trim().toLowerCase();
@@ -1321,7 +1333,7 @@ function assistantOption(value: string | undefined): 'claude' | 'codex' | undefi
 }
 
 export async function runSetupVerb(argv: string[]): Promise<SetupVerbResult> {
-  const parsed = parseArguments(argv, VALUED);
+  const parsed = parseArguments(argv, argumentTable('setup'));
   const json = parsed.flags.has('json');
   try {
     if (parsed.flags.has('ask')) {

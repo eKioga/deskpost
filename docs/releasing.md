@@ -32,6 +32,9 @@ How a release goes from `master` to the public download, and the exact commands 
    - prints `READY: main <sha>, tag v<version>, refs/releases/v<version>; nothing pushed`.
 3. **Publish, on the reader's explicit yes**: one atomic push from the publish clone. Nothing else publishes a
    release.
+4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
+   `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
+   the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.
 
 ## The push (the only step that publishes)
 
@@ -45,7 +48,9 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
   (`docs/mirror-publishing-job.md`). One push carries all three refs, or none.
 - Before it runs, check that the three SHAs are the ones the `READY` line printed:
   `git -C <publish>\pub rev-parse main v<version>^{commit} refs/releases/v<version>`.
-- **What follows**: the mirror publishes `Kioga/deskpost` to `eKioga/deskpost` within about ten minutes. It pushes
+- **What follows**: the release session starts the mirror right after this push (step 4, through Forgejo's
+  API), and it publishes `Kioga/deskpost` to `eKioga/deskpost`; its daily run
+  catches a missed start. It pushes
   `main` and the tag, then makes the GitHub release from `refs/releases/<tag>`. Check both
   `https://github.com/eKioga/deskpost/releases/latest` and the tag's release page before telling anyone to upgrade.
 
@@ -57,4 +62,32 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
 - If the publish slipped a day, B corrects the release date in `docs/roadmap.md` on the next `desk/sNN`, which
   reaches `master` at that Kickoff's MERGE (B never commits on `master`). The public copy follows at the next release.
 - Only once `releases/latest` names the new version, and it is newer than the installed one, is anyone given an
-  upgrade line.
+  upgrade line. Before giving one, check which install root and which Library it acts on: an install outside the
+  default root, run with the bare one-liner, refuses as a second install, and a retry can fall into a new install's
+  "Where should your Library live?" prompt.
+- **Every release is installed.** Never suggest skipping a version to test a later route; test a new route on the
+  next upgrade instead.
+
+## Proving an install in a build session
+
+A build session has no version bump, so a build of `HEAD` reports the same version as `-PreviousRelease`, and
+`Test-InstallLifecycle` refuses two equal versions. The recipe (S89, S94):
+
+1. Clone `HEAD` cleanly (`git clone -c core.autocrlf=false`, `* -text` in `.git/info/attributes`) into the scratchpad,
+   and make ONE commit there setting `<version>-s<NN>` in both plugin manifests, `.claude-plugin/marketplace.json`,
+   `kernel/package.json` and `llms-install.md`. The clone is never pushed.
+2. Build it with `Build-KernelRelease.ps1 -SourceRoot <clone>`, then run `Test-BuiltRelease.ps1 -PreviousRelease
+   <the previous release's rel folder>`, with every PATH entry holding a `deskpost` shim dropped first.
+3. Self-test sections 116, 117 and 130-133 run only with `LIBRARY_SELFTEST_KERNEL` naming the extracted release's
+   `bin\library.exe` (`tar.exe -xf`); the `-Fast` gate skips them.
+4. The suffixed version breaks sections 143, 144, 146 and 147 (they compare or bump versions), so judge them, and any
+   new install section, on a **second, unbumped build** of the same commit (`-Target 'win-x64'` is enough).
+
+## When auto mode stops the publish push
+
+The harness's auto-mode classifier has blocked the publish push once and later let the same push through. It has
+also refused branch amends and deletes on some days and allowed them on others; the cause is unknown. What has
+worked: the reader's message names the exact action ("publish 1.4.0"), never a bare "yes"; the push runs as one
+plain command, with its checks in separate calls. Classifier rules live only in the reader's user settings, and a
+change to them is the reader's own edit, never one an agent writes or scripts. Log any new block with its reason,
+the Claude Code version and how many seats were open.

@@ -27,6 +27,7 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { assertInsideRoot, lexists, renderPageBody } from './pagepath.ts';
 import { strayControlRefusal } from './controlchars.ts';
+import { resolveContentPath } from './contentpath.ts';
 
 class HubNewPageRefusal extends Error {}
 
@@ -134,7 +135,7 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
   let sourceFile: string | null = null;
   let sourceBytes: Buffer | null = null;
   if (hasPath) {
-    sourceFile = path.resolve(path.isAbsolute(options.contentPath) ? options.contentPath : path.join(workspace, options.contentPath));
+    sourceFile = resolveContentPath(workspace, options.contentPath);
     if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) refuse(`--content-path '${options.contentPath}' is not a file (resolved to ${sourceFile}).`);
     try {
       sourceBytes = fs.readFileSync(sourceFile);

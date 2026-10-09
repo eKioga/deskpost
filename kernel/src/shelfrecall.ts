@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { ensureDirectory, writeAtomicBytes } from './fsx.ts';
 import { enterSeatRegistryLock, exitBookLock, withBookLocks, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
@@ -50,8 +51,6 @@ import {
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 const STRICT_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-export const SHELF_RECALL_OPTIONS = ['shelf-slug', 'lock-timeout', 'plan-id', 'seat', 'workspace'];
 
 /** A test hook, named in self-test section 68: fail the recall after its pages are copied, so the rollback is seen. */
 function injectedFault(): string {
@@ -93,7 +92,7 @@ function recalledIdentity(workspace: string, wiki: string, slug: string): { titl
 }
 
 /** The Shelf slug `_book.md`'s `source_boundary` names, when it names `shelf/<s>/wiki`. */
-function sourceShelfSlug(wiki: string): string | null {
+export function sourceShelfSlug(wiki: string): string | null {
   const root = path.join(wiki, '_book.md');
   if (!fs.existsSync(root)) return null;
   const boundary = splitLocalFrontmatter(readStrictUtf8(root)).fields?.get('source_boundary') ?? '';
@@ -106,7 +105,7 @@ function sourceShelfSlug(wiki: string): string | null {
  * refusal is certain before an approval is issued.
  */
 function recallPlan(workspace: string, argv: string[]): RecallPlan {
-  const parsed = parseArguments(argv, SHELF_RECALL_OPTIONS);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'recall'));
   const argument = parsed.positional[0] ?? '';
   if (/^shared\//.test(argument)) {
     refuse(
@@ -230,7 +229,7 @@ function recallPlan(workspace: string, argv: string[]): RecallPlan {
 }
 
 export function shelfRecallVerb(argv: string[], programRoot: string, workspace: string): { refusal: string | null; value: PsJsonValue | null } {
-  const parsed = parseArguments(argv, SHELF_RECALL_OPTIONS);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'recall'));
   const preview = recallPlan(workspace, argv);
   if (parsed.flags.has('preflight')) return { refusal: null, value: preview.document };
   if (!parsed.flags.has('user-confirmed')) refuse('The Book was not recalled: review the preflight (--preflight) and rerun with --user-confirmed --plan-id <id>.');

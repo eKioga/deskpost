@@ -30,6 +30,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
@@ -213,7 +214,7 @@ function settleMutation(mutation: BookMutation | null, rollback: string): void {
 // --- rename ---------------------------------------------------------------------------------------
 
 export function renameVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['new-title', 'workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'rename'));
   const slug = parsed.positional[0] ?? '';
   const newSlug = parsed.positional[1] ?? '';
   for (const candidate of [
@@ -665,7 +666,7 @@ function updateShelfNoteIndex(book: ShelfBook): void {
  * foreign seat an entry that would entitle it to whatever Book landed on that slug next.
  */
 export function removeVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['reason', 'seat', 'workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'remove'));
   const slug = parsed.positional[0] ?? '';
   if (!STRICT_SLUG_PATTERN.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
 
@@ -963,7 +964,7 @@ function isWithin(child: string, parent: string): boolean {
  * absent from the active Shelf a reader browses; findable, labelled, and read-only.
  */
 export function archiveVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['reason', 'workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'archive'));
   const slug = parsed.positional[0] ?? '';
   if (!STRICT_SLUG_PATTERN.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
 
@@ -1208,7 +1209,7 @@ function openBookRootsEverywhere(workspace: string, desks: string): string[] {
  * reader WROTE rather than a regenerated approximation of it.
  */
 export function restoreVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
-  const parsed = parseArguments(argv, ['workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'restore'));
   const slug = parsed.positional[0] ?? '';
   if (!STRICT_SLUG_PATTERN.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
 
@@ -1400,7 +1401,7 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
  */
 export function stubVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
   void programRoot;
-  const parsed = parseArguments(argv, ['canonical', 'reason', 'superseded-on', 'workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'stub'));
   const bookSlug = parsed.positional[0] ?? '';
   const pagePath = parsed.positional[1] ?? '';
   const canonical = parsed.options.get('canonical') ?? '';

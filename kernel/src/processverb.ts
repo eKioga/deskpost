@@ -6,6 +6,7 @@
  */
 
 import { parseArguments } from './argv.ts';
+import { verbTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { agentProcessIdentity, readProcessAncestry } from './procstart.ts';
 import { waitForAgentExit } from './seat.ts';
@@ -28,7 +29,7 @@ function pidArgument(value: string | undefined): number | null {
 }
 
 export async function runProcessVerb(argv: string[]): Promise<ProcessVerbResult> {
-  const parsed = parseArguments(argv, ['start-utc', 'name', 'poll-ms']);
+  const parsed = parseArguments(argv, verbTable('process'));
   const [action, pidText] = parsed.positional;
   const usage = 'library process <start|ancestry|wait> <pid> [--start-utc <s>] [--poll-ms <n>]; library process list [--name <image>]';
   if (action === 'list') {

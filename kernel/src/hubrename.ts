@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { withBookLocks, SEAT_REGISTRY_LOCK_ROOT } from './locks.ts';
@@ -428,7 +429,7 @@ function runStep(context: Context, plan: RenamePlan, step: Step): void {
 }
 
 export function hubRename(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['title', 'plan-id', 'lock-timeout', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('hub', 'rename'));
   const [oldWord = '', newWord = ''] = parsed.positional;
   if (!oldWord || !newWord) refuse('library hub rename needs both names: library hub rename <old-slug> <new-slug> --title "<new title>" --preflight.');
   const [oldSlug, newSlug] = [oldWord, newWord].map((word) => {

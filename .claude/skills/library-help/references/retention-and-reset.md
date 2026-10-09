@@ -108,7 +108,9 @@ it is current policy or an instruction.
 only if batches leave it. A batch is there to be compiled: once its Book holds what it needs, or its
 Project closes, the reader evicts the batch. Surviving a reset means a reset leaves `raw/` alone, not
 that `raw/` is storage. When a reader asks where to keep source text for good, the answer is the
-Book that owns it (its pages, through `book add-page` or `collection add-page`), never `raw/`.
+Book that owns it (its pages, through `book add-page` or `collection add-page`), never `raw/`. A whole batch becomes
+a Shelf Book's `sources/` pages with `library book add-page <slug> --from-folder raw/<batch>`, which names the batch
+as ready to evict and leaves it where it is.
 
 ```
 library raw search <batch> "<term>"     # search ONE named batch
@@ -124,12 +126,23 @@ anything under `raw/`.
 Fetching a URL or a git repository into a batch is not in the `library` program. The reader
 downloads it into a new batch folder by hand.
 
+## A Library inside a synced notes vault
+
+A Library can sit inside a larger folder that a notes app (Obsidian, for one) syncs to other devices.
+
+- **A delete that fails there** may be the sync app holding the file. Ask the reader to close the app, then try
+  again; never work around it.
+- **A scan of the whole vault reaches the Library**, closed Shelf Books included, and no guard sees a path above the
+  Library. Exclude the Library's folder before any file is opened (`grep -r --exclude-dir=<library folder>`, or a
+  walk that skips it); filtering the output afterwards still reads every file. Get Library facts through `library`
+  commands and the validated reader instead.
+
 ## Publishing and archiving
 
 Publishing a Shelf Book to a shared collection, refreshing one, and archiving a Book or a Project
 all follow the same shape: **preview, show the manifest and plan id, one clear approval, then the
 confirmed run**. The full sequences are in
-[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.3.8/docs/librarian-operation-playbooks.md). Read the
+[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/librarian-operation-playbooks.md). Read the
 applicable section immediately before the action. A Library on its own disk has no shared
 collection to publish to, and its Books stay on the Shelf.
 

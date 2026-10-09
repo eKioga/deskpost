@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { readReceipt, writeReceipt, withLifecycleLock, argvQuote, receiptPath, type RemovalList } from './lifecycle.ts';
 import { nativeBroadcastEnvironment, nativeStartDetached, nativeUserPathRead, nativeUserPathWrite } from './win32proc.ts';
 
@@ -328,7 +329,7 @@ export interface FinisherResult {
 }
 
 export function runFinishUninstall(argv: string[]): FinisherResult {
-  const parsed = parseArguments(argv, ['parent-pid', 'root', 'handshake', 'transaction', 'result']);
+  const parsed = parseArguments(argv, argumentTable('finish-uninstall'));
   const parent = Number(parsed.options.get('parent-pid') ?? '');
   const root = parsed.options.get('root') ?? '';
   const handshake = parsed.options.get('handshake') ?? '';

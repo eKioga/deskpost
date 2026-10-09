@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { writeAtomicBytes, writeAtomicText } from './fsx.ts';
 import { withBookLocks, type BookLock } from './locks.ts';
@@ -466,7 +467,7 @@ function applyImport(workspace: string, planId: string, timeoutSeconds: number):
 }
 
 export async function basicMemoryImport(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'plan-id', 'lock-timeout']);
+  const parsed = parseArguments(argv, argumentTable('basic-memory', 'import'));
   const preview = parsed.flags.has('preflight') || parsed.flags.has('dry-run');
   if (preview) {
     const plan = buildPlan(workspace);

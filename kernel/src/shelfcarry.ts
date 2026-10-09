@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
@@ -118,7 +119,7 @@ function describe(workspace: string, old: string, slug: string, plan: ReturnType
 }
 
 export function shelfCarryVerb(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['book', 'plan-id', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'carry'));
   const given = (parsed.positional[0] ?? '').trim();
   if (!given) refuse('library shelf carry needs the old workspace: library shelf carry <old-workspace> --book <capture-book>.');
   const old = path.resolve(given);

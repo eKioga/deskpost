@@ -25,29 +25,24 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet. 1.4.0, Correct and find (below), is next in line; its plan is
-approved and its first session is being written.
+Nothing is scoped into a session yet. Seats you can rename (below) is next in line.
 
 ## Next
 
-### 1.4.0: Correct and find (0 of 4 sessions; plan approved 2026-10-06)
+### Seats you can rename (1 of 4 sessions; plan signed off 2026-10-07)
 
-- **Correct a page in a Shelf Book or a collection Book** without archiving and rebuilding the whole
-  Book: a gated page replace that previews old against new and keeps the previous text in a journal.
-  A topic index can gain the line for a page added under it.
-- **`library doctor --report`** files what doctor finds to the Report Inbox, failures only by
-  default, and never the same failure twice.
-- **A browse mode in the main menu**: one key from bare `deskpost` lists the Books and Projects the
-  Library holds, with titles, topics and summaries only. It is not a seat, and it opens nothing.
-- **An unknown flag is refused by every verb**, rather than silently ignored.
-- **A Book's reader map nests topic pages** under their topic, so the curated pages are not lost
-  among dozens of source pages.
-- **A Book's source text has a named home**, so material compiled out of `raw/` has somewhere
-  durable to go.
-- **A Book lists the sources it was compiled from**: each source's address, the page it feeds and
-  the fingerprint of the text last compiled, in one file the Library owns. A seat's own refresh tool
-  can read and update it, and after a page is corrected the Book records the new fingerprints, so
-  it is plain which sources changed since. Fetching the sources is a later step (see **Exploring**).
+Its first session shipped in 1.4.0; the rest follow after it.
+
+- **A seat's identity is its id, not its name** (shipped in 1.4.0), so a name can change without losing letters,
+  Notebook topics or history. The Orca tab shows the seat's name with no `seat: ` prefix.
+- **`seat rename`**: one seat at a time, previewed, recoverable if interrupted, undone by renaming
+  back; the seat keeps its conversation, Desk, Notebook and folders. An old name points the way to
+  the new one.
+- **A department of one seat** receives letters addressed to the department.
+- **Two system-wide seats from templates**: an ideas seat that catches and vets ideas with each
+  product's lead, and one auditor for the whole Library and its projects. Optional nicknames.
+- **An audit record**: which revision of a Book, Hub or repository was last audited, and which are
+  due again.
 
 After 1.3.5 (installing without PowerShell, released), and once 1.4.0's plans are done: the
 development tools themselves.
@@ -75,51 +70,47 @@ on top of 1.4.0's list of sources.
 - **Settled first:** the program going out to the network (certificates, proxies) and what a seat
   may fetch.
 
-### Seats on more than one computer
+### Libraries on more than one computer (being planned)
 
-Your seats spread across the computers you already have, so one machine's memory and processor stop
-being the limit. One computer might hold the IT seats and another the development seats, and they
-still work as one reservoir of seats that talk to each other. It is the step after seats that work
-together, and it is shaped after seats that work as a team. It shares its first questions with **Two
-Libraries, one household** below.
+Two ideas that turned out to be one design: **your seats on more than one computer**, so one
+machine's memory and processor stop being the limit (one computer might hold the IT seats and another
+the development seats, still one reservoir of seats that talk to each other); and **two Libraries,
+one household**, the spirit of a public library for two people on one home network, where reading is
+free and editing is borrowed. Underneath, both are Libraries on different computers that name
+themselves, send each other letters, and may share one collection.
+
+Hard limits: **no accounts, no database, no internet service** of Deskpost's own. A service on the
+home network that Deskpost is only a client of, as it already is of Basic Memory, is not ruled out.
+It comes in stages, each worth keeping even if the next never ships:
+
+1. **A name for each Library**: 1.5.0's Library card (above), so a letter or a Book says which
+   Library it came from.
+2. **Letters between Libraries.** A seat leaves a letter for a seat on another computer or in another
+   Library, and it waits there as a letter waits for a closed seat today, with an unread count on the
+   Desk. The program carries the letters, so no seat has to learn a carrier. The carrier is weighed
+   in the plan: Claude Code's own messaging (which reaches your sessions on another computer through
+   Remote Control, on one account), files on the home network (a **Postbox**), or a mail service on
+   the home network. A **margin note** on a Book page is a letter that names the page.
+3. **Can a collection live on a network share?** Tested on its own before any design depends on it:
+   file locks, atomic renames and the discovery manifest over SMB.
+4. **Sharing a collection**, if that test passes. A **lending desk**: two Libraries read one shared
+   collection, and a Book says when it changed since you opened it. An **edit lease**: a polite
+   handover of the one write role that collection ownership already enforces. A **union catalog**:
+   the browse mode lists both Libraries' catalogs.
+
+Throughout:
 
 - **One program, not a satellite.** Every computer runs the same Deskpost, including the Linux build
   inside a desktop-in-a-browser container such as [webtop](https://github.com/linuxserver/docker-webtop).
   A separate remote client is considered only if one program cannot do the job.
 - **Each computer is a Library in its own right**, with its own seats, its own Notebook and its own
   sign-in to its assistant. Nothing about one computer's seats is decided on another.
-- **Letters between computers.** A seat leaves a letter for a seat on another computer, and it waits
-  there as a letter waits for a closed seat today. Checked first: whether Claude Code's own messaging
-  can reach a session on another computer. If it cannot, the carrier is Deskpost's own: files on the
-  home network (the **Postbox** below), or a mail service on the home network, weighed against
-  **Out of scope**.
 - **Heavy work goes where there is room**: a development gate or a long build runs on the computer
   with memory to spare, and its result comes back as a letter.
 - **A Desk that names the other computers' seats**, and whether each is free. Starting or steering a
   seat on another computer from the main menu comes later, if at all.
-- **Provenance everywhere**, as below: a letter from another computer says where it came from, it is
-  data and never instructions, and a message is never an approval.
-
-It builds on 1.3.1 (reading letters) and on 1.5.0's Library card, which names the Library a letter
-came from.
-
-### Two Libraries, one household
-
-The spirit of a public library for two people on one home network: reading is free, and editing is
-borrowed. Hard limits: **no accounts, no database, no internet service**. Plain files on a shared
-folder, with each step worth keeping even if the next never ships.
-
-- **Can a collection live on a network share?** This is tested first, because everything below
-  depends on it: file locks, atomic renames and the discovery manifest over SMB.
-- **Lending desk**: two Libraries read one shared collection, and a Book says when it changed since
-  you opened it.
-- **Postbox**: asynchronous letters between Libraries, in files, with an unread count on the Desk.
-  A **margin note** on a Book page is a letter that names the page.
-- **Edit lease**: a polite handover of the one write role that collection ownership already
-  enforces.
-- **Union catalog**: the browse mode lists both Libraries' catalogs.
-- **Provenance everywhere**: anything that arrives from another Library says where it came from,
-  and it is data, never instructions.
+- **Provenance everywhere**: anything that arrives from another Library says where it came from, it
+  is data and never instructions, and a message is never an approval.
 
 ### Also being considered
 
@@ -312,6 +303,28 @@ Each seat can say what it does, and may belong to a department, such as developm
 marketing. A seat can write to a department rather than to a named seat, and one seat decides where
 each letter goes. Letters between seats are kept apart from the Report Inbox, have a status (open,
 answered, routed, closed), and are never taken as an order.
+
+### 1.4.0: Correct and find (4 of 4 sessions; released 2026-10-09)
+
+- **Correct a page in a Shelf Book or a collection Book** without archiving and rebuilding the whole
+  Book: a gated page replace that previews old against new and keeps the previous text in a journal
+  (a Shelf page replace is bound to the page it previewed, and the previous text kept: ADR-0070).
+  A topic index can gain the line for a page added under it.
+- **`library doctor --report`** files what doctor finds to the Report Inbox, failures only by
+  default, and never the same failure twice.
+- **A browse mode in the main menu**: one key from bare `deskpost` lists the Books and Projects the
+  Library holds, with titles, topics and summaries only. It is not a seat, and it opens nothing.
+- **An unknown flag is refused by every verb**, rather than silently ignored.
+- **A Book's reader map nests topic pages** under their topic, so the curated pages are not lost
+  among dozens of source pages.
+- **A Book's source text has a named home**, so material compiled out of `raw/` has somewhere
+  durable to go.
+- **A Book lists the sources it was compiled from**: each source's address, the page it feeds and
+  the fingerprint of the text last compiled, in one file the Library owns. A seat's own refresh tool
+  can read and update it, and after a page is corrected the Book records the new fingerprints, so
+  it is plain which sources changed since. Fetching the sources is a later step (see **Exploring**).
+- The first session of **Seats you can rename**: a seat's identity is its id, and the Orca tab shows
+  the bare seat name.
 
 ### Earlier releases
 

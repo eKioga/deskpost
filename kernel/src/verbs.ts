@@ -25,6 +25,9 @@
  * pretending to would be the same mistake the kernel side was avoiding in the first place.
  */
 
+import type { ArgumentTable } from './argv.ts';
+import { CONTENT_PATH_RULE } from './contentpath.ts';
+
 export interface VerbDeclaration {
   summary: string;
   usage: string;
@@ -38,6 +41,76 @@ export interface VerbDeclaration {
   row: string;
   /** Lines `<verb> <action> --help` adds under the action's usage, one per mode or rule (S85 row 1). */
   details?: Record<string, string[]>;
+  /**
+   * WHAT EACH ACTION TAKES, keyed by action, with `''` for the verb without one (PLAN-correct-and-find.md D7,
+   * kickoffs/s106). The parser reads its value names from here, the front door refuses whatever is not here, and the
+   * self-test checks every usage line the documents teach against it. The global flags (`GLOBAL_ARGUMENTS`) are added
+   * by `argumentTable`, never written here.
+   */
+  arguments: Record<string, ArgumentTable>;
+  /** False for a verb that runs against no workspace, so `--workspace` is not one of its global flags. */
+  workspace?: false;
+}
+
+/**
+ * THE GLOBAL FLAGS, DECLARED ONCE: every verb takes `--json` (a no-op where the verb always prints JSON) and `--help`,
+ * and every verb that runs against a workspace takes `--workspace <path>`. `--seat` is a verb's own, where it reads one.
+ */
+export const GLOBAL_ARGUMENTS = { valued: ['workspace'], boolean: ['json', 'help'] };
+
+/** One action's table with the global flags added: what the parser, the front door and the docs check all read. */
+export function argumentTable(verb: string, action = ''): ArgumentTable {
+  const declaration = VERBS[verb];
+  const own = declaration?.arguments[action];
+  if (!declaration || !own) throw new Error(`verbs.ts declares no argument table for '${verb}${action ? ` ${action}` : ''}'; that is a defect in verbs.ts.`);
+  const valued = [...(own.valued ?? [])];
+  if (declaration.workspace !== false && !valued.includes('workspace')) valued.push(GLOBAL_ARGUMENTS.valued[0]!);
+  const boolean = [...(own.boolean ?? [])];
+  for (const name of GLOBAL_ARGUMENTS.boolean) if (!boolean.includes(name)) boolean.push(name);
+  return { ...own, valued, boolean };
+}
+
+/**
+ * THE GLOBAL FLAGS ALONE, for a command line whose action the verb does not have: the front door still finds
+ * `--workspace`, and the verb refuses the action in its own words.
+ */
+export function globalTable(verb: string): ArgumentTable {
+  return { valued: VERBS[verb]?.workspace === false ? [] : [...GLOBAL_ARGUMENTS.valued], boolean: [...GLOBAL_ARGUMENTS.boolean], positionals: 0 };
+}
+
+/** The action's table when the verb declares that action, else the global flags alone (the verb refuses the action). */
+export function tableFor(verb: string, action: string): ArgumentTable {
+  return VERBS[verb]?.arguments[action] ? argumentTable(verb, action) : globalTable(verb);
+}
+
+/**
+ * EVERY ACTION'S VALUE NAMES TOGETHER, for a parser whose job is to find the action itself (`process`, `collection
+ * owner|rebuild`): a value is never read as the action word. The front door has already checked the line against the
+ * action's own table.
+ */
+export function verbTable(verb: string): ArgumentTable {
+  const tables = Object.keys(VERBS[verb]?.arguments ?? {}).map((action) => argumentTable(verb, action));
+  const union = (pick: (table: ArgumentTable) => string[] | undefined): string[] => [...new Set(tables.flatMap((table) => pick(table) ?? []))];
+  return { valued: union((table) => table.valued), repeatable: union((table) => table.repeatable), boolean: union((table) => table.boolean), positionals: Math.max(0, ...tables.map((table) => table.positionals)) };
+}
+
+/** The action a command line names, and the words after it: the first word, or the first action word after flags. */
+export function commandAction(verb: string, rest: string[]): { action: string; argv: string[] } {
+  const declaration = VERBS[verb];
+  if (!declaration || !declaration.actions.length) return { action: '', argv: rest };
+  if (declaration.actions.includes(rest[0] ?? '')) return { action: rest[0]!, argv: rest.slice(1) };
+  // A FLAG MAY COME BEFORE THE ACTION (`raw --workspace w search ...`): skip each option and its value.
+  const valued = new Set([...GLOBAL_ARGUMENTS.valued, ...Object.values(declaration.arguments).flatMap((table) => [...(table.valued ?? []), ...(table.repeatable ?? [])])]);
+  for (let index = 0; index < rest.length; index += 1) {
+    const item = rest[index]!;
+    if (item.startsWith('--')) {
+      if (valued.has(item.substring(2))) index += 1;
+      continue;
+    }
+    if (declaration.actions.includes(item)) return { action: item, argv: [...rest.slice(0, index), ...rest.slice(index + 1)] };
+    break;
+  }
+  return { action: '', argv: rest };
 }
 
 export const VERBS: Record<string, VerbDeclaration> = {
@@ -49,18 +122,47 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library basic-memory open [<slug> [--shelf archive] [--seat <s>]]; library basic-memory rollback-check [--registry-root <d>]',
     actions: ['disconnect', 'import', 'open', 'rollback-check', 'setup', 'status'],
     positional: false,
+    arguments: {
+      setup: { valued: ['url', 'collection', 'storage'], boolean: ['preflight'], positionals: 0 },
+      disconnect: { positionals: 0 },
+      status: { positionals: 0 },
+      import: { valued: ['plan-id', 'lock-timeout'], boolean: ['preflight', 'dry-run', 'user-confirmed'], positionals: 0 },
+      open: { valued: ['shelf', 'seat', 'claim-token'], internal: ['claim-token'], positionals: 1 },
+      'rollback-check': { valued: ['registry-root'], positionals: 0 },
+    },
     // PLAN-basic-memory.md (S52): a connection, never a backend, and nothing written to Basic Memory in 1.1.
     ported: true,
     row: 'S52',
   },
   book: {
-    summary: 'Add a page to an open curated Book, or graduate a Notebook topic into one.',
+    summary: 'Add a page to an open curated Book (or a raw/ batch as its sources/ pages), correct one of its pages in place, keep its source list, rebuild its reader map, or graduate a Notebook topic into one.',
     // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `book <action> --help` shows it.
     usage:
       'library book add-page <slug> <page> (--content-path <f> | --body <text>) [--title <t>] [--seat <s>] [--preflight]; ' +
-      'library book graduate <slug> [--topic <t> | --source-path <p>] [--page-prefix <p>] [--recurse] [--seat <s>] [--preflight]',
-    actions: ['add-page', 'graduate'],
+      'library book add-page <slug> --from-folder raw/<batch> [--seat <s>] [--preflight]; ' +
+      'library book graduate <slug> [--topic <t> | --source-path <p>] [--page-prefix <p>] [--recurse] [--seat <s>] [--preflight]; ' +
+      'library book replace-page <slug> <page> --content-path <f> [--sources-compiled <f>] (--preflight | --base-sha256 <h>) [--seat <s>]; ' +
+      'library book reader-map <slug> [--seat <s>]; ' +
+      'library book sources <slug> [(--set | --mark-compiled) --content-path <f> (--preflight | --base-sha256 <h>)] [--seat <s>]',
+    actions: ['add-page', 'graduate', 'reader-map', 'replace-page', 'sources'],
     positional: false,
+    details: {
+      '*': [CONTENT_PATH_RULE],
+      'add-page': [CONTENT_PATH_RULE],
+      'replace-page': [CONTENT_PATH_RULE],
+      sources: [CONTENT_PATH_RULE],
+    },
+    // `--seat` IS ACCEPTED WHERE THE USAGE NAMES IT, and changes nothing there: the seat comes from the session.
+    arguments: {
+      // Two forms: `<slug> <page>`, or `<slug> --from-folder raw/<batch>`, which refuses a second word itself.
+      'add-page': { valued: ['title', 'body', 'content-path', 'from-folder', 'seat'], boolean: ['preflight'], positionals: 2 },
+      graduate: { valued: ['topic', 'source-path', 'page-prefix', 'seat'], boolean: ['recurse', 'preflight'], positionals: 1 },
+      // `--body` and `--title` are read only to be refused by name: a correction takes a file and keeps its own H1.
+      'replace-page': { valued: ['content-path', 'base-sha256', 'sources-compiled', 'body', 'title', 'seat'], internal: ['body', 'title'], boolean: ['preflight'], positionals: 2 },
+      // These two refuse a second word in their own sentences.
+      'reader-map': { valued: ['seat'], positionals: 1, ownWords: true },
+      sources: { valued: ['content-path', 'base-sha256', 'seat'], boolean: ['set', 'mark-compiled', 'preflight'], positionals: 1, ownWords: true },
+    },
     // `add-page` is ported whole; `graduate` answers --preflight and refuses the apply half by
     // name, because its per-page progress journal is what makes an interrupted run resumable.
     ported: true,
@@ -71,19 +173,57 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // --content-path beside --body (S66): on Windows the shim keeps only an inline body's first line.
     // --why (S73 row 3): one closed category, recorded and never required.
     // --supersedes (S73 row 4): closes the named older note in the same Book, and needs the Book open and a seat.
-    usage: 'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] [--supersedes notes/<page>] [--for <seat>]',
+    // --answers, --routes and --for-department (S98) were accepted and named in no usage (kickoffs/s106 row 6a).
+    usage:
+      'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] ' +
+      '[--supersedes notes/<page>] [--for <seat> | --for-department <department>] [--answers notes/<page>] [--routes notes/<page>]',
+    details: {
+      '*': [
+        '--for names one seat a letter is for; --for-department names a department, and any seat in it may answer.',
+        '--answers notes/<page> answers that letter and closes it; --routes notes/<page> hands it on to the seat --for names and closes it.',
+        CONTENT_PATH_RULE,
+      ],
+    },
     actions: [],
     positional: true,
+    arguments: {
+      '': {
+        valued: [
+          'title', 'body', 'content-path', 'why', 'supersedes', 'for', 'for-department', 'answers', 'routes',
+          'tags', 'source-paths', 'source-project', 'capture-date', 'require-note-file', 'seat',
+        ],
+        // `--seat` is read only to be refused: a capture's seat is the session's. The other two are triage batch's plumbing.
+        internal: ['capture-date', 'require-note-file', 'seat'],
+        boolean: ['preflight'],
+        positionals: 1,
+      },
+    },
     ported: true,
     row: 'S15',
   },
   collection: {
-    summary: "The shared collection's ownership claim, the Local collection's Discovery manifests, and a page added to one of its Books.",
+    summary: "The shared collection's ownership claim, the Local collection's Discovery manifests, and a page added to or corrected in one of its Books.",
     usage:
       'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]; library collection rebuild [--json]; ' +
-      'library collection add-page <slug> <page> (--content-path <f> | --body <b>) [--title <t>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]',
-    actions: ['add-page', 'owner', 'rebuild'],
+      'library collection add-page <slug> <page> (--content-path <f> | --body <b>) [--title <t>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]; ' +
+      'library collection replace-page <slug> <page> --content-path <f> (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]',
+    actions: ['add-page', 'owner', 'rebuild', 'replace-page'],
     positional: false,
+    details: {
+      '*': [CONTENT_PATH_RULE],
+      'add-page': [CONTENT_PATH_RULE],
+      'replace-page': [CONTENT_PATH_RULE],
+      owner: ['--status is the default: with neither --acquire nor --release, owner reports the claim, and --status changes nothing.'],
+    },
+    arguments: {
+      // `--status` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): it is the default, and the kernel's own
+      // remedy sentences and a matrix row name it.
+      owner: { boolean: ['status', 'acquire', 'release', 'force', 'user-confirmed'], positionals: 0 },
+      rebuild: { positionals: 0 },
+      'add-page': { valued: ['title', 'body', 'content-path', 'plan-id', 'lock-timeout', 'seat'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+      // `--body` and `--title` are read only to be refused by name.
+      'replace-page': { valued: ['content-path', 'plan-id', 'lock-timeout', 'seat', 'body', 'title'], internal: ['body', 'title'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+    },
     // Set-CollectionOwner.ps1 whole (S43), judged by kernel self-test section 28.
     ported: true,
     row: 'S16',
@@ -93,8 +233,16 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library compile <batch> --topic <t> --topic-title <title> --topic-overview <line> --article-slug <s> ' +
       '--content-path <file> --source-file <a[,b]> [--replace-existing] [--require-pin] [--preflight | --plan-id <id>] [--json]',
+    details: { '*': [CONTENT_PATH_RULE] },
     actions: [],
     positional: true,
+    arguments: {
+      '': {
+        valued: ['topic', 'topic-title', 'topic-overview', 'article-slug', 'content-path', 'source-file', 'allow-host', 'plan-id', 'seat'],
+        boolean: ['replace-existing', 'require-pin', 'preflight'],
+        positionals: 1,
+      },
+    },
     // A batch with no git repository compiles whole. A source file INSIDE one refuses by name: the
     // upstream pin -- HEAD, the tracked remote ref and a bounded fetch proving the commit is on the
     // remote -- is not ported, and withholding a pin the oracle would capture is a thinner answer.
@@ -106,14 +254,25 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library desk [open|close|clear] [book|project <slug>] [--location collection|shelf|shared] [--shelf archive] [--seat <name>] [--json]',
     actions: ['clear', 'close', 'open'],
     positional: false,
+    arguments: {
+      // THE OVERVIEW: any word is read as an action, and the verb refuses one it does not have.
+      '': { valued: ['seat'], positionals: 1 },
+      open: { valued: ['location', 'shelf', 'seat', 'claim-token'], internal: ['claim-token'], positionals: 2 },
+      close: { valued: ['location', 'shelf', 'seat', 'claim-token'], internal: ['claim-token'], positionals: 2 },
+      clear: { valued: ['location', 'shelf', 'seat', 'claim-token'], internal: ['claim-token'], positionals: 2 },
+    },
     ported: true,
     row: 'S14',
   },
   doctor: {
-    summary: 'Every registered check, with one result each. A check that did not run reports skipped.',
-    usage: 'library doctor [--workspace <path>] [--json]',
+    summary: 'Every registered check, with one result each. A check that did not run reports skipped. --report files each FAIL (and each WARN with --warnings) once into the Report Inbox.',
+    usage: 'library doctor [--workspace <path>] [--report [--warnings]] [--json]',
     actions: [],
     positional: false,
+    arguments: {
+      // `--served-by`, `--kept` and `--registry-root` are the installer's: `install` runs them in its child doctor.
+      '': { valued: ['served-by', 'registry-root'], repeatable: ['kept'], internal: ['served-by', 'registry-root', 'kept'], boolean: ['report', 'warnings'], positionals: 0 },
+    },
     // The nine checks that read the reader's material -- what `Invoke-LibraryChecks.ps1 -WorkspaceOnly`
     // runs. The program's own development gate is not a doctor's, and is not ported.
     ported: true,
@@ -124,6 +283,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library finish-uninstall --parent-pid <n> --root <dir> --handshake <file> --transaction <id> --result <file>',
     actions: [],
     positional: false,
+    arguments: { '': { valued: ['parent-pid', 'root', 'handshake', 'transaction', 'result'], positionals: 0 } },
+    workspace: false,
     // PLAN-no-powershell-runtime.md D8 (S83): the port of tools/Finish-Uninstall.ps1, started outside the uninstall's
     // job by CreateProcessW. Not in the menu; self-test section 116 judges it through a fixture install.
     ported: true,
@@ -136,6 +297,23 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '[--allow-overlap] [--repair] [--keep-libraries] [--path-change|--no-path-change] [--wait <seconds>] [--plugin|--skip-plugin] [--resume finish|undo] [--librarian claude|codex]',
     actions: [],
     positional: false,
+    // INSTALL REFUSES AN UNKNOWN FLAG AND A WORD ITSELF, in its own sentences (S89), from this table.
+    arguments: {
+      '': {
+        valued: [
+          'release', 'install-root', 'library', 'platform', 'plan-id', 'resume', 'librarian', 'wait',
+          'script-sha', 'script-path', 'refusal-file', 'extracted', 'archive-sha256', 'bootstrap-folder',
+        ],
+        boolean: [
+          'yes', 'dry-run', 'allow-overlap', 'repair', 'keep-libraries', 'no-path-change', 'path-change', 'plugin', 'skip-plugin',
+          'run-as-file', 'forwarded',
+        ],
+        internal: ['script-sha', 'script-path', 'refusal-file', 'extracted', 'archive-sha256', 'bootstrap-folder', 'run-as-file', 'forwarded'],
+        positionals: 0,
+        ownRefusals: true,
+      },
+    },
+    workspace: false,
     // PLAN-install-without-powershell.md D1-D8 (S89, ADR-0066). Run by a reader it is the bootstrap: it reads and checks
     // the release, then runs that release's own binary with --extracted <folder> --archive-sha256 <hex>, which installs.
     // install.ps1 is a forwarder onto the same, passing --forwarded, --refusal-file, --script-sha, --script-path and
@@ -156,6 +334,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
     },
     actions: [],
     positional: false,
+    // UPGRADE REFUSES AN UNKNOWN FLAG AND A WORD ITSELF, in its own sentences (S92), from this table.
+    arguments: {
+      '': { valued: ['release', 'plan-id', 'wait'], boolean: ['check', 'dry-run', 'yes', 'path-change', 'no-path-change'], positionals: 0, ownRefusals: true },
+    },
+    workspace: false,
     // PLAN-one-step-upgrade.md D1 (S92, ADR-0068): the check reads SHA256SUMS; an upgrade runs `install` as the
     // bootstrap with --install-root <this install>, so the new release does its own install.
     ported: true,
@@ -166,6 +349,19 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
     actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'],
     positional: false,
+    // ONE TABLE FOR EVERY HOOK, as the usage is one clause: a refused hook would fail a harness event, and a
+    // registration written by an older release passes the same few names to each.
+    arguments: Object.fromEntries(
+      ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'].map((action) => [
+        action,
+        {
+          valued: ['seat', 'state-directory', 'agent-pid', 'deadline-seconds', 'reader-tool-prefix'],
+          boolean: ['advisory'],
+          internal: ['deadline-seconds', 'advisory'],
+          positionals: 0,
+        },
+      ]),
+    ),
     // The two Shelf guards (S31, the first half of S20's port), the Basic Memory guard (S32) and the
     // ConfigChange settings guard and the UserPromptSubmit Desk context hook (S36). The PostCompact and
     // SessionStart serve-ledger clear, the PostToolUse search reminder and the SessionStart seat roster
@@ -202,9 +398,32 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line.",
         'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
         "Gated means --preflight first, then --user-confirmed --plan-id <id> with the reader's yes.",
+        'add-section, append-section and check-item given a --plan-id apply only when it is the one their --preflight gives now.',
+        CONTENT_PATH_RULE,
       ],
     },
     positional: false,
+    arguments: {
+      new: { valued: ['title', 'purpose', 'next-action'], boolean: ['dev', 'preflight'], positionals: 1 },
+      // EVERY MODE'S NAMES IN ONE TABLE; `--title` given to a mode but new-page is refused in hubedit.ts, and
+      // `--user-confirmed` is accepted on every mode.
+      edit: {
+        valued: ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'title', 'plan-id', 'seat', 'lock-timeout'],
+        boolean: ['uncheck', 'preflight', 'user-confirmed'],
+        positionals: 1,
+        // S97's own sentence refuses a second word, naming it.
+        ownWords: true,
+      },
+      archive: { boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      'copy-pages': {
+        valued: ['source', 'title', 'purpose', 'destination-directory', 'plan-id', 'journal-path'],
+        repeatable: ['next-action', 'include-page'],
+        boolean: ['at-project-root', 'preflight', 'user-confirmed', 'replace-existing'],
+        internal: ['journal-path'],
+        positionals: 1,
+      },
+      rename: { valued: ['title', 'plan-id', 'lock-timeout'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+    },
     // `new` against both backends (S30 local, S33 Basic Memory); `edit` against both (S34); `archive`
     // (S34) and `copy-pages` (S35) against Basic Memory, their preflights, with the confirmed halves
     // refusing by name.
@@ -216,6 +435,17 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library init [<folder>] [--writable] [--json]',
     actions: [],
     positional: true,
+    // INIT REFUSES AN UNKNOWN FLAG AND A SECOND FOLDER ITSELF, in its own sentences (S61), from this table; `--force`
+    // is read only to be refused by name.
+    arguments: {
+      '': {
+        valued: ['registry-root', 'collection-id', 'mcp-url'],
+        boolean: ['writable', 'force'],
+        internal: ['registry-root', 'collection-id', 'mcp-url', 'force'],
+        positionals: 1,
+        ownRefusals: true,
+      },
+    },
     ported: true,
     row: 'S13',
   },
@@ -224,15 +454,39 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library library [list] [--json]; library library default <folder> [--json]',
     actions: ['default', 'list'],
     positional: false,
+    arguments: {
+      '': { valued: ['registry-root'], internal: ['registry-root'], positionals: 0 },
+      list: { valued: ['registry-root'], internal: ['registry-root'], positionals: 0 },
+      default: { valued: ['registry-root'], internal: ['registry-root'], positionals: 1 },
+    },
+    workspace: false,
     // PLAN-install-onboarding.md step 5a (S55, ADR-0059): the default Library is one registry entry's `default: true`.
     ported: true,
     row: 'S55',
+  },
+  browse: {
+    summary: 'What the Library holds: Shelf Books, collection Books and Projects, by title, slug, summary and topics. Seatless, offline, metadata only; the menu shows it on l.',
+    usage: 'library browse [--archived] [--json] [--workspace <path>]',
+    actions: [],
+    positional: false,
+    arguments: { '': { boolean: ['archived'], positionals: 0, ownWords: true } },
+    // PLAN-correct-and-find.md D5 (S102 row 4).
+    ported: true,
+    row: 'S102',
   },
   menu: {
     summary: 'The main menu, which bare `deskpost` opens: your seats, a number to resume one, n<number> for a new conversation, + for a new seat.',
     usage: 'library menu [--workspace <path>] [--width <n>] [--plain] [--assistant claude|codex] [--script <answers-file>]',
     actions: [],
     positional: false,
+    arguments: {
+      '': {
+        valued: ['width', 'assistant', 'script', 'registry-root', 'transcript-root', 'cwd'],
+        boolean: ['plain'],
+        internal: ['registry-root', 'transcript-root', 'cwd'],
+        positionals: 0,
+      },
+    },
     // PLAN-install-onboarding.md step 5a (S55, ADR-0059): tools/SeatPicker.ps1 ported, launching through `seat start`.
     ported: true,
     row: 'S55',
@@ -240,10 +494,19 @@ export const VERBS: Record<string, VerbDeclaration> = {
   mcp: {
     summary: 'The validated reader: one tool call the way a harness makes it, or the stdio MCP server a harness launches.',
     usage:
-      'library mcp call <tool> [--slug <s>] [--page <p>] [--place shelf|collection|shared] [--query <q>] [--location <l>]; ' +
+      'library mcp call <tool> [--slug <s>] [--page <p>] [--place shelf|collection|shared] [--section <heading>] [--query <q>] [--location <l>]; ' +
       'library mcp serve [--workspace <path>] [--state-directory <d>] [--seat <s>]',
     actions: ['call', 'serve'],
     positional: false,
+    arguments: {
+      // One option per tool argument, `max_results` spelled `--max-results`; `--location` also answers for `--place`.
+      call: {
+        valued: ['slug', 'page', 'place', 'location', 'shelf', 'section', 'query', 'max-results', 'seat', 'id'],
+        internal: ['id'],
+        positionals: 1,
+      },
+      serve: { valued: ['state-directory', 'seat'], positionals: 0 },
+    },
     ported: true,
     row: 'S13',
   },
@@ -253,6 +516,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library migrate [--assign <item>=<seat>[,...]] [--set-aside <item>[,...]] (--preflight | --plan-id <id>) | --resume | --rollback [--seat <s>] [--json]',
     actions: [],
     positional: false,
+    arguments: {
+      '': { valued: ['assign', 'set-aside', 'plan-id', 'seat', 'fault-after'], internal: ['fault-after'], boolean: ['preflight', 'resume', 'rollback'], positionals: 0 },
+    },
     // ADR-0029's migration (S18). It exists only here: the PowerShell implementation never carries the
     // seat-owned Notebook, so its row is independent and tools/Test-NotebookMigration.ps1 judges it.
     ported: true,
@@ -263,6 +529,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library notebook <render [--seat <s>] | own> [--workspace <path>] [--json]',
     actions: ['own', 'render'],
     positional: false,
+    arguments: {
+      render: { valued: ['seat'], positionals: 0 },
+      // RETIRED: it refuses by name before any table is read (kickoffs/s106 ruling 3).
+      own: { positionals: 0, retired: true },
+    },
     ported: true,
     row: 'S17',
   },
@@ -271,6 +542,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library process <start|ancestry|wait> <pid> [--start-utc <s>] [--poll-ms <n>]; library process list [--name <image>]',
     actions: ['ancestry', 'list', 'start', 'wait'],
     positional: false,
+    arguments: {
+      start: { positionals: 1 },
+      ancestry: { positionals: 1 },
+      wait: { valued: ['start-utc', 'poll-ms'], positionals: 1 },
+      list: { valued: ['name'], positionals: 0 },
+    },
+    workspace: false,
     // PLAN-no-powershell-runtime.md D7 (S83): the calls a seat and a lifecycle switch make, on `bun:ffi` in a compiled
     // kernel. Not in the menu; self-test section 115 judges a compiled kernel through it with no PowerShell on PATH.
     ported: true,
@@ -279,12 +557,37 @@ export const VERBS: Record<string, VerbDeclaration> = {
   publish: {
     summary: "Publish, batch-publish or refresh a Shelf Book into the Library's collection: collection/ on a local Library, Basic Memory on one attached to it.",
     usage:
-      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] --preflight, ' +
-      'then --user-confirmed --plan-id <plan_id>; library publish batch --plan <path> --preflight; ' +
-      'library publish refresh <slug> --title <t> --summary <s> [--collection <c>] --preflight, then --user-confirmed --plan-id <refresh_plan_id>. ' +
-      "A recalled Book's --title and --summary default to its Shelf entry. On a local Library a refresh is approved by its refresh_plan_id, never its candidate_plan_id",
+      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] ' +
+      '(--preflight | --user-confirmed --plan-id <plan_id>); library publish batch --plan <path> (--preflight | --user-confirmed --plan-id <plan_id>); ' +
+      'library publish refresh <slug> --title <t> --summary <s> [--collection <c>] (--preflight | --user-confirmed --plan-id <refresh_plan_id>)',
+    // THE PROSE THAT ENDED THE USAGE (S106 row 3): a usage clause is grammar the docs check reads, so sentences live here.
+    details: {
+      '*': [
+        'Each runs --preflight first, then --user-confirmed --plan-id <id> with the id the preflight issued.',
+        "A recalled Book's --title and --summary default to its Shelf entry. On a local Library a refresh is approved by its",
+        'refresh_plan_id, never its candidate_plan_id.',
+      ],
+    },
     actions: ['batch', 'refresh'],
     positional: true,
+    arguments: {
+      '': {
+        valued: [
+          'title', 'summary', 'book-slug', 'collection', 'topics', 'book-version', 'reason', 'lock-timeout', 'plan-id',
+          'publication-journal-path', 'workflow-journal-path',
+        ],
+        boolean: ['replace-existing', 'preflight', 'user-confirmed'],
+        internal: ['publication-journal-path', 'workflow-journal-path'],
+        positionals: 1,
+      },
+      batch: { valued: ['plan', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 0 },
+      refresh: {
+        valued: ['title', 'summary', 'book-slug', 'collection', 'lock-timeout', 'plan-id', 'journal-path'],
+        boolean: ['preflight', 'user-confirmed'],
+        internal: ['journal-path'],
+        positionals: 1,
+      },
+    },
     // The fence (S34), then the three preflights (S35, src/publish.ts): Publish-ShelfBookToShared,
     // Publish-ShelfBookBatchToShared and Publish-BookCopy -ReplaceExisting. The confirmed publish and refresh
     // since S39, and the batch's since S40.
@@ -293,9 +596,18 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   raw: {
     summary: 'Scoped search over one source batch, and which Project owns each batch.',
-    usage: 'library raw <search|owners> [arguments]',
+    usage: 'library raw search <batch> <query> [--max-results <n>]; library raw owners [--offline]',
     actions: ['owners', 'search'],
     positional: false,
+    details: {
+      owners: ['--offline is the default: owners reads only this Library and never the network, so --offline changes nothing.'],
+    },
+    arguments: {
+      search: { valued: ['max-results'], positionals: 2 },
+      // `--offline` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): the verb is always offline, and a matrix
+      // row passes it.
+      owners: { boolean: ['offline'], positionals: 0 },
+    },
     ported: true,
     row: 'S15',
   },
@@ -306,6 +618,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library reset restore (--list | --quarantine <name> [--show | --topic <t,...>] [--adopt] [--preflight | --plan-id <id>]) [--json]',
     actions: ['restore'],
     positional: false,
+    arguments: {
+      // `--whole-tree` and `--all-idle-seats` are read only to be refused by name.
+      '': { valued: ['seat', 'plan-id'], boolean: ['clear-desk', 'preflight', 'whole-tree', 'all-idle-seats'], internal: ['whole-tree', 'all-idle-seats'], positionals: 0 },
+      restore: { valued: ['quarantine', 'topic', 'plan-id', 'seat'], boolean: ['list', 'show', 'adopt', 'preflight'], positionals: 0 },
+    },
     ported: true,
     row: 'S17',
   },
@@ -315,7 +632,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library seat <cards|describe|dirs|enter|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
       '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
       'library seat start <name> --project <slug> [--template performer|orchestrator] [--department <slug>] [--role performer|orchestrator] ' +
-      '[--card "<one line>"] [--open-book <shelf-slug>]... [--preflight | --plan-id <id>] (a new seat; any of these needs the plan_id its preflight issued); ' +
+      '[--card "<one line>"] [--open-book <shelf-slug>]... [--preflight | --plan-id <id>]; ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--clear-department] [--clear-role] [--clear-card] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
@@ -327,6 +644,47 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // the reader's gate (1.3.8, ADR-0069), and `cards` lists them as the directory, computed and read only.
     actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'retire', 'settings', 'start', 'status'],
     positional: false,
+    details: {
+      start: ['A new seat: --template, --department, --role, --card and --open-book each need the plan_id its --preflight issued.'],
+      dirs: ['--list is the default: with neither --add nor --remove, dirs lists the seat\'s folders, and --list changes nothing.'],
+    },
+    arguments: {
+      cards: { valued: ['seat'], boolean: ['all'], positionals: 0 },
+      describe: {
+        valued: ['department', 'role', 'card', 'from', 'plan-id'],
+        boolean: ['clear-department', 'clear-role', 'clear-card', 'preflight'],
+        positionals: 1,
+      },
+      dirs: { valued: ['add', 'remove'], boolean: ['list'], positionals: 1 },
+      // THE SESSION-START HOOK'S ROUTE: the five `seat start` options are read only to be refused by name here.
+      enter: {
+        valued: ['agent-pid', 'session-id', 'deadline-seconds', 'project', 'plan-id', 'department', 'role', 'card', 'template', 'open-book'],
+        boolean: ['create', 'preflight'],
+        internal: ['agent-pid', 'deadline-seconds'],
+        positionals: 1,
+      },
+      // The claim holder `seat enter` spawns; never run by hand.
+      hold: {
+        valued: ['seat', 'attempt-id', 'agent-pid', 'agent-start-utc', 'poll-ms'],
+        internal: ['seat', 'attempt-id', 'agent-pid', 'agent-start-utc', 'poll-ms'],
+        positionals: 0,
+      },
+      retire: { valued: ['plan-id'], boolean: ['preflight'], positionals: 1 },
+      settings: { valued: ['inbound', 'plan-id'], boolean: ['preflight'], positionals: 1 },
+      // EVERYTHING AFTER A BARE `--` IS THE AGENT'S, never checked. The two legacy names are read only to be refused.
+      start: {
+        valued: [
+          'project', 'command', 'plan-id', 'assistant', 'resume', 'session-id', 'department', 'role', 'card', 'template',
+          'deadline-seconds', 'restore-desk-from-archive',
+        ],
+        repeatable: ['open-book'],
+        boolean: ['no-launch', 'preflight', 'retire-legacy-desk'],
+        internal: ['deadline-seconds', 'restore-desk-from-archive', 'retire-legacy-desk'],
+        positionals: 1,
+        passthrough: true,
+      },
+      status: { valued: ['seat'], boolean: ['text'], positionals: 0 },
+    },
     ported: true,
     row: 'S14',
   },
@@ -338,6 +696,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // 29-32, which drive the kernel's real verbs, because a kernel judging itself is not a judge.
     actions: ['codex-hooks', 'hooks', 'session-start'],
     positional: false,
+    // NOT PORTED: it refuses by name before any table is read.
+    arguments: { '': { positionals: 0, retired: true }, 'codex-hooks': { positionals: 0, retired: true }, hooks: { positionals: 0, retired: true }, 'session-start': { positionals: 0, retired: true } },
     ported: false,
     row: 'S18',
   },
@@ -346,6 +706,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library rollback [--yes] [--json]',
     actions: [],
     positional: false,
+    arguments: { '': { boolean: ['yes'], positionals: 0 } },
+    workspace: false,
     // PLAN-install-onboarding.md step 8 (S54, ADR-0058), keeping ADR-0054's shared-Desk preflight. Windows in 1.1.
     ported: true,
     row: 'S54',
@@ -358,6 +720,18 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library setup --welcome --workspace <Library> [--assistant claude|codex]',
     actions: [],
     positional: true,
+    // EVERY MODE'S NAMES IN ONE TABLE, as the usage is one verb; `--welcome` is answered by the menu's module.
+    arguments: {
+      '': {
+        valued: [
+          'answers', 'install-root', 'library', 'resources', 'register-as', 'out', 'plan-file', 'assistant', 'script',
+          'cwd', 'checksum-note', 'registry-root', 'release-sha', 'script-sha', 'user-path', 'refresh-served',
+        ],
+        boolean: ['ask', 'plan', 'apply', 'welcome', 'sessions', 'yes', 'repair', 'allow-overlap', 'no-path-change', 'run-as-file', 'keep-libraries'],
+        internal: ['script', 'cwd', 'checksum-note', 'registry-root', 'release-sha', 'script-sha', 'user-path', 'refresh-served', 'sessions', 'run-as-file', 'keep-libraries'],
+        positionals: 1,
+      },
+    },
     // PLAN-install-onboarding.md steps 2-4 (S54, ADR-0057). The installer runs --ask, --plan and --apply; a reader runs the bare verb.
     ported: true,
     row: 'S54',
@@ -366,9 +740,17 @@ export const VERBS: Record<string, VerbDeclaration> = {
     summary: "The collection's Catalog: `collection/` on a local Library, Basic Memory on one attached to it. List an entry, archive a Book.",
     usage:
       'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight; ' +
-      "library shared archive <slug> [--kind book] --user-confirmed --plan-id <id> (a local Library: the plan_id its preflight issued)",
+      'library shared archive <slug> [--kind book] --user-confirmed --plan-id <id>',
+    details: {
+      archive: ['On a local Library, --plan-id is the plan_id the preflight issued.'],
+    },
     actions: ['archive', 'list-entry'],
     positional: false,
+    arguments: {
+      // Both backends' names: a local Library reads `--kind` and `--plan-id`; Basic Memory's preflight reads neither.
+      archive: { valued: ['kind', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      'list-entry': { valued: ['title', 'summary', 'kind', 'collection'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+    },
     // Both preflights, against Basic Memory (S34); a confirmed run names the PowerShell helper.
     ported: true,
     row: 'S16',
@@ -393,6 +775,21 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library shelf rebuild [<slug>]',
     actions: ['archive', 'carry', 'duplicates', 'new', 'rebuild', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
     positional: false,
+    arguments: {
+      '': { positionals: 0 },
+      render: { positionals: 0 },
+      new: { valued: ['title', 'summary', 'topics', 'origin', 'closed-by'], boolean: ['capture', 'letters', 'preflight'], positionals: 1 },
+      rename: { valued: ['new-title', 'plan-id'], boolean: ['preflight'], positionals: 2 },
+      remove: { valued: ['reason', 'seat', 'plan-id'], boolean: ['preflight'], positionals: 1 },
+      archive: { valued: ['reason', 'plan-id'], boolean: ['preflight'], positionals: 1 },
+      restore: { valued: ['plan-id'], boolean: ['preflight'], positionals: 1 },
+      stub: { valued: ['canonical', 'reason', 'superseded-on', 'plan-id'], boolean: ['preflight'], positionals: 2 },
+      duplicates: { valued: ['embedding-url', 'embedding-model', 'api-key', 'similarity-threshold', 'batch-size'], positionals: 0 },
+      carry: { valued: ['book', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      recall: { valued: ['shelf-slug', 'lock-timeout', 'plan-id', 'seat'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      tidy: { valued: ['days', 'restore', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      rebuild: { positionals: 1 },
+    },
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.
     ported: true,
@@ -400,7 +797,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   triage: {
     summary: 'The triage inventory, plan validation, and the resumable batch.',
-    usage: 'library triage <inventory [--pending]|validate|batch> [--actions <json>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
+    usage: 'library triage <inventory [--pending]|validate|batch> [--actions <json> | --actions-path <file>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
     // THE SOURCES, AND HOW A LETTER IS CLOSED (S85 row 5, backlog Row C): `source_slug` was nowhere in the help.
     details: {
       '*': [
@@ -409,6 +806,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
         '  notebook   a Notebook article.',
         '',
         'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting, and no Notebook page.',
+        'validate is always a preview: it writes nothing, and --preflight changes nothing there.',
+        '--actions-path <file> reads the actions as UTF-8 JSON from a file, in place of --actions: Windows PowerShell strips the',
+        'quotes inside an inline JSON value. ' + CONTENT_PATH_RULE.replace('--content-path', '--actions-path'),
         '',
         'Marking a letter read (the seat it is for may close it):',
         `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,
@@ -416,6 +816,19 @@ export const VERBS: Record<string, VerbDeclaration> = {
     },
     actions: ['batch', 'inventory', 'validate'],
     positional: false,
+    arguments: {
+      inventory: { boolean: ['pending'], positionals: 0 },
+      // `--preflight` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): validation is always a preview, and a
+      // matrix row passes it.
+      validate: { valued: ['actions', 'actions-path', 'capture-date', 'seat'], boolean: ['preflight'], internal: ['capture-date'], positionals: 0 },
+      // `--plan-path` is read only to be refused by name.
+      batch: {
+        valued: ['actions', 'actions-path', 'capture-date', 'seat', 'plan-id', 'lock-timeout', 'plan-path'],
+        boolean: ['preflight', 'user-confirmed'],
+        internal: ['capture-date', 'plan-path'],
+        positionals: 0,
+      },
+    },
     // All three answer. `batch` (S43) runs and resumes a plan for the local kinds and refuses a project or
     // book action by name; the old `resume` action is gone, because a resume IS the same batch run again.
     ported: true,
@@ -426,6 +839,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library uninstall [--dry-run] [--yes] [--json]',
     actions: [],
     positional: false,
+    arguments: { '': { boolean: ['dry-run', 'yes'], positionals: 0 } },
+    workspace: false,
     // PLAN-install-onboarding.md step 8 (S54, ADR-0058): a frozen list, the Libraries edited first, then a finisher. Windows in 1.1.
     ported: true,
     row: 'S54',
@@ -435,6 +850,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage: 'library verbs',
     actions: [],
     positional: false,
+    arguments: { '': { positionals: 0 } },
+    workspace: false,
     ported: true,
     row: 'S13',
   },

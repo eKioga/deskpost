@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { withBookLocks } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
@@ -92,7 +93,7 @@ const STALE_PLAN_ID =
   'changed since you approved it. Nothing was moved.';
 
 export function localSharedArchive(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['workspace', 'plan-id', 'kind']);
+  const parsed = parseArguments(argv, argumentTable('shared', 'archive'));
   const slug = parsed.positional[0] ?? '';
   if (!slug.trim()) refuse('BookSlug is required.');
   if (!SLUG.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');

@@ -14,15 +14,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { programRoot } from './programroot.ts';
 import { installRootOf } from './machine.ts';
 import { DEFAULT_RELEASE, defaultPlatform, newTempFolder, readReleaseFile } from './bootstrap.ts';
 import { installVerb } from './install.ts';
 import { compareVersions, latestVersionIn } from './versions.ts';
 import { upgradeLine } from './setup.ts';
-
-const UPGRADE_VALUED = ['release', 'plan-id', 'wait'];
-const UPGRADE_FLAGS = ['check', 'dry-run', 'json', 'yes', 'path-change', 'no-path-change'];
 
 export interface UpgradeCheck {
   installed: string | null;
@@ -106,14 +104,9 @@ export function readUpdateRecord(root: string): UpdateRecord | null {
   }
 }
 
-/**
- * `DESKPOST_UPDATE_CHECK`: `0` turns the check and its line off; `1` forces the check whenever the menu opens, for a
- * fixture that cannot be a terminal (ADR-0068); anything else is the default, once a day from an interactive menu.
- */
-export function updateCheckSetting(): 'off' | 'forced' | 'daily' {
-  const value = (process.env['DESKPOST_UPDATE_CHECK'] ?? '').trim();
-  return value === '0' ? 'off' : value === '1' ? 'forced' : 'daily';
-}
+/** `DESKPOST_UPDATE_CHECK`'s reading lives in `updatecheck.ts` (kickoffs/s102 K3); it is re-exported here for its callers. */
+import { updateCheckSetting } from './updatecheck.ts';
+export { updateCheckSetting };
 
 /** Whether a day has passed since the last attempt, error included, so the gate holds offline. */
 export function updateCheckDue(root: string, now: number = Date.now()): boolean {
@@ -162,15 +155,16 @@ export interface UpgradeResult {
 }
 
 export async function upgradeVerb(argv: string[]): Promise<UpgradeResult> {
-  const parsed = parseArguments(argv, UPGRADE_VALUED);
-  const unknown = [...parsed.flags].filter((name) => !UPGRADE_FLAGS.includes(name));
+  const parsed = parseArguments(argv, argumentTable('upgrade'));
+  const unknown = [...parsed.flags].filter((name) => !(argumentTable('upgrade').boolean ?? []).includes(name));
   if (unknown.length) return { refusal: `deskpost upgrade has no ${unknown.map((name) => `--${name}`).join(', ')}. Run \`deskpost upgrade --help\` for what it takes. Nothing was changed.`, exitCode: 1 };
   if (parsed.positional.length) return { refusal: `deskpost upgrade takes no words ('${parsed.positional.join(' ')}'); it upgrades the install it runs from. Nothing was changed.`, exitCode: 1 };
   const check = parsed.flags.has('check');
   const json = parsed.flags.has('json');
-  // INSIDE A SEAT'S SESSION IT REFUSES (D1): the upgrade waits for every session, this one included. `--check` changes
-  // nothing and is answered anywhere.
-  if (!check && insideSeat()) {
+  // INSIDE A SEAT'S SESSION IT REFUSES (D1): the upgrade waits for every session, this one included. `--check` and
+  // `--dry-run` change nothing and are answered anywhere (kickoffs/s102 K1); the dry run's Sessions row then names this
+  // session among the open ones.
+  if (!check && !parsed.flags.has('dry-run') && insideSeat()) {
     return { refusal: 'Run `deskpost upgrade` from a terminal or the main menu, not from a seat\'s session: the upgrade waits for every session, including this one. Nothing was changed.', exitCode: 1 };
   }
   const root = installRootOf(programRoot());

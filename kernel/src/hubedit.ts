@@ -22,6 +22,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { resolveContentPath } from './contentpath.ts';
+import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
@@ -65,7 +67,7 @@ export function joinLines(lines: string[]): string {
   return lines.join('\n').replace(/\n+$/, '') + '\n';
 }
 
-function removeTrailingBlank(lines: string[]): string[] {
+export function removeTrailingBlank(lines: string[]): string[] {
   let end = lines.length;
   while (end > 0 && isBlank(lines[end - 1])) end--;
   return lines.slice(0, end);
@@ -103,13 +105,13 @@ function fencedLineMask(lines: string[]): boolean[] {
   return mask;
 }
 
-interface Heading {
+export interface Heading {
   index: number;
   level: number;
   text: string;
 }
 
-function headings(lines: string[]): Heading[] {
+export function headings(lines: string[]): Heading[] {
   const fenced = fencedLineMask(lines);
   const found: Heading[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -148,6 +150,11 @@ function sectionSpan(lines: string[], section: string): Span | null {
 function sectionText(lines: string[], span: Span | null): string {
   if (span === null) return '';
   return removeTrailingBlank(lines.slice(span.start, span.end)).join('\n');
+}
+
+/** A Markdown table row: its first non-blank character is `|`. */
+function isTableLine(line: string): boolean {
+  return /^[ \t]{0,3}\|/.test(line);
 }
 
 /** `Test-ListLine`, whose `-match` is case-insensitive -- which no character in it can feel. */
@@ -286,8 +293,8 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
   const lines = toLines(currentBody);
   const addition = removeTrailingBlank(toLines(content));
   if (mode === 'RemoveSection') {
-    if (!isBlank(content)) refuse('RemoveSection takes no content.');
-    if (!isBlank(matchText)) refuse('RemoveSection takes no MatchText.');
+    if (!isBlank(content)) refuse('remove-section takes no content.');
+    if (!isBlank(matchText)) refuse('remove-section takes no --match-text.');
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
   }
   if (!['ReplaceBody', 'CheckItem', 'RemoveSection'].includes(mode) && addition.length === 0) refuse('The supplied content is empty.');
@@ -323,13 +330,13 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
   }
 
   if (mode === 'ReplaceBody') {
-    if (addition.length === 0) refuse('ReplaceBody requires a non-empty body.');
+    if (addition.length === 0) refuse('replace-body requires a non-empty body.');
     return joinLines(addition);
   }
 
   const span = sectionSpan(lines, section);
   if (mode === 'AddSection') {
-    if (span !== null) refuse(`Section '${section}' already exists; use AppendSection or ReplaceSection.`);
+    if (span !== null) refuse(`Section '${section}' already exists; use append-section or replace-section.`);
     const kept = removeTrailingBlank(lines);
     const result: string[] = [];
     if (kept.length) result.push(...kept, '');
@@ -360,6 +367,8 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
   if (mode === 'AppendSection') {
     // A bullet added to a list continues that list; prose gets its own paragraph break.
     const continuesList = insideList(sectionLines) && isListLine(addition[0]!);
+    // A ROW ADDED TO A TABLE AT THE SECTION'S END continues that table (kickoffs/s102 K4): a blank line would end it.
+    const continuesTable = sectionLines.length > 1 && isTableLine(sectionLines[sectionLines.length - 1]!) && isTableLine(addition[0]!);
     // A BULLET ADDED TO A SECTION WHOSE LIST IS FOLLOWED BY PROSE joins that list, before the prose (Report
     // 2026-09-29): appended after the prose, it read as the prose's own item.
     const listEnd = !continuesList && isListLine(addition[0]!) ? lastListEnd(sectionLines) : -1;
@@ -367,7 +376,7 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
       result.push(...sectionLines.slice(0, listEnd), ...addition, ...sectionLines.slice(listEnd));
     } else {
       result.push(...sectionLines);
-      if (!continuesList) result.push('');
+      if (!continuesList && !continuesTable) result.push('');
       result.push(...addition);
     }
   } else {
@@ -693,13 +702,14 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
 }
 
 async function hubEditUnwarned(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['mode', 'section', 'match-text', 'content', 'content-path', 'page', 'seat', 'plan-id', 'workspace', 'lock-timeout', 'title']);
+  const parsed = parseArguments(argv, argumentTable('hub', 'edit'));
   // ONE SLUG HELPER FOR EVERY HUB WRITER (PLAN-one-step-upgrade.md small fix 2): `projects/<slug>` is taken, and a
   // refusal names `<slug>`, not the PowerShell parameter. The oracle's order is kept: a blank slug, then the mode.
   const { slug, problem: slugProblem } = hubSlug(parsed.positional[0] ?? '');
   const modeWord = parsed.options.get('mode') ?? '';
   if (isBlank(slug)) refuse(slugProblem!);
-  if (isBlank(modeWord)) refuse('Mode is required: AddSection, AppendSection, CheckItem, RemoveSection, ReplaceItem, ReplaceSection, ReplaceBody, or new-page.');
+  // MODE NAMES IN A REFUSAL ARE THE CLI'S (kickoffs/s106 ruling 2): `add-section`, never the PowerShell `AddSection`.
+  if (isBlank(modeWord)) refuse(`--mode is required: ${Object.keys(MODE_WORDS).join(', ')}, or new-page.`);
   // ONE POSITIONAL WORD, THE HUB'S SLUG, IN EVERY MODE (S97 row 4, deskpost-prompts-dev's Report). No mode reads a second,
   // so one is a value the shell split or a quote left open: refused before anything is read or written.
   if (parsed.positional.length > 1) {
@@ -742,6 +752,12 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (mode === undefined) {
     refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}, new-page.`);
   }
+  // `--title` IS NEW-PAGE'S ALONE (PLAN-correct-and-find.md D7 bullet 2): every other mode ignored it, so a seat that gave one
+  // to rename a page heard nothing and the page kept its H1.
+  if (parsed.options.has('title')) {
+    const word = Object.keys(MODE_WORDS).find((key) => MODE_WORDS[key] === mode) ?? mode;
+    refuse(`hub edit --mode ${word} takes no --title: only new-page reads one, as a new page's H1. Nothing was written.`);
+  }
   if (slugProblem !== null) refuse(slugProblem);
 
   // THE FENCE, THEN THE COLLECTION ID, before anything about the page: the oracle's order, so a
@@ -768,8 +784,8 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (!isBlank(section)) section = section.trim().replace(/^#+/, '').trim();
   if (mode === 'RemoveSection') {
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
-    if (contentGiven || contentPathGiven) refuse('RemoveSection takes no content; do not supply --content or --content-path.');
-    if (parsed.options.has('match-text')) refuse('RemoveSection takes no --match-text.');
+    if (contentGiven || contentPathGiven) refuse('remove-section takes no content; do not supply --content or --content-path.');
+    if (parsed.options.has('match-text')) refuse('remove-section takes no --match-text.');
   }
   if (ITEM_MODES.includes(mode) && isBlank(matchText)) {
     refuse(`${mode} requires --match-text: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
@@ -778,12 +794,12 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const usedContentPath = !isBlank(contentPath);
   let contentFull = '';
   if (mode === 'CheckItem') {
-    if (usedContent || usedContentPath) refuse('CheckItem changes only the checkbox marker; it takes no content.');
+    if (usedContent || usedContentPath) refuse('check-item changes only the checkbox marker; it takes no content.');
   } else if (mode !== 'RemoveSection' && usedContent === usedContentPath) {
     refuse('Supply exactly one of --content or --content-path.');
   }
   if (usedContentPath) {
-    contentFull = path.resolve(path.isAbsolute(contentPath) ? contentPath : path.join(workspace, contentPath));
+    contentFull = resolveContentPath(workspace, contentPath);
     if (!fs.existsSync(contentFull) || !fs.statSync(contentFull).isFile()) refuse(`--content-path '${contentPath}' is not a file (resolved to ${contentFull}).`);
     try {
       content = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(contentFull));
@@ -842,13 +858,13 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const currentLines = toLines(currentBody);
   const proposedLines = toLines(proposedBody);
   if (mode === 'CheckItem') {
-    if (currentLines.length !== proposedLines.length) refuse('CheckItem would change the page shape; the edit stopped without writing.');
+    if (currentLines.length !== proposedLines.length) refuse('check-item would change the page shape; the edit stopped without writing.');
     const differing = currentLines.map((_, i) => i).filter((i) => currentLines[i] !== proposedLines[i]);
-    if (differing.length > 1) refuse(`CheckItem would change ${differing.length} lines; the edit stopped without writing.`);
+    if (differing.length > 1) refuse(`check-item would change ${differing.length} lines; the edit stopped without writing.`);
     if (differing.length === 1) {
       const normalizedOld = currentLines[differing[0]!]!.replace(/\[[ xX]\]/g, '[ ]');
       const normalizedNew = proposedLines[differing[0]!]!.replace(/\[[ xX]\]/g, '[ ]');
-      if (normalizedOld !== normalizedNew) refuse('CheckItem would change more than the checkbox marker; the edit stopped without writing.');
+      if (normalizedOld !== normalizedNew) refuse('check-item would change more than the checkbox marker; the edit stopped without writing.');
     }
   } else if (!isReplacing && !linesPreserved(currentLines, proposedLines)) {
     refuse(`${mode} would not preserve the existing page text; the edit stopped without writing.`);
@@ -862,8 +878,13 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   let sectionAfter: PsJsonValue = null;
   let itemBefore: PsJsonValue = null;
   let itemAfter: PsJsonValue = null;
+  // THE SECTION'S BODY WITHOUT ITS HEADING (kickoffs/s106 row 7d): `section_before` starts at the `## ` line, which
+  // replace-section refuses in its content, so a seat editing the preview had to cut it first. Both are given.
+  let sectionBodyBefore: PsJsonValue = null;
   if (SECTION_MODES.includes(mode)) {
-    sectionBefore = sectionText(currentLines, sectionSpan(currentLines, section));
+    const beforeSpan = sectionSpan(currentLines, section);
+    sectionBefore = sectionText(currentLines, beforeSpan);
+    sectionBodyBefore = beforeSpan === null ? null : sectionText(currentLines, { ...beforeSpan, start: beforeSpan.start + 1 }).replace(/^(\s*\n)+/, '');
     const afterSpan = sectionSpan(proposedLines, section);
     sectionAfter = afterSpan === null ? null : sectionText(proposedLines, afterSpan);
   }
@@ -896,6 +917,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     current_line_count: currentLines.length,
     proposed_line_count: proposedLines.length,
     section_before: sectionBefore,
+    section_body_before: sectionBodyBefore,
     section_after: sectionAfter,
     item_before: itemBefore,
     item_after: itemAfter,
@@ -933,6 +955,14 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     if ((parsed.options.get('plan-id') ?? '') !== planId) {
       refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page changed since the preview; it reads ${currentHash} now.`);
     }
+  } else if (parsed.options.has('plan-id') && (parsed.options.get('plan-id') ?? '').trim() !== planId) {
+    // AN ADDITIVE EDIT GIVEN A PLAN ID IS BOUND BY IT (kickoffs/s106 row 5; the Report triaged 2026-10-08 06:58 PDT): it
+    // was ignored, so a seat that previewed, then applied after the page moved, wrote anyway. Without one it stays ungated.
+    const word = Object.keys(MODE_WORDS).find((key) => MODE_WORDS[key] === mode) ?? mode;
+    refuse(
+      `${word} was given a --plan-id that is not this edit's: rerun --preflight and pass its exact plan_id, or leave --plan-id out. ` +
+        `A different plan_id means the page changed since the preview; it reads ${currentHash} now. Nothing was written.`,
+    );
   }
 
   const pageLabel = pageName.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();

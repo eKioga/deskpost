@@ -42,6 +42,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson } from './psjson.ts';
 import type { PsJsonValue } from './psjson.ts';
@@ -60,6 +61,7 @@ import { withBookLocks } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
+import { foldedMapLines, type MapPage } from './maplines.ts';
 import {
   collectionPageManifest,
   driftRefusal,
@@ -326,13 +328,12 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
   });
   const frontmatterPageCount = sources.filter((source) => source.frontmatter.length > 0).length;
   const sourceDigest = sha256OfText(sources.map((source) => `${source.source}|${source.sha256}`).join('\n'));
-  const links = [`- [[${bookRoot}/_book|Book metadata and limits]]`].concat(
-    sources.map((source) => {
-      const target = source.path.substring(0, source.path.length - 3);
-      const relative = source.path.substring(bookRoot.length + 1);
-      return `- [[${target}|${readerMapLabel(source.body, relative)}]]`;
-    }),
-  );
+  // THE FOLDED MAP (D4): one builder with the Shelf's, reading a topic index's Shelf-relative links by the same rule.
+  const mapPages: MapPage[] = sources.map((source) => {
+    const relative = source.path.substring(bookRoot.length + 1);
+    return { page: relative.substring(0, relative.length - 3), label: readerMapLabel(source.body, relative), text: source.body };
+  });
+  const links = [`- [[${bookRoot}/_book|Book metadata and limits]]`].concat(foldedMapLines(mapPages, (page) => `${bookRoot}/${page}`, input.bookSlug).lines);
   const rootBody = `# ${input.title}\n\n## Purpose\n\n${input.summary}\n\n## Reader map\n\n- [[${bookRoot}/_index|Open the reader map]]\n`;
   const indexBody = `# ${input.title} - Reader Map\n\n${links.join('\n')}\n`;
   const records: CandidateRecord[] = [
@@ -1057,11 +1058,6 @@ function required(value: string | undefined, name: string, usage: string): strin
   return value;
 }
 
-const VALUED = [
-  'title', 'summary', 'book-slug', 'collection', 'topics', 'book-version', 'reason', 'plan', 'workspace', 'plan-id',
-  'journal-path', 'publication-journal-path', 'workflow-journal-path', 'lock-timeout',
-];
-
 // --- library publish ----------------------------------------------------------------------------------------
 
 /** Publish-ShelfBookToShared.ps1 as far as its composite plan. */
@@ -1177,7 +1173,7 @@ function keepShelfSummary(workspace: string, shelfSlug: string, summary: string)
 }
 
 async function publishVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, VALUED);
+  const parsed = parseArguments(argv, argumentTable('publish'));
   const usage = 'publish <shelf-slug> --title <t> --summary <s>';
   const shelfSlug = required(parsed.positional[0], 'the Shelf Book slug', usage);
   const defaults = returnDefaults(workspace, shelfSlug, parsed, usage);
@@ -1301,7 +1297,7 @@ async function publishWorkflow(
 
 /** Publish-BookCopy.ps1 -Destination Shared -FromShelf -SourcePath shelf/<slug> -ReplaceExisting. */
 async function refreshVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, VALUED);
+  const parsed = parseArguments(argv, argumentTable('publish', 'refresh'));
   const usage = 'publish refresh <slug> --title <t> --summary <s>';
   const shelfSlug = required(parsed.positional[0], 'the Shelf Book slug', usage);
   const defaults = returnDefaults(workspace, shelfSlug, parsed, usage);
@@ -1390,7 +1386,7 @@ function optionalString(item: Record<string, unknown>, name: string, fallback = 
  * order, a failed item journalled and left alone while later items continue.
  */
 async function batchVerb(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, VALUED);
+  const parsed = parseArguments(argv, argumentTable('publish', 'batch'));
   if (!isLocalBackend(workspace)) resolveCollectionId(workspace);
   const planPath = required(parsed.options.get('plan'), '--plan', 'publish batch --plan <path>');
   const full = path.resolve(planPath);

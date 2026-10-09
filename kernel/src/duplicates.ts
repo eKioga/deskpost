@@ -22,6 +22,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { requireWorkspace } from './workspace.ts';
 import { readStrictUtf8 } from './notebook.ts';
@@ -91,7 +92,7 @@ function numberOption(value: string | undefined, fallback: number, name: string)
 }
 
 export async function shelfDuplicates(argv: string[]): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'embedding-url', 'embedding-model', 'api-key', 'similarity-threshold', 'batch-size']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'duplicates'));
   const embeddingUrl = parsed.options.get('embedding-url') ?? process.env['TEI_EMBEDDING_URL'] ?? '';
   const embeddingModel = parsed.options.get('embedding-model') ?? 'tei-bge-small-en-v1-5';
   const apiKey = parsed.options.get('api-key') ?? process.env['TEI_API_KEY'] ?? '';

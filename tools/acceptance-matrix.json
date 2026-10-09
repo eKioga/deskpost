@@ -340,11 +340,11 @@
       "match": { "field_pattern": "^(effect\\.shelf/curated/wiki/sibling\\.md|result\\.with_characters)$", "value_pattern": "(?s)^text:# Sibling\\n\\n> \\*\\*Superseded \\d{4}-\\d{2}-\\d{2}\\.\\*\\* This topic now lives in the \\*\\*curated\\*\\* Book, page\\n> (`alpha`|\\[\\[shelf/curated/wiki/alpha\\|alpha\\]\\]) -- Superseded by the acceptance matrix\\. Kept here as a stub so nothing that links to this page\\n> breaks\\. See \\[Duplicate Topic Resolution\\]\\((\\.\\./\\.\\./\\.\\./docs|https://github\\.com/eKioga/deskpost/blob/(v\\d+\\.\\d+\\.\\d+|main)/docs)/duplicate-topic-resolution\\.md\\)\\.$|^(285|350)$" }
     },
     "kernel-add-page-says-whether-the-topic-index-was-updated": {
-      "reason": "S85 row 1 (b8d717d, 1.3.3): book add-page reports topic_index_not_updated, null when there is nothing to say, on its own result and on a triage action's child add-page (result.actions[n].plan in a preflight, result.outcomes[n].result in a run). The PowerShell oracle has no such field. The oracle is not edited (ruling 5). Only that key, and only absent against null, is paired; every other field is compared.",
-      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
-      "approved_on": "2026-10-04",
+      "reason": "S101 row 3 (1.4.0, PLAN-correct-and-find.md D3), rewriting S85 row 1's delta (b8d717d, 1.3.3): book add-page reports topic_index (updated, already-listed, or null when the page's folder has no topic index), where it reported topic_index_not_updated, on its own result and on a triage action's child add-page (result.actions[n].plan in a preflight, result.outcomes[n].result in a run). The PowerShell oracle has no such field. No fixture Book has a topic folder (the plan's A3, confirmed at S101), so the kernel's value is always null here. The oracle is not edited. Only that key, and only absent against null, is paired; every other field is compared.",
+      "approved_by": "the S101 kickoff (kickoffs/s101, ruling 6)",
+      "approved_on": "2026-10-07",
       "applies_to": ["capture.page-added-to-an-open-curated-book", "triage.batch-preflight-binds-every-action", "triage.batch-confirmed-lands-every-action-and-journals-it", "triage.batch-files-a-holding-note-and-closes-it"],
-      "match": { "field_pattern": "^result(\\.actions\\[\\d+\\]\\.plan|\\.outcomes\\[\\d+\\]\\.result)?\\.topic_index_not_updated$", "value_pattern": "^(<absent>|<null>)$" }
+      "match": { "field_pattern": "^result(\\.actions\\[\\d+\\]\\.plan|\\.outcomes\\[\\d+\\]\\.result)?\\.topic_index$", "value_pattern": "^(<absent>|<null>)$" }
     },
     "kernel-desk-omits-why-missing-for-a-book-anyone-closes": {
       "reason": "S85 row 4 (4da9aeb, 1.3.3): the Desk overview omits pending_why_missing for a capture Book whose Closed by: is any, where it misled, while the PowerShell oracle still reports it as 0. The oracle is not edited (ruling 5). Only that key, and only 0 against absent, is paired; every other field of the overview is compared.",
@@ -387,6 +387,64 @@
       "approved_on": "2026-10-07",
       "applies_to": ["triage.inventory-lists-what-is-waiting"],
       "match": { "field_pattern": "^result\\.pages_listed$", "value_pattern": "^(<absent>|all|none)$" }
+    },
+    "kernel-page-reads-carry-the-pages-sha256": {
+      "reason": "1.4.0 (S102 row 1, R1): a page read through read_open_book_page answers with a second content item, sha256: <hex>, the whole page's SHA-256 in its comparison form (the BOM stripped, CRLF read as LF), the value book replace-page --preflight calls current_sha256. The first item, the page, is unchanged. The PowerShell adapter answers with one item. The oracle is not edited. Only the second item's type and text, and only absent against text or the normalised hash line, are paired.",
+      "approved_by": "the S102 kickoff (kickoffs/s102, ruling 7)",
+      "approved_on": "2026-10-07",
+      "applies_to": ["reader.reads-a-page-of-an-open-book", "reader.serve-reads-a-page-of-an-open-book"],
+      "match": { "field_pattern": "^result\\.result\\.content\\[1\\]\\.(type|text)$", "value_pattern": "^(<absent>|text|sha256: <sha256>)$" }
+    },
+    "kernel-page-readers-describe-sha256-and-section": {
+      "reason": "1.4.0 (S102 row 1, R1-R2): mcp serve's tools/list names the page readers' sha256 item and the optional section argument in one short sentence, kept short because tools/list is always-on context (kernel/test/context-budget.json). The PowerShell adapter's descriptions end before it. The oracle is not edited. The sentence is paired verbatim, then the descriptions compare equal.",
+      "approved_by": "the S102 kickoff (kickoffs/s102, ruling 7)",
+      "approved_on": "2026-10-07",
+      "applies_to": ["reader.serve-lists-its-tools"],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[(1|4)\\]\\.description$",
+        "phrases": [
+          { "kernel": " A second item gives its sha256; section reads one ## section.", "powershell": "" }
+        ]
+      }
+    },
+    "kernel-page-readers-take-a-section": {
+      "reason": "1.4.0 (S102 row 1, R2): both page readers' input schemas list an optional section, a string. The PowerShell adapter's schemas do not. The oracle is not edited. Only the section property's type and description, and only absent against the kernel's own values, are paired.",
+      "approved_by": "the S102 kickoff (kickoffs/s102, ruling 7)",
+      "approved_on": "2026-10-07",
+      "applies_to": ["reader.serve-lists-its-tools"],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[(1|4)\\]\\.inputSchema\\.properties\\.section\\.(type|description)$",
+        "value_pattern": "^(<absent>|string|Exact ## heading text\\.)$"
+      }
+    },
+    "kernel-doctor-exits-on-the-fixture-seat-ids": {
+      "reason": "1.4.0 (S103 row 6, judged at S104): the kernel's doctor runs the program check seats.identity, which the PowerShell runner's -WorkspaceOnly does not have, and it FAILs on the oracle fixture's seat_ids, which are hyphenated guids and not 32 lowercase hex characters (the S103 Report on the fixtures' ids), so `doctor` exits 1 where the runner exits 0. Every compared check is unchanged; seats.identity is reported in program_checks, outside the compared list. The oracle and its fixtures are not edited. Only the exit field, and only 0 against 1, is paired.",
+      "approved_by": "the S104 kickoff (kickoffs/s104, ruling 7)",
+      "approved_on": "2026-10-08",
+      "applies_to": [
+        "checks.reports-every-registered-check",
+        "checks.a-trusted-codex-project-with-unreviewed-hooks-is-warned",
+        "checks.a-trusted-codex-project-with-every-hook-reviewed-passes",
+        "checks.a-plugin-only-workspace-reads-as-guarded"
+      ],
+      "match": {
+        "field_pattern": "^exit$",
+        "value_pattern": "^[01]$"
+      }
+    },
+    "kernel-desk-quarantine-says-its-scope": {
+      "reason": "1.4.0 (S106 row 7c, judged at S107): the Desk's quarantine block counts this seat's quarantines only and ends with scope, a sentence naming the seat and the route that lists every seat's. The PowerShell oracle's Desk does not have it. The oracle is not edited. Only that key, and only absent against that sentence for a seat name, is paired.",
+      "approved_by": "the S107 kickoff (kickoffs/s107, ruling 10)",
+      "approved_on": "2026-10-09",
+      "applies_to": [
+        "workspace.resolves-by-walking-up-from-a-subdirectory",
+        "desk.overview-names-what-is-open-at-this-seat",
+        "desk.a-bare-slug-on-the-desk-is-a-shared-book"
+      ],
+      "match": {
+        "field_pattern": "^result\\.notebook\\.quarantine\\.scope$",
+        "value_pattern": "^(<absent>|seat [a-z0-9][a-z0-9-]*: its own quarantines only; reset restore --list lists every seat's)$"
+      }
     }
   },
   "excluded_helpers": {
@@ -2516,7 +2574,7 @@
       "area": "publication",
       "class": "success",
       "oracle": "independent",
-      "operation": "A page added to a Book in a local Library's own collection (library collection add-page) is previewed with a plan_id, then written under the Book lock with its reader map gaining exactly one line at its end: the map's frontmatter kept, a topic index beside the page named and never edited, a Discovery manifest committed and read back. A closed or archived Book, an existing page, another plan_id, a map changed while the run waited for the lock, a map ending in an open fence and a folder that is a junction are each refused with nothing written, and a manifest that did not commit is rolled back to the Book as it was (S67, PLAN-local-collection-writers.md step A).",
+      "operation": "A page added to a Book in a local Library's own collection (library collection add-page) is previewed with a plan_id, then written under the Book lock with its reader map gaining exactly one line at its end: the map's frontmatter kept, a topic index beside the page gaining the page's line at its end unless it already links it in either form (S101, PLAN-correct-and-find.md D3), a Discovery manifest committed and read back. A closed or archived Book, an existing page, another plan_id, a map changed while the run waited for the lock, a map ending in an open fence and a folder that is a junction are each refused with nothing written, and a manifest that did not commit is rolled back to the Book as it was (S67, PLAN-local-collection-writers.md step A).",
       "reason": "The PowerShell oracle has no local half: tools/Add-ShelfBookPage.ps1 adds a page to a Shelf Book, and no helper writes a local collection. Judged by section 59 of kernel/test/selftest.ts (S67) against the kernel under test, entirely through the front door, over a fixture Book shaped as an import leaves one (frontmatter, full-prefix links, a curated topic index); it fails against 1.2.1, which has no add-page.",
       "judge": { "command": ["node", "kernel/test/selftest.ts"], "environment": { "LIBRARY_SELFTEST_KERNEL": "{kernel}", "LIBRARY_SELFTEST_SECTIONS": "59" } },
       "fixture": "workspace-seated",

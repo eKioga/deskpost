@@ -19,6 +19,7 @@ import * as zlib from 'node:zlib';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { writeAtomicText } from './fsx.ts';
 import { readRegistry } from './workspace.ts';
@@ -773,7 +774,7 @@ function uninstallPreview(root: string, removal: RemovalList, edits: LibraryEdit
  * before this process exits (round 4, #1).
  */
 export async function uninstallVerb(argv: string[]): Promise<LifecycleResult> {
-  const parsed = parseArguments(argv, []);
+  const parsed = parseArguments(argv, argumentTable('uninstall'));
   const json = parsed.flags.has('json');
   const interactive = isInteractive(parsed.flags.has('yes'), json);
   try {
@@ -914,7 +915,7 @@ export function switchCurrent(root: string, target: string, tag: string): void {
  * switch to a version whose reader would refuse that Desk whole. Safe because every version's hooks name library.exe.
  */
 export async function rollbackVerb(argv: string[]): Promise<LifecycleResult> {
-  const parsed = parseArguments(argv, []);
+  const parsed = parseArguments(argv, argumentTable('rollback'));
   const json = parsed.flags.has('json');
   const interactive = isInteractive(parsed.flags.has('yes'), json);
   try {

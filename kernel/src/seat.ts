@@ -30,6 +30,7 @@ import { clearStaleStaging, writeAtomicText } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { utcRoundTrip } from './journal.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { requireWorkspace } from './workspace.ts';
 import { assertSeatRegistryLockHeld, enterSeatRegistryLock, exitBookLock, isSeatRegistryLockHeld } from './locks.ts';
 import {
@@ -37,6 +38,7 @@ import {
   deskStateDirectory,
   readDeskFileLines,
   resolveSeatName,
+  SEAT_SLUG_PATTERN,
   seatDirectoryNames,
   seatsDirectory,
   setDeskEntryForSeat,
@@ -44,6 +46,7 @@ import {
 import { assertSeatRegistered, psSortCompare, readNotebookTopicOwners, seatIncarnationStatus } from './notebook.ts';
 import { letterTally, pendingCaptureNotes, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { isAddressedTo } from './shelfnote.ts';
+import { identityRowsOfRegistry, seatIncarnation } from './seatincarnation.ts';
 import { openCollection } from './collection.ts';
 import { activateFreshNotebookLayout, migratingRefusal, readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import {
@@ -577,17 +580,16 @@ function seatSlugReuseBlockers(workspace: string, stateDirectory: string, seat: 
   return blockers;
 }
 
-/** Assert-NewSeatIsCreatable, rule for rule and sentence for sentence. The registry is read by the caller, under the lock. */
-function assertNewSeatIsCreatable(options: {
-  workspace: string;
-  stateDirectory: string;
-  rows: Record<string, PsJsonValue>[];
-  seat: string;
-  project: string;
-  activeProjects: string[];
-  seatOnly?: boolean;
-}): void {
-  const { seat, project } = options;
+/**
+ * ONE NAME CHECK FOR EVERY CREATOR (kickoffs/s103 row 4; PLAN-seat-identity.md section 1, bullet 7): `seat start`'s
+ * create, `seat enter --create` and the wizard all reach it through `assertNewSeatIsCreatable`, at preflight and again
+ * under the registry lock at apply. A name is refused when a live seat holds it now (the oracle's sentence), when a
+ * Notebook record of another incarnation holds it (the oracle's), when it is not a seat slug, when a seat gave it up by a
+ * rename (it stays reserved for that seat, retired or not), or when the retirement records cannot all be read, since a
+ * name they reserve cannot then be ruled out. A retired seat's own name stays reusable, as before.
+ */
+export function assertSeatNameFree(options: { workspace: string; stateDirectory: string; rows: Record<string, PsJsonValue>[]; seat: string }): void {
+  const { seat } = options;
   if (options.rows.some((row) => String(row['seat']) === seat)) {
     refuse(
       `Seat '${seat}' already exists. Enter it with deskpost seat enter ${seat}, or work at it from a ` +
@@ -603,6 +605,38 @@ function assertNewSeatIsCreatable(options: {
         '<a seat that exists>, or declare it with -Scope shared, and then this name is free.',
     );
   }
+  if (!SEAT_SLUG_PATTERN.test(seat)) {
+    refuse(`Seat name '${seat}' is not a seat name: lowercase letters, digits and hyphens, starting with a letter or a digit. Nothing was created.`);
+  }
+  const formerHolder = identityRowsOfRegistry(options.rows).find((row) => row.names.slice(0, -1).some((span) => span.name === seat));
+  if (formerHolder) {
+    refuse(`Seat name '${seat}' was given up by seat '${formerHolder.seat}' in a rename, and stays reserved for that seat. Choose another name. Nothing was created.`);
+  }
+  const retirement = readSeatRetirementRecords(options.workspace);
+  if (retirement.faults.length) {
+    refuse(
+      `Seat name '${seat}' cannot be checked against the names retired seats reserve, because a retirement record cannot be read: ${retirement.faults.join('; ')}. ` +
+        'Repair the record, then create the seat. Nothing was created.',
+    );
+  }
+  const retiredHolder = retirement.records.find((record) => record.names.some((span) => span.name === seat && span.name !== record.seat));
+  if (retiredHolder) {
+    refuse(`Seat name '${seat}' was given up in a rename by seat '${retiredHolder.seat}', since retired, and stays reserved for that seat. Choose another name. Nothing was created.`);
+  }
+}
+
+/** Assert-NewSeatIsCreatable, rule for rule and sentence for sentence. The registry is read by the caller, under the lock. */
+function assertNewSeatIsCreatable(options: {
+  workspace: string;
+  stateDirectory: string;
+  rows: Record<string, PsJsonValue>[];
+  seat: string;
+  project: string;
+  activeProjects: string[];
+  seatOnly?: boolean;
+}): void {
+  const { seat, project } = options;
+  assertSeatNameFree(options);
   if (options.seatOnly) return;
   const listed = [...options.activeProjects].sort(psSortCompare).join(', ');
   if (!project.trim()) {
@@ -809,7 +843,7 @@ async function seatCreate(options: {
 // --- seat enter -------------------------------------------------------------------------------------
 
 async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['workspace', 'agent-pid', 'session-id', 'deadline-seconds', 'project', 'plan-id', 'department', 'role', 'card', 'template', 'open-book']);
+  const parsed = parseArguments(argv, argumentTable('seat', 'enter'));
   // THE FIVE OPTIONS ARE `seat start`'s (S97 row 1): this route has no planner for them, so it refuses them by name.
   const given = SEAT_START_OPTIONS.filter((option) => parsed.options.has(option));
   if (given.length) {
@@ -980,7 +1014,7 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
  * IT TAKES NO LOCK, EVER: the verb that spawned it waits for it while holding the registry lock.
  */
 async function seatHold(argv: string[]): Promise<number> {
-  const parsed = parseArguments(argv, ['workspace', 'seat', 'attempt-id', 'agent-pid', 'agent-start-utc', 'poll-ms']);
+  const parsed = parseArguments(argv, argumentTable('seat', 'hold'));
   const workspace = parsed.options.get('workspace') ?? '';
   const stateDirectory = path.join(workspace, '.claude');
   const seat = parsed.options.get('seat') ?? '';
@@ -1131,16 +1165,23 @@ function agentSpawn(file: string, args: string[], searchPath?: string): { file: 
  * THE TAB IS NAMED FOR THE SEAT ONCE THE CLAIM IS HELD (ADR-0021: a cosmetic, reversible action is performed, not
  * offered). SILENT ON SUCCESS, and a failure keeps its line, because that is the case where the tab does not say
  * where the reader is sitting. `orca terminal rename [--terminal <handle>] [--title <text>]`, from its --help (1.4.198).
+ * THE TITLE IS THE SEAT'S NAME ALONE (kickoffs/s103 row 5; PLAN-seat-identity.md section 6): a squeezed tab showed only
+ * the `seat: ` prefix it used to carry. AND RETITLING NEVER BLOCKS A LAUNCH: any failure, the `.cmd` route's refusal
+ * of a handle cmd.exe would change included, is its stderr line, and the seat starts.
  */
 function renameTab(handle: string, seat: string): void {
   if (!handle.trim()) return;
-  const orca = resolveOnPath('orca');
-  if (orca === null) return;
-  const launch = agentSpawn(orca, ['terminal', 'rename', '--terminal', handle, '--title', `seat: ${seat}`]);
-  const ran = spawnSync(launch.file, launch.args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: launch.verbatim, timeout: 10000 });
-  if (ran.status !== 0) {
-    const why = `${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
-    process.stderr.write(`The tab was not retitled (failed): ${why || `orca exited ${String(ran.status)}`}\n`);
+  try {
+    const orca = resolveOnPath('orca');
+    if (orca === null) return;
+    const launch = agentSpawn(orca, ['terminal', 'rename', '--terminal', handle, '--title', seat]);
+    const ran = spawnSync(launch.file, launch.args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: launch.verbatim, timeout: 10000 });
+    if (ran.status !== 0) {
+      const why = `${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
+      process.stderr.write(`The tab was not retitled (failed): ${why || `orca exited ${String(ran.status)}`}\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`The tab was not retitled (failed): ${(error as Error).message}\n`);
   }
 }
 
@@ -1199,11 +1240,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   const split = argv.indexOf('--');
   const own = split >= 0 ? argv.slice(0, split) : argv;
   const passthrough = split >= 0 ? argv.slice(split + 1) : [];
-  const parsed = parseArguments(
-    own,
-    ['workspace', 'project', 'command', 'deadline-seconds', 'restore-desk-from-archive', 'session-id', 'resume', 'plan-id', 'assistant', 'department', 'role', 'card', 'template'],
-    ['open-book'],
-  );
+  const parsed = parseArguments(own, argumentTable('seat', 'start'));
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   // A SEAT START CLEARS THE LIBRARY'S STALE STAGING FILES (PLAN-basic-memory.md step 4a): a crashed write's debris.
   clearStaleStaging(workspace);
@@ -1624,15 +1661,17 @@ function notebookActivationPreview(workspace: string): string {
  * nearest is Get-DeskOverview's seat lines; there is no differential row, and self-test section 24 reads it.
  */
 function seatStatus(argv: string[]): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['workspace', 'seat']);
+  const parsed = parseArguments(argv, argumentTable('seat', 'status'));
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   const stateDirectory = path.join(workspace, '.claude');
   const rows = readRegistryRows(path.join(seatsDirectory(stateDirectory), '_registry.json'));
   const named = resolveSeatName({ seat: parsed.options.get('seat') ?? '', stateDirectory });
   // ONE VALIDATED PROJECTION OVER THE WHOLE REGISTRY (1.3.8, kickoffs/s96 row 1): the raw rows above are a writer's.
   const projection = seatMetadata(rows);
-  // AND THE REGISTRY'S HISTORY (kickoffs/s96 row 2): each row's last confirmed change, and its unconfirmed attempts.
+  // AND THE REGISTRY'S HISTORY (kickoffs/s96 row 2): each row's last confirmed change, and its unconfirmed attempts,
+  // joined by identity (kickoffs/s103 row 3).
   const history = readSeatHistory(workspace);
+  const identity = { live: identityRowsOfRegistry(rows), retired: [] };
   const seats = rows
     .map((row) => String(row['seat']))
     .sort(psSortCompare)
@@ -1654,7 +1693,7 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
         // ITS CARD, DEPARTMENT, ROLE AND TEMPLATE (1.3.8, ADR-0069), after every existing key, null where absent.
         ...metadataJson(metadataFor(projection, seat)),
         ...((): Record<string, PsJsonValue> => {
-          const state = seatHistoryState(history, seat, String(row['seat_id'] ?? ''));
+          const state = seatHistoryState(history, seat, String(row['seat_id'] ?? ''), identity);
           return { last_change: state.lastConfirmed as unknown as PsJsonValue, ...(state.unconfirmed ? { unconfirmed_attempts: state.unconfirmed } : {}) };
         })(),
       } as Record<string, PsJsonValue>;
@@ -1673,7 +1712,7 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
 // --- seat retire ------------------------------------------------------------------------------------
 
 function seatRetire(argv: string[]): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, ['workspace', 'plan-id']);
+  const parsed = parseArguments(argv, argumentTable('seat', 'retire'));
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   const stateDirectory = path.join(workspace, '.claude');
   const resolved = resolveSeatName({ seat: parsed.positional[0] ?? '', stateDirectory });
@@ -1724,6 +1763,16 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     const rawRows = readRegistryRows(registryFile);
     const rawRow = rawRows.find((row) => String(row['seat']) === seat);
     const fields = rawMetadata(rawRow);
+    // THE NAME HISTORY TRAVELS INTO THE RETIREMENT RECORD (kickoffs/s103 row 2): every name in it stays reserved for this
+    // seat after it is gone. Bound by the plan id when the row carries one, so a row without it plans as at 1.3.8; a
+    // history that does not parse is refused here, because archiving it would set its reserved names free.
+    const carriesNames = rawRow !== undefined && 'names' in rawRow;
+    if (carriesNames && entry.namesProblem !== null) {
+      refuse(
+        `Seat '${seat}' carries a names history in .claude/seats/_registry.json that does not parse (${entry.namesProblem}), and cannot be retired until it is repaired by hand: ` +
+          'retiring it would archive the seat without the names it reserves. Nothing was retired.',
+      );
+    }
     const leaving = seatMetadata(rawRows).seats.get(seat);
     const losesOrchestrator = leaving?.role === 'orchestrator' ? leaving.department : null;
     // A SEAT WITH LETTERS WAITING IS NOT RETIRED (kickoffs/s99 row 5, ruling 3; PLAN-seats-team.md session 3 item 5),
@@ -1731,7 +1780,7 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     // reaches no one. Counted by the recipient predicate, so a letter the seat sent, or one stamped for an earlier
     // incarnation of its slug, does not hold it. Best effort: capture takes its Book's lock and not this one (the plan's
     // Risks), so the apply counts again here, under the registry lock, and doctor names a letter that lands after.
-    const waiting = letterTally(pendingCaptureNotes(workspace).filter(({ note }) => isAddressedTo(note, { seat, seatId: entry.seatId })));
+    const waiting = letterTally(pendingCaptureNotes(workspace).filter(({ note }) => isAddressedTo(note, seatIncarnation(stateDirectory, seat))));
     if (waiting.count) {
       const books = Object.entries(waiting.byBook).map(([slug, count]) => `${slug}: ${count}`).join(', ');
       refuse(
@@ -1747,7 +1796,8 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     const material =
       `${seat}|${entry.project}|${bookLines.join(';')}|${projectLines.join(';')}` +
       (notebookEntries.length ? `|notebook=${notebookEntries.join(';')}` : '') +
-      `|seat_id=${entry.seatId}|fields=${JSON.stringify(fields)}`;
+      `|seat_id=${entry.seatId}|fields=${JSON.stringify(fields)}` +
+      (carriesNames ? `|names=${JSON.stringify(entry.names)}` : '');
     const planId = crypto.createHash('sha256').update(material, 'utf8').digest('hex').substring(0, 16);
 
     // WHAT WILL TRAVEL BESIDE THE DESK, read now -- and deliberately NOT in the plan id: a conversation
@@ -1774,6 +1824,7 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
         plan_id: planId,
         open_books: bookLines,
         open_projects: projectLines,
+        ...(carriesNames ? { names: entry.names as unknown as PsJsonValue } : {}),
         records_to_archive: recordsPresent,
         ...(seatOwned ? { notebook_to_archive: notebookEntries.map((name) => `${notebookRelative}/${name}`) } : {}),
         // WHEN A DEPARTMENT LOSES ITS ORCHESTRATOR (kickoffs/s96 row 2), said before the yes, and nothing otherwise.
@@ -1838,6 +1889,7 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
         retired_utc: utcRoundTrip(),
         open_books: bookLines,
         open_projects: projectLines,
+        ...(carriesNames ? { names: entry.names as unknown as PsJsonValue } : {}),
       }) + '\n',
     );
 
@@ -2017,14 +2069,14 @@ export async function runSeatVerb(
       }
       case 'dirs': {
         // UNGATED (ruling 2): the seat's own launch setting, additive, reversible, and applied only from its next launch.
-        const parsed = parseArguments(rest, ['workspace', 'add', 'remove']);
+        const parsed = parseArguments(rest, argumentTable('seat', 'dirs'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         emitResult(seatDirsResult(workspace, parsed.positional[0] ?? '', { add: parsed.options.get('add'), remove: parsed.options.get('remove') }));
         return 0;
       }
       case 'settings': {
         // GATED (kickoffs/s79 row 3): it changes what reaches a seat, so a change previews and takes the plan id.
-        const parsed = parseArguments(rest, ['workspace', 'inbound', 'plan-id']);
+        const parsed = parseArguments(rest, argumentTable('seat', 'settings'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         emitResult(
           seatSettingsResult({
@@ -2040,7 +2092,7 @@ export async function runSeatVerb(
       case 'cards': {
         // UNGATED AND READ ONLY (kickoffs/s96 row 3, ruling 5): the directory, computed. Text for a person by default, opening
         // with the data-not-instructions line; `--json` for the document.
-        const parsed = parseArguments(rest, ['workspace', 'seat']);
+        const parsed = parseArguments(rest, argumentTable('seat', 'cards'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         const value = seatCardsResult({ workspace, seat: parsed.options.get('seat'), all: parsed.flags.has('all') });
         emitResult(value, parsed.flags.has('json') ? undefined : seatCardsText(value));
@@ -2048,7 +2100,7 @@ export async function runSeatVerb(
       }
       case 'describe': {
         // GATED (kickoffs/s96 row 2, ruling 4): a seat's department, role and card change only under the reader's yes.
-        const parsed = parseArguments(rest, ['workspace', 'department', 'role', 'card', 'from', 'plan-id']);
+        const parsed = parseArguments(rest, argumentTable('seat', 'describe'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         emitResult(
           seatDescribeResult({

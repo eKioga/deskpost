@@ -165,6 +165,16 @@ _Avoid_: index, manifest, TOC, "the catalog" meaning the shared collection
 A Book's own `_index` page, listing the pages it contains.
 _Avoid_: table of contents, sitemap
 
+**Topic index**:
+A curated `<folder>/_index` page below a Book's top that lists the pages of its topic; the generated
+reader map folds those pages under it.
+_Avoid_: sub-map, folder index
+
+**Source list**:
+The file `_sources.md` at a Shelf Book's root, kept by `deskpost book sources`, naming each upstream
+the Book was compiled from, the pages it feeds and the fingerprint of the text last compiled.
+_Avoid_: registry, sources block (that is a compiled Notebook article's `## Sources`), manifest
+
 **Canonical**:
 Said of the Book holding the current coverage of a topic, when more than one Book covers it.
 _Avoid_: master, primary, source of truth
@@ -281,6 +291,10 @@ Said of a Book or Project moved to an inactive shelf and removed from its active
 from closed: archiving is an organizational move, closing is an attention choice.
 _Avoid_: retired, deleted, cold storage
 
+**Browse mode**:
+The main menu's `l`, a seatless listing of what the Library holds, metadata only.
+_Avoid_: search, catalog seat
+
 ## Working with material
 
 **Compile**:
@@ -332,6 +346,11 @@ _Avoid_: sync, push, upload, back up
 **Refresh**:
 Replacing an existing Book's reader pages from current evidence.
 _Avoid_: update, re-sync, rebuild
+
+**Restore file**:
+The `.previous.txt` a page replace leaves beside its journal, passed back with `--content-path` to
+undo it.
+_Avoid_: backup, undo log
 
 **Recall**:
 Bringing a Book in this Library's Local collection back to the Shelf as a new Shelf Book, page for

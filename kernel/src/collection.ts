@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import type { PsJsonValue } from './psjson.ts';
@@ -312,7 +313,7 @@ async function hubNewShared(
 }
 
 async function hubNew(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  const parsed = parseArguments(argv, ['title', 'purpose', 'next-action', 'workspace']);
+  const parsed = parseArguments(argv, argumentTable('hub', 'new'));
   if (!(parsed.positional[0] ?? '')) refuse('library hub new needs the Project slug: library hub new <slug> --title <title>.');
   const { slug, problem } = hubSlug(parsed.positional[0]!);
   if (problem !== null) refuse(problem);

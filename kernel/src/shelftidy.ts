@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
@@ -33,7 +34,6 @@ import { parseShelfNote, shelfNotes } from './shelfnote.ts';
 import { reviewedMonths, updateShelfNoteIndex } from './capture.ts';
 import { assertShelfBookOpen } from './triage.ts';
 
-export const SHELF_TIDY_OPTIONS = ['workspace', 'plan-id', 'days', 'restore'];
 export const DEFAULT_TIDY_DAYS = 14;
 const MONTH = /^\d{4}-\d{2}$/;
 const DAY_MS = 86_400_000;
@@ -191,7 +191,7 @@ function runMoves(options: {
 }
 
 export function shelfTidyVerb(argv: string[], workspace: string, now: number = Date.now()): Record<string, PsJsonValue> {
-  const parsed = parseArguments(argv, SHELF_TIDY_OPTIONS);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'tidy'));
   const slug = (parsed.positional[0] ?? '').trim();
   const book = captureBook(workspace, slug);
   const restore = parsed.options.get('restore');

@@ -27,11 +27,15 @@ import { randomUUID } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
+import { fileDoctorFindings } from './doctorreport.ts';
+import { releaseTuple } from './programroot.ts';
 import { homeDirectory, resolveWorkspace } from './workspace.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
 import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
 import { readSeatHistory, seatHistoryState } from './seathistory.ts';
+import { identityView, incarnationOf } from './seatincarnation.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
@@ -949,8 +953,9 @@ function seatRegistryFields(workspace: string): string {
   } catch {
     // the registry's own checks say why; the projection above already read what it could
   }
+  const identity = identityView(registry, []);
   for (const row of registry) {
-    const unconfirmed = seatHistoryState(history, row.seat, row.seatId).unconfirmed;
+    const unconfirmed = seatHistoryState(history, row.seat, row.seatId, identity).unconfirmed;
     if (unconfirmed) {
       problems.push(
         `seat '${row.seat}' has ${unconfirmed} unconfirmed attempt${unconfirmed === 1 ? '' : 's'} in ${history.file}: a change whose commit line was never written, so whether it reached the registry cannot be said; ` +
@@ -1001,24 +1006,82 @@ function lettersRecipientIncarnation(workspace: string): string {
   }
   const problems: string[] = [];
   let pending = 0;
+  // BY IDENTITY (kickoffs/s103 row 3): a letter the projection joins to a live seat, under its name or one the seat gave
+  // up by a rename, is that seat's; otherwise its name says which of the two it is.
+  const identity = identityView(registry, []);
   for (const book of captureBookRows(workspace)) {
     for (const note of shelfNotes(book)) {
       if (note.review === 'done' || !note.forSeat) continue;
       pending += 1;
       const closes = `${note.fromSeat ? `its writer '${note.fromSeat}' closes it` : 'the reader closes it'}, or the reader with other_seat`;
+      const forSeatId = (noteFrontmatter(readUtf8(note.fullPath)).get('for_seat_id') ?? '').trim();
+      if (incarnationOf(identity, note.forSeat, forSeatId || null, 'letters').outcome === 'live') continue;
       const row = registry.find((candidate) => candidate.seat === note.forSeat);
       if (!row) {
         problems.push(`${book.slug} ${note.page} is a pending letter for seat '${note.forSeat}', which is not in the registry; ${closes}`);
         continue;
       }
-      const forSeatId = (noteFrontmatter(readUtf8(note.fullPath)).get('for_seat_id') ?? '').trim();
-      if (forSeatId && forSeatId !== row.seatId) {
-        problems.push(`${book.slug} ${note.page} is a pending letter for seat '${note.forSeat}' that was addressed to another incarnation of it (for_seat_id ${forSeatId}); ${closes}`);
-      }
+      problems.push(`${book.slug} ${note.page} is a pending letter for seat '${note.forSeat}' that was addressed to another incarnation of it (for_seat_id ${forSeatId}); ${closes}`);
     }
   }
   if (problems.length) return `WARN: ${problems.join('; ')}`;
   return pending ? `${pending} pending letter${pending === 1 ? ' is' : 's are'} each for a seat in the registry` : 'no pending letter is addressed to a seat';
+}
+
+/**
+ * EVERY SEAT IS ONE IDENTITY (kickoffs/s103 row 6; PLAN-seat-identity.md section 1): a FAIL naming each registry row
+ * whose `seat_id` is malformed or shared with another row, each name history that does not parse, each name two seats'
+ * histories share (a seat's past name that another live seat is called now included), each retirement record that
+ * cannot be read, and each letter whose `for_seat_id` or `origin_seat_id` names no seat in the registry and no retirement
+ * record. A row with no id at all (pre-identity) is not a failure, and a malformed letter id is the relationship-fields
+ * check's. Never a write: every repair is by hand.
+ */
+function seatsIdentity(workspace: string): string {
+  let registry: ReturnType<typeof readSeatRegistry>;
+  try {
+    registry = readSeatRegistry(path.join(workspace, '.claude'));
+  } catch (error) {
+    return `SKIP: the seat registry cannot be read, so no seat's identity can be checked: ${(error as Error).message}`;
+  }
+  const view = identityView(registry, []);
+  const problems: string[] = [];
+  for (const row of view.live) {
+    if (row.identity === 'invalid') {
+      const sharing = view.live.filter((other) => other !== row && other.seatId === row.seatId).map((other) => `'${other.seat}'`);
+      problems.push(
+        sharing.length
+          ? `seat '${row.seat}' shares its seat_id ${row.seatId} with seat ${sharing.join(', ')}, so no record is matched to either by id; give each its own id (32 lowercase hex characters) by hand`
+          : `seat '${row.seat}' has a seat_id that is not 32 lowercase hex characters (${JSON.stringify(row.seatId)}), so no record is matched to it by id; repair it by hand`,
+      );
+    }
+    if (row.namesProblem !== null) problems.push(`seat '${row.seat}' has a names history that does not parse (${row.namesProblem}), and reads as its one current name until it is repaired by hand`);
+  }
+  const holders = new Map<string, string[]>();
+  for (const row of view.live) for (const span of row.names) holders.set(span.name, [...(holders.get(span.name) ?? []), row.seat]);
+  for (const [name, seats] of [...holders].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
+    if (seats.length < 2) continue;
+    const current = view.live.find((row) => row.seat === name);
+    problems.push(
+      current
+        ? `the name '${name}' is seat '${name}''s now, and also in the name history of seat ${seats.filter((seat) => seat !== name).map((seat) => `'${seat}'`).join(', ')}, so a record under it cannot be told apart; repair the history by hand`
+        : `the name '${name}' is in the name history of more than one seat (${seats.map((seat) => `'${seat}'`).join(', ')}), so a record under it cannot be told apart; repair the histories by hand`,
+    );
+  }
+  const retirement = readSeatRetirementRecords(workspace);
+  problems.push(...retirement.faults);
+  const known = new Set([...view.live.map((row) => row.seatId), ...retirement.records.map((record) => record.seat_id)].filter((id) => id !== ''));
+  let recorded = 0;
+  for (const book of captureBookRows(workspace)) {
+    for (const note of shelfNotes(book)) {
+      for (const [field, id] of [['for_seat_id', note.forSeatId], ['origin_seat_id', note.originSeatId]] as const) {
+        if (id === null || note.malformed.includes(field)) continue;
+        recorded += 1;
+        if (!known.has(id)) problems.push(`${book.slug} ${note.page} records ${field} ${id}, which names no seat in the registry and no retirement record`);
+      }
+    }
+  }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${view.live.length} seat${view.live.length === 1 ? '' : 's'}, each with ${view.live.every((row) => row.identity === 'valid') ? 'its own id' : 'its own id or none'} and its own names; ${recorded} recorded letter id${recorded === 1 ? '' : 's'}, each naming a seat or a retirement record`;
 }
 
 /**
@@ -1178,8 +1241,11 @@ export interface DoctorResult {
 }
 
 export function runDoctor(argv: string[], program: string): DoctorResult {
-  const parsed = parseArguments(argv, ['workspace', 'served-by', 'kept', 'registry-root']);
+  const parsed = parseArguments(argv, argumentTable('doctor'));
   if (parsed.options.has('served-by')) return runServedBy(argv, parsed.options.get('served-by')!, program, parsed.options.get('registry-root'));
+  if (parsed.flags.has('warnings') && !parsed.flags.has('report')) {
+    return { refusal: 'doctor --warnings files WARNs too, so it needs --report: deskpost doctor --report [--warnings].', value: null, exitCode: 1 };
+  }
   const resolved = resolveWorkspace({ explicit: parsed.options.get('workspace') });
   if (resolved.kind === 'conflict') return { refusal: resolved.reason ?? 'the workspace selection is contradictory', value: null, exitCode: 1 };
   const workspace = resolved.kind === 'resolved' ? path.resolve(resolved.workspace!) : '';
@@ -1202,6 +1268,10 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
       checks: results as unknown as PsJsonValue,
       program_checks: programChecks as unknown as PsJsonValue,
       shared_library_write: false,
+      // D6: each FAIL (and WARN with --warnings) filed once into the Report Inbox; never a change to the exit code.
+      ...(parsed.flags.has('report')
+        ? { report: fileDoctorFindings(workspace, [...programChecks, ...results], parsed.flags.has('warnings'), String(releaseTuple()['plugin_version'] ?? '')) }
+        : {}),
     },
     exitCode: failed || programFailed ? 1 : 0,
   };
@@ -1295,6 +1365,8 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('letters.recipient-incarnation', () => lettersRecipientIncarnation(workspace)) : { check: 'letters.recipient-incarnation', status: 'skipped', detail: 'no Library here, so no letters to check' },
     // AND THIS ONE (kickoffs/s98 row 2): a letter whose relationship fields do not validate. A WARN; never a write.
     workspace ? runCheck('letters.relationship-fields', () => lettersRelationshipFields(workspace)) : { check: 'letters.relationship-fields', status: 'skipped', detail: 'no Library here, so no letters to check' },
+    // AND THIS ONE (kickoffs/s103 row 6): every seat one identity, every recorded letter id a known seat. A FAIL.
+    workspace ? runCheck('seats.identity', () => seatsIdentity(workspace)) : { check: 'seats.identity', status: 'skipped', detail: 'no Library here, so no seats whose identity to check' },
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
     runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
     ...refreshUnfinished(program),

@@ -29,6 +29,7 @@ import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatregistry.ts';
+import { identityRowsOfRegistry } from './seatincarnation.ts';
 import {
   METADATA_FIELDS,
   cardProblem,
@@ -286,7 +287,7 @@ function describeRead(workspace: string, stateDirectory: string, seat: string): 
   const meta = projection.seats.get(seat)!;
   const raw = rawMetadata(row);
   const invalid = METADATA_FIELDS.filter((field) => raw[field] !== null && meta[field] === null);
-  const state = seatHistoryState(readSeatHistory(workspace), seat, String(row['seat_id'] ?? ''));
+  const state = seatHistoryState(readSeatHistory(workspace), seat, String(row['seat_id'] ?? ''), { live: identityRowsOfRegistry(rows), retired: [] });
   return {
     schema: 1,
     operation: 'Describe a Library seat',

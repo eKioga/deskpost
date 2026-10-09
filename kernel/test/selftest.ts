@@ -35,6 +35,7 @@ import { fillSeatTemplate, loadSeatTemplate, seatTemplateId, seatTemplateNames }
 import { releaseFiles } from '../src/releasefiles.ts';
 import { seatCreationPlanId } from '../src/seatstartplan.ts';
 import { launcherAgentProof } from '../src/procstart.ts';
+import { foldedMapLines } from '../src/maplines.ts';
 import type { PsJsonValue } from '../src/psjson.ts';
 
 /**
@@ -515,6 +516,8 @@ if (selected(8)) {
       // S55. With no terminal and no answers the menu refuses in its own branch; an unknown action stops `library`'s.
       menu: ['menu'],
       library: ['library', 'no-such-action'],
+      // S102. A stray word refuses in its own branch, before the Library is read.
+      browse: ['browse', 'no-such-word'],
     };
     for (const [verb, declaration] of Object.entries(VERBS)) {
       if (!declaration.ported) continue;
@@ -933,6 +936,24 @@ if (selected(13)) {
     newProjectBody('# Q\n\n## Notes\n\nOnly prose here.\n', 'AppendSection', 'Notes', '- A first bullet', '', false),
     '# Q\n\n## Notes\n\nOnly prose here.\n\n- A first bullet\n',
     'a bullet appended to a prose-only section did not start its own paragraph at the end',
+  );
+  // A ROW APPENDED TO A TABLE AT THE SECTION'S END continues it (kickoffs/s102 K4); a `|` line after prose, and prose
+  // after a table, keep their blank line. The PowerShell oracle is not changed, and no matrix row appends after a table.
+  const table = '# T\n\n## Log\n\n| When | What |\n| --- | --- |\n| Mon | One |\n\n## Next\n\n- [ ] Later\n';
+  equal(
+    newProjectBody(table, 'AppendSection', 'Log', '| Tue | Two |', '', false),
+    '# T\n\n## Log\n\n| When | What |\n| --- | --- |\n| Mon | One |\n| Tue | Two |\n\n## Next\n\n- [ ] Later\n',
+    'a row appended to a table at the section end did not continue the table',
+  );
+  equal(
+    newProjectBody('# T\n\n## Log\n\nOnly prose.\n', 'AppendSection', 'Log', '| A | B |', '', false),
+    '# T\n\n## Log\n\nOnly prose.\n\n| A | B |\n',
+    'a table line appended after prose lost its blank line',
+  );
+  equal(
+    newProjectBody(table, 'AppendSection', 'Log', 'A note under the table.', '', false),
+    '# T\n\n## Log\n\n| When | What |\n| --- | --- |\n| Mon | One |\n\nA note under the table.\n\n## Next\n\n- [ ] Later\n',
+    'prose appended after a table lost its blank line',
   );
   equal(
     newProjectBody('# C\r\n\r\n## Now\r\n\r\n- [ ] one\r\n\r\n## Next\r\n\r\n- [x] two\r\n', 'CheckItem', '', '', 'two', true),
@@ -4877,7 +4898,7 @@ if (selected(51)) {
     // BELOW 120 COLUMNS, CARDS: SAME NUMBERS, ONE FIELD PER LINE.
     const narrow = menu(['q'], ['--workspace', library, '--width', '80']);
     check(!narrow.stdout.includes('Seats in this Library:') && /^\s+1 o home-lab/m.test(narrow.stdout) && /^\s+Project\s+home-lab/m.test(narrow.stdout), `a narrow terminal did not get cards: ${narrow.stdout.slice(0, 900)}`);
-    check(narrow.stdout.includes('+  new seat     h  Show me around     b  Basic Memory     q  quit') && narrow.stdout.includes('h  Show me around   a deskpost-help seat') && narrow.stdout.includes('Pick a seat to continue its last session, or n<number> for a new one.'), `the tools footer or the first hint is missing: ${narrow.stdout}`);
+    check(narrow.stdout.includes('+  new seat    h  Show me around    l  browse    b  Basic Memory    q  quit') && narrow.stdout.includes('h  Show me around   a deskpost-help seat') && narrow.stdout.includes('Pick a seat to continue its last session, or n<number> for a new one.'), `the tools footer or the first hint is missing: ${narrow.stdout}`);
 
     // THE GRAMMAR'S REFUSALS EACH SAY THEIR OWN THING, AND THE LOOP GOES ON.
     const grammar = menu(['x', '9', '', 'q'], ['--workspace', library]);
@@ -5561,7 +5582,8 @@ if (selected(58)) {
 
 // Judged through the front door only, so with LIBRARY_SELFTEST_KERNEL it judges that kernel (the acceptance row
 // `publication.collection-add-page-only-ever-adds`). The preview writes nothing; the run adds the page and one line at
-// the end of the reader map, keeps the map's frontmatter, commits a manifest, and names a topic index it did not edit.
+// the end of the reader map, keeps the map's frontmatter, commits a manifest, and adds the page's line to the topic index
+// beside it (kickoffs/s101 row 3).
 // Each refusal fires by name and writes nothing: a closed Book, an archived one, a page that exists, a plan_id that is
 // not the preview's, a map that changed after the preview, a map ending in an open fence, a folder that is a junction
 // (live or dangling), and a Library attached to Basic Memory. Three manifest failures each roll the page back, and
@@ -5618,7 +5640,7 @@ if (selected(59)) {
     const planned = first.plan;
     check(/^collection-page-[0-9a-f]{64}$/.test(String(planned['plan_id'])), `the preview carries no plan_id: ${first.ran.stdout.slice(0, 300)}`);
     equal(planned['reader_map_line'], '- [[books/demo/wiki/guide/valheim|Valheim Server]]', 'the preview did not show the exact map line');
-    equal(planned['topic_index_not_updated'], 'collection/books/demo/wiki/guide/_index.md', 'the preview did not name the topic index it leaves alone');
+    equal(planned['topic_index'], 'updated', 'the preview did not say the topic index gains the line for the page');
     check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')) && fs.readFileSync(path.join(wiki, '_index.md'), 'utf8') === map, 'the preview wrote something');
     refused(add('guide/valheim'), '--user-confirmed', 'a run with no confirmation');
     refused(add('guide/valheim', ['--user-confirmed', '--plan-id', 'collection-page-0']), "not this preview's", 'a run on a plan_id that was not the preview\'s');
@@ -5661,6 +5683,7 @@ if (selected(59)) {
       const ran = cli(['collection', 'add-page', 'demo', 'guide/valheim', '--content-path', body, '--user-confirmed', '--plan-id', String(again.plan['plan_id'])], { LIBRARY_COLLECTION_ADD_PAGE_FAULT: fault });
       check(ran.exit !== 0 && ran.stderr.includes('Rollback: complete and verified') && ran.stderr.includes('Discovery: the Book is as it was'), `the ${fault} fault was not rolled back and reported: ${ran.stderr.trim()}`);
       check(!fs.existsSync(path.join(wiki, 'guide', 'valheim.md')) && fs.readFileSync(path.join(wiki, '_index.md'), 'utf8') === map, `the ${fault} fault left the page or a changed map`);
+      equal(fs.readFileSync(path.join(wiki, 'guide', '_index.md'), 'utf8'), topicIndex, `the ${fault} fault left a changed topic index`);
       check(!fs.existsSync(path.join(store, 'dirty.json')) && fs.existsSync(path.join(store, 'current.json')), `the ${fault} fault left the Book's manifest dirty`);
     }
 
@@ -5672,7 +5695,7 @@ if (selected(59)) {
     check(ran.exit === 0 && (JSON.parse(ran.stdout || '{}') as { status?: string }).status === 'added', `the page was not added: ${ran.stdout.slice(0, 300)} ${ran.stderr.trim()}`);
     equal(fs.readFileSync(path.join(wiki, 'guide', 'valheim.md'), 'utf8'), '# Valheim Server\n\nThe compiled reference.\n', 'the page was not written as given');
     equal(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8'), map + '- [[books/demo/wiki/guide/valheim|Valheim Server]]\n', 'the map was not the old map plus one line');
-    equal(fs.readFileSync(path.join(wiki, 'guide', '_index.md'), 'utf8'), topicIndex, 'the topic index was edited');
+    equal(fs.readFileSync(path.join(wiki, 'guide', '_index.md'), 'utf8'), topicIndex + '- [[guide/valheim|Valheim Server]]\n', 'the topic index did not gain exactly the line for the page');
     check(!fs.existsSync(path.join(store, 'dirty.json')) && fs.existsSync(path.join(store, 'current.json')), 'the run left the manifest dirty or uncommitted');
     const found = cli(['mcp', 'call', 'discover_book_pages', '--query', 'Valheim Server', '--seat', 'first']);
     check(found.stdout.includes('guide/valheim'), `Discovery does not find the new page: ${found.stdout.slice(0, 300)} ${found.stderr.trim()}`);
@@ -12735,6 +12758,11 @@ if (selected(144)) {
     check(outside.exit !== 0 && outside.stderr.includes('not an installed Deskpost') && outside.stderr.includes('Nothing was changed.'), `upgrade outside an install did not refuse by name: ${outside.stderr.trim()}`);
     const seated = runCli(['upgrade', '--yes'], { cwd: root, env: { LIBRARY_SEAT: 'first' } });
     check(seated.exit !== 0 && seated.stderr.includes("not from a seat's session") && seated.stderr.includes('including this one'), `upgrade inside a seat did not refuse: ${seated.stderr.trim()}`);
+    // A DRY RUN INSIDE A SEAT IS ANSWERED (kickoffs/s102 K1): from a checkout it meets the next refusal, not the seat's.
+    for (const tail of [['--dry-run'], ['--dry-run', '--json']]) {
+      const seatedDry = runCli(['upgrade', ...tail], { cwd: root, env: { LIBRARY_SEAT: 'first' } });
+      check(!seatedDry.stderr.includes("not from a seat's session") && seatedDry.stderr.includes('not an installed Deskpost'), `upgrade ${tail.join(' ')} inside a seat met the seat refusal: ${seatedDry.stderr.trim()}`);
+    }
     const bogus = runCli(['upgrade', '--install-root', prog], { cwd: root });
     check(bogus.exit !== 0 && bogus.stderr.includes('has no --install-root'), `upgrade took an argument it does not have: ${bogus.stderr.trim()}`);
     const help = runCli(['upgrade', '--help'], { cwd: root });
@@ -12791,6 +12819,16 @@ if (selected(144)) {
       const sessions = (shown['sessions'] ?? {}) as Record<string, unknown>;
       check(dry.exit === 0 && shown['status'] === 'dry-run' && typeof shown['plan_id'] === 'string' && shown['plan'] !== undefined && sessions['open'] === 0, `upgrade --dry-run --json did not show the plan and sessions: ${dry.said}`);
       equal(JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, ''))['version'], releaseA.version, 'the dry run changed the install');
+      // INSIDE A SEAT (kickoffs/s102 K1): the dry run answers and changes nothing; the real run still refuses.
+      const seatedRun = (args: string[]) => {
+        const ran = spawnSync(current, args, { cwd: fixture, env: { ...env, LIBRARY_SEAT: 'first' }, encoding: 'utf8', timeout: 300000, input: '' });
+        return { exit: ran.status ?? -1, said: `${ran.stdout ?? ''} ${ran.stderr ?? ''}`.replace(/\s+/g, ' ').trim() };
+      };
+      const seatedDry = seatedRun(['upgrade', '--dry-run', '--release', releaseB.folder]);
+      check(seatedDry.exit === 0 && seatedDry.said.endsWith('Dry run: nothing was changed.'), `upgrade --dry-run inside a seat did not answer: ${seatedDry.said.slice(-500)}`);
+      equal(JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, ''))['version'], releaseA.version, 'the seated dry run changed the install');
+      const seatedReal = seatedRun(['upgrade', '--yes', '--release', releaseB.folder]);
+      check(seatedReal.exit !== 0 && seatedReal.said.includes("not from a seat's session"), `upgrade inside a seat no longer refused: ${seatedReal.said.slice(-500)}`);
 
       const upgraded = run(current, ['upgrade', '--yes', '--release', releaseB.folder]);
       const record = JSON.parse(fs.readFileSync(path.join(prog, 'current.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
@@ -13377,6 +13415,12 @@ if (selected(151)) {
     check(screenKeys(keyView)[0] === '[Enter] upgrade', `an upgrade's keys do not start [Enter] upgrade: ${screenKeys(keyView).join(' ')}`);
     check(screenKeys({ ...keyView, installState: 'new' })[0] === '[Enter] install', 'a new install does not keep [Enter] install');
     check(screenKeys({ ...keyView, installState: 'repair' })[0] === '[Enter] repair', 'a repair does not say [Enter] repair');
+    // A DRY RUN'S ENTER SHOWS THE PLAN (kickoffs/s102 K2), on every install state; the other keys are as before.
+    for (const installState of ['upgrade', 'repair', 'new'] as const) {
+      const wet = screenKeys({ ...keyView, installState });
+      const dry = screenKeys({ ...keyView, installState, dryRun: true });
+      check(dry[0] === '[Enter] show the plan' && JSON.stringify(dry.slice(1)) === JSON.stringify(wet.slice(1)), `a dry run's ${installState} keys are not [Enter] show the plan and the rest: ${dry.join(' ')}`);
+    }
     equal(quitText('upgrade'), 'Nothing was changed.', 'q on an upgrade does not say nothing was changed');
     equal(quitText('new'), 'Nothing was installed.', 'q on a new install does not say nothing was installed');
 
@@ -13392,6 +13436,21 @@ if (selected(151)) {
     check(naming.length === 1 && naming[0]!.includes('0.7.0, 0.8.0, 0.9.0') && !naming[0]!.includes('1.0.0') && !naming[0]!.includes('incoming') && !naming[0]!.includes('notes'), `the upgrade's plan does not name exactly the three old versions it removes: ${upgradeRows.join(' / ')}`);
     const newRows = screenRows(viewOfAnswers({ ...answers, install_state: 'new', from_version: null })).rows.map((row) => row.join(' | '));
     check(!newRows.some((row) => row.includes('older version')), `a new install's plan names versions to remove: ${newRows.join(' / ')}`);
+
+    // THE UPDATES ROW SAYS WHAT THIS SHELL SET (kickoffs/s102 K3): off, every menu, or once a day.
+    const updatesRow = () => screenRows(viewOfAnswers(answers)).rows.map((row) => row.join(' | ')).find((row) => row.startsWith('Updates')) ?? '';
+    const savedUpdateCheck = process.env['DESKPOST_UPDATE_CHECK'];
+    try {
+      process.env['DESKPOST_UPDATE_CHECK'] = '0';
+      check(updatesRow().startsWith('Updates | off | DESKPOST_UPDATE_CHECK=0 is set in this shell'), `the Updates row with the check off: ${updatesRow()}`);
+      process.env['DESKPOST_UPDATE_CHECK'] = '1';
+      check(updatesRow().startsWith('Updates | every menu | DESKPOST_UPDATE_CHECK=1 is set in this shell'), `the Updates row with the check forced: ${updatesRow()}`);
+      delete process.env['DESKPOST_UPDATE_CHECK'];
+      check(updatesRow().startsWith('Updates | once a day | the menu checks GitHub'), `the Updates row by default: ${updatesRow()}`);
+    } finally {
+      if (savedUpdateCheck === undefined) delete process.env['DESKPOST_UPDATE_CHECK'];
+      else process.env['DESKPOST_UPDATE_CHECK'] = savedUpdateCheck;
+    }
 
     // ONE "Brought up to date" PER LIBRARY: the apply's line is the plan, the refresh's the outcome.
     const a = path.join(root, 'libA');
@@ -15869,6 +15928,2398 @@ if (selected(178)) {
     refusedAsToday('the interrupted batch run again with its approved id', confirmed(mixed, mixedId));
   } catch (error) {
     failures.push(`section 178 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 179. A PAGE OF A SHELF BOOK CORRECTED IN PLACE (kickoffs/s101 row 2; ADR-0070; PLAN-correct-and-find.md D1) -------
+
+// Through the front door only. `book replace-page` is bound, not approved: the preflight writes nothing and gives the
+// page's hash, and the apply requires it. The replace stores what `book add-page` would store for the same body, keeps
+// the previous text in the journal and as a restore file, regenerates a generated map (its label follows a changed
+// H1), leaves a curated one alone, and commits a manifest. The restore line puts the start back byte for byte, for an
+// LF page and a CRLF page alike. A fault after the journal, and one after the write, each leave the page whole and the
+// restore file gone. Each refusal writes nothing: a stale hash, a capture Book, a closed Book, the top `_index`, a
+// missing page, `--sources-compiled`, `--title`, and both or neither of --preflight and --base-sha256.
+if (selected(179)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-replace-page-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_BOOK_REPLACE_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    for (const slug of ['demo', 'kept', 'shut']) {
+      equal(as(['shelf', 'new', slug, '--title', slug.toUpperCase(), '--summary', 'A curated Book.', '--json']).exit, 0, `the Book '${slug}' was not made`);
+    }
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/holding\nshelf/demo\nshelf/kept\n');
+    const wiki = path.join(lib, 'shelf', 'demo', 'wiki');
+    const file = (name: string, text: string) => {
+      const full = path.join(root, name);
+      fs.writeFileSync(full, text);
+      return full;
+    };
+    const add = (slug: string, page: string, text: string) => as(['book', 'add-page', slug, page, '--content-path', file(`add-${slug}-${page.replace(/\//g, '-')}.md`, text), '--json']);
+    const replace = (slug: string, page: string, content: string, tail: string[], extra: Record<string, string> = {}) =>
+      as(['book', 'replace-page', slug, page, '--content-path', content, ...tail, '--json'], extra);
+    const snapshot = () =>
+      listFiles(path.join(lib, 'shelf')).concat(fs.existsSync(path.join(lib, 'internal', 'shelf-journals')) ? listFiles(path.join(lib, 'internal', 'shelf-journals')).map((name) => `journal:${name}`) : [])
+        .sort()
+        .map((name) => (name.startsWith('journal:') ? name : `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, 'shelf', ...name.split('/')))).digest('hex')}`))
+        .join('\n');
+
+    // AN LF PAGE: preflight, a stale hash, the apply, the restore.
+    const start = '# Guide\n\nThe first text.\nA second line.\n';
+    check(add('demo', 'guide', start).exit === 0, 'the LF page was not added');
+    const pageFile = path.join(wiki, 'guide.md');
+    const startBytes = fs.readFileSync(pageFile);
+    const corrected = file('corrected.md', '# Guide, corrected\n\nThe first text, corrected.\nA second line.\n');
+    let before = snapshot();
+    const pre = replace('demo', 'guide', corrected, ['--preflight']);
+    const plan = parsed(pre);
+    check(pre.exit === 0 && /^[0-9a-f]{64}$/.test(String(plan['current_sha256'])) && /^[0-9a-f]{64}$/.test(String(plan['proposed_sha256'])), `the preflight gave no hashes: ${said(pre).slice(0, 300)}`);
+    check(plan['added_lines'] === 2 && plan['removed_lines'] === 2 && plan['title_before'] === 'Guide' && plan['title_after'] === 'Guide, corrected' && plan['reader_map'] === 'regenerated', `the preflight's counts, titles or map are wrong: ${JSON.stringify(plan).slice(0, 500)}`);
+    check(String(plan['next']).includes(`--base-sha256 ${plan['current_sha256']}`) && plan['confirmation_required'] === false, `the preflight's next line does not carry the base hash: ${plan['next']}`);
+    check(!pre.stdout.includes('The first text, corrected'), 'the preflight printed the page text');
+    equal(snapshot(), before, 'the preflight wrote something');
+    const stale = replace('demo', 'guide', corrected, ['--base-sha256', '0'.repeat(64)]);
+    check(stale.exit !== 0 && said(stale).includes('changed after the preflight') && said(stale).includes('nothing was written'), `a stale base hash was not refused by name: ${said(stale).slice(0, 300)}`);
+    equal(snapshot(), before, 'a stale base hash wrote something');
+
+    const applied = replace('demo', 'guide', corrected, ['--base-sha256', String(plan['current_sha256'])]);
+    const result = parsed(applied);
+    check(applied.exit === 0 && result['status'] === 'written' && result['title_changed'] === true, `the replace did not write: ${said(applied).slice(0, 400)}`);
+    check(/^generation \d+ committed$/.test(String(result['manifest'])), `the replace committed no manifest generation: ${result['manifest']}`);
+    check(add('kept', 'same', '# Guide, corrected\n\nThe first text, corrected.\nA second line.\n').exit === 0, 'the comparison page was not added');
+    equal(fs.readFileSync(pageFile, 'utf8'), fs.readFileSync(path.join(lib, 'shelf', 'kept', 'wiki', 'same.md'), 'utf8'), 'the replaced page is not what book add-page stores for the same body');
+    check(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8').includes('[[guide|Guide, corrected]]'), 'the generated map did not follow the changed H1');
+    const previous = path.join(lib, ...String(result['previous_body_path']).split('/'));
+    check(/^internal\/shelf-journals\/.+\.previous\.txt$/.test(String(result['previous_body_path'])) && fs.existsSync(previous), `no restore file beside the journal: ${result['previous_body_path']}`);
+    check(fs.readFileSync(previous).equals(startBytes), 'the restore file is not the previous page byte for byte');
+    check(fs.existsSync(path.join(lib, ...String(result['journal']).split('/'))) && String(result['previous_body_path']).startsWith(String(result['journal']).replace(/\.json$/, '')), 'the restore file is not beside its journal');
+    const restoreLine = String(result['restore']);
+    check(restoreLine.startsWith(`deskpost book replace-page demo guide --content-path ${result['previous_body_path']} --base-sha256 `), `the restore line is not the verb with the restore file: ${restoreLine}`);
+    const restoreArgs = restoreLine.split(' ').slice(1);
+    const restored = as([...restoreArgs, '--json']);
+    check(restored.exit === 0 && parsed(restored)['status'] === 'written', `the restore line did not run: ${said(restored).slice(0, 300)}`);
+    check(fs.readFileSync(pageFile).equals(startBytes), 'the restore did not put the start back byte for byte (LF)');
+
+    // UNCHANGED: the same text writes nothing, with or without a base hash.
+    before = snapshot();
+    const same = replace('demo', 'guide', file('same.md', start), ['--base-sha256', '1'.repeat(64)]);
+    check(same.exit === 0 && parsed(same)['status'] === 'unchanged', `the same text was not unchanged: ${said(same).slice(0, 300)}`);
+    equal(snapshot(), before, 'an unchanged replace wrote something');
+
+    // A CRLF PAGE: kept CRLF inside, as add-page stores it, and restored byte for byte.
+    check(add('demo', 'crlf', '# Windows\r\n\r\nLine one.\r\nLine two.\r\n').exit === 0, 'the CRLF page was not added');
+    const crlfFile = path.join(wiki, 'crlf.md');
+    const crlfStart = fs.readFileSync(crlfFile);
+    const crlfNew = file('crlf-new.md', '# Windows\r\n\r\nLine one, corrected.\r\nLine two.\r\n');
+    const crlfPlan = parsed(replace('demo', 'crlf', crlfNew, ['--preflight']));
+    const crlfRun = parsed(replace('demo', 'crlf', crlfNew, ['--base-sha256', String(crlfPlan['current_sha256'])]));
+    check(crlfRun['status'] === 'written' && fs.readFileSync(crlfFile, 'utf8') === '# Windows\r\n\r\nLine one, corrected.\r\nLine two.\n', `the CRLF page was not stored as add-page stores it: ${JSON.stringify(fs.readFileSync(crlfFile, 'utf8'))}`);
+    const crlfBack = as([...String(crlfRun['restore']).split(' ').slice(1), '--json']);
+    check(crlfBack.exit === 0 && fs.readFileSync(crlfFile).equals(crlfStart), 'the restore did not put the start back byte for byte (CRLF)');
+
+    // A CURATED MAP is left alone.
+    fs.writeFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), '# KEPT - Reader Map\n\n## Pages\n\nA reader wrote this.\n\n- [[same|Same]]\n');
+    const curatedBefore = fs.readFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), 'utf8');
+    const curatedNew = file('curated.md', '# Same, renamed\n\nNew text.\n');
+    const curatedPlan = parsed(replace('kept', 'same', curatedNew, ['--preflight']));
+    check(curatedPlan['reader_map'] === 'curated: unchanged', `a curated map was not named as unchanged: ${curatedPlan['reader_map']}`);
+    check(parsed(replace('kept', 'same', curatedNew, ['--base-sha256', String(curatedPlan['current_sha256'])]))['status'] === 'written', 'the page under a curated map was not replaced');
+    equal(fs.readFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), 'utf8'), curatedBefore, 'a curated map was rewritten');
+
+    // THE FAULTS: after the journal, and after the write. The page stays whole, and the restore file goes.
+    for (const fault of ['after-journal', 'after-write']) {
+      before = snapshot();
+      const journals = fs.readdirSync(path.join(lib, 'internal', 'shelf-journals')).filter((name) => name.endsWith('.previous.txt')).length;
+      const faultPlan = parsed(replace('demo', 'guide', corrected, ['--preflight']));
+      const faulted = replace('demo', 'guide', corrected, ['--base-sha256', String(faultPlan['current_sha256'])], { LIBRARY_BOOK_REPLACE_PAGE_FAULT: fault });
+      check(faulted.exit !== 0 && said(faulted).includes('FAULT INJECTED') && said(faulted).includes('Rollback: complete and verified'), `the ${fault} fault was not rolled back: ${said(faulted).slice(0, 300)}`);
+      check(fs.readFileSync(pageFile).equals(startBytes), `the ${fault} fault did not leave the page whole`);
+      equal(fs.readdirSync(path.join(lib, 'internal', 'shelf-journals')).filter((name) => name.endsWith('.previous.txt')).length, journals, `the ${fault} fault left a restore file`);
+      equal(snapshot().split('\n').filter((line) => !line.startsWith('journal:')).join('\n'), before.split('\n').filter((line) => !line.startsWith('journal:')).join('\n'), `the ${fault} fault changed the Book`);
+    }
+
+    // THE REFUSALS, each writing nothing.
+    before = snapshot();
+    const refusedFor = (label: string, ran: { exit: number; stdout: string; stderr: string }, words: string) =>
+      check(ran.exit !== 0 && said(ran).includes(words), `${label} was not refused by name: ${said(ran).slice(0, 300)}`);
+    const base = ['--base-sha256', '2'.repeat(64)];
+    refusedFor('a capture Book', replace('holding', 'guide', corrected, base), 'is a capture Book');
+    check(add('demo', 'other', '# Other\n\nText.\n').exit === 0, 'the page for the closed-Book case was not added');
+    before = snapshot();
+    fs.mkdirSync(path.join(lib, 'shelf', 'shut', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(lib, 'shelf', 'shut', 'wiki', 'page.md'), '# Page\n\nText.\n');
+    before = snapshot();
+    refusedFor('a closed Book', replace('shut', 'page', corrected, base), "is closed");
+    refusedFor('the top reader map', replace('demo', '_index', corrected, base), 'must not name');
+    refusedFor('a missing page', replace('demo', 'absent', corrected, base), 'book add-page');
+    refusedFor('--sources-compiled', replace('demo', 'guide', corrected, [...base, '--sources-compiled', corrected]), '--sources-compiled');
+    refusedFor('--title', replace('demo', 'guide', corrected, [...base, '--title', 'X']), 'takes no --title');
+    refusedFor('both --preflight and --base-sha256', replace('demo', 'guide', corrected, [...base, '--preflight']), 'exactly one of --preflight or --base-sha256');
+    refusedFor('neither --preflight nor --base-sha256', replace('demo', 'guide', corrected, []), 'exactly one of --preflight or --base-sha256');
+    refusedFor('a malformed base hash', replace('demo', 'guide', corrected, ['--base-sha256', 'abc']), '64 hex characters');
+    equal(snapshot(), before, 'a refused replace wrote something');
+  } catch (error) {
+    failures.push(`section 179 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 180. A PAGE ADDED UNDER A TOPIC GAINS ITS LINE IN THE TOPIC INDEX (kickoffs/s101 row 3; PLAN-correct-and-find.md D3) --
+
+// Through the front door only, for `book add-page` on the Shelf and `collection add-page` alike. A page added under a
+// folder whose `_index.md` does not link it appends one Book-relative line at that index's end (`topic_index:
+// updated`), keeping its frontmatter; an index that already links the page, in either form, gains nothing
+// (`already-listed`), so a line is written once; a page at the top, or under a folder with no index, says null. The
+// preview writes nothing. An index ending in an open fence is refused with nothing written. On the collection side the
+// index's hash is in the plan_id, so an index changed after the preview is refused. A fault after the page lands rolls
+// the index back with it.
+if (selected(180)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-topic-line-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_COLLECTION_ADD_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--json']).exit, 0, 'the Shelf Book was not made');
+    const deskFile = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    fs.writeFileSync(deskFile, 'shelf/demo\nbooks/coll\n');
+    const wiki = path.join(lib, 'shelf', 'demo', 'wiki');
+    let counter = 0;
+    const body = (text: string) => {
+      counter += 1;
+      const full = path.join(root, `body-${counter}.md`);
+      fs.writeFileSync(full, text);
+      return full;
+    };
+    const add = (page: string, title: string, tail: string[] = []) => as(['book', 'add-page', 'demo', page, '--content-path', body(`# ${title}\n\nText of ${title}.\n`), ...tail, '--json']);
+    const read = (...parts: string[]) => fs.readFileSync(path.join(...parts), 'utf8');
+
+    // THE SHELF: the topic index first, then a page under it.
+    const indexStart = '---\ntitle: topic\n---\n\n# Topic\n\n- [[topic/zero|Zero]]\n';
+    fs.mkdirSync(path.join(wiki, 'topic'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, 'topic', '_index.md'), indexStart);
+    const preview = add('topic/one', 'One', ['--preflight']);
+    check(preview.exit === 0 && parsed(preview)['topic_index'] === 'updated' && !('topic_index_not_updated' in parsed(preview)), `the preview did not say the topic index gains a line: ${said(preview).slice(0, 300)}`);
+    check(!fs.existsSync(path.join(wiki, 'topic', 'one.md')) && read(wiki, 'topic', '_index.md') === indexStart, 'the preview wrote something');
+    const one = add('topic/one', 'One');
+    check(one.exit === 0 && parsed(one)['topic_index'] === 'updated' && parsed(one)['status'] === 'added', `the page under the topic was not added with its line: ${said(one).slice(0, 300)}`);
+    equal(read(wiki, 'topic', '_index.md'), indexStart + '- [[topic/one|One]]\n', 'the topic index did not gain exactly one line at its end, its frontmatter kept');
+
+    // WRITTEN ONCE: the same page again, after its file is gone, finds its line already there.
+    fs.rmSync(path.join(wiki, 'topic', 'one.md'));
+    equal(as(['shelf', 'rebuild', 'demo']).exit, 0, 'the Book was not rebuilt after the page was removed');
+    const again = add('topic/one', 'One');
+    check(again.exit === 0 && parsed(again)['topic_index'] === 'already-listed', `a page already listed was not already-listed: ${said(again).slice(0, 300)}`);
+    equal(read(wiki, 'topic', '_index.md'), indexStart + '- [[topic/one|One]]\n', 'a page already listed gained a second line');
+    // ...and a link given in the topic's own words counts too.
+    const listed = add('topic/zero', 'Zero');
+    check(listed.exit === 0 && parsed(listed)['topic_index'] === 'already-listed', `a page the index already linked was not already-listed: ${said(listed).slice(0, 300)}`);
+
+    // NULL: a page at the top, and under a folder with no index.
+    const top = add('top', 'Top');
+    check(top.exit === 0 && parsed(top)['topic_index'] === null, `a page at the top did not say null: ${said(top).slice(0, 300)}`);
+    const bare = add('bare/page', 'Bare');
+    check(bare.exit === 0 && parsed(bare)['topic_index'] === null && !fs.existsSync(path.join(wiki, 'bare', '_index.md')), `a folder with no index did not say null, or gained one: ${said(bare).slice(0, 300)}`);
+
+    // AN OPEN FENCE is refused, nothing written.
+    const fenced = read(wiki, 'topic', '_index.md') + '\n```\nexample\n';
+    fs.writeFileSync(path.join(wiki, 'topic', '_index.md'), fenced);
+    const fence = add('topic/two', 'Two');
+    check(fence.exit !== 0 && said(fence).includes('unclosed code fence'), `a topic index ending in an open fence was not refused: ${said(fence).slice(0, 300)}`);
+    check(!fs.existsSync(path.join(wiki, 'topic', 'two.md')) && read(wiki, 'topic', '_index.md') === fenced, 'a refused page wrote something');
+
+    // THE COLLECTION: full-prefix links count, the index's hash is in the plan_id, a fault rolls the index back.
+    const cwiki = path.join(lib, 'collection', 'books', 'coll', 'wiki');
+    fs.mkdirSync(path.join(cwiki, 'guide'), { recursive: true });
+    fs.writeFileSync(path.join(cwiki, '_book.md'), '# Coll\n\n## Purpose\n\nA fixture Book.\n');
+    fs.writeFileSync(path.join(cwiki, '_index.md'), '# Coll - Reader Map\n\n- [[books/coll/wiki/_book|Book metadata and limits]]\n- [[books/coll/wiki/guide/_index|Guide]]\n');
+    const guideStart = '# Guide\n\n- [[books/coll/wiki/guide/known|Known]]\n';
+    fs.writeFileSync(path.join(cwiki, 'guide', '_index.md'), guideStart);
+    equal(as(['collection', 'rebuild']).exit, 0, 'the collection manifests were not built');
+    const cadd = (page: string, title: string, tail: string[], extra: Record<string, string> = {}) =>
+      as(['collection', 'add-page', 'coll', page, '--content-path', body(`# ${title}\n\nText of ${title}.\n`), ...tail, '--json'], extra);
+    const known = parsed(cadd('guide/known', 'Known', ['--preflight']));
+    equal(known['topic_index'], 'already-listed', 'a full-prefix link in the topic index did not count');
+    const cplan = parsed(cadd('guide/new', 'New', ['--preflight']));
+    equal(cplan['topic_index'], 'updated', 'the collection preview did not say the topic index gains a line');
+    fs.writeFileSync(path.join(cwiki, 'guide', '_index.md'), guideStart + '- [[books/coll/wiki/guide/late|Late]]\n');
+    const moved = cadd('guide/new', 'New', ['--user-confirmed', '--plan-id', String(cplan['plan_id'])]);
+    check(moved.exit !== 0 && said(moved).includes("not this preview's") && !fs.existsSync(path.join(cwiki, 'guide', 'new.md')), `a topic index changed after the preview was not refused: ${said(moved).slice(0, 300)}`);
+    fs.writeFileSync(path.join(cwiki, 'guide', '_index.md'), guideStart);
+    const fplan = parsed(cadd('guide/new', 'New', ['--preflight']));
+    const faulted = cadd('guide/new', 'New', ['--user-confirmed', '--plan-id', String(fplan['plan_id'])], { LIBRARY_COLLECTION_ADD_PAGE_FAULT: 'commit' });
+    check(faulted.exit !== 0 && said(faulted).includes('Rollback: complete and verified'), `the collection fault was not rolled back: ${said(faulted).slice(0, 300)}`);
+    check(!fs.existsSync(path.join(cwiki, 'guide', 'new.md')) && read(cwiki, 'guide', '_index.md') === guideStart, 'the collection fault left the page or a changed topic index');
+    const rplan = parsed(cadd('guide/new', 'New', ['--preflight']));
+    const ran = cadd('guide/new', 'New', ['--user-confirmed', '--plan-id', String(rplan['plan_id'])]);
+    check(ran.exit === 0 && parsed(ran)['topic_index'] === 'updated', `the collection page was not added with its line: ${said(ran).slice(0, 300)}`);
+    equal(read(cwiki, 'guide', '_index.md'), guideStart + '- [[guide/new|New]]\n', 'the collection topic index did not gain exactly one Book-relative line');
+    fs.writeFileSync(path.join(cwiki, 'guide', '_index.md'), guideStart + '\n~~~\nopen\n');
+    const cfence = cadd('guide/other', 'Other', ['--preflight']);
+    check(cfence.exit !== 0 && said(cfence).includes('unclosed code fence'), `a collection topic index ending in an open fence was not refused: ${said(cfence).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 180 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 181. A PAGE OF A COLLECTION BOOK CORRECTED IN PLACE (kickoffs/s101 row 4; ADR-0070; PLAN-correct-and-find.md D2) ----
+
+// Through the front door only. `collection replace-page` is gated as `collection add-page` is: the preview writes
+// nothing and issues a plan_id over the page's current and proposed text and the reader map; the run rechecks them and a
+// page changed after the preview is refused with nothing written. A changed H1 relabels the one map line that links the
+// page, in either link form, and a map with two such lines is left alone. A Book published from the Shelf names its
+// Shelf copy and warns. The previous text is kept as a restore file, and the restore line puts the start back byte for
+// byte. A Notebook source leaves publication evidence. A fault after the journal, and one after the write, roll back to
+// the Book as it was. Refused, writing nothing: a closed Book, an archived one, a missing page, the top `_index`,
+// --title, no --user-confirmed, and another plan_id.
+if (selected(181)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-collection-replace-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_COLLECTION_REPLACE_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'src', '--title', 'Source', '--summary', 'The Shelf copy.', '--json']).exit, 0, 'the Shelf source Book was not made');
+
+    const wiki = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(path.join(wiki, 'guide'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '---\ntitle: _book\nsource_boundary: shelf/src/wiki\n---\n\n# Demo\n\n## Purpose\n\nA fixture Book.\n');
+    const map = '---\ntitle: _index\n---\n\n# Demo - Reader Map\n\n- [[books/demo/wiki/_book|Book metadata and limits]]\n- [[books/demo/wiki/guide/start|Getting Started]]\n- [[twice|Twice]]\n\nSee also [[twice]].\n';
+    fs.writeFileSync(path.join(wiki, '_index.md'), map);
+    const start = '# Getting Started\n\nThe first text.\n';
+    fs.writeFileSync(path.join(wiki, 'guide', 'start.md'), start);
+    fs.writeFileSync(path.join(wiki, 'twice.md'), '# Twice\n\nLinked twice.\n');
+    fs.mkdirSync(path.join(lib, 'collection', 'archive', 'old', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(lib, 'collection', 'archive', 'old', 'wiki', 'page.md'), '# Page\n');
+    equal(as(['collection', 'rebuild']).exit, 0, 'the collection manifests were not built');
+    const deskFile = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    fs.writeFileSync(deskFile, 'books/demo\n');
+    const notebook = path.join(lib, 'notebook', 'first', 'topic');
+    fs.mkdirSync(notebook, { recursive: true });
+    const corrected = path.join(notebook, 'corrected.md');
+    fs.writeFileSync(corrected, '# Getting Started Again\n\nThe first text, corrected.\n');
+    const replace = (slug: string, page: string, content: string, tail: string[], extra: Record<string, string> = {}) =>
+      as(['collection', 'replace-page', slug, page, '--content-path', content, ...tail, '--json'], extra);
+    const tree = () =>
+      listFiles(lib)
+        .filter((name) => name.startsWith('collection/') || name.startsWith('internal/publication-journals/') || name.endsWith('.previous.txt'))
+        .map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`)
+        .join('\n');
+
+    // THE PREVIEW: the hashes, the map label, the Shelf source and its warning, a plan_id, and nothing written.
+    let before = tree();
+    const pre = replace('demo', 'guide/start', corrected, ['--preflight']);
+    const plan = parsed(pre);
+    check(pre.exit === 0 && /^collection-replace-[0-9a-f]{64}$/.test(String(plan['plan_id'])) && plan['confirmation_required'] === true, `the preview carries no plan_id: ${said(pre).slice(0, 300)}`);
+    check(plan['title_before'] === 'Getting Started' && plan['title_after'] === 'Getting Started Again' && plan['reader_map_label'] === 'updated', `the preview's titles or map label are wrong: ${JSON.stringify(plan).slice(0, 400)}`);
+    check(plan['shelf_source'] === 'src' && String(plan['warning']).includes('publish refresh src'), `the Shelf source was not named and warned: ${plan['shelf_source']} ${plan['warning']}`);
+    check(!pre.stdout.includes('The first text, corrected'), 'the preview printed the page text');
+    equal(tree(), before, 'the preview wrote something');
+
+    // REFUSED, WRITING NOTHING.
+    const refusedFor = (label: string, ran: { exit: number; stdout: string; stderr: string }, words: string) =>
+      check(ran.exit !== 0 && said(ran).includes(words), `${label} was not refused by name: ${said(ran).slice(0, 300)}`);
+    refusedFor('no --user-confirmed', replace('demo', 'guide/start', corrected, ['--plan-id', String(plan['plan_id'])]), '--user-confirmed');
+    refusedFor('another plan_id', replace('demo', 'guide/start', corrected, ['--user-confirmed', '--plan-id', 'collection-replace-0']), "not this preview's");
+    refusedFor('a missing page', replace('demo', 'guide/absent', corrected, ['--preflight']), 'collection add-page');
+    refusedFor('the top reader map', replace('demo', '_index', corrected, ['--preflight']), 'must not name');
+    refusedFor('--title', replace('demo', 'guide/start', corrected, ['--preflight', '--title', 'X']), 'takes no --title');
+    refusedFor('an archived Book', replace('old', 'page', corrected, ['--preflight']), "collection's archive");
+    fs.writeFileSync(deskFile, '');
+    refusedFor('a closed Book', replace('demo', 'guide/start', corrected, ['--preflight']), 'deskpost desk open book demo --location collection');
+    fs.writeFileSync(deskFile, 'books/demo\n');
+    // A PAGE CHANGED AFTER THE PREVIEW: its plan_id is no longer the preview's.
+    fs.writeFileSync(path.join(wiki, 'guide', 'start.md'), start + '\nA late line.\n');
+    refusedFor('a page changed after the preview', replace('demo', 'guide/start', corrected, ['--user-confirmed', '--plan-id', String(plan['plan_id'])]), "not this preview's");
+    fs.writeFileSync(path.join(wiki, 'guide', 'start.md'), start);
+    equal(tree(), before, 'a refused replace wrote something');
+
+    // THE FAULTS roll back to the Book as it was.
+    for (const fault of ['after-journal', 'after-write']) {
+      const again = parsed(replace('demo', 'guide/start', corrected, ['--preflight']));
+      const faulted = replace('demo', 'guide/start', corrected, ['--user-confirmed', '--plan-id', String(again['plan_id'])], { LIBRARY_COLLECTION_REPLACE_PAGE_FAULT: fault });
+      check(faulted.exit !== 0 && said(faulted).includes('Rollback: complete and verified') && said(faulted).includes('Discovery: the Book is as it was'), `the ${fault} fault was not rolled back: ${said(faulted).slice(0, 300)}`);
+      equal(tree(), before, `the ${fault} fault changed the Book`);
+    }
+
+    // THE RUN: the page, the one map line relabelled, the restore file, the evidence.
+    const startBytes = fs.readFileSync(path.join(wiki, 'guide', 'start.md'));
+    const ran = replace('demo', 'guide/start', corrected, ['--user-confirmed', '--plan-id', String(plan['plan_id'])]);
+    const result = parsed(ran);
+    check(ran.exit === 0 && result['status'] === 'written' && result['title_changed'] === true, `the replace did not write: ${said(ran).slice(0, 400)}`);
+    equal(fs.readFileSync(path.join(wiki, 'guide', 'start.md'), 'utf8'), '# Getting Started Again\n\nThe first text, corrected.\n', 'the page was not written as given');
+    equal(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8'), map.replace('[[books/demo/wiki/guide/start|Getting Started]]', '[[books/demo/wiki/guide/start|Getting Started Again]]'), 'the map was not the old map with the one label changed');
+    const previous = path.join(lib, ...String(result['previous_body_path']).split('/'));
+    check(fs.existsSync(previous) && fs.readFileSync(previous).equals(startBytes), 'the restore file is not the previous page byte for byte');
+    check(typeof result['publication_evidence'] === 'string' && fs.existsSync(path.join(lib, ...String(result['publication_evidence']).split('/'))), `a Notebook source left no publication evidence: ${result['publication_evidence']}`);
+    check(String(result['manifest']).includes('committed') && result['manifest_status'] === 'ok', `the replace did not commit a manifest: ${result['manifest']}`);
+    const found = as(['mcp', 'call', 'discover_book_pages', '--query', 'Getting Started Again', '--seat', 'first']);
+    check(found.stdout.includes('guide/start'), `Discovery does not find the corrected page: ${found.stdout.slice(0, 300)}`);
+
+    // THE RESTORE: the restore line's preview, then its yes, and the start is back byte for byte.
+    const restoreLine = String(result['restore']);
+    check(restoreLine === `deskpost collection replace-page demo guide/start --content-path ${result['previous_body_path']} --preflight`, `the restore line is not the verb's preview with the restore file: ${restoreLine}`);
+    const restorePlan = parsed(as([...restoreLine.split(' ').slice(1), '--json']));
+    const restored = replace('demo', 'guide/start', String(result['previous_body_path']), ['--user-confirmed', '--plan-id', String(restorePlan['plan_id'])]);
+    check(restored.exit === 0 && fs.readFileSync(path.join(wiki, 'guide', 'start.md')).equals(startBytes), `the restore did not put the start back byte for byte: ${said(restored).slice(0, 300)}`);
+    check(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8') === map, 'the restore did not put the map label back');
+
+    // UNCHANGED, and A PAGE LINKED TWICE: its label is left, and the result says so.
+    before = tree();
+    const same = replace('demo', 'guide/start', path.join(lib, ...String(result['previous_body_path']).split('/')), ['--preflight']);
+    check(same.exit === 0 && parsed(same)['status'] === 'unchanged', `the same text was not unchanged: ${said(same).slice(0, 300)}`);
+    equal(tree(), before, 'an unchanged replace wrote something');
+    const twiceFile = path.join(root, 'twice.md');
+    fs.writeFileSync(twiceFile, '# Twice, renamed\n\nLinked twice.\n');
+    const twice = parsed(replace('demo', 'twice', twiceFile, ['--preflight']));
+    equal(twice['reader_map_label'], 'unchanged', 'a page the map links twice had a label rewritten');
+    check(twice['shelf_source'] === 'src', 'the Shelf source was not named for another page');
+  } catch (error) {
+    failures.push(`section 181 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 182. THE READER'S HASH, SECTION AND "DID YOU MEAN" (S102 row 1; PLAN-correct-and-find.md r4, R1-R3). Both page
+// readers answer with the page as before and a second item, `sha256: <hex>`, equal to `book replace-page --preflight`'s
+// `current_sha256` for an LF page and a CRLF page alike, and to the Hub page's comparison hash. `section` returns one
+// `##` section, fenced headings ignored, with the whole page's hash; a heading not on the page, or on it twice, is
+// refused naming the headings, and nothing else is read. A page asked for without its folder names the pages that end
+// in it, on the Shelf, in the collection and on a Hub; with none near, the old wording stays. `mcp serve` lists
+// `section` on both tools, and answers with the same two items.
+if (selected(182)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-reader-section-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const envelope = (result: { stdout: string }): { content: { type: string; text: string }[]; isError: boolean } => {
+      try {
+        return (JSON.parse(result.stdout) as { result: { content: { type: string; text: string }[]; isError: boolean } }).result;
+      } catch {
+        return { content: [], isError: true };
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (envelope(result).content.map((item) => item.text).join(' ') || result.stdout + result.stderr).replace(/\s+/g, ' ');
+    const sha = (text: string) => createHash('sha256').update(Buffer.from(text.replace(/^﻿/, '').replace(/\r\n/g, '\n'), 'utf8')).digest('hex');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'bk', '--title', 'Fixture Book', '--summary', 'A fixture.', '--json']).exit, 0, 'the Shelf Book was not made');
+    const deskFile = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    fs.writeFileSync(deskFile, 'shelf/bk\nbooks/demo\n');
+
+    const pageText = '# Start\n\nThe opening.\n\n## One\n\nFirst section.\n\n```\n## Two\n```\n\n## Two\n\nSecond section.\n\n\n## Twice\n\na\n\n## Twice\n\nb\n';
+    const pageFile = path.join(root, 'start.md');
+    fs.writeFileSync(pageFile, pageText);
+    equal(as(['book', 'add-page', 'bk', 'guide/start', '--content-path', pageFile]).exit, 0, 'the fixture page was not added');
+    const wiki = path.join(lib, 'shelf', 'bk', 'wiki');
+    fs.writeFileSync(path.join(wiki, 'crlf.md'), '﻿# Windows\r\n\r\nSaved on Windows.\r\n');
+    const read = (slug: string, page: string, tail: string[] = []) => as(['mcp', 'call', 'read_open_book_page', '--slug', slug, '--page', page, ...tail, '--seat', 'first']);
+    const preflightSha = (page: string, body: string) => {
+      const file = path.join(root, `${page.replace(/\//g, '-')}-new.md`);
+      fs.writeFileSync(file, body);
+      try {
+        return String((JSON.parse(as(['book', 'replace-page', 'bk', page, '--content-path', file, '--preflight', '--json']).stdout) as Record<string, unknown>)['current_sha256']);
+      } catch {
+        return 'no preflight';
+      }
+    };
+
+    // R1: the page as before, then its hash, equal to the preflight's current_sha256.
+    const whole = envelope(read('bk', 'guide/start'));
+    equal(whole.content[0]?.text, fs.readFileSync(path.join(wiki, 'guide', 'start.md'), 'utf8'), 'the first item is not the page as stored');
+    equal(whole.content.length, 2, 'a page read did not answer with two items');
+    equal(whole.content[1]?.text, `sha256: ${preflightSha('guide/start', '# Start\n\nChanged.\n')}`, "the page's sha256 is not replace-page's current_sha256");
+    const windows = envelope(read('bk', 'crlf'));
+    equal(windows.content[1]?.text, `sha256: ${preflightSha('crlf', '# Windows\n\nChanged.\n')}`, "a CRLF page's sha256 is not replace-page's current_sha256");
+    equal(windows.content[1]?.text, `sha256: ${sha('# Windows\n\nSaved on Windows.\n')}`, "a CRLF page's sha256 is not its LF form's");
+
+    // R2: one section, the fenced heading ignored, the whole page's hash.
+    const two = envelope(read('bk', 'guide/start', ['--section', 'Two']));
+    equal(two.content[0]?.text, '## Two\n\nSecond section.\n', 'the section Two was not cut at the next heading, past the fenced one');
+    equal(two.content[1]?.text, whole.content[1]?.text, "a section's sha256 is not the whole page's");
+    const absent = read('bk', 'guide/start', ['--section', 'Three']);
+    check(envelope(absent).isError && said(absent).includes("Its ## headings: 'One', 'Two', 'Twice', 'Twice'") && !said(absent).includes('First section'), `a heading not on the page was not refused naming the headings: ${said(absent).slice(0, 300)}`);
+    const twice = read('bk', 'guide/start', ['--section', 'Twice']);
+    check(envelope(twice).isError && said(twice).includes('2 times'), `a heading on the page twice was not refused: ${said(twice).slice(0, 300)}`);
+    check(envelope(read('bk', 'guide/start', ['--section', '## Two'])).isError, "a section given with its '## ' was read");
+
+    // R3: "Did you mean", on the Shelf, then the old wording with nothing near.
+    const near = read('bk', 'start');
+    check(envelope(near).isError && said(near).includes('That page is not in this Book. Did you mean guide/start?'), `the Shelf did not name the near page: ${said(near).slice(0, 300)}`);
+    const far = read('bk', 'nowhere');
+    check(envelope(far).isError && said(far).includes('That page is not in this Book.') && !said(far).includes('Did you mean'), `a page with nothing near was not refused as before: ${said(far).slice(0, 300)}`);
+
+    // The collection: a local Book's pages are named too.
+    const demo = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(path.join(demo, 'a'), { recursive: true });
+    fs.mkdirSync(path.join(demo, 'b'), { recursive: true });
+    fs.writeFileSync(path.join(demo, '_book.md'), '# Demo\n');
+    fs.writeFileSync(path.join(demo, 'a', 'page.md'), '# A\n');
+    fs.writeFileSync(path.join(demo, 'b', 'page.md'), '# B\n');
+    const collected = read('demo', 'page');
+    check(envelope(collected).isError && said(collected).includes('Did you mean a/page, b/page?'), `the collection did not name both near pages: ${said(collected).slice(0, 300)}`);
+    equal(envelope(read('demo', 'a/page')).content[1]?.text, `sha256: ${sha('# A\n')}`, "a collection page's sha256 is wrong");
+
+    // A Hub page: its hash, a section, and "Did you mean" after the sentence the mods key on.
+    const hub = (page: string, tail: string[] = []) => as(['mcp', 'call', 'read_open_project_page', '--slug', 'work', '--page', page, ...tail, '--seat', 'first']);
+    const hubFile = path.join(lib, 'collection', 'projects', 'work', '_project.md');
+    const root_ = envelope(hub('_project'));
+    equal(root_.content[1]?.text, `sha256: ${sha(fs.readFileSync(hubFile, 'utf8'))}`, "the Hub page's sha256 is not its comparison hash");
+    const now = envelope(hub('_project', ['--section', 'Now']));
+    check(!now.isError && now.content[0]!.text.startsWith('## Now\n') && !now.content[0]!.text.includes('## Next'), `the Hub's Now section was not read alone: ${JSON.stringify(now).slice(0, 300)}`);
+    const notePage = path.join(root, 'note.md');
+    fs.writeFileSync(notePage, '# A note\n\nText.\n');
+    equal(as(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/2026-10-07-a-note', '--content-path', notePage]).exit, 0, 'the Hub note was not made');
+    const hubNear = hub('2026-10-07-a-note');
+    check(envelope(hubNear).isError && said(hubNear).includes('That page is not in this Project. Did you mean notes/2026-10-07-a-note?'), `the Hub did not name the near page: ${said(hubNear).slice(0, 300)}`);
+    const hubFar = hub('README');
+    check(said(hubFar).includes("That page is not in this Project. A Project Hub's root page is '_project'."), `a Hub page with nothing near lost its wording: ${said(hubFar).slice(0, 300)}`);
+
+    // mcp serve: `section` on both tools, and the same two items.
+    const lines = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'read_open_book_page', arguments: { slug: 'bk', page: 'guide/start', section: 'One' } } },
+    ].map((message) => JSON.stringify(message)).join('\n') + '\n';
+    const served = runCli(['mcp', 'serve', '--workspace', lib, '--seat', 'first'], { cwd: root, env, input: lines })
+      .stdout.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line) as { id: number; result: Record<string, any> });
+    const tools = (served.find((answer) => answer.id === 1)?.result['tools'] ?? []) as { name: string; inputSchema: { properties: Record<string, unknown> } }[];
+    for (const name of ['read_open_book_page', 'read_open_project_page']) {
+      check(tools.find((tool) => tool.name === name)?.inputSchema.properties['section'] !== undefined, `mcp serve does not list section on ${name}`);
+    }
+    const servedPage = served.find((answer) => answer.id === 2)?.result as { content: { text: string }[] } | undefined;
+    check(servedPage?.content[0]?.text === '## One\n\nFirst section.\n\n```\n## Two\n```\n' && servedPage?.content[1]?.text === whole.content[1]?.text, `mcp serve did not answer the section with the page's hash: ${JSON.stringify(servedPage).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 182 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 183. THE FOLDED READER MAP (S102 row 2; PLAN-correct-and-find.md D4). The builder, in process: a topic's reached
+// pages become one line for its index with the count in the label, where the folder's first page sorted; a page the
+// index does not reach stays on its own; a nested topic folds its own pages; publish's target form and an imported
+// index's full-prefix links. Then through `book add-page`: the map a Book gains is folded and still tests generated
+// (the next add-page regenerates it), a partial topic index leaves `reader_map_unlisted` at 0, and a page added under
+// the topic passes the reach readback and joins the count.
+if (selected(183)) {
+  const page = (name: string, label: string, text = `# ${label}\n`) => ({ page: name, label, text });
+  const built = foldedMapLines(
+    [
+      page('intro', 'Intro'),
+      page('src/_index', 'Sources', '# Sources\n\n- [[src/one|One]]\n- [[src/two|Two]]\n- [[src/deep/_index|Deep]]\n'),
+      page('src/deep/_index', 'Deep', '# Deep\n\n- [[src/deep/x|X]]\n'),
+      page('src/deep/x', 'X'),
+      page('src/one', 'One'),
+      page('src/three', 'Three'),
+      page('src/two', 'Two'),
+      page('zed', 'Zed'),
+    ],
+    (name) => name,
+  );
+  equal(
+    built.lines.join('\n'),
+    ['- [[intro|Intro]]', '- [[src/_index|Sources (2 pages)]]', '- [[src/deep/_index|Deep (1 page)]]', '- [[src/three|Three]]', '- [[zed|Zed]]'].join('\n'),
+    'the folded map is not one line per topic, at its folder, with unreached pages on their own',
+  );
+  equal(built.foldedTopics, 2, 'the folded topics were not counted');
+  const published = foldedMapLines(
+    [page('t/_index', 'Topic', '# Topic\n\n- [[books/demo/wiki/t/a|A]]\n'), page('t/a', 'A'), page('t/b', 'B')],
+    (name) => `books/demo/wiki/${name}`,
+    'demo',
+  );
+  equal(published.lines.join('\n'), '- [[books/demo/wiki/t/_index|Topic (1 page)]]\n- [[books/demo/wiki/t/b|B]]', "publish's target form, or an imported index's full-prefix link, was not folded");
+  equal(foldedMapLines([page('t/_index', 'Topic', '# Topic\n'), page('t/a', 'A')], (name) => name).lines.join('\n'), '- [[t/_index|Topic]]\n- [[t/a|A]]', 'a topic index that reaches nothing did not list flat');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-folded-map-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'bk', '--title', 'Fixture Book', '--summary', 'A fixture.', '--json']).exit, 0, 'the Shelf Book was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/bk\n');
+    const add = (name: string, body: string) => {
+      const file = path.join(root, `${name.replace(/\//g, '-')}.md`);
+      fs.writeFileSync(file, body);
+      return as(['book', 'add-page', 'bk', name, '--content-path', file, '--json']);
+    };
+    equal(add('src/three', '# Three\n').exit, 0, 'src/three was not added');
+    equal(add('src/_index', '# Sources\n\n- [[src/one|One]]\n- [[src/two|Two]]\n').exit, 0, 'the topic index was not added');
+    equal(add('src/one', '# One\n').exit, 0, 'src/one was not added');
+    const two = add('src/two', '# Two\n');
+    const twoResult = parsed(two);
+    check(two.exit === 0 && twoResult['reader_map_unlisted'] === 0 && typeof twoResult['reader_map_pages'] === 'number', `the folded map did not stay generated, or left a page unreached: ${two.stdout.slice(0, 400)}`);
+    const map = () => fs.readFileSync(path.join(lib, 'shelf', 'bk', 'wiki', '_index.md'), 'utf8');
+    check(map().includes('- [[src/_index|Sources (2 pages)]]') && map().includes('- [[src/three|Three]]') && !map().includes('[[src/one|'), `the Shelf map was not folded: ${map()}`);
+    const four = add('src/four', '# Four\n');
+    check(four.exit === 0 && parsed(four)['topic_index'] === 'updated' && parsed(four)['reader_map_unlisted'] === 0, `a page added under the topic did not pass the reach readback: ${four.stdout.slice(0, 400)}`);
+    check(map().includes('- [[src/_index|Sources (3 pages)]]'), `the added page did not join the topic's count: ${map()}`);
+  } catch (error) {
+    failures.push(`section 183 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 184. `book reader-map` (S102 row 3; D4's verb). A Book whose generated map was written flat before folding is rebuilt
+// by the folding rule, under its journal, with a manifest generation, so Discovery does not call it stale; run again it
+// is unchanged and writes nothing. Refused, writing nothing: a curated map, a capture Book, a closed Book, an archived
+// Book, a stray word, and no slug.
+if (selected(184)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-reader-map-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    for (const [slug, title] of [['bk', 'Fixture Book'], ['cur', 'Curated Book'], ['old', 'Old Book']]) {
+      equal(as(['shelf', 'new', slug!, '--title', title!, '--summary', 'A fixture.', '--json']).exit, 0, `the Shelf Book ${slug} was not made`);
+    }
+    const deskFile = path.join(lib, '.claude', 'seats', 'first', '.open-books');
+    fs.writeFileSync(deskFile, 'shelf/bk\nshelf/cur\nshelf/old\nshelf/holding\n');
+    const wiki = path.join(lib, 'shelf', 'bk', 'wiki');
+    fs.mkdirSync(path.join(wiki, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, 'src', '_index.md'), '# Sources\n\n- [[src/one|One]]\n');
+    fs.writeFileSync(path.join(wiki, 'src', 'one.md'), '# One\n');
+    fs.writeFileSync(path.join(wiki, 'intro.md'), '# Intro\n');
+    const flat = '# Fixture Book - Reader Map\n\n- [[_book|Book metadata and limits]]\n- [[intro|Intro]]\n- [[src/_index|Sources]]\n- [[src/one|One]]\n';
+    fs.writeFileSync(path.join(wiki, '_index.md'), flat);
+    equal(as(['shelf', 'rebuild', 'bk']).exit, 0, 'the manifest was not rebuilt before the verb');
+    fs.writeFileSync(path.join(lib, 'shelf', 'cur', 'wiki', '_index.md'), '# Curated\n\nA reader wrote this.\n\n- [[_book|Book]]\n');
+    const tree = () =>
+      listFiles(lib)
+        .filter((name) => name.startsWith('shelf/') || name.startsWith('internal/shelf-journals/'))
+        .map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`)
+        .join('\n');
+
+    // REFUSED, WRITING NOTHING.
+    let before = tree();
+    const refusedFor = (label: string, ran: { exit: number; stdout: string; stderr: string }, words: string) =>
+      check(ran.exit !== 0 && said(ran).includes(words), `${label} was not refused by name: ${said(ran).slice(0, 300)}`);
+    refusedFor('a curated map', as(['book', 'reader-map', 'cur']), 'is curated');
+    refusedFor('a capture Book', as(['book', 'reader-map', 'holding']), 'capture Book');
+    refusedFor('a stray word', as(['book', 'reader-map', 'bk', 'extra']), 'takes one Book slug');
+    refusedFor('no slug', as(['book', 'reader-map']), 'needs a Book slug');
+    fs.writeFileSync(deskFile, 'shelf/cur\nshelf/old\n');
+    refusedFor('a closed Book', as(['book', 'reader-map', 'bk']), 'deskpost desk open book bk --location shelf');
+    fs.writeFileSync(deskFile, 'shelf/bk\nshelf/cur\nshelf/old\nshelf/holding\n');
+    equal(tree(), before, 'a refused reader-map wrote something');
+
+    // THE RUN: folded, journaled, a manifest generation, and Discovery not stale.
+    const ran = as(['book', 'reader-map', 'bk', '--json']);
+    const result = parsed(ran);
+    check(ran.exit === 0 && result['status'] === 'written' && result['folded_topics'] === 1 && result['reader_map_unlisted'] === 0, `the map was not rebuilt: ${said(ran).slice(0, 400)}`);
+    equal(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8'), '# Fixture Book - Reader Map\n\n- [[_book|Book metadata and limits]]\n- [[intro|Intro]]\n- [[src/_index|Sources (1 page)]]\n', 'the rebuilt map is not the folded one');
+    check(typeof result['journal'] === 'string' && fs.existsSync(path.join(lib, ...String(result['journal']).split('/'))), `the rebuild left no journal: ${result['journal']}`);
+    check(String(result['manifest']).includes('committed'), `the rebuild did not commit a manifest: ${result['manifest']}`);
+    const found = as(['mcp', 'call', 'discover_book_pages', '--query', 'Sources', '--seat', 'first']);
+    check(!found.stdout.includes('STALE'), `Discovery calls the Book stale after the rebuild: ${found.stdout.slice(0, 400)}`);
+
+    // AGAIN: unchanged, nothing written.
+    before = tree();
+    const again = as(['book', 'reader-map', 'bk', '--json']);
+    check(again.exit === 0 && parsed(again)['status'] === 'unchanged', `a second rebuild was not unchanged: ${said(again).slice(0, 300)}`);
+    equal(tree(), before, 'an unchanged rebuild wrote something');
+
+    // AN ARCHIVED BOOK.
+    fs.writeFileSync(deskFile, 'shelf/bk\nshelf/cur\nshelf/holding\n');
+    const archive = parsed(as(['shelf', 'archive', 'old', '--preflight', '--json']));
+    const archived = as(['shelf', 'archive', 'old', '--plan-id', String(archive['plan_id'])]);
+    check(archived.exit === 0, `the fixture Book was not archived: ${said(archived).slice(0, 300)}`);
+    before = tree();
+    refusedFor('an archived Book', as(['book', 'reader-map', 'old']), 'is archived');
+    equal(tree(), before, 'a refused reader-map of an archived Book wrote something');
+  } catch (error) {
+    failures.push(`section 184 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 185. `deskpost browse` AND THE MENU'S `l` (S102 row 4; PLAN-correct-and-find.md D5's data and key). The grammar, kernel
+// only like section 101's `u`: `l` and `L` browse, the invalid-key text names `l`, and every footer line is within 80
+// columns. `browse --json` seatless on a local Library: the Shelf's Books with summary and topics, the collection's
+// Books, Projects by title and slug and never a Hub's text, the archived count, `--archived` listing them, and nothing
+// written. On a Basic Memory Library configured at a listener: the offline roster's Books with "as of", the Projects
+// line, and no connection made. The plain list, and the menu's `l` and the no-seats fork's, by --script answers.
+if (selected(185)) {
+  const { resolveChoice, footerLines } = await import('../src/menu.ts');
+  for (const typed of ['l', 'L', ' l ']) equal(resolveChoice(typed, 2).action, 'browse', `'${typed}' did not browse`);
+  check(resolveChoice('x', 2).reason.includes('+, h, l, b or q'), `the invalid-key text does not name l: ${resolveChoice('x', 2).reason}`);
+  for (const both of [false, true]) {
+    for (const line of footerLines(both, both ? 'claude' : null)) check(line.length <= 80 || line.startsWith('  n<number>'), `a footer line is wider than 80 columns: ${line} (${line.length})`);
+  }
+  check(footerLines(false, null)[0]!.includes('l  browse'), 'the footer does not offer l');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-browse-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    const seatless = (args: string[], extra: Record<string, string> = {}, workspace = lib) => runCli([...args, '--workspace', workspace], { cwd: root, env: { ...env, ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work', '--purpose', 'A private purpose line.']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'bk', '--title', 'Fixture Book', '--summary', 'A fixture summary.', '--topics', 'alpha,beta', '--json']).exit, 0, 'the Shelf Book was not made');
+    equal(as(['shelf', 'new', 'gone', '--title', 'Gone Book', '--summary', 'To archive.', '--json']).exit, 0, 'the second Shelf Book was not made');
+    const archive = parsed(as(['shelf', 'archive', 'gone', '--preflight', '--json']));
+    equal(as(['shelf', 'archive', 'gone', '--plan-id', String(archive['plan_id'])]).exit, 0, 'the second Shelf Book was not archived');
+    const demo = path.join(lib, 'collection', 'books', 'demo', 'wiki');
+    fs.mkdirSync(demo, { recursive: true });
+    fs.writeFileSync(path.join(demo, '_book.md'), '# Demo Book\n\nA collection Book.\n');
+    const tree = () =>
+      listFiles(lib)
+        .filter((name) => !name.startsWith('.claude/seats/') && !name.startsWith('internal/locks/'))
+        .map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`)
+        .join('\n');
+
+    const before = tree();
+    const ran = seatless(['browse', '--json']);
+    const data = parsed(ran);
+    check(ran.exit === 0 && data['operation'] === 'Browse the Library' && data['backend'] === 'local', `browse --json did not answer seatless: ${(ran.stdout + ran.stderr).slice(0, 300)}`);
+    const shelfBook = (data['shelf'] ?? []).find((entry: any) => entry.slug === 'bk');
+    check(shelfBook?.title === 'Fixture Book' && shelfBook?.summary === 'A fixture summary.' && JSON.stringify(shelfBook?.topics) === '["alpha","beta"]' && shelfBook?.open_line === 'deskpost desk open book bk --location shelf', `the Shelf Book is not listed with its metadata: ${JSON.stringify(shelfBook)}`);
+    check((data['collection'] ?? []).some((entry: any) => entry.slug === 'demo' && entry.title === 'Demo Book'), `the collection Book is not listed: ${JSON.stringify(data['collection'])}`);
+    const project = (data['projects'] ?? []).find((entry: any) => entry.slug === 'work');
+    check(project?.title === 'Work' && project?.summary === '' && !ran.stdout.includes('A private purpose line'), `the Project is not listed by title and slug alone: ${JSON.stringify(project)}`);
+    equal(JSON.stringify(data['archived_count']), '{"books":1,"projects":0}', 'the archived count is wrong');
+    equal(data['archived'], null, 'the archived Books were listed without --archived');
+    const archived = parsed(seatless(['browse', '--archived', '--json']));
+    check((archived['archived'] ?? []).some((entry: any) => entry.slug === 'gone' && entry.kind === 'book'), `--archived did not list the archived Book: ${JSON.stringify(archived['archived'])}`);
+    const plain = seatless(['browse']);
+    check(plain.exit === 0 && plain.stdout.includes('Books on the Shelf (') && plain.stdout.includes('Fixture Book [bk]  A fixture summary.') && plain.stdout.includes('Archived: 1 Book, 0 Projects'), `the plain list is not as built: ${plain.stdout.slice(0, 400)}`);
+    check(plain.stdout.split(/\r?\n/).every((line) => line.length <= 80), 'a plain list line is wider than 80 columns');
+    equal(tree(), before, 'browse wrote something');
+
+    // THE MENU: `l` lists, then the menu comes back; the no-seats fork offers `l` too.
+    const script = path.join(root, 'answers.txt');
+    // `l`, then Enter back to the menu (row 5's prompt), then `q`.
+    fs.writeFileSync(script, 'l\n\nq\n');
+    const menu = seatless(['menu', '--plain', '--script', script]);
+    check(menu.stdout.includes('Fixture Book [bk]') && menu.stdout.includes('No seat was chosen.'), `the menu's l did not list, then return: ${menu.stdout.slice(-600)}`);
+    const empty = path.join(root, 'empty');
+    equal(runCli(['init', empty], { cwd: root, env }).exit, 0, 'the seatless fixture Library did not initialise');
+    const fork = seatless(['menu', '--plain', '--script', script], {}, empty);
+    check(fork.stdout.includes('[l]        Browse') && fork.stdout.includes('Books on the Shelf (') && fork.stdout.includes('Nothing was created.'), `the no-seats fork did not offer l: ${fork.stdout.slice(-600)}`);
+
+    // A BASIC MEMORY LIBRARY: the offline roster, "as of", the Projects line, and no connection made.
+    const { createServer } = await import('node:net');
+    let connections = 0;
+    const listener = createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', () => resolve()));
+    const port = (listener.address() as { port: number }).port;
+    const bm = path.join(root, 'bm');
+    equal(basicMemoryWorkspace(bm, path.join(root, 'reg2'), `http://127.0.0.1:${port}/mcp`, '33333333-3333-4333-8333-333333333333', { cwd: root, env }).exit, 0, 'the Basic Memory fixture was not made');
+    fs.mkdirSync(path.join(bm, 'internal', 'book-manifests', 'shared'), { recursive: true });
+    fs.writeFileSync(path.join(bm, 'internal', 'book-manifests', 'shared', '_roster.json'), JSON.stringify({ generated_utc: '2026-10-01T00:00:00Z', books: [{ slug: 'shared-one' }] }));
+    const remote = seatless(['browse', '--json'], { LIBRARY_MCP_TIMEOUT_MS: '1500' }, bm);
+    const remoteData = parsed(remote);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    listener.close();
+    check(remote.exit === 0 && remoteData['backend'] === 'basic-memory' && remoteData['collection_as_of'] === '2026-10-01T00:00:00Z', `the Basic Memory Library's roster was not read: ${(remote.stdout + remote.stderr).slice(0, 400)}`);
+    check((remoteData['collection'] ?? []).some((entry: any) => entry.slug === 'shared-one' && entry.place === 'shared'), `the roster's Book is not listed: ${JSON.stringify(remoteData['collection'])}`);
+    equal(remoteData['projects_note'], 'Projects live in Basic Memory; a seat lists them.', "the Basic Memory Library's Projects line is wrong");
+    equal(connections, 0, 'browse made a network call on a Basic Memory Library');
+  } catch (error) {
+    failures.push(`section 185 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 186. THE BROWSE SCREEN'S FILTER AND ENTRY VIEW (S102 row 5; D5's screen). In process: words filter by title, slug,
+// summary and topics, every word, any case; an entry's view carries its catalog text, its page count and the line that
+// opens it from a seat. Through the menu by --script answers: `l`, a word narrows the list, a number shows one entry, a
+// number past the list says so, Enter returns to the menu, and nothing is written.
+if (selected(186)) {
+  const { filterBrowse, browseEntryLines } = await import('../src/browse.ts');
+  const entry = (slug: string, title: string, summary: string, topics: string[]) => ({
+    kind: 'book' as const,
+    place: 'shelf' as const,
+    slug,
+    title,
+    summary,
+    topics,
+    pages: 3,
+    catalog_text: `## ${title}\n\n- **Summary:** ${summary}`,
+    open_line: `deskpost desk open book ${slug} --location shelf`,
+  });
+  const entries = [entry('alpha', 'Alpha Notes', 'About lakes.', ['water']), entry('beta', 'Beta Guide', 'About hills.', ['earth', 'stone'])];
+  equal(filterBrowse(entries, 'STONE').map((item) => item.slug).join(','), 'beta', 'a topic did not filter, case-insensitively');
+  equal(filterBrowse(entries, 'about lakes').map((item) => item.slug).join(','), 'alpha', 'two words did not both have to match');
+  equal(filterBrowse(entries, 'alp').map((item) => item.slug).join(','), 'alpha', 'a slug part did not filter');
+  equal(filterBrowse(entries, 'nowhere').length, 0, 'a word nothing holds matched something');
+  const view = browseEntryLines(entries[1]!).join('\n');
+  check(view.includes('Beta Guide [beta], a Book on the Shelf') && view.includes('- **Summary:** About hills.') && view.includes('Pages: 3') && view.includes('Topics: earth, stone') && view.includes('From a seat: deskpost desk open book beta --location shelf'), `the entry view is not as built: ${view}`);
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-browse-screen-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first' } });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    equal(as(['shelf', 'new', 'lakes', '--title', 'Lake Notes', '--summary', 'About lakes.', '--topics', 'water', '--json']).exit, 0, 'the first Shelf Book was not made');
+    equal(as(['shelf', 'new', 'hills', '--title', 'Hill Guide', '--summary', 'About hills.', '--topics', 'stone', '--json']).exit, 0, 'the second Shelf Book was not made');
+    const tree = () =>
+      listFiles(lib)
+        .filter((name) => !name.startsWith('.claude/seats/') && !name.startsWith('internal/locks/'))
+        .map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`)
+        .join('\n');
+    const before = tree();
+    const script = path.join(root, 'answers.txt');
+    fs.writeFileSync(script, 'l\nstone\n1\n99\n\nq\n');
+    const ran = runCli(['menu', '--plain', '--script', script, '--workspace', lib], { cwd: root, env });
+    const out = ran.stdout;
+    // What the filter printed: between the first prompt and the second.
+    const first = out.indexOf('Browse ›');
+    const filtered = out.substring(first, out.indexOf('Browse ›', first + 1));
+    check(out.includes('Lake Notes [lakes]') && filtered.includes('Hill Guide [hills]') && !filtered.includes('Lake Notes [lakes]'), `a word did not narrow the list: ${filtered.slice(0, 600)}`);
+    check(out.includes('a Book on the Shelf') && out.includes('From a seat: deskpost desk open book') && out.includes('Pages: '), `a number did not show its entry: ${out.slice(-900)}`);
+    check(out.includes('There is no entry 99; the list offers 1 to'), `a number past the list was not said: ${out.slice(-900)}`);
+    check(out.includes('No seat was chosen.'), `Enter did not return to the menu: ${out.slice(-600)}`);
+    equal(tree(), before, 'the browse screen wrote something');
+  } catch (error) {
+    failures.push(`section 186 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 187. THE NAME HISTORY AND ID VALIDATION (S103 row 1; PLAN-seat-identity.md section 1, bullets 1-2). In process: a row
+// without `names` reads as its one name since its creation; a well-formed history is kept, and a malformed one reads as
+// the implied span with its problem named; an id that is not 32 lowercase hex, or that two rows share, is `invalid` and
+// keyed by name, and `readSeatIds` gives it no id to match; two pre-identity rows never share a key; `readSeatRegistry`
+// carries the history; the creation plan id ignores it, so no oracle row moves.
+if (selected(187)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-names-')));
+  try {
+    const { seatNameHistory, identityRowsOfRegistry, readSeatIds } = await import('../src/seatincarnation.ts');
+    const { readSeatRegistry } = await import('../src/desk.ts');
+    const { seatCreationPlanId } = await import('../src/seatstartplan.ts');
+    const idA = 'a'.repeat(32);
+    const idB = 'b'.repeat(32);
+    const implied = seatNameHistory('dev', '2026-01-01T00:00:00Z', undefined);
+    equal(JSON.stringify(implied), JSON.stringify({ names: [{ name: 'dev', from_utc: '2026-01-01T00:00:00Z', to_utc: null }], problem: null }), 'a row without names did not read as its one name since its creation');
+    const history = [{ name: 'old', from_utc: '2026-01-01T00:00:00Z', to_utc: '2026-02-01T00:00:00Z' }, { name: 'dev', from_utc: '2026-02-01T00:00:00Z', to_utc: null }];
+    const kept = seatNameHistory('dev', '2026-01-01T00:00:00Z', history);
+    check(kept.problem === null && JSON.stringify(kept.names) === JSON.stringify(history), `a well-formed history was not kept: ${JSON.stringify(kept)}`);
+    const malformed: [unknown, string][] = [
+      [[], 'non-empty list'],
+      ['dev', 'non-empty list'],
+      [[{ name: 'dev', from_utc: 'T', to_utc: 'T2' }], 'is not open'],
+      [[{ name: 'other', from_utc: 'T', to_utc: null }], "not the seat's name"],
+      [[{ name: 'old', from_utc: 'T' }, { name: 'dev', from_utc: 'T', to_utc: null }], 'has no to_utc'],
+      [[{ name: 'dev', from_utc: 'T', to_utc: 'T2' }, { name: 'dev', from_utc: 'T2', to_utc: null }], 'twice'],
+      [[{ name: 'Not A Slug', from_utc: 'T', to_utc: 'T2' }, { name: 'dev', from_utc: 'T2', to_utc: null }], 'no seat name'],
+      [[{ name: 'dev', to_utc: null }], 'no from_utc'],
+    ];
+    for (const [value, why] of malformed) {
+      const read = seatNameHistory('dev', 'T0', value);
+      check((read.problem ?? '').includes(why) && read.names.length === 1 && read.names[0]!.name === 'dev', `a malformed names (${JSON.stringify(value)}) was not read as the implied span naming '${why}': ${JSON.stringify(read)}`);
+    }
+
+    const rows = identityRowsOfRegistry([
+      { seat: 'good', seat_id: idA, created_utc: 'T1', names: history.map((span) => ({ ...span, name: span.name === 'dev' ? 'good' : span.name })) },
+      { seat: 'short', seat_id: 'abc' },
+      { seat: 'upper', seat_id: 'A'.repeat(32) },
+      { seat: 'dashed', seat_id: '01234567-89ab-cdef-0123-456789abcdef' },
+      { seat: 'twin-one', seat_id: idB },
+      { seat: 'twin-two', seat_id: idB },
+      { seat: 'bare-one' },
+      { seat: 'bare-two', seat_id: '' },
+    ]);
+    const row = (seat: string) => rows.find((candidate) => candidate.seat === seat)!;
+    check(row('good').identity === 'valid' && row('good').key === idA && row('good').names.map((span) => span.name).join(',') === 'old,good', `a valid row is not keyed by its id with its history: ${JSON.stringify(row('good'))}`);
+    for (const seat of ['short', 'upper', 'dashed', 'twin-one', 'twin-two']) {
+      check(row(seat).identity === 'invalid' && row(seat).key === `name:${seat}`, `seat '${seat}' is not identity: invalid, keyed by its name: ${JSON.stringify(row(seat))}`);
+    }
+    for (const seat of ['bare-one', 'bare-two']) check(row(seat).identity === 'pre-identity' && row(seat).key === `name:${seat}`, `seat '${seat}' is not a pre-identity row keyed name:<seat>: ${JSON.stringify(row(seat))}`);
+    check(new Set(rows.map((candidate) => candidate.key)).size === rows.length && rows.every((candidate) => candidate.key !== ''), `two rows share a key, or one is '': ${rows.map((candidate) => candidate.key).join(',')}`);
+
+    const state = path.join(root, '.claude');
+    fs.mkdirSync(path.join(state, 'seats'), { recursive: true });
+    const registryRows = [
+      { seat: 'good', project: 'good-hub', created_utc: '2026-01-01T00:00:00Z', seat_id: idA, names: [{ name: 'old', from_utc: '2026-01-01T00:00:00Z', to_utc: '2026-02-01T00:00:00Z' }, { name: 'good', from_utc: '2026-02-01T00:00:00Z', to_utc: null }] },
+      { seat: 'plain', project: 'plain-hub', created_utc: '2026-03-01T00:00:00Z', seat_id: 'c'.repeat(32) },
+      { seat: 'twin-one', project: 'one-hub', created_utc: '2026-03-01T00:00:00Z', seat_id: idB },
+      { seat: 'twin-two', project: 'two-hub', created_utc: '2026-03-01T00:00:00Z', seat_id: idB },
+    ];
+    fs.writeFileSync(path.join(state, 'seats', '_registry.json'), JSON.stringify({ schema: 1, seats: registryRows }, null, 4) + '\n');
+    const entries = readSeatRegistry(state);
+    const entry = (seat: string) => entries.find((candidate) => candidate.seat === seat)!;
+    equal(entry('good').names.map((span) => span.name).join(','), 'old,good', 'readSeatRegistry did not carry the history');
+    equal(JSON.stringify(entry('plain').names), JSON.stringify([{ name: 'plain', from_utc: '2026-03-01T00:00:00Z', to_utc: null }]), 'readSeatRegistry did not read a row without names as its one name');
+    const ids = readSeatIds(state);
+    check(ids.get('good') === idA && ids.get('twin-one') === '' && ids.get('twin-two') === '', `readSeatIds gave a shared id to match: ${JSON.stringify([...ids])}`);
+    const without = registryRows.map(({ names: _names, ...rest }) => rest);
+    equal(seatCreationPlanId(registryRows as never, 'new', 'new-hub'), seatCreationPlanId(without as never, 'new', 'new-hub'), 'the creation plan id moved with a name history');
+  } catch (error) {
+    failures.push(`section 187 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 188. RETIREMENT CARRIES THE NAME HISTORY (S103 row 2; PLAN-seat-identity.md section 1, bullet 4). Through the CLI: a
+// seat whose row carries `names` retires with them in seat.json, its preflight shows them, and its plan id binds them
+// (the same seat without them plans a different id, and the old id is refused after they change); a seat without them
+// writes seat.json's keys as before; a history that does not parse refuses the retire and writes nothing; the archive
+// reader exposes each record's names, and a record whose names do not parse, or which has no seat.json, is a fault.
+if (selected(188)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-retire-names-')));
+  try {
+    const { readSeatRetirementRecords } = await import('../src/desk.ts');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ...QUIET_TAB };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const json = (ran: { stdout: string }) => JSON.parse(ran.stdout) as Record<string, any>;
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const seat of ['named', 'plain', 'broken']) {
+      equal(as(['hub', 'new', `${seat}-hub`, '--title', seat]).exit, 0, `the fixture Hub for '${seat}' was not made`);
+      equal(as(['seat', 'start', seat, '--project', `${seat}-hub`, '--no-launch']).exit, 0, `the fixture seat '${seat}' was not made`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const setNames = (seat: string, names: unknown) => {
+      const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+      fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry.seats.map((row) => (row['seat'] === seat ? { ...row, names } : row)) }, null, 4) + '\n');
+    };
+    const archives = path.join(lib, 'internal', 'seat-archive');
+    const seatJson = (seat: string) => {
+      const folder = fs.readdirSync(archives).find((name) => name.startsWith(`${seat}-`))!;
+      return JSON.parse(fs.readFileSync(path.join(archives, folder, 'seat.json'), 'utf8')) as Record<string, unknown>;
+    };
+
+    const plainPlan = json(as(['seat', 'retire', 'named', '--preflight', '--json']));
+    const history = [{ name: 'earlier', from_utc: '2026-01-01T00:00:00Z', to_utc: '2026-02-01T00:00:00Z' }, { name: 'named', from_utc: '2026-02-01T00:00:00Z', to_utc: null }];
+    setNames('named', history);
+    const namedPlan = json(as(['seat', 'retire', 'named', '--preflight', '--json']));
+    check(namedPlan['plan_id'] !== plainPlan['plan_id'] && JSON.stringify(namedPlan['names']) === JSON.stringify(history), `the preflight did not show and bind the history: ${JSON.stringify(namedPlan).slice(0, 500)}`);
+    const stale = as(['seat', 'retire', 'named', '--plan-id', String(plainPlan['plan_id']), '--json']);
+    check(stale.exit !== 0 && stale.stderr.includes('rerun the current preflight') && !fs.existsSync(archives), `a plan id taken before the history changed was not refused, or wrote something: ${stale.exit} ${stale.stderr.trim()}`);
+    equal(as(['seat', 'retire', 'named', '--plan-id', String(namedPlan['plan_id']), '--json']).exit, 0, 'the seat with a history did not retire');
+    equal(JSON.stringify(seatJson('named')['names']), JSON.stringify(history), "seat.json does not carry the seat's history");
+
+    const plainNow = json(as(['seat', 'retire', 'plain', '--preflight', '--json']));
+    check(!('names' in plainNow), `a seat without a history showed one at preflight: ${JSON.stringify(plainNow).slice(0, 300)}`);
+    equal(as(['seat', 'retire', 'plain', '--plan-id', String(plainNow['plan_id']), '--json']).exit, 0, 'the seat without a history did not retire');
+    equal(Object.keys(seatJson('plain')).join(','), 'seat,seat_id,project,retired_utc,open_books,open_projects', "a seat without a history wrote seat.json's keys differently");
+
+    setNames('broken', [{ name: 'broken', from_utc: 'T', to_utc: 'T2' }]);
+    const before = listFiles(lib).join('\n');
+    const refused = as(['seat', 'retire', 'broken', '--preflight', '--json']);
+    check(refused.exit !== 0 && refused.stderr.includes('names history') && refused.stderr.includes('Nothing was retired'), `a history that does not parse did not refuse the retire: ${refused.exit} ${refused.stderr.trim()}`);
+    equal(listFiles(lib).join('\n'), before, 'the refused retire wrote something');
+
+    const read = readSeatRetirementRecords(lib);
+    const record = (seat: string) => read.records.find((candidate) => candidate.seat === seat);
+    check(read.faults.length === 0 && JSON.stringify(record('named')?.names) === JSON.stringify(history) && record('plain')?.names.map((span) => span.name).join(',') === 'plain', `the archive reader does not expose each record's names: ${JSON.stringify(read)}`);
+    fs.mkdirSync(path.join(archives, 'gone-20260101-000000'));
+    fs.mkdirSync(path.join(archives, 'garbled-20260101-000000'));
+    fs.writeFileSync(path.join(archives, 'garbled-20260101-000000', 'seat.json'), JSON.stringify({ seat: 'garbled', seat_id: 'd'.repeat(32), names: 'garbled' }) + '\n');
+    const faulty = readSeatRetirementRecords(lib);
+    check(faulty.faults.some((fault) => fault.includes('gone-20260101-000000 carries no seat.json')) && faulty.faults.some((fault) => fault.includes('garbled-20260101-000000/seat.json carries a names history that does not parse')), `the archive reader did not report both faults: ${JSON.stringify(faulty.faults)}`);
+    check(faulty.records.some((candidate) => candidate.seat === 'garbled'), 'a record whose names do not parse no longer says its seat is retired');
+  } catch (error) {
+    failures.push(`section 188 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 189. THE IDENTITY PROJECTION AND ITS CONSUMERS (S103 row 3; PLAN-seat-identity.md section 1, bullets 5-6). In process:
+// over every recorded name and id against a registry and retirement records written by today's code, each consumer on
+// the projection answers exactly as its rule of today did (the recipient, the asker, the writer, Notebook ownership,
+// history); with a `names` history injected, each resolves the past name under its own rule (a missing id matches for
+// letters, never for the strict rule); a retired and re-created name with an empty-id topic still reads `retired`; this
+// Library's shape (a retired name re-created with a new id) resolves as today; an invalid id is never matched by id.
+// Through the CLI: letters, an answer, a route and a Holding note written by today's code give the same Desk counts,
+// seat cards, doctor verdict and reader map with an implied history injected; then letters to and from a past name
+// count, group, answer and close as the seat's own.
+if (selected(189)) {
+  const { incarnationOf, identityView, seatIncarnation, singleRowView } = await import('../src/seatincarnation.ts');
+  const { isAddressedTo, isStartedBy, isWrittenBy, parseShelfNote } = await import('../src/shelfnote.ts');
+  const { seatIncarnationStatus } = await import('../src/notebook.ts');
+  const { seatHistoryState } = await import('../src/seathistory.ts');
+  const idLead = '1'.repeat(32);
+  const idQaOld = '2'.repeat(32);
+  const idQaNew = '3'.repeat(32);
+  const idOther = '4'.repeat(32);
+  const span = (name: string) => [{ name, from_utc: '', to_utc: null }];
+  // TODAY'S SHAPE: a valid row, a pre-identity row, a name retired and created again, a pre-identity retirement.
+  const registry = [
+    { seat: 'lead', seatId: idLead, project: 'lead-hub', createdUtc: '', names: span('lead'), namesProblem: null },
+    { seat: 'old', seatId: '', project: 'old-hub', createdUtc: '', names: span('old'), namesProblem: null },
+    { seat: 'qa', seatId: idQaNew, project: 'qa-hub', createdUtc: '', names: span('qa'), namesProblem: null },
+  ];
+  const retirements = [
+    { seat: 'qa', seat_id: idQaOld },
+    { seat: 'gone', seat_id: '' },
+  ];
+  const view = identityView(registry, retirements);
+  const note = (lines: string[]) => parseShelfNote('n.md', 'n.md', `---\ncaptured: 2026-10-08T00:00:00Z\nreview: pending\n${lines.join('\n')}\n---\n\n# N\n\nx\n`);
+  // Today's rules, transcribed from 997c84c, to compare against.
+  const todayAddressed = (n: ReturnType<typeof note>, row: { seat: string; seatId: string }) => !!n.forSeat && n.forSeat === row.seat && !n.malformed.includes('for_seat') && !n.malformed.includes('for_seat_id') && (n.forSeatId === null || n.forSeatId === row.seatId);
+  const todayStarted = (n: ReturnType<typeof note>, row: { seat: string; seatId: string }) => !n.malformed.length && (n.originSeat !== null ? n.originSeat === row.seat && (n.originSeatId === null || n.originSeatId === row.seatId) : n.fromSeat === row.seat);
+  const todayStatus = (seat: string, id: string) => {
+    const entry = registry.find((row) => row.seat === seat);
+    if (entry && entry.seatId === id) return 'live';
+    return retirements.some((record) => record.seat === seat && record.seat_id === id) ? 'retired' : 'unaccounted';
+  };
+  const names = ['lead', 'old', 'qa', 'gone', 'nobody'];
+  const ids: (string | null)[] = [null, idLead, idQaOld, idQaNew, idOther];
+  let compared = 0;
+  const differ: string[] = [];
+  for (const row of registry) {
+    const self = seatIncarnation('', row.seat, view);
+    for (const name of names) {
+      for (const id of ids) {
+        const letter = note([`from_seat: ${name}`, `for_seat: ${name}`, ...(id ? [`for_seat_id: ${id}`] : []), `origin_seat: ${name}`, ...(id ? [`origin_seat_id: ${id}`] : [])]);
+        const legacy = note([`from_seat: ${name}`]);
+        if (isAddressedTo(letter, self) !== todayAddressed(letter, row)) differ.push(`isAddressedTo ${row.seat} ${name} ${id}`);
+        if (isStartedBy(letter, self) !== todayStarted(letter, row)) differ.push(`isStartedBy ${row.seat} ${name} ${id}`);
+        if (isStartedBy(legacy, self) !== todayStarted(legacy, row)) differ.push(`isStartedBy(from_seat) ${row.seat} ${name}`);
+        if (isWrittenBy(legacy, self) !== (legacy.fromSeat === row.seat)) differ.push(`isWrittenBy ${row.seat} ${name}`);
+        compared += 4;
+      }
+    }
+  }
+  for (const name of names) {
+    for (const id of ['', idLead, idQaOld, idQaNew, idOther]) {
+      if (seatIncarnationStatus(registry, retirements, name, id) !== todayStatus(name, id)) differ.push(`seatIncarnationStatus ${name} ${id}`);
+      const history = { file: 'h', records: [{ attempt: 'a', when: '', verb: 'describe', seat: name, seat_id: id, from_seat: null, plan_id: 'p', before: {}, after: {} }], committed: new Set(['a']), unparsable: [] };
+      for (const row of registry) {
+        const mine = seatHistoryState(history as never, row.seat, row.seatId, view).lastConfirmed !== null;
+        if (mine !== (name === row.seat && id === row.seatId)) differ.push(`seatHistoryState ${row.seat} ${name} ${id}`);
+      }
+      compared += 1 + registry.length;
+    }
+  }
+  check(differ.length === 0, `a consumer on the projection answers differently from its rule of today (${differ.length} of ${compared}): ${differ.slice(0, 12).join('; ')}`);
+  // The rules with no registry at hand see the one row, as before.
+  check(isAddressedTo(note(['for_seat: lead', `for_seat_id: ${idLead}`]), { seat: 'lead', seatId: idLead }) && !isAddressedTo(note(['for_seat: lead', `for_seat_id: ${idLead}`]), { seat: 'lead', seatId: '' }), 'a seat with no view does not see its one row as before');
+  equal(JSON.stringify(singleRowView({ seat: 'x', seatId: '' }).live.map((row) => row.identity)), '["pre-identity"]', 'a one-row view did not read its row');
+
+  // RETIRED AND CREATED AGAIN, WITH AN EMPTY-ID TOPIC (the retire-and-recreate sequence): still `retired`.
+  const recreated = [{ seat: 'qa', seatId: idQaNew, project: 'qa-hub', createdUtc: '', names: span('qa'), namesProblem: null }];
+  equal(seatIncarnationStatus(recreated, [{ seat: 'qa', seat_id: '' }], 'qa', ''), 'retired', 'an empty-id topic of a retired and re-created seat does not read retired');
+  // THIS LIBRARY'S SHAPE: a retired name re-created with a new id.
+  equal(`${seatIncarnationStatus(registry, retirements, 'qa', idQaOld)},${seatIncarnationStatus(registry, retirements, 'qa', idQaNew)}`, 'retired,live', 'a retired name re-created with a new id does not resolve as today');
+  check(isAddressedTo(note(['for_seat: qa']), seatIncarnation('', 'qa', view)) && !isAddressedTo(note(['for_seat: qa', `for_seat_id: ${idQaOld}`]), seatIncarnation('', 'qa', view)), "an id-less letter to a re-created name is not the new seat's, or one to the old incarnation is");
+
+  // A PAST NAME, injected: lead was called `former`.
+  const renamed = identityView([{ ...registry[0]!, names: [{ name: 'former', from_utc: 'T0', to_utc: 'T1' }, { name: 'lead', from_utc: 'T1', to_utc: null }] }, registry[1]!, registry[2]!], retirements);
+  const lead = seatIncarnation('', 'lead', renamed);
+  check(isAddressedTo(note(['for_seat: former']), lead) && isAddressedTo(note(['for_seat: former', `for_seat_id: ${idLead}`]), lead) && !isAddressedTo(note(['for_seat: former', `for_seat_id: ${idOther}`]), lead), 'the recipient rule does not resolve a past name under the letters rule');
+  check(isStartedBy(note(['origin_seat: former', `origin_seat_id: ${idLead}`]), lead) && isStartedBy(note(['from_seat: former']), lead) && isWrittenBy(note(['from_seat: former']), lead), 'the asker or the writer does not resolve a past name');
+  equal(JSON.stringify(incarnationOf(renamed, 'former', idLead, 'letters')), JSON.stringify({ outcome: 'live', seat_id: idLead, current_name: 'lead', via: 'past-name' }), 'the projection does not name the current seat for a past name');
+  const renamedRegistry = [{ ...registry[0]!, names: [{ name: 'former', from_utc: 'T0', to_utc: 'T1' }, { name: 'lead', from_utc: 'T1', to_utc: null }] }, registry[1]!, registry[2]!];
+  equal(`${seatIncarnationStatus(renamedRegistry, retirements, 'former', idLead)},${seatIncarnationStatus(renamedRegistry, retirements, 'former', '')}`, 'live,unaccounted', 'the strict rule does not take a past name with its id, or takes one with an empty id');
+  const pastHistory = (id: string) => ({ file: 'h', records: [{ attempt: 'a', when: '', verb: 'describe', seat: 'former', seat_id: id, from_seat: null, plan_id: 'p', before: {}, after: {} }], committed: new Set(['a']), unparsable: [] });
+  check(seatHistoryState(pastHistory(idLead) as never, 'lead', idLead, renamed).lastConfirmed !== null && seatHistoryState(pastHistory('') as never, 'lead', idLead, renamed).lastConfirmed === null, 'history does not join a past name by its id, or joins one with an empty id');
+  // A past name a retirement record carries reads `retired` under the same rule.
+  const retiredRenamed = identityView(registry, [{ seat: 'ended', seat_id: idOther, names: [{ name: 'earlier', from_utc: 'T0', to_utc: 'T1' }, { name: 'ended', from_utc: 'T1', to_utc: null }] }]);
+  equal(`${incarnationOf(retiredRenamed, 'earlier', idOther, 'strict').outcome},${incarnationOf(retiredRenamed, 'earlier', '', 'strict').outcome}`, 'retired,unknown', "a retired seat's past name does not resolve under the strict rule");
+
+  // AN INVALID ID IS NEVER MATCHED BY ID for a letter or a past name: two rows sharing one. The strict rule keeps today's
+  // comparison as written, name and id together, as the oracle's hyphenated fixture ids need.
+  const twins = identityView([{ seat: 'twin-one', seatId: idOther, names: [{ name: 'was-twin', from_utc: 'T0', to_utc: 'T1' }, { name: 'twin-one', from_utc: 'T1', to_utc: null }] }, { seat: 'twin-two', seatId: idOther }], []);
+  check(!isAddressedTo(note(['for_seat: twin-one', `for_seat_id: ${idOther}`]), seatIncarnation('', 'twin-one', twins)) && isAddressedTo(note(['for_seat: twin-one']), seatIncarnation('', 'twin-one', twins)), 'a shared id was matched, or the name rule was lost with it');
+  equal(`${incarnationOf(twins, 'was-twin', idOther, 'strict').outcome},${incarnationOf(twins, 'was-twin', null, 'letters').outcome}`, 'unknown,unknown', 'a past name was matched through a shared id');
+  equal(incarnationOf(twins, 'twin-one', idOther, 'strict').outcome, 'live', "the strict rule lost today's comparison as written");
+  const hyphenated = identityView([{ seat: 'gamma', seatId: '33333333-3333-3333-3333-333333333333' }], []);
+  equal(`${incarnationOf(hyphenated, 'gamma', '33333333-3333-3333-3333-333333333333', 'strict').outcome},${incarnationOf(hyphenated, 'gamma', '33333333-3333-3333-3333-333333333333', 'letters').outcome}`, 'live,unknown', 'a hyphenated id is not matched as today (strict as written; never for a letter)');
+
+  const w = await seatClaimWorkspace('identity-projection', { pin: false });
+  try {
+    const ws = w.workspace;
+    for (const hub of ['lead-hub', 'dev-hub']) equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
+    const leadAgent = w.startAgent();
+    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    const devAgent = w.startAgent();
+    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
+    const rows = () => (JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] }).seats;
+    const seatId = (seat: string) => String(rows().find((row) => row['seat'] === seat)?.['seat_id'] ?? '');
+    for (const seat of ['lead', 'dev']) fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\nshelf/holding\n');
+    const json = (ran: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(ran.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const capture = (agent: number, book: string, args: string[]) => {
+      const ran = w.as(agent, ['capture', book, ...args, '--body', 'x', '--workspace', ws, '--json']);
+      return { ...ran, page: String(json(ran)['note_page'] ?? '').replace(/^shelf\/[a-z-]+\/wiki\//, '') };
+    };
+    const notesDir = path.join(ws, 'shelf', 'letters', 'wiki', 'notes');
+    const mapFile = path.join(ws, 'shelf', 'letters', 'wiki', '_index.md');
+    const cards = () => {
+      const report = json(w.as(process.pid, ['seat', 'cards', '--all', '--workspace', ws, '--json']));
+      return JSON.stringify([...((report['departments'] as Record<string, any>[] | undefined) ?? []).flatMap((entry) => entry['seats'] as Record<string, unknown>[]), ...((report['without_department'] as Record<string, unknown>[] | undefined) ?? [])].map((row) => [row['seat'], row['pending_letters']]));
+    };
+    const doctorLetters = () => {
+      const report = json(w.as(process.pid, ['doctor', '--workspace', ws, '--json']));
+      const row = ((report['program_checks'] as Record<string, unknown>[] | undefined) ?? []).find((candidate) => candidate['check'] === 'letters.recipient-incarnation') ?? {};
+      return `${String(row['status'])}: ${String(row['detail'])}`;
+    };
+    const desk = (agent: number, seat: string) => json(w.as(agent, ['desk', '--seat', seat, '--workspace', ws, '--json']));
+    const snapshot = () =>
+      JSON.stringify({
+        lead: [desk(leadAgent, 'lead')['letters_for_this_seat'], desk(leadAgent, 'lead')['letters_from_this_seat']],
+        dev: [desk(devAgent, 'dev')['letters_for_this_seat'], desk(devAgent, 'dev')['letters_from_this_seat'], ((desk(devAgent, 'dev')['other_seats'] as Record<string, unknown>[] | undefined) ?? []).map((row) => [row['seat'], row['pending_letters']])],
+        cards: cards(),
+        doctor: doctorLetters(),
+        map: fs.readFileSync(mapFile, 'utf8'),
+      });
+
+    // LETTERS WRITTEN BY TODAY'S CODE: two to lead, one answered, one routed back; a Holding note.
+    const first = capture(devAgent, 'letters', ['--for', 'lead', '--title', 'First question']);
+    const second = capture(devAgent, 'letters', ['--for', 'lead', '--title', 'Second question']);
+    const third = capture(devAgent, 'letters', ['--for', 'lead', '--title', 'Third question']);
+    check([first, second, third].every((ran) => ran.exit === 0), `the letters to lead were not written: ${[first, second, third].map((ran) => ran.stderr.trim()).join(' ')}`);
+    equal(capture(leadAgent, 'letters', ['--answers', first.page, '--title', 'An answer']).exit, 0, 'lead could not answer');
+    equal(capture(leadAgent, 'letters', ['--for', 'dev', '--routes', second.page, '--title', 'A route']).exit, 0, 'lead could not route');
+    equal(capture(devAgent, 'holding', ['--title', 'A holding note', '--why', 'no-home']).exit, 0, 'the Holding note was not written');
+    const before = snapshot();
+    // AN IMPLIED HISTORY INJECTED (the shape a row without `names` reads as): nothing a consumer answers moves.
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: rows().map((row) => ({ ...row, names: [{ name: row['seat'], from_utc: row['created_utc'], to_utc: null }] })) }, null, 4) + '\n');
+    equal(snapshot(), before, 'an implied name history changed what a consumer answers');
+
+    // A PAST NAME: lead was `former`. Letters to it, with and without lead's id, and from it.
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: rows().map((row) => (row['seat'] === 'lead' ? { ...row, names: [{ name: 'former', from_utc: '2026-01-01T00:00:00Z', to_utc: String(row['created_utc']) }, { name: 'lead', from_utc: row['created_utc'], to_utc: null }] } : row)) }, null, 4) + '\n');
+    const hand = (name: string, title: string, lines: string[]) => fs.writeFileSync(path.join(notesDir, `${name}.md`), `---\ncaptured: 2026-10-08T00:00:00Z\nreview: pending\n${lines.join('\n')}\n---\n\n# ${title}\n\nx\n`);
+    hand('2026-10-08-to-former-with-id', 'To former with id', ['from_seat: dev', 'for_seat: former', `for_seat_id: ${seatId('lead')}`, 'why: for-seat', 'origin_seat: dev', `origin_seat_id: ${seatId('dev')}`]);
+    hand('2026-10-08-to-former-no-id', 'To former with no id', ['from_seat: dev', 'for_seat: former', 'why: for-seat']);
+    hand('2026-10-08-to-former-other-id', 'To former, another id', ['from_seat: dev', 'for_seat: former', `for_seat_id: ${'9'.repeat(32)}`, 'why: for-seat']);
+    hand('2026-10-08-from-former-a', 'From former A', ['from_seat: former', 'for_seat: dev', `for_seat_id: ${seatId('dev')}`, 'why: for-seat', 'origin_seat: former', `origin_seat_id: ${seatId('lead')}`]);
+    hand('2026-10-08-from-former-b', 'From former B', ['from_seat: former', 'for_seat: dev', `for_seat_id: ${seatId('dev')}`, 'why: for-seat', 'origin_seat: former', `origin_seat_id: ${seatId('lead')}`]);
+    const fourth = capture(devAgent, 'letters', ['--for', 'lead', '--title', 'Fourth question']);
+    equal(fourth.exit, 0, 'a letter after the history was injected was not written');
+    const leadDesk = desk(leadAgent, 'lead');
+    // Before: Third question (pending, for lead) and nothing else for lead; now Fourth and the two to former.
+    equal(leadDesk['letters_for_this_seat']?.['count'], 4, `the past name's letters do not count for lead: ${JSON.stringify(leadDesk['letters_for_this_seat'])}`);
+    check(cards().includes('["lead",4]'), `seat cards does not count the past name's letters for lead: ${cards()}`);
+    const doctor = doctorLetters();
+    check(doctor.startsWith('warn') && doctor.includes('to-former-other-id') && !doctor.includes('to-former-with-id') && !doctor.includes('to-former-no-id'), `doctor does not take the past name's letters as lead's, or misses the other id: ${doctor}`);
+    const map = fs.readFileSync(mapFile, 'utf8');
+    const leadGroup = map.substring(map.indexOf('### For lead'), map.indexOf('###', map.indexOf('### For lead') + 4) === -1 ? undefined : map.indexOf('###', map.indexOf('### For lead') + 4));
+    check(leadGroup.includes('To former with id') && leadGroup.includes('To former with no id') && map.includes('### For former') && map.substring(map.indexOf('### For former')).includes('To former, another id'), `the map does not group the past name's letters under lead's current name: ${map}`);
+    const answer = capture(devAgent, 'letters', ['--answers', 'notes/2026-10-08-from-former-a', '--title', 'Answer to former']);
+    check(answer.exit === 0 && json(answer)['for_seat'] === 'lead' && json(answer)['for_seat_id'] === seatId('lead'), `an answer to a letter the seat asked under its past name does not reach its current name: ${answer.stderr.trim()} ${JSON.stringify(json(answer)).slice(0, 300)}`);
+    const actions = JSON.stringify([{ kind: 'review', source: 'holding', source_slug: 'letters', source_match: 'From former B' }]);
+    const preflight = w.as(leadAgent, ['triage', 'batch', '--actions', actions, '--preflight', '--json', '--workspace', ws]);
+    const closed = w.as(leadAgent, ['triage', 'batch', '--actions', actions, '--user-confirmed', '--plan-id', String(json(preflight)['plan_id'] ?? ''), '--json', '--workspace', ws]);
+    check(closed.exit === 0 && json(closed)['status'] === 'complete', `the seat could not close a note it wrote under its past name: ${closed.stdout.slice(0, 300)} ${closed.stderr.trim().slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 189 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// 190. ONE NAME CHECK FOR EVERY CREATOR (S103 row 4; PLAN-seat-identity.md section 1, bullet 7). Through the CLI and the
+// wizard's verdict: a name a live seat gave up by a rename is refused by `seat start`'s create (preflight and apply),
+// `seat enter --create` and the wizard; so is one a retired seat gave up, and any name while a retirement record cannot
+// be read; a retired seat's own name is still taken as before; a live seat's current name keeps the oracle's sentence;
+// a name that is not a slug is refused; each refusal writes nothing.
+if (selected(190)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-name-check-')));
+  try {
+    const { newSeatVerdict } = await import('../src/seat.ts');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ...QUIET_TAB };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const hub of ['keeper-hub', 'spare-hub', 'other-hub']) equal(as(['hub', 'new', hub, '--title', hub]).exit, 0, `the fixture Hub ${hub} was not made`);
+    equal(as(['seat', 'start', 'keeper', '--project', 'keeper-hub', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry.seats.map((row) => ({ ...row, names: [{ name: 'formerly', from_utc: '2026-01-01T00:00:00Z', to_utc: row['created_utc'] }, { name: 'keeper', from_utc: row['created_utc'], to_utc: null }] })) }, null, 4) + '\n');
+    const archives = path.join(lib, 'internal', 'seat-archive');
+    fs.mkdirSync(path.join(archives, 'ended-20260101-000000'), { recursive: true });
+    fs.writeFileSync(path.join(archives, 'ended-20260101-000000', 'seat.json'), JSON.stringify({ seat: 'ended', seat_id: 'e'.repeat(32), project: 'gone-hub', retired_utc: '2026-01-02T00:00:00Z', names: [{ name: 'earlier', from_utc: '2026-01-01T00:00:00Z', to_utc: '2026-01-01T12:00:00Z' }, { name: 'ended', from_utc: '2026-01-01T12:00:00Z', to_utc: null }] }) + '\n');
+    const tree = () => listFiles(lib).filter((name) => !name.startsWith('internal/locks/')).map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`).join('\n');
+    const refusedEverywhere = (name: string, says: string) => {
+      const before = tree();
+      const preflight = as(['seat', 'start', name, '--project', 'spare-hub', '--preflight', '--json']);
+      const apply = as(['seat', 'start', name, '--project', 'spare-hub', '--no-launch']);
+      const enter = as(['seat', 'enter', name, '--create', '--project', 'spare-hub', '--preflight', '--json']);
+      const verdict = newSeatVerdict(lib, name, 'spare-hub', ['keeper-hub', 'spare-hub', 'other-hub']);
+      for (const [label, ran] of [['seat start --preflight', preflight], ['seat start apply', apply], ['seat enter --create', enter]] as const) {
+        check(ran.exit !== 0 && ran.stderr.includes(says), `${label} did not refuse '${name}' saying "${says}": ${ran.exit} ${ran.stderr.trim().slice(0, 300)}`);
+      }
+      check(!verdict.creatable && verdict.reason.includes(says), `the wizard's verdict did not refuse '${name}': ${JSON.stringify(verdict).slice(0, 300)}`);
+      equal(tree(), before, `a refusal of '${name}' wrote something`);
+    };
+    refusedEverywhere('formerly', "was given up by seat 'keeper' in a rename, and stays reserved for that seat");
+    refusedEverywhere('earlier', "was given up in a rename by seat 'ended', since retired, and stays reserved for that seat");
+    const current = newSeatVerdict(lib, 'keeper', 'spare-hub', ['spare-hub']);
+    check(!current.creatable && current.reason.startsWith("Seat 'keeper' already exists."), `a live seat's current name lost the oracle's sentence: ${current.reason}`);
+    const malformed = as(['seat', 'start', 'Not_A_Slug', '--project', 'spare-hub', '--preflight', '--json']);
+    check(malformed.exit !== 0, `a name that is not a slug was taken: ${malformed.stdout.slice(0, 200)}`);
+    check(newSeatVerdict(lib, 'Not_A_Slug', 'spare-hub', ['spare-hub']).reason.includes('is not a seat name'), 'the wizard took a name that is not a slug');
+    // A FAULT IN THE RETIREMENT RECORDS refuses every name until it is repaired.
+    fs.mkdirSync(path.join(archives, 'broken-20260101-000000'));
+    refusedEverywhere('fresh', 'cannot be checked against the names retired seats reserve');
+    fs.rmSync(path.join(archives, 'broken-20260101-000000'), { recursive: true });
+    // A RETIRED SEAT'S OWN NAME is reusable, as before; so is a name nothing holds.
+    const reused = as(['seat', 'start', 'ended', '--project', 'spare-hub', '--preflight', '--json']);
+    check(reused.exit === 0 && json190(reused)['seat'] === 'ended', `a retired seat's own name was refused: ${reused.stderr.trim().slice(0, 300)}`);
+    equal(as(['seat', 'start', 'ended', '--project', 'spare-hub', '--no-launch']).exit, 0, "a retired seat's own name could not be taken again");
+    equal(as(['seat', 'start', 'fresh', '--project', 'other-hub', '--no-launch']).exit, 0, 'a free name could not be taken');
+  } catch (error) {
+    failures.push(`section 190 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function json190(ran: { stdout: string }): Record<string, unknown> {
+  try {
+    return JSON.parse(ran.stdout) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+// 191. THE BARE TAB TITLE (S103 row 5; PLAN-seat-identity.md section 6). With a fake orca on PATH and no real Orca: a
+// launch retitles its own tab to the seat's name with no `seat: ` prefix; an orca that fails, and (on Windows) a handle
+// the `.cmd` route refuses, each leave one stderr line and the seat still launches.
+if (selected(191)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-bare-tab-')));
+  const inherited = process.env['ORCA_TERMINAL_HANDLE'];
+  try {
+    const bin = path.join(root, 'fakebin');
+    const failing = path.join(root, 'failbin');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(failing);
+    const log = path.join(root, 'orca.log');
+    fakeAssistant(bin, 'orca', log);
+    fakeAssistant(failing, 'orca', log, process.platform === 'win32' ? 'exit /b 3\r\n' : 'exit 3\n');
+    const pathWith = (dir: string) => dir + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', PATH: pathWith(bin), Path: pathWith(bin) };
+    const kernel = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture Hub was not made');
+    const start = (extra: Record<string, string>) =>
+      runCli(['seat', 'start', 'first', '--project', 'work', '--workspace', lib, '--command', kernel[0]!, '--', ...kernel.slice(1), 'verbs'], { cwd: lib, env: { ...env, ...extra } });
+    const renames = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split(/\r?\n/).map((line) => line.replace(/"/g, '')).filter((line) => line.includes('terminal rename'));
+    delete process.env['ORCA_TERMINAL_HANDLE'];
+
+    const titled = start({ ORCA_TERMINAL_HANDLE: 'tab-one' });
+    check(titled.exit === 0 && !titled.stderr.includes('not retitled'), `the seat did not launch cleanly: ${titled.exit} ${titled.stderr.trim().slice(0, 300)}`);
+    const line = renames().find((entry) => entry.includes('tab-one')) ?? '';
+    check(/--title first\s*$/.test(line) && !line.includes('seat:'), `the tab was not titled with the bare seat name: ${line}`);
+
+    const failed = start({ ORCA_TERMINAL_HANDLE: 'tab-two', PATH: pathWith(failing), Path: pathWith(failing) });
+    check(failed.exit === 0 && failed.stderr.includes('The tab was not retitled (failed)'), `an orca that failed blocked the launch or said nothing: ${failed.exit} ${failed.stderr.trim().slice(0, 300)}`);
+
+    if (process.platform === 'win32') {
+      const refused = start({ ORCA_TERMINAL_HANDLE: 'tab"three' });
+      check(refused.exit === 0 && refused.stderr.includes('The tab was not retitled (failed)') && refused.stderr.includes('cmd.exe would change'), `a handle the .cmd route refuses blocked the launch: ${refused.exit} ${refused.stderr.trim().slice(0, 300)}`);
+    }
+  } catch (error) {
+    failures.push(`section 191 stopped early: ${(error as Error).message}`);
+  } finally {
+    if (inherited === undefined) delete process.env['ORCA_TERMINAL_HANDLE'];
+    else process.env['ORCA_TERMINAL_HANDLE'] = inherited;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// 192. DOCTOR'S IDENTITY CHECK (S103 row 6; PLAN-seat-identity.md section 1). `seats.identity` passes on seats as `seat
+// start` writes them, a pre-identity row included, and on letters whose ids name a seat or a retirement record; it
+// FAILs, naming each, for a shared id, a malformed id, a names history that does not parse, a past name another live
+// seat is called now, a name two histories share, a retirement record with no seat.json, and a letter id that names no
+// seat and no record. Doctor writes nothing.
+if (selected(192)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seats-identity-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ...QUIET_TAB };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const seat of ['alpha', 'beta']) {
+      equal(as(['hub', 'new', `${seat}-hub`, '--title', seat]).exit, 0, `the fixture Hub for '${seat}' was not made`);
+      equal(as(['seat', 'start', seat, '--project', `${seat}-hub`, '--no-launch']).exit, 0, `the fixture seat '${seat}' was not made`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const original = fs.readFileSync(registryFile, 'utf8');
+    const rows = () => (JSON.parse(original) as { seats: Record<string, unknown>[] }).seats;
+    const idOf = (seat: string) => String(rows().find((row) => row['seat'] === seat)?.['seat_id']);
+    const withRows = (change: (row: Record<string, unknown>) => Record<string, unknown>) => fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: rows().map(change) }, null, 4) + '\n');
+    const identity = () => {
+      const ran = as(['doctor', '--json']);
+      const report = JSON.parse(ran.stdout) as Record<string, unknown>;
+      return ((report['program_checks'] as Record<string, unknown>[] | undefined) ?? []).find((row) => row['check'] === 'seats.identity') ?? {};
+    };
+    const fails = (label: string, says: string) => {
+      const row = identity();
+      check(row['status'] === 'fail' && String(row['detail']).includes(says), `seats.identity did not FAIL ${label} saying "${says}": ${JSON.stringify(row).slice(0, 500)}`);
+    };
+    const tree = () => listFiles(lib).filter((name) => !name.startsWith('internal/locks/')).map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`).join('\n');
+
+    const clean = identity();
+    check(clean['status'] === 'pass' && String(clean['detail']).startsWith('2 seats, each with its own id and its own names'), `seats.identity did not pass seats as seat start writes them: ${JSON.stringify(clean)}`);
+    const before = tree();
+    withRows((row) => (row['seat'] === 'beta' ? { ...row, seat_id: idOf('alpha') } : row));
+    fails('for a shared id', `seat 'beta' shares its seat_id ${idOf('alpha')} with seat 'alpha'`);
+    withRows((row) => (row['seat'] === 'beta' ? { ...row, seat_id: 'not-an-id' } : row));
+    fails('for a malformed id', "seat 'beta' has a seat_id that is not 32 lowercase hex characters");
+    withRows((row) => (row['seat'] === 'beta' ? { ...row, seat_id: '' } : row));
+    equal(identity()['status'], 'pass', 'a pre-identity row failed seats.identity');
+    withRows((row) => (row['seat'] === 'alpha' ? { ...row, names: 'garbled' } : row));
+    fails('for a names history that does not parse', "seat 'alpha' has a names history that does not parse");
+    withRows((row) => (row['seat'] === 'alpha' ? { ...row, names: [{ name: 'beta', from_utc: 'T0', to_utc: 'T1' }, { name: 'alpha', from_utc: 'T1', to_utc: null }] } : row));
+    fails("for a past name another live seat is called now", "the name 'beta' is seat 'beta''s now, and also in the name history of seat 'alpha'");
+    withRows((row) => ({ ...row, names: [{ name: 'shared', from_utc: 'T0', to_utc: 'T1' }, { name: row['seat'], from_utc: 'T1', to_utc: null }] }));
+    fails('for a name two histories share', "the name 'shared' is in the name history of more than one seat ('alpha', 'beta')");
+    fs.writeFileSync(registryFile, original);
+    equal(identity()['status'], 'pass', 'seats.identity did not pass again once the registry was repaired');
+
+    const notesDir = path.join(lib, 'shelf', 'letters', 'wiki', 'notes');
+    fs.mkdirSync(notesDir, { recursive: true });
+    const retiredId = 'd'.repeat(32);
+    const archive = path.join(lib, 'internal', 'seat-archive', 'gone-20260101-000000');
+    fs.mkdirSync(archive, { recursive: true });
+    fs.writeFileSync(path.join(archive, 'seat.json'), JSON.stringify({ seat: 'gone', seat_id: retiredId, project: 'gone-hub', retired_utc: '2026-01-02T00:00:00Z' }) + '\n');
+    fs.writeFileSync(path.join(notesDir, '2026-10-08-known.md'), `---\ncaptured: 2026-10-08T00:00:00Z\nreview: done\nfrom_seat: gone\nfor_seat: alpha\nfor_seat_id: ${idOf('alpha')}\norigin_seat: gone\norigin_seat_id: ${retiredId}\n---\n\n# Known\n\nx\n`);
+    const known = identity();
+    check(known['status'] === 'pass' && String(known['detail']).includes('2 recorded letter ids'), `letter ids naming a seat and a retirement record did not pass: ${JSON.stringify(known)}`);
+    const stray = 'e'.repeat(32);
+    fs.writeFileSync(path.join(notesDir, '2026-10-08-stray.md'), `---\ncaptured: 2026-10-08T00:00:00Z\nreview: pending\nfrom_seat: alpha\nfor_seat: nobody\nfor_seat_id: ${stray}\n---\n\n# Stray\n\nx\n`);
+    fails('for a letter id that names nothing', `letters notes/2026-10-08-stray records for_seat_id ${stray}, which names no seat in the registry and no retirement record`);
+    fs.rmSync(path.join(notesDir, '2026-10-08-stray.md'));
+    fs.mkdirSync(path.join(lib, 'internal', 'seat-archive', 'husk-20260101-000000'));
+    fails('for a retirement record with no seat.json', 'internal/seat-archive/husk-20260101-000000 carries no seat.json');
+    fs.rmSync(path.join(lib, 'internal', 'seat-archive', 'husk-20260101-000000'), { recursive: true });
+    fs.rmSync(path.join(lib, 'internal', 'seat-archive'), { recursive: true });
+    fs.rmSync(path.join(notesDir, '2026-10-08-known.md'));
+    equal(tree(), before, 'doctor wrote something');
+  } catch (error) {
+    failures.push(`section 192 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 193. THE SOURCE HOME: A raw/ BATCH BECOMES A BOOK'S sources/ PAGES (kickoffs/s104 row 1; PLAN-correct-and-find.md D8) --
+
+// Through the front door only. `book add-page <slug> --from-folder raw/<batch>` takes a flat batch directly under raw/
+// and makes each `.md` or `.txt` file the page `sources/<name>` by the name rule, titled by its own H1 or its stem, in
+// one lock, one journal and one manifest generation. `sources/_index.md` is created (`# Sources`, one line per page) or
+// gains D3's lines; a generated map folds the pages under it, a curated one gains its link, and every page is reached.
+// The batch's owner is named, nothing in raw/ changes, and `next` names the batch ready to evict. The preview writes
+// nothing. A fault after the pages rolls the whole batch back. Each refusal names every bad file and writes nothing: a
+// bad name among good ones, two files reaching one name, a name the Book has, a subfolder, a file neither .md nor .txt,
+// a stray control character, an empty batch, a folder not directly under raw/, a <page> positional, a closed Book, a
+// capture Book, and a topic index ending in an open fence.
+if (selected(193)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-from-folder-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_BOOK_FROM_FOLDER_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    for (const slug of ['demo', 'kept', 'fenced', 'shut']) {
+      equal(as(['shelf', 'new', slug, '--title', slug.toUpperCase(), '--summary', 'A curated Book.', '--json']).exit, 0, `the Book '${slug}' was not made`);
+    }
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/holding\nshelf/demo\nshelf/kept\nshelf/fenced\n');
+    const raw = path.join(lib, 'raw');
+    const batch = (name: string, files: Record<string, string>) => {
+      const folder = path.join(raw, ...name.split('/'));
+      fs.mkdirSync(folder, { recursive: true });
+      for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(folder, file), text);
+      return `raw/${name}`;
+    };
+    const fromFolder = (slug: string, folder: string, tail: string[] = [], extra: Record<string, string> = {}) =>
+      as(['book', 'add-page', slug, '--from-folder', folder, ...tail, '--json'], extra);
+    const hashOf = (dir: string) =>
+      fs.existsSync(dir)
+        ? listFiles(dir).sort().map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(dir, ...name.split('/')))).digest('hex')}`).join('\n')
+        : '';
+    const snapshot = () => `${hashOf(path.join(lib, 'shelf'))}\n--raw--\n${hashOf(raw)}`;
+    const wiki = path.join(lib, 'shelf', 'demo', 'wiki');
+    fs.mkdirSync(path.join(lib, 'internal'), { recursive: true });
+    fs.writeFileSync(path.join(lib, 'internal', 'raw-batch-owners.json'), JSON.stringify({ schema: 1, records: [{ batch: 'unity-docs', project: 'work' }] }));
+
+    // THE PREVIEW: the name rule, the titles, the owner, and nothing written.
+    const unity = batch('unity-docs', {
+      'Shader Graph -- Overview.md': '# Shader Graph\n\nNodes and edges.\n',
+      'Release_Notes 2024.TXT': 'Plain text notes.\nA second line.\n',
+      'no-heading.md': 'A Markdown file with no H1.\n',
+    });
+    let before = snapshot();
+    const pre = fromFolder('demo', unity, ['--preflight']);
+    const plan = parsed(pre);
+    const pages = ((plan['pages'] as Record<string, string>[] | undefined) ?? []).map((row) => `${row['file']}=${row['page']}=${row['page_title']}`).sort();
+    equal(
+      pages.join(' | '),
+      [
+        'Release_Notes 2024.TXT=shelf/demo/wiki/sources/release-notes-2024.md=Release_Notes 2024',
+        'Shader Graph -- Overview.md=shelf/demo/wiki/sources/shader-graph-overview.md=Shader Graph',
+        'no-heading.md=shelf/demo/wiki/sources/no-heading.md=no-heading',
+      ].join(' | '),
+      'the preview did not name each page by the name rule and title it by its H1 or its stem',
+    );
+    check(pre.exit === 0 && plan['topic_index'] === 'created' && plan['batch'] === 'raw/unity-docs' && plan['batch_owner'] === 'work' && plan['confirmation_required'] === false, `the preview's batch, owner or topic index is wrong: ${said(pre).slice(0, 400)}`);
+    equal(snapshot(), before, 'the preview wrote something');
+
+    // THE APPLY.
+    const applied = fromFolder('demo', unity);
+    const result = parsed(applied);
+    check(applied.exit === 0 && result['status'] === 'added' && result['page_count'] === 3, `the batch was not added: ${said(applied).slice(0, 400)}`);
+    check(/^generation \d+ committed$/.test(String(result['manifest'])), `the batch committed no manifest generation: ${result['manifest']}`);
+    check(String(result['next']).includes('raw/unity-docs') && String(result['next']).includes('ready to evict') && String(result['next']).includes('work') && String(result['next']).includes('Nothing under raw/ was deleted'), `next does not name the batch ready to evict with its owner: ${result['next']}`);
+    equal(hashOf(raw), before.split('\n--raw--\n')[1], 'the batch changed raw/');
+    equal(fs.readFileSync(path.join(wiki, 'sources', 'release-notes-2024.md'), 'utf8'), '# Release_Notes 2024\n\nPlain text notes.\nA second line.\n', 'a .txt page was not titled by its stem as add-page renders it');
+    equal(fs.readFileSync(path.join(wiki, 'sources', 'shader-graph-overview.md'), 'utf8'), '# Shader Graph\n\nNodes and edges.\n', 'an .md page with its own H1 was not kept as written');
+    equal(
+      fs.readFileSync(path.join(wiki, 'sources', '_index.md'), 'utf8'),
+      '# Sources\n\n- [[sources/release-notes-2024|Release_Notes 2024]]\n- [[sources/shader-graph-overview|Shader Graph]]\n- [[sources/no-heading|no-heading]]\n',
+      'sources/_index.md was not created with one line per page',
+    );
+    const map = fs.readFileSync(path.join(wiki, '_index.md'), 'utf8');
+    check(map.includes('[[sources/_index|Sources (3 pages)]]') && !map.includes('[[sources/no-heading'), `the generated map does not fold the source pages under their topic: ${map}`);
+    check(result['reader_map_unlisted'] === 0 && result['topic_index'] === 'created', `the pages are not all reached: ${JSON.stringify(result).slice(0, 300)}`);
+    check(fs.existsSync(path.join(lib, ...String(result['journal']).split('/'))), 'the batch left no journal');
+
+    // A SECOND BATCH INTO THE SAME TOPIC: the index gains D3's lines.
+    const second = batch('more-docs', { 'Extra Page.md': '# Extra\n\nMore.\n' });
+    const added = parsed(fromFolder('demo', second));
+    check(added['status'] === 'added' && added['topic_index'] === 'updated' && added['batch_owner'] === null, `a second batch did not add its line to the topic index: ${JSON.stringify(added).slice(0, 300)}`);
+    check(fs.readFileSync(path.join(wiki, 'sources', '_index.md'), 'utf8').endsWith('- [[sources/no-heading|no-heading]]\n- [[sources/extra-page|Extra]]\n'), 'the topic index did not gain the second batch line at its end');
+    check(fs.readFileSync(path.join(wiki, '_index.md'), 'utf8').includes('[[sources/_index|Sources (4 pages)]]'), 'the generated map does not count the second batch');
+
+    // A CURATED MAP gains the topic's link, once, and every page is reached.
+    fs.writeFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), '# KEPT - Reader Map\n\n## Pages\n\nA reader wrote this.\n');
+    const curated = parsed(fromFolder('kept', batch('kept-docs', { 'one.md': '# One\n\nText.\n', 'two.txt': 'Two.\n' })));
+    const keptMap = fs.readFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), 'utf8');
+    check(curated['status'] === 'added' && curated['reader_map_unlisted'] === 0 && keptMap.startsWith('# KEPT - Reader Map\n\n## Pages\n\nA reader wrote this.\n') && keptMap.includes('[[sources/_index|Sources]]'), `a curated map did not gain the topic link: ${keptMap}`);
+
+    // A FAULT AFTER THE PAGES: the whole batch rolls back, the folder it made included.
+    fs.rmSync(path.join(lib, 'shelf', 'kept', 'wiki', 'sources'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(lib, 'shelf', 'kept', 'wiki', '_index.md'), '# KEPT - Reader Map\n\n## Pages\n\nA reader wrote this.\n');
+    before = snapshot();
+    const faulted = fromFolder('kept', 'raw/kept-docs', [], { LIBRARY_BOOK_FROM_FOLDER_FAULT: 'after-pages' });
+    check(faulted.exit !== 0 && said(faulted).includes('FAULT INJECTED') && said(faulted).includes('Rollback: complete and verified'), `the fault was not rolled back: ${said(faulted).slice(0, 300)}`);
+    equal(snapshot(), before, 'a faulted batch left the Book other than it found it');
+    check(!fs.existsSync(path.join(lib, 'shelf', 'kept', 'wiki', 'sources')), 'a faulted batch left the sources/ folder it made');
+
+    // THE REFUSALS, each naming its file and writing nothing.
+    const refusedFor = (label: string, ran: { exit: number; stdout: string; stderr: string }, words: string[]) => {
+      check(ran.exit !== 0 && words.every((word) => said(ran).includes(word)), `${label} was not refused by name: ${said(ran).slice(0, 400)}`);
+    };
+    fs.mkdirSync(path.join(lib, 'shelf', 'fenced', 'wiki', 'sources'), { recursive: true });
+    fs.writeFileSync(path.join(lib, 'shelf', 'fenced', 'wiki', 'sources', '_index.md'), '# Sources\n\n```\nunclosed\n');
+    const mixed = batch('mixed', { 'good.md': '# Good\n\nFine.\n', '---.md': '# Dashes\n', 'also good.txt': 'Fine too.\n' });
+    const shelfBefore = hashOf(path.join(lib, 'shelf'));
+    refusedFor('a bad name among good ones', fromFolder('demo', mixed), ['raw/mixed/---.md', 'leaves no page name', 'added whole or not at all', 'Nothing was added']);
+    refusedFor('two files reaching one name', fromFolder('demo', batch('twins', { 'A b.md': '# A\n', 'a-b.md': '# B\n' })), ['raw/twins/A b.md and raw/twins/a-b.md', 'sources/a-b']);
+    refusedFor('a name the Book has', fromFolder('demo', unity), ['would be the page sources/shader-graph-overview', 'already has']);
+    const nested = batch('nested', { 'top.md': '# Top\n' });
+    fs.mkdirSync(path.join(raw, 'nested', 'inner'));
+    refusedFor('a subfolder', fromFolder('demo', nested), ['raw/nested/inner/ is a subfolder']);
+    refusedFor('a file neither .md nor .txt', fromFolder('demo', batch('pdfs', { 'a.md': '# A\n', 'scan.pdf': '%PDF' })), ['raw/pdfs/scan.pdf is neither .md nor .txt']);
+    refusedFor('a stray control character', fromFolder('demo', batch('ctrl', { 'bell.md': '# Bell\n\nA \u0007 bell.\n' })), ['raw/ctrl/bell.md has a stray control character']);
+    refusedFor('an empty file', fromFolder('demo', batch('blank', { 'empty.md': '  \n' })), ['raw/blank/empty.md is empty']);
+    fs.mkdirSync(path.join(raw, 'none'));
+    refusedFor('an empty batch', fromFolder('demo', 'raw/none'), ['raw/none holds no .md or .txt file']);
+    refusedFor('a folder below a batch', fromFolder('demo', 'raw/nested/inner'), ['is not a batch directly under raw/']);
+    fs.mkdirSync(path.join(root, 'outside'));
+    fs.writeFileSync(path.join(root, 'outside', 'a.md'), '# A\n');
+    refusedFor('a folder outside raw/', fromFolder('demo', path.join(root, 'outside')), ['is not a batch directly under raw/']);
+    refusedFor('raw/ itself', fromFolder('demo', 'raw'), ['is not a batch directly under raw/']);
+    refusedFor('a <page> positional', as(['book', 'add-page', 'demo', 'sources/x', '--from-folder', unity, '--json']), ['takes no <page>', 'Nothing was added']);
+    refusedFor('--content-path beside it', as(['book', 'add-page', 'demo', '--from-folder', unity, '--content-path', 'x.md', '--json']), ['takes no --content-path']);
+    refusedFor('a capture Book', fromFolder('holding', 'raw/more-docs'), ['is a capture Book']);
+    refusedFor('a closed Book', fromFolder('shut', 'raw/more-docs'), ['is closed']);
+    refusedFor('a topic index in an open fence', fromFolder('fenced', 'raw/more-docs'), ['unclosed code fence']);
+    equal(hashOf(path.join(lib, 'shelf')), shelfBefore, 'a refused batch wrote something');
+  } catch (error) {
+    failures.push(`section 193 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 194. THE SOURCE LIST: _sources.md AND book sources (kickoffs/s104 row 2; PLAN-correct-and-find.md D8, D1) ---------
+
+// Through the front door only. `book sources <slug>` reads a Shelf Book's `_sources.md`, seated and with the Book open;
+// a Book with none reads as `absent`. `--set` validates the list whole (schema, unique ids, a known kind, each fed page
+// existing, a fingerprint of 64 hex or null) and is the only form that creates the file; the first `--set` binds to
+// `--base-sha256 absent`. `--mark-compiled` records fingerprints with the UTC instant, refusing an unknown id and an
+// absent file. Each write's preflight writes nothing and the apply requires its hash. The file is markdown holding one
+// fenced JSON block under the Library's line, and round-trips. `book replace-page --sources-compiled` marks the list in
+// the page's own write and journal (a fault after the write restores both), refusing an unknown id and an absent list.
+// The list is not a page: no reader map, Discovery manifest or full-text index names it, and it moves with the Book on
+// rename, archive and restore.
+if (selected(194)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-source-list-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', LIBRARY_BOOK_REPLACE_PAGE_FAULT: '' };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: 'first', ...extra } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    const said = (result: { stdout: string; stderr: string }) => (result.stdout + result.stderr).replace(/\s+/g, ' ');
+    const file = (name: string, text: string) => {
+      const full = path.join(root, name);
+      fs.writeFileSync(full, text);
+      return full;
+    };
+    const json = (name: string, value: unknown) => file(name, JSON.stringify(value));
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    equal(as(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'the fixture Hub was not made');
+    equal(as(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
+    for (const slug of ['demo', 'other', 'shut']) {
+      equal(as(['shelf', 'new', slug, '--title', slug.toUpperCase(), '--summary', 'A curated Book.', '--json']).exit, 0, `the Book '${slug}' was not made`);
+    }
+    const setDesk = (...books: string[]) => fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), ['shelf/holding', ...books].join('\n') + '\n');
+    setDesk('shelf/demo', 'shelf/other');
+    for (const page of ['guide', 'topic/deep']) {
+      check(as(['book', 'add-page', 'demo', page, '--content-path', file(`${page.replace('/', '-')}.md`, `# ${page}\n\nText.\n`), '--json']).exit === 0, `the page ${page} was not added`);
+    }
+    const listFile = path.join(lib, 'shelf', 'demo', '_sources.md');
+    const sources = (slug: string, tail: string[] = []) => as(['book', 'sources', slug, ...tail, '--json']);
+    const hashOf = (dir: string) =>
+      listFiles(dir).sort().map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(dir, ...name.split('/')))).digest('hex')}`).join('\n');
+    const shelfSnap = () => hashOf(path.join(lib, 'shelf'));
+    const refusedFor = (label: string, ran: { exit: number; stdout: string; stderr: string }, words: string[]) =>
+      check(ran.exit !== 0 && words.every((word) => said(ran).includes(word)), `${label} was not refused by name: ${said(ran).slice(0, 400)}`);
+
+    // NO LIST YET: the read says absent, and a mark is refused.
+    const empty = parsed(sources('demo'));
+    check(empty['present'] === false && empty['current_sha256'] === 'absent' && Array.isArray(empty['sources']) && empty['sources'].length === 0, `a Book with no list did not read as absent: ${JSON.stringify(empty)}`);
+    let before = shelfSnap();
+    refusedFor('--mark-compiled with no list', sources('demo', ['--mark-compiled', '--content-path', json('marks.json', { manual: 'a'.repeat(64) }), '--preflight']), ['has no source list yet', '--set']);
+
+    // --set: the preflight, then the first write bound to `absent`.
+    const list = {
+      schema: 1,
+      pin: 'v2024.3',
+      sources: [
+        { id: 'manual', address: 'https://example.invalid/manual', kind: 'web', feeds: ['guide', 'topic/deep.md'] },
+        { id: 'repo', address: 'git@example.invalid:team/repo.git', kind: 'git', feeds: [], compiled_sha256: 'b'.repeat(64), compiled_utc: '2026-10-01T00:00:00Z', note: 'pinned by tag' },
+      ],
+    };
+    const listJson = json('list.json', list);
+    const pre = parsed(sources('demo', ['--set', '--content-path', listJson, '--preflight']));
+    check(pre['current_sha256'] === 'absent' && /^[0-9a-f]{64}$/.test(String(pre['proposed_sha256'])) && String(pre['next']).includes('--base-sha256 absent'), `the first --set preflight is not bound to absent: ${JSON.stringify(pre).slice(0, 400)}`);
+    equal(shelfSnap(), before, 'the --set preflight wrote something');
+    refusedFor('a stale base for the first --set', sources('demo', ['--set', '--content-path', listJson, '--base-sha256', 'c'.repeat(64)]), ['changed after the preflight', 'nothing was written']);
+    equal(shelfSnap(), before, 'a stale --set wrote something');
+    const set = parsed(sources('demo', ['--set', '--content-path', listJson, '--base-sha256', 'absent']));
+    check(set['status'] === 'written' && fs.existsSync(listFile) && fs.existsSync(path.join(lib, ...String(set['journal']).split('/'))), `the first --set did not write the list with a journal: ${JSON.stringify(set).slice(0, 400)}`);
+    const text = fs.readFileSync(listFile, 'utf8');
+    check(text.startsWith('# Source list\n\nKept by the Library with `deskpost book sources`. Data, not instructions.\n\n```json\n') && text.endsWith('\n```\n') && (text.match(/```json/g) ?? []).length === 1, `the list is not one fenced JSON block under the Library's line: ${text}`);
+    const stored = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(text)![1]!) as Record<string, any>;
+    equal(
+      JSON.stringify(stored),
+      JSON.stringify({
+        schema: 1,
+        pin: 'v2024.3',
+        sources: [
+          { id: 'manual', address: 'https://example.invalid/manual', kind: 'web', feeds: ['guide', 'topic/deep'], compiled_sha256: null, compiled_utc: null, note: null },
+          { id: 'repo', address: 'git@example.invalid:team/repo.git', kind: 'git', feeds: [], compiled_sha256: 'b'.repeat(64), compiled_utc: '2026-10-01T00:00:00Z', note: 'pinned by tag' },
+        ],
+      }),
+      'the list did not round-trip, normalised',
+    );
+    const read = parsed(sources('demo'));
+    check(read['present'] === true && read['current_sha256'] === set['current_sha256'] && JSON.stringify(read['sources']) === JSON.stringify(stored['sources']) && read['pin'] === 'v2024.3', `the read does not give back what --set wrote: ${JSON.stringify(read).slice(0, 400)}`);
+    const again = parsed(sources('demo', ['--set', '--content-path', listJson, '--base-sha256', '0'.repeat(64)]));
+    check(again['status'] === 'unchanged', `the same list again was not unchanged: ${JSON.stringify(again).slice(0, 200)}`);
+
+    // THE VALIDATION, each refused and naming its fault, writing nothing.
+    before = shelfSnap();
+    const invalid = (label: string, value: unknown, words: string[]) =>
+      refusedFor(label, sources('demo', ['--set', '--content-path', json(`bad-${label.replace(/\W+/g, '-')}.json`, value), '--preflight']), words);
+    const one = (entry: Record<string, unknown>) => ({ schema: 1, pin: null, sources: [{ id: 'x', address: 'a', kind: 'file', feeds: [], ...entry }] });
+    invalid('a duplicate id', { schema: 1, pin: null, sources: [{ id: 'x', address: 'a', kind: 'web', feeds: [] }, { id: 'x', address: 'b', kind: 'web', feeds: [] }] }, ["the id 'x' is used twice"]);
+    invalid('an unknown kind', one({ kind: 'ftp' }), ["source 'x' has kind \"ftp\"", 'web, file or git']);
+    invalid('a fed page the Book lacks', one({ feeds: ['missing'] }), ["source 'x' feeds \"missing\", which is not a page of this Book"]);
+    invalid('a short fingerprint', one({ compiled_sha256: 'abc' }), ['compiled_sha256 that is not 64 lowercase hex']);
+    invalid('another schema', { schema: 2, pin: null, sources: [] }, ['schema is 2, not 1']);
+    invalid('an unknown key', one({ url: 'u' }), ["has an unknown key 'url'"]);
+    refusedFor('a file that is not JSON', sources('demo', ['--set', '--content-path', file('notjson.json', '{ nope'), '--preflight']), ['is not JSON']);
+    refusedFor('both --set and --mark-compiled', sources('demo', ['--set', '--mark-compiled', '--content-path', listJson, '--preflight']), ['not both']);
+    refusedFor('neither --preflight nor --base-sha256', sources('demo', ['--set', '--content-path', listJson]), ['exactly one of --preflight or --base-sha256']);
+    refusedFor('a closed Book', sources('shut'), ['is closed']);
+    refusedFor('a capture Book', sources('holding'), ['is a capture Book']);
+    equal(shelfSnap(), before, 'a refused list wrote something');
+
+    // --mark-compiled: the fingerprint and the instant; an unknown id refused.
+    const marks = json('marks.json', { manual: 'd'.repeat(64) });
+    const markPlan = parsed(sources('demo', ['--mark-compiled', '--content-path', marks, '--preflight']));
+    check(markPlan['current_sha256'] === set['current_sha256'] && JSON.stringify(markPlan['marked']) === '["manual"]', `the mark preflight is wrong: ${JSON.stringify(markPlan).slice(0, 300)}`);
+    refusedFor('an unknown id to mark', sources('demo', ['--mark-compiled', '--content-path', json('unknown.json', { nobody: 'd'.repeat(64) }), '--preflight']), ["'nobody' is not a source in this list"]);
+    const startedAt = Date.now();
+    const marked = parsed(sources('demo', ['--mark-compiled', '--content-path', marks, '--base-sha256', String(markPlan['current_sha256'])]));
+    const afterMark = parsed(sources('demo'))['sources'] as Record<string, any>[];
+    const manual = afterMark.find((row) => row['id'] === 'manual')!;
+    check(marked['status'] === 'written' && manual['compiled_sha256'] === 'd'.repeat(64) && Math.abs(Date.parse(String(manual['compiled_utc'])) - startedAt) < 120000, `the mark did not record the fingerprint and the instant: ${JSON.stringify(manual)}`);
+    equal(afterMark.find((row) => row['id'] === 'repo')!['compiled_sha256'], 'b'.repeat(64), 'the mark changed a source it did not name');
+
+    // book replace-page --sources-compiled: one write, one journal.
+    const replacePlan = (slug: string, content: string, tail: string[]) => as(['book', 'replace-page', slug, 'guide', '--content-path', content, ...tail, '--json']);
+    const corrected = file('corrected.md', '# guide\n\nText, recompiled.\n');
+    const compiled = json('compiled.json', { manual: 'e'.repeat(64) });
+    const rpre = parsed(replacePlan('demo', corrected, ['--sources-compiled', compiled, '--preflight']));
+    check(JSON.stringify(rpre['sources_compiled']) === '["manual"]', `the replace preflight does not name the sources it marks: ${JSON.stringify(rpre).slice(0, 300)}`);
+    const listBeforeFault = fs.readFileSync(listFile);
+    const faultRun = as(['book', 'replace-page', 'demo', 'guide', '--content-path', corrected, '--sources-compiled', compiled, '--base-sha256', String(rpre['current_sha256']), '--json'], { LIBRARY_BOOK_REPLACE_PAGE_FAULT: 'after-write' });
+    check(faultRun.exit !== 0 && said(faultRun).includes('Rollback: complete and verified') && fs.readFileSync(listFile).equals(listBeforeFault), `a faulted replace did not restore the source list: ${said(faultRun).slice(0, 300)}`);
+    const rpre2 = parsed(replacePlan('demo', corrected, ['--sources-compiled', compiled, '--preflight']));
+    const replaced = parsed(replacePlan('demo', corrected, ['--sources-compiled', compiled, '--base-sha256', String(rpre2['current_sha256'])]));
+    const afterReplace = (parsed(sources('demo'))['sources'] as Record<string, any>[]).find((row) => row['id'] === 'manual')!;
+    check(replaced['status'] === 'written' && JSON.stringify(replaced['sources_compiled']) === '["manual"]' && afterReplace['compiled_sha256'] === 'e'.repeat(64), `the replace did not mark the source list: ${JSON.stringify(replaced).slice(0, 400)}`);
+    const journal = JSON.parse(fs.readFileSync(path.join(lib, ...String(replaced['journal']).split('/')), 'utf8').replace(/^﻿/, '')) as { entries: { path: string }[] };
+    check(journal.entries.some((entry) => entry.path.endsWith('_sources.md')), 'the replace did not journal the source list with the page');
+    before = shelfSnap();
+    refusedFor('an unknown id with --sources-compiled', replacePlan('demo', file('again.md', '# guide\n\nOnce more.\n'), ['--sources-compiled', json('nobody.json', { nobody: 'f'.repeat(64) }), '--preflight']), ['--sources-compiled', "'nobody' is not a source in this list"]);
+    check(as(['book', 'add-page', 'other', 'guide', '--content-path', file('other-guide.md', '# guide\n\nOther.\n'), '--json']).exit === 0, 'the page of the Book with no list was not added');
+    before = shelfSnap();
+    refusedFor('--sources-compiled with no list', replacePlan('other', corrected, ['--sources-compiled', compiled, '--base-sha256', '1'.repeat(64)]), ['--sources-compiled needs a source list', 'shelf/other/_sources.md does not exist']);
+    equal(shelfSnap(), before, 'a refused --sources-compiled wrote something');
+
+    // NOT A PAGE: no reader map, Discovery manifest or full-text index names it.
+    check(!fs.readFileSync(path.join(lib, 'shelf', 'demo', 'wiki', '_index.md'), 'utf8').includes('_sources'), 'the reader map names the source list');
+    const manifests = path.join(lib, 'internal', 'book-manifests');
+    const named = fs.existsSync(manifests) ? listFiles(manifests).filter((name) => fs.readFileSync(path.join(manifests, ...name.split('/')), 'utf8').includes('_sources')) : [];
+    equal(named.join(', '), '', 'a Discovery manifest names the source list');
+    const needle = 'zqxsourcelistneedle';
+    const withNeedle = { ...list, sources: [{ ...list.sources[0]!, note: needle }, list.sources[1]!] };
+    const needlePlan = parsed(sources('demo', ['--set', '--content-path', json('needle.json', withNeedle), '--preflight']));
+    check(parsed(sources('demo', ['--set', '--content-path', json('needle.json', withNeedle), '--base-sha256', String(needlePlan['current_sha256'])]))['status'] === 'written', 'the needle list was not written');
+    for (const tool of ['discover_book_pages', 'search_open_books']) {
+      const found = as(['mcp', 'call', tool, '--query', needle, '--seat', 'first']);
+      check(found.exit === 0 && !said(found).includes('_sources'), `${tool} named the source list: ${said(found).slice(0, 300)}`);
+    }
+
+    // IT MOVES WITH THE BOOK: rename, archive, restore.
+    setDesk('shelf/other');
+    const gated = (args: string[]) => {
+      const plan = parsed(as([...args, '--preflight', '--json']));
+      return as([...args, '--plan-id', String(plan['plan_id'] ?? ''), '--json']);
+    };
+    const renamed = gated(['shelf', 'rename', 'demo', 'moved', '--new-title', 'Moved']);
+    check(renamed.exit === 0 && fs.existsSync(path.join(lib, 'shelf', 'moved', '_sources.md')) && !fs.existsSync(listFile), `the rename did not move the source list: ${said(renamed).slice(0, 300)}`);
+    const archived = gated(['shelf', 'archive', 'moved']);
+    check(archived.exit === 0 && fs.existsSync(path.join(lib, 'shelf', '_archive', 'moved', '_sources.md')), `the archive did not move the source list: ${said(archived).slice(0, 300)}`);
+    const restored = gated(['shelf', 'restore', 'moved']);
+    check(restored.exit === 0 && fs.existsSync(path.join(lib, 'shelf', 'moved', '_sources.md')), `the restore did not bring the source list back: ${said(restored).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 194 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+
+// --- 195. DOCTOR FILES WHAT IT FINDS, ONCE (kickoffs/s104 row 3; PLAN-correct-and-find.md D6) --------------------------
+
+// Through the front door only. `doctor --report` files each FAIL as one Report in the Report Inbox, titled `doctor:
+// <check> failed`, carrying `doctor_check` and `doctor_digest` in its frontmatter and the check's text, the Deskpost
+// version, the Library and the date in its body; the finding here is S103's `seats.identity` (a seat_id two seats
+// share). Run again it files nothing and names the Report it skipped for, pending, done, or tidied into
+// `reviewed/<yyyy-mm>/`. `--warnings` files the WARNs as well. A seatless run files a seatless Report. A finding that
+// cannot be filed is listed, never fatal, and doctor's exit code is the same with or without `--report`. Plain
+// `doctor` writes nothing.
+if (selected(195)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-doctor-report-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ...QUIET_TAB };
+    const lib = path.join(root, 'lib');
+    const as = (args: string[], seat = 'alpha') => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: seat } });
+    const parsed = (result: { stdout: string }): Record<string, any> => {
+      try {
+        return JSON.parse(result.stdout) as Record<string, any>;
+      } catch {
+        return {};
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const seat of ['alpha', 'beta']) {
+      equal(as(['hub', 'new', `${seat}-hub`, '--title', seat], '').exit, 0, `the fixture Hub for '${seat}' was not made`);
+      equal(as(['seat', 'start', seat, '--project', `${seat}-hub`, '--no-launch'], '').exit, 0, `the fixture seat '${seat}' was not made`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    const alphaId = String(registry.seats.find((row) => row['seat'] === 'alpha')!['seat_id']);
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: registry.seats.map((row) => (row['seat'] === 'beta' ? { ...row, seat_id: alphaId } : row)) }, null, 4) + '\n');
+
+    const inbox = path.join(lib, 'shelf', 'reports', 'wiki');
+    const reports = () => listFiles(inbox).filter((name) => /^(notes|reviewed\/\d{4}-\d{2})\/[^/]+\.md$/.test(name)).sort();
+    const tree = () => listFiles(lib).filter((name) => !name.startsWith('internal/locks/')).map((name) => `${name} ${createHash('sha256').update(fs.readFileSync(path.join(lib, ...name.split('/')))).digest('hex')}`).join('\n');
+
+    // PLAIN DOCTOR writes nothing, and gives the exit code --report must keep.
+    const before = tree();
+    const plain = as(['doctor', '--json']);
+    const plainReport = parsed(plain);
+    const all = [...((plainReport['checks'] as Record<string, any>[]) ?? []), ...((plainReport['program_checks'] as Record<string, any>[]) ?? [])];
+    const failedChecks = all.filter((row) => row['status'] === 'fail').map((row) => String(row['check'])).sort();
+    const warnedChecks = all.filter((row) => row['status'] === 'warn').map((row) => String(row['check'])).sort();
+    check(plain.exit === 1 && failedChecks.includes('seats.identity'), `the fixture did not FAIL seats.identity: ${failedChecks.join(', ')}`);
+    equal(tree(), before, 'plain doctor wrote something');
+    check(!('report' in plainReport), 'plain doctor carried a report');
+
+    // THE FIRST --report: each FAIL filed once.
+    const first = as(['doctor', '--report', '--json']);
+    const firstReport = parsed(first)['report'] as Record<string, any[]>;
+    equal(first.exit, plain.exit, 'doctor --report changed doctor\'s exit code');
+    equal(firstReport['filed']!.map((row) => String(row['check'])).sort().join(','), failedChecks.join(','), 'doctor --report did not file each FAIL once');
+    check(firstReport['skipped']!.length === 0 && firstReport['not_filed']!.length === 0, `the first --report skipped or failed something: ${JSON.stringify(firstReport).slice(0, 400)}`);
+    const identityRow = firstReport['filed']!.find((row) => row['check'] === 'seats.identity')!;
+    const notePath = path.join(lib, ...`${String(identityRow['page'])}.md`.split('/'));
+    const note = fs.existsSync(notePath) ? fs.readFileSync(notePath, 'utf8') : '';
+    const detail = String(all.find((row) => row['check'] === 'seats.identity')!['detail']);
+    const digest = createHash('sha256').update(`seats.identity\n${detail}`.replace(/\r\n/g, '\n')).digest('hex');
+    check(/^shelf\/reports\/wiki\/notes\/\d{4}-\d{2}-\d{2}-doctor-seats-identity-failed$/.test(String(identityRow['page'])), `the Report is not named for its finding: ${identityRow['page']}`);
+    check(note.includes('\ndoctor_check: seats.identity\n') && note.includes(`\ndoctor_digest: ${digest}\n`) && identityRow['doctor_digest'] === digest, `the Report does not carry its check and digest: ${note.slice(0, 400)}`);
+    check(note.includes('# doctor: seats.identity failed') && note.includes(detail) && note.includes('- **Status:** FAIL') && note.includes(`- **Library:** ${lib}`) && /- \*\*Deskpost:\*\* \S+/.test(note) && /- \*\*Date:\*\* \d{4}-\d{2}-\d{2}/.test(note), `the Report's body lacks the check's text, version, Library or date: ${note}`);
+    check(note.includes('\nfrom_seat: alpha\n') && note.includes('\nreview: pending\n'), 'the seated Report does not name its seat');
+
+    // AGAIN: nothing new, the Report named.
+    const count = reports().length;
+    const second = parsed(as(['doctor', '--report', '--json']))['report'] as Record<string, any[]>;
+    check(second['filed']!.length === 0 && second['skipped']!.some((row) => row['check'] === 'seats.identity' && row['page'] === identityRow['page']), `the second --report did not skip naming the Report: ${JSON.stringify(second).slice(0, 400)}`);
+    equal(reports().length, count, 'the second --report filed a Report');
+
+    // DONE AND TIDIED INTO reviewed/<yyyy-mm>/: still skipped.
+    const reviewedDir = path.join(inbox, 'reviewed', '2026-01');
+    fs.mkdirSync(reviewedDir, { recursive: true });
+    fs.writeFileSync(path.join(reviewedDir, path.basename(notePath)), note.replace('review: pending', 'review: done'));
+    fs.rmSync(notePath);
+    const third = parsed(as(['doctor', '--report', '--json']))['report'] as Record<string, any[]>;
+    check(third['filed']!.length === 0 && third['skipped']!.some((row) => row['check'] === 'seats.identity' && String(row['page']).startsWith('shelf/reports/wiki/reviewed/2026-01/')), `a tidied Report did not stop a second filing: ${JSON.stringify(third).slice(0, 400)}`);
+
+    // --warnings files the WARNs too, once.
+    const warned = parsed(as(['doctor', '--report', '--warnings', '--json']))['report'] as Record<string, any[]>;
+    equal(warned['filed']!.map((row) => String(row['check'])).sort().join(','), warnedChecks.join(','), '--warnings did not file each WARN');
+    check(warned['filed']!.every((row) => row['status'] === 'warn'), '--warnings filed something that was not a WARN');
+
+    // A CHANGED FINDING IS A NEW FINDING, and a seatless run files a seatless Report.
+    const gammaId = 'c'.repeat(32);
+    const shared = JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: shared.seats.map((row) => ({ ...row, seat_id: gammaId })) }, null, 4) + '\n');
+    const seatless = parsed(as(['doctor', '--report', '--json'], ''))['report'] as Record<string, any[]>;
+    const fresh = seatless['filed']!.find((row) => row['check'] === 'seats.identity');
+    const freshNote = fresh ? fs.readFileSync(path.join(lib, ...`${String(fresh['page'])}.md`.split('/')), 'utf8') : '';
+    check(fresh !== undefined && fresh['doctor_digest'] !== digest && !freshNote.includes('\nfrom_seat:'), `a changed finding was not filed as a new, seatless Report: ${JSON.stringify(seatless).slice(0, 400)}`);
+
+    // NOT FILED, NEVER FATAL: an Inbox with no notes folder to write into.
+    fs.writeFileSync(registryFile, JSON.stringify({ schema: 1, seats: shared.seats.map((row) => (row['seat'] === 'beta' ? { ...row, seat_id: 'd'.repeat(32) } : { ...row, seat_id: 'd'.repeat(32) })) }, null, 4) + '\n');
+    const blocked = path.join(inbox, 'notes');
+    fs.renameSync(blocked, `${blocked}-aside`);
+    fs.writeFileSync(blocked, 'a file where the notes folder belongs');
+    const stuck = as(['doctor', '--report', '--json']);
+    const stuckReport = parsed(stuck)['report'] as Record<string, any[]>;
+    check(stuck.exit === 1 && stuckReport['not_filed']!.some((row) => row['check'] === 'seats.identity' && String(row['reason']).length > 0), `a finding that could not be filed was not listed, or was fatal: ${stuck.exit} ${JSON.stringify(stuckReport).slice(0, 400)}`);
+    fs.rmSync(blocked);
+    fs.renameSync(`${blocked}-aside`, blocked);
+  } catch (error) {
+    failures.push(`section 195 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 196. THE DESK SAYS WHEN THE LAUNCHER HOLDS THIS SEAT FOR ANOTHER AGENT (kickoffs/s104 row 4) ----------------------
+
+// The launcher proof had three answers, and `not-held` stood both for no launcher at all and for a launcher whose own
+// agent is another process, so the Desk said nothing about a seat the launcher holds for someone else. Now the second
+// says so, with that agent's pid: `held by the deskpost launcher for another agent (pid <n>)`, and
+// `is_this_conversation` stays false. Through the front door, from a stand-in agent (a copy of node named claude.exe,
+// as section 166's) that runs the CLI with CLAUDE_PID naming itself: with this judge as the launcher the seat is held for
+// this session; with a fake launcher whose child is another stand-in agent, the Desk names that child's pid; with the
+// launcher variable unset the note is empty, as before. The child lookup is checked on its own.
+if (selected(196) && KERNEL_COMMAND.length === 0) {
+  const w = await seatClaimWorkspace('other-agent', { pin: false });
+  const sleepers: ReturnType<typeof spawn>[] = [];
+  try {
+    const { launcherChildAgent } = await import('../src/procstart.ts');
+    const holder = w.startAgent();
+    equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+    const ws = w.workspace;
+    const token = w.claimToken('first');
+    const image = path.join(w.root, 'agent-image', 'claude.exe');
+    fs.mkdirSync(path.dirname(image), { recursive: true });
+    try {
+      fs.linkSync(process.execPath, image);
+    } catch {
+      fs.copyFileSync(process.execPath, image);
+    }
+    // THE STAND-IN AGENT runs the CLI directly, so the CLI's own walk meets it.
+    const agentScript = path.join(w.root, 'stand-in-agent.mjs');
+    fs.writeFileSync(
+      agentScript,
+      [
+        "import { spawnSync } from 'node:child_process';",
+        "import * as fs from 'node:fs';",
+        'const [out, node, cli, ...args] = process.argv.slice(2);',
+        "const ran = spawnSync(node, [cli, ...args], { encoding: 'utf8', env: { ...process.env, CLAUDE_PID: String(process.pid) } });",
+        'fs.writeFileSync(out, JSON.stringify({ status: ran.status, stdout: ran.stdout, stderr: ran.stderr }));',
+        '',
+      ].join('\n'),
+    );
+    let run = 0;
+    const deskSeat = (launcherPid: string): Record<string, unknown> => {
+      run += 1;
+      const out = path.join(w.root, `desk-${run}.json`);
+      const env = { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: token, DESKPOST_LAUNCHER_PID: launcherPid, CLAUDE_PID: '' };
+      spawnSync(image, [agentScript, out, process.execPath, CLI, 'desk', '--workspace', ws, '--json'], { cwd: w.root, encoding: 'utf8', env });
+      try {
+        const ran = JSON.parse(fs.readFileSync(out, 'utf8')) as { stdout: string };
+        return ((JSON.parse(ran.stdout) as Record<string, unknown>)['this_seat'] as Record<string, unknown> | undefined) ?? {};
+      } catch (error) {
+        return { error: (error as Error).message };
+      }
+    };
+
+    // THIS JUDGE AS THE LAUNCHER: held for this session, as before.
+    const held = deskSeat(String(process.pid));
+    check(String(held['state_note']).startsWith('held for this session by the deskpost launcher'), `the seat was not held for this session: ${JSON.stringify(held).slice(0, 400)}`);
+
+    // A FAKE LAUNCHER whose own child is another stand-in agent.
+    const childPidFile = path.join(w.root, 'child.pid');
+    const launcherScript = path.join(w.root, 'fake-launcher.mjs');
+    fs.writeFileSync(
+      launcherScript,
+      [
+        "import { spawn } from 'node:child_process';",
+        "import * as fs from 'node:fs';",
+        'const [image, pidFile] = process.argv.slice(2);',
+        "const child = spawn(image, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });",
+        'fs.writeFileSync(pidFile, String(child.pid));',
+        'setTimeout(() => child.kill(), 60000);',
+        '',
+      ].join('\n'),
+    );
+    const fake = spawn(process.execPath, [launcherScript, image, childPidFile], { stdio: 'ignore' });
+    sleepers.push(fake);
+    for (let wait = 0; wait < 100 && !fs.existsSync(childPidFile); wait += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    const childPid = Number(fs.existsSync(childPidFile) ? fs.readFileSync(childPidFile, 'utf8') : '0');
+    check(childPid > 0, 'the fake launcher started no agent');
+    equal(launcherChildAgent(fake.pid!)?.pid ?? 0, childPid, "the lookup did not find the fake launcher's own agent");
+    equal(launcherChildAgent(childPid), null, 'the lookup found an agent under a process that has none');
+    const other = deskSeat(String(fake.pid));
+    equal(other['state_note'], `held by the deskpost launcher for another agent (pid ${childPid})`, `the Desk did not name the launcher's other agent: ${JSON.stringify(other).slice(0, 400)}`);
+    equal(other['is_this_conversation'], false, 'a seat held for another agent read as this conversation');
+
+    // NO LAUNCHER: nothing said, as before.
+    const none = deskSeat('');
+    check(none['is_this_conversation'] === false && none['state_note'] === '', `a seat with no launcher said something: ${JSON.stringify(none).slice(0, 400)}`);
+    try {
+      process.kill(childPid);
+    } catch {
+      // already gone
+    }
+  } catch (error) {
+    failures.push(`section 196 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const sleeper of sleepers) sleeper.kill();
+    w.dispose();
+  }
+}
+
+// --- 197. EVERY VERB REFUSES WHAT IT DOES NOT DECLARE (kickoffs/s106 rows 1-2; PLAN-correct-and-find.md D7) -------------
+
+// Until 1.4.0 a flag a verb did not know was ignored, `--name=value` was a flag named `name=value`, and an extra word was
+// kept, so a typo ran the verb without it and said nothing. Each verb and action now declares its flags and its arity
+// once, in verbs.ts, and the front door refuses the rest before the verb runs, naming the command and what it takes. Here:
+// every action has a table, the global flags are on every one, and a valued name is never also a boolean; then, through
+// the front door, each refusal (an unknown flag, `--name=value`, an extra word, `--title` on a hub edit mode that ignores
+// it) writes nothing; an unmatched quote in a title warns; the three flags that callers pass and the verb ignored by
+// design (`collection owner --status`, `raw owners --offline`, `triage validate --preflight`) are accepted and change
+// nothing; `--json` is taken where the verb always prints JSON; the retired `notebook own` keeps its own refusal; init
+// and upgrade keep their own sentences; and `seat start`'s words after a bare `--` are the agent's, never checked.
+if (selected(197)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-flags-')));
+  try {
+    const { argumentTable, commandAction, GLOBAL_ARGUMENTS } = await import('../src/verbs.ts');
+    const { checkArguments, quoteWarnings } = await import('../src/argv.ts');
+
+    // THE TABLES THEMSELVES.
+    for (const [verb, declaration] of Object.entries(VERBS)) {
+      for (const action of declaration.actions) check(declaration.arguments[action] !== undefined, `${verb} ${action} declares no argument table`);
+      if (!declaration.actions.length) check(declaration.arguments[''] !== undefined, `${verb} declares no argument table`);
+      for (const action of Object.keys(declaration.arguments)) {
+        const table = argumentTable(verb, action);
+        for (const name of GLOBAL_ARGUMENTS.boolean) check((table.boolean ?? []).includes(name), `${verb} ${action} lacks the global --${name}`);
+        if (declaration.workspace !== false) check((table.valued ?? []).includes('workspace'), `${verb} ${action} lacks the global --workspace`);
+        const valued = new Set([...(table.valued ?? []), ...(table.repeatable ?? [])]);
+        for (const name of table.boolean ?? []) check(!valued.has(name), `${verb} ${action} declares --${name} both with and without a value`);
+        for (const name of table.internal ?? []) check(valued.has(name) || (table.boolean ?? []).includes(name), `${verb} ${action} hides --${name}, which it does not take`);
+      }
+    }
+    // THE PASSTHROUGH: after `seat start`'s bare `--`, nothing is checked.
+    const start = argumentTable('seat', 'start');
+    equal(checkArguments('deskpost seat start', ['first', '--no-launch', '--', '--model', 'x', '--help', 'free', 'words'], start), null, "seat start checked the agent's own arguments");
+    check((checkArguments('deskpost seat start', ['first', '--bogus', '--', '--model'], start) ?? '').includes('has no --bogus'), 'seat start took an unknown flag before its --');
+    // A FLAG BEFORE THE ACTION still finds it.
+    equal(commandAction('raw', ['--workspace', 'w', 'search', 'b', 'q']).action, 'search', 'a flag before the action hid it');
+    equal(quoteWarnings('deskpost hub new', ['x', '--title', 'Say "hi'], argumentTable('hub', 'new')).length, 1, 'an unmatched quote in a title did not warn');
+    equal(quoteWarnings('deskpost hub new', ['x', '--title', 'Say "hi"'], argumentTable('hub', 'new')).length, 0, 'a matched quote warned');
+
+    // THROUGH THE FRONT DOOR, in a fixture Library.
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    const run = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(run(['hub', 'new', 'work', '--title', 'Work', '--purpose', 'Flags.']).exit, 0, 'the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'first', '--project', 'work', '--no-launch', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const tree = (): string => {
+      const hash = createHash('sha256');
+      const walk = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else hash.update(`${path.relative(lib, full)}\0`).update(fs.readFileSync(full)).update('\0');
+        }
+      };
+      walk(lib);
+      return hash.digest('hex');
+    };
+    const refused = (args: string[], says: string[], label: string): void => {
+      const before = tree();
+      const result = run(args);
+      check(result.exit !== 0, `${label}: it ran (${result.stdout.slice(0, 200)})`);
+      for (const text of says) check(result.stderr.includes(text), `${label}: the refusal did not say '${text}': ${result.stderr.trim().slice(0, 400)}`);
+      equal(tree(), before, `${label}: the refusal wrote something`);
+    };
+    const edit = ['hub', 'edit', 'work', '--mode', 'add-section', '--section', 'Log', '--content', 'An entry.'];
+    refused([...edit, '--sectoin', 'X'], ['deskpost hub edit has no --sectoin', '--section <value>', '--content-path <value>', 'Nothing was run.'], 'an unknown flag');
+    check(!run([...edit, '--sectoin', 'X']).stderr.includes('--claim-token'), 'a refusal named an internal flag');
+    refused(['hub', 'edit', 'work', '--mode=add-section', '--section', 'Log', '--content', 'x'], ['`--mode add-section`', 'write `--mode <value>`'], 'the --name=value form');
+    refused(['hub', 'new', 'more', 'words', '--title', 'More'], ['deskpost hub new takes one word', 'words'], 'an extra word');
+    refused([...edit, '--title', 'Ignored'], ['--title', 'add-section', 'new-page'], '--title on a mode that ignores it');
+    refused(['desk', 'open', 'book', 'demo', 'extra'], ['deskpost desk open takes 2 words', 'extra'], 'an extra word after a Desk write');
+    refused(['shelf', 'remove', 'demo', '--user-confirmed', '--plan-id', 'x'], ['deskpost shelf remove has no --user-confirmed'], 'a shelf writer given a flag it never read');
+
+    // THE QUOTE WARNING runs the verb.
+    const quoted = run(['hub', 'new', 'quoted', '--title', 'Say "hi', '--purpose', 'A test.']);
+    equal(quoted.exit, 0, `a title with an unmatched quote was refused: ${quoted.stderr.trim()}`);
+    check(quoted.stderr.includes('--title holds an unmatched quote'), `an unmatched quote did not warn: ${quoted.stderr.trim()}`);
+
+    // ACCEPTED AND CHANGING NOTHING: the same answer with the flag as without it.
+    const same = (bare: string[], flag: string, label: string): void => {
+      const without = run(bare);
+      const withIt = run([...bare, flag]);
+      equal(withIt.exit, without.exit, `${label}: the exit code changed (${withIt.stderr.trim().slice(0, 300)})`);
+      equal(withIt.stdout.replace(/"(generated_utc|checked_utc|now_utc)":\s*"[^"]*"/g, ''), without.stdout.replace(/"(generated_utc|checked_utc|now_utc)":\s*"[^"]*"/g, ''), `${label}: the answer changed`);
+    };
+    same(['collection', 'owner'], '--status', 'collection owner --status');
+    same(['raw', 'owners'], '--offline', 'raw owners --offline');
+    same(['triage', 'validate', '--actions', '[]'], '--preflight', 'triage validate --preflight');
+    same(['desk'], '--json', 'desk --json');
+
+    // THE RETIRED ACTION AND THE VERBS WITH THEIR OWN SENTENCES.
+    const own = run(['notebook', 'own', 'topic', '--bogus']);
+    check(own.exit !== 0 && own.stderr.includes('retired by ADR-0029'), `notebook own lost its retired refusal: ${own.stderr.trim().slice(0, 300)}`);
+    const init = runCli(['init', path.join(root, 'other'), '--bogus'], { cwd: root, env });
+    check(init.stderr.includes("library init has no --bogus; nothing has been written"), `init lost its own sentence: ${init.stderr.trim()}`);
+    check(!fs.existsSync(path.join(root, 'other')), 'a refused init made its folder');
+    const upgrade = runCli(['upgrade', '--bogus'], { cwd: root, env });
+    check(upgrade.stderr.includes('deskpost upgrade has no --bogus'), `upgrade lost its own sentence: ${upgrade.stderr.trim()}`);
+    const equalsInit = runCli(['init', path.join(root, 'other'), '--registry-root=x'], { cwd: root, env });
+    check(equalsInit.stderr.includes('write `--registry-root <value>`') && !fs.existsSync(path.join(root, 'other')), `init took --name=value: ${equalsInit.stderr.trim()}`);
+  } catch (error) {
+    failures.push(`section 197 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 198. NOTHING THE DOCUMENTS TEACH BREAKS (kickoffs/s106 row 3; PLAN-correct-and-find.md D7) -------------------------
+
+// Every usage line a reader is taught -- a fenced command line or an inline code span starting `library ` or `deskpost `
+// in library-help (SKILL.md and references/) and docs/guides/, and every clause of each verb's --help -- is read as the
+// usage grammar verbs.ts writes (`<t>` a value or a word, `[...]` optional, `a|b` one of, `...` repeated) and checked
+// against its verb's table: every flag declared for the action (or for one of the actions an alternation names), no
+// `--name=value`, and no more words than the action takes. A line that fails is fixed in its document, or the table is.
+if (selected(198)) {
+  try {
+    const { argumentTable, verbUsageText } = await import('../src/verbs.ts');
+    const documents = [
+      path.join(PROGRAM_ROOT, '.claude', 'skills', 'library-help', 'SKILL.md'),
+      ...fs.readdirSync(path.join(PROGRAM_ROOT, '.claude', 'skills', 'library-help', 'references')).filter((name) => name.endsWith('.md')).map((name) => path.join(PROGRAM_ROOT, '.claude', 'skills', 'library-help', 'references', name)),
+      ...fs.readdirSync(path.join(PROGRAM_ROOT, 'docs', 'guides')).filter((name) => name.endsWith('.md')).map((name) => path.join(PROGRAM_ROOT, 'docs', 'guides', name)),
+    ];
+    const lines: { where: string; text: string }[] = [];
+    for (const file of documents) {
+      let fenced = false;
+      fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
+        const where = `${path.relative(PROGRAM_ROOT, file).replace(/\\/g, '/')}:${index + 1}`;
+        if (/^\s*(```|~~~)/.test(line)) {
+          fenced = !fenced;
+          return;
+        }
+        if (fenced) {
+          const command = /^\s*(?:\$ |> |! |PS> )?((?:library|deskpost) .*)$/.exec(line);
+          if (command) lines.push({ where, text: command[1]! });
+          return;
+        }
+        for (const span of line.matchAll(/`((?:library|deskpost) [^`]*)`/g)) lines.push({ where, text: span[1]! });
+      });
+    }
+    for (const verb of Object.keys(VERBS)) {
+      for (const clause of verbUsageText(verb).split('\n').filter((text) => text.startsWith('  deskpost '))) lines.push({ where: `${verb} --help`, text: clause.trim() });
+    }
+    check(lines.length > 150, `the scan found only ${lines.length} usage lines`);
+
+    // ONE LINE, AS THE GRAMMAR READS IT.
+    const problems: string[] = [];
+    const scan = (where: string, text: string): void => {
+      // The command ends at a shell pipe, a redirect, `&&`, a `;` or a `#` comment outside a group.
+      let depth = 0;
+      let end = text.length;
+      for (let index = 0; index < text.length; index += 1) {
+        const ch = text[index]!;
+        if ('[(<'.includes(ch)) depth += 1;
+        else if (')]>'.includes(ch) && depth > 0) depth -= 1;
+        else if (depth === 0 && (ch === ';' || ch === '#' || (ch === '|' && text[index - 1] === ' ' && text[index + 1] === ' ') || (ch === '>' && text[index - 1] === ' ') || text.startsWith('&&', index))) {
+          end = index;
+          break;
+        }
+      }
+      // A word is a run of non-spaces in which a quote or a `<placeholder>` may hold spaces; its grouping marks, a
+      // trailing `...` and a trailing comma are grammar, not the word.
+      const tokens = (text.slice(0, end).match(/(?:"[^"]*"|'[^']*'|<[^>]*>|[^\s<"'])+/g) ?? [])
+        .map((token) => {
+          let word = token;
+          for (let before = ''; before !== word; ) {
+            before = word;
+            word = word.replace(/^[[(]+/, '').replace(/(\.\.\.|[\])]|,)$/, '');
+          }
+          return word;
+        })
+        .filter((token) => token !== '' && token !== '|');
+      tokens.shift();
+      const verb = tokens.shift() ?? '';
+      if (verb === '' || verb === 'help' || verb.startsWith('<') || verb === '--version' || verb === '--help') return;
+      if (!VERBS[verb]) {
+        problems.push(`${where}: no command '${verb}' in \`${text}\``);
+        return;
+      }
+      const declaration = VERBS[verb]!;
+      let actions = [''];
+      if (declaration.actions.length) {
+        const first = (tokens[0] ?? '').replace(/^<|>$/g, '');
+        const named = first.split('|').filter((word) => declaration.actions.includes(word));
+        if (named.length) {
+          actions = named;
+          tokens.shift();
+        } else if (first === 'action' || first === 'action>' || /^<.*>$/.test(tokens[0] ?? '') && !declaration.arguments['']) {
+          actions = Object.keys(declaration.arguments).filter((action) => action !== '');
+          tokens.shift();
+        } else if (!declaration.arguments['']) {
+          problems.push(`${where}: '${tokens[0] ?? ''}' is not an action of ${verb} in \`${text}\``);
+          return;
+        }
+      }
+      const tables = actions.filter((action) => declaration.arguments[action]).map((action) => argumentTable(verb, action));
+      if (!tables.length || tables.some((table) => table.retired)) return;
+      const takes = (name: string, kind: 'valued' | 'boolean'): boolean =>
+        tables.some((table) => (kind === 'valued' ? [...(table.valued ?? []), ...(table.repeatable ?? [])] : table.boolean ?? []).includes(name));
+      let words = 0;
+      for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index]!;
+        if (token === '--') break;
+        if (token.startsWith('--')) {
+          for (const flag of token.split('|')) {
+            const name = flag.replace(/^--/, '');
+            if (name.includes('=')) problems.push(`${where}: \`${flag}\` is the --name=value form, in \`${text}\``);
+            else if (takes(name, 'valued')) {
+              if (flag === token) index += 1;
+            } else if (!takes(name, 'boolean')) problems.push(`${where}: ${verb}${actions[0] ? ` ${actions.join('|')}` : ''} has no --${name}, in \`${text}\``);
+          }
+          continue;
+        }
+        if (token === 'arguments' || token === 'then' || token === 'or') continue;
+        words += 1;
+      }
+      const most = Math.max(...tables.map((table) => (table.ownRefusals ? Number.POSITIVE_INFINITY : table.positionals)));
+      if (words > most) problems.push(`${where}: ${verb}${actions[0] ? ` ${actions.join('|')}` : ''} takes ${most} word(s) and is taught ${words}, in \`${text}\``);
+    };
+    for (const line of lines) scan(line.where, line.text);
+    const failing = problems.length;
+    // THE SCAN CATCHES WHAT IT IS FOR: an unknown flag, the `--name=value` form and an extra word, each once.
+    scan('canary', 'deskpost hub edit work --mode add-section --sectoin');
+    scan('canary', 'deskpost desk open book demo --location=shelf');
+    scan('canary', 'deskpost book reader-map demo extra');
+    equal(problems.length - failing, 3, `the scan missed a canary: ${problems.slice(failing).join(' || ')}`);
+    equal(failing, 0, `usage lines that fail their tables (${failing}): ${problems.slice(0, failing).join(' || ')}`);
+  } catch (error) {
+    failures.push(`section 198 stopped early: ${(error as Error).message}`);
+  }
+}
+
+// --- 199. THE READER REFUSES AN ARGUMENT IT DOES NOT DECLARE (kickoffs/s106 row 4; Eric's ruling (a), 2026-10-08) -----
+
+// Every tool's schema said `additionalProperties: false` and nothing enforced it: a `section` sent to a reader that did
+// not know it returned the whole page, and an unknown `location` read the whole catalog. Through `mcp serve`'s front door:
+// an undeclared argument and a value outside an enum are refused, naming the tool and what it takes, and nothing is read;
+// a `workspace` naming another workspace keeps its own refusal, and one naming this workspace is accepted; declared
+// arguments still read. Through `mcp call`: the same check on the arguments its flags give, `--location` still answering
+// for a page tool's `place`.
+if (selected(199)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-reader-args-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--purpose', 'Reader arguments.', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'first', '--project', 'work', '--no-launch', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+
+    const calls: [number, string, Record<string, unknown>][] = [
+      [1, 'read_open_project_page', { slug: 'work', page: '_project', x: '1' }],
+      [2, 'read_book_catalog', { location: 'nowhere' }],
+      [3, 'read_project_catalog', { shelf: 'attic' }],
+      [4, 'read_open_project_page', { slug: 'work', page: '_project', workspace: path.join(root, 'elsewhere') }],
+      [5, 'read_open_project_page', { slug: 'work', page: '_project', workspace: lib }],
+      [6, 'read_open_project_page', { slug: 'work', page: '_project', section: 'Purpose' }],
+      [7, 'discover_book_pages', { query: 'x', place: 'shelf' }],
+    ];
+    const input = calls.map(([id, name, args]) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })).join('\n') + '\n';
+    const served = spawnSync(KERNEL_COMMAND.length ? KERNEL_COMMAND[0]! : process.execPath, [...(KERNEL_COMMAND.length ? KERNEL_COMMAND.slice(1) : [CLI]), 'mcp', 'serve', '--workspace', lib, '--seat', 'first'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB, ...env },
+      input,
+    });
+    const answers = new Map((served.stdout ?? '').split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+      const parsed = JSON.parse(line) as { id: number; result: { isError: boolean; content: { text: string }[] } };
+      return [parsed.id, { isError: parsed.result.isError, text: parsed.result.content.map((item) => item.text).join('\n') }] as const;
+    }));
+    const said = (id: number) => answers.get(id) ?? { isError: false, text: `no answer: ${(served.stderr ?? '').slice(0, 300)}` };
+    const refusedWith = (id: number, text: string, label: string) => check(said(id).isError && said(id).text.includes(text), `${label}: ${said(id).text.slice(0, 300)}`);
+    refusedWith(1, "read_open_project_page takes slug, page and section; it does not take 'x'. Nothing was read.", 'an undeclared argument');
+    refusedWith(2, "read_book_catalog takes location shared, shelf, all, archive, collection or shared-archive; it does not take 'nowhere'.", 'a location outside its list');
+    refusedWith(3, "read_project_catalog takes shelf active or archive; it does not take 'attic'.", 'a shelf outside its list');
+    refusedWith(4, 'is bound to the workspace', 'another workspace');
+    check(!said(5).isError && said(5).text.includes('# Work'), `this workspace, named, was refused: ${said(5).text.slice(0, 300)}`);
+    check(!said(6).isError && said(6).text.includes('Reader arguments.') && !said(6).text.includes('## Now'), `a declared section did not read: ${said(6).text.slice(0, 300)}`);
+    refusedWith(7, "discover_book_pages takes query and max_results; it does not take 'place'.", 'a place given to a tool that has none');
+
+    // `mcp call`: the flags' arguments, checked the same way.
+    const call = (args: string[]) => {
+      const run = runCli(['mcp', 'call', ...args, '--seat', 'first', '--workspace', lib], { cwd: root, env });
+      try {
+        const result = (JSON.parse(run.stdout) as { result: { isError: boolean; content: { text: string }[] } }).result;
+        return { exit: run.exit, isError: result.isError, text: result.content.map((item) => item.text).join('\n') };
+      } catch {
+        return { exit: run.exit, isError: true, text: run.stderr };
+      }
+    };
+    const sectioned = call(['read_book_catalog', '--section', 'X']);
+    check(sectioned.isError && sectioned.text.includes("read_book_catalog takes location; it does not take 'section'."), `mcp call took a section for a catalog: ${sectioned.text.slice(0, 300)}`);
+    const placed = call(['read_open_book_page', '--slug', 'absent', '--page', 'p', '--location', 'shelf']);
+    check(!placed.text.includes('does not take'), `--location no longer answers for place: ${placed.text.slice(0, 300)}`);
+    const bogus = call(['read_open_project_page', '--slug', 'work', '--page', '_project', '--bogus']);
+    check(bogus.exit !== 0 && bogus.text.includes('deskpost mcp call has no --bogus'), `mcp call took an unknown flag: ${bogus.text.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 199 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 200. AN ADDITIVE HUB EDIT CHECKS A GIVEN --plan-id (kickoffs/s106 row 5; the Report triaged 2026-10-08 06:58 PDT) --
+
+// Only the replacing modes read `--plan-id`, so a seat that previewed an append, then applied it after the page moved,
+// wrote anyway. Now add-section, append-section and check-item given a plan id apply only when it is the one the same
+// edit's --preflight gives for the page as it is now, and otherwise refuse with K2's sentence and the page's hash, writing
+// nothing; with no plan id they stay ungated, and --user-confirmed is accepted on every mode.
+if (selected(200)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-additive-plan-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--purpose', 'Plan ids.', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'first', '--project', 'work', '--no-launch', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const page = path.join(lib, 'collection', 'projects', 'work', '_project.md');
+    const content = (name: string, text: string): string => {
+      const file = path.join(root, `${name}.md`);
+      fs.writeFileSync(file, text);
+      return file;
+    };
+    const edit = (tail: string[]) => runCli(['hub', 'edit', 'work', ...tail, '--workspace', lib], { cwd: root, env });
+    const planOf = (tail: string[]): string => String((JSON.parse(edit([...tail, '--preflight']).stdout) as Record<string, unknown>)['plan_id'] ?? '');
+    const pageHash = (): string => createHash('sha256').update(fs.readFileSync(page, 'utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n')).digest('hex');
+
+    // THE PLAN ID OF THE PAGE AS IT IS: applied.
+    const append = ['--mode', 'append-section', '--section', 'Next', '--content-path', content('a', '- [ ] One line to tick.\n')];
+    const fresh = planOf(append);
+    check(/^project-edit-[0-9a-f]{64}$/.test(fresh), `the additive preflight issued no plan id: ${fresh}`);
+    equal(edit([...append, '--plan-id', fresh]).exit, 0, 'an append with its current plan id was refused');
+
+    // A PLAN ID FROM BEFORE THE PAGE MOVED: refused, nothing written, for each additive mode.
+    const add = ['--mode', 'add-section', '--section', 'Log', '--content-path', content('b', 'An entry.\n')];
+    const tick = ['--mode', 'check-item', '--section', 'Next', '--match-text', 'One line to tick'];
+    const stale = { add: planOf(add), append: planOf(['--mode', 'append-section', '--section', 'Next', '--content-path', content('c', '- [ ] Another.\n')]), tick: planOf(tick) };
+    equal(edit(['--mode', 'append-section', '--section', 'Now', '--content-path', content('d', '- [ ] The page moves.\n')]).exit, 0, 'the ungated append that moves the page failed');
+    for (const [label, tail, id] of [['add-section', add, stale.add], ['append-section', ['--mode', 'append-section', '--section', 'Next', '--content-path', content('c', '- [ ] Another.\n')], stale.append], ['check-item', tick, stale.tick]] as const) {
+      const before = fs.readFileSync(page);
+      const refused = edit([...tail, '--plan-id', id]);
+      check(refused.exit !== 0 && refused.stderr.includes(`${label} was given a --plan-id that is not this edit's`) && refused.stderr.includes(`it reads ${pageHash()} now`) && refused.stderr.includes('Nothing was written.'), `${label} with a stale plan id was not refused in K2's words: ${refused.stderr.trim().slice(0, 400)}`);
+      check(fs.readFileSync(page).equals(before), `${label} with a stale plan id wrote`);
+    }
+    // NO PLAN ID: ungated as before, and --user-confirmed is accepted.
+    equal(edit([...add, '--user-confirmed']).exit, 0, 'an add-section with --user-confirmed and no plan id was refused');
+    equal(edit(tick).exit, 0, 'a check-item with no plan id was refused');
+  } catch (error) {
+    failures.push(`section 200 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 201. FLAG FIXES FROM TRIAGE (kickoffs/s106 row 6) ------------------------------------------------------------------
+
+// (a) capture's usage names --answers, --routes and --for-department, and says --for is a seat and --for-department a
+// department. (b) triage validate and batch read their actions from --actions-path <file> as well as --actions, never
+// both, and a bad-JSON refusal names the flag given, never the PowerShell parameter ActionJson. (c) One --content-path
+// rule on every verb that takes one, said in each one's help: an absolute path as given; a relative one from the working
+// directory first, then from the Library's folder; neither is refused naming both and writes nothing; both takes the
+// working directory's and says so in the result (content_path_resolved).
+if (selected(201)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-flag-fixes-')));
+  try {
+    const { CONTENT_PATH_RULE } = await import('../src/contentpath.ts');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    const here = path.join(root, 'here');
+    fs.mkdirSync(here);
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    const run = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: here, env });
+    equal(run(['hub', 'new', 'work', '--title', 'Work', '--purpose', 'Flag fixes.']).exit, 0, 'the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'first', '--project', 'work', '--no-launch', '--workspace', lib], { cwd: root, env }).exit, 0, 'the fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+
+    // (a) capture's help.
+    const captureHelp = run(['capture', '--help']).stdout;
+    for (const text of ['--for-department <department>', '--answers notes/<page>', '--routes notes/<page>', '--for names one seat', CONTENT_PATH_RULE]) {
+      check(captureHelp.includes(text), `capture --help does not say '${text}'`);
+    }
+    // (c) the rule, in the help of every verb that takes --content-path.
+    for (const args of [['hub', 'edit'], ['collection', 'add-page'], ['collection', 'replace-page'], ['book', 'add-page'], ['book', 'replace-page'], ['book', 'sources'], ['compile']]) {
+      check(run([...args, '--help']).stdout.includes(CONTENT_PATH_RULE), `${args.join(' ')} --help does not state the --content-path rule`);
+    }
+
+    // (b) --actions-path.
+    const actions = '[{"kind":"review","source":"holding","source_slug":"holding","source_page":"notes/absent"}]';
+    fs.writeFileSync(path.join(here, 'actions.json'), actions);
+    const inline = run(['triage', 'validate', '--actions', actions]);
+    const fromFile = run(['triage', 'validate', '--actions-path', 'actions.json']);
+    equal(fromFile.exit, inline.exit, `--actions-path did not answer as --actions does: ${fromFile.stderr.trim().slice(0, 300)}`);
+    equal(fromFile.stdout, inline.stdout, '--actions-path read a different plan from --actions');
+    const both = run(['triage', 'validate', '--actions', actions, '--actions-path', 'actions.json']);
+    check(both.exit !== 0 && both.stderr.includes('not both'), `--actions with --actions-path was not refused: ${both.stderr.trim()}`);
+    fs.writeFileSync(path.join(here, 'bad.json'), '[{kind:review}]');
+    for (const [label, args, named] of [
+      ['a bad file', ['triage', 'batch', '--actions-path', 'bad.json', '--preflight'], '--actions-path bad.json must hold valid JSON'],
+      ['bad inline JSON', ['triage', 'validate', '--actions', '[{kind:review}]'], '--actions must be valid JSON'],
+    ] as const) {
+      const bad = run([...args]);
+      check(bad.exit !== 0 && bad.stderr.includes(named) && !bad.stderr.includes('ActionJson'), `${label}: ${bad.stderr.trim().slice(0, 300)}`);
+    }
+
+    // (c) the rule, through hub edit and capture.
+    const page = path.join(lib, 'collection', 'projects', 'work', '_project.md');
+    const append = (file: string) => run(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', file]);
+    fs.writeFileSync(path.join(here, 'from-here.md'), '- [ ] Read from the working directory.\n');
+    equal(append('from-here.md').exit, 0, 'a relative path in the working directory was not read');
+    fs.writeFileSync(path.join(lib, 'from-library.md'), '- [ ] Read from the Library.\n');
+    equal(append('from-library.md').exit, 0, "a relative path in the Library's folder was not read");
+    check(fs.readFileSync(page, 'utf8').includes('Read from the working directory.') && fs.readFileSync(page, 'utf8').includes('Read from the Library.'), 'the two relative reads did not arrive');
+    const before = fs.readFileSync(page);
+    const neither = append('nowhere.md');
+    check(neither.exit !== 0 && neither.stderr.includes(path.join(here, 'nowhere.md')) && neither.stderr.includes(path.join(lib, 'nowhere.md')) && neither.stderr.includes('Nothing was written.'), `a path in neither place was not refused naming both: ${neither.stderr.trim()}`);
+    check(fs.readFileSync(page).equals(before), 'a path in neither place wrote');
+    fs.writeFileSync(path.join(here, 'both.md'), '- [ ] The working directory copy.\n');
+    fs.writeFileSync(path.join(lib, 'both.md'), '- [ ] The Library copy.\n');
+    const twice = append('both.md');
+    const resolved = String((JSON.parse(twice.stdout || '{}') as Record<string, unknown>)['content_path_resolved'] ?? '');
+    check(twice.exit === 0 && resolved.includes('working directory') && resolved.includes(path.join(lib, 'both.md')), `a path in both places did not say which it read: ${twice.stdout.slice(0, 300)} ${twice.stderr.trim()}`);
+    check(fs.readFileSync(page, 'utf8').includes('The working directory copy.') && !fs.readFileSync(page, 'utf8').includes('The Library copy.'), "a path in both places did not read the working directory's");
+    fs.writeFileSync(path.join(here, 'note.md'), '# A note from here\n\nBody.\n');
+    const captured = run(['capture', 'holding', '--content-path', 'note.md']);
+    check(captured.exit === 0, `capture did not read a relative path from the working directory: ${captured.stderr.trim().slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 201 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 202. SMALL FIXES FROM TRIAGE (kickoffs/s106 row 7) -----------------------------------------------------------------
+
+// (a) The Desk's this_seat.seat_id is the registry row's, for a seat whose claim is free as for one held. (b) A seat with
+// no department sees the other seats with none (`without_department`), never itself. (c) The Desk's quarantine block
+// counts only this seat's quarantines, by the journal's seat, and its scope line names the seat; triage inventory reads
+// only this seat's Notebook on the seat-owned layout and says so, and a seatless one still reads the whole tree. (d) The
+// hub edit preflight gives section_body_before, the section without its heading, beside section_before.
+if (selected(202)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-small-fixes-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, 'the fixture Library did not initialise');
+    const as = (seat: string, args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: seat } });
+    const json = (run: { stdout: string; stderr: string }): Record<string, unknown> => {
+      try {
+        return JSON.parse(run.stdout) as Record<string, unknown>;
+      } catch {
+        return { unreadable: `${run.stdout.slice(0, 200)} ${run.stderr.trim().slice(0, 300)}` };
+      }
+    };
+    equal(as('', ['hub', 'new', 'work', '--title', 'Work', '--purpose', 'Small fixes.']).exit, 0, 'the fixture Hub was not made');
+    equal(as('', ['hub', 'new', 'other', '--title', 'Other', '--purpose', 'The second seat.']).exit, 0, 'the second fixture Hub was not made');
+    for (const [seat, project] of [['first', 'work'], ['second', 'other']]) {
+      equal(runCli(['seat', 'start', seat!, '--project', project!, '--no-launch', '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, `the fixture seat ${seat} was not made`);
+    }
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const registry = JSON.parse(fs.readFileSync(path.join(lib, '.claude', 'seats', '_registry.json'), 'utf8').replace(/^﻿/, '')) as unknown;
+    const rows = (Array.isArray(registry) ? registry : ((registry as Record<string, unknown>)['seats'] as unknown[])) as Record<string, unknown>[];
+    const firstId = String(rows.find((row) => row['seat'] === 'first')?.['seat_id'] ?? '');
+    check(/^[0-9a-f]{32}$/.test(firstId), `the fixture registry has no seat_id for first: ${JSON.stringify(registry).slice(0, 300)}`);
+
+    // THE SEAT-OWNED LAYOUT FIRST, activated by a seat's first Notebook write: a quarantine on a fresh workspace reads as
+    // the shared layout's.
+    const rendered = as('first', ['notebook', 'render']);
+    equal(rendered.exit, 0, `the first seat's Notebook was not activated: ${rendered.stderr.trim().slice(0, 300)}`);
+
+    // (a) and (c), the Desk: a free seat, and a quarantine for each of two seats.
+    const quarantine = path.join(lib, 'internal', 'notebook-reset-quarantine');
+    for (const seat of ['first', 'second']) {
+      fs.mkdirSync(path.join(quarantine, `${seat}-20261008-120000`, 'topic'), { recursive: true });
+      fs.writeFileSync(path.join(quarantine, `${seat}-20261008-120000`, 'reset-journal.json'), JSON.stringify({ seat, quarantined_utc: '2026-10-08T19:00:00Z' }));
+    }
+    const desk = json(as('first', ['desk', '--json']));
+    const thisSeat = (desk['this_seat'] ?? {}) as Record<string, unknown>;
+    equal(thisSeat['seat_id'], firstId, `this_seat.seat_id is not the registry row's for a free seat: ${JSON.stringify(thisSeat).slice(0, 300)}`);
+    const block = (((desk['notebook'] ?? {}) as Record<string, unknown>)['quarantine'] ?? {}) as Record<string, unknown>;
+    equal(block['count'], 1, `the Desk counted another seat's quarantine: ${JSON.stringify(block).slice(0, 300)}`);
+    check(String(block['scope'] ?? '').startsWith('seat first'), `the quarantine scope does not name the seat: ${JSON.stringify(block['scope'])}`);
+
+    // (b) seat cards, from a seat with no department.
+    const cards = json(as('first', ['seat', 'cards', '--json']));
+    equal(cards['view'], 'no-department', `the fixture seat's view is not no-department: ${JSON.stringify(cards).slice(0, 300)}`);
+    const others = ((cards['without_department'] ?? []) as Record<string, unknown>[]).map((row) => row['seat']);
+    check(others.includes('second') && !others.includes('first'), `a seat with no department did not see the other seats with none: ${JSON.stringify(others)}`);
+    check(as('first', ['seat', 'cards']).stdout.includes('Other seats with no department'), 'the cards text did not list the other seats with no department');
+
+    // (c) triage inventory, on that layout.
+    for (const seat of ['first', 'second']) {
+      fs.mkdirSync(path.join(lib, 'notebook', seat, 'topic'), { recursive: true });
+      fs.writeFileSync(path.join(lib, 'notebook', seat, 'topic', `${seat}-page.md`), `# A page of ${seat}\n`);
+    }
+    const pathsOf = (inventory: Record<string, unknown>) => ((inventory['pages'] ?? []) as Record<string, unknown>[]).map((page) => String(page['path']));
+    const seated = json(as('first', ['triage', 'inventory', '--json']));
+    check(pathsOf(seated).some((item) => item.includes('first-page')) && !pathsOf(seated).some((item) => item.includes('second-page')), `triage inventory read another seat's Notebook: ${JSON.stringify(pathsOf(seated))}`);
+    check(String(seated['notebook_scope'] ?? '').startsWith('seat first'), `triage inventory does not name its seat: ${JSON.stringify(seated['notebook_scope'])}`);
+    const seatless = json(as('', ['triage', 'inventory', '--json']));
+    check(pathsOf(seatless).some((item) => item.includes('second-page')) && seatless['notebook_scope'] === undefined, `a seatless inventory changed: ${JSON.stringify(pathsOf(seatless))}`);
+
+    // (d) the preflight's section body.
+    const preview = json(as('first', ['hub', 'edit', 'work', '--mode', 'replace-section', '--section', 'Purpose', '--content', 'Replaced.', '--preflight']));
+    check(String(preview['section_before'] ?? '').startsWith('## Purpose'), `section_before lost its heading: ${JSON.stringify(preview['section_before'])}`);
+    equal(String(preview['section_body_before'] ?? '').trim(), 'Small fixes.', `section_body_before is not the body alone: ${JSON.stringify(preview['section_body_before'])}`);
+  } catch (error) {
+    failures.push(`section 202 stopped early: ${(error as Error).message}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -30,12 +30,12 @@ import {
 import { archiveVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './shelfwriters.ts';
 import { updateShelfNoteIndex } from './capture.ts';
 import { shelfCarryVerb } from './shelfcarry.ts';
-import { shelfRecallVerb, SHELF_RECALL_OPTIONS } from './shelfrecall.ts';
-import { shelfTidyVerb, SHELF_TIDY_OPTIONS } from './shelftidy.ts';
+import { shelfRecallVerb } from './shelfrecall.ts';
+import { shelfTidyVerb } from './shelftidy.ts';
 import { shelfRebuildVerb } from './shelfrebuild.ts';
 import { readRecallRecord, recallRecordTakenRefusal } from './recallrecord.ts';
 import { localDate } from './localdate.ts';
-import { verbUsageText } from './verbs.ts';
+import { argumentTable, tableFor, verbUsageText } from './verbs.ts';
 
 export interface VerbResult {
   refusal: string | null;
@@ -50,7 +50,7 @@ const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stu
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
 function renderVerb(argv: string[], programRoot: string): VerbResult {
-  const parsed = parseArguments(argv, ['workspace']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'render'));
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   const render = invokeShelfCatalogRender({ workspace, programRoot });
   const result: PsJsonValue = {
@@ -65,7 +65,7 @@ function renderVerb(argv: string[], programRoot: string): VerbResult {
 }
 
 function newBookVerb(argv: string[], programRoot: string): VerbResult {
-  const parsed = parseArguments(argv, ['title', 'summary', 'topics', 'origin', 'workspace', 'closed-by']);
+  const parsed = parseArguments(argv, argumentTable('shelf', 'new'));
   const slug = parsed.positional[0] ?? '';
   // WHO CLOSES ITS NOTES (S73 row 4): a capture Book's `- **Closed by:**` line, `writer` unless the reader says
   // `any`, as the Report Inbox does. It means nothing on a curated Book, so it is refused there.
@@ -252,10 +252,9 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
     return { refusal: `library shelf has no action '${action}'. It has: ${ACTIONS.join(', ')}.`, value: null, asJson: false };
   }
   // A MISSING SLUG IS USAGE (S71 row 10), once for every action that takes one: its own usage, not the slug-format
-  // refusal a writer gives an empty string. Every action's valued options, so a value is never read as the slug.
+  // refusal a writer gives an empty string. The action's own table, so a value is never read as the slug.
   if (!['render', 'duplicates', 'rebuild'].includes(action)) {
-    const valued = [...new Set([...SHELF_RECALL_OPTIONS, ...SHELF_TIDY_OPTIONS, 'workspace', 'plan-id', 'new-title', 'reason', 'seat', 'canonical', 'superseded-on', 'title', 'summary', 'topics', 'origin', 'book', 'closed-by'])];
-    if (!(parseArguments(argv.slice(1), valued).positional[0] ?? '').trim()) {
+    if (!(parseArguments(argv.slice(1), tableFor('shelf', action)).positional[0] ?? '').trim()) {
       return { refusal: verbUsageText('shelf', action).trimEnd(), value: null, asJson: false };
     }
   }
@@ -267,26 +266,26 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         return newBookVerb(argv.slice(1), programRoot);
       case 'recall': {
         // S70, PLAN-shelf-recall.md: a collection Book back to the Shelf, and `--shelf-slug` a valued option.
-        const parsed = parseArguments(argv.slice(1), SHELF_RECALL_OPTIONS);
+        const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'recall'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         const recalled = shelfRecallVerb(argv.slice(1), programRoot, workspace);
         return { refusal: recalled.refusal, value: recalled.value, asJson: true };
       }
       case 'tidy': {
         // S77 row 1, PLAN-holding-discipline.md row 5: closed notes out of notes/, and one back with --restore.
-        const parsed = parseArguments(argv.slice(1), SHELF_TIDY_OPTIONS);
+        const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'tidy'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         return { refusal: null, value: shelfTidyVerb(argv.slice(1), workspace), asJson: true };
       }
       case 'rebuild': {
         // S87 row 2, ruling 4: a Shelf Book's Discovery manifest written again from disk; every Book with no slug.
-        const parsed = parseArguments(argv.slice(1), ['workspace']);
+        const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'rebuild'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         return { refusal: null, value: shelfRebuildVerb(argv.slice(1), workspace), asJson: true };
       }
       case 'carry': {
         // PLAN-basic-memory.md step 4b: another workspace's capture notes, carried byte for byte into this Library's Shelf.
-        const parsed = parseArguments(argv.slice(1), ['workspace', 'book', 'plan-id']);
+        const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'carry'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         return { refusal: null, value: shelfCarryVerb(argv.slice(1), workspace), asJson: true };
       }
@@ -298,15 +297,7 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         // THE WORKSPACE IS RESOLVED ONCE, HERE, so the five writers cannot disagree about which one
         // they are operating on -- and so a workspace refusal reaches the reader before any of them
         // has read a catalog.
-        const parsed = parseArguments(argv.slice(1), [
-          'workspace',
-          'plan-id',
-          'new-title',
-          'reason',
-          'seat',
-          'canonical',
-          'superseded-on',
-        ]);
+        const parsed = parseArguments(argv.slice(1), tableFor('shelf', action));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         const rest = argv.slice(1);
         const written =

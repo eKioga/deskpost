@@ -331,6 +331,38 @@ export function launcherDirectAgent(launcherPid: number, records: AncestryRecord
   return null;
 }
 
+/**
+ * THE LAUNCHER'S OWN AGENT, read from below rather than from this process (kickoffs/s104 row 4): an agent client whose
+ * parent is `launcherPid`, or null. The Desk names it when the launcher holds the seat for an agent that is not this
+ * one, and only then, since this is a read of every process on the machine. A fault is null, never a throw.
+ */
+export function launcherChildAgent(launcherPid: number): { pid: number } | null {
+  if (!Number.isInteger(launcherPid) || launcherPid <= 0) return null;
+  try {
+    let rows: { pid: number; parentPid: number; name: string }[];
+    if (process.platform === 'win32' && nativeProcessCalls() !== null) {
+      rows = nativeProcessTable().map((row) => ({ pid: row.pid, parentPid: row.parentPid, name: row.name }));
+    } else if (process.platform === 'win32') {
+      const text = runPowerShell(
+        `ConvertTo-Json -Compress -InputObject @(@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId=${launcherPid}" -ErrorAction SilentlyContinue) | ` +
+          `ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name } })`,
+      ).trim();
+      const parsed = text ? (JSON.parse(text) as { pid: number; name: string }[] | { pid: number; name: string }) : [];
+      rows = (Array.isArray(parsed) ? parsed : [parsed]).map((row) => ({ pid: row.pid, parentPid: launcherPid, name: row.name }));
+    } else {
+      rows = execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,comm='], { encoding: 'utf8' })
+        .split('\n')
+        .map((line) => /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line))
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match) => ({ pid: Number(match[1]), parentPid: Number(match[2]), name: match[3]!.split('/').pop()! }));
+    }
+    const child = rows.find((row) => row.parentPid === launcherPid && row.pid !== launcherPid && isAgentClientProcessName(row.name));
+    return child ? { pid: child.pid } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The agent `CLAUDE_PID` names, or 0 when it names none: Claude Code sets it in its tool and hook children. */
 export function environmentClaudePid(): number {
   const raw = (process.env['CLAUDE_PID'] ?? '').trim();

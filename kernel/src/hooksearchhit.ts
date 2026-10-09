@@ -14,6 +14,7 @@
 import { field, hookCommandText } from './guards.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix } from './readerprefix.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 
 export const SEARCH_HIT_REMINDER =
   'A hit is a location, not a reading: these results say only where the term occurs. ' +
@@ -32,7 +33,7 @@ export function isSearchCall(call: unknown, prefix: string): boolean {
 /** `library hook search-hit [--reader-tool-prefix <p>]`, payload on stdin: the reminder, or nothing. */
 export function runSearchHitVerb(argv: string[], stdinText: string): string {
   try {
-    const parsed = parseArguments(argv, ['reader-tool-prefix']);
+    const parsed = parseArguments(argv, argumentTable('hook', 'search-hit'));
     const prefix = parsed.options.get('reader-tool-prefix') || DEFAULT_READER_PREFIX;
     if (!isReaderPrefix(prefix)) return '';
     const call = JSON.parse(stdinText.replace(/^﻿/, '') || 'null') as unknown;

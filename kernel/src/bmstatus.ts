@@ -19,6 +19,7 @@
 
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { markerConnection, mcpTimeoutMs, readExactOrNull, type BasicMemoryConnection } from './basicmemory.ts';
 import { openServer } from './bmconnection.ts';
 import { compareWithSource, readImportRecord, scanSource, type RootKind, type RootRow } from './bmsource.ts';
@@ -55,7 +56,7 @@ function plural(count: number, word: string): string {
 }
 
 export async function basicMemoryStatus(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  parseArguments(argv, ['workspace']);
+  parseArguments(argv, argumentTable('basic-memory', 'status'));
   const connection = markerConnection(workspace);
   if (connection === null) {
     return {

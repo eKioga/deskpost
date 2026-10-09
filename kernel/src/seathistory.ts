@@ -19,6 +19,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { METADATA_FIELDS, type MetadataField } from './seatmeta.ts';
+import { resolvesTo, type SeatIdentityView } from './seatincarnation.ts';
 
 export const SEAT_HISTORY_RELATIVE = 'internal/seat-registry-history.jsonl';
 
@@ -148,10 +149,12 @@ export interface SeatHistoryState {
 /**
  * One seat incarnation's state in the history: its records are those naming the seat with the same `seat_id` (a slug
  * retired and created again starts afresh). AN UNCONFIRMED ATTEMPT COUNTS ONLY UNTIL A LATER CONFIRMED CHANGE to the
- * same seat, which says again what its fields are.
+ * same seat, which says again what its fields are. Joined by the identity projection's strict rule (kickoffs/s103 row
+ * 3): given the registry's `view`, a record under a name the seat gave up by a rename, with its id, is the seat's too.
  */
-export function seatHistoryState(history: SeatHistoryRead, seat: string, seatId: string): SeatHistoryState {
-  const mine = history.records.filter((record) => record.seat === seat && String(record.seat_id ?? '') === seatId);
+export function seatHistoryState(history: SeatHistoryRead, seat: string, seatId: string, view?: SeatIdentityView): SeatHistoryState {
+  const row = view ? { seat, seatId, view } : { seat, seatId };
+  const mine = history.records.filter((record) => resolvesTo(record.seat, String(record.seat_id ?? ''), row, 'strict'));
   let lastIndex = -1;
   for (let index = mine.length - 1; index >= 0; index -= 1) {
     if (history.committed.has(mine[index]!.attempt)) {

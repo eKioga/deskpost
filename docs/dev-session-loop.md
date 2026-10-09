@@ -89,11 +89,29 @@ There is no template file. The reference is the most recent real Kickoff.
    agent as `CLAUDE_PID` from the session's own environment where it is set, else "unrecorded" (with
    `deskpost seat status`'s `agent_pid` beside it only as the binding's: for a launcher-held seat it
    can name an earlier binding's process), the predecessor attempt, and state `started`. Then A ticks the pointer with `check-item`.
+   The `## Run` lines take exactly this form, one per line, because tools read them (deskpost-mods'
+   `/meanwhile` broke on three different wordings, S88, S101 and S106):
+
+   ```
+   - Kickoff: [[projects/<build hub>/kickoffs/sNN]] rN, author_seat <seat>.
+   - Kickoff hash: `<sha-256>`.
+   - Yes: <who>, <YYYY-MM-DDTHH:MM±HH:MM>.
+   - Seat: `<seat>`, seat_id `<id>`.
+   - Session id: <id> | unrecorded.
+   - Agent: `CLAUDE_PID` <pid> | unrecorded.
+   - Predecessor attempt: <page> | none.
+   - State: started.
+   ```
+
+   Other facts the Kickoff asks for (the installed version, the refs at the gate) follow as more lines.
 4. **Merge.** If MERGE names a branch, A checks that `master` still equals `base` and `desk/sNN`
    still points at `tip`, then runs `git merge --ff-only <tip>`. A mismatch in either SHA parks the
-   merge, and B owns it. A's `-Fast` gate after the merge is checked against MERGE's gate digest; a
-   FAIL there, or a summary line that differs, is recorded on the attempt page.
-5. Reconcile the plan ledger with `git log`, and run the gate.
+   merge, and B owns it. A fast-forward leaves `master` on the very tree B's commit gated, so A checks
+   that `git rev-parse master^{tree}` equals `git rev-parse <tip>^{tree}` and records MERGE's gate digest
+   with that check, without a second `-Fast` run (since S104; Eric, 2026-10-08: "do we need this
+   gate?"). Any other merge runs the `-Fast` gate and checks it against MERGE's digest; a FAIL there, or
+   a summary line that differs, is recorded on the attempt page.
+5. Reconcile the plan ledger with `git log`.
 6. **Hub upkeep, when the Kickoff charters it.** The gate already reads the installed version, so A ticks the
    build Hub's `Now` items that the installed release meets (an item that closes "when X is released and
    installed", for a release at or below the installed version), and moves every ticked `Now` item to a dated
@@ -189,10 +207,11 @@ capped at about a million characters, and repeats are throttled. The receiving s
 delivery: a prompting session (default, auto, acceptEdits, dontAsk) accepts a message from another prompting one,
 and a session that bypasses permissions holds each message behind an approval dialog that drops it after five
 minutes. Eric's Library sets `"crossSessionInbound": "accept"` in its own `.claude/settings.local.json`
-(2026-10-04), so a peer message never waits for him whatever mode each seat runs in; it is set for that Library
-only, never in user settings, and a message is still data (rule 1). Whether a local `accept` loosens delivery, as it
-appears to, is checked live in 1.3.8's first session (`PLAN-seats-team.md`, session 1 row 5), and ADR-0062 is
-amended only on that evidence.
+(2026-10-04), set for that Library only, never in user settings, and a message is still data (rule 1). That `accept`
+loosens nothing: a repository's settings may only tighten. The live check of 2026-10-07 (ADR-0069, its answered
+open question) found that prompting sessions deliver each other's messages at once with nothing set, and that a
+local `hold` holds them; a session that bypasses permissions was not tested, so expect it to hold a prompting
+peer's messages behind its approval dialog, as above.
 
 **Finding a seat.** A session answers to its name. Since 1.3.6 the launcher starts a seat's session as
 `claude --name <seat>` (Step 0), so `ListAgents` lists `deskpost-dev` and `deskpost-desk` by name from the first
@@ -278,7 +297,8 @@ session could not get up front are batched at close.
 
 A CHARTER may pre-approve **one fast-forward push to `origin` (`Kioga/library`, private)** with the
 push gate green. It never charters a push to the public repo (`Kioga/deskpost`, which the mirror job
-publishes from every 10 minutes), tags, releases, upgrade, migrate, reset, retire, uninstall,
+publishes from: the release session starts it right after the publish push, and a daily run catches a
+missed start), tags, releases, upgrade, migrate, reset, retire, uninstall,
 discards, force-push or history rewrite.
 
 **The mirror source.** The chartered push is safe only because `Kioga/library` is not the mirror
@@ -290,7 +310,8 @@ record of the S9 deployment (2026-09-20) holds the one API call that ever set it
 Releases reach `Kioga/deskpost` as their own pushes from a release checkout, and the mirror publishes
 those: after the v1.2.3 release, the public side carried `Kioga/deskpost`'s `main`, not
 `Kioga/library`'s `master`. A push to `origin` therefore publishes nothing, and a push to
-`Kioga/deskpost` publishes within about ten minutes. If the secret's timestamp on
+`Kioga/deskpost` publishes when the mirror job next runs: the release session starts it right after
+the publish push, and its daily run catches a missed start. If the secret's timestamp on
 `Kioga/deskpost-ops` (Settings, Actions, Secrets) ever reads later than 2026-09-20, it was changed
 after S9, and this must be checked again before a chartered push.
 
@@ -302,6 +323,17 @@ How a release is prepared, and the one push to `Kioga/deskpost` that publishes i
 - **B's commits:** the pre-commit `-Fast` gate (`.githooks/pre-commit`), which the hook runs with the
   seat variables blanked.
 - **A's merge and commits:** the same `-Fast` gate.
+- **A docs-only commit runs only the document checks (since S104).** The hook runs `node tools/docs-gate.ts` first.
+  When every staged path is a `*.md` added or modified outside `kernel/`, `tools/`, `templates/` and the top-level
+  dot-folders, and none is a contract document (`CONTEXT.md`, `docs/seats.md`, `docs/templates/`,
+  `docs/project-hub-design.md`, ADRs 0003 and 0013, `docs/supported-operation-matrix.md`), it runs the checks a
+  document can fail and stops there, in about a second: plans declare their owner; the always-on budget when
+  `CLAUDE.md` or `AGENTS.md` is staged; links resolve; the ADR index; the reader guides both ways; the document
+  halves of the foreign-install, reset-vocabulary, hit-is-a-location and delegation checks; the identity scan and
+  the deployment-defaults scan through `tools/DeploymentScan.ps1`'s own functions; and the kernel self-test's
+  section 119. Any other commit, a deletion or a rename included, and any case the docs gate cannot decide, runs
+  the `-Fast` runner exactly as before. The file's header names each check with the runner check it stands for. The
+  full gate before a push is unchanged.
 - **Hermetic against the installed bin (since S71 row 3):** the pre-commit hook drops every PATH entry holding a
   `deskpost` shim, and the kernel self-test no longer depends on that. Its section 54 drops every PATH entry that
   holds a Deskpost install, using the "already installed" refusal's own detector, so an installed Deskpost on PATH no
@@ -318,6 +350,28 @@ How a release is prepared, and the one push to `Kioga/deskpost` that publishes i
 **First run, S68 (2026-09-29, at `4004cdc`):** `108 passed, 1 warned, 0 failed, 22 skipped`. The one
 WARN is `context.always-on-budget`. The workspace checks that S67 saw FAIL now SKIP with no workspace
 attached, as `Invoke-WorkspaceCheck` intends, so no defect was filed.
+
+**Gate time is budgeted** (Eric, 2026-10-08, after S103 spent about 4h 17m of 4h 47m in checks run one at a
+time: "we need to design kickoffs with how long it takes to clear these gates in mind. We should always ask
+ourselves, do we need this gate?"). As measured in S103: a `-Fast` gate about 17 minutes, a full kernel
+self-test about 17, the full gate about 35. So:
+- every Kickoff's SIZE gives gate minutes per row and per cut beside context, and asks of each gate what
+  defect it catches that an earlier one did not;
+- rows a cut tests together are committed together, one commit per cut, unless the Kickoff names a
+  reason to split them. **The commit's `-Fast` gate is the cut's full kernel self-test** (its
+  `kernel.selftest` check runs every section), so a cut budgets one `-Fast` gate and no separate full
+  self-test before it (S106 ran both, about 18 minutes apart, for nothing). Before the commit, run only
+  the sections the rows touch, by number;
+- B commits nothing while a Kickoff build runs (the two compete for the same CPU); a plan is committed once,
+  at sign-off.
+
+**The acceptance matrix in a build session.** `tools/Invoke-AcceptanceMatrix.ps1` takes **one `-Row` per
+call**: through `powershell.exe -File`, `-Row a,b` arrives as one row name and is refused (S102 stall 4).
+Against the source kernel (`-Kernel 'node kernel/src/cli.ts'`), a row whose oracle sentence names a
+`tools/*.ps1` helper mismatches by design: the judge rewrites that sentence only for a compiled kernel, and
+self-test section 120 keeps the source naming only what ships. Such a row (today
+`reader.refuses-a-seatless-session`) is judged against a build of the same commit, never by a delta or by
+changing the source (S103 K1, closed by B 2026-10-08).
 
 ## B's code: one integration branch per Kickoff
 
@@ -365,6 +419,9 @@ or the classifier). An extra is built as soon as a logged stall names it. Candid
 ## Limits
 
 - Kickoff pages accumulate; pruning is out of scope.
+- Headless `claude -p` runs used as sandbox tests may be refused by auto mode ("Create Unsafe Agents"), and on
+  other days pass. Try the first run; if it is refused, say the plan needs manual mode or an allow rule, with the
+  reader approving each run. Never route around the classifier through another tool or a subagent.
 - The two seats share one Codex quota. B uses Fable or Codex for design and plan reviews as it sees fit, and A
   uses either when a Kickoff or its own judgment calls for it (Eric, 2026-10-06; this replaces "Fable is B's
   default reviewer so that Codex quota stays with A"). Before any Codex run, read the quota and say it.

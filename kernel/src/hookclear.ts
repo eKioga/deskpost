@@ -18,6 +18,7 @@
 
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { field } from './guards.ts';
 import { clearHookServed } from './hookledger.ts';
 import { resolveWorkspace } from './workspace.ts';
@@ -33,7 +34,7 @@ export function compactClearStateDirectory(options: { workspace?: string; stateD
 /** `library hook compact-clear [--workspace <p>] [--state-directory <d>]`, payload on stdin. Always prints nothing. */
 export function runCompactClearVerb(argv: string[], stdinText: string): string {
   try {
-    const parsed = parseArguments(argv, ['workspace', 'state-directory']);
+    const parsed = parseArguments(argv, argumentTable('hook', 'compact-clear'));
     const stateDirectory = compactClearStateDirectory({ workspace: parsed.options.get('workspace'), stateDirectory: parsed.options.get('state-directory') });
     if (stateDirectory === null) return '';
     const call = JSON.parse(stdinText.replace(/^﻿/, '') || 'null') as unknown;

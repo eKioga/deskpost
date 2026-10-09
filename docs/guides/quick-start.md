@@ -29,6 +29,7 @@ to start (a terminal install offers the same choice as it ends):
 This Library has no seats yet. A seat is a place to work, with its own Desk and one Project.
   [h, Enter] Show me around   a deskpost-help seat with the Librarian as your guide
   [+]        Your first seat  name a project, and start working in it
+  [l]        Browse           what the Library holds, without a seat
   [q]        Later
 ```
 
@@ -60,6 +61,7 @@ at it, when it was last used, and what its last conversation was called:
 | `n` and a number | a new conversation at that seat |
 | `+` | a new seat |
 | `r` and a number | retire that seat, after it shows you what it archives |
+| `l` | what the Library holds: its Books and Projects by title, without a seat (`deskpost browse`) |
 | `b` | Basic Memory, which shares your Books across machines (optional) |
 | `q` | nothing; you stay where you are |
 

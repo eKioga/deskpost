@@ -10,7 +10,8 @@
  * one.
  *
  * A LEAF MODULE ON PURPOSE. `triage.ts` -> `triagebatch.ts` -> `capture.ts` -> `desk.ts` already chain,
- * and `argv.ts` records what an import cycle costs here, so this file imports only `shelfbook.ts`.
+ * and `argv.ts` records what an import cycle costs here, so this file imports only `shelfbook.ts` and the identity
+ * projection in `seatincarnation.ts`, itself a leaf (kickoffs/s103 row 3).
  * The seat-rule predicate lives here for the same reason: `resolveNoteSource` (triage) and
  * `captureVerb` (`--supersedes`) both call it, and `capture.ts` cannot import from `triage.ts`.
  */
@@ -18,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, readUtf8, type ClosedBy, type ShelfBook } from './shelfbook.ts';
+import { resolvesTo, type SeatIdentityView } from './seatincarnation.ts';
 
 export type { ClosedBy };
 
@@ -163,6 +165,11 @@ export function seatNameForText(value: string | null | undefined): string {
 export interface SeatIncarnation {
   seat: string;
   seatId: string;
+  /**
+   * The registry it was read from (kickoffs/s103 row 3), so a name this seat gave up by a rename still finds it. Absent,
+   * the rules see this one row and nothing else, as they did before.
+   */
+  view?: SeatIdentityView;
 }
 
 /**
@@ -171,12 +178,21 @@ export interface SeatIncarnation {
  * `for_seat_id`, that id is the row's `seat_id`: a letter written to an earlier incarnation of a slug is not the new
  * one's. A letter with no `for_seat_id`, whenever it was written, matches by slug alone (the legacy rule). A note whose
  * `for_seat` or `for_seat_id` is malformed reaches no seat: its address is not guessed. The Desk's counts, `seat cards`,
- * the close rule and the "may close" count all ask this, and nothing else compares a recipient.
+ * the close rule and the "may close" count all ask this, and nothing else compares a recipient. SINCE S103 (row 3) IT
+ * ASKS THE ONE IDENTITY PROJECTION under the letters rule: that rule first, then a name the seat gave up by a rename.
  */
 export function isAddressedTo(note: Pick<ShelfNoteRow, 'forSeat' | 'forSeatId' | 'malformed'>, row: SeatIncarnation | null): boolean {
-  if (row === null || !note.forSeat || note.forSeat !== row.seat) return false;
+  if (row === null || !note.forSeat) return false;
   if (note.malformed.includes('for_seat') || note.malformed.includes('for_seat_id')) return false;
-  return note.forSeatId === null || note.forSeatId === row.seatId;
+  return resolvesTo(note.forSeat, note.forSeatId, row, 'letters');
+}
+
+/**
+ * WHETHER A SEAT WROTE A NOTE (the seat rule's writer, kickoffs/s103 row 3): its `from_seat` through the identity
+ * projection, which carries no id, so the seat holding the name, or the one that gave it up by a rename.
+ */
+export function isWrittenBy(note: Pick<ShelfNoteRow, 'fromSeat'>, row: SeatIncarnation | null): boolean {
+  return note.fromSeat !== null && resolvesTo(note.fromSeat, null, row, 'letters');
 }
 
 function valueOr(fields: Map<string, string>, key: string, fallback: string): string {
@@ -302,7 +318,7 @@ export function growingState(book: ShelfBook, notes: ShelfNoteRow[], seat: SeatI
   const growing = pending.length > threshold || (oldest !== null && now - oldest > days * 86_400_000);
   const mayClose = (book.closedBy ?? 'any') === 'any'
     ? pending.length
-    : pending.filter((note) => !note.fromSeat || (seat !== null && (note.fromSeat === seat.seat || isAddressedTo(note, seat)))).length;
+    : pending.filter((note) => !note.fromSeat || (seat !== null && (isWrittenBy(note, seat) || isAddressedTo(note, seat)))).length;
   return { growing, mayClose };
 }
 
@@ -330,8 +346,8 @@ export function isStuckLetter(
  */
 export function isStartedBy(note: Pick<ShelfNoteRow, 'fromSeat' | 'originSeat' | 'originSeatId' | 'malformed'>, row: SeatIncarnation | null): boolean {
   if (row === null || note.malformed.length) return false;
-  if (note.originSeat !== null) return note.originSeat === row.seat && (note.originSeatId === null || note.originSeatId === row.seatId);
-  return note.fromSeat === row.seat;
+  if (note.originSeat !== null) return resolvesTo(note.originSeat, note.originSeatId, row, 'letters');
+  return isWrittenBy(note, row);
 }
 
 /**
@@ -358,7 +374,7 @@ export function assertSeatMayClose(
   if (book.closedBy === 'any') return;
   if (!note.fromSeat) return;
   // ITS RECIPIENT BY THE ONE PREDICATE (kickoffs/s98 row 0): a letter to an earlier incarnation of this slug is not its.
-  if (seat !== null && (note.fromSeat === seat.seat || isAddressedTo(note, seat))) return;
+  if (seat !== null && (isWrittenBy(note, seat) || isAddressedTo(note, seat))) return;
   if (otherSeat === note.fromSeat) return;
   refuse(
     `${note.page} in Book '${book.slug}' was written by seat '${note.fromSeat}', and in this Book a seat closes only its own notes. To sort it at the reader's ask, add "other_seat": "${note.fromSeat}" to the action.`,

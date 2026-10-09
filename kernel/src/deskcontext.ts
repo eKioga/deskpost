@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
+import { argumentTable } from './verbs.ts';
 import { splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
@@ -377,7 +378,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
 
 /** `library hook desk-context [--workspace <p>] [--state-directory <d>] [--seat <s>] [--agent-pid <n>] [--deadline-seconds <n>] [--reader-tool-prefix <p>]`. */
 export function runDeskContextVerb(argv: string[], stdinText: string): string {
-  const parsed = parseArguments(argv, ['workspace', 'seat', 'state-directory', 'agent-pid', 'deadline-seconds', 'reader-tool-prefix']);
+  const parsed = parseArguments(argv, argumentTable('hook', 'desk-context'));
   const pid = parsed.options.get('agent-pid');
   const deadline = parsed.options.get('deadline-seconds');
   return deskContext(
