@@ -47,7 +47,10 @@ import { psSortCompare } from './notebook.ts';
 import { askAtTerminal, Interrupted } from './prompt.ts';
 import { browseData, browseEntries, browseEntryLines, browseLines, filterBrowse } from './browse.ts';
 import { changeSeatDirs, launchLine, planSeatDirs, readAddedDirs, seatDirsSentence } from './seatdirs.ts';
-import { cardProblem, departmentProblem, metadataFor, roleLabel, seatMetadata } from './seatmeta.ts';
+import { cardProblem, departmentProblem, destinationOf, metadataFor, roleLabel, seatMetadata, type DepartmentDestination, type SeatRole } from './seatmeta.ts';
+import { loadSeatTemplate, type SeatTemplate } from './seattemplates.ts';
+import { pendingLetterCounts } from './desk.ts';
+import { seatNameHistory } from './seatincarnation.ts';
 
 // --- the conversation with the reader -------------------------------------------------------------------------------
 
@@ -182,6 +185,37 @@ export interface MenuRow {
   /** Its role and department as one phrase, and its card (1.3.8, kickoffs/s96 row 1), through the one projection; '' for none. */
   role?: string;
   card?: string;
+  /** Its pending letters (kickoffs/s109 ruling 5), from the counts the Desk computes; 0 when none or unreadable. */
+  letters?: number;
+  /** The name it gave up in its newest rename, within 30 days of it (kickoffs/s110 ruling 6); '' for none. */
+  formerly?: string;
+}
+
+/** How long the menu says "(formerly <old>)" after a rename (PLAN-seat-identity.md section 3). */
+export const FORMERLY_DAYS = 30;
+
+/**
+ * The name a registry row gave up in its newest rename, while that rename is under FORMERLY_DAYS old at `now`; '' for a
+ * seat never renamed, a history that does not parse, or a rename older than that. From the row the menu already read.
+ */
+export function formerlyName(seat: string, names: unknown, now: Date): string {
+  if (names === undefined || names === null) return '';
+  const history = seatNameHistory(seat, '', names);
+  if (history.problem !== null) return '';
+  let newest: { name: string; at: number } | null = null;
+  for (const span of history.names) {
+    if (span.to_utc === null) continue;
+    const at = Date.parse(span.to_utc);
+    if (!Number.isNaN(at) && (newest === null || at > newest.at)) newest = { name: span.name, at };
+  }
+  if (newest === null) return '';
+  const age = now.getTime() - newest.at;
+  return age >= 0 && age < FORMERLY_DAYS * 24 * 60 * 60 * 1000 ? newest.name : '';
+}
+
+/** The " (formerly <old>)" mark a recently renamed seat carries on its row; nothing otherwise. */
+export function formerlyMark(row: MenuRow): string {
+  return row.formerly ? ` (formerly ${row.formerly})` : '';
 }
 
 /** The short "+N folders" mark a seat with added folders carries on its row; nothing when it has none. */
@@ -189,11 +223,25 @@ export function foldersMark(row: MenuRow): string {
   return row.folders > 0 ? ` +${row.folders} folder${row.folders === 1 ? '' : 's'}` : '';
 }
 
+/** The "(2 letters)" mark a seat with letters waiting carries on its row; nothing for none (kickoffs/s109 ruling 5). */
+export function lettersMark(row: MenuRow): string {
+  const count = row.letters ?? 0;
+  return count > 0 ? ` (${count} letter${count === 1 ? '' : 's'})` : '';
+}
+
 /** One row per registered seat, sorted by name, numbered from 1. One unreadable seat does not take the roster down. */
-export function menuRows(workspace: string, options: { transcriptRoot?: string; skipTitles?: boolean } = {}): MenuRow[] {
+export function menuRows(workspace: string, options: { transcriptRoot?: string; skipTitles?: boolean; now?: Date } = {}): MenuRow[] {
+  const now = options.now ?? new Date();
   const stateDirectory = path.join(workspace, '.claude');
   const entries = [...seatRegistryRows(workspace)].sort((left, right) => psSortCompare(String(left['seat']), String(right['seat'])));
   const projection = seatMetadata(entries);
+  // ONE READ PER REDRAW (ruling 5): the Desk's own counts, and an unreadable Shelf marks no seat.
+  let letters = new Map<string, number>();
+  try {
+    letters = pendingLetterCounts(workspace);
+  } catch {
+    letters = new Map();
+  }
   return entries.map((entry, position) => {
     const seat = String(entry['seat']);
     const meta = metadataFor(projection, seat);
@@ -208,6 +256,8 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       folders: 0,
       role: roleLabel(meta),
       card: meta.card ?? '',
+      letters: letters.get(seat) ?? 0,
+      formerly: formerlyName(seat, entry['names'], now),
       view: {
         session_id: '', conversation_source: 'none', recorded_utc: '', assistant: 'claude', title: '', title_status: 'no-conversation',
         title_note: 'nothing has recorded a conversation at this seat', entry_action: 'none', entry_note: '',
@@ -335,7 +385,7 @@ function conversationText(row: MenuRow, glyphs: Glyphs): string {
 
 /** The numbered table lines. THE CELLS ARE BUILT BEFORE THE WIDTHS ARE MEASURED, so a state note cannot misalign them. */
 export function tableLines(rows: MenuRow[], glyphs: Glyphs): string[] {
-  const cells = rows.map((row) => ({ index: row.index, seat: row.seat + foldersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
+  const cells = rows.map((row) => ({ index: row.index, seat: row.seat + formerlyMark(row) + foldersMark(row) + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
   const width = (key: 'seat' | 'project' | 'state' | 'last') => Math.max(0, ...cells.map((cell) => cell[key].length));
   const widths = { seat: width('seat'), project: width('project'), state: width('state'), last: width('last') };
   return cells.map(
@@ -354,7 +404,7 @@ export function cardLines(rows: MenuRow[], width: number, glyphs: Glyphs, palett
     const marker = stateMark(row.state, glyphs, palette);
     // THE PLAIN HEAD IS MEASURED, NOT THE COLOURED ONE: an escape has no visible width.
     const prefix = `  ${String(row.index).padStart(2)} ${marker.mark} `;
-    const seat = fit(row.seat + foldersMark(row), width - prefix.length - row.state.length - 2, glyphs);
+    const seat = fit(row.seat + formerlyMark(row) + foldersMark(row) + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
     const gap = Math.max(1, width - prefix.length - seat.length - row.state.length - 1);
     lines.push(`  ${String(row.index).padStart(2)} ${marker.color}${marker.mark}${palette.reset} ${palette.bold}${seat}${palette.reset}${' '.repeat(gap)}${marker.color}${row.state}${palette.reset}`);
     const fields: [string, string][] = [];
@@ -836,12 +886,32 @@ async function wizard(state: MenuState, first: boolean): Promise<number | null> 
     }
     // THE NEW STEPS (S97 row 2, PLAN-seats-team.md session 2 item 1): template, department, card, Shelf Books. Each has
     // an [Enter] default, so the blank path stays a run of Enters.
-    const choices = await seatChoices(state, seat);
+    const chosen = await seatChoices(state, seat, slug, withHub);
+    const choices = chosen.choices;
+    seat = chosen.seat;
     const result = await preview(state, { seat, slug, title, projects, first, choices });
     if (result === 'again') continue;
     if (result === 'cancel') return first ? 0 : null;
     return result;
   }
+}
+
+/** The wizard's template keys, in the order it shows them (kickoffs/s110 ruling 10). */
+export const WIZARD_TEMPLATE_KEYS: readonly (readonly [string, string])[] = [
+  ['p', 'performer'],
+  ['o', 'orchestrator'],
+  ['a', 'auditor'],
+  ['i', 'ideas'],
+];
+
+/** The job a template gives the proposed seat name, `<department>-<job>`; no template is `dev`. */
+const WIZARD_JOBS: Record<string, string> = { performer: 'dev', orchestrator: 'lead', auditor: 'audit', ideas: 'ideas' };
+
+/** Where a department's letters go, in the wizard's words. */
+function destinationWords(destination: DepartmentDestination): string {
+  if (destination.kind === 'orchestrator') return `letters go to its orchestrator, ${destination.seat}`;
+  if (destination.kind === 'only-seat') return `letters go to its only seat, ${destination.seat}`;
+  return 'no orchestrator yet, so letters to it are refused';
 }
 
 /**
@@ -851,63 +921,91 @@ async function wizard(state: MenuState, first: boolean): Promise<number | null> 
  * second [Enter] there drops the template. The card is one line; the Books are numbered from the Shelf catalog. Every
  * value is checked here as `seat start` checks it, and the preview runs the one planner again over all of them.
  */
-async function seatChoices(state: MenuState, seat: string): Promise<SeatStartChoices> {
+async function seatChoices(state: MenuState, projectSeat: string, slug: string, withHub: string[]): Promise<{ choices: SeatStartChoices; seat: string }> {
   const { talk, workspace } = state;
   const rows = seatRegistryRows(workspace);
   const choices: SeatStartChoices = { openBooks: [] };
+  let seat = projectSeat;
 
-  // TEMPLATE.
-  for (;;) {
-    const key = (await talk.ask('Template   [p] performer   [o] orchestrator   [Enter] none › ')).toLowerCase();
-    if (key === '') break;
-    if (key === 'p' || key === 'o') {
-      choices.template = key === 'p' ? 'performer' : 'orchestrator';
-      break;
-    }
-    talk.say(`'${key}' is not one of the keys above.`);
-  }
-  const role = choices.template;
-
-  // DEPARTMENT.
+  // DEPARTMENT FIRST (kickoffs/s110 ruling 10), each existing one with where its letters go (ADR-0073).
+  const projection = seatMetadata(rows);
   const departments = registryDepartments(rows);
   talk.say(
     departments.length
-      ? `  Departments: ${departments.map((name) => `${name} (orchestrator: ${departmentOrchestrator(rows, name) ?? 'none yet'})`).join(', ')}.`
+      ? `  Departments: ${departments.map((name) => `${name} (${destinationWords(destinationOf(projection, name))})`).join(', ')}.`
       : '  No seat has a department yet.',
   );
-  let warned = false;
   for (;;) {
     const typed = await talk.ask('Department, a slug   [Enter] none › ');
-    if (!typed) {
-      if (choices.template !== undefined && !warned) {
-        talk.say(`A role requires a department, and template '${choices.template}' gives this seat the role ${role}. Type a department, or [Enter] again for no template.`);
-        warned = true;
-        continue;
-      }
-      if (choices.template !== undefined) {
-        talk.say('No template, so no role: the seat is made without one.');
-        delete choices.template;
-      }
-      break;
-    }
+    if (!typed) break;
     const problem = departmentProblem(typed);
     if (problem) {
       talk.say(`'${typed}' is not a department name: ${problem}.`);
       continue;
     }
-    const orchestrator = departmentOrchestrator(rows, typed);
-    if (role === 'orchestrator' && orchestrator !== null) {
-      talk.say(
-        `Department '${typed}' already has an orchestrator, '${orchestrator}', and a department has one. Create '${seat}' as a performer, ` +
-          `then hand the role over with ${COMMAND_NAME} seat describe ${seat} --role orchestrator --from ${orchestrator}. Type another department.`,
-      );
-      continue;
-    }
     if (!departments.includes(typed)) talk.say(`  '${typed}' is a new department.`);
-    if (role === 'performer') talk.say(orchestrator !== null ? `  Its orchestrator is '${orchestrator}'.` : `  Department '${typed}' has no orchestrator yet.`);
     choices.department = typed;
     break;
   }
+
+  // THEN THE TEMPLATE, only with a department: a template gives a role, and a role requires a department. THE ROLE COMES
+  // FROM THE LOADED TEMPLATE (ruling 10), never from the key.
+  let role: SeatRole | null = null;
+  if (choices.department === undefined) {
+    talk.say('  No department, so no template and no role: the seat is made without them.');
+  } else {
+    const department = choices.department;
+    for (;;) {
+      const key = (await talk.ask(`Template   ${WIZARD_TEMPLATE_KEYS.map(([letter, name]) => `[${letter}] ${name}`).join('  ')}  [Enter] none › `)).toLowerCase();
+      if (key === '') break;
+      const name = WIZARD_TEMPLATE_KEYS.find(([letter]) => letter === key)?.[1];
+      if (name === undefined) {
+        talk.say(`'${key}' is not one of the keys above.`);
+        continue;
+      }
+      let template: SeatTemplate;
+      try {
+        template = loadSeatTemplate(programRoot(), name);
+      } catch (error) {
+        talk.say((error as Error).message);
+        continue;
+      }
+      const orchestrator = departmentOrchestrator(rows, department);
+      if (template.role === 'orchestrator' && orchestrator !== null) {
+        talk.say(
+          `Department '${department}' already has an orchestrator, '${orchestrator}', and a department has one. Create this seat as a performer, ` +
+            `then hand the role over with ${COMMAND_NAME} seat describe <seat> --role orchestrator --from ${orchestrator}. Choose another template.`,
+        );
+        continue;
+      }
+      if (template.role === 'performer') {
+        const destination = destinationOf(projection, department);
+        talk.say(destination.seat !== null ? `  Letters to department '${department}' go to '${destination.seat}' (${destination.kind === 'orchestrator' ? 'its orchestrator' : 'its only seat'}).` : `  Department '${department}' has no orchestrator yet.`);
+      }
+      choices.template = name;
+      role = template.role;
+      break;
+    }
+
+    // THEN THE NAME, proposed as <department>-<job> (ruling 10): editable, checked as every creator checks it, and a
+    // collision offered the next suffix, never taken over.
+    const job = WIZARD_JOBS[choices.template ?? ''] ?? 'dev';
+    const base = `${department}-${job}`;
+    let proposed = base;
+    for (let next = 2; !newSeatVerdict(workspace, proposed, slug, withHub, true).creatable && next < 20; next += 1) proposed = `${base}-${next}`;
+    for (;;) {
+      const typed = (await talk.ask(`Seat name   [Enter] ${proposed} › `)).trim().toLowerCase();
+      const name = typed || proposed;
+      const verdict = newSeatVerdict(workspace, name, slug, withHub, true);
+      if (!verdict.creatable) {
+        talk.say(`A seat cannot be named '${name}': ${verdict.reason || 'that name is not usable'}.`);
+        continue;
+      }
+      seat = name;
+      break;
+    }
+  }
+  void role;
 
   // CARD.
   for (;;) {
@@ -947,7 +1045,7 @@ async function seatChoices(state: MenuState, seat: string): Promise<SeatStartCho
       break;
     }
   }
-  return choices;
+  return { choices, seat };
 }
 
 /** One argument as the preview prints it: quoted when it holds a space. */
@@ -980,9 +1078,13 @@ async function preview(
 ): Promise<number | 'again' | 'cancel'> {
   const { talk, workspace } = state;
   let projects = plan.projects;
+  // RINGS REACH A NEW CLAUDE CODE SEAT AT ONCE UNLESS THE READER SAYS NO (kickoffs/s108 ruling 6): asked once, in the
+  // preview, default yes; `[m]` turns it off. Never for Codex, which has no inbox.
+  let acceptRings = true;
   for (;;) {
     const hubExists = projects.includes(plan.slug);
-    const verdict = newSeatVerdict(workspace, plan.seat, plan.slug, hubExists ? projects : [...projects, plan.slug], false, plan.choices);
+    const choices: SeatStartChoices = { ...plan.choices, inbound: state.assistant === 'claude' && acceptRings ? 'accept' : undefined };
+    const verdict = newSeatVerdict(workspace, plan.seat, plan.slug, hubExists ? projects : [...projects, plan.slug], false, choices);
     if (!verdict.creatable) {
       talk.say(verdict.reason);
       return 'again';
@@ -998,14 +1100,26 @@ async function preview(
     talk.say(`  Card       ${planned.card ?? 'none'}`);
     talk.say(`  Template   ${planned.templateId ?? 'none'}`);
     talk.say(`  Books      ${planned.books.length ? planned.books.map((slug) => `shelf/${slug}`).join(', ') : 'none'}`);
+    if (state.assistant === 'claude') {
+      talk.say(`  Messages   ${acceptRings ? "other seats' rings reach it at once (inbound accept)" : 'Claude Code decides (inbound unset): a seat that skips permission prompts holds each ring for you'}`);
+    }
     talk.say(`  Desk       ${deskStateDirectory(path.join(workspace, '.claude'), plan.seat)}, with projects/${plan.slug} open`);
     talk.say(`  Librarian  ${state.assistant ? ASSISTANT_LABEL[state.assistant] : 'none found: the seat is made, and nothing is started'}`);
     talk.say(`  Touches    ${hubExists || local ? 'this Library only; no other seat' : 'the SHARED collection, for the Hub; no other seat'}`);
     talk.say(`  plan_id    ${verdict.plan_id}`);
     const firstStart = plan.first ? firstStartLine(state.assistant) : null;
     if (firstStart) talk.say(`  ${firstStart}`);
-    const keys = ['[Enter] create it and start', ...(state.claude && state.codex ? [`[a] use ${ASSISTANT_LABEL[state.assistant === 'claude' ? 'codex' : 'claude']}`] : []), '[q] cancel'];
+    const keys = [
+      '[Enter] create it and start',
+      ...(state.claude && state.codex ? [`[a] use ${ASSISTANT_LABEL[state.assistant === 'claude' ? 'codex' : 'claude']}`] : []),
+      ...(state.assistant === 'claude' ? [acceptRings ? '[m] hold rings instead' : '[m] accept rings'] : []),
+      '[q] cancel',
+    ];
     const key = (await talk.ask(keys.join('   ') + ' › ')).toLowerCase();
+    if (key === 'm' && state.assistant === 'claude') {
+      acceptRings = !acceptRings;
+      continue;
+    }
     if (key === 'a' && state.claude && state.codex) {
       state.assistant = state.assistant === 'claude' ? 'codex' : 'claude';
       continue;
@@ -1037,7 +1151,7 @@ async function preview(
       }
       projects = [...projects, plan.slug];
     }
-    const args = [plan.seat, '--project', plan.slug, '--plan-id', verdict.plan_id, ...seatStartChoiceArguments(plan.choices)];
+    const args = [plan.seat, '--project', plan.slug, '--plan-id', verdict.plan_id, ...seatStartChoiceArguments(choices)];
     talk.say(`  ${COMMAND_NAME} seat start ${args.map(shown).join(' ')}`);
     touchRegistryForSelfTest(workspace);
     if (state.assistant === null) {

@@ -30,6 +30,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock, isBookLockHeld } from './locks.ts';
+import { seatNotebookPath } from './seatpaths.ts';
 
 export const NOTEBOOK_LAYOUT_RECORD = 'internal/notebook-layout.json';
 export const NOTEBOOK_MIGRATION_ROOT = 'internal/notebook-migration';
@@ -176,7 +177,7 @@ export interface NotebookScope {
 
 export function seatNotebookRelative(seat: string): string {
   if (!SEAT_SLUG.test(seat)) throw new Error(`'${seat}' is not a seat slug, so it names no Notebook root.`);
-  return `notebook/${seat}`;
+  return seatNotebookPath(seat);
 }
 
 /**

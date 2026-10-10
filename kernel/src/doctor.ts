@@ -37,6 +37,7 @@ import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
 import { readSeatHistory, seatHistoryState } from './seathistory.ts';
 import { identityView, incarnationOf } from './seatincarnation.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
+import { deadNotebookLinks, NOTEBOOK_LINK_REPAIR } from './notebooklinks.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
@@ -1183,6 +1184,16 @@ function captureBooksGrowing(workspace: string): string {
   const growing: string[] = [];
   const unread: string[] = [];
   let checked = 0;
+  // BY RECIPIENT (kickoffs/s109 ruling 2): a letter for a live seat is that seat's to close, so the reader is told to open
+  // the seat, not to triage. Read once; a registry that cannot be read leaves every letter counted as growing.
+  let identity: ReturnType<typeof identityView> | null = null;
+  try {
+    identity = identityView(readSeatRegistry(path.join(workspace, '.claude')), readSeatRetirementRecords(workspace).records);
+  } catch {
+    identity = null;
+  }
+  // ONLY A BOOK THAT TAKES LETTERS counts by recipient; the Holding Shelf's notes are its writers' and grow as before.
+  const letterBooks = new Set(captureBookRows(workspace).filter((row) => row.takesLetters).map((row) => row.slug));
   for (const section of shelfCatalogSections(readUtf8(catalogFile))) {
     if (!/^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(section.body)) continue;
     const slug = /^[ \t]*-[ \t]+\*\*Path:\*\*[ \t]+shelf\/([a-z0-9][a-z0-9-]*)[ \t]*$/m.exec(section.body)?.[1];
@@ -1194,11 +1205,35 @@ function captureBooksGrowing(workspace: string): string {
     }
     const notes = shelfNotes(book);
     if (!growingState(book, notes, null).growing) continue;
-    const pending = notes.filter((note) => note.review !== 'done').length;
-    growing.push(
-      `capture Book '${slug}' is growing: ${pending} pending, past ${book.growingPending} pending or ${book.growingDays} days; ` +
-        `open it with deskpost desk open book ${slug} --location shelf and triage its notes`,
-    );
+    const open = notes.filter((note) => note.review !== 'done');
+    // In a Book closed by recipient, a pending letter whose recipient is a live seat waits for that seat; what is left
+    // (letters to a retired or unknown seat, and notes for no one) is what the Book's own growing signal counts.
+    const waiting = new Map<string, number>();
+    const rest = (book.closedBy ?? 'any') === 'any' || identity === null || !letterBooks.has(slug)
+      ? open
+      : open.filter((note) => {
+          const reached = incarnationOf(identity!, note.forSeat, note.forSeatId, 'letters');
+          if (reached.outcome !== 'live') return true;
+          const name = reached.current_name ?? note.forSeat!;
+          waiting.set(name, (waiting.get(name) ?? 0) + 1);
+          return false;
+        });
+    const parts: string[] = [];
+    if (waiting.size) {
+      const total = [...waiting.values()].reduce((sum, count) => sum + count, 0);
+      const bySeat = [...waiting.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([seat, count]) => `${seat} ${count}`);
+      parts.push(
+        `capture Book '${slug}': ${total} letter${total === 1 ? ' waits' : 's wait'} for ${waiting.size === 1 ? 'its recipient' : 'their recipients'}: ${bySeat.join(', ')}; ` +
+          `open ${waiting.size === 1 ? 'that seat' : 'those seats'}, where each recipient reads and closes its own`,
+      );
+    }
+    if (rest.length && growingState(book, rest, null).growing) {
+      parts.push(
+        `capture Book '${slug}' is growing: ${rest.length} pending${waiting.size ? ' with no live recipient' : ''}, past ${book.growingPending} pending or ${book.growingDays} days; ` +
+          `open it with deskpost desk open book ${slug} --location shelf and triage its notes`,
+      );
+    }
+    growing.push(...parts);
   }
   if (growing.length || unread.length) return `WARN: ${[...growing, ...unread].join('; ')}`;
   return checked ? `${checked} capture Book${checked === 1 ? '' : 's'}, none growing` : 'no capture Book on the Shelf';
@@ -1219,6 +1254,21 @@ function standardBooksPresent(workspace: string): string {
     return `WARN: this Library has no ${missing.map((slug) => `'${slug}'`).join(', ')} Book, which every library init lays out; run library init ${workspace} to add ${missing.length === 1 ? 'it' : 'them'} (it adds only what is missing)`;
   }
   return `all ${STANDARD_SHELF_BOOK_SLUGS.length} standard capture Books are on the Shelf`;
+}
+
+/**
+ * A LASTING RECORD NEVER LINKS INTO THE NOTEBOOK (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook
+ * path that no longer exists, as a reset that came before the refusal would have left it. A WARN, with the repair.
+ */
+function notebookLinksResolve(workspace: string): string {
+  const dead = deadNotebookLinks(workspace);
+  if (!dead.length) return 'no Hub or Shelf Book line names a Notebook path that is gone';
+  const shown = dead.slice(0, 10).map((link) => `${link.page} line ${link.line} (${link.path})`);
+  const more = dead.length > shown.length ? `; and ${dead.length - shown.length} more` : '';
+  return (
+    `WARN: ${dead.length} line${dead.length === 1 ? '' : 's'} of a Hub or Shelf Book name${dead.length === 1 ? 's' : ''} a Notebook path that no longer exists: ` +
+    `${shown.join('; ')}${more}. ${NOTEBOOK_LINK_REPAIR.charAt(0).toUpperCase()}${NOTEBOOK_LINK_REPAIR.slice(1)} (deskpost reset restore --list shows what a reset set aside)`
+  );
 }
 
 function runCheck(check: string, body: () => string): CheckResult {
@@ -1249,11 +1299,15 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
   const resolved = resolveWorkspace({ explicit: parsed.options.get('workspace') });
   if (resolved.kind === 'conflict') return { refusal: resolved.reason ?? 'the workspace selection is contradictory', value: null, exitCode: 1 };
   const workspace = resolved.kind === 'resolved' ? path.resolve(resolved.workspace!) : '';
-  const { results, programChecks } = doctorChecks(workspace, program);
+  const { results, programChecks: own } = doctorChecks(workspace, program);
+  // GROUPED AS --served-by GROUPS THEM (kickoffs/s109 ruling 3): `program_checks` holds the program-wide checks only, and
+  // the Library's own kernel checks are `library_checks`. `checks` keeps the rows the PowerShell runner compares.
+  const programChecks = own.filter((row) => PROGRAM_WIDE_CHECKS.has(row.check));
+  const libraryChecks = workspace ? own.filter((row) => !PROGRAM_WIDE_CHECKS.has(row.check)) : [];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;
   const failed = count('fail');
-  const programFailed = programChecks.filter((row) => row.status === 'fail').length;
+  const programFailed = [...programChecks, ...libraryChecks].filter((row) => row.status === 'fail').length;
   return {
     refusal: null,
     value: {
@@ -1267,10 +1321,11 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
       skipped: count('skipped'),
       checks: results as unknown as PsJsonValue,
       program_checks: programChecks as unknown as PsJsonValue,
+      library_checks: libraryChecks as unknown as PsJsonValue,
       shared_library_write: false,
       // D6: each FAIL (and WARN with --warnings) filed once into the Report Inbox; never a change to the exit code.
       ...(parsed.flags.has('report')
-        ? { report: fileDoctorFindings(workspace, [...programChecks, ...results], parsed.flags.has('warnings'), String(releaseTuple()['plugin_version'] ?? '')) }
+        ? { report: fileDoctorFindings(workspace, [...programChecks, ...libraryChecks, ...results], parsed.flags.has('warnings'), String(releaseTuple()['plugin_version'] ?? '')) }
         : {}),
     },
     exitCode: failed || programFailed ? 1 : 0,
@@ -1367,6 +1422,8 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('letters.relationship-fields', () => lettersRelationshipFields(workspace)) : { check: 'letters.relationship-fields', status: 'skipped', detail: 'no Library here, so no letters to check' },
     // AND THIS ONE (kickoffs/s103 row 6): every seat one identity, every recorded letter id a known seat. A FAIL.
     workspace ? runCheck('seats.identity', () => seatsIdentity(workspace)) : { check: 'seats.identity', status: 'skipped', detail: 'no Library here, so no seats whose identity to check' },
+    // AND THIS ONE (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook path that is gone. A WARN.
+    workspace ? runCheck('notebook.links-resolve', () => notebookLinksResolve(workspace)) : { check: 'notebook.links-resolve', status: 'skipped', detail: 'no Library here, so no Hub or Shelf Book links to check' },
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
     runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
     ...refreshUnfinished(program),

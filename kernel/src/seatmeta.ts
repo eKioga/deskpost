@@ -190,6 +190,28 @@ export function departmentOf(projection: SeatMetadataProjection, seat: string): 
 }
 
 /**
+ * ONE DESTINATION PER DEPARTMENT (kickoffs/s110 ruling 7; PLAN-seat-identity.md section 4; ADR-0073): its orchestrator,
+ * else its only seat, else none, with its seats. `capture --for-department`, `seat cards`, the retire preview and the
+ * wizard all ask here, so they cannot disagree. A department no seat carries has no destination and no seats.
+ */
+export type DepartmentDestination =
+  | { kind: 'orchestrator'; seat: string; seats: string[] }
+  | { kind: 'only-seat'; seat: string; seats: string[] }
+  | { kind: 'none'; seat: null; seats: string[] };
+
+export function departmentDestination(view: DepartmentView | null | undefined): DepartmentDestination {
+  const seats = view?.seats ?? [];
+  if (view && view.orchestrator !== null) return { kind: 'orchestrator', seat: view.orchestrator, seats };
+  if (seats.length === 1) return { kind: 'only-seat', seat: seats[0]!, seats };
+  return { kind: 'none', seat: null, seats };
+}
+
+/** A department's destination in a projection, by name; a department no seat carries is `none` with no seats. */
+export function destinationOf(projection: SeatMetadataProjection, department: string): DepartmentDestination {
+  return departmentDestination(projection.departments.find((view) => view.department === department));
+}
+
+/**
  * The projection of the registry file under a state directory, read here and NEVER THROWING: a file that cannot be
  * read or parsed gives an empty projection with one problem, and the registry's own reader says the rest.
  */

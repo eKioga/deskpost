@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { deskStateDirectory, resolveSeatName } from './seatdesk.ts';
+import { assertNoSeatRename, seatFilePaths } from './seatpaths.ts';
 import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 
@@ -35,7 +36,7 @@ function refuse(message: string): never {
 }
 
 export function inboundSettingsPath(stateDirectory: string, seat: string): string {
-  return path.join(deskStateDirectory(stateDirectory, seat), 'settings.json');
+  return seatFilePaths(stateDirectory, seat).inboundSettings;
 }
 
 /** The file the launcher writes for one launch on the `claude.cmd` route, which cannot pass `"` inline. */
@@ -183,6 +184,8 @@ export function seatSettingsResult(options: { workspace: string; seat: string; i
   if (!options.planId) refuse('Nothing was changed: run with --preflight, show the reader what it reports, and rerun with its exact --plan-id after one clear yes.');
   const lock = enterSeatRegistryLock(options.workspace, 10);
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(options.workspace, seat);
     if (options.planId !== planIdFor(seat, value, fileDigest(file))) {
       refuse("Nothing was changed: that plan_id does not match this seat, this value and the seat's settings file as it is now. Rerun the preflight, which shows the file as it stands, and pass its plan_id.");
     }

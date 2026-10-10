@@ -131,6 +131,13 @@
       "applies_to": ["area:checks", "workspace.init-leaves-a-workspace-its-checks-pass"],
       "match": { "field_pattern": "^result\\.program_checks(\\[|\\.|$)" }
     },
+    "kernel-doctor-groups-the-librarys-own-checks": {
+      "reason": "1.4.1 (S109 row 3): a plain doctor groups its checks as --served-by does. program_checks holds the program-wide checks only, and the Library's own kernel checks, which the PowerShell runner's -WorkspaceOnly does not have, are library_checks. The compared checks list, its counts and its details are unchanged. Only library_checks is the kernel's.",
+      "approved_by": "the S109 kickoff (kickoffs/s109, ruling 3)",
+      "approved_on": "2026-10-09",
+      "applies_to": ["area:checks", "workspace.init-leaves-a-workspace-its-checks-pass"],
+      "match": { "field_pattern": "^result\\.library_checks(\\[|\\.|$)" }
+    },
     "kernel-init-writes-library-help": {
       "reason": "PLAN-assistant-onboarding.md step 7 (S57): every Library's instructions name the library-help Skill, and only the opt-in plugin carried it, so the kernel's init copies it into .claude/skills/library-help/ with an ownership manifest. The PowerShell initializer, the oracle, writes no Skill. Only the Skill's own files and init's result.skill report are the kernel's; every other file init writes, and result.files in its fixed order, are still compared. Kernel self-test section 55 judges the copy itself: its contents, a second run's idempotence, an edited file left and named, and a hand-made Skill left whole.",
       "approved_by": "PLAN-assistant-onboarding.md step 7 and its step 6 matrix note, signed off by the reader in S57",
@@ -444,6 +451,30 @@
       "match": {
         "field_pattern": "^result\\.notebook\\.quarantine\\.scope$",
         "value_pattern": "^(<absent>|seat [a-z0-9][a-z0-9-]*: its own quarantines only; reset restore --list lists every seat's)$"
+      }
+    },
+    "kernel-reset-lists-the-links-into-what-it-moves": {
+      "reason": "S109 row 1 (kickoffs/s109 ruling 1): a reset refuses while a Hub or Shelf Book line links into a topic or loose file it would move, and its preflight lists those lines as inbound_links (page, line, topic), bound by the plan id only when there are any. The PowerShell oracle has no such list. The oracle is not edited. Only inbound_links is the kernel's; with none, the plan id and every other field are compared as before.",
+      "approved_by": "the S109 kickoff (kickoffs/s109, ruling 1): a new reset field takes a kernel_only delta",
+      "approved_on": "2026-10-09",
+      "applies_to": ["area:reset"],
+      "match": { "field_pattern": "^result\\.inbound_links(\\[|\\.|$)" }
+    },
+    "kernel-reset-names-the-links-in-its-wrong-plan-refusal": {
+      "reason": "1.4.1 (S109 row 1, judged at S111): the reset plan id binds the Hub and Shelf Book lines that link into what it would move, so the refusal of a plan id it did not issue names them too: \"..., the loose files under notebook/, or the lines that link into them are not what that plan described.\" The PowerShell oracle's reset has no link check, so its sentence ends at the loose files.",
+      "approved_by": "the S111 kickoff (kickoffs/s111, ruling 10)",
+      "approved_on": "2026-10-09",
+      "applies_to": [
+        "reset.refuses-without-the-plan-id-it-issued"
+      ],
+      "match": {
+        "field_pattern": "^stderr$",
+        "phrases": [
+          {
+            "kernel": ", the loose files under notebook/, or the lines that link into them are",
+            "powershell": ", or the loose files under notebook/ are"
+          }
+        ]
       }
     }
   },

@@ -386,7 +386,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           by_book: tally.byBook,
           oldest_pending: tally.oldest,
           // WHERE THEY ARE LISTED (kickoffs/s99 row 4, ruling 2): the reader map's group for this seat, or the inventory.
-          route: `library desk open book ${Object.keys(tally.byBook)[0]} --location shelf, then read its letters under '### For ${seat}' in its reader map, or list them with library triage inventory --pending`,
+          // THE SECTION THE READER CAN READ (kickoffs/s110 ruling 6): its `section` takes a `##` heading, so the route
+          // names `## Pending review` and the `### For <seat>` group to look for inside it.
+          route: `library desk open book ${Object.keys(tally.byBook)[0]} --location shelf, then read section 'Pending review' of its reader map (_index) and its letters under '### For ${seat}' there, or list them with library triage inventory --pending`,
           // STUCK (kickoffs/s99 row 4, ruling 2), the last key: its department letters older than their own Book's age.
           stuck: mine.filter(({ book, note }) => isStuckLetter(note, book)).length,
         }
@@ -613,6 +615,36 @@ export function captureBookRows(workspace: string): CaptureBookRow[] {
     books.push(convertFromShelfCatalogEntry({ workspace, slug, title: section.title, body: section.body, bookRoot: `shelf/${slug}` }));
   }
   return books.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
+}
+
+/**
+ * THIS SEAT'S PENDING LETTERS, AS PAGE NAMES (kickoffs/s108 ruling 3; ADR-0071): `<book>/notes/<page>` for each pending
+ * note addressed to the seat by the one recipient predicate, in the Books that take letters only, sorted OLDEST FIRST
+ * BY ARRIVAL: the note's `captured` instant, then the page name. A page name is `<local date>-<title>`, so two letters
+ * of one day sort by title, not by time (deskpost-desk's letter of 2026-10-09); the last here is the newest that
+ * arrived. Read for the Desk hook's letter line and its ledger key, and for `seat enter`'s count: never a title or a
+ * sender. A note whose address is malformed is no seat's.
+ */
+export function pendingLetterPagesForSeat(workspace: string, seat: string): string[] {
+  const stateDirectory = path.join(workspace, '.claude');
+  const self = seatIncarnation(stateDirectory, seat, readSeatIdentityView(stateDirectory));
+  const pages: { page: string; captured: string }[] = [];
+  for (const book of captureBookRows(workspace)) {
+    if (!book.takesLetters) continue;
+    for (const note of shelfNotes(book)) {
+      if (note.review === 'done' || !note.forSeat || note.malformed.length) continue;
+      // `unknown` (no captured line) sorts before every instant, so a note with no stamp is never taken as the newest.
+      if (isAddressedTo(note, self)) pages.push({ page: `${book.slug}/${note.page}`, captured: note.captured === 'unknown' ? '' : note.captured });
+    }
+  }
+  const byName = (left: string, right: string): number => {
+    const a = left.replace(/^[^/]+\//, '');
+    const b = right.replace(/^[^/]+\//, '');
+    return a < b ? -1 : a > b ? 1 : left < right ? -1 : left > right ? 1 : 0;
+  };
+  return pages
+    .sort((left, right) => (left.captured < right.captured ? -1 : left.captured > right.captured ? 1 : byName(left.page, right.page)))
+    .map((entry) => entry.page);
 }
 
 /** A pending note of a capture Book, beside its Book (kickoffs/s99 row 4). */

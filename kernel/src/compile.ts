@@ -39,6 +39,7 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
+import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation } from './seatpaths.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { resolveRawBatch } from './rawsearch.ts';
 import { resolveSeatName } from './seatdesk.ts';
@@ -402,7 +403,18 @@ function compileVerb(workspace: string, argv: string[]): PsJsonValue {
 
   let journalPath: string | null = null;
   const topicExisted = fs.existsSync(preview.topicPath) && fs.statSync(preview.topicPath).isDirectory();
-  const lock = enterBookLock(workspace, notebookTopicLockRoot(request.topic, scope.relative));
+  // THE SEAT'S NOTEBOOK LOCK FIRST, then the topic's, then the render's (kickoffs/s109 ruling 7): the order every Notebook
+  // writer shares, and the final check that no rename began meanwhile.
+  const start = beginSeatMutation(workspace, seat);
+  const notebookLock = enterSeatNotebookLock(workspace, scope.seat);
+  let lock: ReturnType<typeof enterBookLock> | null = null;
+  try {
+    recheckSeatMutation(start);
+    lock = enterBookLock(workspace, notebookTopicLockRoot(request.topic, scope.relative));
+  } catch (error) {
+    exitBookLock(notebookLock);
+    throw error;
+  }
   try {
     try {
       const current = compilationPlan(request, scope);
@@ -481,6 +493,7 @@ function compileVerb(workspace: string, argv: string[]): PsJsonValue {
     }
   } finally {
     exitBookLock(lock);
+    exitBookLock(notebookLock);
   }
 }
 

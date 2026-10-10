@@ -379,6 +379,8 @@ export async function sharedArchive(argv: string[], workspace: string): Promise<
   const activeRoot = await readExactOrNull(session, projectId, `${activeDirectory}/wiki/_book.md`, words);
   const archiveRoot = await readExactOrNull(session, projectId, `${archiveDirectory}/wiki/_book.md`, words);
   const activeIndex = await readExactOrNull(session, projectId, `${activeDirectory}/wiki/_index.md`, words);
+  // AN ARCHIVED BOOK IS SAID AS ONE (kickoffs/s109 ruling 4): no active copy and an archive copy is not "incomplete".
+  if (activeRoot === null && activeIndex === null && archiveRoot !== null) refuse(`Book '${slug}' is already archived; nothing to do.`);
   if (activeRoot === null || activeIndex === null) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
   if (archiveRoot !== null) refuse(`Archive already contains '${slug}'; no move was attempted.`);
   const plan: Record<string, PsJsonValue> = {

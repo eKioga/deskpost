@@ -44,9 +44,9 @@ import {
   setDeskEntryForSeat,
 } from './seatdesk.ts';
 import { assertSeatRegistered, psSortCompare, readNotebookTopicOwners, seatIncarnationStatus } from './notebook.ts';
-import { letterTally, pendingCaptureNotes, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
+import { letterTally, pendingCaptureNotes, pendingLetterPagesForSeat, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { isAddressedTo } from './shelfnote.ts';
-import { identityRowsOfRegistry, seatIncarnation } from './seatincarnation.ts';
+import { identityRowsOfRegistry, pastNameRefusal, seatIncarnation } from './seatincarnation.ts';
 import { openCollection } from './collection.ts';
 import { activateFreshNotebookLayout, migratingRefusal, readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import {
@@ -71,9 +71,9 @@ import { nativeProcessCalls, nativeWaitForExit } from './win32proc.ts';
 import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
-import { addedDirArguments, addedDirsPath, addedDirsStatus, nameArguments, seatDirsResult } from './seatdirs.ts';
+import { addedDirArguments, addedDirsPath, addedDirsStatus, lettersPromptArguments, nameArguments, seatDirsResult } from './seatdirs.ts';
 import { seatStatusText } from './human.ts';
-import { carriesMetadata, metadataFor, metadataJson, rawMetadata, seatMetadata } from './seatmeta.ts';
+import { carriesMetadata, metadataFor, metadataJson, rawMetadata, seatMetadata, destinationOf } from './seatmeta.ts';
 import { readRegistryRows, writeSeatRegistry } from './seatregistry.ts';
 import { appendHistoryCommit, appendHistoryRecords, newAttemptId, readSeatHistory, seatHistoryState } from './seathistory.ts';
 import { seatDescribeResult } from './seatdescribe.ts';
@@ -89,6 +89,8 @@ import {
   type SeatStartPlan,
 } from './seatstartplan.ts';
 import { seatCardsResult, seatCardsText } from './seatcards.ts';
+import { assertNoSeatRename, seatRenameJournals } from './seatpaths.ts';
+import { seatRenameResult } from './seatrename.ts';
 import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -608,6 +610,10 @@ export function assertSeatNameFree(options: { workspace: string; stateDirectory:
   if (!SEAT_SLUG_PATTERN.test(seat)) {
     refuse(`Seat name '${seat}' is not a seat name: lowercase letters, digits and hyphens, starting with a letter or a digit. Nothing was created.`);
   }
+  const renaming = seatRenameJournals(options.workspace).find((journal) => journal.new === seat);
+  if (renaming) {
+    refuse(`Seat name '${seat}' is the new name of seat '${renaming.old}', whose rename is unfinished. Choose another name. Nothing was created.`);
+  }
   const formerHolder = identityRowsOfRegistry(options.rows).find((row) => row.names.slice(0, -1).some((span) => span.name === seat));
   if (formerHolder) {
     refuse(`Seat name '${seat}' was given up by seat '${formerHolder.seat}' in a rename, and stays reserved for that seat. Choose another name. Nothing was created.`);
@@ -915,6 +921,8 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
   let result: Record<string, PsJsonValue>;
   let noOp = false;
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(workspace, seat);
     const entry = assertSeatRegistered(stateDirectory, seat);
 
     // ONE SEAT PER AGENT PROCESS FOR ITS LIFE (D11), checked before the matrix: "you are already
@@ -1001,6 +1009,17 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
   // THE ORACLE WRITES THIS AFTER ITS LOCK AND ONLY ON THE BINDING PATH: its no-op `return`s from
   // inside the try, so the trailing activity write never runs there.
   if (!noOp) writeSeatActivity({ stateDirectory, seat, note: 'seat bound' });
+  // THE LETTERS WAITING, AS A COUNT (kickoffs/s108 ruling 3; ADR-0071): a seat that types `seat enter` hears of its mail
+  // in its own output. Only when there are some, so an empty seat's result is unchanged; a reader fault adds nothing.
+  try {
+    const waiting = pendingLetterPagesForSeat(workspace, seat).length;
+    if (waiting > 0) {
+      result['letters_waiting'] = waiting;
+      result['letters_next'] = 'Read them through your Desk before other work, then close each one you have dealt with: deskpost letters close notes/<page> --note "<what became of it>".';
+    }
+  } catch {
+    // a count, and entering a seat must not fail on it
+  }
   return result;
 }
 
@@ -1190,7 +1209,7 @@ function plannedStart(
   rows: Record<string, PsJsonValue>[],
   seat: string,
   project: string,
-  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[] },
+  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; inbound?: string | undefined },
   registryFile: string,
   workspace: string,
 ): SeatStartPlan {
@@ -1204,7 +1223,8 @@ function plannedStart(
 
 /** What a plan's options set, as `seat start` reports it: the four fields, then the Books. */
 function planJson(plan: SeatStartPlan): Record<string, PsJsonValue> {
-  return { ...planFields(plan), open_books: plan.books };
+  // THE INBOUND POLICY THE PREVIEW NAMES (kickoffs/s108 ruling 6), only when one was given.
+  return { ...planFields(plan), open_books: plan.books, ...(plan.inbound !== null ? { inbound_policy: plan.inbound === 'unset' ? 'unset' : `seat file: ${plan.inbound}` } : {}) };
 }
 
 /**
@@ -1276,6 +1296,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     card: parsed.options.get('card'),
     template: parsed.options.get('template'),
     openBooks: parsed.lists.get('open-book') ?? [],
+    // kickoffs/s108 ruling 6: a new seat's inbound policy, under the same preview and wrapped plan id.
+    inbound: parsed.options.get('inbound'),
   };
   const withOptions = SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
   if (withOptions && !parsed.flags.has('preflight')) {
@@ -1323,28 +1345,43 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   // only: Codex has no inbox. A file that fails validation is never passed, and the launch says so; the seat still
   // starts. On the `claude.cmd` route, which refuses `"`, the value goes in a fresh file the launcher writes at launch.
   let inbound: InboundRead;
-  try {
-    inbound = readInboundSettings(stateDirectory, seat);
-  } catch (error) {
-    inbound = { state: 'invalid', reason: (error as Error).message };
-  }
+  const readInbound = (): InboundRead => {
+    try {
+      return readInboundSettings(stateDirectory, seat);
+    } catch (error) {
+      return { state: 'invalid', reason: (error as Error).message };
+    }
+  };
+  inbound = readInbound();
   const inboundCommandScript = (() => {
     if (process.platform !== 'win32') return false;
     const searchPath = process.env[Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'] ?? '';
     const file = agentExecutable(command, searchPath).file;
     return /\.(cmd|bat)$/i.test(/[\\/]/.test(file) ? file : resolveOnPath(file, searchPath) ?? file);
   })();
-  const inboundArguments =
-    assistant === 'claude' && inbound.state === 'valid'
-      ? inboundSettingsArguments({ stateDirectory, seat, value: inbound.value, commandScript: inboundCommandScript, write: false })
+  const inboundArgumentsFor = (read: InboundRead): string[] =>
+    assistant === 'claude' && read.state === 'valid'
+      ? inboundSettingsArguments({ stateDirectory, seat, value: read.value, commandScript: inboundCommandScript, write: false })
       : [];
-  const agentArguments = [
+  let inboundArguments = inboundArgumentsFor(inbound);
+  // THE FIRST PROMPT FOR A SEAT WITH LETTERS WAITING (kickoffs/s108 ruling 4), right after the name: a positional after
+  // a variadic option such as `--add-dir` would be read as one more of its values. A reader fault adds no prompt.
+  let lettersWaiting = 0;
+  try {
+    lettersWaiting = pendingLetterPagesForSeat(workspace, seat).length;
+  } catch {
+    lettersWaiting = 0;
+  }
+  const firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+  const buildAgentArguments = (): string[] => [
     ...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })),
     ...nameArguments(assistant, seat, passthrough),
+    ...firstPrompt,
     ...addedDirArguments(appliedDirs),
     ...inboundArguments,
     ...passthrough,
   ];
+  let agentArguments = buildAgentArguments();
   const conversationId = resumeId || sessionId;
   // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
@@ -1369,6 +1406,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   let otherSeats: string[] = [];
   let plan: SeatStartPlan | null = null;
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(workspace, seat);
     const rows = readRegistryRows(registryFile);
     existing = rows.find((row) => String(row['seat']) === seat) ?? null;
     otherSeats = rows.map((row) => String(row['seat'])).filter((other) => other !== seat);
@@ -1392,6 +1431,9 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
           `Seat '${seat}' was not created: it was created by another session while the plan was open. Nothing was written; ` +
             'look at the seats again.',
         );
+      }
+      if (parsed.options.has('inbound')) {
+        refuse(`Seat '${seat}' already exists, so --inbound does not apply to it: an existing seat's inbound policy changes with deskpost seat settings ${seat} --inbound <value> --preflight, then its --plan-id. Nothing was changed.`);
       }
       if (withOptions) {
         refuse(
@@ -1438,6 +1480,17 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
           // S97 ROW 1, AFTER EVERY EXISTING KEY: what the options set, and the WRAPPED plan id (null for an existing seat).
           ...(plan !== null && plan.options ? planJson(plan) : {}),
           plan_id: plan !== null ? plan.planId : null,
+          // THE FIRST PROMPT, AS THE LAUNCHER WOULD PASS IT (kickoffs/s108 ruling 4), only when it would: the arguments
+          // a launch builds, read without starting anything.
+          ...(firstPrompt.length && !noLaunch ? { first_prompt: firstPrompt[0]!, letters_waiting: lettersWaiting, command_args: agentArguments } : {}),
+          // A NEW CLAUDE CODE SEAT WITH NO INBOUND POLICY (kickoffs/s108 ruling 6) is told how to take rings.
+          ...(existing === null && assistant === 'claude' && (plan === null || plan.inbound === null)
+            ? {
+                next:
+                  `Add --inbound accept to this preflight so other seats' rings reach '${seat}' at once: a session that bypasses ` +
+                  'permissions otherwise holds every ring behind a dialog that waits for the reader. It is applied with this plan_id, as deskpost seat settings applies it.',
+              }
+            : {}),
         },
         exitCode: 0,
       };
@@ -1494,6 +1547,14 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       writeSeatRegistry(stateDirectory, [...rows, row]);
       rowWritten = true;
       if (attempt !== null) appendHistoryCommit(workspace, attempt);
+      // THE INBOUND POLICY THE PREVIEW NAMED (kickoffs/s108 ruling 6), written as `seat settings` writes it, after the row,
+      // so this very launch passes it. `unset` writes nothing.
+      if (plan!.inbound !== null && plan!.inbound !== 'unset') {
+        writeAtomicText(inboundSettingsPath(stateDirectory, seat), JSON.stringify({ crossSessionInbound: plan!.inbound }, null, 2) + '\n');
+        inbound = readInbound();
+        inboundArguments = inboundArgumentsFor(inbound);
+        agentArguments = buildAgentArguments();
+      }
     }
     // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
     // lock this block already holds, and only when a conversation is actually started. `source` is `launcher`: a
@@ -1722,6 +1783,8 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
 
   const lock = enterSeatRegistryLock(workspace);
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(workspace, seat);
     const registryFile = path.join(seatsDirectory(stateDirectory), '_registry.json');
     const entry = assertSeatRegistered(stateDirectory, seat);
 
@@ -1775,6 +1838,20 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     }
     const leaving = seatMetadata(rawRows).seats.get(seat);
     const losesOrchestrator = leaving?.role === 'orchestrator' ? leaving.department : null;
+    // WHEN A DEPARTMENT LOSES ITS DESTINATION (kickoffs/s110 ruling 7, ADR-0073): this seat is its orchestrator or its
+    // only seat. Where its letters go after, from the registry without this seat.
+    const losesDestination = (() => {
+      const department = leaving?.department ?? null;
+      if (department === null || destinationOf(seatMetadata(rawRows), department).seat !== seat) return null;
+      const after = destinationOf(seatMetadata(rawRows.filter((row) => String(row['seat']) !== seat)), department);
+      const note =
+        after.kind === 'only-seat'
+          ? `After this, letters to department '${department}' go to its only seat, ${after.seat}.`
+          : after.seats.length === 0
+            ? `After this, department '${department}' has no seat: a letter to it is refused until a seat joins it with deskpost seat describe <seat> --department ${department}.`
+            : `After this, department '${department}' has ${after.seats.length} seats (${after.seats.join(', ')}) and no orchestrator: a letter to it is refused until one takes the role with deskpost seat describe <seat> --role orchestrator.`;
+      return { department, note };
+    })();
     // A SEAT WITH LETTERS WAITING IS NOT RETIRED (kickoffs/s99 row 5, ruling 3; PLAN-seats-team.md session 3 item 5),
     // preflight and apply alike, and decided before a plan id is issued, as the claim is: a letter to a retired seat
     // reaches no one. Counted by the recipient predicate, so a letter the seat sent, or one stamped for an earlier
@@ -1827,11 +1904,12 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
         ...(carriesNames ? { names: entry.names as unknown as PsJsonValue } : {}),
         records_to_archive: recordsPresent,
         ...(seatOwned ? { notebook_to_archive: notebookEntries.map((name) => `${notebookRelative}/${name}`) } : {}),
-        // WHEN A DEPARTMENT LOSES ITS ORCHESTRATOR (kickoffs/s96 row 2), said before the yes, and nothing otherwise.
-        ...(losesOrchestrator !== null
+        // WHEN A DEPARTMENT LOSES ITS DESTINATION (kickoffs/s96 row 2; since S110 its orchestrator or its only seat,
+        // replacing department_loses_orchestrator), said before the yes, and nothing otherwise.
+        ...(losesDestination !== null
           ? {
-              department_loses_orchestrator: losesOrchestrator,
-              department_note: `After this, department '${losesOrchestrator}' has no orchestrator: letters to it reach no one until another seat takes the role with deskpost seat describe <seat> --role orchestrator.`,
+              department_loses_destination: losesDestination.department,
+              department_note: losesDestination.note,
             }
           : {}),
         archive_destination: path.join(archiveRoot, `${seat}-<timestamp>`),
@@ -1990,6 +2068,8 @@ export interface SeatStartChoices {
   card?: string | undefined;
   template?: string | undefined;
   openBooks: string[];
+  /** The new seat's inbound policy (kickoffs/s108 ruling 6): the wizard's preview offers `accept` for Claude Code. */
+  inbound?: string | undefined;
 }
 
 /** The `seat start` arguments that carry a wizard's choices, in one order. */
@@ -2000,6 +2080,7 @@ export function seatStartChoiceArguments(choices: SeatStartChoices): string[] {
     ...(choices.role !== undefined ? ['--role', choices.role] : []),
     ...(choices.card !== undefined ? ['--card', choices.card] : []),
     ...choices.openBooks.flatMap((slug) => ['--open-book', slug]),
+    ...(choices.inbound !== undefined ? ['--inbound', choices.inbound] : []),
   ];
 }
 
@@ -2039,6 +2120,39 @@ export function recordLauncherConversation(options: { workspace: string; seat: s
  * `hold` is internal -- `enter` spawns it -- and prints nothing: the attempt record and the handle are
  * its whole interface.
  */
+/** What each seat verb would have done, for the redirect's "Nothing was <done>." */
+const REDIRECT_DONE: Record<string, string> = {
+  start: 'started',
+  enter: 'entered',
+  hold: 'held',
+  settings: 'changed',
+  describe: 'changed',
+  dirs: 'changed',
+  retire: 'retired',
+  cards: 'shown',
+};
+
+/**
+ * The seat a verb names, read as that verb reads it; a parse that fails is left to the verb's own refusal. THE RENAME
+ * BARRIER first (kickoffs/s109 ruling 8), then THE REDIRECT (kickoffs/s110 ruling 5): a past name of a live seat is
+ * refused with the name it has now, before the verb reads or writes anything.
+ */
+function assertNoRenameAt(action: string, rest: string[]): void {
+  let name = '';
+  let workspace = '';
+  try {
+    const parsed = parseArguments(rest, argumentTable('seat', action));
+    name = (action === 'cards' ? parsed.options.get('seat') : parsed.positional[0] ?? parsed.options.get('seat')) ?? '';
+    workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+  } catch {
+    return;
+  }
+  if (!name) return;
+  assertNoSeatRename(workspace, name);
+  const redirect = pastNameRefusal(path.join(workspace, '.claude'), name, REDIRECT_DONE[action] ?? 'changed');
+  if (redirect !== null) refuse(redirect);
+}
+
 export async function runSeatVerb(
   argv: string[],
   emitResult: (value: PsJsonValue, humanText?: string) => void,
@@ -2047,7 +2161,12 @@ export async function runSeatVerb(
   const action = argv[0] ?? '';
   const rest = argv.slice(1);
   try {
+    // THE RENAME BARRIER AT EVERY VERB THAT ACTS AT A SEAT (kickoffs/s109 ruling 8), by either name, before anything else.
+    if (Object.keys(REDIRECT_DONE).includes(action)) assertNoRenameAt(action, rest);
     switch (action) {
+      case 'rename':
+        emitResult(seatRenameResult(rest));
+        return 0;
       case 'enter':
         emitResult(await seatEnter(rest));
         return 0;
@@ -2122,7 +2241,7 @@ export async function runSeatVerb(
         return 0;
       }
       default:
-        onRefusal(`library seat has no action '${action}'. It has: cards, describe, dirs, enter, retire, settings, start, status.`);
+        onRefusal(`library seat has no action '${action}'. It has: cards, describe, dirs, enter, rename, retire, settings, start, status.`);
     }
   } catch (error) {
     onRefusal((error as Error).message);

@@ -449,6 +449,25 @@ export const VERBS: Record<string, VerbDeclaration> = {
     ported: true,
     row: 'S13',
   },
+  letters: {
+    summary: 'Close a letter addressed to this seat, in one step and with no new note, once it has been dealt with.',
+    // kickoffs/s108 ruling 2 (the messaging plan r4, D3; ADR-0071): `--seat` is read only to be refused by name.
+    usage: 'library letters close notes/<page> [--note "<one line>"]',
+    details: {
+      close: [
+        'Closes a letter for this seat in the letters Book (open on its Desk): review: done, the reviewed: stamp, and',
+        '--note as closed_note, one line saying what became of it. It needs no reader\'s yes and writes no note.',
+        'It refuses another seat\'s letter, a closed one, and one still carrying answered_by or routed_to.',
+      ],
+    },
+    actions: ['close'],
+    positional: false,
+    arguments: {
+      close: { valued: ['note', 'seat'], internal: ['seat'], positionals: 1 },
+    },
+    ported: true,
+    row: 'S108',
+  },
   library: {
     summary: 'The Libraries registered on this machine, and which one bare `deskpost` opens from anywhere.',
     usage: 'library library [list] [--json]; library library default <folder> [--json]',
@@ -629,23 +648,33 @@ export const VERBS: Record<string, VerbDeclaration> = {
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
     usage:
-      'library seat <cards|describe|dirs|enter|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      'library seat <cards|describe|dirs|enter|rename|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
       '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
       'library seat start <name> --project <slug> [--template performer|orchestrator] [--department <slug>] [--role performer|orchestrator] ' +
-      '[--card "<one line>"] [--open-book <shelf-slug>]... [--preflight | --plan-id <id>]; ' +
+      '[--card "<one line>"] [--open-book <shelf-slug>]... [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>]; ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--clear-department] [--clear-role] [--clear-card] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
       'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
+      'library seat rename <old> <new> [--preflight | --user-confirmed --plan-id <id>] [--workspace <path>] [--json]; ' +
+      'library seat rename (--resume <seat> | --rollback <seat>) [--workspace <path>] [--json]; ' +
       'library seat status [--seat <name>] [--text] [--workspace <path>]',
     // Every one answers; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
     // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), and `settings` its
     // inbound policy (1.3.1, ADR-0062), both applied by `start`. `describe` sets a seat's department, role and card under
     // the reader's gate (1.3.8, ADR-0069), and `cards` lists them as the directory, computed and read only.
-    actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'retire', 'settings', 'start', 'status'],
+    actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'rename', 'retire', 'settings', 'start', 'status'],
     positional: false,
     details: {
-      start: ['A new seat: --template, --department, --role, --card and --open-book each need the plan_id its --preflight issued.'],
+      rename: [
+        'One seat per run, by its id: its folder, its Notebook root, four files\' seat key and its registry row; the Project and Hub never change.',
+        'A stopped rename stands as a barrier at the seat: --resume <seat> finishes it, --rollback <seat> puts it back (either name finds it).',
+        'Undo a finished rename by renaming back to the seat\'s previous name.',
+      ],
+      start: [
+        'A new seat: --template, --department, --role, --card, --open-book and --inbound each need the plan_id its --preflight issued.',
+        '--inbound accept lets other seats\' rings reach a new Claude Code seat at once; an existing seat takes it from seat settings.',
+      ],
       dirs: ['--list is the default: with neither --add nor --remove, dirs lists the seat\'s folders, and --list changes nothing.'],
     },
     arguments: {
@@ -669,12 +698,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
         internal: ['seat', 'attempt-id', 'agent-pid', 'agent-start-utc', 'poll-ms'],
         positionals: 0,
       },
+      rename: { valued: ['plan-id', 'resume', 'rollback'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
       retire: { valued: ['plan-id'], boolean: ['preflight'], positionals: 1 },
       settings: { valued: ['inbound', 'plan-id'], boolean: ['preflight'], positionals: 1 },
       // EVERYTHING AFTER A BARE `--` IS THE AGENT'S, never checked. The two legacy names are read only to be refused.
       start: {
         valued: [
-          'project', 'command', 'plan-id', 'assistant', 'resume', 'session-id', 'department', 'role', 'card', 'template',
+          'project', 'command', 'plan-id', 'assistant', 'resume', 'session-id', 'department', 'role', 'card', 'template', 'inbound',
           'deadline-seconds', 'restore-desk-from-archive',
         ],
         repeatable: ['open-book'],
@@ -790,6 +820,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
       tidy: { valued: ['days', 'restore', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
       rebuild: { positionals: 1 },
     },
+    details: {
+      render: [
+        "render rebuilds shelf/_catalog.md from each Book's shelf/<slug>/_catalog-entry.md. It takes no Book name: it",
+        'renders the whole catalog. Run it after any _catalog-entry.md edit. It is safe to rerun: the same entries give the same catalog.',
+      ],
+    },
     // The five writers landed in S14; `duplicates` in S41 (src/duplicates.ts), judged against the
     // harness's embedding stand-in.
     ported: true,
@@ -810,7 +846,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
         '--actions-path <file> reads the actions as UTF-8 JSON from a file, in place of --actions: Windows PowerShell strips the',
         'quotes inside an inline JSON value. ' + CONTENT_PATH_RULE.replace('--content-path', '--actions-path'),
         '',
-        'Marking a letter read (the seat it is for may close it):',
+        'A seat closes a letter for itself with deskpost letters close notes/<page> --note "<what became of it>", not with triage.',
+        'The reader closes any letter with a review that names its Book:',
         `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,
       ],
     },

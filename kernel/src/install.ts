@@ -607,9 +607,10 @@ export type ClosingPart = 'program' | 'library' | 'refresh' | null;
  * before doctor ran. Only a program failure is the install's to roll back. A report that could not be read is the
  * program's, since its own doctor did not answer. Pure, so self-test section 132 judges it on any host.
  *
- * ONLY THE PROGRAM-WIDE CHECKS ARE THE PROGRAM'S (the Codex review's finding 6): the ordinary doctor also keeps Library
- * checks in `program_checks` (`seats.added-folders`, the `shelf.*` ones, `seats.inbound-policy`), which `--served-by`
- * folds into each Library's rows; a failure among those is the Library's, and names no rollback.
+ * ONLY THE PROGRAM-WIDE CHECKS ARE THE PROGRAM'S (the Codex review's finding 6): the ordinary doctor kept Library checks
+ * in `program_checks` (`seats.added-folders`, the `shelf.*` ones, `seats.inbound-policy`) until 1.4.1 moved them to
+ * `library_checks` (kickoffs/s109 ruling 3), and `--served-by` folds them into each Library's rows; a failure among
+ * those is the Library's, and names no rollback. An older report's are still read as the Library's.
  */
 export function closingPart(exit: number, report: Record<string, unknown> | null, refreshing: boolean): ClosingPart {
   if (report === null) return exit === 0 ? null : refreshing ? 'refresh' : 'program';
@@ -617,7 +618,7 @@ export function closingPart(exit: number, report: Record<string, unknown> | null
   const programRows = failing(report['program_checks']);
   if (programRows.some((row) => PROGRAM_WIDE_CHECKS.has(String(row?.['check'])))) return 'program';
   const libraries = Array.isArray(report['libraries']) ? (report['libraries'] as { checks?: unknown }[]) : [];
-  if (programRows.length || failing(report['checks']).length || libraries.some((library) => failing(library.checks).length)) return 'library';
+  if (programRows.length || failing(report['checks']).length || failing(report['library_checks']).length || libraries.some((library) => failing(library.checks).length)) return 'library';
   return exit === 0 ? null : 'program';
 }
 

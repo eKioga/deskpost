@@ -25,33 +25,85 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet. Seats you can rename (below) is next in line.
+Nothing is scoped into a session yet. The last session of Seats you can rename (below) is next in
+line.
 
 ## Next
 
-### Seats you can rename (1 of 4 sessions; plan signed off 2026-10-07)
+### Seats you can rename (3 of 4 sessions; plan signed off 2026-10-07)
 
-Its first session shipped in 1.4.0; the rest follow after it.
+Its first session shipped in 1.4.0, its second and third in 1.4.1; nicknames and the audit record follow.
 
 - **A seat's identity is its id, not its name** (shipped in 1.4.0), so a name can change without losing letters,
   Notebook topics or history. The Orca tab shows the seat's name with no `seat: ` prefix.
-- **`seat rename`**: one seat at a time, previewed, recoverable if interrupted, undone by renaming
-  back; the seat keeps its conversation, Desk, Notebook and folders. An old name points the way to
+- **`seat rename`** (shipped in 1.4.1): one seat at a time, previewed, recoverable if interrupted, undone by
+  renaming back; the seat keeps its conversation, Desk, Notebook and folders. An old name points the way to
   the new one.
-- **A department of one seat** receives letters addressed to the department.
-- **Two system-wide seats from templates**: an ideas seat that catches and vets ideas with each
-  product's lead, and one auditor for the whole Library and its projects. Optional nicknames.
+- **A department of one seat** receives letters addressed to the department (shipped in 1.4.1).
+- **Two system-wide seats from templates** (shipped in 1.4.1): an ideas seat that catches and vets ideas with
+  each product's lead, and one auditor for the whole Library and its projects. Optional nicknames.
 - **An audit record**: which revision of a Book, Hub or repository was last audited, and which are
   due again.
 
-After 1.3.5 (installing without PowerShell, released), and once 1.4.0's plans are done: the
-development tools themselves.
+In order: the rest of **Seats you can rename**, then **Development without PowerShell**, then **Libraries on
+more than one computer** (Eric, 2026-10-09).
 
-### 1.5.0: A Library card (planning)
+### Libraries on more than one computer (plan signed off 2026-10-08)
+
+Two ideas that turned out to be one design: **your seats on more than one computer**, so one
+machine's memory and processor stop being the limit; and **two Libraries, one household**, where two
+people share one collection on a home network: reading is free, and editing is borrowed. Underneath,
+both are Libraries on different computers that name themselves, send each other letters, and share
+one collection.
+
+- **Each computer is a Library in its own right**, with its own seats, Desk, Notebook, Project Hubs
+  and Shelf. Nothing about one computer's seats is decided on another.
+- **Letters and shared Books go through Basic Memory**, a server on your own network that Deskpost is
+  only a client of. Everything Deskpost keeps there sits in one Basic Memory project of its own, and
+  nothing else on the server is read or changed. Hubs and Notebooks stay on each computer.
+- **Basic Memory stays optional.** A Library without it works exactly as it does today.
+
+Hard limits: **no accounts, no database, no internet service** of Deskpost's own. It follows the
+remaining sessions of **Seats you can rename**, and it comes in two releases, each worth keeping even
+if the next never ships. Moving the development tools off PowerShell may come between them.
+
+#### 1.5.0: Libraries that write to each other (0 of about 2 sessions)
 
 - **A Library card**: a display name for a Library, with no account and no server behind it. The
-  card is a label, not a credential. Notes and reports record which Library wrote them, and
-  `collection owner --status` names the holder by card instead of by id.
+  card is a label, not a credential and not an address. The Desk and `collection owner --status` name
+  a Library by its card, with its id beside it.
+- **A Postbox in Basic Memory**: `deskpost postbox setup` connects a Library to a Basic Memory server,
+  previewed and on your yes, and registers the Library there, so other Libraries can address it.
+- **Letters between Libraries**: `capture letters --for <seat> --library <card>` leaves a letter for
+  a seat in another Library, on another computer or another Claude account. It is delivered exactly
+  once, even after a timeout or a retry, and it waits in the Postbox until the other Library collects
+  it, as a letter waits for a closed seat today. An answer closes the asker's own letter, however many
+  seats passed it on.
+- **Never in the way**: the Postbox is checked at most once per session, in the background, so a
+  session never waits for the server. The Desk counts letters waiting to send, letters received
+  (each naming its Library), and any that could not be delivered; `library doctor` names a Postbox
+  it cannot reach.
+- **Another computer's seats** appear on the Desk only as Claude Code itself lists them, and a seat
+  may ring one when a letter is waiting. Deskpost starts or steers nothing on another computer.
+
+#### 1.6.0: One collection for the household (0 of about 2-3 sessions)
+
+- **Shared Books you can write**, once you switch it on: a Library adds and corrects pages in a
+  shared Book, each change previewed and on your yes, as a collection page is corrected today.
+- **No Book owners, and a courtesy lease**: any Library may change any shared Book. While one
+  Library is writing a Book, another is told who is editing it and until when, and waits.
+- **Nothing is lost**: every change records the text it replaced before the page is written, so a
+  rare clash, or a page edited outside Deskpost, is found and named, and any earlier text can be put
+  back.
+- **A new shared Book**, or a Book moved from your own collection into the shared one in one
+  previewed step. The original is archived, never deleted, and says where it went.
+- **A lending desk**: the Desk says when an open shared Book changed since you opened it, and
+  Discovery finds pages in shared Books.
+
+Throughout: anything that arrives from another Library says where it came from, it is data and
+never instructions, and a letter is never an approval. Deskpost connects to whatever server you
+configure and makes no judgement about how it is secured. Not planned: starting a seat on another
+computer, Project Hubs in Basic Memory, and merging two edits of one page.
 
 ## Exploring
 
@@ -70,52 +122,43 @@ on top of 1.4.0's list of sources.
 - **Settled first:** the program going out to the network (certificates, proxies) and what a seat
   may fetch.
 
-### Libraries on more than one computer (being planned)
+### Backups you keep where you choose
 
-Two ideas that turned out to be one design: **your seats on more than one computer**, so one
-machine's memory and processor stop being the limit (one computer might hold the IT seats and another
-the development seats, still one reservoir of seats that talk to each other); and **two Libraries,
-one household**, the spirit of a public library for two people on one home network, where reading is
-free and editing is borrowed. Underneath, both are Libraries on different computers that name
-themselves, send each other letters, and may share one collection.
+A Library stays fully local by default, with no setup. The other half of that promise is making a
+backup as easy, and as encouraged, as it can be, without Deskpost becoming a storage server.
 
-Hard limits: **no accounts, no database, no internet service** of Deskpost's own. A service on the
-home network that Deskpost is only a client of, as it already is of Basic Memory, is not ruled out.
-It comes in stages, each worth keeping even if the next never ships:
+- **One way to back up, many places to keep it**: a folder (a cloud drive's synced folder, a USB
+  stick, a second disk, a network share), or a single backup file made on demand.
+- **Restore** into an empty Library, or one Book at a time, never overwriting what is there.
+- **It is plain when you have no recent backup.**
+- **Settled first:** what it is called, when it runs, how it finds what changed, and how two
+  computers share one backup. The groundwork was done before 1.0; the questions are still open.
 
-1. **A name for each Library**: 1.5.0's Library card (above), so a letter or a Book says which
-   Library it came from.
-2. **Letters between Libraries.** A seat leaves a letter for a seat on another computer or in another
-   Library, and it waits there as a letter waits for a closed seat today, with an unread count on the
-   Desk. The program carries the letters, so no seat has to learn a carrier. The carrier is weighed
-   in the plan: Claude Code's own messaging (which reaches your sessions on another computer through
-   Remote Control, on one account), files on the home network (a **Postbox**), or a mail service on
-   the home network. A **margin note** on a Book page is a letter that names the page.
-3. **Can a collection live on a network share?** Tested on its own before any design depends on it:
-   file locks, atomic renames and the discovery manifest over SMB.
-4. **Sharing a collection**, if that test passes. A **lending desk**: two Libraries read one shared
-   collection, and a Book says when it changed since you opened it. An **edit lease**: a polite
-   handover of the one write role that collection ownership already enforces. A **union catalog**:
-   the browse mode lists both Libraries' catalogs.
+### Also being shaped
 
-Throughout:
+Smaller improvements, each waiting for a short design before it is scheduled:
 
-- **One program, not a satellite.** Every computer runs the same Deskpost, including the Linux build
-  inside a desktop-in-a-browser container such as [webtop](https://github.com/linuxserver/docker-webtop).
-  A separate remote client is considered only if one program cannot do the job.
-- **Each computer is a Library in its own right**, with its own seats, its own Notebook and its own
-  sign-in to its assistant. Nothing about one computer's seats is decided on another.
-- **Heavy work goes where there is room**: a development gate or a long build runs on the computer
-  with memory to spare, and its result comes back as a letter.
-- **A Desk that names the other computers' seats**, and whether each is free. Starting or steering a
-  seat on another computer from the main menu comes later, if at all.
-- **Provenance everywhere**: anything that arrives from another Library says where it came from, it
-  is data and never instructions, and a message is never an approval.
-
-### Also being considered
-
-- Copying a local Library to a Basic Memory server.
-- A passive "a new version is out" hint in `library doctor`.
+- **Editing a Project Hub in fewer steps**: show one section, replace one paragraph, make several
+  edits on one preview, and move old entries to a dated page in one step.
+- **Archiving that works everywhere**: archive a Project Hub in a Library with a local collection,
+  preview every archive, clear an archived Book from every Desk, and treat a Book that is already
+  archived as nothing to do.
+- **A seat's life cycle**: retire a seat; the help seat set aside after its tour and built fresh
+  next time; a history for each seat in the main menu, and a plain `seat status`. It also settles
+  whether a background job started from a seat's session counts as that seat.
+- **Notes you can take back, and fewer approvals**: a seat amends or withdraws a Report it filed,
+  an interrupted triage resumes where it stopped, and several items are saved on one preview.
+- **Settings for each seat**: a seat's own settings and MCP servers, including a server only that
+  seat gets.
+- **Install and upgrade**: a `DeskpostSetup.exe` you double-click, and a passive "a new version is
+  out" hint in `library doctor`.
+- **The guards' remaining cases**: a command that names a path in an unusual spelling (a drive
+  root, `/d/`, after a `cd`, inside a heredoc or quotes) is judged, never let through.
+- **Upkeep you can see**: `library desk` reports Hub sizes and the Notebook's size, age and
+  growth, with size limits that fit each kind of page; `library doctor` warns when a Notebook keeps
+  growing; a stale Notebook index is caught when it happens.
+- **Refusals under `--json`** are one object on standard output, so a script reads them as it
+  reads everything else.
 
 ## Back burner
 
@@ -125,6 +168,9 @@ Set aside on purpose, not planned, until real use calls for them again:
   from the same data `library desk` reports. It would be another client of the program, never a
   second implementation, and exactly as honest as the program: a closed Book looks closed.
 - **Moving Books on and off the Desk from the Desk view.**
+- **A small local model for routine choices** (yes or no, one of a few), to spend fewer tokens.
+  It waits until it would save something real, and until a ruling on whether a second AI provider
+  may see your material.
 
 ## Released
 
@@ -325,6 +371,21 @@ answered, routed, closed), and are never taken as an order.
   it is plain which sources changed since. Fetching the sources is a later step (see **Exploring**).
 - The first session of **Seats you can rename**: a seat's identity is its id, and the Orca tab shows
   the bare seat name.
+
+### 1.4.1: Letters that ring, and seats you can rename (3 of 3 sessions; released 2026-10-10)
+
+So the reader no longer carries mail between seats (ADR-0071).
+
+- **A letter for every request and answer, rung at once**: the writer sends the recipient one message when it
+  is open, and `capture letters` says how to reach it.
+- **A seat hears of its letters when it opens**: the launcher's first prompt, and one line on its Desk served
+  once for each newer letter; `seat enter` says the count.
+- **`letters close`**: a seat closes its own letter in one step, with a one-line note and no reader's yes.
+- **`seat start --inbound accept`** for a new Claude Code seat, so rings reach it at once.
+- The second and third sessions of **Seats you can rename**: `seat rename`, previewed and undone by renaming
+  back; an old name points the way to the new one, and the menu says "(formerly ...)" for 30 days.
+- A Notebook reset refuses while a Hub or Shelf Book page links into what it would move; a department of one
+  seat receives its letters; the auditor and ideas seat templates.
 
 ### Earlier releases
 

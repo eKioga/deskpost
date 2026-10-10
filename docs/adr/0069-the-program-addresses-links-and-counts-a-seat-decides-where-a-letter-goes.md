@@ -8,6 +8,9 @@ letters to a department; released in session 4)
 assignment or workflow engine" (0062:145-147) and "Nothing a seat may act on lives only in a message" (0062:51-58).
 See "What this changes in ADR-0062". Its inbound-policy lines 0062:28 and 0062:123-124 are answered here (2026-10-07), not
 amended.
+**Amended by:** [ADR-0073](0073-a-department-letter-goes-to-its-orchestrator-or-its-only-seat-and-a-seats-names-follow-one-set-of-rules.md)
+(2026-10-09): a letter to a department goes to its orchestrator or its only seat, which resolves the delivery line
+against the Consequences line "A department of one makes its only seat its orchestrator".
 **Relates to:** [ADR-0018](0018-a-seat-binds-to-a-conversation-by-verified-process-identity.md) (what a seat's name
 proves), [ADR-0060](0060-the-holding-shelf-is-the-last-resort-and-its-growth-is-a-library-signal.md) (growth as a
 signal), [Seats](../seats.md), [Capture Books](../capture-book-model.md)

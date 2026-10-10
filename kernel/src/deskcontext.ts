@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { splitBookRoot } from './desk.ts';
+import { pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
@@ -57,6 +57,11 @@ export function directoryLine(stateDirectory: string, seat: string): string {
 }
 
 const EVENT = 'UserPromptSubmit';
+/**
+ * THE DESK'S LETTER LINE (kickoffs/s108 ruling 3; ADR-0071), a constant: no count, title or sender, so the reader map is
+ * never quoted into a prompt. Served inside the block's once-per-session rule, keyed on the newest pending letter.
+ */
+export const LETTERS_WAIT_LINE = 'Letters wait for this seat: read them before other work, then close each one you have dealt with.';
 /**
  * THE READER'S CALLABLE PREFIX, which the harness composes and this hook cannot know (ADR-0007: the tool
  * is advertised by its exact callable name). A project-level server in Claude Code is `mcp__<server>__`,
@@ -352,7 +357,21 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     } catch {
       // swallowed: a static line, and a prompt must not wait on it
     }
-    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${seatWarning}${notebookWarning}`;
+    // THIS SEAT'S PENDING LETTERS (kickoffs/s108 ruling 3), in their own `try`: a reader fault leaves no line and the
+    // text-only key, so it can never make the block per prompt. The newest page reaches the ledger key only.
+    let letterLine = '';
+    let newestPending = '';
+    try {
+      const pending = pendingLetterPagesForSeat(workspace, seat);
+      if (pending.length) {
+        letterLine = ` ${LETTERS_WAIT_LINE}`;
+        newestPending = pending[pending.length - 1]!;
+      }
+    } catch {
+      letterLine = '';
+      newestPending = '';
+    }
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${seatWarning}${notebookWarning}`;
     // ONCE PER SESSION, KEYED ON THE TEXT ITSELF (kickoffs/s77 row 0, the desk-context Report): an identical block
     // already served into this conversation is still in it, so it is not sent again. A changed Desk, seat or warning
     // is a different text and is sent. Only where the ledger clear is proven to reach this ledger (above), only for
@@ -361,7 +380,9 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     try {
       const claudeCode = prefix === DEFAULT_READER_PREFIX && (process.env['DESKPOST_ASSISTANT'] ?? '') !== 'codex';
       if (claudeCode && sessionId.trim() && ledgerClearReaches(workspace, stateDirectory)) {
-        const ledgerKey = `desk-context:${seat}:${sha256OfText(text)}`;
+        // ONCE PER NEWEST PENDING LETTER (kickoffs/s108 ruling 3): a newer letter is a new key, served once; the close of
+        // an older one while a newer waits leaves the key as it was. With none pending, the text-only key as before.
+        const ledgerKey = `desk-context:${seat}:${sha256OfText(newestPending ? `${text}|${newestPending}` : text)}`;
         if (testHookServed(stateDirectory, sessionId, ledgerKey)) {
           return sessionTitle ? JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT, sessionTitle } }) : '';
         }

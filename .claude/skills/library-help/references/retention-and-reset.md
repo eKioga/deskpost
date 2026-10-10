@@ -31,6 +31,13 @@ the plan id, the Notebook changed: preview again, say what changed, and ask agai
 Show the preview's target, the topics and loose files it would move, and `desk_action`. Ask once,
 then run the confirmed command. It never triages and never writes to the collection.
 
+**A reset never breaks a link.** A lasting record links to a Hub notes page or a repo file, never
+into the Notebook. The preview's `inbound_links` lists each line of a Hub or Shelf Book page that
+names a path under what the reset would move (page, line and topic), and the confirmed run refuses
+while any remain; there is no override. The repair is to home the material on a dated Hub notes
+page (`library hub edit <slug> --mode new-page`) or in a repo file, repoint each link, and preview
+again. `library doctor` warns about a line that already names a Notebook path that is gone.
+
 ## What a reset cannot reach, and why "empty everything" is several requests
 
 A reset is one seat's. **`--all-idle-seats` and `--whole-tree` are refused by name**: they reached
@@ -142,7 +149,7 @@ A Library can sit inside a larger folder that a notes app (Obsidian, for one) sy
 Publishing a Shelf Book to a shared collection, refreshing one, and archiving a Book or a Project
 all follow the same shape: **preview, show the manifest and plan id, one clear approval, then the
 confirmed run**. The full sequences are in
-[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/librarian-operation-playbooks.md). Read the
+[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.4.1/docs/librarian-operation-playbooks.md). Read the
 applicable section immediately before the action. A Library on its own disk has no shared
 collection to publish to, and its Books stay on the Shelf.
 

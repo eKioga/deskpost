@@ -25,6 +25,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
+import { seatStatePath } from './seatpaths.ts';
 import { assertSeatRegistryLockHeld } from './locks.ts';
 import { seatBindingForAgent } from './seatclaim.ts';
 import { currentAgentProcessId } from './procstart.ts';
@@ -43,8 +44,9 @@ export function deskFileName(kind: DeskKind): string {
   return kind === 'books' ? '.open-books' : '.open-projects';
 }
 
+/** The seat's state folder, through the one seat-path resolver (kickoffs/s109 ruling 7). */
 export function deskStateDirectory(stateDirectory: string, seat: string): string {
-  return path.join(seatsDirectory(stateDirectory), seat);
+  return seatStatePath(stateDirectory, seat);
 }
 
 export function deskFilePath(stateDirectory: string, seat: string, kind: DeskKind): string {

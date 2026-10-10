@@ -20,7 +20,7 @@ import { installRootOf } from './machine.ts';
 import { DEFAULT_RELEASE, defaultPlatform, newTempFolder, readReleaseFile } from './bootstrap.ts';
 import { installVerb } from './install.ts';
 import { compareVersions, latestVersionIn } from './versions.ts';
-import { upgradeLine } from './setup.ts';
+import { UPGRADE_OPENED_ENV, upgradeLine } from './setup.ts';
 
 export interface UpgradeCheck {
   installed: string | null;
@@ -198,7 +198,11 @@ export async function upgradeVerb(argv: string[]): Promise<UpgradeResult> {
   const child = ['--release', release, '--install-root', root];
   for (const flag of ['dry-run', 'json', 'yes', 'path-change', 'no-path-change']) if (parsed.flags.has(flag)) child.push(`--${flag}`);
   for (const option of ['plan-id', 'wait']) if (parsed.options.has(option)) child.push(`--${option}`, parsed.options.get(option)!);
-  if (!json) say(`Upgrading Deskpost ${found.installed} at ${root} to ${found.latest}.`);
+  // ONE OPENING LINE ON EVERY ROUTE (kickoffs/s110 ruling 3): said here, before the install's own refusals, the download
+  // and its check, so a run that stops before `setup` still says what it was doing. `setup`, run by the release being
+  // installed, reads UPGRADE_OPENED_ENV and does not say it again; `deskpost setup` on its own keeps its line.
+  say(`Upgrading Deskpost ${found.installed} to ${found.latest} at ${root}.`);
+  process.env[UPGRADE_OPENED_ENV] = '1';
   const installed = await installVerb(child);
   return { refusal: installed.refusal, exitCode: installed.exitCode };
 }

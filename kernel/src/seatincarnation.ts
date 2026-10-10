@@ -244,3 +244,31 @@ export function resolvesTo(recordedName: string | null, recordedId: string | nul
   const found = incarnationOf(row.view ?? singleRowView(row), recordedName, recordedId, rule);
   return found.outcome === 'live' && found.current_name === row.seat;
 }
+
+/** A UTC time as the local calendar date, `YYYY-MM-DD`; '' when it does not parse. */
+export function localDateOf(utc: string): string {
+  const when = new Date(utc);
+  if (Number.isNaN(when.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
+}
+
+/**
+ * AN OLD NAME POINTS THE WAY (PLAN-seat-identity.md section 3; kickoffs/s110 ruling 5). The live seat that gave `name` up
+ * by a rename, its name now and the local date it gave it up; null when a live seat holds the name now (the current
+ * name wins, standing answer 14) or no live seat ever gave it up. Facts only: no alias, no use log.
+ */
+export function renamedAway(view: SeatIdentityView, name: string): { seat: string; date: string } | null {
+  if (!name || view.live.some((row) => row.seat === name)) return null;
+  for (const row of view.live) {
+    const span = row.names.slice(0, -1).find((candidate) => candidate.name === name);
+    if (span) return { seat: row.seat, date: localDateOf(span.to_utc ?? '') };
+  }
+  return null;
+}
+
+/** The redirect's sentence: "'<old>' was renamed to '<new>' on <date>; write to that name. Nothing was <done>." */
+export function pastNameRefusal(stateDirectory: string, name: string, done: string): string | null {
+  const found = renamedAway(readSeatIdentityView(stateDirectory), name);
+  return found ? `'${name}' was renamed to '${found.seat}' on ${found.date}; write to that name. Nothing was ${done}.` : null;
+}

@@ -54,6 +54,8 @@ import {
   type QuarantineRow,
 } from './notebook.ts';
 import { notebookScope, prepareNotebookScopeForWrite, SEAT_INDEX_NAME, type NotebookScope } from './notebooklayout.ts';
+import { inboundNotebookLinks, NOTEBOOK_LINK_REPAIR, type InboundLink } from './notebooklinks.ts';
+import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation } from './seatpaths.ts';
 
 export interface ResetResult {
   refusal: string | null;
@@ -151,7 +153,7 @@ interface SeatTarget {
  * INCARNATION is bound with every topic, so an approval cannot execute against a seat that was retired
  * and recreated under the same name between the preview and the run.
  */
-function resetPlanId(options: { seat: string; desk: boolean; targets: SeatTarget[]; loose: string[] }): string {
+function resetPlanId(options: { seat: string; desk: boolean; targets: SeatTarget[]; loose: string[]; inbound: InboundLink[] }): string {
   const lines = [
     'action=reset-local-notebook',
     `seat=${options.seat}`,
@@ -160,8 +162,20 @@ function resetPlanId(options: { seat: string; desk: boolean; targets: SeatTarget
     `clear_desk=${options.desk}`,
     ...options.targets.map((row) => `topic=${row.topic}:${row.seat}:${row.seat_id}`).sort(),
     ...options.loose.map((name) => `loose=${name}`),
+    // THE INBOUND LINKS ARE BOUND (kickoffs/s109 ruling 1), and add nothing when there are none, so a plan with
+    // none is the plan it was before.
+    ...options.inbound.map((row) => `inbound=${row.page}:${row.line}:${row.topic}`).sort(),
   ];
   return `reset-local-notebook-${sha256Hex(lines.join('\n'))}`;
+}
+
+/** The refusal a reset gives while a lasting record links into what it would move: each line, then the repair. */
+function inboundRefusal(rows: InboundLink[]): string {
+  const lines = rows.map((row) => `${row.page} line ${row.line} (${row.topic})`);
+  return (
+    `${rows.length} line${rows.length === 1 ? '' : 's'} of a Hub or Shelf Book page link${rows.length === 1 ? 's' : ''} into what this reset would move: ` +
+    `${lines.join('; ')}. A reset would break ${rows.length === 1 ? 'it' : 'them'}, so ${NOTEBOOK_LINK_REPAIR}, then rerun the preflight.`
+  );
 }
 
 const COPY_ADVISORY_MESSAGE =
@@ -221,7 +235,10 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
   };
   const targets = withRegistryLock(workspace, select);
   const looseScan = looseFiles(scope.root);
-  const planId = resetPlanId({ seat, desk: clearDesk, targets, loose: looseScan.movable });
+  const inboundFor = (rows: SeatTarget[], loose: string[]): InboundLink[] =>
+    inboundNotebookLinks(workspace, scope.relative, [...rows.map((row) => row.topic), ...loose]);
+  const inbound = inboundFor(targets, looseScan.movable);
+  const planId = resetPlanId({ seat, desk: clearDesk, targets, loose: looseScan.movable, inbound });
 
   const leftovers = looseScan.reserved.length;
   const predictedRemaining = {
@@ -258,7 +275,8 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
     sweep: { requested: false, seats_resolved: 0, claim_probes: 0, to_sweep: [], skipped: [], message: NO_SWEEP_MESSAGE },
     loose_files_to_quarantine: looseScan.movable,
     loose_files_left_reserved_name: looseScan.reserved,
-    refusals: [],
+    refusals: inbound.length ? [inboundRefusal(inbound)] : [],
+    inbound_links: inbound as unknown as PsJsonValue,
     plan_id: planId,
     recoverable:
       'Topics are MOVED into internal/notebook-reset-quarantine/, never deleted. Bring them back with ' +
@@ -281,7 +299,10 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
   if (!approvedPlanId) throw new Error('Reset aborted: review the preflight and rerun with its exact --plan-id.');
 
   const topicLocks: BookLock[] = [];
+  const start = beginSeatMutation(workspace, seat);
   const registryLock = enterSeatRegistryLock(workspace);
+  // THE REGISTRY LOCK, THEN THE SEAT'S NOTEBOOK LOCK, then the topics' and the render's (kickoffs/s109 ruling 7).
+  let notebookLock: BookLock | null = null;
   let quarantineDirectory = '';
   let moves: Record<string, PsJsonValue>[] = [];
   let looseMoved: string[] = [];
@@ -290,17 +311,22 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
   let masterTopicCount = 0;
   let remaining: string[] = [];
   try {
+    notebookLock = enterSeatNotebookLock(workspace, scope.seat);
+    recheckSeatMutation(start);
     // REVALIDATED UNDER THE LOCK, and the plan_id is what makes that mean something: a topic added
     // or a seat recreated since the preview becomes a refusal rather than a silent inclusion.
     const current = select();
     applyLoose = looseFiles(scope.root);
-    const currentPlanId = resetPlanId({ seat, desk: clearDesk, targets: current, loose: applyLoose.movable });
+    const currentInbound = inboundFor(current, applyLoose.movable);
+    const currentPlanId = resetPlanId({ seat, desk: clearDesk, targets: current, loose: applyLoose.movable, inbound: currentInbound });
     if (currentPlanId !== approvedPlanId) {
       throw new Error(
-        `Reset aborted and nothing was moved: the seat, the scope switches, the topics selected, their owners, or the loose files under ${scope.relative}/ are not what that plan described. ` +
+        `Reset aborted and nothing was moved: the seat, the scope switches, the topics selected, their owners, the loose files under ${scope.relative}/, or the lines that link into them are not what that plan described. ` +
           'Rerun the current preflight and pass its exact plan_id as --plan-id.',
       );
     }
+    // NO OVERRIDE (ruling 1): a reset never breaks a lasting record. Refused before anything is made or moved.
+    if (currentInbound.length) throw new Error(`Reset refused and nothing was moved: ${inboundRefusal(currentInbound)}`);
     prepareNotebookScopeForWrite(scope, 'Reset');
 
     // Created only now, with the plan revalidated: a refused reset leaves no empty stamped directory.
@@ -352,6 +378,7 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
     }
   } finally {
     for (const lock of topicLocks) exitBookLock(lock);
+    exitBookLock(notebookLock);
     exitBookLock(registryLock);
   }
 
@@ -634,12 +661,16 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
   if (!approvedPlanId) throw new Error('Restore aborted: review the preflight and rerun with its exact --plan-id.');
 
   const topicLocks: BookLock[] = [];
+  const start = beginSeatMutation(workspace, seat);
   const registryLock = enterSeatRegistryLock(workspace);
+  let notebookLock: BookLock | null = null;
   let moves: Record<string, PsJsonValue>[] = [];
   let looseMoved: string[] = [];
   let masterTopicCount = 0;
   const ownership: Record<string, PsJsonValue>[] = [];
   try {
+    notebookLock = enterSeatNotebookLock(workspace, scope.seat);
+    recheckSeatMutation(start);
     const current = restoreDispositions(scope, seat, notebookQuarantineInventory(workspace, quarantineName)[0]!, selectedTopics, adopt);
     const currentRows = current.rows.filter((row) => row.action !== 'blocked');
     const currentBlocked = current.rows.filter((row) => row.action === 'blocked');
@@ -698,6 +729,7 @@ function restoreVerb(workspace: string, argv: string[]): PsJsonValue {
     writeAtomicText(path.join(quarantineRow.directory, 'restore-journal.json'), psConvertToJson(journal as unknown as PsJsonValue) + '\n');
   } finally {
     for (const lock of topicLocks) exitBookLock(lock);
+    exitBookLock(notebookLock);
     exitBookLock(registryLock);
   }
 

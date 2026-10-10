@@ -46,6 +46,13 @@ import { updateCheckSetting } from './updatecheck.ts';
 
 export const SETUP_QUIT = 3;
 
+/**
+ * SET BY `deskpost upgrade` FOR THE RUN IT STARTS (kickoffs/s110 ruling 3): the verb has already said "Upgrading Deskpost
+ * <old> to <new> at <root>.", so setup does not say it again. An environment variable rather than a flag, because the
+ * setup that reads it is the release being installed: a release that does not know it says its line, and never refuses.
+ */
+export const UPGRADE_OPENED_ENV = 'DESKPOST_UPGRADE_OPENED';
+
 export interface SetupAnswers {
   schema: 1;
   version: string;
@@ -569,11 +576,8 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
     }
   }
   if (installState !== 'new' && !given) {
-    talk.say(
-      installState === 'upgrade'
-        ? `Upgrading Deskpost ${folderState.version ?? '?'} to ${version} at ${installRoot}.`
-        : `Repairing Deskpost ${version} at ${installRoot}.`,
-    );
+    if (installState !== 'upgrade') talk.say(`Repairing Deskpost ${version} at ${installRoot}.`);
+    else if ((process.env[UPGRADE_OPENED_ENV] ?? '') !== '1') talk.say(`Upgrading Deskpost ${folderState.version ?? '?'} to ${version} at ${installRoot}.`);
     if (!served.length) talk.say('No registered Library runs this install; none is made.');
   } else {
     // THE ONE QUESTION (Q2).
@@ -690,7 +694,7 @@ async function ask(options: AskOptions, talk: Conversation): Promise<number> {
   // THE ONE SCREEN, AND THE ONE KEYPRESS.
   for (;;) {
     const removesVersions = installState === 'upgrade' ? versionsToPrune(installRoot, [version, folderState.version ?? '']) : [];
-    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot), removesVersions }));
+    talk.say('\n' + screenText({ version, checksumNote: options.checksumNote, installRoot, installState, fromVersion: folderState.version, library, state, repairLibrary, unguarded, assistant, both: claude !== null && codex !== null, pathChange: pathChangeFor(installRoot), overlapAccepted, runAsFile: options.runAsFile === true, keptLibraries: keepLibraries ? refreshTargets() : [], refresh: keepLibraries ? [] : preview(), spelling, pathRow: pathRowFor(installRoot), removesVersions, dryRun: options.dryRun === true }));
     if (!talk.interactive) break;
     const keys = screenKeys({ installState, state, repairLibrary, unguarded, refreshing: refreshTargets().length > 0, keepLibraries, both: claude !== null && codex !== null, assistant, dryRun: options.dryRun === true });
     const key = (await talk.ask('\n' + keys.join('   ') + ' › ')).toLowerCase();
@@ -788,6 +792,8 @@ export interface ScreenView {
   refresh?: RefreshPreview[];
   /** An upgrade: the old `versions\<v>` folders it removes once it commits, by the prune's keep rule (kickoffs/s94 row 2). */
   removesVersions?: string[];
+  /** A dry run (`--dry-run`): the Library row says what the run WOULD do (kickoffs/s109 ruling 4). */
+  dryRun?: boolean;
 }
 
 /** What the screen's keys depend on. */
@@ -842,7 +848,7 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
   const servedOnly = view.state === 'none' && (kept.length > 0 || refresh.length > 0);
   const libraryNote =
     servedOnly && refresh.length
-      ? `brought up to date in this run: ${refresh.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
+      ? `${view.dryRun ? 'would be ' : ''}brought up to date in this run: ${refresh.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
       : servedOnly
       ? `kept as ${kept.length === 1 ? 'it is' : 'they are'}, behind the program until ${COMMAND_NAME} init <folder>`
       : view.state === 'none'
@@ -858,8 +864,8 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
   // EACH SERVED LIBRARY'S REFRESH, BESIDE THE PROGRAM PLAN (ADR-0063 decisions 1 and 4): a count, or the reason it is kept.
   for (const entry of refresh) {
     if (view.state !== 'none' || refresh.length > 1 || entry.refused !== null) {
-      rows.push(['', entry.workspace, entry.refused !== null ? `kept as it is: ${entry.refused}` : `brought up to date: ${entry.writes} file(s)`]);
-    } else rows.push(['', '', `${entry.writes} file(s) brought up to date after the program switches`]);
+      rows.push(['', entry.workspace, entry.refused !== null ? `kept as it is: ${entry.refused}` : `${view.dryRun ? 'would be ' : ''}brought up to date: ${entry.writes} file(s)`]);
+    } else rows.push(['', '', `${entry.writes} file(s) ${view.dryRun ? 'would be ' : ''}brought up to date after the program switches`]);
     if (entry.refused === null && entry.codex) rows.push(['', '', 'Codex will ask you to review this Library\'s hooks again on its next start.']);
   }
   if (view.state !== 'none') for (const folder of kept) rows.push(['', folder, `kept as it is, behind the program until ${COMMAND_NAME} init <folder>`]);

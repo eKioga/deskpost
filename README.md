@@ -203,16 +203,18 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.4.0**. The full roadmap, with what each milestone carries and how far
+The current release is **1.4.1**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Next: seats you can rename.** A seat keeps its id when it is renamed, so it keeps its letters,
-  Notebook and history, and an old name still points the way to the new one.
-- **Then: 1.5.0, a Library card**: a display name for a Library, with no account behind it.
-- **Exploring:** refreshing a Book from its sources; and Libraries on more than one computer, being
-  planned: the seats you run share the load of the computers you already have and still talk to
-  each other, and two Libraries in one household can share a collection on the home network with no
-  accounts, database or server.
+- **Next: the rest of seats you can rename.** Optional nicknames, and a record of which Books, Hubs
+  and repositories were last audited and which are due again.
+- **Then: Libraries on more than one computer**, its plan signed off: 1.5.0 gives each Library a
+  card (a display name, with no account behind it) and lets Libraries on different computers leave
+  each other letters through a Basic Memory server on your own network; 1.6.0 lets two Libraries in
+  one household share and edit one collection there, with no accounts, database or service of
+  Deskpost's own. Basic Memory stays optional.
+- **Exploring:** refreshing a Book from its sources; backups kept in a folder or file you choose;
+  and smaller improvements, listed in the roadmap.
 
 What each earlier release carried is under **Released** in the roadmap.
 

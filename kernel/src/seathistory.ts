@@ -154,7 +154,9 @@ export interface SeatHistoryState {
  */
 export function seatHistoryState(history: SeatHistoryRead, seat: string, seatId: string, view?: SeatIdentityView): SeatHistoryState {
   const row = view ? { seat, seatId, view } : { seat, seatId };
-  const mine = history.records.filter((record) => resolvesTo(record.seat, String(record.seat_id ?? ''), row, 'strict'));
+  // A ROLLED-BACK RENAME IS NOT DONE (kickoffs/s109 ruling 8): its attempt and its rollback line both drop out.
+  const rolledBack = new Set(history.records.filter((record) => record.verb === 'seat rename rolled back').map((record) => record.attempt));
+  const mine = history.records.filter((record) => !rolledBack.has(record.attempt) && resolvesTo(record.seat, String(record.seat_id ?? ''), row, 'strict'));
   let lastIndex = -1;
   for (let index = mine.length - 1; index >= 0; index -= 1) {
     if (history.committed.has(mine[index]!.attempt)) {

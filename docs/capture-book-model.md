@@ -1,5 +1,7 @@
 # Capture Books and the Library Help Skill
 
+> **Since S110:** `Add-ShelfNote.ps1`, `Invoke-LibraryTriage.ps1` and `Rename-ShelfBook.ps1` are internal, not commands a reader runs; the kernel verbs `deskpost capture`, `deskpost triage batch` and `deskpost shelf rename` replace them.
+
 > **Status:** implemented and acceptance-tested, 2026-08-16.
 
 ## The defect

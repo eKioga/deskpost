@@ -38,6 +38,7 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
+import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation } from './seatpaths.ts';
 import { completeBookMutation, enterBookMutation, type BookMutation } from './mutation.ts';
 import { captureVerb, runBookVerb, updateShelfNoteIndex } from './capture.ts';
 import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
@@ -878,7 +879,6 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         const topic = String(action.metadata['topic'] ?? '');
         if (seat === null) refuse(seatState.message);
         const scope = notebookScope(workspace, seat, 'write', 'Triaging a note into the Notebook');
-        prepareNotebookScopeForWrite(scope, 'Triaging a note into the Notebook');
         const topicDirectory = path.join(scope.root, topic);
         const destination = path.join(topicDirectory, note.file);
         result['destination'] = action.write_set.find((item) => item.endsWith(`/${note.file}`)) ?? action.write_set[0]!;
@@ -887,8 +887,21 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
           refuse(`${scope.relative}/${topic} exists with no _index.md. Repair or remove that directory before triaging into it; a topic with no index cannot be rendered into the Notebook master index.`);
         }
         result['topic_is_new'] = !topicExists;
-        // Book, then topic, then render: the lock order every Notebook writer shares. The Book's is held.
-        const topicLock = enterBookLock(workspace, notebookTopicLockRoot(topic, scope.relative), lockTimeout);
+        // Book, then the seat's Notebook lock, then topic, then render: the lock order every Notebook writer shares. The
+        // Book's is held. The final check that no rename began meanwhile is made under the Notebook lock (ruling 7).
+        const start = beginSeatMutation(workspace, seat);
+        const notebookLock = enterSeatNotebookLock(workspace, scope.seat, lockTimeout);
+        let topicLock: BookLock | null = null;
+        try {
+          recheckSeatMutation(start);
+          // THE ROOT IS MADE ONLY AFTER THE FINAL CHECK (kickoffs/s110 ruling 1), so a refusal mid-rename leaves no
+          // empty `notebook/<old>/` behind to stop the rename's rollback.
+          prepareNotebookScopeForWrite(scope, 'Triaging a note into the Notebook');
+          topicLock = enterBookLock(workspace, notebookTopicLockRoot(topic, scope.relative), lockTimeout);
+        } catch (error) {
+          exitBookLock(notebookLock);
+          throw error;
+        }
         try {
           const original = fs.readFileSync(note.fullPath, 'utf8');
           if (topicExists) {
@@ -922,6 +935,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
           }
         } finally {
           exitBookLock(topicLock);
+          exitBookLock(notebookLock);
         }
         // The Notebook copy is not a Book write, so the window opens here, at the Shelf note's frontmatter.
         const content = fs.readFileSync(note.fullPath, 'utf8');

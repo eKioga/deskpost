@@ -30,6 +30,7 @@ import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatregistry.ts';
 import { identityRowsOfRegistry } from './seatincarnation.ts';
+import { assertNoSeatRename } from './seatpaths.ts';
 import {
   METADATA_FIELDS,
   cardProblem,
@@ -348,6 +349,8 @@ export function seatDescribeResult(options: { workspace: string; seat: string; r
   const fromSeat = caller.status === 'named' ? caller.seat! : null;
   const lock = enterSeatRegistryLock(workspace, 10);
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(workspace, seat);
     const rows = readRegistryRows(file);
     if (options.planId !== planIdFor(seat, request, registryDigest(file))) {
       refuse(`${NOTHING} That plan_id does not match this seat, these changes and the seat registry as it is now: the registry changed since the preview, or the id is not the one it issued. Rerun the preflight, show the reader what it says, and ask again.`);

@@ -108,6 +108,8 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
   const archiveFull = path.join(collection, 'archive', slug);
   const activeRoot = path.join(activeFull, 'wiki', '_book.md');
   const activeIndex = path.join(activeFull, 'wiki', '_index.md');
+  // AN ARCHIVED BOOK IS SAID AS ONE (kickoffs/s109 ruling 4): no active copy and an archive copy is not "incomplete".
+  if (!fs.existsSync(activeFull) && fs.existsSync(archiveFull)) refuse(`Book '${slug}' is already archived; nothing to do.`);
   if (!fs.existsSync(activeRoot) || !fs.existsSync(activeIndex)) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
   if (fs.existsSync(archiveFull)) refuse(`Archive already contains '${slug}'; no move was attempted.`);
   const bookTitle = firstHeading(readUtf8(activeRoot)) ?? slug;

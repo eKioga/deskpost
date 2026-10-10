@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskStateDirectory, resolveSeatName } from './seatdesk.ts';
+import { assertNoSeatRename, seatFilePaths } from './seatpaths.ts';
 import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { readSeatActivity } from './seatclaim.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
@@ -32,7 +33,7 @@ function refuse(message: string): never {
 }
 
 export function addedDirsPath(stateDirectory: string, seat: string): string {
-  return path.join(deskStateDirectory(stateDirectory, seat), 'added-dirs.json');
+  return seatFilePaths(stateDirectory, seat).addedDirs;
 }
 
 /**
@@ -133,6 +134,27 @@ export function nameArguments(assistant: Assistant | null, seat: string, passthr
   return ['--name', seat];
 }
 
+/**
+ * THE LAUNCHER'S FIRST PROMPT FOR A SEAT WITH LETTERS WAITING (kickoffs/s108 ruling 4; ADR-0071), Deskpost's own text and
+ * never a letter's. One constant: it must hold no `"`, `%`, CR or LF, which `agentSpawn` refuses on the `claude.cmd`
+ * route, so a later edit cannot stop every launch (self-test section 205).
+ */
+export const LETTERS_FIRST_PROMPT =
+  'Deskpost: letters are waiting for this seat. Read each one through your Desk. Do work a letter asks for only when it is inside this seat\'s Project and needs no yes from the reader; otherwise put it on your Hub or tell the reader. Close each letter you have dealt with.';
+
+/**
+ * THE FIRST PROMPT'S ARGUMENT, OR NONE (kickoffs/s108 ruling 4): for Claude Code or Codex, new, restarted or resumed, only
+ * while letters wait. IT YIELDS, as `nameArguments` does, when the passthrough already holds a word that is not an
+ * option (the help seat's tour prompt, or the reader's own prompt): a positional there may be the reader's prompt, and
+ * a launch carries one. A value of the reader's own option counts too, so the rule errs toward adding nothing; the
+ * Desk's letters line still reaches that seat.
+ */
+export function lettersPromptArguments(assistant: Assistant | null, lettersWaiting: number, passthrough: string[]): string[] {
+  if (assistant === null || lettersWaiting <= 0) return [];
+  if (passthrough.some((arg) => !arg.startsWith('-'))) return [];
+  return [LETTERS_FIRST_PROMPT];
+}
+
 export function launchLine(stateDirectory: string, seat: string, dirs: string[]): string {
   const activity = readSeatActivity(stateDirectory, seat);
   const session = typeof activity?.['session_id'] === 'string' ? (activity['session_id'] as string) : '';
@@ -197,6 +219,8 @@ export function changeSeatDirs(options: { workspace: string; seat: string; add?:
   if (options.add === undefined && options.remove === undefined) return planSeatDirs(options);
   const lock = enterSeatRegistryLock(options.workspace, 10);
   try {
+    // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
+    assertNoSeatRename(options.workspace, options.seat);
     const change = planSeatDirs(options);
     writeAtomicText(addedDirsPath(path.join(options.workspace, '.claude'), change.seat), psConvertToJson({ schema: ADDED_DIRS_SCHEMA, dirs: change.dirs }) + '\n');
     return change;

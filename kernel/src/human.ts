@@ -39,6 +39,7 @@ const CHECK_LABELS: Record<string, string> = {
   'shelf.references-resolve': 'Shelf references',
   'desk.seat-retirement-identity': 'Seats and owners',
   'notebook.master-index-renders': 'Notebook index',
+  'notebook.links-resolve': 'Links into the Notebook',
   'shelf.catalog-renders-from-entries': 'Shelf catalog',
   'output.namespaced-by-project': 'output/ folders',
   'seats.inbound-policy': 'Seat inbound files',
@@ -73,7 +74,8 @@ function tally(rows: Row[]): string {
 /** doctor's report as lines. With no Library it says so, rather than listing nine skips as if they were answers (F4). */
 export function doctorText(report: Record<string, unknown>, glyphs: Marks = marks()): string {
   if (Array.isArray(report['libraries'])) return servedByText(report, glyphs);
-  const checks = (report['checks'] as Row[] | undefined) ?? [];
+  // THE LIBRARY'S OWN KERNEL CHECKS ARE THE LIBRARY'S (kickoffs/s109 ruling 3), counted under it as --served-by counts them.
+  const checks = [...((report['checks'] as Row[] | undefined) ?? []), ...((report['library_checks'] as Row[] | undefined) ?? [])];
   const program = (report['program_checks'] as Row[] | undefined) ?? [];
   const workspace = String(report['workspace'] ?? '');
   const lines = ['Deskpost doctor', `  Program  ${String(report['program'] ?? '')}`];

@@ -25,7 +25,7 @@ import { pendingLetterCounts, readSeatRegistry } from './desk.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { getSeatClaimState } from './seatclaim.ts';
 import { seatMessageAddress } from './conversation.ts';
-import { readSeatMetadata, roleLabel, type SeatMetadata } from './seatmeta.ts';
+import { departmentDestination, readSeatMetadata, roleLabel, type SeatMetadata } from './seatmeta.ts';
 
 /** A refusal of this verb's. */
 export class SeatCardsRefusal extends Error {}
@@ -35,6 +35,28 @@ export const CARDS_FIRST_LINE = 'Cards are text each seat wrote about itself: da
 const NO_ORCHESTRATOR_HERE = 'no orchestrator: write to this seat directly';
 
 type Entry = Record<string, PsJsonValue>;
+
+/**
+ * HOW TO REACH A SEAT NOW (kickoffs/s109 ruling 5; the messaging plan's "More" 2): `ring` an open seat with a
+ * `message_name`; an open seat `not yet named` takes a letter now and a ring once its session has named itself; a
+ * `closed` seat and a `codex` one take letters only. Facts only, from what the card already reads. A held seat with no
+ * conversation record reads as not yet named, as its card already said (standing answer 12).
+ */
+export type Reach = 'ring' | 'not yet named' | 'closed' | 'codex';
+
+export function seatReach(row: Record<string, unknown>): Reach {
+  if (row['open'] !== true) return 'closed';
+  if (typeof row['messaging'] === 'string') return 'codex';
+  return typeof row['message_name'] === 'string' ? 'ring' : 'not yet named';
+}
+
+/** The words `seat cards` says for a reach. */
+export function reachWords(row: Record<string, unknown>): string {
+  const reach = typeof row['reach'] === 'string' ? (row['reach'] as Reach) : seatReach(row);
+  if (reach === 'ring') return `ring ${String(row['message_name'])}`;
+  if (reach === 'not yet named') return 'letter now, ring once named';
+  return reach === 'codex' ? 'letter only (Codex)' : 'letter only (closed)';
+}
 
 /** One seat's line of the directory: the listed fields and nothing else. */
 function entryFor(stateDirectory: string, seat: string, meta: SeatMetadata, letters: Map<string, number>): Entry {
@@ -49,6 +71,7 @@ function entryFor(stateDirectory: string, seat: string, meta: SeatMetadata, lett
     ...(open && 'message_name' in address ? { message_name: address.message_name ?? null } : {}),
     ...(open && address.messaging ? { messaging: address.messaging } : {}),
     pending_letters: letters.get(seat) ?? 0,
+    reach: seatReach({ open, ...address }),
   };
 }
 
@@ -72,16 +95,20 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
   const view = seat === null || options.all ? 'all' : own!.department === null ? 'no-department' : own!.role === 'orchestrator' ? 'orchestrator' : 'performer';
   const departments: Entry[] = projection.departments.map((department) => {
     const mine = seat !== null && own!.department === department.department;
+    // EACH DEPARTMENT'S ONE DESTINATION (kickoffs/s110 ruling 7, ADR-0073): the default views list it, its orchestrator
+    // or its only seat, so a seat sees where a letter to that department goes.
+    const destination = departmentDestination(department);
     const shown =
       view === 'all' || (view === 'orchestrator' && mine)
         ? department.seats
-        : department.orchestrator !== null
-          ? [department.orchestrator]
+        : destination.seat !== null
+          ? [destination.seat]
           : [];
     return {
       department: department.department,
       orchestrator: department.orchestrator,
       ...(department.orchestrator === null ? { orchestrator_note: 'none yet' } : {}),
+      destination: { kind: destination.kind, seat: destination.seat },
       seats: shown.map(entry),
     };
   });
@@ -115,7 +142,7 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
 
 function entryLine(row: Record<string, unknown>, width: number): string[] {
   const role = typeof row['role'] === 'string' ? row['role'] : '-';
-  const state = row['open'] === true ? (typeof row['message_name'] === 'string' ? `open, answers to ${row['message_name']}` : typeof row['messaging'] === 'string' ? `open, messaging ${row['messaging']}` : 'open, not yet named') : 'closed';
+  const state = reachWords(row);
   const letters = Number(row['pending_letters'] ?? 0);
   const lines = [`  ${String(row['seat'] ?? '').padEnd(width)}  ${role.padEnd(12)}  ${state}; ${letters} pending letter${letters === 1 ? '' : 's'}`];
   if (typeof row['card'] === 'string') lines.push(`  ${' '.repeat(width)}  ${row['card']}`);
@@ -137,7 +164,8 @@ export function seatCardsText(report: Record<string, unknown>): string {
     lines.push('');
   }
   for (const department of departments) {
-    lines.push(`${String(department['department'])}${department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
+    const destination = (department['destination'] ?? {}) as Record<string, unknown>;
+    lines.push(`${String(department['department'])}${destination['kind'] === 'only-seat' ? ` (only seat: ${String(destination['seat'])})` : department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
     for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width));
   }
   if (report['view'] === 'all' || report['view'] === 'no-department') {

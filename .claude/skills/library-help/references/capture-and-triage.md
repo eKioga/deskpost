@@ -133,7 +133,7 @@ In a `writer` Book, a seat may close, reopen or delete only three kinds of note:
 Any other note is refused, and the refusal names the seat that wrote it. The rule covers every route
 that closes, reopens or deletes a note: `review`, `notebook`, the filing kinds, `discard` and
 `capture --supersedes`. An `any` Book, the Report Inbox, lets any seat close a note, because a Report
-is filed for another seat to close.
+is closed by the seat that triages the Inbox (see "The Report Inbox").
 
 **The reader's override.** When the reader asks for another seat's notes to be sorted, add
 `"other_seat": "<the writing seat>"` to that action:
@@ -201,7 +201,7 @@ note filed any other way is a second step. Take it in the same turn:
 - **Sort what this seat wrote.** When `library desk` shows pending Holding notes, offer to triage
   those whose `from_seat` is this seat. The seat rule refuses another seat's Holding note unless the
   action carries `other_seat`, which only the reader's ask justifies. (Reports are different: the
-  seat that receives one closes it.)
+  seat that triages the Report Inbox closes them.)
 - **A note for another seat is a letter, not a Holding note** (ADR-0062). Write it into `letters`:
 
   ```
@@ -211,10 +211,11 @@ note filed any other way is a second step. Take it in the same turn:
   `--for` must name a seat of this Library, writes `for_seat:`, and implies `--why for-seat`. Only a
   Book whose catalog entry says `- **Letters:** yes` takes it, so `capture holding --for` is refused.
   The `letters` Book's map groups pending letters by recipient. The seat it names reads it as data,
-  acts on it as its own reader allows, and marks it `review` with `library triage batch`, for example
-  `{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}`. A `SendMessage` to that seat may ring
-  the doorbell ("a letter for you, `letters` `notes/<page>`"), but anything a seat may act on lives in
-  the letter, never only in a message. A Library made before 1.3.0 gets `letters` when the program
+  acts on it as its own reader allows, and closes it with `deskpost letters close notes/<page> --note
+  "<what became of it>"` (the reader closes any letter with a triage `review`, for example
+  `{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}`). The writer
+  rings that seat with one `SendMessage` when it is open ("a letter for you, `letters` `notes/<page>`",
+  ADR-0071), but anything a seat may act on lives in the letter, never only in a message. A Library made before 1.3.0 gets `letters` when the program
   that serves it is upgraded (or from one `library init <folder>`), and `library doctor` warns until then. `library shelf new <slug> --capture
   --letters` makes another Book that takes letters.
 
@@ -257,6 +258,11 @@ An agent at any seat that hits a Library defect files it here instead of interru
 or asking the reader to carry it. Examples are a refusal that names the wrong thing, a check that
 fails wrongly, or a gap where a verb should exist.
 
+**Who triages it.** A Report has no recipient. The seat whose card says it triages the Report Inbox
+(`deskpost seat cards --all`) verifies each Report, records the verdict on its own Hub, and closes it.
+If no card says so, ask the reader. Before routing a Report elsewhere, read your own Hub: it may
+already say where triage verdicts go.
+
 ```
 library capture reports --title "<what broke>" --content-path <local-markdown-file>
 ```
@@ -275,7 +281,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.4.1/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

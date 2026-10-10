@@ -15,6 +15,8 @@ import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { invokeNotebookRender, scopeIndexDrift } from './notebook.ts';
+import { exitBookLock } from './locks.ts';
+import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation } from './seatpaths.ts';
 import { notebookScope, prepareNotebookScopeForWrite } from './notebooklayout.ts';
 
 export interface NotebookResult {
@@ -32,8 +34,19 @@ function renderVerb(workspace: string, argv: string[]): PsJsonValue {
   const seatState = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
   const scope = notebookScope(workspace, seatState.status === 'named' ? seatState.seat! : null, 'write', 'Rendering the Notebook index');
   const driftBefore = scopeIndexDrift(scope);
-  prepareNotebookScopeForWrite(scope, 'Rendering the Notebook index');
-  const render = invokeNotebookRender(scope);
+  // THE SEAT'S NOTEBOOK LOCK around the final check and the write (kickoffs/s109 ruling 7). The root is made only after
+  // that check (kickoffs/s110 ruling 1): made before it, a render under a seat's old name mid-rename left an empty
+  // `notebook/<old>/` that stopped the rollback.
+  const start = scope.seat ? beginSeatMutation(workspace, scope.seat) : null;
+  const notebookLock = enterSeatNotebookLock(workspace, scope.seat);
+  let render: ReturnType<typeof invokeNotebookRender>;
+  try {
+    if (start) recheckSeatMutation(start);
+    prepareNotebookScopeForWrite(scope, 'Rendering the Notebook index');
+    render = invokeNotebookRender(scope);
+  } finally {
+    exitBookLock(notebookLock);
+  }
   return {
     schema: 1,
     operation: 'Render the Notebook master index',

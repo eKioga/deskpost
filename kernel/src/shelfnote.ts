@@ -51,6 +51,8 @@ export interface ShelfNoteRow {
   /** The letter a routed one came from, and how many routes it has taken, 0 to 3 (kickoffs/s98 row 2). */
   routedFrom: string | null;
   hops: number | null;
+  /** What became of a letter its recipient closed with `letters close` (kickoffs/s108 ruling 2). Null with no line. */
+  closedNote: string | null;
   /**
    * The reserved keys this note carries twice, or with a value of the wrong shape (`malformedNoteKeys`), sorted; empty
    * for a well-formed note. Display is tolerant and mutation strict: a malformed address reaches no seat.
@@ -112,6 +114,10 @@ export const RESERVED_NOTE_KEYS: readonly string[] = [
   'routed_to',
   'routed_from',
   'hops',
+  // `letters close`'s one line (kickoffs/s108 ruling 2): what became of a letter its recipient closed.
+  'closed_note',
+  // How a letter to a department was delivered (kickoffs/s110 ruling 7, ADR-0073): to its orchestrator or its only seat.
+  'department_delivery',
 ];
 
 const NOTE_SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -122,11 +128,15 @@ const FIELD_SHAPES: Record<string, RegExp> = {
   origin_seat_id: /^[0-9a-f]{32}$/,
   origin_seat: NOTE_SLUG,
   for_department: NOTE_SLUG,
+  department_delivery: /^(orchestrator|only-seat)$/,
   answers: NOTE_LINK,
   answered_by: NOTE_LINK,
   routed_to: NOTE_LINK,
   routed_from: NOTE_LINK,
   hops: /^[0-3]$/,
+  // ONE LINE, NO CONTROL CHARACTER (capture's rule, kickoffs/s108 ruling 2): the line itself ends at the line break, so
+  // what is left to judge is a tab or another control character inside it.
+  closed_note: /^[^\u0000-\u001f\u007f-\u009f]+$/,
 };
 
 /**
@@ -233,6 +243,7 @@ export function parseShelfNote(name: string, fullPath: string, content: string):
     answers: valueOrNull(fields, 'answers'),
     routedFrom: valueOrNull(fields, 'routed_from'),
     hops: /^[0-3]$/.test(fields.get('hops') ?? '') ? Number(fields.get('hops')) : null,
+    closedNote: valueOrNull(fields, 'closed_note'),
     malformed: malformedNoteKeys(content),
   };
 }

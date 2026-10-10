@@ -40,6 +40,7 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { inlineCutWarning } from './inlinecut.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
+import { assertNoSeatRename } from './seatpaths.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import {
   completeBookMutation,
@@ -65,15 +66,16 @@ import {
 import { rawBatchOwner } from './rawowners.ts';
 import { archiveRecordPath, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, isAddressedTo, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
-import { idsOf, incarnationOf, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
-import { departmentProblem, readSeatMetadata } from './seatmeta.ts';
+import { idsOf, incarnationOf, pastNameRefusal, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
+import { departmentProblem, destinationOf, readSeatMetadata } from './seatmeta.ts';
 
 /** Said by a capture that records no why (S73 row 3), word for word as Add-ShelfNote.ps1 says it. */
 const WHY_MISSING_NEXT =
   " This note records no why. Before the Holding Shelf, try the seat's own Hub (hub edit --mode new-page), a Book, " +
   'or the Notebook, and record a why category when none of them fits.';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName, seatDirectoryNames } from './seatdesk.ts';
-import { launcherHoldsSeatForThisAgent } from './seatclaim.ts';
+import { getSeatClaimState, launcherHoldsSeatForThisAgent } from './seatclaim.ts';
+import { seatMessageAddress } from './conversation.ts';
 import { seatConversationRecord } from './desk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedPage } from './pagepath.ts';
@@ -278,33 +280,36 @@ function supersededNote(book: ShelfBook, page: string, seat: SeatIncarnation): S
 }
 
 /**
- * THE LETTER `--answers` OR `--routes` NAMES (kickoffs/s98 rows 1 and 2; PLAN-seats-team.md session 3 items 1 and 2): it
+ * THE LETTER `--answers`, `--routes` OR `letters close` NAMES (kickoffs/s98 rows 1 and 2; PLAN-seats-team.md session 3
+ * items 1 and 2; kickoffs/s108 ruling 2): it
  * exists, its frontmatter is whole, it is addressed to this seat by the recipient predicate, and it is still pending
  * with no closing link. Checked before the lock and again under it, so a letter answered or routed in between is
  * refused, never closed twice. Mutation is strict where display is tolerant: a malformed letter is refused here.
  */
-function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes'): ShelfNoteRow {
-  const act = flag === '--answers' ? 'answer' : 'route';
+function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes' | 'letters close'): ShelfNoteRow {
+  const act = flag === '--answers' ? 'answer' : flag === '--routes' ? 'route' : 'close';
+  // `letters close` WRITES NO NOTE (kickoffs/s108 ruling 2), so its refusals say nothing was closed.
+  const nothing = flag === 'letters close' ? 'Nothing was closed.' : 'Nothing was captured.';
   const note = shelfNotes(book).find((row) => row.page === page);
-  if (!note) refuse(`${flag} names ${page}, and Book '${book.slug}' has no such note. Nothing was captured.`);
+  if (!note) refuse(`${flag} names ${page}, and Book '${book.slug}' has no such note. ${nothing}`);
   if (note.malformed.length) {
     refuse(
       `${page} carries frontmatter this program does not trust (${note.malformed.join(', ')}), so ${flag} refuses it: ` +
-        "repair the note's frontmatter by hand, or close it with triage. Nothing was captured.",
+        `repair the note's frontmatter by hand, or close it with triage. ${nothing}`,
     );
   }
   if (!isAddressedTo(note, seat)) {
     refuse(
       note.forSeat === seat.seat
-        ? `${page} was addressed to an earlier seat named '${seat.seat}' (its for_seat_id is not this seat's), so this seat cannot ${act} it. Nothing was captured.`
+        ? `${page} was addressed to an earlier seat named '${seat.seat}' (its for_seat_id is not this seat's), so this seat cannot ${act} it. ${nothing}`
         : note.forSeat
-          ? `${page} is a letter for seat '${note.forSeat}', not for this seat '${seat.seat}', so this seat cannot ${act} it. Nothing was captured.`
-          : `${page} is addressed to no seat, so it is not a letter ${flag} can ${act}. Nothing was captured.`,
+          ? `${page} is a letter for seat '${note.forSeat}', not for this seat '${seat.seat}', so this seat cannot ${act} it. ${nothing}`
+          : `${page} is addressed to no seat, so it is not a letter ${flag} can ${act}. ${nothing}`,
     );
   }
-  if (note.review === 'done') refuse(`${page} is already closed (review: done), so ${flag} refuses it. Nothing was captured.`);
+  if (note.review === 'done') refuse(`${page} is already closed (review: done), so ${flag} refuses it. ${nothing}`);
   if (note.answeredBy || note.routedTo) {
-    refuse(`${page} was reopened and still carries ${note.answeredBy ? 'answered_by' : 'routed_to'}: reopen is for triage, not for a second ${act}; write a new letter. Nothing was captured.`);
+    refuse(`${page} was reopened and still carries ${note.answeredBy ? 'answered_by' : 'routed_to'}: reopen is for triage, not for a second ${act}; write a new letter. ${nothing}`);
   }
   return note;
 }
@@ -478,6 +483,33 @@ function runRollback(journalPath: string | null, extra?: () => void): string {
   }
 }
 
+/**
+ * A CAPTURE BOOK'S MAP, REGENERATED FROM THE NOTES ON DISK NOW (kickoffs/s109 ruling 8; PLAN-seat-identity.md section 2,
+ * "Then the letters maps"): under the Book's own lock and mutation journal, with a manifest generation committed, exactly
+ * as a capture regenerates it. Idempotent, so a rename's `--resume` may run it again. Throws with the rollback's word.
+ */
+export function regenerateCaptureMap(workspace: string, slug: string): void {
+  const book = getShelfBook(workspace, slug);
+  const mapPath = path.join(book.wikiPath, '_index.md');
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  let mutation: BookMutation | null = null;
+  try {
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: 'Regenerate the letters map after a seat rename', lock });
+    journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: 'Regenerate the letters map after a seat rename', paths: [mapPath] }).journalPath;
+    updateShelfNoteIndex(book);
+    completeBookMutation(mutation);
+    mutation = null;
+  } catch (error) {
+    const rollback = runRollback(journalPath);
+    settle(mutation, rollback);
+    throw new Error(`the map of '${slug}' was not regenerated: ${(error as Error).message}. Rollback: ${rollback}`);
+  } finally {
+    exitBookLock(lock);
+  }
+}
+
 // --- capture ---------------------------------------------------------------------------------------
 
 /**
@@ -588,6 +620,11 @@ export function captureVerb(
     if (parsed.options.has('for') || parsed.flags.has('for')) {
       if (!book.takesLetters) refuseNoLetters('--for');
       if (!forSeat) refuse('--for names the seat a letter is for: --for <seat>. Nothing was captured.');
+      // THE RENAME BARRIER FIRST (kickoffs/s109 ruling 8): mid-rename, either name may have no folder yet.
+      assertNoSeatRename(workspace, forSeat);
+      // AN OLD NAME POINTS THE WAY (kickoffs/s110 ruling 5): a past name of a live seat is refused with its name now.
+      const redirect = pastNameRefusal(stateDirectory(workspace), forSeat, 'captured');
+      if (redirect !== null) refuse(redirect);
       const seats = seatDirectoryNames(stateDirectory(workspace));
       if (!seats.includes(forSeat)) {
         refuse(`--for '${forSeat}' names no seat in this Library. Seats: ${seats.length ? seats.join(', ') : '(none)'}. Nothing was captured.`);
@@ -599,21 +636,28 @@ export function captureVerb(
     // letter is written, to the department's one orchestrator, so `for_seat` names a seat as on every other letter and
     // the reader's preface, the Desk count and the close rule need no second path. `for_department` keeps the address.
     let forDepartment = (parsed.options.get('for-department') ?? '').trim();
+    let departmentDelivery: 'orchestrator' | 'only-seat' | '' = '';
     if (given('for-department')) {
       if (!book.takesLetters) refuseNoLetters('--for-department');
       if (!forDepartment) refuse('--for-department names the department a letter is for: --for-department <department>. Nothing was captured.');
       const problem = departmentProblem(forDepartment);
       if (problem !== null) refuse(`--for-department '${forDepartment}' is not a department name: ${problem}. Nothing was captured.`);
-      const departments = readSeatMetadata(stateDirectory(workspace)).departments;
-      const orchestrator = departments.find((view) => view.department === forDepartment)?.orchestrator ?? null;
-      if (orchestrator === null) {
-        const reachable = departments.filter((view) => view.orchestrator !== null).map((view) => `${view.department} (${view.orchestrator})`);
+      // ONE DESTINATION (kickoffs/s110 ruling 7, ADR-0073): its orchestrator, else its only seat; none is refused, naming
+      // the seats. Resolved once, here; nothing moves a letter after it is written.
+      const projection = readSeatMetadata(stateDirectory(workspace));
+      const destination = destinationOf(projection, forDepartment);
+      if (destination.kind === 'none') {
+        if (!destination.seats.length) {
+          const known = projection.departments.map((view) => view.department);
+          refuse(`Department '${forDepartment}' has no seat in this Library, so a letter to it reaches no one. Departments: ${known.length ? known.join(', ') : '(none)'}. Write to a seat with --for <seat>. Nothing was captured.`);
+        }
         refuse(
-          `Department '${forDepartment}' has no orchestrator in this Library, so a letter to it reaches no seat. ` +
-            `Departments with one: ${reachable.length ? reachable.join(', ') : '(none)'}. Write to a seat with --for <seat>. Nothing was captured.`,
+          `Department '${forDepartment}' has ${destination.seats.length} seats (${destination.seats.join(', ')}) and no orchestrator, so a letter to it has no one place to go. ` +
+            'Describe one as its orchestrator, or write to a seat with --for <seat>. Nothing was captured.',
         );
       }
-      forSeat = orchestrator;
+      forSeat = destination.seat;
+      departmentDelivery = destination.kind;
       if (!why) why = 'for-seat';
     }
 
@@ -698,6 +742,8 @@ export function captureVerb(
     const originSeat = routed !== null ? routedOrigin(routed).seat : fromSeat;
     const originSeatId = routed !== null ? routedOrigin(routed).seatId : letter && fromSeat ? seatIds.get(fromSeat) ?? '' : '';
     const forSeatId = asker !== null ? asker.seatId : letter ? seatIds.get(forSeat) ?? '' : '';
+    // THE RENAME BARRIER (kickoffs/s109 ruling 8): a letter to a seat being renamed, by either name, waits for the rename.
+    if (letter) assertNoSeatRename(workspace, forSeat);
 
     // A NEWER NOTE CLOSES AN OLDER ONE (S73 row 4): `--supersedes notes/<page>` names a note of this Book, so it needs
     // the Book open and a seat, where a capture without it stays seatless-capable. The note must exist, and the seat
@@ -790,6 +836,7 @@ export function captureVerb(
             : 'No existing page is read, changed, or removed.'),
       // A LETTER'S ADDRESS AND BOTH INCARNATIONS (kickoffs/s98 row 0), after every older key; null where none was read.
       ...(forDepartment ? { for_department: forDepartment } : {}),
+      ...(departmentDelivery ? { department_delivery: departmentDelivery } : {}),
       ...(letter ? { for_seat_id: forSeatId || null, origin_seat: originSeat || null, origin_seat_id: originSeatId || null } : {}),
       ...(answers ? { answers } : {}),
       ...(routed ? { routes, hops: (routed.hops ?? 0) + 1 } : {}),
@@ -815,6 +862,8 @@ export function captureVerb(
     if (letter && forSeatId) frontmatter.push(`for_seat_id: ${forSeatId}`);
     if (letter && originSeat) frontmatter.push(`origin_seat: ${originSeat}`);
     if (letter && originSeatId) frontmatter.push(`origin_seat_id: ${originSeatId}`);
+    // HOW A DEPARTMENT LETTER WAS DELIVERED (kickoffs/s110 ruling 7), after every older line.
+    if (departmentDelivery) frontmatter.push(`department_delivery: ${departmentDelivery}`);
     if (answers) frontmatter.push(`answers: ${answers}`);
     if (routed) frontmatter.push(`routed_from: ${routes}`, `hops: ${(routed.hops ?? 0) + 1}`);
     for (const [key, value] of internal.extraFrontmatter ?? []) frontmatter.push(`${key}: ${value}`);
@@ -910,6 +959,28 @@ export function captureVerb(
       exitBookLock(lock);
     }
 
+    // HOW TO REACH THE RECIPIENT NOW (kickoffs/s108 ruling 5; ADR-0071), read after the write so a seat that opened in
+    // between is found: its `message_name`, or null with why (`closed`, `codex`, `not yet named`). A fact for the
+    // writer's ring, never a verdict; the kernel sends nothing. For --answers the first asker, for a department letter
+    // its resolved orchestrator. A read that fails says nothing rather than guess.
+    if (forSeat) {
+      try {
+        const desks = stateDirectory(workspace);
+        const address = seatMessageAddress(desks, forSeat, getSeatClaimState(desks, forSeat).state);
+        const reach: [string | null, string | null] =
+          address.assistant === 'codex'
+            ? [null, 'codex']
+            : !('message_name' in address)
+              ? [null, 'closed']
+              : address.message_name
+                ? [address.message_name, null]
+                : [null, 'not yet named'];
+        plan['recipient_message_name'] = reach[0];
+        if (reach[1] !== null) plan['recipient_message_name_reason'] = reach[1];
+      } catch {
+        // a fact for the ring, and a capture never fails on it
+      }
+    }
     plan['status'] = 'captured';
     plan['captured'] = capturedAt;
     plan['review'] = 'pending';
@@ -928,6 +999,102 @@ export function captureVerb(
         ? 'This Book is open at this seat; read the note with read_open_book_page when you are ready to review.'
         : `This Book is closed by default. Open it with deskpost desk open book ${slug} --location shelf when you are ready to review.`) +
       (why || !whyMissingSaid ? '' : WHY_MISSING_NEXT);
+    return { refusal: null, value: plan };
+  } catch (error) {
+    return { refusal: (error as Error).message, value: null };
+  }
+}
+
+// --- letters close ---------------------------------------------------------------------------------
+
+/** The capture Book `letters close` closes in: the standard `letters` Book (ADR-0062), as D3 names the verb. */
+const LETTERS_BOOK = 'letters';
+
+/**
+ * `deskpost letters close notes/<page> [--note "<one line>"]` (kickoffs/s108 ruling 2; the messaging plan r4, D3;
+ * ADR-0071). A SEAT CLOSES ITS OWN LETTER IN ONE STEP, with no reader's yes and no new note: the letter is patched as
+ * `--answers` patches it (`review: done`, the `reviewed:` stamp), with `closed_note` in place of a link. The seat is
+ * resolved, never typed; the Book is open on its Desk; the letter passes `closableLetter`, before the lock and again
+ * under it, so a reopened letter that kept its link is refused and one with no link is allowed. Journalled with the
+ * reader map, and the manifest takes a new generation, as every capture does. `--user-confirmed` is no part of it: that
+ * is an assertion of the reader's confirmation, never made for a seat's own mail.
+ */
+export function lettersCloseVerb(argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('letters', 'close'));
+  try {
+    if (parsed.options.has('seat') || parsed.flags.has('seat')) {
+      refuse('deskpost letters close does not take --seat: the closing seat is resolved from this session\'s binding or launcher, never typed, so no shell can close another seat\'s letter. Nothing was closed.');
+    }
+    const page = (parsed.positional[0] ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
+    if (!/^notes\/[^/]+$/.test(page)) {
+      refuse('deskpost letters close names one letter as notes/<page>, for example deskpost letters close notes/2026-10-09-a-question --note "answered by message". Nothing was closed.');
+    }
+    const given = parsed.options.has('note') || parsed.flags.has('note');
+    const note = (parsed.options.get('note') ?? '').trim();
+    if (given && !note) refuse('--note is one line saying what became of the letter, for example --note "on Hub Next". Nothing was closed.');
+    const stray = controlCharacterInLine(note);
+    if (stray !== null) {
+      refuse(`--note holds ${stray.name} (${stray.codePoint}): a closed_note is one line of text with no control character, since it is written into the letter's frontmatter. Nothing was closed.`);
+    }
+
+    const book = getShelfBook(workspace, LETTERS_BOOK);
+    if (!book.isCapture || !book.takesLetters) {
+      refuse(`Shelf Book '${LETTERS_BOOK}' does not take letters (its catalog entry needs '- **Kind:** capture' and '- **Letters:** yes'). Nothing was closed.`);
+    }
+    const seatState = resolveSeatName({ stateDirectory: stateDirectory(workspace) });
+    if (seatState.status !== 'named') refuse(`deskpost letters close closes a letter addressed to this seat, so it needs a seat. ${seatState.message ?? ''} Nothing was closed.`.replace(/ +/g, ' '));
+    const seat = seatState.seat!;
+    assertShelfBookOpen(workspace, LETTERS_BOOK, 'closing one of its letters with deskpost letters close', seat);
+    const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
+    closableLetter(book, page, self, 'letters close');
+
+    const plan: Record<string, PsJsonValue> = {
+      schema: LIBRARY_OUTPUT_SCHEMA,
+      operation: 'Close a letter',
+      book: book.bookRoot,
+      letter: page,
+      seat,
+      ...(note ? { closed_note: note } : {}),
+      confirmation_required: false,
+      shared_library_write: false,
+      scope: `Closes ${page} (review: done, reviewed:${note ? ', closed_note:' : ''}), regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`,
+    };
+
+    const mapPath = path.join(book.wikiPath, '_index.md');
+    let lock: BookLock | null = null;
+    let journalPath: string | null = null;
+    let mutation: BookMutation | null = null;
+    let pendingCount = 0;
+    let manifestSummary = '';
+    try {
+      lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+      // AGAIN UNDER THE LOCK: still pending, still unlinked, still this seat's.
+      const letter = closableLetter(book, page, self, 'letters close');
+      mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Close letter ${page}`, lock });
+      journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: `Close letter ${page}`, paths: [letter.fullPath, mapPath] }).journalPath;
+      const text = readUtf8(letter.fullPath);
+      let closed = setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp());
+      // A REOPENED LETTER'S OLD NOTE IS NOT CARRIED INTO THIS CLOSE: replaced by the new one, or removed with none.
+      closed = setNoteField(closed, 'closed_note', note || null);
+      if (!/^review: done/m.test(closed)) refuse(`${letter.page} has no review field to close.`);
+      writeAtomicText(letter.fullPath, closed);
+      pendingCount = updateShelfNoteIndex(book).pendingCount;
+      manifestSummary = completeBookMutation(mutation).summary;
+      mutation = null;
+    } catch (error) {
+      const failure = (error as Error).message;
+      const rollback = runRollback(journalPath);
+      settle(mutation, rollback);
+      return { refusal: `The letter was not closed. ${failure}. Rollback: ${rollback}.`, value: null };
+    } finally {
+      exitBookLock(lock);
+    }
+
+    plan['status'] = 'closed';
+    plan['review'] = 'done';
+    plan['pending_count'] = pendingCount;
+    plan['journal'] = journalPath ? workspaceRelative(workspace, journalPath) : null;
+    plan['manifest'] = manifestSummary;
     return { refusal: null, value: plan };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

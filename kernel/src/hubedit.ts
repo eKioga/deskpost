@@ -752,6 +752,8 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   if (mode === undefined) {
     refuse(`library hub edit has no mode '${modeWord}'. It has: ${Object.keys(MODE_WORDS).join(', ')}, new-page.`);
   }
+  // THE MODE AS THE READER TYPES IT, for every refusal below (kickoffs/s108 ruling 8): the one inverse of MODE_WORDS.
+  const cliMode = Object.keys(MODE_WORDS).find((key) => MODE_WORDS[key] === mode) ?? mode;
   // `--title` IS NEW-PAGE'S ALONE (PLAN-correct-and-find.md D7 bullet 2): every other mode ignored it, so a seat that gave one
   // to rename a page heard nothing and the page kept its H1.
   if (parsed.options.has('title')) {
@@ -780,7 +782,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const contentPathGiven = parsed.options.has('content-path');
   let content = parsed.options.get('content') ?? '';
   const contentPath = parsed.options.get('content-path') ?? '';
-  if (SECTION_MODES.includes(mode) && isBlank(section)) refuse(`${mode} requires --section, the exact level-two heading text without the leading '##'.`);
+  if (SECTION_MODES.includes(mode) && isBlank(section)) refuse(`${cliMode} requires --section, the exact level-two heading text without the leading '##'.`);
   if (!isBlank(section)) section = section.trim().replace(/^#+/, '').trim();
   if (mode === 'RemoveSection') {
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
@@ -788,7 +790,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     if (parsed.options.has('match-text')) refuse('remove-section takes no --match-text.');
   }
   if (ITEM_MODES.includes(mode) && isBlank(matchText)) {
-    refuse(`${mode} requires --match-text: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
+    refuse(`${cliMode} requires --match-text: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
   }
   const usedContent = !isBlank(content);
   const usedContentPath = !isBlank(contentPath);
@@ -867,7 +869,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       if (normalizedOld !== normalizedNew) refuse('check-item would change more than the checkbox marker; the edit stopped without writing.');
     }
   } else if (!isReplacing && !linesPreserved(currentLines, proposedLines)) {
-    refuse(`${mode} would not preserve the existing page text; the edit stopped without writing.`);
+    refuse(`${cliMode} would not preserve the existing page text; the edit stopped without writing.`);
   }
 
   const currentHash = sha256OfText(currentBody);
@@ -949,11 +951,11 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, written: false, status: 'unchanged', journal: null, shared_library_write: false };
   }
   if (isReplacing) {
-    if (!parsed.flags.has('user-confirmed')) refuse(`${mode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
+    if (!parsed.flags.has('user-confirmed')) refuse(`${cliMode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
     // THE SECOND SENTENCE SAYS WHAT A STALE ID USUALLY MEANS (kickoffs/s99 row K2, ruling 7), with the page's hash now; the
     // first stays word for word. An id never issued reads the same: telling the two apart would need stored previews.
     if ((parsed.options.get('plan-id') ?? '') !== planId) {
-      refuse(`${mode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page changed since the preview; it reads ${currentHash} now.`);
+      refuse(`${cliMode} is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page changed since the preview; it reads ${currentHash} now.`);
     }
   } else if (parsed.options.has('plan-id') && (parsed.options.get('plan-id') ?? '').trim() !== planId) {
     // AN ADDITIVE EDIT GIVEN A PLAN ID IS BOUND BY IT (kickoffs/s106 row 5; the Report triaged 2026-10-08 06:58 PDT): it

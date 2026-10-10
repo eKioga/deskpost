@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.0/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.1/docs/seats.md).
 
 ## Books
 
@@ -92,9 +92,10 @@ installed Deskpost does not ship them: they are helpers in the Deskpost source c
 proves the source has not moved, and never that an article reflects it.
 
 **A Shelf Book's Summary lives in `_catalog-entry.md`**, not in `_book.md`'s Purpose, which only `shelf new` and
-`shelf recall` set alongside it. To change the Summary, edit `_catalog-entry.md`, then run `library shelf render
-<slug>` and `library shelf rebuild <slug>`. `shelf rebuild` alone rewrites only the manifest, and an edit to the
-entry does not mark the Book stale.
+`shelf recall` set alongside it. To change the Summary, edit `_catalog-entry.md`, then run `deskpost shelf render`
+(it takes no Book name: it rebuilds `shelf/_catalog.md` from every Book's entry, and is safe to rerun) and
+`deskpost shelf rebuild <slug>`. Run `shelf render` after any `_catalog-entry.md` edit. `shelf rebuild` alone
+rewrites only the manifest, and an edit to the entry does not mark the Book stale.
 
 ## Project Hubs
 

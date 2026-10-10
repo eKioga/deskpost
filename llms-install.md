@@ -1,7 +1,7 @@
 # Installing Deskpost: instructions for the assistant
 
-**Deskpost 1.4.0.** This page belongs to the release at
-`https://github.com/eKioga/deskpost/releases/download/v1.4.0`, called **the release base** below. Both commands
+**Deskpost 1.4.1.** This page belongs to the release at
+`https://github.com/eKioga/deskpost/releases/download/v1.4.1`, called **the release base** below. Both commands
 download from it, so the plan you show and the install you run come from the same release.
 
 You are reading this because the person you are working with asked you to install Deskpost. That request is
@@ -43,13 +43,13 @@ program with Windows' own `tar.exe`, and runs that program's `install` as a dry 
 **In PowerShell:**
 
 ```powershell
-$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path (Join-Path $d 'program') | Out-Null; [Console]::Error.WriteLine("Deskpost download folder: $d"); curl.exe -fLo "$d\SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.4.0/SHA256SUMS'; if ($LASTEXITCODE -eq 0) { curl.exe -fLo "$d\deskpost-1.4.0-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.4.0/deskpost-1.4.0-win-x64.zip' }; if ($LASTEXITCODE -eq 0) { & "$env:SystemRoot\System32\tar.exe" -xf "$d\deskpost-1.4.0-win-x64.zip" -C "$d\program" --strip-components=1 }; if ($LASTEXITCODE -eq 0) { & "$d\program\bin\library.exe" install --release $d --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT> }
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path (Join-Path $d 'program') | Out-Null; [Console]::Error.WriteLine("Deskpost download folder: $d"); curl.exe -fLo "$d\SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.4.1/SHA256SUMS'; if ($LASTEXITCODE -eq 0) { curl.exe -fLo "$d\deskpost-1.4.1-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.4.1/deskpost-1.4.1-win-x64.zip' }; if ($LASTEXITCODE -eq 0) { & "$env:SystemRoot\System32\tar.exe" -xf "$d\deskpost-1.4.1-win-x64.zip" -C "$d\program" --strip-components=1 }; if ($LASTEXITCODE -eq 0) { & "$d\program\bin\library.exe" install --release $d --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT> }
 ```
 
 **In Git Bash:**
 
 ```bash
-u="$(mktemp -d)" && mkdir "$u/program" && d="$(cygpath -w "$u")" && echo "Deskpost download folder: $d" >&2 && curl.exe -fLo "$u/SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.4.0/SHA256SUMS' && curl.exe -fLo "$u/deskpost-1.4.0-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.4.0/deskpost-1.4.0-win-x64.zip' && /c/Windows/System32/tar.exe -xf "$d\\deskpost-1.4.0-win-x64.zip" -C "$d\\program" --strip-components=1 && "$u/program/bin/library.exe" install --release "$d" --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT>
+u="$(mktemp -d)" && mkdir "$u/program" && d="$(cygpath -w "$u")" && echo "Deskpost download folder: $d" >&2 && curl.exe -fLo "$u/SHA256SUMS" 'https://github.com/eKioga/deskpost/releases/download/v1.4.1/SHA256SUMS' && curl.exe -fLo "$u/deskpost-1.4.1-win-x64.zip" 'https://github.com/eKioga/deskpost/releases/download/v1.4.1/deskpost-1.4.1-win-x64.zip' && /c/Windows/System32/tar.exe -xf "$d\\deskpost-1.4.1-win-x64.zip" -C "$d\\program" --strip-components=1 && "$u/program/bin/library.exe" install --release "$d" --dry-run --json --library '<LIBRARY>' --librarian <ASSISTANT>
 ```
 
 In Git Bash, call Windows' `tar.exe` by its full path as shown: Git's own `tar` reads `C:` as a remote host.
@@ -82,7 +82,7 @@ in the result) with `-Json -PlanId <plan_id>` and no `-DryRun`; its flags are sp
 `-InstallRoot` and `-Resume`:
 
 ```powershell
-$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.4.0/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.4.0' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
+$d = Join-Path $env:TEMP ('deskpost-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/eKioga/deskpost/releases/download/v1.4.1/install.ps1' -OutFile (Join-Path $d 'install.ps1') -ErrorAction Stop; powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'install.ps1') -Release 'https://github.com/eKioga/deskpost/releases/download/v1.4.1' -DryRun -Json -Library '<LIBRARY>' -Librarian <ASSISTANT>
 ```
 
 ## 4. Show the plan, and ask
@@ -154,7 +154,7 @@ it."
   both commands outside the sandbox, in Codex's own dialog. If escalation is unavailable or declined, do not
   change a policy or look for a way round it. Give the person the terminal install instead, to run themselves in
   PowerShell:
-  `irm https://github.com/eKioga/deskpost/releases/download/v1.4.0/install.ps1 | iex`
+  `irm https://github.com/eKioga/deskpost/releases/download/v1.4.1/install.ps1 | iex`
 - **First start.** Codex reads a Library's guards only once the folder is trusted and its hooks are reviewed, and it
   skips unreviewed hooks silently. Tell the person: when Codex starts in the Library, trust the folder, then type
   `/hooks` and approve Deskpost's hooks, and only then ask to be shown around.

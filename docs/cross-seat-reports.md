@@ -1,5 +1,7 @@
 # Cross-Seat Agent Reports
 
+> **Since S110:** `Add-ShelfNote.ps1`, `New-ShelfBook.ps1` and `Rename-ShelfBook.ps1` are internal, not commands a reader runs; the kernel verbs `deskpost capture`, `deskpost shelf new` and `deskpost shelf rename` replace them.
+
 > **Status:** implemented 2026-09-11, proposed the same day. The sections below are kept in the order
 > they were written — defect, decision, benefit, boundary — because the reader benefit and safety
 > boundary had to be recorded *before* the build, and rewriting them afterwards to match what shipped

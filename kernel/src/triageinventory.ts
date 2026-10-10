@@ -356,6 +356,8 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
         // A LETTER'S STATUS, WORKED OUT (kickoffs/s98 row 3, ruling 5): the last key, on every note of a Book that takes
         // letters and on no other note.
         ...(book.takesLetters ? { letter_status: letterStatus(note) } : {}),
+        // WHAT BECAME OF IT, beside the status and never as one (kickoffs/s108 ruling 2): only on a letter closed with a note.
+        ...(book.takesLetters && note.closedNote && note.review === 'done' ? { closed_note: note.closedNote } : {}),
       };
     }),
   );

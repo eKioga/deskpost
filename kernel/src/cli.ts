@@ -24,7 +24,7 @@ import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
-import { captureVerb, runBookVerb } from './capture.ts';
+import { captureVerb, lettersCloseVerb, runBookVerb } from './capture.ts';
 import { runRawSearch } from './rawsearch.ts';
 import { runRawOwners } from './rawowners.ts';
 import { runTriageVerb } from './triage.ts';
@@ -373,6 +373,22 @@ async function main(argv: string[]): Promise<number> {
         refuse(`library book : ${(error as Error).message}`);
       }
       const result = runBookVerb(rest, workspace);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, true);
+      return 0;
+    }
+
+    // A SEAT'S OWN MAIL (kickoffs/s108 ruling 2): one action, `close`, read from the words after it.
+    case 'letters': {
+      if (action !== 'close') refuse(`library letters has no action '${rest[0] ?? ''}'. It has: close.`);
+      const parsed = parseArguments(tail, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library letters : ${(error as Error).message}`);
+      }
+      const result = lettersCloseVerb(tail, workspace);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
       return 0;

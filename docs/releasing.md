@@ -35,6 +35,11 @@ How a release goes from `master` to the public download, and the exact commands 
 4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
    `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
    the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.
+   **The token never comes from a bare `op`**: a seat shell has no 1Password account. Read the item
+   `forgejo-dispatch (deskpost)` once through `deskpost_secrets.py`'s `_op`
+   (`D:\dev\projects\deskpost-secrets`), which hands this PC's service-account token to `op` in its child
+   environment only and keeps `op`'s first error line. Then one dispatch call and one status read. The
+   steps and the script that ran green in S107: `deskpost-dev`'s Hub page `notes/how-to-start-the-publish-mirror`.
 
 ## The push (the only step that publishes)
 

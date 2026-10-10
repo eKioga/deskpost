@@ -28,15 +28,15 @@
       "summary": "List an existing shared Book or Project Hub that is missing from its Catalog. Additive only: issues one edit_note find_replace against the collection heading, adds exactly one line, removes nothing, and reports already_listed without writing when the slug is present."
     },
     "Add-ShelfBookPage.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Add one new page to an open, curated Shelf Book. Additive, create-new, under the Book's lock."
     },
     "Add-ShelfBookTopic.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Graduate a whole Notebook topic into an open, curated Shelf Book. Retry-safe: bound manifest, per-page progress journal, identical pages idempotent, divergent collisions refused."
     },
     "Add-ShelfNote.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Capture one note into a capture-enabled Shelf Book."
     },
     "Archive-ProjectHub.ps1": {
@@ -171,7 +171,7 @@
       "summary": "Copy an approved external wiki into a new Shelf Book."
     },
     "Initialize-LibraryWorkspace.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "`library init <folder>`: write the workspace marker `.library/workspace.json`, register the workspace in the machine registry, install the operating rules into CLAUDE.md and AGENTS.md as one managed section between `<!-- library:begin -->` and `<!-- library:end -->`, and merge the harness settings without overwriting unrelated entries. Idempotent; refuses whole and writes nothing when a marker's section is malformed or a settings entry conflicts. In an un-split checkout the instruction files belong to the program and are left alone."
     },
     "Initialize-CodexLibrary.ps1": {
@@ -187,7 +187,7 @@
       "summary": "Run every self-test and static check. The acceptance gate for each phase."
     },
     "Invoke-LibraryTriage.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Triage material out of the Notebook or a capture Book to any reachable destination -- Holding Shelf, Notebook, Shelf Book, Project Hub, new shared Book, or in-place Review/Discard. Takes -ActionJson for an approved batch with a durable journal and per-action retry, -PlanPath to re-run a stored plan, or -Source/-Page/-MatchText/-To for one note, which composes into a one-action plan so a single note and a batch of twenty share one write-set digest. Confirmation is per kind, not per surface: review, notebook, holding and shelf-book run on one call, while discard, project and book take a preflight, an exact plan_id, and one approval. Writing INTO a capture Book is ungated; any action whose SOURCE is a capture Book needs that Book open. Reads plans and journals from the legacy internal/handoff-* directories and writes only triage-named records."
     },
     "Invoke-SeatClaimHolder.ps1": {
@@ -235,7 +235,7 @@
       "summary": "Create a Project Hub in the shared collection."
     },
     "New-ShelfBook.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Create a new, empty Shelf Book -- curated, or capture-enabled with -Capture. Fills the gap where every other route needed material that already existed, and keeps the derived catalog out of hand edits: it composes the entry with the Shelf composer and commits it inside the render lock. Takes no Book lock, matching Publish-BookCopy.ps1 and for the same reason. Refuses an existing Book root and an orphaned catalog entry, applies directly because it can only create, and reads back through Get-ShelfBook rather than through what it wrote."
     },
     "NotebookIndex.ps1": {
@@ -295,7 +295,7 @@
       "summary": "Permanently delete one curated Shelf Book after a preflight, exact content-bound plan_id, and one approval. Closes the Book if necessary, stages and verifies it, removes its Catalog entry, and creates no local archive copy. Rollback remains available until permanent staged deletion begins."
     },
     "Rename-ShelfBook.ps1": {
-      "role": "public",
+      "role": "internal",
       "summary": "Rename a Shelf Book's slug and title, with a per-Book lock, pre-write journal, and verified rollback."
     },
     "Reset-LocalNotebook.ps1": {

@@ -1,5 +1,7 @@
 # Derived Indexes: the Notebook master index and the Shelf catalog
 
+> **Since S110:** `Invoke-LibraryTriage.ps1` and `Rename-ShelfBook.ps1` are internal, not commands a reader runs; the kernel verbs `deskpost triage batch` and `deskpost shelf rename` replace them.
+
 `notebook/_master-index.md` and `shelf/_catalog.md` are **derived**. Nothing composes them by hand
 any more: each is rendered from state that already exists, under a lock that serialises the render,
 and written by an atomic replacement that a concurrent reader can never catch half-finished.

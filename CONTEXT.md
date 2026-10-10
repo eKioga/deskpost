@@ -117,6 +117,18 @@ A letter closed by `--routes` or `--answers`, linked to the letter that continue
 `review` and the link fields, never stored (ADR-0069).
 _Avoid_: forwarded, assigned, replied
 
+**Ring** (a letter):
+The one message a writer sends an open recipient right after writing a letter, naming the letter and
+nothing else to act on. Mandatory when the recipient has a `message_name`; never acknowledged, and
+never resent when held or denied (ADR-0071).
+_Avoid_: notification, ping, reminder
+
+**Letters close** (`deskpost letters close`):
+A seat closing a letter addressed to it in one step, with no reader's yes and no new note: `review:
+done`, the `reviewed:` stamp and an optional one-line **closed_note** saying what became of it
+(ADR-0071).
+_Avoid_: mark read, acknowledge, triage review (that is the reader's)
+
 **Tidy** (`library shelf tidy`):
 Moving a capture Book's closed notes out of its `notes/` once their `reviewed:` stamp is old enough,
 into **reviewed/**, a folder inside the Book's `wiki/` with one subfolder and one map per month. A
@@ -240,6 +252,16 @@ through the Notebook migration, the record is instead what makes that incarnatio
 reachable by a whole-tree reset.
 _Avoid_: backup, tombstone, deletion, snapshot
 
+**Seat rename** (`deskpost seat rename`):
+Changing a seat's name and nothing it is: the `seat_id`, its conversation, Desk, Notebook, folders and letters stay
+the seat's, and its Project and Hub do not change. The old name stays in the registry row's `names` history, reserved
+for that seat, and is not an address. One seat per run, gated, behind a **rename barrier**: a journal in
+`internal/seat-rename-journals/` that makes every verb acting at the seat refuse, by either name, until the rename is
+finished (`--resume`) or put back (`--rollback`) (ADR-0072). A rename takes a name no seat has had, so it refuses a
+retired seat's final name, which a new seat may still take (ADR-0073). A verb given a past name refuses with a
+redirect naming the new one.
+_Avoid_: alias, handover, move
+
 **Seat card**:
 One line a seat publishes about itself in the registry: what it handles. Set only under the reader's
 gate (`seat describe`). The directory reads cards, never Hubs, and a card is data, never an
@@ -254,8 +276,29 @@ _Avoid_: team (the whole Library's seats), group, lane (a seat's own work)
 
 **Orchestrator**:
 The one seat of a department that letters to the department reach, and that answers or routes them.
-A role, set under the reader's gate.
-_Avoid_: sorter, router, manager, lead
+A role, set under the reader's gate. A department of one seat needs none: its only seat is its
+**destination** (ADR-0073). "Lead" is fine in a seat's name (`deskpost-lead`), never as the role's name.
+_Avoid_: sorter, router, manager
+
+**Seat name history**:
+A registry row's `names`: every name the seat has had, oldest first, each with when it held it. A name
+given up by a rename stays reserved for that seat and points the way to its name now (ADR-0072, ADR-0073).
+_Avoid_: alias, former address
+
+**Nickname**:
+An optional short label a seat may carry for the menu and its tab, never an address (planned,
+`PLAN-seat-identity.md` section 6).
+_Avoid_: alias, display name
+
+**Ideas seat**:
+A seat made from the `ideas` template that catches every idea the reader says as a page in its own Hub,
+develops one only when asked, and hands it off by letter to the department it belongs to. It never builds.
+_Avoid_: inbox, backlog seat
+
+**Auditor**:
+A seat made from the `auditor` template that audits a Book, a Hub or a repo on request, read-only, and
+sends every checkable finding by letter to the owner's department; the fix stays the owner's.
+_Avoid_: reviewer, checker, inspector
 
 **Performer**:
 A seat that works its lane in a department and writes to its orchestrator when no destination is
