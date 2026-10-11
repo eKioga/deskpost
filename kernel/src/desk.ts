@@ -54,6 +54,7 @@ import { addedDirsStatus } from './seatdirs.ts';
 import { seatMessageAddress } from './conversation.ts';
 import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
+import { deskAuditFacts } from './audit.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -466,6 +467,19 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         : null,
   };
 
+  // THE AUDIT COUNTS (kickoffs/s112 ruling 6), only when the Library has a department `audit` with a destination; a
+  // failure says nothing rather than refuse the overview.
+  const auditTargetOf = (book: { slug: string; location: string; shelf: string }): string | null =>
+    book.shelf !== 'active' ? null : book.location === 'shelf' ? `shelf/${book.slug}` : book.location === 'collection' ? `collection/${book.slug}` : null;
+  let auditFacts: ReturnType<typeof deskAuditFacts> = null;
+  try {
+    const openTargets = [...openBooks.map(auditTargetOf).filter((target): target is string => target !== null), ...openProjects.map(String)];
+    auditFacts = deskAuditFacts(workspace, projection, seat, openTargets);
+  } catch {
+    auditFacts = null;
+  }
+  const dueProjects = auditFacts === null ? [] : openProjects.map(String).filter((project) => auditFacts!.dueTargets.has(project));
+
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
     operation: 'Desk Overview',
@@ -476,9 +490,11 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     ...(lettersFromThisSeat !== null ? { letters_from_this_seat: lettersFromThisSeat } : {}),
     other_seats: otherSeats,
     directory,
+    ...(auditFacts !== null && auditFacts.auditsDue !== null ? { audits_due: auditFacts.auditsDue } : {}),
     seat_consistency: seatRegistryConsistency(workspace, stateDirectory),
-    open_books: openBooks,
+    open_books: auditFacts === null ? openBooks : openBooks.map((book) => (auditFacts!.dueTargets.has(auditTargetOf(book) ?? '') ? { ...book, audit_due: true } : book)),
     open_projects: openProjects,
+    ...(dueProjects.length ? { audit_due_projects: dueProjects } : {}),
     capture_books: captureBooks,
     notebook: {
       path: notebookRoot,

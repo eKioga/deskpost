@@ -7,6 +7,9 @@
  * - `card`: one line of at most 160 characters, with no control character (tab included: a card is one line of terminal
  *   text); what the seat handles, in its own words.
  * - `template`: `<name>@<version>`, the template the seat was created from. Validated here; session 2 writes it.
+ * - `nickname` (kickoffs/s112 ruling 4; PLAN-seat-identity.md section 6): a short label for the menu and the tab, 1-16
+ *   characters of letters, digits, space, `-`, `_` and `.`, no space at either end. Compared without regard to capital
+ *   letters, shown as typed. Unique among nicknames and never any seat's name, current or past; NEVER AN ADDRESS.
  *
  * THE READER NEVER THROWS ON THESE FIELDS. The registry has many readers, and `readSeatRegistry` keeps failing closed
  * only on what it always did (bad JSON, a missing seat or project). A malformed value, a role with no department, or a
@@ -23,7 +26,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { controlCharacterInLine } from './controlchars.ts';
 
-export const METADATA_FIELDS = ['department', 'role', 'card', 'template'] as const;
+export const METADATA_FIELDS = ['department', 'role', 'card', 'template', 'nickname'] as const;
 export type MetadataField = (typeof METADATA_FIELDS)[number];
 
 export const SEAT_ROLES = ['performer', 'orchestrator'] as const;
@@ -32,15 +35,18 @@ export type SeatRole = (typeof SEAT_ROLES)[number];
 export const CARD_MAX_CHARACTERS = 160;
 export const DEPARTMENT_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const TEMPLATE_PATTERN = /^[a-z0-9][a-z0-9-]*@[0-9]+(\.[0-9]+)*$/;
+export const NICKNAME_MAX_CHARACTERS = 16;
+const NICKNAME_CHARACTERS = /^[A-Za-z0-9 _.-]+$/;
 
 export interface SeatMetadata {
   department: string | null;
   role: SeatRole | null;
   card: string | null;
   template: string | null;
+  nickname: string | null;
 }
 
-export const NO_METADATA: SeatMetadata = Object.freeze({ department: null, role: null, card: null, template: null });
+export const NO_METADATA: SeatMetadata = Object.freeze({ department: null, role: null, card: null, template: null, nickname: null });
 
 export interface DepartmentView {
   department: string;
@@ -86,11 +92,27 @@ export function templateProblem(value: unknown): string | null {
   return typeof value === 'string' && TEMPLATE_PATTERN.test(value) ? null : 'a template is <name>@<version>, such as performer@1';
 }
 
+/** Why a nickname value is refused, or null when it is 1-16 allowed characters with no space at either end. */
+export function nicknameProblem(value: unknown): string | null {
+  if (typeof value !== 'string' || value === '') return `a nickname is 1-${NICKNAME_MAX_CHARACTERS} characters`;
+  const length = [...value].length;
+  if (length > NICKNAME_MAX_CHARACTERS) return `a nickname is at most ${NICKNAME_MAX_CHARACTERS} characters, and this one is ${length}`;
+  if (!NICKNAME_CHARACTERS.test(value)) return "a nickname holds only letters, digits, spaces, '-', '_' and '.'";
+  if (value !== value.trim()) return 'a nickname has no space at either end';
+  return null;
+}
+
+/** A nickname or a name as nicknames compare: without regard to capital letters. */
+export function nicknameKey(value: string): string {
+  return value.toLowerCase();
+}
+
 const PROBLEM: Record<MetadataField, (value: unknown) => string | null> = {
   department: departmentProblem,
   role: roleProblem,
   card: cardProblem,
   template: templateProblem,
+  nickname: nicknameProblem,
 };
 
 /** Why one field's value is refused, or null. */
@@ -98,17 +120,26 @@ export function fieldProblem(field: MetadataField, value: unknown): string | nul
   return PROBLEM[field](value);
 }
 
-/** Whether a raw row carries any of the four fields (any value, valid or not). */
+/** Whether a raw row carries any of the fields (any value, valid or not). */
 export function carriesMetadata(row: Record<string, unknown>): boolean {
   return METADATA_FIELDS.some((field) => field in row && row[field] !== null && row[field] !== undefined);
 }
 
-/** A raw row's four values as written (null when absent), for a history record or a plan id. Never validated. */
+/** A raw row's values as written (null when absent), for a history record or a plan id. Never validated. */
 export function rawMetadata(row: Record<string, unknown> | undefined): Record<MetadataField, unknown> {
   const out = {} as Record<MetadataField, unknown>;
-  for (const field of METADATA_FIELDS) out[field] = row && field in row && row[field] !== undefined ? row[field] : null;
+  for (const field of METADATA_FIELDS) {
+    const present = row && field in row && row[field] !== undefined && row[field] !== null;
+    // A NICKNAME IS LEFT OUT WHERE A SEAT HAS NONE, so a history record or a preview of a seat without one reads as it
+    // did before nicknames (kickoffs/s112 ruling 4; the plan's Proof keeps every existing expectation).
+    if (OPTIONAL_FIELDS.includes(field) && !present) continue;
+    out[field] = present ? row[field] : null;
+  }
   return out;
 }
+
+/** The fields a record or a preview names only when set. */
+export const OPTIONAL_FIELDS: readonly MetadataField[] = ['nickname'];
 
 function sortText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -129,7 +160,7 @@ export function seatMetadata(rows: readonly unknown[]): SeatMetadataProjection {
     const row = raw as Record<string, unknown>;
     if (typeof row['seat'] !== 'string' || !row['seat']) continue;
     const seat = row['seat'];
-    const meta: SeatMetadata = { department: null, role: null, card: null, template: null };
+    const meta: SeatMetadata = { department: null, role: null, card: null, template: null, nickname: null };
     for (const field of METADATA_FIELDS) {
       const value = row[field];
       if (value === undefined || value === null) continue;
@@ -149,6 +180,39 @@ export function seatMetadata(rows: readonly unknown[]): SeatMetadataProjection {
       meta.role = null;
     }
     seats.set(seat, meta);
+  }
+  // A NICKNAME IS NO SEAT'S NAME AND ONE SEAT'S ONLY, properties of the whole registry: one that equals a current or past
+  // name, or that two seats share, reads as absent, and each is named. Retired names are judged where one is set.
+  const names = new Map<string, string>();
+  for (const raw of rows) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    if (typeof row['seat'] !== 'string' || !row['seat']) continue;
+    names.set(nicknameKey(row['seat']), row['seat']);
+    if (Array.isArray(row['names'])) {
+      for (const span of row['names']) {
+        const name = span !== null && typeof span === 'object' ? (span as Record<string, unknown>)['name'] : undefined;
+        if (typeof name === 'string' && name) names.set(nicknameKey(name), row['seat']);
+      }
+    }
+  }
+  const byNickname = new Map<string, string[]>();
+  for (const [seat, meta] of seats) {
+    if (meta.nickname === null) continue;
+    const owner = names.get(nicknameKey(meta.nickname));
+    if (owner !== undefined) {
+      meta.nickname = null;
+      said(seat, 'nickname', `it is a name of seat '${owner}', and a nickname is never a seat's name`, `set another with deskpost seat describe ${seat} --nickname <value>, or remove it with deskpost seat describe ${seat} --clear-nickname`);
+      continue;
+    }
+    byNickname.set(nicknameKey(meta.nickname), [...(byNickname.get(nicknameKey(meta.nickname)) ?? []), seat]);
+  }
+  for (const holders of byNickname.values()) {
+    if (holders.length < 2) continue;
+    for (const seat of holders) {
+      seats.get(seat)!.nickname = null;
+      said(seat, 'nickname', `seats ${holders.join(', ')} share it, and a nickname is one seat's`, `keep it on one and set another on the rest with deskpost seat describe <seat> --nickname <value>`);
+    }
   }
   // ONE ORCHESTRATOR PER DEPARTMENT, a property of the whole registry: two read as none, and each is named.
   const byDepartment = new Map<string, string[]>();
@@ -176,6 +240,18 @@ export function seatMetadata(rows: readonly unknown[]): SeatMetadataProjection {
     departments.push({ department, orchestrator: orchestrators.length === 1 ? orchestrators[0]! : null, seats: members });
   }
   return { seats, departments, problems };
+}
+
+/** The seat whose nickname `name` is, compared without regard to capital letters; null when it is no seat's. */
+export function nicknameOwner(projection: SeatMetadataProjection, name: string): string | null {
+  const key = nicknameKey(name);
+  for (const [seat, meta] of projection.seats) if (meta.nickname !== null && nicknameKey(meta.nickname) === key) return seat;
+  return null;
+}
+
+/** How the menu row and the tab name a seat: `<nickname> (<seat>)` when it has one, else the seat. */
+export function seatLabel(seat: string, nickname: string | null | undefined): string {
+  return nickname ? `${nickname} (${seat})` : seat;
 }
 
 /** One seat's validated fields from a projection, or none. */

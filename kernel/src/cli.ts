@@ -25,6 +25,7 @@ import { deskOverview, deskWrite } from './desk.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
 import { captureVerb, lettersCloseVerb, runBookVerb } from './capture.ts';
+import { auditVerb } from './audit.ts';
 import { runRawSearch } from './rawsearch.ts';
 import { runRawOwners } from './rawowners.ts';
 import { runTriageVerb } from './triage.ts';
@@ -375,6 +376,32 @@ async function main(argv: string[]): Promise<number> {
       const result = runBookVerb(rest, workspace);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
+      return 0;
+    }
+
+    // THE AUDIT RECORD (kickoffs/s112 ruling 5): `revision`, `record` and `due`, lines for a person, the document with --json.
+    case 'audit': {
+      if (!['revision', 'record', 'due'].includes(action)) refuse(`library audit has no action '${rest[0] ?? ''}'. It has: due, record, revision.`);
+      const parsed = parseArguments(tail, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library audit : ${(error as Error).message}`);
+      }
+      try {
+        const result = auditVerb(action, {
+          workspace,
+          target: parsed.positional[0],
+          revision: parsed.options.get('revision'),
+          findings: parsed.options.get('findings'),
+          report: parsed.options.get('report'),
+          days: parsed.options.get('days'),
+        });
+        emit(result.value, parsed.flags.has('json'), result.text);
+      } catch (error) {
+        refuse((error as Error).message);
+      }
       return 0;
     }
 

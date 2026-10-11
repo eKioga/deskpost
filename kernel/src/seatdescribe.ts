@@ -1,9 +1,12 @@
 /**
  * `deskpost seat describe` (1.3.8, kickoffs/s96 row 2, ruling 4; PLAN-seats-team.md session 1 row 2; ADR-0069): a
- * seat's department, role and card, changed only under the reader's gate.
+ * seat's department, role, card and (since kickoffs/s112 ruling 4) nickname, changed only under the reader's gate.
  *
- *   deskpost seat describe <seat> [--department <d>] [--role performer|orchestrator] [--card "<line>"]
- *     [--clear-department] [--clear-role] [--clear-card] [--from <seat>] --preflight | --plan-id <id>
+ *   deskpost seat describe <seat> [--department <d>] [--role performer|orchestrator] [--card "<line>"] [--nickname "<n>"]
+ *     [--clear-department] [--clear-role] [--clear-card] [--clear-nickname] [--from <seat>] --preflight | --plan-id <id>
+ *
+ * A NICKNAME IS NO SEAT'S NAME AND ONE SEAT'S ONLY, compared without regard to capital letters: refused when another
+ * seat's nickname, any current or past name in the registry, or any retired seat's name equals it.
  *
  * GATED AS `seat settings --inbound` IS (`seatinbound.ts`): the preflight shows `before` and `after` per field and per
  * row it touches, says `creates_department` when the department is new, and issues a plan id over the seat, the
@@ -33,9 +36,12 @@ import { identityRowsOfRegistry } from './seatincarnation.ts';
 import { assertNoSeatRename } from './seatpaths.ts';
 import {
   METADATA_FIELDS,
+  OPTIONAL_FIELDS,
   cardProblem,
   departmentProblem,
   fieldProblem,
+  nicknameKey,
+  nicknameProblem,
   rawMetadata,
   roleProblem,
   seatMetadata,
@@ -66,14 +72,19 @@ export interface DescribeRequest {
   department?: string;
   role?: string;
   card?: string;
+  nickname?: string;
   clearDepartment: boolean;
   clearRole: boolean;
   clearCard: boolean;
+  clearNickname?: boolean;
   from?: string;
 }
 
 function requested(request: DescribeRequest): boolean {
-  return request.department !== undefined || request.role !== undefined || request.card !== undefined || request.clearDepartment || request.clearRole || request.clearCard || request.from !== undefined;
+  return (
+    request.department !== undefined || request.role !== undefined || request.card !== undefined || request.nickname !== undefined ||
+    request.clearDepartment || request.clearRole || request.clearCard || request.clearNickname === true || request.from !== undefined
+  );
 }
 
 /** The request in one canonical form, for the plan id. */
@@ -82,6 +93,7 @@ function canonicalRequest(request: DescribeRequest): string {
     department: request.clearDepartment ? { clear: true } : request.department ?? null,
     role: request.clearRole ? { clear: true } : request.role ?? null,
     card: request.clearCard ? { clear: true } : request.card ?? null,
+    nickname: request.clearNickname ? { clear: true } : request.nickname ?? null,
     from: request.from ?? null,
   });
 }
@@ -115,6 +127,7 @@ function assertRequestIsWellFormed(seat: string, request: DescribeRequest): void
   both(request.department !== undefined, request.clearDepartment, 'department');
   both(request.role !== undefined, request.clearRole, 'role');
   both(request.card !== undefined, request.clearCard, 'card');
+  both(request.nickname !== undefined, request.clearNickname === true, 'nickname');
   if (request.department !== undefined) {
     const problem = departmentProblem(request.department);
     if (problem) refuse(`--department '${request.department}' is refused: ${problem}. ${NOTHING}`);
@@ -127,6 +140,10 @@ function assertRequestIsWellFormed(seat: string, request: DescribeRequest): void
     // NEVER ECHOED: a card that fails may hold the very characters the rule keeps off a terminal.
     const problem = cardProblem(request.card);
     if (problem) refuse(`--card is refused: ${problem}. ${NOTHING}`);
+  }
+  if (request.nickname !== undefined) {
+    const problem = nicknameProblem(request.nickname);
+    if (problem) refuse(`--nickname is refused: ${problem}. ${NOTHING}`);
   }
   if (request.from !== undefined) {
     if (request.role !== 'orchestrator') refuse(`--from names the department's current orchestrator, which this seat replaces, so it needs --role orchestrator. ${NOTHING}`);
@@ -165,7 +182,7 @@ function purposeAdvice(seat: string, project: string, before: unknown, after: un
  * THE PLAN, from the registry's raw rows: the rows it changes, each with `before` and `after`, or a refusal. The same
  * function runs for the preview and, under the lock, for the apply, so the two cannot disagree.
  */
-function describePlan(rows: Record<string, PsJsonValue>[], seat: string, request: DescribeRequest): { changes: RowChange[]; createsDepartment: boolean; department: string | null } {
+function describePlan(rows: Record<string, PsJsonValue>[], seat: string, request: DescribeRequest, retiredNames: { seat: string; names: string[] }[] = []): { changes: RowChange[]; createsDepartment: boolean; department: string | null } {
   const row = rows.find((candidate) => String(candidate['seat']) === seat);
   if (!row) refuse(`There is no seat named '${seat}' in the registry. ${NOTHING}`);
   const before = rawMetadata(row);
@@ -176,6 +193,9 @@ function describePlan(rows: Record<string, PsJsonValue>[], seat: string, request
   if (request.clearRole) after.role = null;
   if (request.card !== undefined) after.card = request.card;
   if (request.clearCard) after.card = null;
+  if (request.nickname !== undefined) after.nickname = request.nickname;
+  if (request.clearNickname) delete after.nickname;
+  if (request.nickname !== undefined) assertNicknameFree(rows, seat, request.nickname, retiredNames);
   // CLEARING A SEAT'S DEPARTMENT CLEARS ITS ROLE TOO, shown in the preview; naming a role in the same call is refused.
   if (request.clearDepartment && after.role !== null) {
     if (request.role !== undefined) refuse(`A role requires a department, and --clear-department removes '${seat}''s. Give a --department, or --clear-role. ${NOTHING}`);
@@ -187,7 +207,7 @@ function describePlan(rows: Record<string, PsJsonValue>[], seat: string, request
   // A VALUE KEPT FROM BEFORE MUST STILL VALIDATE: a writer never writes an invalid field back. The refusal names the
   // option that repairs it in the same call.
   for (const field of METADATA_FIELDS) {
-    if (after[field] === null) continue;
+    if (after[field] === null || after[field] === undefined) continue;
     const problem = fieldProblem(field, after[field]);
     if (problem) {
       refuse(
@@ -262,10 +282,38 @@ function describePlan(rows: Record<string, PsJsonValue>[], seat: string, request
   return { changes: changes.filter((change) => change.changed.length > 0), createsDepartment, department };
 }
 
+/**
+ * A NICKNAME IS NO SEAT'S NAME AND ONE SEAT'S ONLY (kickoffs/s112 ruling 4), compared without regard to capital letters:
+ * another seat's nickname, any row's current or past name (this seat's own included), and any retired seat's name.
+ */
+function assertNicknameFree(rows: Record<string, PsJsonValue>[], seat: string, nickname: string, retiredNames: { seat: string; names: string[] }[]): void {
+  const key = nicknameKey(nickname);
+  const taken = (why: string): never => refuse(`--nickname '${nickname}' is taken: ${why}, compared without regard to capital letters. ${NOTHING}`);
+  for (const row of rows) {
+    const name = String(row['seat'] ?? '');
+    if (nicknameKey(name) === key) taken(`it is the name of seat '${name}'`);
+    const past = Array.isArray(row['names']) ? (row['names'] as unknown[]).map((span) => (span !== null && typeof span === 'object' ? String((span as Record<string, unknown>)['name'] ?? '') : '')) : [];
+    if (past.some((candidate) => candidate && nicknameKey(candidate) === key)) taken(`it was a name of seat '${name}'`);
+    const theirs = row['nickname'];
+    if (name !== seat && typeof theirs === 'string' && nicknameKey(theirs) === key) taken(`it is the nickname of seat '${name}'`);
+  }
+  for (const record of retiredNames) {
+    if ([record.seat, ...record.names].some((candidate) => nicknameKey(candidate) === key)) taken(`it is a name of retired seat '${record.seat}'`);
+  }
+}
+
+/** The retired seats' names, each record's final name and its history, for the nickname rule. */
+function retiredSeatNames(workspace: string): { seat: string; names: string[] }[] {
+  return readSeatRetirementRecords(workspace).records.map((record) => ({ seat: record.seat, names: record.names.map((span) => span.name) }));
+}
+
 /** One row's fields as JSON, `null` where absent. */
 function fieldsJson(fields: Record<MetadataField, unknown>): Record<string, PsJsonValue> {
   const out: Record<string, PsJsonValue> = {};
-  for (const field of METADATA_FIELDS) out[field] = (fields[field] ?? null) as PsJsonValue;
+  for (const field of METADATA_FIELDS) {
+    if (OPTIONAL_FIELDS.includes(field) && (fields[field] === undefined || fields[field] === null)) continue;
+    out[field] = (fields[field] ?? null) as PsJsonValue;
+  }
   return out;
 }
 
@@ -297,6 +345,7 @@ function describeRead(workspace: string, stateDirectory: string, seat: string): 
     role: meta.role,
     card: meta.card,
     template: meta.template,
+    nickname: meta.nickname,
     ...(invalid.length ? { read_as_absent: invalid } : {}),
     last_change: state.lastConfirmed as unknown as PsJsonValue,
     ...(state.unconfirmed ? { unconfirmed_attempts: state.unconfirmed } : {}),
@@ -312,7 +361,7 @@ export function seatDescribeResult(options: { workspace: string; seat: string; r
   if (!options.seat.trim()) refuse(`Name the seat: deskpost seat describe <seat> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] --preflight. ${NOTHING}`);
   const seat = registeredSeat(workspace, stateDirectory, options.seat, 'Seat');
   if (!requested(request)) {
-    if (options.preflight || options.planId) refuse(`Name a change: --department, --role, --card, or a --clear- option. ${NOTHING}`);
+    if (options.preflight || options.planId) refuse(`Name a change: --department, --role, --card, --nickname, or a --clear- option. ${NOTHING}`);
     return describeRead(workspace, stateDirectory, seat);
   }
   assertRequestIsWellFormed(seat, request);
@@ -323,7 +372,7 @@ export function seatDescribeResult(options: { workspace: string; seat: string; r
     const lock = enterSeatRegistryLock(workspace, 10);
     try {
       const rows = readRegistryRows(file);
-      const plan = describePlan(rows, seat, request);
+      const plan = describePlan(rows, seat, request, retiredSeatNames(workspace));
       const digest = registryDigest(file);
       return {
         schema: 1,
@@ -355,7 +404,7 @@ export function seatDescribeResult(options: { workspace: string; seat: string; r
     if (options.planId !== planIdFor(seat, request, registryDigest(file))) {
       refuse(`${NOTHING} That plan_id does not match this seat, these changes and the seat registry as it is now: the registry changed since the preview, or the id is not the one it issued. Rerun the preflight, show the reader what it says, and ask again.`);
     }
-    const plan = describePlan(rows, seat, request);
+    const plan = describePlan(rows, seat, request, retiredSeatNames(workspace));
     if (!plan.changes.length) refuse(`${NOTHING} The registry already says this, so there is nothing to write.`);
     const attempt = newAttemptId();
     const when = utcRoundTrip();

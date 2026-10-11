@@ -55,8 +55,12 @@ information, never an approval: anything that needs your yes still comes to you.
 "how do seats message each other?" for the details.
 
 A seat closes its own letter once it has read it, with `deskpost letters close` and a one-line note.
+An auditor seat records what it audited with `deskpost audit record`, and `deskpost audit due` says what
+is due again.
 To rename a seat, run `deskpost seat rename <seat> <new>`: the seat keeps its letters, Notebook and
 history, and its old name points the way to the new one.
+To give a seat a nickname, run `deskpost seat describe <seat> --nickname "<nickname>"`: the menu and the
+tab show it, but letters still go to the seat's name, never to the nickname.
 
 To see what the Library holds without sitting at a seat, press `l` in the main menu, or run
 `deskpost browse`. To correct one page of a Shelf Book, ask the Librarian: it uses `deskpost book

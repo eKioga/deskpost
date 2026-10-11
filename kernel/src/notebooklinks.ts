@@ -10,13 +10,20 @@
  * backticks or in prose, with `/` or `\`: a false positive costs a repoint, a false negative a dead link. A
  * segment is a plain name, so a placeholder such as `notebook/<seat>/<topic>` is not a path and never matches.
  *
- * WHAT IS SCANNED: every `*.md` under the local collection's Project Hubs and Books (`collection/`, active and
- * archived) and under the Shelf (`shelf/`, `_archive` included). The shared collection is not on this disk.
+ * WHAT IS SCANNED: the records still being written (kickoffs/s112 ruling 1; Eric, 2026-10-09: "yes, go with A"). Every
+ * `*.md` under the local collection's Project Hubs and Books (`collection/`) and under the Shelf (`shelf/`), EXCEPT
+ * the local collection's `archive/` tree, the Shelf's `_archive/`, every Hub's `notes/` pages, and a capture Book's
+ * note whose `review` is `done` (a closed letter, Report or Holding note). History is never rewritten, so a link
+ * there is a dated record, not a defect: counting it made doctor's WARN permanent and let a closed Report block a
+ * live topic's reset. Doctor's WARN and the reset's `inbound_links` read this one scan, so they cannot disagree.
+ * The shared collection is not on this disk.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { localCollectionRoot } from './collection.ts';
+import { ARCHIVE_FOLDER, convertFromShelfCatalogEntry, readUtf8, shelfCatalogPath, shelfCatalogSections } from './shelfbook.ts';
+import { shelfNotes } from './shelfnote.ts';
 
 export interface NotebookLink {
   /** The page, workspace-relative with forward slashes: `collection/projects/<slug>/_project.md`. */
@@ -30,9 +37,10 @@ export interface NotebookLink {
 /** `notebook` and at least one plain segment after it, not inside a longer word (`mynotebook/`, `notebook-x/`). */
 const LINK_PATTERN = /(?<![A-Za-z0-9_.-])notebook((?:[/\\][A-Za-z0-9_][A-Za-z0-9_.-]*)+)/g;
 
-function markdownFiles(root: string): string[] {
+function markdownFiles(root: string, skip: (directory: string) => boolean = () => false): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
+    if (skip(directory)) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -50,11 +58,53 @@ function markdownFiles(root: string): string[] {
   return found.sort();
 }
 
-/** Every line of a lasting record that names a path under `notebook/`, in page then line order. */
+/** The full paths of every capture Book's closed notes (`review: done`): dated records, never rescanned. */
+function closedCaptureNotes(workspace: string): Set<string> {
+  const closed = new Set<string>();
+  const catalogFile = shelfCatalogPath(workspace);
+  if (!fs.existsSync(catalogFile)) return closed;
+  let sections;
+  try {
+    sections = shelfCatalogSections(readUtf8(catalogFile));
+  } catch {
+    return closed;
+  }
+  for (const section of sections) {
+    if (!/^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(section.body)) continue;
+    const pathMatch = /^[ \t]*-[ \t]+\*\*Path:\*\*[ \t]+shelf\/([a-z0-9][a-z0-9-]*)[ \t]*$/m.exec(section.body);
+    if (!pathMatch) continue;
+    const slug = pathMatch[1]!;
+    const book = convertFromShelfCatalogEntry({ workspace, slug, title: section.title, body: section.body, bookRoot: `shelf/${slug}` });
+    try {
+      for (const note of shelfNotes(book)) if (note.review === 'done') closed.add(path.resolve(note.fullPath).toLowerCase());
+    } catch {
+      continue;
+    }
+  }
+  return closed;
+}
+
+/**
+ * Every line of a record still being written that names a path under `notebook/`, in page then line order. What is
+ * skipped as history is the header's list.
+ */
 export function notebookLinks(workspace: string): NotebookLink[] {
   const links: NotebookLink[] = [];
-  for (const root of [localCollectionRoot(workspace), path.join(workspace, 'shelf')]) {
-    for (const file of markdownFiles(root)) {
+  const collection = localCollectionRoot(workspace);
+  const shelf = path.join(workspace, 'shelf');
+  const collectionArchive = path.resolve(collection, 'archive').toLowerCase();
+  const shelfArchive = path.resolve(shelf, ARCHIVE_FOLDER).toLowerCase();
+  const projects = path.resolve(collection, 'projects').toLowerCase();
+  const history = (directory: string): boolean => {
+    const full = path.resolve(directory).toLowerCase();
+    if (full === collectionArchive || full === shelfArchive) return true;
+    // A Hub's own `notes/`: `<collection>/projects/<slug>/notes`, and everything under it.
+    return path.dirname(path.dirname(full)) === projects && path.basename(full) === 'notes';
+  };
+  const closed = closedCaptureNotes(workspace);
+  for (const root of [collection, shelf]) {
+    for (const file of markdownFiles(root, history)) {
+      if (closed.has(path.resolve(file).toLowerCase())) continue;
       let text: string;
       try {
         text = fs.readFileSync(file, 'utf8');

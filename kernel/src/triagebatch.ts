@@ -749,8 +749,14 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         if (entry.gateError) refuse(entry.gateError);
         assertDeskState(action);
         assertWriteSetWritable(action);
-        assertSourceUnchanged(action);
-        const result = invokeChildAction(entry.resolved, entry.childPlanId);
+        const notebookRead = enterNotebookSourceRead(action);
+        let result: PsJsonValue;
+        try {
+          assertSourceUnchanged(action);
+          result = invokeChildAction(entry.resolved, entry.childPlanId);
+        } finally {
+          exitBookLock(notebookRead);
+        }
         record.state = 'succeeded';
         record.completed_utc = utcSeconds();
         record.error = '';
@@ -798,6 +804,26 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     };
   } finally {
     exitBookLock(batchLock);
+  }
+
+  /**
+   * A SHELF BOOK PAGE GRADUATED FROM THE NOTEBOOK READS IT UNDER THE SEAT'S NOTEBOOK LOCK (kickoffs/s112 ruling 2). Its
+   * hash check alone refused only once a rename had moved the note; a rename stopped at its barrier, before the move,
+   * let the page land. So the read takes the lock with the same final check as a Notebook write, and holds it until the
+   * child has read the source: a rename waits for it, or it refuses at the barrier and writes nothing. The lock is
+   * taken before the destination Book's, the one place a Notebook lock comes first; both wait with a timeout.
+   */
+  function enterNotebookSourceRead(action: TriageAction): BookLock | null {
+    if (action.kind !== 'shelf-book' || action.source !== 'notebook' || seat === null) return null;
+    const start = beginSeatMutation(workspace, seat);
+    const lock = enterSeatNotebookLock(workspace, notebookScope(workspace, seat, 'read', 'Triaging from the Notebook').seat, lockTimeout);
+    try {
+      recheckSeatMutation(start);
+    } catch (error) {
+      exitBookLock(lock);
+      throw error;
+    }
+    return lock;
   }
 
   function invokeChildAction(pair: Resolved, childPlanId: string | null): PsJsonValue {

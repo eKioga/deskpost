@@ -203,16 +203,16 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.4.1**. The full roadmap, with what each milestone carries and how far
+The current release is **1.4.2**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
-- **Next: the rest of seats you can rename.** Optional nicknames, and a record of which Books, Hubs
-  and repositories were last audited and which are due again.
-- **Then: Libraries on more than one computer**, its plan signed off: 1.5.0 gives each Library a
+- **Next: Libraries on more than one computer**, its plan signed off: 1.5.0 gives each Library a
   card (a display name, with no account behind it) and lets Libraries on different computers leave
   each other letters through a Basic Memory server on your own network; 1.6.0 lets two Libraries in
   one household share and edit one collection there, with no accounts, database or service of
   Deskpost's own. Basic Memory stays optional.
+- **Alongside: development without PowerShell.** The tools that build, test and release Deskpost
+  move to TypeScript, and a commit is judged in about two minutes.
 - **Exploring:** refreshing a Book from its sources; backups kept in a folder or file you choose;
   and smaller improvements, listed in the roadmap.
 

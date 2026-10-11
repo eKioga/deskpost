@@ -536,6 +536,8 @@ if (selected(8)) {
       browse: ['browse', 'no-such-word'],
       // S108. An unknown action stops in the verb's own branch.
       letters: ['letters', 'no-such-action'],
+      // S112. The same.
+      audit: ['audit', 'no-such-action'],
     };
     for (const [verb, declaration] of Object.entries(VERBS)) {
       if (!declaration.ported) continue;
@@ -18691,7 +18693,8 @@ if (selected(206)) {
     const topic = path.join(ws, 'notebook', 'first', 'findings');
     fs.mkdirSync(topic, { recursive: true });
     fs.writeFileSync(path.join(topic, 'page.md'), '# A finding\n\nWorth keeping.\n');
-    const hubPage = path.join(ws, 'collection', 'projects', 'alpha', 'notes', '2026-10-09-decision.md');
+    // A live Hub page outside `notes/`: since S112 a Hub's `notes/` pages are history and the scan skips them (212).
+    const hubPage = path.join(ws, 'collection', 'projects', 'alpha', 'research', '2026-10-09-decision.md');
     fs.mkdirSync(path.dirname(hubPage), { recursive: true });
     fs.writeFileSync(hubPage, '# A decision\n\nA placeholder, notebook/<seat>/<topic>, is not a path.\n- Decided: see [[notebook/first/findings/page]].\nAnother seat: `notebook/second/findings`.\n');
     const shelfPage = path.join(ws, 'shelf', 'holding', 'wiki', 'notes', 'kept.md');
@@ -18701,11 +18704,11 @@ if (selected(206)) {
 
     const plan = json(reset(['--preflight']));
     const rows = ((plan['inbound_links'] ?? []) as { page: string; line: number; topic: string }[]).map((row) => `${row.page}:${row.line}:${row.topic}`).sort();
-    equal(rows.join(' | '), 'collection/projects/alpha/notes/2026-10-09-decision.md:4:findings | shelf/holding/wiki/notes/kept.md:3:findings', `the preflight did not list exactly the two lines that link into the topic: ${JSON.stringify(plan).slice(0, 600)}`);
+    equal(rows.join(' | '), 'collection/projects/alpha/research/2026-10-09-decision.md:4:findings | shelf/holding/wiki/notes/kept.md:3:findings', `the preflight did not list exactly the two lines that link into the topic: ${JSON.stringify(plan).slice(0, 600)}`);
     check(((plan['refusals'] ?? []) as string[]).some((line) => line.includes('home the material on a dated Hub notes page')), `the preflight did not say the repair: ${JSON.stringify(plan['refusals'])}`);
     const notebookBefore = w.snapshot(path.join(ws, 'notebook'));
     const refused = reset(['--plan-id', String(plan['plan_id'])]);
-    check(refused.exit !== 0 && refused.stderr.includes('Reset refused and nothing was moved') && refused.stderr.includes('collection/projects/alpha/notes/2026-10-09-decision.md line 4 (findings)'), `the reset was not refused naming the line: ${refused.stderr.trim().slice(0, 500)}`);
+    check(refused.exit !== 0 && refused.stderr.includes('Reset refused and nothing was moved') && refused.stderr.includes('collection/projects/alpha/research/2026-10-09-decision.md line 4 (findings)'), `the reset was not refused naming the line: ${refused.stderr.trim().slice(0, 500)}`);
     equal(w.snapshot(path.join(ws, 'notebook')), notebookBefore, 'a refused reset changed the Notebook');
     check(!fs.existsSync(path.join(ws, 'internal', 'notebook-reset-quarantine')) || fs.readdirSync(path.join(ws, 'internal', 'notebook-reset-quarantine')).length === 0, 'a refused reset made a quarantine directory');
 
@@ -18724,7 +18727,7 @@ if (selected(206)) {
     equal(linkCheck()?.status, 'pass', `doctor did not pass a Library with no dead Notebook link: ${JSON.stringify(linkCheck())}`);
     fs.writeFileSync(hubPage, '# A decision\n\n- Decided: see [[notebook/first/findings/page]].\n');
     const dead = linkCheck();
-    check(dead?.status === 'warn' && dead.detail.includes('collection/projects/alpha/notes/2026-10-09-decision.md line 3 (notebook/first/findings/page)') && dead.detail.includes('repoint the link'), `a dead Notebook link was not doctor's WARN: ${JSON.stringify(dead)}`);
+    check(dead?.status === 'warn' && dead.detail.includes('collection/projects/alpha/research/2026-10-09-decision.md line 3 (notebook/first/findings/page)') && dead.detail.includes('repoint the link'), `a dead Notebook link was not doctor's WARN: ${JSON.stringify(dead)}`);
 
     // (c) LETTERS BY RECIPIENT: six letters from first to a live seat second, past the Book's default of five.
     equal(w.as(process.pid, ['seat', 'start', 'second', '--project', 'beta', '--no-launch', '--workspace', ws]).exit, 0, 'the seat second was not made');
@@ -19456,6 +19459,394 @@ if (selected(211)) {
     failures.push(`section 211 stopped early: ${(error as Error).message}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 212. THE LINK SCANS READ ONLY LIVE RECORDS; GRADUATION DURING A RENAME; ARCHIVED UNDER THE LOCKS (kickoffs/s112 1-3) --
+
+// (a) A dead link, and a link into a live topic, in each of the four skipped places (the local collection's
+// `archive/`, the Shelf's `_archive/`, a Hub's `notes/` and a closed capture note) is neither doctor's WARN nor a
+// reset's `inbound_links`; the same lines in a live Hub page, an open curated Book page and a pending capture note are
+// both. (b) A `triage batch` graduating a Notebook page into a Shelf Book while its seat is stopped mid-rename (the
+// barrier stands, nothing moved yet) refuses at the barrier and writes nothing to the Book; after the rollback the same
+// plan lands. (c) A local Book archived between the plan and the locks is said as archived, not as incomplete.
+if (selected(212)) {
+  const w = await seatClaimWorkspace('live-links');
+  try {
+    const ws = w.workspace;
+    const json = (run: { stdout: string; stderr: string }): Record<string, any> => {
+      try {
+        return JSON.parse(run.stdout) as Record<string, any>;
+      } catch {
+        return { unreadable: `${run.stdout.slice(0, 200)} ${run.stderr.trim().slice(0, 300)}` };
+      }
+    };
+    const agent = w.startAgent();
+    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat first could not be created');
+    fs.mkdirSync(path.join(ws, 'internal'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+    const topic = path.join(ws, 'notebook', 'first', 'findings');
+    fs.mkdirSync(topic, { recursive: true });
+    fs.writeFileSync(path.join(topic, '_index.md'), '# findings\n\nA topic.\n');
+    fs.writeFileSync(path.join(topic, 'page.md'), '# A finding\n\nWorth keeping.\n');
+    equal(w.as(agent, ['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--workspace', ws, '--json']).exit, 0, 'the curated Book could not be made');
+    const captured = json(w.as(agent, ['capture', 'holding', '--title', 'Two links', '--body', 'See [[notebook/first/gone/page]] and [[notebook/first/findings/page]].', '--workspace', ws, '--json']));
+    const notesDir = path.join(ws, 'shelf', 'holding', 'wiki', 'notes');
+    const noteName = fs.readdirSync(notesDir).find((file) => file.includes('two-links'));
+    check(noteName !== undefined, `the capture note was not written: ${JSON.stringify(captured).slice(0, 300)}`);
+    const notePage = `shelf/holding/wiki/notes/${noteName}`;
+    const body = '# Links\n\nGone: [[notebook/first/gone/page]].\nLive: [[notebook/first/findings/page]].\n';
+    const pages: Record<string, string> = {
+      liveHub: 'collection/projects/alpha/research/live.md',
+      curated: 'shelf/demo/wiki/linked.md',
+      hubNotes: 'collection/projects/alpha/notes/2026-10-10-history.md',
+      collectionArchive: 'collection/archive/old/wiki/linked.md',
+      shelfArchive: 'shelf/_archive/older/wiki/linked.md',
+    };
+    for (const page of Object.values(pages)) {
+      const full = path.join(ws, ...page.split('/'));
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, body);
+    }
+    const deadDetail = () => ((json(w.as(process.pid, ['doctor', '--workspace', ws, '--json']))['library_checks'] ?? []) as { check: string; detail: string }[]).find((row) => row.check === 'notebook.links-resolve')?.detail ?? '';
+    const inbound = () => ((json(w.as(agent, ['reset', '--seat', 'first', '--workspace', ws, '--json', '--preflight']))['inbound_links'] ?? []) as { page: string }[]).map((row) => row.page);
+    const counted = [pages.liveHub!, pages.curated!, notePage];
+    const skipped = [pages.hubNotes!, pages.collectionArchive!, pages.shelfArchive!];
+    // A PENDING capture note is a live record: counted with the live Hub page and the curated Book page.
+    let detail = deadDetail();
+    let rows = inbound();
+    for (const page of counted) {
+      check(detail.includes(`${page} line`), `doctor did not count the dead link in a live record, ${page}: ${detail.slice(0, 600)}`);
+      check(rows.includes(page), `the reset did not list the link from a live record, ${page}: ${rows.join(', ')}`);
+    }
+    for (const page of skipped) {
+      check(!detail.includes(page), `doctor counted a dead link in history, ${page}: ${detail.slice(0, 600)}`);
+      check(!rows.includes(page), `the reset listed a link from history, ${page}: ${rows.join(', ')}`);
+    }
+    // CLOSED, the same note is history: neither counts it.
+    const noteFile = path.join(notesDir, noteName!);
+    fs.writeFileSync(noteFile, fs.readFileSync(noteFile, 'utf8').replace(/^review: pending$/m, 'review: done'));
+    detail = deadDetail();
+    rows = inbound();
+    check(!detail.includes(notePage) && detail.includes(pages.liveHub!), `doctor counted a dead link in a closed capture note: ${detail.slice(0, 600)}`);
+    check(!rows.includes(notePage) && rows.includes(pages.liveHub!), `the reset listed a link from a closed capture note: ${rows.join(', ')}`);
+    // With the live records repointed, nothing is left: the four skipped places never block a reset.
+    for (const page of [pages.liveHub!, pages.curated!]) fs.writeFileSync(path.join(ws, ...page.split('/')), '# Links\n\nRepointed to a Hub notes page.\n');
+    check(/^no Hub or Shelf Book line/.test(deadDetail()), `history alone still made doctor's WARN: ${deadDetail().slice(0, 400)}`);
+    equal(inbound().join(', '), '', 'history alone still blocked the reset');
+
+    // (b) GRADUATION DURING A RENAME.
+    equal(w.as(agent, ['desk', 'open', 'book', 'demo', '--location', 'shelf', '--seat', 'first', '--workspace', ws]).exit, 0, 'the demo Book could not be opened');
+    const actions = JSON.stringify([{ kind: 'shelf-book', source: 'notebook', source_path: 'notebook/first/findings/page.md', slug: 'demo', page_path: 'graduated', title: 'Graduated' }]);
+    const planned = json(w.as(agent, ['triage', 'batch', '--actions', actions, '--preflight', '--workspace', ws, '--json']));
+    const batchPlan = String(planned['plan_id'] ?? 'none');
+    check(batchPlan.startsWith('triage-'), `the graduation was not planned: ${JSON.stringify(planned).slice(0, 400)}`);
+    // The seat must be free to rename: its agent ends, and the batch then runs as the seat by name.
+    w.agents.find((candidate) => candidate.pid === agent)?.kill();
+    check(w.untilFree('first'), 'the seat first was not free after its agent ended');
+    const renamePlan = String(json(w.as(process.pid, ['seat', 'rename', 'first', 'renamed', '--preflight', '--workspace', ws, '--json']))['plan_id'] ?? 'none');
+    const stopped = w.as(process.pid, ['seat', 'rename', 'first', 'renamed', '--user-confirmed', '--plan-id', renamePlan, '--workspace', ws, '--json'], { LIBRARY_SEAT_RENAME_FAULT: 'after-journal' });
+    check(stopped.exit !== 0 && stopped.stderr.includes('FAULT INJECTED') && fs.existsSync(path.join(topic, 'page.md')), `the rename was not stopped at its barrier with the note in place: ${stopped.stderr.trim().slice(0, 300)}`);
+    const graduated = path.join(ws, 'shelf', 'demo', 'wiki', 'graduated.md');
+    const bookBefore = w.snapshot(path.join(ws, 'shelf', 'demo'));
+    const apply = () => json(w.as(process.pid, ['triage', 'batch', '--actions', actions, '--user-confirmed', '--plan-id', batchPlan, '--workspace', ws, '--json'], { LIBRARY_SEAT: 'first' }));
+    const during = apply();
+    const error = String(((during['outcomes'] ?? []) as Record<string, unknown>[])[0]?.['error'] ?? JSON.stringify(during).slice(0, 400));
+    check(during['all_succeeded'] !== true && error.includes("Seat 'first' is being renamed"), `a graduation during a rename was not refused at the barrier: ${error}`);
+    check(!fs.existsSync(graduated) && w.snapshot(path.join(ws, 'shelf', 'demo')) === bookBefore, 'a graduation refused at the barrier wrote to the Book');
+    const back = json(w.as(process.pid, ['seat', 'rename', '--rollback', 'first', '--workspace', ws, '--json']));
+    equal(back['status'], 'rolled-back', `the stopped rename did not roll back: ${JSON.stringify(back).slice(0, 300)}`);
+    const after = apply();
+    check(after['all_succeeded'] === true && fs.existsSync(graduated), `the same graduation did not land once the rename was rolled back: ${JSON.stringify(after).slice(0, 400)}`);
+
+    // (c) ARCHIVED BETWEEN THE PLAN AND THE LOCKS: the archive waits on the active Book's lock while another hand
+    // archives it, then says so.
+    const wiki = path.join(ws, 'collection', 'books', 'atlas', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Atlas\n\nA fixture Book.\n');
+    fs.writeFileSync(path.join(wiki, '_index.md'), '# Atlas\n\n- [[books/atlas/wiki/start|Start]]\n');
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nWhere to begin.\n');
+    equal(w.as(process.pid, ['collection', 'rebuild', '--workspace', ws, '--json']).exit, 0, 'the fixture Book was not rebuilt');
+    const archivePlan = String(json(w.as(process.pid, ['shared', 'archive', 'atlas', '--kind', 'book', '--preflight', '--workspace', ws, '--json']))['plan_id'] ?? 'none');
+    const lockFile = path.join(ws, 'internal', 'book-locks', 'books-atlas.lock');
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(lockFile, `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=books/atlas\n`, { flag: 'wx' });
+    const waiting = w.asAsync(process.pid, ['shared', 'archive', 'atlas', '--kind', 'book', '--user-confirmed', '--plan-id', archivePlan, '--workspace', ws, '--json']);
+    w.pause(2500);
+    fs.mkdirSync(path.join(ws, 'collection', 'archive'), { recursive: true });
+    fs.renameSync(path.join(ws, 'collection', 'books', 'atlas'), path.join(ws, 'collection', 'archive', 'atlas'));
+    fs.rmSync(lockFile, { force: true });
+    const waited = await waiting;
+    check(waited.exit !== 0 && waited.stderr.includes("Book 'atlas' is already archived; nothing to do.") && !waited.stderr.includes('incomplete or missing'), `a Book archived under the locks was not said as archived: ${waited.stderr.trim().slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 212 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+
+// --- 213. NICKNAMES (kickoffs/s112 ruling 4; PLAN-seat-identity.md section 6) ------------------------------------------
+
+// (a) A nickname is 1-16 characters of letters, digits, space, '-', '_' and '.', with no space at either end; each
+// refusal writes nothing. (b) It is unique among nicknames and never equal to a current, past or retired name, all
+// compared without regard to capital letters, and shown as typed. (c) It is set and cleared under describe's gate and
+// history. (d) It is never an address: every seat verb and `capture --for` given a nickname, in any capitals, refuses
+// with the sentence and writes nothing. (e) The menu row in both layouts and the tab title show `<nickname> (<seat>)`.
+// (f) A renamed seat keeps its nickname, and "(formerly ...)" follows it; a retired seat's nickname is free again.
+if (selected(213)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-nickname-')));
+  try {
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    const log = path.join(root, 'orca.log');
+    fakeAssistant(bin, 'orca', log);
+    const onPath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env: Record<string, string> = {
+      LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '',
+      NO_COLOR: '1', LIBRARY_MENU_TOUCH_REGISTRY: '', PATH: onPath, Path: onPath,
+    };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...extra } });
+    const json = (run: { stdout: string; stderr: string }): Record<string, any> => {
+      try {
+        return JSON.parse(run.stdout) as Record<string, any>;
+      } catch {
+        return { unreadable: `${run.stdout.slice(0, 200)} ${run.stderr.trim().slice(0, 300)}` };
+      }
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    for (const [seat, project] of [['first', 'alpha'], ['second', 'beta'], ['gone', 'gamma']] as const) {
+      equal(cli(['hub', 'new', project, '--title', project]).exit, 0, `the ${project} Hub could not be made`);
+      const made = cli(['seat', 'start', seat, '--project', project, '--no-launch']);
+      equal(made.exit, 0, `the seat ${seat} was not made: ${made.stderr.trim().slice(0, 300)}`);
+    }
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const rowOf = (seat: string): Record<string, unknown> => ((JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as { seats: Record<string, unknown>[] }).seats.find((row) => row['seat'] === seat) ?? {});
+    const preview = (seat: string, args: string[]) => cli(['seat', 'describe', seat, ...args, '--preflight', '--json']);
+    const describe = (seat: string, args: string[]) => {
+      const planned = json(preview(seat, args));
+      return cli(['seat', 'describe', seat, ...args, '--plan-id', String(planned['plan_id'] ?? 'none'), '--json']);
+    };
+    const state = () => `${fs.readFileSync(registryFile, 'utf8')}\n==\n${fs.existsSync(path.join(lib, 'internal', 'seat-registry-history.jsonl')) ? fs.readFileSync(path.join(lib, 'internal', 'seat-registry-history.jsonl'), 'utf8') : ''}`;
+
+    // (a) VALIDATION: each refused by its preflight, and nothing written.
+    const before = state();
+    for (const [value, why] of [['abcdefghijklmnopq', 'at most 16'], ['dev/lead', 'letters, digits'], [' lead', 'space at either end'], ['lead ', 'space at either end']] as const) {
+      const refused = preview('first', ['--nickname', value]);
+      check(refused.exit !== 0 && refused.stderr.includes('--nickname') && refused.stderr.includes(why) && refused.stderr.includes('Nothing was changed.'), `the nickname '${value}' was not refused (${why}): ${refused.stderr.trim().slice(0, 300)}`);
+    }
+    equal(state(), before, 'a refused nickname wrote something');
+
+    // (c) SET UNDER THE GATE, shown as typed, recorded in the history.
+    const set = describe('first', ['--nickname', 'Dev Lead']);
+    check(set.exit === 0 && rowOf('first')['nickname'] === 'Dev Lead', `the nickname was not set: ${set.stderr.trim().slice(0, 300)}`);
+    check(fs.readFileSync(path.join(lib, 'internal', 'seat-registry-history.jsonl'), 'utf8').includes('"nickname":"Dev Lead"'), 'the nickname was not recorded in the seat history');
+    equal(json(cli(['seat', 'describe', 'first', '--json']))['nickname'], 'Dev Lead', 'describe does not read the nickname back');
+
+    // (b) UNIQUENESS, without regard to capital letters: another seat's nickname, a current name, a past name, a retired name.
+    equal(cli(['seat', 'retire', 'gone', '--plan-id', String(json(cli(['seat', 'retire', 'gone', '--preflight', '--json']))['plan_id'] ?? 'none'), '--json']).exit, 0, 'the seat gone was not retired');
+    const renamePlan = String(json(cli(['seat', 'rename', 'second', 'twin', '--preflight', '--json']))['plan_id'] ?? 'none');
+    equal(cli(['seat', 'rename', 'second', 'twin', '--user-confirmed', '--plan-id', renamePlan, '--json']).exit, 0, 'the seat second was not renamed to twin');
+    const unique = state();
+    for (const [value, why] of [['dev LEAD', "seat 'first'"], ['FIRST', "seat 'first'"], ['Second', "seat 'twin'"], ['GONE', "retired seat 'gone'"]] as const) {
+      const refused = preview('twin', ['--nickname', value]);
+      check(refused.exit !== 0 && refused.stderr.includes(why) && refused.stderr.includes('Nothing was changed.'), `the nickname '${value}' was not refused as taken (${why}): ${refused.stderr.trim().slice(0, 300)}`);
+    }
+    equal(state(), unique, 'a nickname refused as taken wrote something');
+
+    // (d) NEVER AN ADDRESS: every seat verb and capture --for, in any capitals.
+    const address = state();
+    const verbs: [string[], string][] = [
+      [['seat', 'start', 'dev lead', '--project', 'alpha', '--no-launch'], 'started'],
+      [['seat', 'enter', 'Dev Lead'], 'entered'],
+      [['seat', 'hold', '--seat', 'DEV LEAD'], 'held'],
+      [['seat', 'settings', 'Dev Lead', '--inbound', 'accept', '--preflight'], 'changed'],
+      [['seat', 'describe', 'Dev Lead'], 'changed'],
+      [['seat', 'dirs', 'Dev Lead'], 'changed'],
+      [['seat', 'retire', 'Dev Lead', '--preflight'], 'retired'],
+      [['seat', 'cards', '--seat', 'dev lead'], 'shown'],
+      [['capture', 'letters', '--for', 'Dev Lead', '--title', 'Hello', '--body', 'A letter.'], 'captured'],
+    ];
+    for (const [args, done] of verbs) {
+      const refused = cli(args);
+      const said = args.find((arg) => /dev lead/i.test(arg))!;
+      check(refused.exit !== 0 && refused.stderr.includes(`'${said}' is the nickname of seat 'first'; write to that name. Nothing was ${done}.`), `${args.slice(0, 2).join(' ')} did not refuse a nickname as an address: ${refused.stderr.trim().slice(0, 300)}`);
+    }
+    equal(state(), address, 'a verb given a nickname wrote something');
+    check(!fs.readdirSync(path.join(lib, 'shelf', 'letters', 'wiki', 'notes')).some((file) => file.includes('hello')), 'a letter to a nickname was captured');
+
+    // (e) THE MENU ROW IN BOTH LAYOUTS, AND THE TAB TITLE.
+    const menu = (width: string) => {
+      const script = path.join(root, `answers-${width}.txt`);
+      fs.writeFileSync(script, 'q\n');
+      return runCli(['menu', '--workspace', lib, '--script', script, '--width', width], { cwd: root, env }).stdout;
+    };
+    for (const width of ['200', '80']) {
+      const out = menu(width);
+      check(out.includes('Dev Lead (first)') && !/Dev Lead \(first\).*Dev Lead/.test(out), `the ${width}-column menu does not show the nickname with the seat: ${out.slice(0, 1200)}`);
+    }
+    const kernel = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+    const launched = runCli(['seat', 'start', 'first', '--workspace', lib, '--command', kernel[0]!, '--', ...kernel.slice(1), 'verbs'], { cwd: lib, env: { ...env, ORCA_TERMINAL_HANDLE: 'fixture-handle' } });
+    const renames = (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split(/\r?\n/).map((line) => line.replace(/"/g, '')).filter((line) => line.includes('terminal rename'));
+    check(launched.exit === 0 && renames.some((line) => line.includes('--title Dev Lead (first)')), `the tab was not titled with the nickname and the seat: ${renames.join(' | ')} ${launched.stderr.trim().slice(0, 300)}`);
+
+    // (c) CLEARED UNDER THE GATE; the plain name comes back.
+    equal(describe('first', ['--clear-nickname']).exit, 0, 'the nickname was not cleared');
+    check(!('nickname' in rowOf('first')) && menu('200').includes(' first') && !menu('200').includes('Dev Lead'), 'a cleared nickname is still on the row or the menu');
+
+    // (f) A RENAMED SEAT KEEPS ITS NICKNAME, and "(formerly ...)" follows it.
+    equal(describe('twin', ['--nickname', 'Twin Peaks']).exit, 0, 'the twin nickname was not set');
+    const again = String(json(cli(['seat', 'rename', 'twin', 'triplet', '--preflight', '--json']))['plan_id'] ?? 'none');
+    equal(cli(['seat', 'rename', 'twin', 'triplet', '--user-confirmed', '--plan-id', again, '--json']).exit, 0, 'twin was not renamed to triplet');
+    equal(rowOf('triplet')['nickname'], 'Twin Peaks', 'a renamed seat lost its nickname');
+    check(menu('200').includes('Twin Peaks (triplet) (formerly twin)'), `the renamed seat's row does not read nickname, seat, then formerly: ${menu('200').slice(0, 1200)}`);
+    // A RETIRED SEAT'S NICKNAME IS FREE: retire triplet, and first may take it.
+    equal(cli(['seat', 'retire', 'triplet', '--plan-id', String(json(cli(['seat', 'retire', 'triplet', '--preflight', '--json']))['plan_id'] ?? 'none'), '--json']).exit, 0, 'triplet was not retired');
+    equal(describe('first', ['--nickname', 'twin peaks']).exit, 0, "a retired seat's nickname was not free again");
+  } catch (error) {
+    failures.push(`section 213 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 214. THE AUDIT RECORD AND AUDIT DUE (kickoffs/s112 ruling 5; PLAN-seat-identity.md section 7, Proof "Audit") ------
+
+// (a) `audit revision` for a Shelf Book, a collection Book, a Hub and a clean repo; `unknown` for a dirty manifest, a
+// page edited in place under an `ok` manifest, and a dirty repo. (b) `audit record` refused for a missing target and a
+// malformed revision, writing nothing; a record says who and whether it was already superseded. (c) `audit due` for
+// never audited and open, never audited and closed, changed (older than --days), unchanged, superseded and unknown.
+// No network: only `git rev-parse` and `git status` run, against a fixture repo.
+if (selected(214)) {
+  const w = await seatClaimWorkspace('audit');
+  try {
+    const ws = w.workspace;
+    const json = (run: { stdout: string; stderr: string }): Record<string, any> => {
+      try {
+        return JSON.parse(run.stdout) as Record<string, any>;
+      } catch {
+        return { unreadable: `${run.stdout.slice(0, 200)} ${run.stderr.trim().slice(0, 300)}` };
+      }
+    };
+    const agent = w.startAgent();
+    const madeSeat = w.createSeat('auditor', 'alpha', agent);
+    equal(madeSeat.exit, 0, `the auditor seat could not be created: ${madeSeat.stderr.trim().slice(0, 300)}`);
+    const as = (args: string[]) => w.as(agent, [...args, '--workspace', ws]);
+    const revision = (target: string) => json(as(['audit', 'revision', target, '--json']));
+    equal(as(['shelf', 'new', 'guide', '--title', 'Guide', '--summary', 'A curated Book.', '--json']).exit, 0, 'the Shelf Book could not be made');
+    equal(as(['shelf', 'new', 'quiet', '--title', 'Quiet', '--summary', 'A Book nobody opens.', '--json']).exit, 0, 'the second Shelf Book could not be made');
+    equal(as(['shelf', 'rebuild', 'quiet', '--json']).exit, 0, 'the quiet Book was not rebuilt');
+    fs.writeFileSync(path.join(ws, 'shelf', 'guide', 'wiki', 'start.md'), '# Start\n\nWhere to begin.\n');
+    equal(as(['shelf', 'rebuild', 'guide', '--json']).exit, 0, 'the Shelf Book was not rebuilt');
+    const atlas = path.join(ws, 'collection', 'books', 'atlas', 'wiki');
+    fs.mkdirSync(atlas, { recursive: true });
+    fs.writeFileSync(path.join(atlas, '_book.md'), '# Atlas\n\nA fixture Book.\n');
+    fs.writeFileSync(path.join(atlas, '_index.md'), '# Atlas\n\n- [[books/atlas/wiki/start|Start]]\n');
+    fs.writeFileSync(path.join(atlas, 'start.md'), '# Start\n\nWhere to begin.\n');
+    equal(as(['collection', 'rebuild', '--json']).exit, 0, 'the collection Book was not rebuilt');
+    const repo = path.join(w.root, 'repo');
+    fs.mkdirSync(repo);
+    const git = (args: string[]) => spawnSync('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', env: repositoryNeutralEnv() });
+    equal(git(['init', '-q']).status, 0, 'the fixture repo was not made');
+    fs.writeFileSync(path.join(repo, 'README.md'), '# Repo\n');
+    git(['add', 'README.md']);
+    equal(git(['commit', '-q', '-m', 'first']).status, 0, 'the fixture repo has no commit');
+    const head = String(git(['rev-parse', 'HEAD']).stdout).trim();
+    const repoTarget = `repo:${repo.split(path.sep).join('/')}`;
+
+    // (a) REVISIONS.
+    const shelfRevision = revision('shelf/guide');
+    check(/^book:[0-9]+:[0-9a-f]{64}$/.test(String(shelfRevision['revision'])), `a Shelf Book's revision is not book:<generation>:<digest>: ${JSON.stringify(shelfRevision)}`);
+    check(/^book:[0-9]+:[0-9a-f]{64}$/.test(String(revision('collection/atlas')['revision'])), `a collection Book's revision is not book:<generation>:<digest>: ${JSON.stringify(revision('collection/atlas'))}`);
+    const hubRevision = String(revision('projects/alpha')['revision']);
+    check(/^hub:[0-9a-f]{64}$/.test(hubRevision), `a Hub's revision is not hub:<sha256>: ${hubRevision}`);
+    equal(String(revision(repoTarget)['revision']), `commit:${head}`, "a clean repo's revision is not its HEAD");
+    // A page edited in place under an `ok` manifest, then a dirty manifest: each `unknown` with its reason.
+    const startPage = path.join(ws, 'shelf', 'guide', 'wiki', 'start.md');
+    fs.writeFileSync(startPage, '# Start\n\nWhere to begin, corrected in place.\n');
+    const edited = revision('shelf/guide');
+    check(edited['revision'] === 'unknown' && String(edited['reason']).includes('a page changed after its manifest was written'), `a page edited in place under an ok manifest was not unknown: ${JSON.stringify(edited)}`);
+    equal(as(['shelf', 'rebuild', 'guide', '--json']).exit, 0, 'the Shelf Book was not rebuilt after the edit');
+    const store = path.join(ws, 'internal', 'book-manifests', 'shelf', 'guide');
+    fs.writeFileSync(path.join(store, 'dirty.json'), JSON.stringify({ reason: 'fixture', pid: 1 }));
+    const dirtyManifest = revision('shelf/guide');
+    check(dirtyManifest['revision'] === 'unknown' && String(dirtyManifest['reason']).includes('dirty'), `a dirty manifest was not unknown: ${JSON.stringify(dirtyManifest)}`);
+    fs.rmSync(path.join(store, 'dirty.json'));
+    fs.writeFileSync(path.join(repo, 'scratch.txt'), 'not committed\n');
+    const dirtyRepo = revision(repoTarget);
+    check(dirtyRepo['revision'] === 'unknown' && String(dirtyRepo['reason']).includes('working tree or index has changes'), `a dirty repo was not unknown: ${JSON.stringify(dirtyRepo)}`);
+    fs.rmSync(path.join(repo, 'scratch.txt'));
+
+    // (b) RECORD: refusals write nothing; a record names the seat and its id.
+    const log = path.join(ws, 'internal', 'audit-records.jsonl');
+    const missing = as(['audit', 'record', 'shelf/nowhere', '--revision', `book:1:${'0'.repeat(64)}`, '--findings', '0', '--json']);
+    check(missing.exit !== 0 && missing.stderr.includes("There is no Shelf Book 'nowhere'") && !fs.existsSync(log), `a record for a missing target was not refused cleanly: ${missing.stderr.trim().slice(0, 300)}`);
+    const malformed = as(['audit', 'record', 'projects/alpha', '--revision', 'commit:abc', '--findings', '0', '--json']);
+    check(malformed.exit !== 0 && malformed.stderr.includes('is not a revision of projects/alpha') && !fs.existsSync(log), `a malformed revision was not refused cleanly: ${malformed.stderr.trim().slice(0, 300)}`);
+    const goodShelf = String(revision('shelf/guide')['revision']);
+    const recorded = json(as(['audit', 'record', 'shelf/guide', '--revision', goodShelf, '--findings', '2', '--report', 'projects/alpha/notes/2026-10-10-guide', '--json']));
+    check(recorded['by_seat'] === 'auditor' && /^[0-9a-f]{32}$/.test(String(recorded['by_seat_id'])) && recorded['findings'] === 2 && recorded['superseded'] === false, `the record does not say who audited, or says superseded: ${JSON.stringify(recorded)}`);
+    equal(fs.readFileSync(log, 'utf8').trim().split(/\r?\n/).length, 1, 'the record was not one line in the log');
+
+    // (c) DUE.
+    const due = (days = '30') => {
+      const rows = (json(as(['audit', 'due', '--days', days, '--json']))['targets'] ?? []) as Record<string, unknown>[];
+      return (target: string) => rows.find((row) => row['target'] === target) ?? {};
+    };
+    // Never audited: due while open on a Desk, not due while open on none.
+    equal(as(['desk', 'open', 'book', 'quiet', '--location', 'shelf', '--seat', 'auditor']).exit, 0, 'the quiet Book could not be opened');
+    let rows = due();
+    check(rows('shelf/quiet')['due'] === true && JSON.stringify(rows('shelf/quiet')['open_on_desks']) === '["auditor"]', `a never-audited open Book is not due: ${JSON.stringify(rows('shelf/quiet'))}`);
+    check(rows('collection/atlas')['due'] === false && rows('collection/atlas')['last_audit'] === null, `a never-audited closed Book is due: ${JSON.stringify(rows('collection/atlas'))}`);
+    // Unchanged since the audit: not due.
+    check(rows('shelf/guide')['due'] === false && rows('shelf/guide')['changed'] === false, `an unchanged audited Book is due: ${JSON.stringify(rows('shelf/guide'))}`);
+    // Changed: due once the audit is older than --days (0 here), not due under it.
+    equal(json(as(['audit', 'record', 'projects/alpha', '--revision', hubRevision, '--findings', '0', '--json']))['superseded'], false, 'the Hub record says superseded');
+    fs.writeFileSync(path.join(ws, 'collection', 'projects', 'alpha', 'notes.md'), '# A new page\n');
+    check(due('30')('projects/alpha')['due'] === false && due('30')('projects/alpha')['changed'] === true, `a recently audited changed Hub is due: ${JSON.stringify(due('30')('projects/alpha'))}`);
+    check(due('0')('projects/alpha')['due'] === true, `a changed Hub older than --days is not due: ${JSON.stringify(due('0')('projects/alpha'))}`);
+    // Superseded: a revision that had already moved on when recorded is due at once.
+    const late = json(as(['audit', 'record', 'projects/alpha', '--revision', hubRevision, '--findings', '1', '--json']));
+    check(late['superseded'] === true && due('30')('projects/alpha')['due'] === true && due('30')('projects/alpha')['superseded'] === true, `a superseded record is not due at once: ${JSON.stringify(due('30')('projects/alpha'))}`);
+    // Unknown: a recorded repo gone dirty is due: unknown, never counted clean.
+    equal(as(['audit', 'record', repoTarget, '--revision', `commit:${head}`, '--findings', '0', '--json']).exit, 0, 'the repo audit was not recorded');
+    fs.writeFileSync(path.join(repo, 'scratch.txt'), 'not committed\n');
+    rows = due();
+    check(rows(repoTarget)['due'] === 'unknown' && rows(repoTarget)['changed'] === 'unknown', `a dirty recorded repo is not due: unknown: ${JSON.stringify(rows(repoTarget))}`);
+    const text = as(['audit', 'due']);
+    check(text.exit === 0 && /^\d+ due, \d+ unknown, of \d+/.test(text.stdout) && text.stdout.includes(`unknown ${repoTarget}`), `audit due's text does not list what is due: ${text.stdout.slice(0, 600)}`);
+    // Capture Books are not audit targets (kickoffs/s113 ruling 1): never listed, and both refusals write nothing.
+    const catalogText = () => fs.readFileSync(path.join(ws, 'shelf', '_catalog.md'), 'utf8');
+    for (const [slug, title] of [['holding', 'Holding'], ['letters', 'Letters']] as const) {
+      if (!new RegExp(`^- \\*\\*Path:\\*\\* shelf/${slug}$`, 'm').test(catalogText())) {
+        equal(as(['shelf', 'new', slug, '--title', title, '--summary', 'A capture Book.', '--capture', '--json']).exit, 0, `the capture Book '${slug}' could not be made`);
+      }
+    }
+    const captureRows = (json(as(['audit', 'due', '--json']))['targets'] ?? []) as Record<string, unknown>[];
+    check(captureRows.length > 0 && !captureRows.some((row) => row['target'] === 'shelf/holding' || row['target'] === 'shelf/letters'), `audit due lists a capture Book: ${JSON.stringify(captureRows.map((row) => row['target']))}`);
+    const logBefore = fs.readFileSync(log, 'utf8');
+    const captureRevision = as(['audit', 'revision', 'shelf/holding', '--json']);
+    check(captureRevision.exit !== 0 && captureRevision.stderr.includes("'holding' is a capture Book: it holds notes in transit, not reference material, so it has no audit. Nothing was read."), `audit revision on a capture Book was not refused: ${captureRevision.stdout.slice(0, 200)} ${captureRevision.stderr.trim().slice(0, 300)}`);
+    const captureRecord = as(['audit', 'record', 'shelf/letters', '--revision', `book:1:${'0'.repeat(64)}`, '--findings', '0', '--json']);
+    check(captureRecord.exit !== 0 && captureRecord.stderr.includes("'letters' is a capture Book: it holds notes in transit, not reference material, so it has no audit. Nothing was recorded."), `audit record on a capture Book was not refused: ${captureRecord.stderr.trim().slice(0, 300)}`);
+    equal(fs.readFileSync(log, 'utf8'), logBefore, 'a refused audit of a capture Book wrote to the audit log');
+
+    // (d) THE DESK COUNTS (ruling 6): nothing while the Library has no department `audit`; then, with the auditor its
+    // only seat, its Desk counts what is due and flags its open Book that is due.
+    const desk = () => json(as(['desk', '--seat', 'auditor']));
+    let overview = desk();
+    check(!('audits_due' in overview) && !JSON.stringify(overview['open_books']).includes('audit_due') && !('audit_due_projects' in overview), `a Desk with no audit department carries audit fields: ${JSON.stringify(overview).slice(0, 400)}`);
+    const plan = json(as(['seat', 'describe', 'auditor', '--department', 'audit', '--preflight', '--json']));
+    equal(as(['seat', 'describe', 'auditor', '--department', 'audit', '--plan-id', String(plan['plan_id'] ?? 'none'), '--json']).exit, 0, 'the auditor was not put in department audit');
+    overview = desk();
+    const dueNow = ((json(as(['audit', 'due', '--json']))['due_count']) as number) ?? -1;
+    equal(overview['audits_due'], dueNow, `the auditor's Desk does not count what audit due says is due: ${JSON.stringify(overview).slice(0, 400)}`);
+    const quiet = ((overview['open_books'] ?? []) as Record<string, unknown>[]).find((book) => book['slug'] === 'quiet');
+    check(quiet?.['audit_due'] === true, `the open Book that is due is not flagged on the Desk: ${JSON.stringify(overview['open_books'])}`);
+  } catch (error) {
+    failures.push(`section 214 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
   }
 }
 

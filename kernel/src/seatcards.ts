@@ -88,7 +88,7 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
   const projection = readSeatMetadata(stateDirectory);
   const letters = pendingLetterCounts(options.workspace);
   const names = registry.map((row) => row.seat).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-  const meta = (name: string): SeatMetadata => projection.seats.get(name) ?? { department: null, role: null, card: null, template: null };
+  const meta = (name: string): SeatMetadata => projection.seats.get(name) ?? { department: null, role: null, card: null, template: null, nickname: null };
   const entry = (name: string): Entry => entryFor(stateDirectory, name, meta(name), letters);
 
   const own = seat !== null ? meta(seat) : null;
@@ -158,7 +158,7 @@ export function seatCardsText(report: Record<string, unknown>): string {
   const width = Math.max(4, ...everyone.map((row) => String(row['seat'] ?? '').length));
   const lines = [CARDS_FIRST_LINE, ''];
   if (thisSeat) {
-    const label = roleLabel({ department: (thisSeat['department'] as string | null) ?? null, role: (thisSeat['role'] as SeatMetadata['role']) ?? null, card: null, template: null });
+    const label = roleLabel({ department: (thisSeat['department'] as string | null) ?? null, role: (thisSeat['role'] as SeatMetadata['role']) ?? null, card: null, template: null, nickname: null });
     lines.push(`This seat: ${String(thisSeat['seat'])}${label ? `, ${label}` : ', no department'}${typeof report['orchestrator_note'] === 'string' ? ` (${report['orchestrator_note']})` : ''}`);
     if (typeof thisSeat['card'] === 'string') lines.push(`  ${thisSeat['card']}`);
     lines.push('');

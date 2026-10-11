@@ -73,7 +73,7 @@ import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, 
 import { isCompiled, programRoot } from './programroot.ts';
 import { addedDirArguments, addedDirsPath, addedDirsStatus, lettersPromptArguments, nameArguments, seatDirsResult } from './seatdirs.ts';
 import { seatStatusText } from './human.ts';
-import { carriesMetadata, metadataFor, metadataJson, rawMetadata, seatMetadata, destinationOf } from './seatmeta.ts';
+import { carriesMetadata, metadataFor, metadataJson, rawMetadata, readSeatMetadata, seatLabel, seatMetadata, destinationOf } from './seatmeta.ts';
 import { readRegistryRows, writeSeatRegistry } from './seatregistry.ts';
 import { appendHistoryCommit, appendHistoryRecords, newAttemptId, readSeatHistory, seatHistoryState } from './seathistory.ts';
 import { seatDescribeResult } from './seatdescribe.ts';
@@ -1188,12 +1188,20 @@ function agentSpawn(file: string, args: string[], searchPath?: string): { file: 
  * the `seat: ` prefix it used to carry. AND RETITLING NEVER BLOCKS A LAUNCH: any failure, the `.cmd` route's refusal
  * of a handle cmd.exe would change included, is its stderr line, and the seat starts.
  */
-function renameTab(handle: string, seat: string): void {
+function renameTab(handle: string, seat: string, workspaceOfTab: string): void {
   if (!handle.trim()) return;
   try {
     const orca = resolveOnPath('orca');
     if (orca === null) return;
-    const launch = agentSpawn(orca, ['terminal', 'rename', '--terminal', handle, '--title', seat]);
+    // A NICKNAME NAMES THE TAB WITH ITS SEAT (kickoffs/s112 ruling 4): `<nickname> (<seat>)`; a registry that cannot be
+    // read titles it with the seat alone.
+    let nickname: string | null = null;
+    try {
+      nickname = metadataFor(readSeatMetadata(path.join(workspaceOfTab, '.claude')), seat).nickname;
+    } catch {
+      nickname = null;
+    }
+    const launch = agentSpawn(orca, ['terminal', 'rename', '--terminal', handle, '--title', seatLabel(seat, nickname)]);
     const ran = spawnSync(launch.file, launch.args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: launch.verbatim, timeout: 10000 });
     if (ran.status !== 0) {
       const why = `${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
@@ -1679,7 +1687,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       const what = conversationAction === 'resume' ? `resuming conversation ${conversationId}` : conversationId ? `conversation ${conversationId}` : 'a new conversation';
       process.stdout.write(`Starting ${assistant ? ASSISTANT_LABEL[assistant] : command} at seat '${seat}' (Project ${bound}), ${what}.\n`);
     } else process.stdout.write(psConvertToJson(result) + '\n');
-    renameTab(tabHandle, seat);
+    renameTab(tabHandle, seat, workspace);
     // THE AGENT, IN THE WORKSPACE, ON THIS TERMINAL -- and this process waits for it, because the claim is
     // this process's handle and must outlive nothing and be outlived by nothing.
     const executable = agentExecutable(command, environment[pathVariable] ?? '');
@@ -2229,9 +2237,11 @@ export async function runSeatVerb(
               department: parsed.options.get('department'),
               role: parsed.options.get('role'),
               card: parsed.options.get('card'),
+              nickname: parsed.options.get('nickname'),
               clearDepartment: parsed.flags.has('clear-department'),
               clearRole: parsed.flags.has('clear-role'),
               clearCard: parsed.flags.has('clear-card'),
+              clearNickname: parsed.flags.has('clear-nickname'),
               from: parsed.options.get('from'),
             },
             preflight: parsed.flags.has('preflight'),

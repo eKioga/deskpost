@@ -47,7 +47,7 @@ import { psSortCompare } from './notebook.ts';
 import { askAtTerminal, Interrupted } from './prompt.ts';
 import { browseData, browseEntries, browseEntryLines, browseLines, filterBrowse } from './browse.ts';
 import { changeSeatDirs, launchLine, planSeatDirs, readAddedDirs, seatDirsSentence } from './seatdirs.ts';
-import { cardProblem, departmentProblem, destinationOf, metadataFor, roleLabel, seatMetadata, type DepartmentDestination, type SeatRole } from './seatmeta.ts';
+import { cardProblem, departmentProblem, destinationOf, metadataFor, roleLabel, seatLabel, seatMetadata, type DepartmentDestination } from './seatmeta.ts';
 import { loadSeatTemplate, type SeatTemplate } from './seattemplates.ts';
 import { pendingLetterCounts } from './desk.ts';
 import { seatNameHistory } from './seatincarnation.ts';
@@ -189,6 +189,8 @@ export interface MenuRow {
   letters?: number;
   /** The name it gave up in its newest rename, within 30 days of it (kickoffs/s110 ruling 6); '' for none. */
   formerly?: string;
+  /** Its nickname, shown as `<nickname> (<seat>)` (kickoffs/s112 ruling 4); '' for none. */
+  nickname?: string;
 }
 
 /** How long the menu says "(formerly <old>)" after a rename (PLAN-seat-identity.md section 3). */
@@ -258,6 +260,7 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       card: meta.card ?? '',
       letters: letters.get(seat) ?? 0,
       formerly: formerlyName(seat, entry['names'], now),
+      nickname: meta.nickname ?? '',
       view: {
         session_id: '', conversation_source: 'none', recorded_utc: '', assistant: 'claude', title: '', title_status: 'no-conversation',
         title_note: 'nothing has recorded a conversation at this seat', entry_action: 'none', entry_note: '',
@@ -385,7 +388,7 @@ function conversationText(row: MenuRow, glyphs: Glyphs): string {
 
 /** The numbered table lines. THE CELLS ARE BUILT BEFORE THE WIDTHS ARE MEASURED, so a state note cannot misalign them. */
 export function tableLines(rows: MenuRow[], glyphs: Glyphs): string[] {
-  const cells = rows.map((row) => ({ index: row.index, seat: row.seat + formerlyMark(row) + foldersMark(row) + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
+  const cells = rows.map((row) => ({ index: row.index, seat: seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
   const width = (key: 'seat' | 'project' | 'state' | 'last') => Math.max(0, ...cells.map((cell) => cell[key].length));
   const widths = { seat: width('seat'), project: width('project'), state: width('state'), last: width('last') };
   return cells.map(
@@ -404,7 +407,7 @@ export function cardLines(rows: MenuRow[], width: number, glyphs: Glyphs, palett
     const marker = stateMark(row.state, glyphs, palette);
     // THE PLAIN HEAD IS MEASURED, NOT THE COLOURED ONE: an escape has no visible width.
     const prefix = `  ${String(row.index).padStart(2)} ${marker.mark} `;
-    const seat = fit(row.seat + formerlyMark(row) + foldersMark(row) + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
+    const seat = fit(seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
     const gap = Math.max(1, width - prefix.length - seat.length - row.state.length - 1);
     lines.push(`  ${String(row.index).padStart(2)} ${marker.color}${marker.mark}${palette.reset} ${palette.bold}${seat}${palette.reset}${' '.repeat(gap)}${marker.color}${row.state}${palette.reset}`);
     const fields: [string, string][] = [];
@@ -949,8 +952,7 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
   }
 
   // THEN THE TEMPLATE, only with a department: a template gives a role, and a role requires a department. THE ROLE COMES
-  // FROM THE LOADED TEMPLATE (ruling 10), never from the key.
-  let role: SeatRole | null = null;
+  // FROM THE LOADED TEMPLATE (ruling 10), never from the key: the plan reads it from `choices.template`.
   if (choices.department === undefined) {
     talk.say('  No department, so no template and no role: the seat is made without them.');
   } else {
@@ -983,7 +985,6 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
         talk.say(destination.seat !== null ? `  Letters to department '${department}' go to '${destination.seat}' (${destination.kind === 'orchestrator' ? 'its orchestrator' : 'its only seat'}).` : `  Department '${department}' has no orchestrator yet.`);
       }
       choices.template = name;
-      role = template.role;
       break;
     }
 
@@ -1005,8 +1006,6 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
       break;
     }
   }
-  void role;
-
   // CARD.
   for (;;) {
     const typed = await talk.ask('Card, one line on what this seat handles   [Enter] no card › ');

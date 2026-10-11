@@ -123,6 +123,9 @@ export function findShelfCatalogEntry(
   return matched[0]!;
 }
 
+/** The catalog line that makes a Book a capture Book: an inbox for notes in transit, never reference material. */
+export const CAPTURE_KIND_LINE = /^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m;
+
 /**
  * One entry's heading and body turned into a Book. Summary and Topics are read as ITEMS, not as
  * lines: a catalog summary wraps, and a continuation line is indented, so each field runs to the
@@ -149,7 +152,7 @@ export function convertFromShelfCatalogEntry(options: {
     bookRoot: options.bookRoot,
     wikiPath,
     notesPath: path.join(wikiPath, 'notes'),
-    isCapture: /^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(options.body),
+    isCapture: CAPTURE_KIND_LINE.test(options.body),
     summary: summaryMatch ? summaryMatch[1]!.replace(/\s+/g, ' ').trim() : '',
     topics: topicsMatch
       ? topicsMatch[1]!

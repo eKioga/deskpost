@@ -175,7 +175,7 @@ export function seatStatusText(report: Record<string, unknown>): string {
   for (const row of seats) {
     const parts = [`Project ${String(row['project'] ?? '')}`];
     // ITS ROLE AND DEPARTMENT (1.3.8, kickoffs/s96 row 1), as the projection reads them; nothing when it has none.
-    const role = roleLabel({ department: typeof row['department'] === 'string' ? row['department'] : null, role: row['role'] === 'performer' || row['role'] === 'orchestrator' ? row['role'] : null, card: null, template: null });
+    const role = roleLabel({ department: typeof row['department'] === 'string' ? row['department'] : null, role: row['role'] === 'performer' || row['role'] === 'orchestrator' ? row['role'] : null, card: null, template: null, nickname: null });
     if (role) parts.push(role);
     // AN ATTEMPT WITH NO COMMIT LINE (kickoffs/s96 row 2): said, never guessed at.
     const unconfirmed = Number(row['unconfirmed_attempts'] ?? 0);

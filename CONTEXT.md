@@ -286,8 +286,11 @@ given up by a rename stays reserved for that seat and points the way to its name
 _Avoid_: alias, former address
 
 **Nickname**:
-An optional short label a seat may carry for the menu and its tab, never an address (planned,
-`PLAN-seat-identity.md` section 6).
+An optional short label a seat may carry for the menu and its tab, shown as `<nickname> (<seat>)`
+and never an address (`PLAN-seat-identity.md` section 6; S112): 1-16 letters, digits, spaces, `-`,
+`_` or `.`, no space at either end, set with `seat describe <seat> --nickname "<n>"` under the
+reader's gate, unique among nicknames and never any seat's current, past or retired name, compared
+without regard to capital letters; a rename keeps it and retiring the seat frees it.
 _Avoid_: alias, display name
 
 **Ideas seat**:
@@ -299,6 +302,14 @@ _Avoid_: inbox, backlog seat
 A seat made from the `auditor` template that audits a Book, a Hub or a repo on request, read-only, and
 sends every checkable finding by letter to the owner's department; the fix stays the owner's.
 _Avoid_: reviewer, checker, inspector
+
+**Audit record**:
+One line of `internal/audit-records.jsonl`, written ungated by `deskpost audit record`: the target, the
+revision the auditor read (taken with `audit revision` before reading), who, when, the number of findings
+and the report page. `audit due` reads it: a target is due when never audited and open on a Desk, when
+its record was already superseded, or when it changed and the audit is older than `--days`; an unknown
+revision is `due: unknown`, never clean (S112).
+_Avoid_: audit log, review record
 
 **Performer**:
 A seat that works its lane in a department and writes to its orchestrator when no destination is

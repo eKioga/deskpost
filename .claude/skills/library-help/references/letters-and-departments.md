@@ -20,6 +20,8 @@ one orchestrator. A seat may also carry a **seat card**: one line saying what it
   `deskpost seat describe <seat> ... --preflight` and then `--plan-id <id>` after their yes. Handing the
   orchestrator role to another seat is one step: `deskpost seat describe <new seat> --role orchestrator
   --from <current>`. Each change is recorded in `internal/seat-registry-history.jsonl`.
+- A nickname (`seat describe <seat> --nickname "<n>"`, under the same yes) only labels the menu row and the
+  tab; a letter or a verb given a nickname is refused with the seat's name to use instead.
 
 ## Letters to a department
 
@@ -124,7 +126,10 @@ the department first, then the template, then the seat's name, then its card and
 
 - `[p] performer`: works its own lane in the department.
 - `[o] orchestrator`: answers or routes the department's letters and keeps its plan; one per department.
-- `[a] auditor`: audits a Book, a Hub or a repo on request, read-only, and sends findings by letter.
+- `[a] auditor`: audits a Book, a Hub or a repo on request, read-only, and sends findings by letter. It takes
+  the revision first (`deskpost audit revision <target>`), records the audit after
+  (`deskpost audit record <target> --revision <r> --findings <n> --report <page>`), and `deskpost audit due`
+  lists what is due again; its Desk counts them while it is department `audit`'s destination.
 - `[i] ideas`: catches each idea as a page on its Hub and hands it off by letter when asked.
 
 The name is proposed as `<department>-<job>` (`qa-dev`, `qa-lead`, `qa-audit`, `qa-ideas`) and can be changed.

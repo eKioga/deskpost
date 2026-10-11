@@ -35,8 +35,8 @@ export interface SeatHistoryRecord {
   seat_id: string;
   from_seat: string | null;
   plan_id: string;
-  before: Record<MetadataField, unknown>;
-  after: Record<MetadataField, unknown>;
+  before: Partial<Record<MetadataField, unknown>>;
+  after: Partial<Record<MetadataField, unknown>>;
   purpose_review_advised?: boolean;
 }
 

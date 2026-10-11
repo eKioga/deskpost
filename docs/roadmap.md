@@ -25,28 +25,29 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-Nothing is scoped into a session yet. The last session of Seats you can rename (below) is next in
-line.
+- **S113** (in progress): 1.4.2's release, then the first half of Development without PowerShell's first session.
 
 ## Next
 
-### Seats you can rename (3 of 4 sessions; plan signed off 2026-10-07)
+In order: the first half of **Development without PowerShell**'s first session, then **1.5.0: Libraries that
+write to each other**, then the rest of **Development without PowerShell**, then **1.6.0** (Eric, 2026-10-10).
 
-Its first session shipped in 1.4.0, its second and third in 1.4.1; nicknames and the audit record follow.
+### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
-- **A seat's identity is its id, not its name** (shipped in 1.4.0), so a name can change without losing letters,
-  Notebook topics or history. The Orca tab shows the seat's name with no `seat: ` prefix.
-- **`seat rename`** (shipped in 1.4.1): one seat at a time, previewed, recoverable if interrupted, undone by
-  renaming back; the seat keeps its conversation, Desk, Notebook and folders. An old name points the way to
-  the new one.
-- **A department of one seat** receives letters addressed to the department (shipped in 1.4.1).
-- **Two system-wide seats from templates** (shipped in 1.4.1): an ideas seat that catches and vets ideas with
-  each product's lead, and one auditor for the whole Library and its projects. Optional nicknames.
-- **An audit record**: which revision of a Book, Hub or repository was last audited, and which are
-  due again.
+Nothing a reader runs needs PowerShell since 1.3.2 and 1.3.5. This milestone does the same for the tools that build,
+test and release Deskpost, and makes the checks fit the work: a commit is judged in about two minutes, and the long
+checks run once per cut, push or release. Its first session is built in two halves, with 1.5.0 between them.
 
-In order: the rest of **Seats you can rename**, then **Development without PowerShell**, then **Libraries on
-more than one computer** (Eric, 2026-10-09).
+- **One gate in TypeScript** (`tools/gate.ts`) with four tiers, commit, cut, push and release, each with a time
+  budget, and one line per check with its time.
+- **A commit runs only the tests for the files it changed**, and the full test suite still runs once per cut, so a
+  wrong guess costs at most one cut.
+- **One heavy check at a time on a machine**, held by a lock the operating system frees when its holder ends.
+- **The old PowerShell implementation keeps judging the program after it is gone:** its results are recorded once,
+  while it still runs, and the program is compared with that record from then on.
+- **Build, release and publish in TypeScript**, producing exactly today's release files.
+- **The PowerShell is deleted only after a release has shipped on the new tools.** What is left afterwards is named:
+  the `install.ps1` forwarder and the Basic Memory reader on Windows.
 
 ### Libraries on more than one computer (plan signed off 2026-10-08)
 
@@ -386,6 +387,18 @@ So the reader no longer carries mail between seats (ADR-0071).
   back; an old name points the way to the new one, and the menu says "(formerly ...)" for 30 days.
 - A Notebook reset refuses while a Hub or Shelf Book page links into what it would move; a department of one
   seat receives its letters; the auditor and ideas seat templates.
+
+### 1.4.2: Nicknames and the audit record (released 2026-10-11)
+
+The fourth and last session of **Seats you can rename**.
+
+- **Optional nicknames**, shown in the menu and the tab, never an address.
+- **The audit record**: `deskpost audit revision`, `audit record` and `audit due`, and the auditor's Desk counts.
+- Doctor's dead Notebook link check and the reset's link check read only pages still being written: history,
+  closed notes and archives are records.
+- Capture Books are not audited.
+- A graduation cannot land in a Book while its seat is being renamed.
+- Archiving a Book twice says "already archived".
 
 ### Earlier releases
 

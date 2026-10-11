@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SeatIncarnation } from './shelfnote.ts';
+import { nicknameOwner, readSeatMetadata } from './seatmeta.ts';
 
 export const SEAT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -269,6 +270,12 @@ export function renamedAway(view: SeatIdentityView, name: string): { seat: strin
 
 /** The redirect's sentence: "'<old>' was renamed to '<new>' on <date>; write to that name. Nothing was <done>." */
 export function pastNameRefusal(stateDirectory: string, name: string, done: string): string | null {
-  const found = renamedAway(readSeatIdentityView(stateDirectory), name);
-  return found ? `'${name}' was renamed to '${found.seat}' on ${found.date}; write to that name. Nothing was ${done}.` : null;
+  const view = readSeatIdentityView(stateDirectory);
+  const found = renamedAway(view, name);
+  if (found) return `'${name}' was renamed to '${found.seat}' on ${found.date}; write to that name. Nothing was ${done}.`;
+  // A NICKNAME IS NEVER AN ADDRESS (kickoffs/s112 ruling 4), said from the same place: a string that is no seat's name
+  // and is a seat's nickname, compared without regard to capital letters.
+  if (!name || view.live.some((row) => row.seat === name)) return null;
+  const owner = nicknameOwner(readSeatMetadata(stateDirectory), name);
+  return owner !== null ? `'${name}' is the nickname of seat '${owner}'; write to that name. Nothing was ${done}.` : null;
 }

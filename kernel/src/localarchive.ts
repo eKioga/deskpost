@@ -134,7 +134,9 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
   if (approved !== plan['plan_id']) refuse(STALE_PLAN_ID);
 
   return withBookLocks(workspace, [activeDirectory, archiveDirectory, 'collection/books', 'collection/archive'], 20, (locks) => {
-    // THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move.
+    // THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move. A Book archived
+    // between the preflight and the locks is said as one, as before the plan (kickoffs/s112 ruling 3a).
+    if (!fs.existsSync(activeFull) && fs.existsSync(archiveFull)) refuse(`Book '${slug}' is already archived; nothing to do.`);
     if (!fs.existsSync(activeRoot) || !fs.existsSync(activeIndex)) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
     if (archivePlanId(slug, kind, activeDirectory, activeFull) !== approved) refuse(STALE_PLAN_ID);
     const activeLock = locks.find((lock) => lock.bookRoot === activeDirectory)!;

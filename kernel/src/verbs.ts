@@ -449,6 +449,35 @@ export const VERBS: Record<string, VerbDeclaration> = {
     ported: true,
     row: 'S13',
   },
+  audit: {
+    summary: 'The audit record: a target\'s revision now, an audit recorded against one, and which Books, Hubs and repos are due.',
+    // kickoffs/s112 ruling 5 (PLAN-seat-identity.md section 7): read-only but for `record`, which is ungated and appends
+    // one line to internal/audit-records.jsonl. No network: a repo is read with git rev-parse and git status only.
+    usage:
+      'library audit revision <target> [--json]; library audit record <target> --revision <r> --findings <n> [--report <page>] [--json]; ' +
+      'library audit due [--days <n>] [--json]',
+    details: {
+      revision: [
+        'A target is shelf/<slug>, collection/<slug>, projects/<slug> or repo:<absolute path>. A Book is book:<generation>:<digest>',
+        'once its pages match its manifest, a Hub hub:<sha256>, a clean repo commit:<HEAD>; anything else is unknown, with why.',
+        'Take the revision before you start reading.',
+      ],
+      record: ['Ungated: appends who audited, when, the revision read, the number of findings and the report page.'],
+      due: [
+        'Due: never audited and open on a Desk; or the last audit read a revision that had already moved on; or changed since',
+        'the last audit and that audit is older than --days (default 30). A target whose revision is unknown is due: unknown.',
+      ],
+    },
+    actions: ['due', 'record', 'revision'],
+    positional: false,
+    arguments: {
+      revision: { positionals: 1 },
+      record: { valued: ['revision', 'findings', 'report'], positionals: 1 },
+      due: { valued: ['days'], positionals: 0 },
+    },
+    ported: true,
+    row: 'S112',
+  },
   letters: {
     summary: 'Close a letter addressed to this seat, in one step and with no new note, once it has been dealt with.',
     // kickoffs/s108 ruling 2 (the messaging plan r4, D3; ADR-0071): `--seat` is read only to be refused by name.
@@ -654,7 +683,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '[--card "<one line>"] [--open-book <shelf-slug>]... [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>]; ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
-      'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--clear-department] [--clear-role] [--clear-card] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
+      'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--nickname "<n>"] [--clear-department] [--clear-role] [--clear-card] [--clear-nickname] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
       'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
       'library seat rename <old> <new> [--preflight | --user-confirmed --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat rename (--resume <seat> | --rollback <seat>) [--workspace <path>] [--json]; ' +
@@ -680,8 +709,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     arguments: {
       cards: { valued: ['seat'], boolean: ['all'], positionals: 0 },
       describe: {
-        valued: ['department', 'role', 'card', 'from', 'plan-id'],
-        boolean: ['clear-department', 'clear-role', 'clear-card', 'preflight'],
+        valued: ['department', 'role', 'card', 'nickname', 'from', 'plan-id'],
+        boolean: ['clear-department', 'clear-role', 'clear-card', 'clear-nickname', 'preflight'],
         positionals: 1,
       },
       dirs: { valued: ['add', 'remove'], boolean: ['list'], positionals: 1 },
