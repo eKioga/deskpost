@@ -46,7 +46,7 @@ function Assert([bool]$Condition, [string]$Message) {
 # for one reason: a here-string piped into a child powershell.exe on Windows is subject to console
 # encoding, and a payload containing a non-ASCII page title would arrive mangled. Both routes land in
 # the same Read-HookPayload call one line apart, so what is exercised is the same reader.
-function Invoke-Hook([string]$Name, [hashtable]$Payload, [string]$StateDirectory, [string]$WorkspacePath) {
+function Invoke-Hook([string]$Name, [hashtable]$Payload, [string]$StateDirectory, [string]$WorkspacePath, [string]$ReaderToolPrefix) {
     $json = $Payload | ConvertTo-Json -Compress -Depth 8
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
     $script = Join-Path $hooks $Name
@@ -55,6 +55,7 @@ function Invoke-Hook([string]$Name, [hashtable]$Payload, [string]$StateDirectory
     # unconditionally would silently re-anchor all of them at once.
     $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-StateDirectory', $StateDirectory, '-InputJsonBase64', $encoded)
     if ($WorkspacePath) { $argv += @('-WorkspacePath', $WorkspacePath) }
+    if ($ReaderToolPrefix) { $argv += @('-ReaderToolPrefix', $ReaderToolPrefix) }
     (& powershell.exe @argv 2>&1 | Out-String).Trim()
 }
 
@@ -554,7 +555,10 @@ wc -c shelf/demo/wiki/_index.md
             '{"matcher":' + (ConvertTo-Json $Matcher) + ',"hooks":' + (& $entry 'Guard-BasicMemoryRead.ps1') + '},' +
             '{"matcher":"^(Bash|exec)$","hooks":' + (& $entry 'Guard-ShellShelfRead.ps1') + '},' +
             '{"matcher":"^apply_patch$","hooks":' + (& $entry 'Guard-ShelfBookRead.ps1') + '}],' +
-            '"UserPromptSubmit":[{"hooks":' + (& $entry 'Get-VirtualDeskContext.ps1') + '}]}}') | ConvertFrom-Json
+            '"UserPromptSubmit":[{"hooks":' + (& $entry 'Get-VirtualDeskContext.ps1') + '}],' +
+            '"SessionStart":[{"hooks":' + (& $entry 'Restore-CompactedGuidance.ps1') + '},{"hooks":' + (& $entry 'Get-SeatStartContext.ps1') + '}],' +
+            '"PostCompact":[{"hooks":' + (& $entry 'Restore-CompactedGuidance.ps1') + '}],' +
+            '"PostToolUse":[{"matcher":"^mcp__validated_book_reader__(discover_book_pages|search_open_books)$","hooks":' + (& $entry 'Add-SearchHitReminder.ps1') + '}]}}') | ConvertFrom-Json
     }
     foreach ($case in @(
             @{ matcher = '^mcp__basic-memory__.*$'; fires = $false; why = "the pre-S38 hyphenated matcher" },
@@ -575,6 +579,10 @@ wc -c shelf/demo/wiki/_index.md
         $context = Get-HookField-FromOutput (Invoke-Reminder $tool @{ query = 'x' }) 'additionalContext'
         Assert ($null -ne $context -and $context.Contains('A hit is a location')) "$tool returned results with no reminder"
     }
+    $codexHit = Invoke-Hook 'Add-SearchHitReminder.ps1' @{ hook_event_name = 'PostToolUse'; tool_name = 'mcp__validated_book_reader__discover_book_pages'; tool_input = @{ query = 'x' } } $stateDir '' 'mcp__validated_book_reader__'
+    Assert ((Get-HookField-FromOutput $codexHit 'additionalContext') -match 'A hit is a location') 'the Codex-shaped search call received no reminder'
+    $codexRaw = Invoke-Hook 'Add-SearchHitReminder.ps1' @{ hook_event_name = 'PostToolUse'; tool_name = 'Bash'; tool_input = @{ command = 'deskpost raw search x' } } $stateDir '' 'mcp__validated_book_reader__'
+    Assert ((Get-HookField-FromOutput $codexRaw 'additionalContext') -match 'A hit is a location') 'the Codex raw search received no reminder'
     $rawContext = Get-HookField-FromOutput (Invoke-Reminder 'PowerShell' @{ command = 'powershell.exe -File "tools/Search-RawBatch.ps1" -Term x' }) 'additionalContext'
     Assert ($null -ne $rawContext -and $rawContext.Contains('A hit is a location')) 'a raw batch search returned results with no reminder'
     Assert ($null -ne $rawContext -and $rawContext.Contains('not a finding of absence')) 'the reminder dropped the half about an empty result'

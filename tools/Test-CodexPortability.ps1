@@ -81,6 +81,9 @@ function New-Fixture([string]$SourceRoot, [string]$FixtureRoot) {
 
 function Test-Fixture([string]$SourceRoot, [string]$FixtureRoot, [string]$UnrelatedDirectory) {
     New-Fixture -SourceRoot $SourceRoot -FixtureRoot $FixtureRoot
+    # A seated launcher may name its own workspace in the environment. Child hooks in this fixture
+    # must see the relocated fixture, not the launcher's unrelated Library workspace.
+    $env:LIBRARY_WORKSPACE = $FixtureRoot
     $initializer = Join-Path $FixtureRoot 'tools/Initialize-CodexLibrary.ps1'
     $first = Invoke-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $initializer, '-Json') -WorkingDirectory $UnrelatedDirectory -InputText ''
     $firstResult = $first.stdout | ConvertFrom-Json
@@ -132,7 +135,7 @@ function Test-Fixture([string]$SourceRoot, [string]$FixtureRoot, [string]$Unrela
 
     $contextRun = Invoke-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $contextPath) -WorkingDirectory $UnrelatedDirectory -InputText '{}'
     $contextResult = $contextRun.stdout | ConvertFrom-Json
-    Assert-True ([string]$contextResult.hookSpecificOutput.additionalContext -cmatch 'projects/library-dev') 'Generated Codex Desk context hook did not report the fixture open Project.'
+    Assert-True ([string]$contextResult.hookSpecificOutput.additionalContext -cmatch 'projects/library-dev') "Generated Codex Desk context hook did not report the fixture open Project: $($contextRun.stdout)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $FixtureRoot '.codex-plugin'))) 'Fixture unexpectedly contains an optional Codex plugin.'
     Assert-True ($config -cnotmatch '(?i)plugin') 'Generated Codex startup depends on an optional plugin.'
 }

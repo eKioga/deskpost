@@ -12,7 +12,9 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { psJsonString } from './psjson.ts';
 
 const LEDGER_CAP = 20;
@@ -71,4 +73,45 @@ export function setHookServed(stateDirectory: string, sessionId: string, key: st
   if (existing.includes(key)) return;
   ledger.set(sessionId, [...existing, key]);
   saveHookLedger(stateDirectory, ledger);
+}
+
+/**
+ * ONE SERVING WHEN THE PLUGIN AND THE WORKSPACE BOTH REGISTER A HOOK (S114 row 6, kickoffs/s114-r2 ruling 13). A Library
+ * that also has the Deskpost Claude plugin enabled registers seat-start and search-hit twice -- in its own
+ * `.claude/settings.local.json` and in the plugin's `hooks/hooks.json` -- and Claude Code runs both, at once, on the same
+ * payload, so a session was given the seat-start text and the search reminder twice (measured on 1.4.3's Eric-layout
+ * fixture). The serve ledger above is read-modify-write, so two hooks started together would both see "not served";
+ * this claim is one exclusive file create instead: the first to create the key's file serves, and a second within
+ * `windowMs` stays silent. Every failure answers "serve": a claim that cannot be made never withholds guidance.
+ */
+export function claimHookOnce(key: string, windowMs = 10_000): boolean {
+  const directory = path.join(os.tmpdir(), 'deskpost-hook-once');
+  const file = path.join(directory, createHash('sha256').update(key).digest('hex').slice(0, 32));
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+    const now = Date.now();
+    for (const name of fs.readdirSync(directory)) {
+      try {
+        const old = path.join(directory, name);
+        if (now - fs.statSync(old).mtimeMs > 86_400_000) fs.rmSync(old, { force: true });
+      } catch {
+        // another hook removed it first
+      }
+    }
+  } catch {
+    return true;
+  }
+  try {
+    fs.writeFileSync(file, String(Date.now()), { flag: 'wx' });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return true;
+    try {
+      if (Date.now() - fs.statSync(file).mtimeMs < windowMs) return false;
+      fs.writeFileSync(file, String(Date.now()));
+    } catch {
+      // unreadable or gone: serve
+    }
+    return true;
+  }
 }

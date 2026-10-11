@@ -63,12 +63,9 @@ Set-StrictMode -Version Latest
 # param() block, so loading it twice costs nothing.
 . (Join-Path $PSScriptRoot 'HookRegistry.ps1')
 
-# The four hooks a Codex session needs, with the matcher tokens each is bound to in the template.
-# The set is the Codex half of tools/HookRegistry.ps1's required list: the three guards plus the
-# Desk informer. The other five Library hooks are registered for Claude Code alone -- Codex fires no
-# PostToolUse for its own tools and has no ConfigChange event at all.
+# The Codex hooks, with the matcher tokens each is bound to in the template.
 #
-# THREE OF THE FOUR NAME THE READER, and in Codex its name is not the project form (S38). Codex spells
+# The guards, Desk context and search reminder name the reader. Codex spells
 # a server's hyphens as underscores in every tool name it offers -- measured S37 -- so the reader this
 # workspace's .codex/config.toml registers as `validated-book-reader` is offered as
 # `mcp__validated_book_reader__<tool>`, and a Desk line or a denial naming `mcp__validated-book-reader__`
@@ -80,7 +77,10 @@ $script:CodexHookTokens = @(
     @{ token = '__BASIC_MEMORY_GUARD_COMMAND__'; file = 'Guard-BasicMemoryRead.ps1'; purpose = 'the shared-collection Desk boundary'; readerPrefix = $false },
     @{ token = '__SHELL_GUARD_COMMAND__';        file = 'Guard-ShellShelfRead.ps1';  purpose = 'a closed Shelf Book is unreadable by shell command'; readerPrefix = $true },
     @{ token = '__PATCH_GUARD_COMMAND__';        file = 'Guard-ShelfBookRead.ps1';   purpose = 'apply_patch cannot write into a closed Shelf Book'; readerPrefix = $true },
-    @{ token = '__DESK_CONTEXT_COMMAND__';       file = 'Get-VirtualDeskContext.ps1'; purpose = 'what is open, on every prompt'; readerPrefix = $true }
+    @{ token = '__DESK_CONTEXT_COMMAND__';       file = 'Get-VirtualDeskContext.ps1'; purpose = 'what is open, on every prompt'; readerPrefix = $true },
+    @{ token = '__COMPACT_CLEAR_COMMAND__';      file = 'Restore-CompactedGuidance.ps1'; purpose = 'clear served context at start and after compaction'; readerPrefix = $false },
+    @{ token = '__SEAT_START_COMMAND__';         file = 'Get-SeatStartContext.ps1'; purpose = 'seat context on session start'; readerPrefix = $false },
+    @{ token = '__SEARCH_HIT_COMMAND__';         file = 'Add-SearchHitReminder.ps1'; purpose = 'a hit is a location'; readerPrefix = $true }
 )
 
 function Get-CodexReaderToolPrefix { $script:CodexReaderToolPrefix }
@@ -190,8 +190,9 @@ function New-CodexHooksDocument {
         $command = Get-CodexGuardCommand -ScriptPath (Get-CodexHookScriptPath -HookDirectory $HookDirectory -FileName $entry.file) -ReaderToolPrefix $prefix
         # Twice: `command` and `commandWindows` carry the same invocation, and a template that lost
         # one of them would leave Codex reading the other on one platform only.
+        $count = if ($entry.token -ceq '__COMPACT_CLEAR_COMMAND__') { 4 } else { 2 }
         $text = Expand-CodexTemplateToken -Text $text -Token ('"' + $entry.token + '"') `
-            -Replacement ($command | ConvertTo-Json -Compress) -ExpectedCount 2
+            -Replacement ($command | ConvertTo-Json -Compress) -ExpectedCount $count
     }
     if ($text -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex hooks still contain a template token.' }
 

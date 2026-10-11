@@ -213,10 +213,223 @@ function parseJsonFile(file: string): unknown {
   return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
 }
 
-function codexHomeDirectory(): string {
+export function codexHomeDirectory(): string {
   const configured = process.env['CODEX_HOME'];
   if (configured && configured.trim()) return configured;
   return path.join(process.platform === 'win32' ? (process.env['USERPROFILE'] ?? os.homedir()) : homeDirectory(), '.codex');
+}
+
+/** One `[mcp_servers.<name>]` or `[plugins."<id>"]` a Codex config defines: its name as written, and how it is set. */
+export interface CodexConfigTable {
+  /** The segment as written, quotes kept: `librarian`, `"computer-use@openai-bundled"`. */
+  key: string;
+  /** The same segment unquoted, for comparing. */
+  name: string;
+  /** No `enabled` key, `enabled = true` or `enabled = false`; anything else is left out as a shape not read. */
+  enabled: boolean | null;
+  /** The table has a `command` or a `url`: it starts a server rather than only setting one. */
+  launches: boolean;
+}
+
+/** The MCP servers and plugins a Codex config defines, and the shapes the line reader left out (never guessed). */
+export interface CodexConfigTables {
+  servers: CodexConfigTable[];
+  plugins: CodexConfigTable[];
+  skipped: string[];
+}
+
+/** A dotted TOML key split into its segments as written, or null when a quote is never closed. */
+function tomlKeySegments(text: string): string[] | null {
+  const segments: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && /\s/.test(text[i]!)) i += 1;
+    let segment = '';
+    if (text[i] === '"' || text[i] === "'") {
+      const quote = text[i]!;
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) j += quote === '"' && text[j] === '\\' ? 2 : 1;
+      if (j >= text.length) return null;
+      segment = text.substring(i, j + 1);
+      i = j + 1;
+    } else {
+      const bare = /^[A-Za-z0-9_-]+/.exec(text.substring(i));
+      if (!bare) return null;
+      segment = bare[0];
+      i += segment.length;
+    }
+    segments.push(segment);
+    while (i < text.length && /\s/.test(text[i]!)) i += 1;
+    if (i >= text.length) break;
+    if (text[i] !== '.') return null;
+    i += 1;
+  }
+  return segments.length ? segments : null;
+}
+
+function tomlUnquote(segment: string): string {
+  if (segment.length >= 2 && segment.startsWith("'") && segment.endsWith("'")) return segment.substring(1, segment.length - 1);
+  if (segment.length >= 2 && segment.startsWith('"') && segment.endsWith('"')) {
+    return segment.substring(1, segment.length - 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return segment;
+}
+
+/**
+ * How a value's text leaves the reader: its open brackets (an array or inline table running onto later lines), an
+ * unclosed multi-line string, or a single-line string never closed (null). Comments after the value are dropped.
+ */
+function tomlValueState(text: string, depth: number): { depth: number; multiline: '"""' | "'''" | null; value: string } | null {
+  let value = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (c === '#') break;
+    if (text.startsWith('"""', i) || text.startsWith("'''", i)) {
+      const fence = text.substring(i, i + 3) as '"""' | "'''";
+      const end = text.indexOf(fence, i + 3);
+      if (end < 0) return { depth, multiline: fence, value };
+      value += text.substring(i, end + 3);
+      i = end + 3;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += c === '"' && text[j] === '\\' ? 2 : 1;
+      if (j >= text.length) return null;
+      value += text.substring(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (c === '[' || c === '{') depth += 1;
+    else if (c === ']' || c === '}') depth -= 1;
+    value += c;
+    i += 1;
+  }
+  return { depth, multiline: null, value: value.trim() };
+}
+
+/**
+ * THE SERVERS AND PLUGINS A CODEX CONFIG DEFINES, READ LINE BY LINE (kickoffs/s114-r2 ruling 3), in the style of
+ * init's `codexConfigEntries` and `codexProjectTrust` here, never a TOML library. A server's name is the first segment
+ * after `mcp_servers`, so `[mcp_servers.X.env]` names X and is never a server of its own; a value running onto later
+ * lines (an array, an inline table, a multi-line string) is passed over, never read as keys. A server or plugin set in
+ * a shape the reader does not read (an inline table, a dotted key, an `enabled` that is neither true nor false) is left
+ * out and named in `skipped`. Null when a line is none of a comment, a table, a key or a value's continuation.
+ */
+export function readCodexConfigTables(text: string): CodexConfigTables | null {
+  const servers = new Map<string, CodexConfigTable>();
+  const plugins = new Map<string, CodexConfigTable>();
+  const skipped: string[] = [];
+  const table = (kind: Map<string, CodexConfigTable>, key: string): CodexConfigTable => {
+    const name = tomlUnquote(key);
+    let found = kind.get(name);
+    if (!found) {
+      found = { key, name, enabled: null, launches: false };
+      kind.set(name, found);
+    }
+    return found;
+  };
+  let current: { kind: 'server' | 'plugin'; entry: CodexConfigTable } | null = null;
+  let container: 'mcp_servers' | 'plugins' | 'root' | null = 'root';
+  const odd = new Set<CodexConfigTable>();
+  let depth = 0;
+  let multiline: '"""' | "'''" | null = null;
+  for (const raw of text.replace(/^﻿/, '').split(/\r?\n/)) {
+    if (multiline !== null) {
+      const end = raw.indexOf(multiline);
+      if (end < 0) continue;
+      const rest = tomlValueState(raw.substring(end + 3), depth);
+      if (rest === null) return null;
+      multiline = rest.multiline;
+      depth = rest.depth;
+      continue;
+    }
+    if (depth > 0) {
+      const rest = tomlValueState(raw, depth);
+      if (rest === null) return null;
+      multiline = rest.multiline;
+      depth = rest.depth;
+      continue;
+    }
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const header = /^(\[\[?)\s*(.+?)\s*(\]\]?)\s*(#.*)?$/.exec(line);
+    if (header && line.startsWith('[')) {
+      if (header[1]!.length !== header[3]!.length) return null;
+      const segments = tomlKeySegments(header[2]!);
+      if (segments === null) return null;
+      current = null;
+      container = null;
+      if (header[1] === '[[') continue;
+      const head = tomlUnquote(segments[0]!);
+      if ((head === 'mcp_servers' || head === 'plugins') && segments.length === 1) container = head;
+      else if (head === 'mcp_servers') {
+        const entry = table(servers, segments[1]!);
+        if (segments.length === 2) current = { kind: 'server', entry };
+      } else if (head === 'plugins') {
+        const entry = table(plugins, segments[1]!);
+        if (segments.length === 2) current = { kind: 'plugin', entry };
+      }
+      continue;
+    }
+    const equals = line.indexOf('=');
+    if (equals <= 0) return null;
+    const keySegments = tomlKeySegments(line.substring(0, equals));
+    if (keySegments === null) return null;
+    const state = tomlValueState(line.substring(equals + 1), 0);
+    if (state === null) return null;
+    multiline = state.multiline;
+    depth = state.depth;
+    const first = tomlUnquote(keySegments[0]!);
+    if (container === 'root' && (first === 'mcp_servers' || first === 'plugins') && keySegments.length >= 2) {
+      skipped.push(`${first}.${keySegments[1]} (a dotted key)`);
+      continue;
+    }
+    if (container === 'mcp_servers' || container === 'plugins') {
+      skipped.push(`${container}.${keySegments[0]} (${keySegments.length > 1 ? 'a dotted key' : 'an inline table'})`);
+      continue;
+    }
+    if (current === null || keySegments.length !== 1) continue;
+    if (first === 'command' || first === 'url') current.entry.launches = true;
+    if (first !== 'enabled') continue;
+    if (state.value === 'true') current.entry.enabled = true;
+    else if (state.value === 'false') current.entry.enabled = false;
+    else odd.add(current.entry);
+  }
+  if (multiline !== null || depth > 0) return null;
+  const settled = (kind: Map<string, CodexConfigTable>, prefix: string): CodexConfigTable[] =>
+    [...kind.values()].filter((entry) => {
+      if (!odd.has(entry)) return true;
+      skipped.push(`${prefix}.${entry.key} (an enabled value that is neither true nor false)`);
+      return false;
+    });
+  return { servers: settled(servers, 'mcp_servers'), plugins: settled(plugins, 'plugins'), skipped };
+}
+
+/** `<CODEX_HOME>/config.toml` as a Library's render and doctor read it: absent, unreadable, or its servers and plugins. */
+export function codexUserConfig(): { path: string; state: 'absent' | 'unreadable' | 'read'; tables: CodexConfigTables | null } {
+  const file = path.join(codexHomeDirectory(), 'config.toml');
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return { path: file, state: 'absent', tables: null };
+  let tables: CodexConfigTables | null = null;
+  try {
+    tables = readCodexConfigTables(fs.readFileSync(file, 'utf8'));
+  } catch {
+    tables = null;
+  }
+  return tables === null ? { path: file, state: 'unreadable', tables: null } : { path: file, state: 'read', tables };
+}
+
+/** The validated reader's server name, never turned off. */
+export const CODEX_READER_SERVER = 'validated-book-reader';
+
+/** What a user config turns on that a Library turns off: every server and plugin on, except the validated reader, sorted. */
+export function codexTurnedOn(tables: CodexConfigTables): { servers: CodexConfigTable[]; plugins: CodexConfigTable[] } {
+  const byName = (a: CodexConfigTable, b: CodexConfigTable) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return {
+    servers: tables.servers.filter((entry) => entry.enabled !== false && entry.name !== CODEX_READER_SERVER).sort(byName),
+    plugins: tables.plugins.filter((entry) => entry.enabled === true).sort(byName),
+  };
 }
 
 /** Whether one directory is trusted in the Codex home a session here would consult, and which home. */
@@ -417,6 +630,36 @@ function codexUnreviewedHooks(hooksPath: string, document: unknown, config: stri
   return unreviewed;
 }
 
+/**
+ * THE WORKSPACE FILE AGAINST THE USER CONFIG (kickoffs/s114-r2 ruling 5). A turn-off table (no `command`, no `url`) for
+ * a server the user config no longer defines stops Codex loading any config, so that FAILs; a server or plugin the user
+ * config turns on that the workspace file does not turn off was added after the last `init`, a WARN. Null when the
+ * user config or the workspace file cannot be read, so nothing is judged from a guess.
+ */
+function codexConfigGuards(configPath: string): { ghosts: string[]; added: string[]; turnedOff: number; userConfig: string } | null {
+  const user = codexUserConfig();
+  let workspaceTables: CodexConfigTables | null = null;
+  try {
+    workspaceTables = readCodexConfigTables(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    workspaceTables = null;
+  }
+  if (workspaceTables === null || user.state === 'unreadable') return null;
+  const defined = new Set((user.tables?.servers ?? []).map((entry) => entry.name));
+  const ghosts = workspaceTables.servers.filter((entry) => !entry.launches && !defined.has(entry.name)).map((entry) => entry.key);
+  if (user.tables === null) return { ghosts, added: [], turnedOff: 0, userConfig: user.path };
+  const off = (entries: CodexConfigTable[]) => new Set(entries.filter((entry) => entry.enabled === false).map((entry) => entry.name));
+  const serversOff = off(workspaceTables.servers);
+  const pluginsOff = off(workspaceTables.plugins);
+  const on = codexTurnedOn(user.tables);
+  const added = [
+    ...on.servers.filter((entry) => !serversOff.has(entry.name)).map((entry) => entry.key),
+    ...on.plugins.filter((entry) => !pluginsOff.has(entry.name)).map((entry) => `plugin ${entry.key}`),
+  ];
+  const turnedOff = on.servers.filter((entry) => serversOff.has(entry.name)).length + on.plugins.filter((entry) => pluginsOff.has(entry.name)).length;
+  return { ghosts, added, turnedOff, userConfig: user.path };
+}
+
 function codexGuardsRegistered(workspace: string, program: string): string {
   if (workspace === program) return 'the program and the workspace are one directory; codex.project-access-config is the window on it';
   if (!fs.existsSync(path.join(program, '.codex', 'hooks.template.json'))) {
@@ -471,6 +714,14 @@ function codexGuardsRegistered(workspace: string, program: string): string {
       'CODEX_HOME, so a seat launched from Orca needs it in the home that seat uses.'
     );
   }
+  const configPath = path.join(workspace, '.codex', 'config.toml');
+  const guards = fs.existsSync(configPath) ? codexConfigGuards(configPath) : null;
+  if (guards !== null && guards.ghosts.length) {
+    throw new Error(
+      `Codex will not start in this Library: \`.codex/config.toml\` turns off ${guards.ghosts.map((name) => '`' + name + '`').join(', ')}, ` +
+        `which \`${guards.userConfig}\` no longer defines. Run \`${COMMAND_NAME} init ${workspace}\`.`,
+    );
+  }
   // THE THIRD GATE (S49): a trusted project's hooks still run only once that Codex home has reviewed them.
   const unreviewed = codexUnreviewedHooks(hooksPath, document, trust.config);
   if (unreviewed.length) {
@@ -481,14 +732,17 @@ function codexGuardsRegistered(workspace: string, program: string): string {
       'review; the review is per Codex home, like the trust grant.'
     );
   }
-  const configPath = path.join(workspace, '.codex', 'config.toml');
   if (!fs.existsSync(configPath)) {
     return `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but has no .codex/config.toml, so a Codex seat there has no validated reader.`;
   }
   if (!/^\[mcp_servers\.validated-book-reader\]\s*$/im.test(fs.readFileSync(configPath, 'utf8'))) {
     return `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but its .codex/config.toml does not declare the validated reader.`;
   }
-  return `${registrations} Codex hook registration(s) resolve, the project is trusted in ${trust.home} with every hook reviewed, and the validated reader is declared`;
+  if (guards !== null && guards.added.length) {
+    return `WARN: ${guards.added.map((name) => '`' + name + '`').join(', ')} are on in Codex sessions here (added after the last \`${COMMAND_NAME} init\`). Run \`${COMMAND_NAME} init ${workspace}\`.`;
+  }
+  return `${registrations} Codex hook registration(s) resolve, the project is trusted in ${trust.home} with every hook reviewed, and the validated reader is declared` +
+    (guards !== null ? `, and ${guards.turnedOff} user-level servers and plugins are turned off` : '');
 }
 
 function catalogBookSlugs(workspace: string): string[] {

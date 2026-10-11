@@ -537,7 +537,7 @@ function New-ClaudeGeneratedFiles {
     $pluginPrefix = Get-PluginToolNameForm -Mode 'plugin' -PluginId $pluginId -ServerId $serverId -Tool ''
     $hooksConfig = [ordered]@{
         description = $script:GeneratedNotice + ' Source: .codex-plugin/hooks.json. ' + [string]$canonical.hooks.description
-        hooks       = (ConvertTo-ClaudeHookRoot $canonical.hooks.hooks @("--reader-tool-prefix $codexPrefix", "--reader-tool-prefix $pluginPrefix"))
+        hooks       = (ConvertTo-ClaudeHookRoot $canonical.hooks.hooks @($codexPrefix, $pluginPrefix))
     }
 
     # THE REPO-SCOPED MARKETPLACE, GENERATED FOR THE SAME REASON THE MANIFEST IS. Step 19 asks that
@@ -856,12 +856,12 @@ function Invoke-PluginPackageSelfTest {
     # EVERY HOOK THAT NAMES THE READER IS HANDED ITS PREFIX (S38), not the Desk hook alone: both Shelf
     # guards' denials send the session to read_open_book_page, and under the project default that is a
     # tool neither plugin's session is offered. The Basic Memory guard names no reader and takes none.
-    foreach ($verb in @('desk-context', 'shelf-read', 'shell-shelf-read')) {
+    foreach ($verb in @('desk-context', 'shelf-read', 'shell-shelf-read', 'search-hit')) {
         Check ($canonicalByVerb.ContainsKey($verb) -and $canonicalByVerb[$verb].command.EndsWith(" --reader-tool-prefix $codexPrefix")) "the canonical hook $verb is handed Codex's name for the reader"
     }
     Check ($canonicalByVerb.ContainsKey('basic-memory-read') -and -not $canonicalByVerb['basic-memory-read'].command.Contains('--reader-tool-prefix')) 'the Basic Memory guard, which names no reader, is handed no prefix'
     $claudeCommands = @(foreach ($p in @($freshHooks.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { [string]$h.command } } })
-    Check (@($claudeCommands | Where-Object { $_.EndsWith(" --reader-tool-prefix $pluginPrefix") }).Count -eq 3) "Claude's generated hooks hand all three reader-naming hooks the plugin's name ($($claudeCommands -join ' | '))"
+    Check (@($claudeCommands | Where-Object { $_.EndsWith(" --reader-tool-prefix $pluginPrefix") }).Count -eq 4) "Claude's generated hooks hand all four reader-naming hooks the plugin's name ($($claudeCommands -join ' | '))"
 
     # THE READER: Claude's plugin carries it, Codex's does not (the reader's ruling, S37).
     # NONE MUST BE SAID, NOT LEFT UNSAID: an absent `mcpServers` makes Codex serve the root .mcp.json.
@@ -875,7 +875,7 @@ function Invoke-PluginPackageSelfTest {
     # THE WINDOWS RENDER: `& ` before every command, idempotent, and only for a win-* stage.
     $windows = ConvertTo-WindowsCodexHooks -Document $canonical.hooks
     $windowsCommands = @(foreach ($p in @($windows.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { [string]$h.command } } })
-    Check ($windowsCommands.Count -eq 4 -and @($windowsCommands | Where-Object { $_ -cnotmatch '^& "\$\{PLUGIN_ROOT\}/bin/library" hook ' }).Count -eq 0) "the Windows render prefixes every command with & ($($windowsCommands -join ' | '))"
+    Check ($windowsCommands.Count -eq 8 -and @($windowsCommands | Where-Object { $_ -cnotmatch '^& "\$\{PLUGIN_ROOT\}/bin/library" hook ' }).Count -eq 0) "the Windows render prefixes every command with & ($($windowsCommands -join ' | '))"
     $twice = ConvertTo-WindowsCodexHooks -Document $windows
     Check ((ConvertTo-PluginCanonicalJson $twice) -ceq (ConvertTo-PluginCanonicalJson $windows)) 'the Windows render is idempotent'
     Check ((ConvertTo-PluginCanonicalJson $canonical.hooks) -cne (ConvertTo-PluginCanonicalJson $windows)) 'the render did not rewrite the canonical document it was handed'
@@ -885,7 +885,7 @@ function Invoke-PluginPackageSelfTest {
     $claudeWindows = ConvertTo-WindowsClaudeHooks -Document $freshHooks
     $claudeWindowsHooks = @(foreach ($p in @($claudeWindows.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { $h } } })
     $notExec = @($claudeWindowsHooks | Where-Object { [string]$_.command -cne '${CLAUDE_PLUGIN_ROOT}/bin/library.exe' -or -not $_.PSObject.Properties['args'] -or [string]@($_.args)[0] -cne 'hook' })
-    Check ($claudeWindowsHooks.Count -eq 4 -and $notExec.Count -eq 0) "the Windows Claude render runs bin/library.exe in exec form for every hook ($(@($claudeWindowsHooks | ForEach-Object { [string]$_.command + ' ' + (@($_.args) -join ' ') }) -join ' | '))"
+    Check ($claudeWindowsHooks.Count -eq 8 -and $notExec.Count -eq 0) "the Windows Claude render runs bin/library.exe in exec form for every hook ($(@($claudeWindowsHooks | ForEach-Object { [string]$_.command + ' ' + (@($_.args) -join ' ') }) -join ' | '))"
     $claudeDeskArgs = @(@(@($claudeWindows.hooks.UserPromptSubmit)[0].hooks)[0].args) -join ' '
     Check ($claudeDeskArgs -ceq "hook desk-context --reader-tool-prefix $pluginPrefix") "the Windows Claude render keeps each hook's arguments, one per element ($claudeDeskArgs)"
     Check ((ConvertTo-PluginCanonicalJson (ConvertTo-WindowsClaudeHooks -Document $claudeWindows)) -ceq (ConvertTo-PluginCanonicalJson $claudeWindows)) 'the Windows Claude render is idempotent'

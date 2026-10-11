@@ -520,7 +520,17 @@ $script:CodexRequiredHooks = @(
        matcherDetail = "the Codex patch guard's matcher does not name apply_patch, so it can never fire";
        detail = 'Codex apply_patch can write into a closed Shelf Book' },
     @{ file = 'Get-VirtualDeskContext.ps1'; event = 'UserPromptSubmit'; matcher = $null;
-       detail = 'Codex does not load Virtual Desk context at prompt submission' }
+       detail = 'Codex does not load Virtual Desk context at prompt submission' },
+    @{ file = 'Restore-CompactedGuidance.ps1'; event = 'SessionStart'; matcher = $null;
+       detail = 'Codex does not clear served context at session start' },
+    @{ file = 'Restore-CompactedGuidance.ps1'; event = 'PostCompact'; matcher = $null;
+       detail = 'Codex does not clear served context after compaction' },
+    @{ file = 'Get-SeatStartContext.ps1'; event = 'SessionStart'; matcher = $null;
+       detail = 'Codex does not load seat context at session start' },
+    @{ file = 'Add-SearchHitReminder.ps1'; event = 'PostToolUse'; matcher = $null;
+       sample = 'mcp__validated_book_reader__discover_book_pages';
+       matcherDetail = 'the Codex search reminder matcher does not match mcp__validated_book_reader__discover_book_pages';
+       detail = 'Codex does not remind that a search hit is a location' }
 )
 
 function Get-CodexRequiredHooks { @($script:CodexRequiredHooks) }
@@ -528,7 +538,7 @@ function Get-CodexRequiredHooks { @($script:CodexRequiredHooks) }
 function Get-CodexRegistrationProblems {
     <#
         One string per Codex hook that is absent, registered under the wrong event, or bound to a
-        matcher it can never fire on. An empty result means all four are registered where they act.
+        matcher it can never fire on. An empty result means all required hooks are registered where they act.
 
         It asks nothing about SHAPE -- Test-CodexHookShape does that -- and nothing about whether the
         scripts exist, which is the caller's question because only the caller knows which program

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$StateDirectory,
+    [string]$ReaderToolPrefix = 'mcp__validated-book-reader__',
     [Parameter(ValueFromPipeline = $true)]
     [string]$InputJson,
     [string]$InputJsonBase64
@@ -36,8 +37,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'HookContext.ps1')
 
 $script:SearchTools = @(
-    'mcp__validated-book-reader__discover_book_pages',
-    'mcp__validated-book-reader__search_open_books'
+    ($ReaderToolPrefix + 'discover_book_pages'),
+    ($ReaderToolPrefix + 'search_open_books')
 )
 
 try {
@@ -50,7 +51,7 @@ try {
         # Search-RawBatch.ps1 is a script, so it arrives as a shell command rather than a tool name.
         $toolInput = Get-HookField $call 'tool_input'
         $command = Get-HookCommandText $toolInput
-        $isSearch = $command -match 'Search-RawBatch\.ps1'
+        $isSearch = $command -match 'Search-RawBatch\.ps1|(^|[\s;&|("''\\/])(deskpost|library)(\.cmd|\.exe)?["'']?\s+raw\s+search(\s|$)'
     }
     if (-not $isSearch) { exit 0 }
 

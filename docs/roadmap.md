@@ -25,7 +25,7 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **S113** (in progress): 1.4.2's release, then the first half of Development without PowerShell's first session.
+- **S114** (in progress): 1.4.3.
 
 ## Next
 
@@ -399,6 +399,19 @@ The fourth and last session of **Seats you can rename**.
 - Capture Books are not audited.
 - A graduation cannot land in a Book while its seat is being renamed.
 - Archiving a Book twice says "already archived".
+
+### 1.4.3: Codex keeps to the Library (released 2026-10-11)
+
+A fix release.
+
+- Under Codex, a Library turns off every MCP server and plugin the Codex user config turns on, except the
+  validated reader.
+- The validated reader sees the seat under Codex.
+- On Windows, Codex commands no longer see two PATHs.
+- Doctor says when a server was added since `deskpost init`, and fails when Codex would not start.
+- Upgrading keeps a Library whose Codex config already carries these guards.
+- **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
+  `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
 ### Earlier releases
 

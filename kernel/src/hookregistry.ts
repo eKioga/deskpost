@@ -57,6 +57,10 @@ export const CODEX_REQUIRED_HOOKS: { file: string; event: string; matcher: RegEx
     detail: 'Codex apply_patch can write into a closed Shelf Book',
   },
   { file: 'Get-VirtualDeskContext.ps1', event: 'UserPromptSubmit', matcher: null, detail: 'Codex does not load Virtual Desk context at prompt submission' },
+  { file: 'Restore-CompactedGuidance.ps1', event: 'SessionStart', matcher: null, detail: 'Codex does not clear served context at session start' },
+  { file: 'Restore-CompactedGuidance.ps1', event: 'PostCompact', matcher: null, detail: 'Codex does not clear served context after compaction' },
+  { file: 'Get-SeatStartContext.ps1', event: 'SessionStart', matcher: null, detail: 'Codex does not load seat context at session start' },
+  { file: 'Add-SearchHitReminder.ps1', event: 'PostToolUse', matcher: null, sample: 'mcp__validated_book_reader__discover_book_pages', matcherDetail: 'the Codex search reminder matcher does not match mcp__validated_book_reader__discover_book_pages', detail: 'Codex does not remind that a search hit is a location' },
 ];
 
 /**

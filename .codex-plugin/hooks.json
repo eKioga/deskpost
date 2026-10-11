@@ -47,6 +47,29 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${PLUGIN_ROOT}/bin/library\" hook compact-clear", "timeout": 30, "statusMessage": "Preparing the Virtual Desk" },
+          { "type": "command", "command": "\"${PLUGIN_ROOT}/bin/library\" hook seat-start", "timeout": 30, "statusMessage": "Finding this session's seat" }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${PLUGIN_ROOT}/bin/library\" hook compact-clear", "timeout": 30, "statusMessage": "Refreshing the Virtual Desk" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(mcp__validated_book_reader__(discover_book_pages|search_open_books)|Bash|PowerShell|exec)$",
+        "hooks": [
+          { "type": "command", "command": "\"${PLUGIN_ROOT}/bin/library\" hook search-hit --reader-tool-prefix mcp__validated_book_reader__", "timeout": 30, "statusMessage": "Checking search results" }
+        ]
+      }
     ]
   }
 }

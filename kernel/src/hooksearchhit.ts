@@ -15,6 +15,9 @@ import { field, hookCommandText } from './guards.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix } from './readerprefix.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
+import { homeDirectory, resolveWorkspace } from './workspace.ts';
+import { enabledClaudePluginHooks } from './hookregistry.ts';
+import { claimHookOnce } from './hookledger.ts';
 
 export const SEARCH_HIT_REMINDER =
   'A hit is a location, not a reading: these results say only where the term occurs. ' +
@@ -38,6 +41,14 @@ export function runSearchHitVerb(argv: string[], stdinText: string): string {
     if (!isReaderPrefix(prefix)) return '';
     const call = JSON.parse(stdinText.replace(/^﻿/, '') || 'null') as unknown;
     if (!isSearchCall(call, prefix)) return '';
+    // ONCE WHEN THE PLUGIN REGISTERS IT TOO (S114 row 6): a raw search matches both registrations; the second is silent.
+    const sessionId = String(field(call, 'session_id') ?? '');
+    if (sessionId) {
+      const cwd = String(field(call, 'cwd') ?? '');
+      const resolved = resolveWorkspace(cwd ? { startDirectory: cwd } : {});
+      const key = `search-hit|${sessionId}|${String(field(call, 'tool_use_id') ?? '')}|${String(field(call, 'tool_name') ?? '')}|${JSON.stringify(field(call, 'tool_input') ?? null)}`;
+      if (resolved.kind === 'resolved' && resolved.workspace && enabledClaudePluginHooks(resolved.workspace, homeDirectory()) !== null && !claimHookOnce(key)) return '';
+    }
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: SEARCH_HIT_REMINDER } });
   } catch {
     return '';

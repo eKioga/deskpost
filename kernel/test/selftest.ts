@@ -52,6 +52,16 @@ if (isCompiled() && process.argv.includes('-e')) {
   process.exit(0);
 }
 
+/**
+ * NO SECTION READS THE READER'S OWN CODEX HOME (kickoffs/s114-r2). Since 1.4.3 `init` turns off, by name, every server
+ * and plugin `$CODEX_HOME/config.toml` turns on, so a run that inherited the real home would render this machine's
+ * servers into every fixture Library. Every child, and every in-process render, sees an empty fixture home instead; a
+ * section that wants a Codex home names its own.
+ */
+const FIXTURE_CODEX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-home-'));
+process.env['CODEX_HOME'] = FIXTURE_CODEX_HOME;
+process.on('exit', () => fs.rmSync(FIXTURE_CODEX_HOME, { recursive: true, force: true }));
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'src', 'cli.ts');
 /**
@@ -1286,7 +1296,7 @@ if (selected(18)) {
     // .NET's `$` matches before a final newline and the oracle's `\z` does not; neither may this.
     const newline = context(['--reader-tool-prefix', 'mcp__validated-book-reader__\n']);
     check(newline.includes('is not an MCP tool prefix') && !newline.includes('read_book_catalog'), `a prefix ending in a newline was advertised: ${newline}`);
-    // S38: THE CODEX BINDINGS `init` WROTE hand three hooks Codex's name for the reader, and the Basic
+    // Codex bindings hand every reader-naming hook Codex's name for the reader, and the Basic
     // Memory guard a matcher that fires on Codex's name for Basic Memory. Asked of the file, not the code.
     const codexHooks = JSON.parse(fs.readFileSync(path.join(workspace, '.codex', 'hooks.json'), 'utf8'));
     const codexCommands: string[] = [];
@@ -1295,7 +1305,7 @@ if (selected(18)) {
     // (S48, ADR-0046: a compiled Windows init registers the kernel's hooks, as POSIX always has).
     const isBasicMemoryGuard = (command: string) => command.includes('Guard-BasicMemoryRead.ps1') || / hook basic-memory-read( |$)/.test(command);
     const prefixed = codexCommands.filter((command) => / (-ReaderToolPrefix|--reader-tool-prefix) mcp__validated_book_reader__$/.test(command));
-    check(prefixed.length === 3 && prefixed.every((command) => !isBasicMemoryGuard(command)), `init's Codex hooks do not hand the three reader-naming hooks Codex's prefix: ${codexCommands.join(' | ')}`);
+    check(prefixed.length === 4 && prefixed.every((command) => !isBasicMemoryGuard(command)), `init's Codex hooks do not hand the four reader-naming hooks Codex's prefix: ${codexCommands.join(' | ')}`);
     // S38 refused suggest_active_projects over the LOCAL collection, which has no oracle; S46 (ADR-0044) answers
     // it there, because that refusal was the default route's. With no Hubs it says so, and asks Basic Memory nothing.
     const marker = JSON.parse(fs.readFileSync(path.join(workspace, '.library', 'workspace.json'), 'utf8').replace(/^﻿/, ''));
@@ -1519,8 +1529,11 @@ if (selected(21) && process.platform !== 'win32') {
     const reader = ((readJson('.mcp.json')['mcpServers'] ?? {}) as Record<string, { command?: string; args?: string[] }>)['validated-book-reader'];
     check(reader?.command === binary && JSON.stringify(reader?.args) === JSON.stringify(['mcp', 'serve', '--state-directory', path.join(workspace, '.claude')]), `init's reader is not the binary's serve: ${JSON.stringify(reader)}`);
     const codex = commandsOf(readJson('.codex/hooks.json'));
-    check(codex.length === 4 && codex.every((row) => row.command.startsWith(prefix)), `init's Codex hooks are not the binary's four: ${codex.map((row) => row.command).join(' | ')}`);
-    check(codex.filter((row) => row.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 3, "init's Codex hooks do not hand three of them Codex's reader prefix");
+    check(codex.length === 8 && codex.every((row) => row.command.startsWith(prefix)), `init's Codex hooks are not the binary's eight: ${codex.map((row) => row.command).join(' | ')}`);
+    check(codex.filter((row) => row.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 4, "init's Codex hooks do not hand four of them Codex's reader prefix");
+    for (const [verb, event] of [['compact-clear', 'SessionStart'], ['compact-clear', 'PostCompact'], ['seat-start', 'SessionStart'], ['search-hit', 'PostToolUse']]) {
+      check(codex.some((row) => row.event === event && row.command.startsWith(prefix + verb)), `init registered no Codex ${event} '${verb}'`);
+    }
     const toml = fs.existsSync(path.join(workspace, '.codex', 'config.toml')) ? fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8') : '';
     check(toml.includes(`command = "${binary}"`) && toml.includes('args = ["mcp", "serve", "--state-directory"') && !toml.includes('powershell'), `init's Codex reader is not the binary's serve: ${toml.slice(-400)}`);
 
@@ -3363,7 +3376,7 @@ if (selected(39) && process.platform === 'win32') {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-winhooks-')));
   try {
     const registry = path.join(root, 'reg');
-    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
     const cli = (args: string[]) => runCli(args, { cwd: root, env });
     const version = JSON.parse(cli(['--version']).stdout) as { compiled?: boolean; program_root?: string };
     const program = String(version.program_root).replace(/\\/g, '/').replace(/\/+$/, '');
@@ -3404,8 +3417,11 @@ if (selected(39) && process.platform === 'win32') {
       check(scripts.length === 0, `a compiled init registered a hook script, and every hook the program registers has a verb: ${scripts.map((row) => spelled(row.entry)).join(' | ')}`);
 
       const codexPrefix = `& '${program.replace(/'/g, "''")}/bin/library' hook `;
-      check(codex.length === 4 && codex.every((row) => row.entry.command.startsWith(codexPrefix) && row.entry.commandWindows === row.entry.command), `a compiled init's Codex hooks are not the kernel's four behind '& ': ${codex.map((row) => row.entry.command).join(' | ')}`);
-      check(codex.filter((row) => row.entry.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 3, "a compiled init's Codex hooks do not hand three of them Codex's reader prefix");
+      check(codex.length === 8 && codex.every((row) => row.entry.command.startsWith(codexPrefix) && row.entry.commandWindows === row.entry.command), `a compiled init's Codex hooks are not the kernel's eight behind '& ': ${codex.map((row) => row.entry.command).join(' | ')}`);
+      check(codex.filter((row) => row.entry.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 4, "a compiled init's Codex hooks do not hand four of them Codex's reader prefix");
+      for (const [verb, event] of [['compact-clear', 'SessionStart'], ['compact-clear', 'PostCompact'], ['seat-start', 'SessionStart'], ['search-hit', 'PostToolUse']]) {
+        check(codex.some((row) => row.event === event && row.entry.command.includes(` hook ${verb}`)), `a compiled init registered no Codex ${event} '${verb}'`);
+      }
 
       // THE REGISTRATIONS START, AND SAY WHAT THE READER CAN RUN. A closed Holding Shelf page, the seat's Desk empty.
       const desk = path.join(workspace, '.claude', 'seats', 'reader');
@@ -3460,7 +3476,7 @@ if (selected(40)) {
   try {
     const agent = w.startAgent();
     equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the local-date judge could not be created');
-    const base = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const base = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const workspace = w.workspace;
     const notesDirectory = path.join(workspace, 'shelf', 'holding', 'wiki', 'notes');
     // Triage reads its source notes, and reading the Holding Shelf needs it open -- the very distinction below.
@@ -10193,7 +10209,7 @@ if (selected(114)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-retired-hook-')));
   try {
     const registry = path.join(root, 'reg');
-    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
     const workspace = path.join(root, 'ws');
     equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'the fresh workspace could not be made');
     check(!fs.existsSync(path.join(PROGRAM_ROOT, '.claude', 'hooks', 'Get-PlaybookContext.ps1')), 'the retired playbook hook script is still in the program');
@@ -10445,7 +10461,7 @@ if (selected(117) && KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path
     for (const key of Object.keys(base)) if (/^path$/i.test(key)) delete base[key];
     const init = spawnSync(KERNEL_COMMAND[0]!, ['init', workspace, '--registry-root', registry], {
       cwd: root,
-      env: { ...base, PATH: entries.join(path.delimiter), LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' },
+      env: { ...base, PATH: entries.join(path.delimiter), LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' },
       encoding: 'utf8',
       timeout: 120000,
     });
@@ -19847,6 +19863,409 @@ if (selected(214)) {
     failures.push(`section 214 stopped early: ${(error as Error).message}`);
   } finally {
     w.dispose();
+  }
+}
+
+// SECTION 215. WHICH SECTIONS A COMMIT RUNS (kickoffs/s113 ruling 15; PLAN-powershell-free-development.md Session 1
+// item 3): tools/section-select.mts's rules, judged on fixtures. (a) A kernel/src file no section claims is refused, and
+// this checkout's own claim map leaves none unclaimed. (b) A changed file's claiming sections are chosen, and nothing
+// else. (c) A file on the shared list, the claim map itself or a self-test helper runs everything. (d) A selftest.ts hunk
+// maps to the section whose `if (selected(N))` block (with its comment lines) holds it; a hunk outside every section,
+// or across two, runs everything; a blank-only hunk selects nothing. The real selftest.ts parses into its sections.
+if (selected(215)) {
+  try {
+    const select = await import('../../tools/section-select.mts');
+    const covers = (sections: Record<string, string[]>) => select.parseCovers(JSON.stringify({ schema: 1, about: 'fixture', sections }));
+    const map = covers({ '3': ['kernel/src/alpha.ts'], '5': ['kernel/src/alpha.ts', 'kernel/src/beta.ts'], '9': ['kernel/src/gamma.ts'] });
+    const choose = (changed: string[], hunks: { start: number; count: number }[] = [], text = '') => select.selectSections({ changed, selftestHunks: hunks, selftestText: text, covers: map });
+
+    // (a) Unclaimed files, on a fixture and on this checkout's map.
+    equal(JSON.stringify(select.unclaimedFiles(map, ['kernel/src/alpha.ts', 'kernel/src/delta.ts', 'kernel/src/beta.ts'])), '["kernel/src/delta.ts"]', 'an unclaimed kernel/src file was not named');
+    const realMap = select.parseCovers(fs.readFileSync(path.join(PROGRAM_ROOT, select.COVERS_PATH), 'utf8'));
+    const realFiles = fs.readdirSync(path.join(PROGRAM_ROOT, 'kernel', 'src')).filter((file) => file.endsWith('.ts')).map((file) => `kernel/src/${file}`);
+    equal(JSON.stringify(select.unclaimedFiles(realMap, realFiles)), '[]', `${select.COVERS_PATH} leaves a kernel/src file unclaimed`);
+    let malformed = '';
+    try {
+      select.parseCovers(JSON.stringify({ schema: 1, about: 'x', sections: { '4': ['src/alpha.ts'] } }));
+    } catch (error) {
+      malformed = (error as Error).message;
+    }
+    check(malformed.includes('kernel/src/<file>.ts'), `a claim outside kernel/src was not refused: '${malformed}'`);
+
+    // (b) A changed file's sections, and only those; a document selects none.
+    const one = choose(['kernel/src/alpha.ts', 'docs/roadmap.md']);
+    check(!one.all && JSON.stringify(one.sections) === '[3,5]' && one.reasons.includes('sections 3, 5: claim alpha.ts'), `alpha.ts did not choose sections 3 and 5: ${JSON.stringify(one)}`);
+    const none = choose(['docs/roadmap.md', 'tools/gate.ts']);
+    check(!none.all && none.sections.length === 0, `a change no section covers chose sections: ${JSON.stringify(none)}`);
+
+    // (c) The shared list, the map and a helper run everything; so does a changed file no section claims.
+    for (const file of ['kernel/src/cli.ts', 'kernel/src/verbs.ts', 'kernel/package.json', 'kernel/tsconfig.json', select.COVERS_PATH, 'kernel/test/helper.ts', 'kernel/src/delta.ts']) {
+      const all = choose(['kernel/src/beta.ts', file]);
+      check(all.all && all.sections.length === 0 && all.reasons.some((reason) => reason.startsWith('every section') && reason.includes(file)), `${file} did not run every section: ${JSON.stringify(all)}`);
+    }
+
+    // (d) selftest.ts hunks, on a fixture file: an import, two sections with their comments, a helper between them.
+    const fixture = [
+      "import * as fs from 'node:fs';", //                         1
+      '', //                                                        2
+      '// SECTION 1. The first.', //                                3
+      'if (selected(1)) {', //                                      4
+      '  check(true, "one");', //                                   5
+      '}', //                                                       6
+      '', //                                                        7
+      'function helper(): number {', //                             8
+      '  return 1;', //                                             9
+      '}', //                                                      10
+      '', //                                                       11
+      '// SECTION 2. The second,', //                              12
+      '// over two lines.', //                                     13
+      "if (selected(2) && process.platform === 'win32') {", //     14
+      '  check(true, "two");', //                                  15
+      '}', //                                                      16
+      '', //                                                       17
+    ].join('\n');
+    const ranges = select.sectionRanges(fixture);
+    equal(JSON.stringify(ranges), '[{"section":1,"start":3,"end":6},{"section":2,"start":12,"end":16}]', 'the fixture did not parse into its two sections with their comments');
+    const st = select.SELFTEST_PATH;
+    const inside = choose([st], [{ start: 15, count: 1 }], fixture);
+    check(!inside.all && JSON.stringify(inside.sections) === '[2]', `a hunk inside section 2 did not choose it: ${JSON.stringify(inside)}`);
+    const comment = choose([st], [{ start: 13, count: 1 }], fixture);
+    check(!comment.all && JSON.stringify(comment.sections) === '[2]', `a hunk in section 2's comment did not choose it: ${JSON.stringify(comment)}`);
+    const padded = choose([st], [{ start: 11, count: 7 }], fixture);
+    check(!padded.all && JSON.stringify(padded.sections) === '[2]', `a new section with its blank lines did not choose it: ${JSON.stringify(padded)}`);
+    for (const [hunk, what] of [[{ start: 9, count: 1 }, 'a helper'], [{ start: 1, count: 1 }, 'an import'], [{ start: 5, count: 11 }, 'two sections']] as const) {
+      const all = choose([st], [hunk], fixture);
+      check(all.all && all.reasons.some((reason) => reason.includes('outside every section')), `a hunk in ${what} did not run every section: ${JSON.stringify(all)}`);
+    }
+    const blank = choose([st], [{ start: 7, count: 1 }], fixture);
+    check(!blank.all && blank.sections.length === 0 && blank.reasons.some((reason) => reason.includes('are blank')), `a blank-only hunk chose something: ${JSON.stringify(blank)}`);
+    equal(JSON.stringify(select.parseHunks('@@ -10,2 +12,3 @@ x\n+a\n@@ -40 +44 @@\n+b\n@@ -50,1 +54,0 @@\n')), '[{"start":12,"count":3},{"start":44,"count":1},{"start":54,"count":0}]', 'git diff -U0 hunk headers were misread');
+
+    // The real selftest.ts: every section opened at column 0 is one range, and this section is among them.
+    const real = select.sectionRanges(fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'test', 'selftest.ts'), 'utf8'));
+    const numbers = new Set(real.map((range) => range.section));
+    check(numbers.has(215) && numbers.has(1) && real.every((range) => range.start <= range.end), `selftest.ts did not parse into its sections: ${real.length} ranges`);
+    check([...numbers].every((section) => String(section) in realMap.sections), `${select.COVERS_PATH} has no entry for a section: ${[...numbers].filter((section) => !(String(section) in realMap.sections)).join(', ')}`);
+  } catch (error) {
+    failures.push(`section 215 stopped early: ${(error as Error).message}`);
+  }
+}
+
+// --- 216. A LIBRARY'S CODEX CONFIG CARRIES ITS OWN GUARDS (kickoffs/s114-r2 rulings 1-6; PLAN-codex-guards.md option A) --
+// Every check runs on a fixture CODEX_HOME. (a) The line reader: a server's name is the first segment after
+// `mcp_servers`, so `[mcp_servers.X.env]` names X; quoted names keep their quotes; a multi-line array or inline table
+// inside a server is passed over; a shape it cannot read is named, never guessed; an unparseable file is null. (b) The
+// render: the reader forwards the seat variables; win32 excludes the inherited Path and posix does not; every server and
+// plugin the user config turns on is turned off, sorted, except the reader and a server already off; zero, one and
+// several. (c) init: absent and unreadable user configs leave the section out and say so; this Library's hand-edited
+// file merges; a guard-shaped unknown entry is refused with its own words. (d) doctor's FAIL, WARN and pass.
+if (selected(216)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-guards-')));
+  try {
+    const doctorModule = await import('../src/doctor.ts');
+    const initModule = await import('../src/init.ts');
+    const { readCodexConfigTables, codexTurnedOn } = doctorModule;
+
+    // (a) The line reader.
+    const parsed = readCodexConfigTables([
+      'model = "x"',
+      '[mcp_servers.alpha]',
+      'command = "a"',
+      'args = [',
+      '  "enabled = false",',
+      '  "[mcp_servers.fake]",',
+      ']',
+      'env = { enabled = "false" }',
+      '[mcp_servers.alpha.env]',
+      "TOKEN = 'secret'",
+      '[mcp_servers."quoted.name"]',
+      "command = 'q'",
+      '[mcp_servers.beta]',
+      'url = "http://example.invalid"',
+      'enabled = false',
+      '[mcp_servers.gamma]',
+      'command = "g"',
+      'enabled = true',
+      'description = """',
+      '[plugins."not-a-plugin@x"]',
+      'enabled = true',
+      '"""',
+      '[mcp_servers.validated-book-reader]',
+      'command = "r"',
+      '[mcp_servers.odd]',
+      'command = "o"',
+      'enabled = "sometimes"',
+      '[plugins."one@market"]',
+      'enabled = true',
+      '[plugins."two@market"]',
+      'enabled = false',
+      '[plugins]',
+      'inline = { enabled = true }',
+      '[[skills.config]]',
+      'enabled = true',
+    ].join('\n'));
+    check(parsed !== null, 'the line reader refused a config it should read');
+    if (parsed !== null) {
+      equal(parsed.servers.map((entry) => `${entry.key}:${entry.enabled}:${entry.launches}`).join(' '), 'alpha:null:true "quoted.name":null:true beta:false:true gamma:true:true validated-book-reader:null:true', 'the servers read');
+      equal(parsed.plugins.map((entry) => `${entry.key}:${entry.enabled}`).join(' '), '"one@market":true "two@market":false', 'the plugins read');
+      check(parsed.skipped.some((entry) => entry.startsWith('mcp_servers.odd')) && parsed.skipped.some((entry) => entry.startsWith('plugins.inline')), `the shapes not read were not named: ${JSON.stringify(parsed.skipped)}`);
+      const on = codexTurnedOn(parsed);
+      equal([...on.servers, ...on.plugins].map((entry) => entry.key).join(' '), 'alpha gamma "quoted.name" "one@market"', 'what the user config turns on, sorted, without the reader or a server already off');
+    }
+    for (const broken of ['[mcp_servers.x', '[mcp_servers."x]', 'just words', 'args = [\n"a",', 'k = """\nnever closed', 'k = "unclosed']) {
+      check(readCodexConfigTables(broken) === null, `an unparseable config was read: ${JSON.stringify(broken)}`);
+    }
+    equal(JSON.stringify(readCodexConfigTables('')), '{"servers":[],"plugins":[],"skipped":[]}', 'an empty config is not an empty reading');
+
+    // (b) The render, in process: win32 and posix, from zero, one and several.
+    const template = path.join(PROGRAM_ROOT, '.codex', 'workspace-config.template.toml');
+    const render = (win32: boolean, userText: string | null, state: 'absent' | 'unreadable' | 'read' = userText === null ? 'absent' : 'read') =>
+      initModule.newCodexWorkspaceConfigDocument(template, 'unused', path.join(root, 'state'), PROGRAM_ROOT, true, 'unused', {
+        win32,
+        userConfig: { path: path.join(root, 'home', 'config.toml'), state, tables: userText === null ? null : readCodexConfigTables(userText) },
+        date: '2026-10-11',
+      });
+    const several = '[mcp_servers.zeta]\ncommand = "z"\n[mcp_servers.alpha]\ncommand = "a"\n[mcp_servers.alpha.env]\nK = "v"\n[mcp_servers.off]\ncommand = "o"\nenabled = false\n[mcp_servers.validated-book-reader]\ncommand = "r"\n[plugins."p@m"]\nenabled = true\n';
+    const posixNone = render(false, null);
+    const winNone = render(true, null);
+    const posixOne = render(false, '[mcp_servers.solo]\ncommand = "s"\n');
+    const winSeveral = render(true, several);
+    check(posixNone.includes('env_vars = ["LIBRARY_SEAT", "LIBRARY_SEAT_CLAIM", "DESKPOST_ASSISTANT", "DESKPOST_LAUNCHER_PID"]'), `the reader does not forward the seat variables: ${posixNone.slice(-500)}`);
+    check(posixNone.includes('default_tools_approval_mode = "approve"') && !posixNone.includes('default_tools_approval_mode = "auto"'), 'the reader is not rendered with approval mode "approve"');
+    check(!posixNone.includes('shell_environment_policy') && !posixOne.includes('shell_environment_policy'), 'a posix render excludes the Path');
+    check(winNone.includes('[shell_environment_policy]\nexclude = ["Path"]\n'), `a win32 render does not exclude the inherited Path: ${winNone.slice(-400)}`);
+    check(!posixNone.includes('Turned off in this Library') && !winNone.includes('Turned off in this Library'), 'a render with no user config turned something off');
+    check(posixOne.includes('\n[mcp_servers.solo]\nenabled = false\n') && posixOne.includes('Derived by `deskpost init` on 2026-10-11'), `one server was not turned off: ${posixOne.slice(-400)}`);
+    const tail = winSeveral.substring(winSeveral.indexOf('# Turned off in this Library'));
+    equal(tail.replace(/^#.*\n/gm, ''), '[mcp_servers.alpha]\nenabled = false\n\n[mcp_servers.zeta]\nenabled = false\n\n[plugins."p@m"]\nenabled = false\n', 'several servers and plugins, sorted, without the reader, the env subtable or a server already off');
+    check(!winSeveral.includes('[mcp_servers.alpha.env]') && !winSeveral.includes('[mcp_servers.off]'), 'a subtable or a server already off was written');
+    equal(render(true, null, 'unreadable'), winNone, 'an unreadable user config changed the render');
+    equal((winSeveral.match(/__[A-Z_]+__/g) ?? []).length, 0, 'a template token survived');
+
+    // (c) init with fixture CODEX_HOMEs.
+    const home = path.join(root, 'home');
+    fs.mkdirSync(home, { recursive: true });
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', CODEX_HOME: home, AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const init = (ws: string) => runCli(['init', ws, '--json'], { cwd: root, env });
+    const resultOf = (run: { stdout: string }): Record<string, unknown> => {
+      try {
+        const document = JSON.parse(run.stdout) as Record<string, unknown>;
+        return ((document['result'] ?? document) as Record<string, unknown>);
+      } catch {
+        return {};
+      }
+    };
+    const configOf = (ws: string) => (fs.existsSync(path.join(ws, '.codex', 'config.toml')) ? fs.readFileSync(path.join(ws, '.codex', 'config.toml'), 'utf8') : '');
+    const absent = path.join(root, 'absent');
+    const first = init(absent);
+    equal(first.exit, 0, `init with no user config failed: ${first.stderr.slice(0, 300)}`);
+    equal(resultOf(first)['codex_user_config'], 'absent', 'init did not say the user config is absent');
+    check(configOf(absent) !== '' && !configOf(absent).includes('Turned off in this Library'), 'init with no user config turned something off');
+    fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.x\n');
+    const unreadable = path.join(root, 'unreadable');
+    const second = init(unreadable);
+    equal(second.exit, 0, `init with an unreadable user config failed: ${second.stderr.slice(0, 300)}`);
+    equal(resultOf(second)['codex_user_config'], 'unreadable', 'init did not say the user config is unreadable');
+
+    // This Library's hand-edited file (2026-10-11, seat deskpost-desk), word for word but for its two paths.
+    const library = path.join(root, 'library');
+    const userConfig = [
+      `[projects.'${library}']`,
+      'trust_level = "trusted"',
+      '[mcp_servers.node_repl]',
+      'command = "node"',
+      '[mcp_servers.librarian]',
+      'command = "librarian"',
+      '[mcp_servers.librarian.env]',
+      'LIBRARIAN_ROOT = "fixture"',
+      '[mcp_servers.basic-memory]',
+      'command = "basic-memory"',
+      '[mcp_servers.agent-mail]',
+      'url = "http://127.0.0.1:1/mcp"',
+      '[mcp_servers.hytale-rag]',
+      'command = "hytale"',
+      '[plugins."computer-use@openai-bundled"]',
+      'enabled = true',
+      '[plugins."unified-computer-use@openai-bundled"]',
+      'enabled = true',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(home, 'config.toml'), userConfig);
+    equal(init(library).exit, 0, 'the hand-edited Library could not be made');
+    const rendered = configOf(library);
+    const command = /^command = .*$/m.exec(rendered)?.[0] ?? '';
+    const args = /^args = .*$/m.exec(rendered)?.[0] ?? '';
+    const handEdited = [
+      '# Managed by `library init`. Re-run it after moving the program; edits here are replaced.',
+      '# Portable source template, with no machine anywhere in it. `library init` renders this into a',
+      "# reader's workspace as .codex/config.toml; tools/Initialize-CodexLibrary.ps1 renders",
+      "# config.template.toml beside it for the program's own Codex sessions.",
+      '#',
+      '# The two differ in exactly one way and it is deliberate: this one registers the validated reader',
+      '# and nothing else. tools/CodexBindings.ps1 carries the reasoning, and it is the same reasoning that',
+      "# keeps basic-memory out of a workspace's .mcp.json on the Claude side.",
+      '#',
+      '# Codex reads this file only when the project is TRUSTED in $CODEX_HOME/config.toml. Untrusted, it',
+      '# is ignored in silence -- measured 2026-09-22, codex-cli 0.153.4 -- which is why',
+      '# workspace.codex-guards-registered reports the trust state beside the file rather than assuming it.',
+      '',
+      '[features]',
+      'hooks = true',
+      '',
+      '[mcp_servers.validated-book-reader]',
+      command,
+      args,
+      'enabled = true',
+      'required = true',
+      'default_tools_approval_mode = "auto"',
+      'startup_timeout_sec = 20',
+      'tool_timeout_sec = 60',
+      '# Added 2026-10-11 by seat deskpost-desk: Codex starts MCP servers without the session\'s environment, so the',
+      '# reader never saw the seat the launcher named. Forward the launcher\'s seat variables. Remove before `library init`.',
+      'env_vars = ["LIBRARY_SEAT", "LIBRARY_SEAT_CLAIM", "DESKPOST_ASSISTANT", "DESKPOST_LAUNCHER_PID"]',
+      '# Added 2026-10-11 by seat deskpost-desk (codex-parity-plan step 0): librarian reads Library',
+      '# content around the validated reader. Remove this table before running `library init` here.',
+      '[mcp_servers.librarian]',
+      'enabled = false',
+      '',
+      '# Added 2026-10-11 by seat deskpost-desk (codex-parity-plan step 0): node_repl runs JavaScript that',
+      '# can read any file, with no Deskpost guard. Remove before running `library init` here.',
+      '[mcp_servers.node_repl]',
+      'enabled = false',
+      '',
+      '# Added 2026-10-11 by seat deskpost-desk (codex-parity-plan step 0): the computer-use plugins serve',
+      '# cua_repl, which can read any file with no Deskpost guard. Remove before running `library init` here.',
+      '[plugins."computer-use@openai-bundled"]',
+      'enabled = false',
+      '',
+      '[plugins."unified-computer-use@openai-bundled"]',
+      'enabled = false',
+      '',
+      '# Added 2026-10-11 by seat deskpost-desk: Codex adds its own PATH beside the inherited Windows Path, so a',
+      '# command sees both and PowerShell\'s Start-Process fails ("Item has already been added ... Path"). Dropping',
+      '# the inherited Path leaves one full PATH (tested: 51 entries, node and git found). Remove before `library init`.',
+      '[shell_environment_policy]',
+      'exclude = ["Path"]',
+      '',
+    ].join('\n');
+    check(command.startsWith('command = ') && args.startsWith('args = '), `the render has no reader command to copy: ${rendered.slice(0, 300)}`);
+    fs.writeFileSync(path.join(library, '.codex', 'config.toml'), handEdited);
+    const upgraded = init(library);
+    if (process.platform === 'win32') {
+      equal(upgraded.exit, 0, `this Library's hand-edited Codex config did not upgrade in place: ${upgraded.stderr.slice(0, 400)}`);
+      equal(configOf(library), rendered, 'the hand-edited Codex config was not brought to the render');
+    } else {
+      // Off Windows the render carries no Path exclusion, so that one hand-added guard is refused in its own words.
+      check(upgraded.exit !== 0 && upgraded.stderr.includes('`shell_environment_policy.exclude` looks like a guard someone added by hand') && !upgraded.stderr.includes('Move them into'), `a posix Library's hand-added Path guard was not refused as a guard: ${upgraded.stderr.slice(0, 400)}`);
+      equal(configOf(library), handEdited, 'a refused Codex config was changed');
+    }
+    for (const name of ['basic-memory', 'agent-mail', 'hytale-rag', 'librarian', 'node_repl']) {
+      check(rendered.includes(`\n[mcp_servers.${name}]\nenabled = false\n`), `the render did not turn off ${name}`);
+    }
+    check(!rendered.includes('[mcp_servers.librarian.env]') && !rendered.includes('LIBRARIAN_ROOT') && !rendered.includes('127.0.0.1'), 'the render copied a value from the user config');
+
+    // A guard-shaped entry the render does not carry is refused as a guard; any other keeps today's words.
+    const guarded = path.join(root, 'guarded');
+    equal(init(guarded).exit, 0, 'the guarded Library could not be made');
+    const managed = configOf(guarded);
+    fs.writeFileSync(path.join(guarded, '.codex', 'config.toml'), managed + '\n[plugins."gone@nowhere"]\nenabled = false\n');
+    const refusedGuard = init(guarded);
+    check(refusedGuard.exit !== 0 && refusedGuard.stderr.includes('`plugins."gone@nowhere".enabled` looks like a guard someone added by hand; Deskpost now turns off every server and plugin your Codex user config turns on, so check whether the render already covers it, remove it, and re-run; nothing has been written.') && !refusedGuard.stderr.includes('Move them into'), `a guard-shaped entry was not refused as a guard: ${refusedGuard.stderr.slice(0, 400)}`);
+    fs.writeFileSync(path.join(guarded, '.codex', 'config.toml'), managed + '\n[mcp_servers.mine]\ncommand = "mine"\n');
+    const refusedOther = init(guarded);
+    check(refusedOther.exit !== 0 && refusedOther.stderr.includes('Move them into $CODEX_HOME/config.toml') && !refusedOther.stderr.includes('looks like a guard'), `another entry lost today's words: ${refusedOther.stderr.slice(0, 400)}`);
+    fs.writeFileSync(path.join(guarded, '.codex', 'config.toml'), managed);
+
+    // (d) doctor: the pass line counts what is turned off; a server added since is a WARN; one removed is a FAIL.
+    const hooksPath = path.join(library, '.codex', 'hooks.json');
+    const hooks = (JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as { hooks: Record<string, { hooks: unknown[] }[]> }).hooks;
+    const reviewed: string[] = [];
+    for (const [event, groups] of Object.entries(hooks)) {
+      const snake = event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+      groups.forEach((group, i) => group.hooks.forEach((_hook, j) => reviewed.push(`[hooks.state.'${path.resolve(hooksPath)}:${snake}:${i}:${j}']`, 'trusted_hash = "fixture"')));
+    }
+    const withReviews = (text: string) => text + reviewed.join('\n') + '\n';
+    fs.writeFileSync(path.join(library, '.codex', 'config.toml'), rendered);
+    const codexRow = () => {
+      const run = runCli(['doctor', '--workspace', library, '--json'], { cwd: root, env });
+      try {
+        return (JSON.parse(run.stdout) as { checks: { check: string; status: string; detail: string }[] }).checks.find((row) => row.check === 'workspace.codex-guards-registered') ?? { status: '(absent)', detail: run.stderr.slice(0, 300) };
+      } catch {
+        return { status: '(unreadable)', detail: `${run.stdout.slice(0, 200)} ${run.stderr.slice(0, 200)}` };
+      }
+    };
+    fs.writeFileSync(path.join(home, 'config.toml'), withReviews(userConfig));
+    const pass = codexRow();
+    check(pass.status === 'pass' && pass.detail.includes('8 Codex hook registration(s) resolve') && pass.detail.includes('and 7 user-level servers and plugins are turned off'), `doctor's pass line: ${pass.status} ${pass.detail}`);
+    fs.writeFileSync(path.join(home, 'config.toml'), withReviews(userConfig + '[mcp_servers.newcomer]\ncommand = "n"\n'));
+    const warn = codexRow();
+    check(warn.status === 'warn' && warn.detail.includes('`newcomer` are on in Codex sessions here (added after the last `deskpost init`). Run `deskpost init'), `doctor's WARN for a server added since: ${warn.status} ${warn.detail}`);
+    fs.writeFileSync(path.join(home, 'config.toml'), withReviews(userConfig.replace('[mcp_servers.hytale-rag]\ncommand = "hytale"\n', '')));
+    const fail = codexRow();
+    check(fail.status === 'fail' && fail.detail.includes('Codex will not start in this Library: `.codex/config.toml` turns off `hytale-rag`, which') && fail.detail.includes('no longer defines. Run `deskpost init'), `doctor's FAIL for a server the user config no longer defines: ${fail.status} ${fail.detail}`);
+    // The fix the FAIL names works (S114 row 6): an earlier render's turn-off is Deskpost's own, so init merges it away.
+    const refreshed = init(library);
+    equal(refreshed.exit, 0, `init after a server left the user config refused: ${refreshed.stderr.slice(0, 400)}`);
+    check(!configOf(library).includes('hytale-rag') && configOf(library).includes('\n[mcp_servers.basic-memory]\nenabled = false\n'), `init did not drop the server the user config no longer defines: ${configOf(library).slice(-600)}`);
+    const healed = codexRow();
+    check(healed.status === 'pass' && healed.detail.includes('and 6 user-level servers and plugins are turned off'), `doctor after that init: ${healed.status} ${healed.detail}`);
+    fs.writeFileSync(path.join(library, '.codex', 'config.toml'), configOf(library) + '\n[mcp_servers.mine]\ncommand = "mine"\n');
+    const below = init(library);
+    check(below.exit !== 0 && below.stderr.includes('mcp_servers.mine.command'), `an entry a reader added below the turned-off section was not refused: ${below.stderr.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 216 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 217. THE PLUGIN AND THE WORKSPACE SERVE SEAT-START AND SEARCH-HIT ONCE (S114 row 6; kickoffs/s114-r2 ruling 13) ----
+// A Library that also has the Deskpost Claude plugin enabled registers both hooks twice, and Claude Code runs both at
+// once on one payload. With the plugin enabled (a fixture CLAUDE_CONFIG_DIR), two runs started together serve once;
+// without it, each run serves as before, so a Library without the plugin, and Codex, are unchanged.
+if (selected(217)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-hook-once-')));
+  try {
+    const registry = path.join(root, 'reg');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: registry, LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '' };
+    const ws = path.join(root, 'ws');
+    equal(runCli(['init', ws], { env }).exit, 0, 'the plugin Library could not be made');
+    const withPlugin = path.join(root, 'claude-with-plugin');
+    const install = path.join(root, 'plugin-install');
+    fs.mkdirSync(path.join(withPlugin, 'plugins'), { recursive: true });
+    fs.mkdirSync(path.join(install, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(install, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(withPlugin, 'settings.json'), JSON.stringify({ enabledPlugins: { 'deskpost@fixture': true } }));
+    fs.writeFileSync(path.join(withPlugin, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'deskpost@fixture': [{ scope: 'user', installPath: install }] } }));
+    fs.writeFileSync(path.join(install, '.claude-plugin', 'plugin.json'), '{}');
+    fs.writeFileSync(path.join(install, 'hooks', 'hooks.json'), '{"hooks":{}}');
+    const withoutPlugin = path.join(root, 'claude-without-plugin');
+    fs.mkdirSync(withoutPlugin, { recursive: true });
+    const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
+    const hook = (args: string[], payload: unknown, config: string): Promise<string> =>
+      new Promise((resolve) => {
+        const child = spawn(file!, [...prefix, 'hook', ...args], { cwd: ws, env: { ...process.env, ...QUIET_TAB, ...env, CLAUDE_CONFIG_DIR: config } });
+        let out = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => (out += chunk));
+        child.on('error', () => resolve(''));
+        child.on('close', () => resolve(out.trim()));
+        child.stdin.end(JSON.stringify(payload));
+      });
+    const pair = async (args: string[], payload: unknown, config: string) => (await Promise.all([hook(args, payload, config), hook(args, payload, config)])).filter((out) => out.length > 0).length;
+    const start = (session: string) => ({ hook_event_name: 'SessionStart', source: 'startup', session_id: session, cwd: ws });
+    const search = (session: string, id: string) => ({ hook_event_name: 'PostToolUse', session_id: session, tool_use_id: id, tool_name: 'Bash', tool_input: { command: 'deskpost raw search valheim' }, tool_response: {}, cwd: ws });
+    const stamp = String(Date.now());
+    equal(await pair(['seat-start', '--workspace', ws, '--agent-pid', '0'], start(`s217-a-${stamp}`), withPlugin), 1, 'seat-start with the plugin enabled did not serve exactly once');
+    equal(await pair(['search-hit'], search(`s217-a-${stamp}`, `toolu_a_${stamp}`), withPlugin), 1, 'search-hit with the plugin enabled did not serve exactly once');
+    equal(await pair(['seat-start', '--workspace', ws, '--agent-pid', '0'], start(`s217-b-${stamp}`), withoutPlugin), 2, 'seat-start without the plugin did not serve each run');
+    equal(await pair(['search-hit'], search(`s217-b-${stamp}`, `toolu_b_${stamp}`), withoutPlugin), 2, 'search-hit without the plugin did not serve each run');
+    // A later search in the same session is its own call, so it is served again.
+    equal(await pair(['search-hit'], search(`s217-a-${stamp}`, `toolu_c_${stamp}`), withPlugin), 1, 'a second search in the session was not served');
+  } catch (error) {
+    failures.push(`section 217 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 

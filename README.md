@@ -203,7 +203,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.4.2**. The full roadmap, with what each milestone carries and how far
+The current release is **1.4.3**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
 - **Next: Libraries on more than one computer**, its plan signed off: 1.5.0 gives each Library a

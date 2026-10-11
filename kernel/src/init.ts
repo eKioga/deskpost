@@ -42,7 +42,9 @@ import {
   toWorkspaceRoot,
 } from './workspace.ts';
 import { HOOK_VERB_FOR_SCRIPT } from './hookregistry.ts';
-import { entryInvocation } from './machine.ts';
+import { COMMAND_NAME, entryInvocation } from './machine.ts';
+import { codexTurnedOn, codexUserConfig, type CodexConfigTables } from './doctor.ts';
+import { localDate } from './localdate.ts';
 import { SKILL_MANIFEST, skillPlans } from './skillcopy.ts';
 
 const SECTION_BEGIN = '<!-- library:begin -->';
@@ -54,7 +56,7 @@ const CODEX_MANAGED_MARKER =
   '# Managed by `library init`. Re-run it after moving the program; edits here are replaced.';
 
 /**
- * The four hooks a Codex session needs, with the matcher token each is bound to in the template. THREE
+ * The hooks a Codex session needs, with the matcher token each is bound to in the template. Four
  * NAME THE READER (S38), and Codex offers it as `mcp__validated_book_reader__<tool>` -- a server's hyphens
  * spelled as underscores, measured S37 -- so each is handed that prefix, as `CodexBindings.ps1` does.
  */
@@ -64,6 +66,9 @@ const CODEX_HOOK_TOKENS: { token: string; file: string; readerPrefix: boolean }[
   { token: '__SHELL_GUARD_COMMAND__', file: 'Guard-ShellShelfRead.ps1', readerPrefix: true },
   { token: '__PATCH_GUARD_COMMAND__', file: 'Guard-ShelfBookRead.ps1', readerPrefix: true },
   { token: '__DESK_CONTEXT_COMMAND__', file: 'Get-VirtualDeskContext.ps1', readerPrefix: true },
+  { token: '__COMPACT_CLEAR_COMMAND__', file: 'Restore-CompactedGuidance.ps1', readerPrefix: false },
+  { token: '__SEAT_START_COMMAND__', file: 'Get-SeatStartContext.ps1', readerPrefix: false },
+  { token: '__SEARCH_HIT_COMMAND__', file: 'Add-SearchHitReminder.ps1', readerPrefix: true },
 ];
 
 export interface InitOptions {
@@ -700,7 +705,7 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
         : codexGuardCommand(codexHookScriptPath(hookDirectory, entry.file, resources !== undefined && programRoot !== undefined ? path.join(resources, '.claude', 'hooks') : hookDirectory), prefix);
     // Twice: `command` and `commandWindows` carry the same invocation, and a template that lost one
     // of them would leave Codex reading the other on one platform only.
-    text = expandCodexToken(text, '"' + entry.token + '"', psJsonString(command), 2);
+    text = expandCodexToken(text, '"' + entry.token + '"', psJsonString(command), entry.token === '__COMPACT_CLEAR_COMMAND__' ? 4 : 2);
   }
   if (/__[A-Z0-9_]+__/.test(text)) throw new Error('The rendered Codex hooks still contain a template token.');
   try {
@@ -721,6 +726,47 @@ function codexTomlArray(values: string[]): string {
   return '[' + values.map(codexTomlString).join(', ') + ']';
 }
 
+/**
+ * WHAT A LIBRARY'S CODEX CONFIG ADDS BELOW THE TEMPLATE (kickoffs/s114-r2 rulings 2-3; PLAN-codex-guards.md option A).
+ * Codex merges `$CODEX_HOME/config.toml` underneath the workspace file, so every server and plugin the reader turned on
+ * there would be live in a Library session: each is turned off here by name, except the validated reader. Only names
+ * the user config defines are written, because a table for a server defined nowhere else stops Codex loading any
+ * config (measured, "invalid transport"). On Windows the inherited `Path` is excluded as well.
+ */
+export interface CodexWorkspaceGuards {
+  win32: boolean;
+  userConfig: { path: string; state: 'absent' | 'unreadable' | 'read'; tables: CodexConfigTables | null };
+  date: string;
+}
+
+/** The comments that open and close the derived section, so a later init knows its own tables (withoutDerivedTurnOffs). */
+const CODEX_TURNED_OFF_BEGIN = '# Turned off in this Library:';
+const CODEX_TURNED_OFF_END = '# End of what `deskpost init` turned off.';
+
+function codexWorkspaceGuardsText(guards: CodexWorkspaceGuards): string {
+  let text = '';
+  if (guards.win32) {
+    text +=
+      '\n# Windows only: Codex adds its own PATH beside the inherited Path, so a command saw both and PowerShell\'s\n' +
+      '# Start-Process failed ("Item has already been added"). Excluding the inherited Path leaves one.\n' +
+      '[shell_environment_policy]\nexclude = ["Path"]\n';
+  }
+  if (guards.userConfig.tables === null) return text;
+  const on = codexTurnedOn(guards.userConfig.tables);
+  if (!on.servers.length && !on.plugins.length) return text;
+  text +=
+    `\n${CODEX_TURNED_OFF_BEGIN} every MCP server and plugin ${guards.userConfig.path.replace(/\\/g, '/')} turns on, except the\n` +
+    `# validated reader. Derived by \`${COMMAND_NAME} init\` on ${guards.date}; run it again after adding one.\n`;
+  const tables = [...on.servers.map((entry) => `[mcp_servers.${entry.key}]`), ...on.plugins.map((entry) => `[plugins.${entry.key}]`)];
+  text += tables.map((header) => `${header}\nenabled = false\n`).join('\n');
+  return text + CODEX_TURNED_OFF_END + '\n';
+}
+
+/** The guards a real init renders: this host's platform, the reader's Codex user config, today's local date. */
+function hostCodexWorkspaceGuards(): CodexWorkspaceGuards {
+  return { win32: HOST_FLAVOR === 'win32', userConfig: codexUserConfig(), date: localDate() };
+}
+
 export function newCodexWorkspaceConfigDocument(
   templatePath: string,
   adapterPath: string,
@@ -728,8 +774,15 @@ export function newCodexWorkspaceConfigDocument(
   programRoot?: string,
   kernelReader: boolean = POSIX_BINDINGS,
   adapterReadPath: string = adapterPath,
+  guards: CodexWorkspaceGuards = hostCodexWorkspaceGuards(),
 ): string {
   if (!fs.existsSync(templatePath)) throw new Error(`Required Codex template is missing: ${templatePath}`);
+  // The guards go below the template, beside the reader's expansion and never by a token, so the PowerShell oracle's
+  // render of the same template is unchanged (kickoffs/s114-r2 ruling 2).
+  const guarded = (text: string): string => {
+    const extra = codexWorkspaceGuardsText(guards);
+    return extra ? text.replace(/\s*$/, '\n') + extra : text;
+  };
   if (kernelReader && programRoot) {
     const serve = ['mcp', 'serve'];
     if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory.replace(/\\/g, '/'));
@@ -737,7 +790,7 @@ export function newCodexWorkspaceConfigDocument(
     posix = expandCodexToken(posix, 'command = "powershell.exe"', 'command = ' + codexTomlString(kernelBinary(programRoot)), 1);
     posix = expandCodexToken(posix, '"__VALIDATED_READER_ARGS__"', codexTomlArray(serve), 1);
     if (/__[A-Z0-9_]+__/.test(posix)) throw new Error('The rendered Codex config still contains a template token.');
-    return CODEX_MANAGED_MARKER + '\n' + posix;
+    return guarded(CODEX_MANAGED_MARKER + '\n' + posix);
   }
   if (!fs.existsSync(adapterReadPath)) {
     throw new Error(
@@ -751,7 +804,7 @@ export function newCodexWorkspaceConfigDocument(
   if (/__[A-Z0-9_]+__/.test(text)) throw new Error('The rendered Codex config still contains a template token.');
   // The ownership stamp goes on the OUTPUT rather than in the template: it is a statement about who
   // wrote this copy, not about what the document says.
-  return CODEX_MANAGED_MARKER + '\n' + text;
+  return guarded(CODEX_MANAGED_MARKER + '\n' + text);
 }
 
 function codexHooksPlan(filePath: string, desired: string, hookDirectory: string): PlanResult {
@@ -801,18 +854,64 @@ function codexConfigPlan(filePath: string, desired: string): PlanResult {
   // THE MARKER SAYS WHO WROTE THE FILE, NOT THAT NOTHING WAS ADDED SINCE (PLAN-one-upgrade.md r6 amendment 2). The whole
   // file is replaced, so a server or setting the reader added below the marker was silently dropped. Now anything the
   // managed render does not carry -- a table, a key, a line -- refuses, and the file is left byte for byte.
-  const added = codexConfigAdditions(text, desired);
+  // A HAND-ADDED GUARD IS NOT A SETTING TO MOVE (kickoffs/s114-r2 ruling 4). An entry that narrows Codex -- `enabled =
+  // false`, or anything under `shell_environment_policy` -- would apply to every project from the user config, so the
+  // refusal says it looks like a guard the render may already carry. Any other entry keeps the move-it advice.
+  const added = codexConfigAdditions(withoutDerivedTurnOffs(text), desired);
   if (added.length) {
-    return {
-      action: 'refuse',
-      content: null,
-      reason:
-        `${filePath}: your Codex config has entries Deskpost did not write (${added.join('; ')}), so it cannot be ` +
-        'brought up to date without discarding them. Move them into $CODEX_HOME/config.toml, which Codex loads ' +
-        'alongside this file, or remove them, and re-run; nothing has been written.',
-    };
+    const guards = codexGuardEntries(text);
+    const guardKeys = added.filter((entry) => guards.has(entry) && !entry.startsWith('['));
+    const others = added.filter((entry) => !guards.has(entry));
+    const reasons: string[] = [];
+    if (guardKeys.length) {
+      const named = guardKeys.map((entry) => '`' + entry + '`').join(', ');
+      reasons.push(
+        guardKeys.length === 1
+          ? `${named} looks like a guard someone added by hand; Deskpost now turns off every server and plugin your Codex user config turns on, so check whether the render already covers it, remove it, and re-run; nothing has been written.`
+          : `${named} look like guards someone added by hand; Deskpost now turns off every server and plugin your Codex user config turns on, so check whether the render already covers them, remove them, and re-run; nothing has been written.`,
+      );
+    }
+    if (others.length) {
+      reasons.push(
+        `your Codex config has entries Deskpost did not write (${others.join('; ')}), so it cannot be ` +
+          'brought up to date without discarding them. Move them into $CODEX_HOME/config.toml, which Codex loads ' +
+          'alongside this file, or remove them, and re-run; nothing has been written.',
+      );
+    }
+    return { action: 'refuse', content: null, reason: `${filePath}: ${reasons.join(' ')}` };
   }
   return { action: 'merge', content: desired, reason: null };
+}
+
+/**
+ * The entries of a Codex config that only narrow Codex: `<table>.enabled` set to false, anything under
+ * `shell_environment_policy`, and the header of a table holding nothing else.
+ */
+function codexGuardEntries(text: string): Set<string> {
+  const guards = new Set<string>();
+  // Per table: whether it holds a guard, and whether it holds anything else.
+  const tables = new Map<string, { guard: boolean; other: boolean }>();
+  let table = '';
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const header = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line);
+    if (header) {
+      table = header[1]!;
+      if (!tables.has(table)) tables.set(table, { guard: false, other: false });
+      continue;
+    }
+    const key = /^("[^"]*"|[A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*(#.*)?$/.exec(line);
+    const narrows = table === 'shell_environment_policy' || table.startsWith('shell_environment_policy.') || (key !== null && key[1] === 'enabled' && key[2] === 'false');
+    if (key && narrows) guards.add(`${table}.${key[1]}`);
+    const held = tables.get(table);
+    if (held) {
+      if (key && narrows) held.guard = true;
+      else held.other = true;
+    }
+  }
+  for (const [name, held] of tables) if (held.guard && !held.other) guards.add(`[${name}]`);
+  return guards;
 }
 
 /**
@@ -835,6 +934,45 @@ function codexConfigEntries(text: string): Set<string> {
     entries.add(key ? `${table}.${key[1]}` : line);
   }
   return entries;
+}
+
+/**
+ * AN EARLIER RENDER'S TURN-OFFS ARE DESKPOST'S, NOT THE READER'S (S114 row 6, found in the Eric-layout upgrade). The
+ * derived section sits between its two comments, so when a server leaves the user config the old file still turns it
+ * off and the new render does not; judged as an addition, that table refused the very `init` doctor's FAIL names as the
+ * fix. Between the comments, only what the render writes there is dropped -- a one-segment `[mcp_servers.X]` or
+ * `[plugins.X]` table holding only `enabled = false` -- so any other table there, and anything a reader added after
+ * the closing comment, is still an addition and still refuses.
+ */
+function withoutDerivedTurnOffs(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.startsWith(CODEX_TURNED_OFF_BEGIN));
+  if (start < 0) return text;
+  const found = lines.findIndex((line, index) => index > start && line.startsWith(CODEX_TURNED_OFF_END));
+  const end = found < 0 ? lines.length : found + 1;
+  // Table by table: a one-segment server or plugin table holding only `enabled = false` is the render's and goes;
+  // any other table in the section, with its lines, stays and is judged like any entry.
+  const kept: string[] = [];
+  let group: string[] = [];
+  let turnOff = false;
+  const flush = () => {
+    if (!turnOff) kept.push(...group.filter((line) => line.trim() && !line.trim().startsWith('#')));
+    group = [];
+    turnOff = false;
+  };
+  for (const raw of lines.slice(start, end)) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      flush();
+      turnOff = /^\[(mcp_servers|plugins)\.("[^"]*"|[A-Za-z0-9_-]+)\]$/.test(line);
+      group.push(raw);
+      continue;
+    }
+    if (line && !line.startsWith('#') && !/^enabled\s*=\s*false$/.test(line)) turnOff = false;
+    group.push(raw);
+  }
+  flush();
+  return [...lines.slice(0, start), ...kept, ...lines.slice(end)].join('\n');
 }
 
 /** What an existing managed Codex config carries that the managed render does not: the reader's own entries. */
@@ -1173,6 +1311,8 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
   const plans: FilePlan[] = [];
   const refusals: string[] = [];
   const skillLeft: string[] = [];
+  let codexUserConfigNote: string | null = null;
+  let codexUserConfigSkipped: string[] = [];
   const skillFiles: { path: string; name: string; action: string; content: string | null }[] = [];
   const body = fs
     .readFileSync(path.join(programRoot, 'templates', 'workspace-instructions.md'), 'utf8')
@@ -1283,9 +1423,14 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       }
       if (codexAdapter !== null) {
         const codexConfigPath = path.join(workspace, '.codex', 'config.toml');
+        const guards = hostCodexWorkspaceGuards();
+        // NEVER A REFUSAL (ruling 3): with no user config, or one the line reader cannot read, the turned-off section is
+        // left out and the result says why; a shape it cannot read is left out and named, never guessed (standing answer 20).
+        if (guards.userConfig.state !== 'read') codexUserConfigNote = guards.userConfig.state;
+        else if (guards.userConfig.tables!.skipped.length) codexUserConfigSkipped = guards.userConfig.tables!.skipped;
         const plan = codexConfigPlan(
           codexConfigPath,
-          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, render, kernelReader, codexAdapter === renderAdapter ? programAdapter : codexAdapter),
+          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, render, kernelReader, codexAdapter === renderAdapter ? programAdapter : codexAdapter, guards),
         );
         if (plan.action === 'refuse') refusals.push(plan.reason!);
         else {
@@ -1466,6 +1611,8 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       backend: String(markerContent['backend']),
       writable,
       files,
+      ...(codexUserConfigNote !== null ? { codex_user_config: codexUserConfigNote } : {}),
+      ...(codexUserConfigSkipped.length ? { codex_user_config_skipped: codexUserConfigSkipped as unknown as PsJsonValue } : {}),
       ...(skillFiles.length || skillLeft.length ? { skill: { files: skillFiles.map((plan) => ({ file: plan.name, action: plan.action })), left: skillLeft } as unknown as PsJsonValue } : {}),
       ...(connectionRecorded !== null
         ? {
@@ -1642,6 +1789,8 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
     registration: registration.action,
     files: result['files'],
     ...('skill' in result ? { skill: result['skill'] } : {}),
+    ...('codex_user_config' in result ? { codex_user_config: result['codex_user_config'] } : {}),
+    ...('codex_user_config_skipped' in result ? { codex_user_config_skipped: result['codex_user_config_skipped'] } : {}),
     ...('connection' in result ? { connection: result['connection'], connection_note: result['connection_note'] } : {}),
     ...(written !== plan.writes.length ? { resumed: plan.writes.length - written } : {}),
   };

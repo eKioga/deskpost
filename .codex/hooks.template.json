@@ -51,6 +51,29 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "__COMPACT_CLEAR_COMMAND__", "commandWindows": "__COMPACT_CLEAR_COMMAND__", "timeout": 30, "statusMessage": "Preparing the Virtual Desk" },
+          { "type": "command", "command": "__SEAT_START_COMMAND__", "commandWindows": "__SEAT_START_COMMAND__", "timeout": 30, "statusMessage": "Finding this session's seat" }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "__COMPACT_CLEAR_COMMAND__", "commandWindows": "__COMPACT_CLEAR_COMMAND__", "timeout": 30, "statusMessage": "Refreshing the Virtual Desk" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(mcp__validated_book_reader__(discover_book_pages|search_open_books)|Bash|exec)$",
+        "hooks": [
+          { "type": "command", "command": "__SEARCH_HIT_COMMAND__", "commandWindows": "__SEARCH_HIT_COMMAND__", "timeout": 30, "statusMessage": "Checking search results" }
+        ]
+      }
     ]
   }
 }

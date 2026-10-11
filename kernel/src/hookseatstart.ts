@@ -28,7 +28,9 @@ import { resolveSeatName } from './seatdesk.ts';
 import { getSeatClaimState, readSeatActivity } from './seatclaim.ts';
 import { currentAgentProcessId } from './procstart.ts';
 import { programRoot } from './programroot.ts';
-import { resolveWorkspace } from './workspace.ts';
+import { homeDirectory, resolveWorkspace } from './workspace.ts';
+import { enabledClaudePluginHooks } from './hookregistry.ts';
+import { claimHookOnce } from './hookledger.ts';
 import { seatsForConversation, selfCommand, updateSeatConversationRecord } from './seat.ts';
 
 const SECTION = '## Sitting down at a seat';
@@ -117,6 +119,9 @@ export function runSeatStartVerb(argv: string[], stdinText: string): string {
     const call = JSON.parse(stdinText.replace(/^﻿/, '') || 'null') as unknown;
     const source = String(field(call, 'source') ?? '');
     const sessionId = String(field(call, 'session_id') ?? '');
+    // ONCE WHEN THE PLUGIN REGISTERS IT TOO (S114 row 6): the second of two runs on one SessionStart says nothing and binds
+    // nothing. Only with the Deskpost Claude plugin enabled here, so a Library without it, and Codex, are unchanged.
+    if (sessionId && enabledClaudePluginHooks(workspace, homeDirectory()) !== null && !claimHookOnce(`seat-start|${workspace.toLowerCase()}|${sessionId}|${source}`)) return '';
     const explicitAgent = parsed.options.get('agent-pid');
     const agentPid = explicitAgent !== undefined && Number(explicitAgent) >= 0 ? Number(explicitAgent) : currentAgentProcessId();
     const resolution = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory, agentPid });

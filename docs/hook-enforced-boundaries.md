@@ -292,6 +292,14 @@ reasons. So a fresh checkout's Library hooks are inert until someone trusts them
 Nothing in this repository can assert that trust has been granted; it is a per-machine step, and it
 belongs in whatever onboarding note tells a reader to run `tools/Initialize-CodexLibrary.ps1`.
 
+**Servers and plugins load in layers too.** Codex merges `$CODEX_HOME/config.toml` underneath a
+Library's `.codex/config.toml`, so every MCP server and plugin the reader turned on there would be
+live in a Library session, `basic-memory` among them. Since 1.4.3 `library init` turns off, by name,
+every server and plugin that user config turns on, except the validated reader (PLAN-codex-guards.md
+option A), and only names it found: a table for a server defined nowhere else stops Codex loading any
+config. `deskpost doctor` WARNs when one was added since and FAILs when the workspace file turns off
+one the user config no longer defines.
+
 *(Corrected 2026-09-07. This paragraph said trust is granted “through `/hooks`”. There is no such
 command: it is not a Codex chat command in the desktop app, and `codex --help` lists no `hooks`
 subcommand. Trust is granted by a **startup review in the CLI TUI** — `tui/src/startup_hooks_review.rs`

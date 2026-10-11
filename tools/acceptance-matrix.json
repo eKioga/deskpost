@@ -94,6 +94,18 @@
         "value_pattern": "validated-book-reader"
       }
     },
+    "kernel-derives-the-codex-config-from-codex-home": {
+      "reason": "1.4.3 (kickoffs/s114-r2 rulings 2, 3 and 7): the Codex config is derived from the reader's CODEX_HOME; PLAN-codex-guards.md option A. The kernel's init turns off every MCP server and plugin $CODEX_HOME/config.toml turns on, except the validated reader, and on Windows excludes the inherited Path; when that user config is absent or cannot be read it leaves the section out and says so in result.codex_user_config, and names any shape it could not read in result.codex_user_config_skipped. The PowerShell initializer is not extended (No new PowerShell), so it has neither field. The .codex/config.toml text itself is already compared under kernel-serves-a-local-workspaces-reader. Judged by kernel self-test section 216.",
+      "approved_by": "the S114 kickoff (kickoffs/s114-r2, ruling 7)",
+      "approved_on": "2026-10-11",
+      "applies_to": [
+        "workspace.init-creates-marker",
+        "workspace.init-is-idempotent",
+        "workspace.init-force-refreshes-managed-sections",
+        "workspace.init-leaves-a-workspace-its-checks-pass"
+      ],
+      "match": { "field_pattern": "^result\\.codex_user_config(_skipped)?(\\[|$)" }
+    },
     "kernel-replaces-the-library-adapter-entry": {
       "reason": "S46: re-run over a workspace whose reader is the Library's own adapter entry, the kernel replaces it with itself and reports that file merged where the PowerShell initializer reports it unchanged. files[2] is .mcp.json and files[6] .codex/config.toml in init's fixed order; only those two actions, and only between unchanged and merge.",
       "approved_by": "the reader, S46, choosing to fix the Windows workspace reader with the init rows' delta",
@@ -2796,6 +2808,54 @@
       "fixture": "workspace-open-book",
       "powershell": { "steps": [ { "script": "tools/Test-CodexPortability.ps1", "args": [] } ] },
       "kernel": { "steps": [ { "command": ["selftest", "codex-hooks", "--workspace", "{workspace}"] } ] }
+    },
+    {
+      "id": "harness.codex-seat-start-names-its-seat",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "In a real Codex session launched at a seat, the SessionStart seat-start output reaches the first model context and names that seat. Check startup, then resume the conversation and check resume; a fixture call alone does not prove delivery.",
+      "reason": "Only a real Codex session can establish that SessionStart fires and its output reaches model context; no release verdict has been recorded yet.",
+      "recorded_verdict": true,
+      "fixture": "workspace-seated",
+      "powershell": { "steps": [ { "script": "tools/Test-LibraryHooks.ps1", "args": [] } ] },
+      "kernel": { "steps": [ { "command": ["selftest", "session-start", "--workspace", "{workspace}"] } ] }
+    },
+    {
+      "id": "harness.codex-compact-clear-re-serves-the-desk",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "In a real Codex session, after compaction, the PostCompact compact-clear empties this session's served-context ledger entry and the next prompt receives the Desk context again. A fixture call alone does not prove the event fired.",
+      "reason": "Only a real Codex compaction can establish that PostCompact fires and the next prompt receives context; no release verdict has been recorded yet.",
+      "recorded_verdict": true,
+      "fixture": "workspace-seated",
+      "powershell": { "steps": [ { "script": "tools/Test-LibraryHooks.ps1", "args": [] } ] },
+      "kernel": { "steps": [ { "command": ["selftest", "hooks", "--workspace", "{workspace}"] } ] }
+    },
+    {
+      "id": "harness.codex-search-hit-after-mcp-search",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "In a real Codex session, after a validated-reader MCP search, the PostToolUse search-hit reminder reaches the next model context; the hit is opened before the answer.",
+      "reason": "Only a real Codex session can establish that the MCP PostToolUse event delivers additionalContext; no release verdict has been recorded yet.",
+      "recorded_verdict": true,
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ { "script": "tools/Test-LibraryHooks.ps1", "args": [] } ] },
+      "kernel": { "steps": [ { "command": ["selftest", "hooks", "--workspace", "{workspace}"] } ] }
+    },
+    {
+      "id": "harness.codex-search-hit-after-shell-search",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "In a real Codex session, after deskpost raw search through the shell, the PostToolUse search-hit reminder reaches the next model context.",
+      "reason": "Only a real Codex session can establish that shell PostToolUse delivers additionalContext; no release verdict has been recorded yet.",
+      "recorded_verdict": true,
+      "fixture": "workspace-open-book",
+      "powershell": { "steps": [ { "script": "tools/Test-LibraryHooks.ps1", "args": [] } ] },
+      "kernel": { "steps": [ { "command": ["selftest", "hooks", "--workspace", "{workspace}"] } ] }
     },
     {
       "id": "harness.a-post-compaction-session-still-knows-where-it-is",
