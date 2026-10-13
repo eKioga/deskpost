@@ -22,7 +22,9 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as zlib from 'node:zlib';
 import { psConvertToJson } from '../src/psjson.ts';
-import { mergeLibraryJsonValue, managedSectionPlan, desiredPermissionAllowlist, planLibraryInit } from '../src/init.ts';
+import { mergeLibraryJsonValue, managedSectionPlan, desiredPermissionAllowlist, planLibraryInit, applyLibraryInit, runLibraryInit } from '../src/init.ts';
+import { SKILL_LOCATIONS, SKILL_MANIFEST, SHIPPED_SKILLS, skillPlans, skillInstallationStatus } from '../src/skillcopy.ts';
+import { libraryEdits } from '../src/lifecycle.ts';
 import { newShelfCatalogEntryText, testShelfCatalogEntryText } from '../src/shelfcatalog.ts';
 import { toWorkspaceRoot, findWorkspaceByMarker } from '../src/workspace.ts';
 import { VERBS, READER_TOOLS } from '../src/verbs.ts';
@@ -97,6 +99,14 @@ if ([...SECTIONS].some((section) => !Number.isInteger(section) || section < 1)) 
 }
 function selected(section: number): boolean {
   return SECTIONS.size === 0 || SECTIONS.has(section);
+}
+
+/** Declared section skips; the lazy predicate is never evaluated for an unselected section. */
+function prerequisite(section: number, condition: () => unknown, reason: string): boolean {
+  if (!selected(section)) return false;
+  if (condition()) return true;
+  process.stdout.write(`SKIP section ${section}: ${reason}\n`);
+  return false;
 }
 
 const failures: string[] = [];
@@ -1493,7 +1503,7 @@ if (selected(20)) {
 // the registrations START -- the registered hook command run through `sh` denies a closed Book, the
 // registered reader answers `tools/list` -- and that doctor now fails a registration this machine cannot
 // start, which it passed for every `powershell.exe` one. POSIX only, and nothing runs it anywhere else.
-if (selected(21) && process.platform !== 'win32') {
+if (selected(21) && prerequisite(21, () => process.platform !== 'win32', 'requires POSIX')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-posixbind-')));
   try {
     const home = path.join(root, 'home');
@@ -1941,7 +1951,9 @@ async function seatClaimWorkspace(label: string, options: { pin?: boolean } = {}
     return false;
   };
   const createSeat = (seat: string, project: string, agentPid: number) => {
-    const args = ['seat', 'enter', seat, '--create', '--project', project, '--agent-pid', String(agentPid), '--workspace', workspace];
+    // Ten seconds for the claim holder's handle, not the verb's default two: a loaded runner starts the holder
+    // slowly, and a fixture that gave up early read as a creation failure (sections 35 and 170, 2026-10-11).
+    const args = ['seat', 'enter', seat, '--create', '--project', project, '--agent-pid', String(agentPid), '--workspace', workspace, '--deadline-seconds', '10'];
     const preflight = as(agentPid, [...args, '--preflight']);
     const planId = (() => {
       try {
@@ -1951,6 +1963,12 @@ async function seatClaimWorkspace(label: string, options: { pin?: boolean } = {}
       }
     })();
     return as(agentPid, [...args, '--plan-id', planId]);
+  };
+  // A seat a section needs before it can test anything: its failure carries the verb's own reason.
+  const seatMade = (seat: string, project: string, agentPid: number, label: string) => {
+    const created = createSeat(seat, project, agentPid);
+    equal(created.exit, 0, `${label}: ${created.stderr.trim()}`);
+    return created;
   };
   const claimToken = (seat: string): string => {
     try {
@@ -2010,7 +2028,7 @@ async function seatClaimWorkspace(label: string, options: { pin?: boolean } = {}
     fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(workspace, '.claude', '.library-project'), '33333333-3333-3333-3333-333333333333');
   }
-  return { root, workspace, as, asAsync, pause, claimed, untilFree, createSeat, claimToken, snapshot, startAgent, agents, dispose };
+  return { root, workspace, as, asAsync, pause, claimed, untilFree, createSeat, seatMade, claimToken, snapshot, startAgent, agents, dispose };
 }
 
 // 25. seat.refuses-a-seat-claimed-by-a-live-process -- ADR-0018 and step 25: a seat whose claim a living process
@@ -2054,6 +2072,36 @@ if (selected(25)) {
     const taken = w.as(second, ['seat', 'enter', 'first', '--agent-pid', String(second), '--workspace', w.workspace]);
     equal(taken.exit, 0, `a new agent could not take a seat whose holder had died: ${taken.stderr.trim()}`);
     check(w.claimed('first') === true, 'the seat a new agent took does not read claimed');
+
+    // A COMMIT JUST AFTER THE DEADLINE IS KEPT (S116's Report): the verb commits as soon as it sees the handle,
+    // so a holder that took it just before the deadline must not let go at the deadline. The holder is driven
+    // by hand for a fresh agent on the freed seat: a pending attempt is written, the holder takes the handle,
+    // and the attempt is committed only once its deadline has passed. The deadline is generous so a slow start
+    // under load still takes the handle in time; the wait ends as soon as it has.
+    process.kill(second);
+    check(w.untilFree('first'), 'the seat still read claimed ten seconds after its second agent died');
+    const late = w.startAgent();
+    const attemptFile = path.join(seatDirectory, 'holder-attempt.json');
+    const lateAttempt = '25000000000000000000000000000001';
+    const lateDeadline = Date.now() + 6000;
+    const attemptRecord = (state: string) =>
+      fs.writeFileSync(attemptFile, JSON.stringify({ seat: 'first', attempt_id: lateAttempt, holder_pid: 0, started_utc: new Date().toISOString(), deadline_utc: new Date(lateDeadline).toISOString(), state }) + '\n');
+    attemptRecord('pending');
+    const lateHolder = w.asAsync(late, ['seat', 'hold', '--workspace', w.workspace, '--seat', 'first', '--attempt-id', lateAttempt, '--agent-pid', String(late), '--agent-start-utc', '']);
+    let tookHandle = false;
+    while (!tookHandle && Date.now() < lateDeadline) {
+      tookHandle = w.claimed('first') === true;
+      if (!tookHandle) w.pause(100);
+    }
+    check(tookHandle, 'the hand-driven holder did not take the handle before its deadline, so the check below proves nothing');
+    while (Date.now() < lateDeadline + 700) w.pause(200);
+    attemptRecord('committed');
+    w.pause(1000);
+    check(w.claimed('first') === true, 'a holder let go of a seat committed just after its deadline');
+    process.kill(late);
+    check(w.untilFree('first'), 'the hand-driven holder did not let go when its agent died');
+    const lateExit = await lateHolder;
+    equal(lateExit.exit, 0, `the hand-driven holder did not end as a committed holder ends: ${lateExit.stderr.trim()}`);
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {
@@ -2071,7 +2119,7 @@ if (selected(26)) {
   const w = await seatClaimWorkspace('claim-fence');
   try {
     const first = w.startAgent();
-    equal(w.createSeat('first', 'alpha', first).exit, 0, 'the seat could not be created and entered');
+    w.seatMade('first', 'alpha', first, 'the seat could not be created and entered');
     const staleToken = w.claimToken('first');
     check(/^[0-9a-f]{32}$/.test(staleToken), `the first session's claim carries no token to go stale: '${staleToken}'`);
     process.kill(first);
@@ -2124,7 +2172,7 @@ if (selected(26)) {
     const retired = w.as(process.pid, ['seat', 'retire', 'first', '--plan-id', retirePlan, '--workspace', w.workspace, '--json']);
     equal(retired.exit, 0, `the seat could not be retired: ${retire.stderr.trim()} ${retired.stderr.trim()}`);
     const reborn = w.startAgent();
-    equal(w.createSeat('first', 'alpha', reborn).exit, 0, 'the seat could not be created again under its old name');
+    w.seatMade('first', 'alpha', reborn, 'the seat could not be created again under its old name');
     const rebornToken = w.claimToken('first');
     for (const token of [staleToken, currentToken]) {
       const old = byToken(token, ['desk', 'open', 'book', 'reports', '--location', 'shelf', '--seat', 'first', '--workspace', w.workspace]);
@@ -2147,8 +2195,8 @@ if (selected(27)) {
   try {
     const mine = w.startAgent();
     const theirs = w.startAgent();
-    equal(w.createSeat('first', 'alpha', mine).exit, 0, 'the acting seat could not be created');
-    equal(w.createSeat('second', 'beta', theirs).exit, 0, 'the other seat could not be created');
+    w.seatMade('first', 'alpha', mine, 'the acting seat could not be created');
+    w.seatMade('second', 'beta', theirs, 'the other seat could not be created');
     // Material in the other seat's Notebook, which a reset would quarantine.
     const notebook = path.join(w.workspace, 'notebook');
     const theirState = path.join(w.workspace, '.claude', 'seats', 'second');
@@ -2484,7 +2532,7 @@ if (selected(30)) {
   let release: (() => void) | null = null;
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const batch = path.join(w.workspace, 'raw', 'alpha', '2026-09-23-sources');
     fs.mkdirSync(batch, { recursive: true });
     fs.writeFileSync(path.join(batch, 'source.md'), '# Source\n\nA fact worth keeping.\n');
@@ -2582,7 +2630,7 @@ if (selected(31)) {
   const w = await seatClaimWorkspace('atomic', { pin: false });
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const hubPage = path.join(w.workspace, 'collection', 'projects', 'alpha', '_project.md');
     check(fs.existsSync(hubPage), `the Hub page is not where the judge expects it: ${hubPage}`);
@@ -2742,7 +2790,7 @@ if (selected(32)) {
   };
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
     const shelf = path.join(w.workspace, 'shelf');
@@ -2844,7 +2892,7 @@ if (selected(33)) {
   let release: (() => void) | null = null;
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
@@ -3003,7 +3051,7 @@ if (selected(34)) {
   const w = await seatClaimWorkspace('triage-notebook');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
@@ -3064,7 +3112,7 @@ if (selected(35)) {
   const w = await seatClaimWorkspace('tier0-reads', { pin: false });
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the Tier 0 seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the Tier 0 seat could not be created');
     const read = (tool: string, args: string[]) => {
       const result = w.as(agent, ['mcp', 'call', tool, ...args, '--seat', 'first', '--workspace', w.workspace]);
       try {
@@ -3202,7 +3250,7 @@ if (selected(36)) {
     // The registered reader, launched as a harness launches it, reads the seat's own Project.
     if (kernelReader && server !== undefined) {
       const agent = w.startAgent();
-      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+      w.seatMade('first', 'alpha', agent, 'the seat could not be created');
       const requests =
         [
           { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'selftest', version: '1' } } },
@@ -3248,7 +3296,7 @@ if (selected(36)) {
 // `library seat start me --project my-project` refused in a new terminal. On Windows a bare agent name PATH does not
 // resolve is started from `~\.local\bin`; a name found in neither place is still refused, naming both. The agent here
 // is the kernel itself, copied into a scratch profile's `.local\bin` under a name nothing else carries.
-if (selected(37) && process.platform === 'win32') {
+if (selected(37) && prerequisite(37, () => process.platform === 'win32', 'requires Windows')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-agentbin-')));
   try {
     const registry = path.join(root, 'reg');
@@ -3285,7 +3333,7 @@ if (selected(37) && process.platform === 'win32') {
 // its real cause only where Git Bash is absent. CLAUDE_CODE_GIT_BASH_PATH decides it, as it decides it for Claude Code:
 // naming a missing file hides Git Bash and naming a file shows it. (Windows resets ProgramFiles in every process it
 // creates, so Git's default folder cannot be hidden from a child; that branch is measured in the Sandbox instead.)
-if (selected(38) && process.platform === 'win32') {
+if (selected(38) && prerequisite(38, () => process.platform === 'win32', 'requires Windows')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-shellform-')));
   try {
     const registry = path.join(root, 'reg');
@@ -3372,7 +3420,7 @@ if (selected(38) && process.platform === 'win32') {
 // no PowerShell for Claude, here or on POSIX, and NO workspace registers the playbook hook. A kernel run
 // from source has no binary to name and keeps every script. Judged through the front door: the registration read back,
 // the hooks LAUNCHED as each harness launches them against a closed Book, and a re-run over the block v0.2.1 wrote.
-if (selected(39) && process.platform === 'win32') {
+if (selected(39) && prerequisite(39, () => process.platform === 'win32', 'requires Windows')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-winhooks-')));
   try {
     const registry = path.join(root, 'reg');
@@ -3475,7 +3523,7 @@ if (selected(40)) {
   const w = await seatClaimWorkspace('localdate');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the local-date judge could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat for the local-date judge could not be created');
     const base = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const workspace = w.workspace;
     const notesDirectory = path.join(workspace, 'shelf', 'holding', 'wiki', 'notes');
@@ -3555,7 +3603,7 @@ if (selected(41)) {
   const w = await seatClaimWorkspace('localbooks', { pin: false });
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the local-Books judge could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat for the local-Books judge could not be created');
     const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     let env: Record<string, string> = base;
     const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
@@ -3786,7 +3834,7 @@ function fakeStorage(folder: string, books: Record<string, Record<string, string
 // files are what makes a workspace a Basic Memory BACKEND, and writing them converted a local Library on its next
 // init. Then every way that conversion could come back is driven: init again, an environment naming another
 // server, `init --mcp-url` on a new folder (F21) -- and a server that accepts the connection and never answers.
-if (selected(42) && !isCompiled()) {
+if (selected(42) && prerequisite(42, () => !isCompiled(), 'requires source suite')) {
   const w = await seatClaimWorkspace('bmsetup', { pin: false });
   const storage = fakeStorage(path.join(w.root, 'storage'), { 'remote-guide': { 'wiki-home': '# unused\n' } });
   let server: { url: string; stop(): void } | null = null;
@@ -3896,7 +3944,7 @@ function hashTree(directory: string): string {
 // The Library already holds a Book of one of its slugs (a root-level conflict), an identical copy of another (adopted),
 // and a seat bound to a third's slug. Crashed mid-run, blocked by a held Hub, and raced by a source file changing after
 // the plan was taken. The source's bytes are hashed before and after: it is never written.
-if (selected(43) && !isCompiled()) {
+if (selected(43) && prerequisite(43, () => !isCompiled(), 'requires source suite')) {
   const w = await seatClaimWorkspace('bmimport', { pin: false });
   const source = path.join(w.root, 'storage');
   let server: { url: string; stop(): void } | null = null;
@@ -3949,7 +3997,7 @@ if (selected(43) && !isCompiled()) {
     put(collection, 'books/clash/wiki/_book.md', '# Clash (mine)\n');
     put(collection, 'books/twin/wiki/_book.md', '# Twin\n');
     equal(cli(['hub', 'new', 'hub-bound', '--title', 'Hub Bound', '--json']).exit, 0, 'the Hub a seat binds to could not be made');
-    equal(w.createSeat('first', 'hub-bound', agent).exit, 0, 'the seat for the import judge could not be created');
+    w.seatMade('first', 'hub-bound', agent, 'the seat for the import judge could not be created');
     fs.rmSync(path.join(collection, 'projects', 'hub-bound'), { recursive: true, force: true });
 
     server = await startFakeBasicMemory(source);
@@ -4123,7 +4171,7 @@ if (selected(43) && !isCompiled()) {
 // before. Where each write staged is observed by wrapping `fs.renameSync` -- the one call that publishes a staged
 // file -- through Node's own `syncBuiltinESMExports`, and EXDEV is injected the same way, so no second drive is
 // needed. Stale staging is cleared by a real `seat enter`.
-if (selected(44) && !isCompiled()) {
+if (selected(44) && prerequisite(44, () => !isCompiled(), 'requires source suite')) {
   const w = await seatClaimWorkspace('staging', { pin: false });
   const nodeModule = await import('node:module');
   const fsDefault = (await import('node:fs')).default;
@@ -4186,7 +4234,7 @@ if (selected(44) && !isCompiled()) {
     fs.writeFileSync(path.join(staging, '.fresh.tmp'), 'in flight');
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
     fs.utimesSync(path.join(staging, '.old.tmp'), twoDaysAgo, twoDaysAgo);
-    equal(w.createSeat('first', 'staged-hub', agent).exit, 0, 'the seat for the staging judge could not be entered');
+    w.seatMade('first', 'staged-hub', agent, 'the seat for the staging judge could not be entered');
     equal(fs.readdirSync(staging).sort().join(','), '.fresh.tmp', 'a seat start did not clear exactly the stale staging file');
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
@@ -4287,7 +4335,7 @@ if (selected(45)) {
 // Local collection, and opens one as `shared/<slug>`, whose pages the validated reader then reads over MCP from the
 // stand-in server. A server that never answers is a named refusal within the timeout. `rollback-check` names every
 // seat holding a `shared/` entry with the command that closes it -- 1.0's reader would refuse that whole Desk.
-if (selected(46) && !isCompiled()) {
+if (selected(46) && prerequisite(46, () => !isCompiled(), 'requires source suite')) {
   const w = await seatClaimWorkspace('bmopen', { pin: false });
   const storage = fakeStorage(path.join(w.root, 'storage'), {
     'remote-guide': { _book: '# Remote Guide\n\nA Book that lives on the server.\n', _index: '# Remote Guide - Reader Map\n\n- [[books/remote-guide/wiki/intro|Intro]]\n', intro: '# Intro\n\nRead over MCP, never copied.\n' },
@@ -4300,7 +4348,7 @@ if (selected(46) && !isCompiled()) {
     server = await startFakeBasicMemory(storage);
     hung = await startFakeBasicMemory(storage, ['--hang']);
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat for the shared-Book judge could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat for the shared-Book judge could not be created');
     const base: Record<string, string> = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env: { ...base, ...extra } });
     const json = (result: { exit: number; stdout: string; stderr: string }, label: string): Record<string, any> => {
@@ -4944,9 +4992,10 @@ if (selected(51)) {
 
     // CODEX: `a` SWITCHES NEW CONVERSATIONS; CODEX TAKES NO ID, AND ITS SESSION REPORTS ONE THROUGH THE DESK CONTEXT HOOK.
     fs.writeFileSync(payload, JSON.stringify({ session_id: codexSession, hook_event_name: 'UserPromptSubmit', prompt: 'hello', cwd: library }));
+    equal(runCli(['seat', 'settings', 'home-lab', '--assistant', 'none', '--workspace', library], { env }).exit, 0, 'clear wizard preference for fallback compatibility');
     const codexNew = menu(['a', 'n1'], ['--workspace', library]);
     check(codexNew.stdout.includes('New conversations now use Codex.') && codexNew.stdout.includes('This starts a new Codex conversation'), `switching to Codex was not said as a new conversation: ${codexNew.stdout.slice(-600)}`);
-    check(logLines().some((line) => /^codex\s*$/.test(line.trim()) || line.trim() === 'codex'), `a new Codex conversation was handed arguments: ${logLines().join(' | ')}`);
+    check(logLines().some((line) => /^codex\s+"?--no-daemon"?\s*$/.test(line.trim())), `a new Codex conversation lost its isolation default: ${logLines().join(' | ')}`);
     const activity = fs.readFileSync(path.join(library, '.claude', 'seats', 'home-lab', 'activity.json'), 'utf8');
     check(activity.includes(codexSession) && activity.includes('"codex"'), `the Codex session's reported conversation was not recorded for the seat: ${activity}`);
     fs.rmSync(payload);
@@ -5406,7 +5455,7 @@ if (selected(56)) {
   const w = await seatClaimWorkspace('sessions-library');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('held', 'alpha', agent).exit, 0, 'the seat for the live-session check could not be created and entered');
+    w.seatMade('held', 'alpha', agent, 'the seat for the live-session check could not be created and entered');
     const prog = path.join(w.root, 'another-root');
     const sessions = (extra: string[]) => {
       const ran = w.as(process.pid, ['setup', '--sessions', '--install-root', prog, ...extra, '--json']);
@@ -7074,9 +7123,9 @@ if (selected(77)) {
     start('alpha', ['--command', 'claude', '--session-id', id, '--', '--x']);
     equal(lastLine('claude'), `claude --session-id ${id} --name alpha ${folders} --x`, 'a named Claude Code conversation did not get the folders between --session-id and the passthrough');
     start('alpha', ['--command', 'codex', '--resume', id]);
-    equal(lastLine('codex'), `codex resume ${id} ${folders}`, 'a resumed Codex conversation did not get the folders after resume <id>');
+    equal(lastLine('codex'), `codex resume ${id} ${folders} --no-daemon`, 'a resumed Codex conversation did not get the folders and isolation default after resume <id>');
     start('alpha', ['--command', 'codex']);
-    equal(lastLine('codex'), `codex ${folders}`, 'a new Codex conversation did not get the folders');
+    equal(lastLine('codex'), `codex ${folders} --no-daemon`, 'a new Codex conversation did not get the folders and isolation default');
     const neither = start('alpha', ['--command', 'orca']);
     equal(lastLine('orca'), 'orca', 'a command that is neither assistant was handed folders');
     check(neither.result['added_dirs_applied'] === false && String(neither.result['added_dirs_reason']).includes('neither Claude Code nor Codex'), `a command that is neither assistant did not say why it got no folders: ${JSON.stringify(neither.result)}`);
@@ -7460,7 +7509,7 @@ if (selected(83)) {
     const { getShelfBook } = await import('../src/shelfbook.ts');
     const { shelfNotes } = await import('../src/shelfnote.ts');
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[]) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env });
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
@@ -7543,7 +7592,7 @@ if (selected(84)) {
   const w = await seatClaimWorkspace('filing');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(agent), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
     const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', w.workspace], { cwd: w.root, env: { ...env, ...extra } });
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
@@ -8417,7 +8466,7 @@ if (selected(94)) {
   const w = await seatClaimWorkspace('session-name');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const config = path.join(w.root, 'claude-config');
     fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
     const titled = '94000000-0000-4000-8000-000000000001';
@@ -8478,9 +8527,9 @@ if (selected(95)) {
   const w = await seatClaimWorkspace('seat-address');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the held seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the held seat could not be created');
     const gone = w.startAgent();
-    equal(w.createSeat('second', 'beta', gone).exit, 0, 'the second seat could not be created');
+    w.seatMade('second', 'beta', gone, 'the second seat could not be created');
     process.kill(gone);
     check(w.untilFree('second'), 'the second seat did not come free when its agent died');
     const conversation = '95000000-0000-4000-8000-000000000001';
@@ -8533,7 +8582,7 @@ if (selected(96)) {
   const w = await seatClaimWorkspace('desk-once');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const config = path.join(w.root, 'claude-config');
     fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
     const stateDirectory = path.join(w.workspace, '.claude');
@@ -8805,9 +8854,9 @@ if (selected(99)) {
   const w = await seatClaimWorkspace('letters');
   try {
     const first = w.startAgent();
-    equal(w.createSeat('first', 'alpha', first).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', first, 'the seat first could not be created');
     const second = w.startAgent();
-    equal(w.createSeat('second', 'beta', second).exit, 0, 'the seat second could not be created');
+    w.seatMade('second', 'beta', second, 'the seat second could not be created');
     const ws = w.workspace;
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
       try {
@@ -8963,7 +9012,7 @@ if (selected(101)) {
 
     // The Desk hook, at a bound seat with a Project open, the ledger clear registered as it reaches this ledger.
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const stateDirectory = path.join(w.workspace, '.claude');
     const clearScript = path.join(w.root, 'program', '.claude', 'hooks', 'Restore-CompactedGuidance.ps1');
     fs.mkdirSync(path.dirname(clearScript), { recursive: true });
@@ -9045,7 +9094,7 @@ if (selected(102)) {
   try {
     const { writeSeatActivity } = await import('../src/seatclaim.ts');
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const stateDirectory = path.join(w.workspace, '.claude');
     const config = path.join(w.root, 'claude-config');
     fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
@@ -9196,13 +9245,13 @@ if (selected(104)) {
   const w = await seatClaimWorkspace('desk-facts');
   try {
     const a = w.startAgent();
-    equal(w.createSeat('first', 'alpha', a).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', a, 'the seat first could not be created');
     const b = w.startAgent();
-    equal(w.createSeat('second', 'beta', b).exit, 0, 'the seat second could not be created');
+    w.seatMade('second', 'beta', b, 'the seat second could not be created');
     const ws = w.workspace;
     equal(w.as(process.pid, ['hub', 'new', 'gamma', '--title', 'gamma', '--workspace', ws]).exit, 0, 'the gamma Hub could not be made');
     const c = w.startAgent();
-    equal(w.createSeat('third', 'gamma', c).exit, 0, 'the seat third could not be created');
+    w.seatMade('third', 'gamma', c, 'the seat third could not be created');
     const conversation = (n: number) => `10400000-0000-4000-8000-00000000000${n}`;
     const setActivity = (seat: string, n: number, more: Record<string, unknown>) =>
       fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, 'activity.json'), JSON.stringify({ seat, last_seen_utc: '2999-01-01T00:00:00Z', note: 'fixture', session_id: conversation(n), conversation_recorded_utc: '2999-01-01T00:00:00Z', ...more }));
@@ -9430,9 +9479,9 @@ if (selected(105)) {
   const w = await seatClaimWorkspace('inbound-held');
   try {
     const a = w.startAgent();
-    equal(w.createSeat('first', 'alpha', a).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', a, 'the seat first could not be created');
     const b = w.startAgent();
-    equal(w.createSeat('second', 'beta', b).exit, 0, 'the seat second could not be created');
+    w.seatMade('second', 'beta', b, 'the seat second could not be created');
     process.kill(b);
     check(w.untilFree('second'), 'the seat second did not come free');
     const ws = w.workspace;
@@ -9474,7 +9523,7 @@ if (selected(106)) {
     const agents: Record<string, number> = {};
     for (const [seat, project] of [['first', 'alpha'], ['second', 'beta'], ['third', 'gamma'], ['fourth', 'delta']] as const) {
       agents[seat] = w.startAgent();
-      equal(w.createSeat(seat, project, agents[seat]!).exit, 0, `the seat ${seat} could not be created`);
+      w.seatMade(seat, project, agents[seat]!, `the seat ${seat} could not be created`);
     }
     process.kill(agents['fourth']!);
     check(w.untilFree('fourth'), 'the seat fourth did not come free');
@@ -9542,7 +9591,7 @@ if (selected(107)) {
     const reference = path.join(root, 'reference');
     equal(init(reference).exit, 0, 'the reference init failed');
     const referenceShelf = tree(reference, 'shelf');
-    const referenceSkill = tree(reference, '.claude/skills');
+    const referenceSkill = new Map(SKILL_LOCATIONS.flatMap((location) => [...tree(reference, location)]));
     const referenceNames = [...tree(reference).keys()].sort().join('|');
     check(fs.readFileSync(entryOf(reference, 'holding'), 'utf8').includes('- **Closed by:** writer'), 'a fresh init no longer writes Closed by: writer on the Holding Shelf');
 
@@ -9578,7 +9627,7 @@ if (selected(107)) {
         continue;
       }
       check(sameTree(tree(ws, 'shelf'), referenceShelf), `the Shelf after a cut before write ${cut + 1} (${writes[cut]!.relative}) is not what a clean init leaves`);
-      check(sameTree(tree(ws, '.claude/skills'), referenceSkill), `the Skill after a cut before write ${cut + 1} (${writes[cut]!.relative}) is not what a clean init leaves`);
+      check(sameTree(new Map(SKILL_LOCATIONS.flatMap((location) => [...tree(ws, location)])), referenceSkill), `the Skills after a cut before write ${cut + 1} (${writes[cut]!.relative}) are not what a clean init leaves`);
       equal([...tree(ws).keys()].sort().join('|'), referenceNames, `the files after a cut before write ${cut + 1} (${writes[cut]!.relative}) are not a clean init's`);
     }
 
@@ -10094,7 +10143,7 @@ if (selected(112)) {
 
     // THE DESK BLOCK, END TO END: sent, withheld while unchanged, sent again after the clear.
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const config = path.join(w.root, 'claude-config');
     fs.mkdirSync(config, { recursive: true });
     const session = '11200000-0000-4000-8000-000000000001';
@@ -10146,9 +10195,9 @@ if (selected(113)) {
 
     // A LIBRARY WITH SEATS: 'first' held by a live agent, 'second' last sat at by a conversation whose agent is gone.
     const holder = w.startAgent();
-    equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', holder, 'the seat first could not be created');
     const gone = w.startAgent();
-    equal(w.createSeat('second', 'beta', gone).exit, 0, 'the seat second could not be created');
+    w.seatMade('second', 'beta', gone, 'the seat second could not be created');
     const conversation = '11300000-0000-4000-8000-000000000001';
     equal(w.as(gone, ['seat', 'enter', 'second', '--agent-pid', String(gone), '--session-id', conversation, '--workspace', w.workspace]).exit, 0, 'the conversation at second could not be recorded');
     const goneAgent = w.agents.find((agent) => agent.pid === gone);
@@ -10243,7 +10292,7 @@ if (selected(114)) {
 // The start time must equal the oracle's own expression for the same pid, read here in this process: the binding is
 // compared by exact string, so a spelling that differs by 100 ns reads as another process. From source (Node) the
 // kernel's fallback is that expression itself, so there the same checks run with PATH untouched. One pid, no DST claim.
-if (selected(115) && process.platform === 'win32') {
+if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requires Windows')) {
   const compiledKernel = KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!);
   const sleepers: ReturnType<typeof spawn>[] = [];
   const sleeper = (ms: number) => {
@@ -10329,7 +10378,7 @@ if (selected(115) && process.platform === 'win32') {
 // install.ps1's Remove-DeskpostPathEntry, the oracle until then, left with the forwarder): every other entry byte for
 // byte, unexpanded, empty entries dropped, REG_EXPAND_SZ. Then the fault: DESKPOST_UNINSTALL_FAULT=no-finisher writes
 // `cancel` and deletes nothing. And no `%TEMP%` copy is left.
-if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!)) {
+if (selected(116) && prerequisite(116, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) {
   const { SHIM_TEXT } = await import('../src/lifecycle.ts');
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-finisher-')));
   const tag = path.basename(root).replace(/[^A-Za-z0-9]/g, '');
@@ -10421,7 +10470,7 @@ if (selected(116) && process.platform === 'win32' && KERNEL_COMMAND.length === 1
 // installer and the reader adapter's closure, and none of the root launchers; the closure it does hold must be complete
 // (every script a closure file dot-sources is there); and an init from it must register no `powershell` in a Claude
 // workspace -- Codex's own `powershell.exe -Command` launcher is the named exception, so .codex/ is not read.
-if (selected(117) && KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path.dirname(path.dirname(KERNEL_COMMAND[0]!)), 'release.json'))) {
+if (selected(117) && prerequisite(117, () => KERNEL_COMMAND.length === 1 && fs.existsSync(path.join(path.dirname(path.dirname(KERNEL_COMMAND[0]!)), 'release.json')), 'requires compiled release tree')) {
   const { adapterClosure, disallowedScripts, dotSourcedTools, ADAPTER } = await import('../src/releasefiles.ts');
   const tree = path.dirname(path.dirname(path.resolve(KERNEL_COMMAND[0]!)));
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-release-tree-')));
@@ -10762,7 +10811,7 @@ if (selected(123)) {
   const w = await seatClaimWorkspace('desk-truth', { pin: false });
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat first could not be created');
     const ws = w.workspace;
     const as = (args: string[]) => w.as(agent, [...args, '--workspace', ws, '--json']);
     const parsed = (result: { stdout: string }): Record<string, unknown> => {
@@ -11415,7 +11464,7 @@ function fixtureInstallEnv(root: string, extra: Record<string, string> = {}): Re
 // faulted after `staged` has nothing to undo, and --resume finish starts over and completes it. A refusal reaches
 // --refusal-file in the program's own words. A dry run as JSON is one line naming its plan and creates nothing, and the
 // install by that plan_id prints one result.
-if (selected(130) && releaseTreeUnderTest() !== null) {
+if (selected(130) && prerequisite(130, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-install-')));
   try {
@@ -11532,7 +11581,7 @@ if (selected(130) && releaseTreeUnderTest() !== null) {
 // REG_EXPAND_SZ with every other entry unexpanded, and the receipt owns the entry; a second run leaves one entry; a
 // fresh install faulted after `placed` and undone takes out exactly the entry it added; and a 1.0-shaped install (the
 // entry there, current.json, no receipt) is adopted with its entry, which the upgrade's receipt then owns, still once.
-if (selected(131) && releaseTreeUnderTest() !== null) {
+if (selected(131) && prerequisite(131, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-path-add-')));
   const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
@@ -11752,7 +11801,7 @@ if (selected(132)) {
 // it under the lock and says so, leaving the receipt as committed; and a later install over it is not blocked. A
 // committed upgrade that still owes its refresh runs it on --resume finish (S90 row 2); and a claimant trying the lock
 // throughout an install never sees a committed receipt beside .pending (S90 row 4).
-if (selected(133) && releaseTreeUnderTest() !== null) {
+if (selected(133) && prerequisite(133, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-pending-fault-')));
   try {
@@ -11899,7 +11948,7 @@ function waitFor(condition: () => boolean, ms: number): boolean {
 // current.json are A's byte for byte, versions\B is gone, and the program it ran from, moved aside, is named and gone
 // once it exits. Then an uninstall with no finisher (DESKPOST_UNINSTALL_FAULT=no-finisher) is finished by `--resume
 // finish` run by the installed program: the root is gone once it exits. No library.exe is left running.
-if (selected(134) && releaseTreeUnderTest() !== null) {
+if (selected(134) && prerequisite(134, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-running-image-')));
   try {
@@ -11969,7 +12018,7 @@ if (selected(134) && releaseTreeUnderTest() !== null) {
 // byte for byte and names the entry it did not add; one faulted after `placed` (its entry added) and undone with
 // --no-path-change leaves the entry and names it; and an uninstall with no finisher, finished with --no-path-change,
 // leaves its entry and names it.
-if (selected(135) && releaseTreeUnderTest() !== null) {
+if (selected(135) && prerequisite(135, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-resume-path-')));
   const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
@@ -12040,7 +12089,7 @@ if (selected(135) && releaseTreeUnderTest() !== null) {
 // adds the entry raw as REG_EXPAND_SZ and reports the broadcast answered; the installed program upgrades to B; `deskpost
 // rollback` goes back to A; an upgrade faulted after `activated` is undone by B's own installed program. Then the cheap
 // second row: no spawn of powershell or pwsh in the install code's own source. No library.exe is left running.
-if (selected(136) && releaseTreeUnderTest() !== null) {
+if (selected(136) && prerequisite(136, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-no-powershell-')));
   const key = `Software\\Deskpost-selftest-${path.basename(root).replace(/[^A-Za-z0-9]/g, '')}-path`;
@@ -12139,7 +12188,7 @@ if (selected(136) && releaseTreeUnderTest() !== null) {
 // WRITTEN: the 1.3.4 script writes HKCU\Environment itself, so every run passes --no-path-change, and the script is
 // run over a pending transaction only when that transaction records `path_change: false`.
 const PREVIOUS_INSTALLER = (process.env['LIBRARY_SELFTEST_PREVIOUS_INSTALLER'] ?? '').trim();
-if (selected(137) && releaseTreeUnderTest() !== null && PREVIOUS_INSTALLER && fs.existsSync(PREVIOUS_INSTALLER)) {
+if (selected(137) && prerequisite(137, () => releaseTreeUnderTest() !== null && PREVIOUS_INSTALLER && fs.existsSync(PREVIOUS_INSTALLER), 'requires compiled release tree and previous installer')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-cross-finish-')));
   try {
@@ -12199,7 +12248,7 @@ if (selected(137) && releaseTreeUnderTest() !== null && PREVIOUS_INSTALLER && fs
 // the install root, the closing text names it as safe to delete and --json gives it as `setup_folder`. Against a
 // compiled release tree (itself outside every fixture root): a JSON install by its dry run's plan_id and a text
 // install each name the tree; a repair run by the installed `current\bin\library.exe` names nothing, in either form.
-if (selected(138) && releaseTreeUnderTest() !== null) {
+if (selected(138) && prerequisite(138, () => releaseTreeUnderTest() !== null, 'requires Windows compiled release tree')) {
   const treeA = releaseTreeUnderTest()!;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-setup-folder-')));
   try {
@@ -12424,7 +12473,7 @@ if (selected(140)) {
     const w = await seatClaimWorkspace('previous-binding', { pin: false });
     try {
       const agent = w.startAgent();
-      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the previous-binding seat could not be created');
+      w.seatMade('first', 'alpha', agent, 'the previous-binding seat could not be created');
       const ws = w.workspace;
       const thisSeatOf = (stdout: string) => {
         try {
@@ -12644,7 +12693,7 @@ if (selected(143)) {
     const savedRegistry = process.env['LIBRARY_WORKSPACES'];
     try {
       const agent = w.startAgent();
-      equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the wait fixture seat could not be created');
+      w.seatMade('first', 'alpha', agent, 'the wait fixture seat could not be created');
       process.env['LIBRARY_WORKSPACES'] = path.join(w.root, 'reg');
       const found = liveSessions(path.join(w.root, 'prog'), { library: w.workspace });
       const seat = found.seats.find((entry) => entry.seat === 'first');
@@ -13253,7 +13302,7 @@ if (selected(148)) {
 // `sh` in a fixture with a stand-in `library` whose doctor fails exactly as the real one does when `deskpost` is not on
 // PATH: with $BIN_DIR off PATH the install is accepted (exit 0) and its last line is the PATH step; a planted doctor
 // failure still fails it; with $BIN_DIR on PATH there is no PATH step. WSL `deskpost-clean` judges the built release.
-if (selected(149) && spawnSync('sh', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0) {
+if (selected(149) && prerequisite(149, () => spawnSync('sh', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0, 'requires working sh')) {
   const shRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-close-sh-')));
   try {
     const text = fs.readFileSync(path.join(PROGRAM_ROOT, 'install.sh'), 'utf8').replace(/\r\n/g, '\n');
@@ -13742,7 +13791,7 @@ if (selected(154)) {
 // pins (`npm ci --offline` in kernel/), over src/ and test/ alike; any error fails the section, naming the first ones, so
 // the -Fast gate's kernel self-test carries the check. TypeScript not installed is a failure that says how to install
 // it. A compiled suite has no source tree to check, and skips.
-if (selected(155) && !isCompiled()) {
+if (selected(155) && prerequisite(155, () => !isCompiled(), 'requires source suite')) {
   const kernelRoot = path.join(PROGRAM_ROOT, 'kernel');
   const tsc = path.join(kernelRoot, 'node_modules', 'typescript', 'bin', 'tsc');
   if (!fs.existsSync(tsc)) {
@@ -14066,9 +14115,9 @@ if (selected(158)) {
       equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     }
     const a = w.startAgent();
-    equal(w.createSeat('desk', 'desk-hub', a).exit, 0, 'the seat desk could not be created');
+    w.seatMade('desk', 'desk-hub', a, 'the seat desk could not be created');
     const b = w.startAgent();
-    equal(w.createSeat('dev', 'dev-hub', b).exit, 0, 'the seat dev could not be created');
+    w.seatMade('dev', 'dev-hub', b, 'the seat dev could not be created');
     for (const [seat, hub] of [['prompts', 'prompts-hub'], ['mkt', 'mkt-hub'], ['loner', 'loner-hub']]) {
       equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
     }
@@ -14160,13 +14209,13 @@ if (selected(159)) {
       equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     }
     const a = w.startAgent();
-    equal(w.createSeat('lead', 'lead-hub', a).exit, 0, 'the seat lead could not be created');
+    w.seatMade('lead', 'lead-hub', a, 'the seat lead could not be created');
     const b = w.startAgent();
-    equal(w.createSeat('hand', 'hand-hub', b).exit, 0, 'the seat hand could not be created');
+    w.seatMade('hand', 'hand-hub', b, 'the seat hand could not be created');
     const c = w.startAgent();
-    equal(w.createSeat('solo', 'solo-hub', c).exit, 0, 'the seat solo could not be created');
+    w.seatMade('solo', 'solo-hub', c, 'the seat solo could not be created');
     const p = w.startAgent();
-    equal(w.createSeat('peer', 'peer-hub', p).exit, 0, 'the seat peer could not be created');
+    w.seatMade('peer', 'peer-hub', p, 'the seat peer could not be created');
     const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
     const fields: Record<string, Record<string, string>> = {
       lead: { department: 'engineering', role: 'orchestrator', card: 'Designs and triages.' },
@@ -14819,7 +14868,7 @@ if (selected(166)) {
     const w = await seatClaimWorkspace('sh-launcher', { pin: false });
     try {
       const holder = w.startAgent();
-      equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+      w.seatMade('first', 'alpha', holder, 'the seat first could not be created');
       const ws = w.workspace;
       const token = w.claimToken('first');
       const conversationId = '12345678-1234-4234-8234-123456789abc';
@@ -14958,9 +15007,9 @@ if (selected(167)) {
       equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     }
     const leadAgent = w.startAgent();
-    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    w.seatMade('lead', 'lead-hub', leadAgent, 'the seat lead could not be created');
     const devAgent = w.startAgent();
-    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    w.seatMade('dev', 'dev-hub', devAgent, 'the seat dev could not be created');
     for (const [seat, hub] of [['mkt', 'mkt-hub'], ['solo', 'solo-hub']]) {
       equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
     }
@@ -15150,7 +15199,7 @@ if (selected(169)) {
     const agents: Record<string, number> = {};
     for (const [seat, hub] of [['lead', 'lead-hub'], ['dev', 'dev-hub'], ['mkt', 'mkt-hub']] as const) {
       agents[seat] = w.startAgent();
-      equal(w.createSeat(seat, hub, agents[seat]!).exit, 0, `the seat ${seat} could not be created`);
+      w.seatMade(seat, hub, agents[seat]!, `the seat ${seat} could not be created`);
     }
     const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
     const registry = () => JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] };
@@ -15268,7 +15317,7 @@ if (selected(170)) {
     const agents: Record<string, number> = {};
     for (const [seat, hub] of [['lead', 'lead-hub'], ['dev', 'dev-hub'], ['ops', 'ops-hub'], ['mkt', 'mkt-hub']] as const) {
       agents[seat] = w.startAgent();
-      equal(w.createSeat(seat, hub, agents[seat]!).exit, 0, `the seat ${seat} could not be created`);
+      w.seatMade(seat, hub, agents[seat]!, `the seat ${seat} could not be created`);
       fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, '.open-books'), 'shelf/letters\n');
     }
     const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
@@ -15502,9 +15551,9 @@ if (selected(173)) {
       equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     }
     const leadAgent = w.startAgent();
-    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    w.seatMade('lead', 'lead-hub', leadAgent, 'the seat lead could not be created');
     const devAgent = w.startAgent();
-    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    w.seatMade('dev', 'dev-hub', devAgent, 'the seat dev could not be created');
     for (const [seat, hub] of [['qa', 'qa-hub'], ['solo', 'solo-hub']]) {
       equal(w.as(process.pid, ['seat', 'start', seat!, '--project', hub!, '--no-launch', '--workspace', ws]).exit, 0, `the free seat ${seat} could not be made`);
     }
@@ -15730,11 +15779,11 @@ if (selected(175)) {
       equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     }
     const leadAgent = w.startAgent();
-    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    w.seatMade('lead', 'lead-hub', leadAgent, 'the seat lead could not be created');
     const devAgent = w.startAgent();
-    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    w.seatMade('dev', 'dev-hub', devAgent, 'the seat dev could not be created');
     const qaAgent = w.startAgent();
-    equal(w.createSeat('qa', 'qa-hub', qaAgent).exit, 0, 'the seat qa could not be created');
+    w.seatMade('qa', 'qa-hub', qaAgent, 'the seat qa could not be created');
     const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
     const fields: Record<string, Record<string, string>> = {
       lead: { department: 'engineering', role: 'orchestrator' },
@@ -15814,7 +15863,7 @@ if (selected(175)) {
     const retirePlan = String(json(w.as(process.pid, ['seat', 'retire', 'qa', '--preflight', '--json', '--workspace', ws]))['plan_id'] ?? '');
     equal(w.as(process.pid, ['seat', 'retire', 'qa', '--plan-id', retirePlan, '--json', '--workspace', ws]).exit, 0, 'the first qa could not be retired');
     const newQaAgent = w.startAgent();
-    equal(w.createSeat('qa', 'qa-hub', newQaAgent).exit, 0, 'qa could not be created again');
+    w.seatMade('qa', 'qa-hub', newQaAgent, 'qa could not be created again');
     openLetters('qa');
     check(seatId('qa') !== '' && seatId('qa') !== firstQaId, 'the second qa did not get a seat_id of its own');
     for (const page of [forOldQa.page, alsoOldQa.page]) edit(page, (text) => text.replace(/^review: done$/m, 'review: pending'));
@@ -17087,9 +17136,9 @@ if (selected(189)) {
     const ws = w.workspace;
     for (const hub of ['lead-hub', 'dev-hub']) equal(w.as(process.pid, ['hub', 'new', hub, '--title', hub, '--workspace', ws]).exit, 0, `the ${hub} Hub could not be made`);
     const leadAgent = w.startAgent();
-    equal(w.createSeat('lead', 'lead-hub', leadAgent).exit, 0, 'the seat lead could not be created');
+    w.seatMade('lead', 'lead-hub', leadAgent, 'the seat lead could not be created');
     const devAgent = w.startAgent();
-    equal(w.createSeat('dev', 'dev-hub', devAgent).exit, 0, 'the seat dev could not be created');
+    w.seatMade('dev', 'dev-hub', devAgent, 'the seat dev could not be created');
     const registryFile = path.join(ws, '.claude', 'seats', '_registry.json');
     const rows = () => (JSON.parse(fs.readFileSync(registryFile, 'utf8')) as { seats: Record<string, unknown>[] }).seats;
     const seatId = (seat: string) => String(rows().find((row) => row['seat'] === seat)?.['seat_id'] ?? '');
@@ -17805,13 +17854,13 @@ if (selected(195)) {
 // as section 166's) that runs the CLI with CLAUDE_PID naming itself: with this judge as the launcher the seat is held for
 // this session; with a fake launcher whose child is another stand-in agent, the Desk names that child's pid; with the
 // launcher variable unset the note is empty, as before. The child lookup is checked on its own.
-if (selected(196) && KERNEL_COMMAND.length === 0) {
+if (selected(196) && prerequisite(196, () => KERNEL_COMMAND.length === 0, 'requires source kernel')) {
   const w = await seatClaimWorkspace('other-agent', { pin: false });
   const sleepers: ReturnType<typeof spawn>[] = [];
   try {
     const { launcherChildAgent } = await import('../src/procstart.ts');
     const holder = w.startAgent();
-    equal(w.createSeat('first', 'alpha', holder).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', holder, 'the seat first could not be created');
     const ws = w.workspace;
     const token = w.claimToken('first');
     const image = path.join(w.root, 'agent-image', 'claude.exe');
@@ -18502,7 +18551,7 @@ if (selected(204)) {
   const w = await seatClaimWorkspace('desk-letters');
   try {
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat could not be created');
     const config = path.join(w.root, 'claude-config');
     fs.mkdirSync(path.join(config, 'projects', 'ws'), { recursive: true });
     const stateDirectory = path.join(w.workspace, '.claude');
@@ -18621,7 +18670,7 @@ if (selected(205)) {
   try {
     const ws = w.workspace;
     const a = w.startAgent();
-    equal(w.createSeat('first', 'alpha', a).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', a, 'the seat first could not be created');
     equal(w.as(process.pid, ['seat', 'start', 'second', '--project', 'beta', '--no-launch', '--workspace', ws]).exit, 0, 'the free seat second was not made');
     const json = (run: { stdout: string; stderr: string }): Record<string, unknown> => {
       try {
@@ -18695,7 +18744,7 @@ if (selected(206)) {
   try {
     const ws = w.workspace;
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat first could not be created');
     const json = (run: { stdout: string; stderr: string }): Record<string, any> => {
       try {
         return JSON.parse(run.stdout) as Record<string, any>;
@@ -18791,10 +18840,10 @@ if (selected(207)) {
     const a = w.startAgent();
     const b = w.startAgent();
     const d = w.startAgent();
-    equal(w.createSeat('first', 'alpha', a).exit, 0, 'the seat first could not be created');
-    equal(w.createSeat('second', 'beta', b).exit, 0, 'the seat second could not be created');
+    w.seatMade('first', 'alpha', a, 'the seat first could not be created');
+    w.seatMade('second', 'beta', b, 'the seat second could not be created');
     equal(w.as(process.pid, ['seat', 'start', 'third', '--project', 'gamma', '--no-launch', '--workspace', ws]).exit, 0, 'the closed seat third was not made');
-    equal(w.createSeat('fourth', 'delta', d).exit, 0, 'the seat fourth could not be created');
+    w.seatMade('fourth', 'delta', d, 'the seat fourth could not be created');
     const session = '20700000-0000-4000-8000-000000000001';
     const activity = (seat: string, more: Record<string, unknown>) =>
       fs.writeFileSync(path.join(ws, '.claude', 'seats', seat, 'activity.json'), JSON.stringify({ seat, last_seen_utc: '2999-01-01T00:00:00Z', note: 'fixture', session_id: session, conversation_recorded_utc: '2999-01-01T00:00:00Z', ...more }));
@@ -18931,7 +18980,7 @@ if (selected(208)) {
     // (a) THE REFUSALS, each writing nothing.
     equal(run(['hub', 'new', 'gamma', '--title', 'gamma']).exit, 0, 'the gamma Hub could not be made');
     const agent = w.startAgent();
-    equal(w.createSeat('held', 'gamma', agent).exit, 0, 'the held seat could not be created');
+    w.seatMade('held', 'gamma', agent, 'the held seat could not be created');
     const heldBefore = everything();
     const held = run(['seat', 'rename', 'held', 'unheld', '--preflight', '--json']);
     check(held.exit !== 0 && /is held: a seat is renamed only while no session holds it/.test(held.stderr), `a held seat was not refused: ${held.stderr.trim().slice(0, 300)}`);
@@ -19498,7 +19547,7 @@ if (selected(212)) {
       }
     };
     const agent = w.startAgent();
-    equal(w.createSeat('first', 'alpha', agent).exit, 0, 'the seat first could not be created');
+    w.seatMade('first', 'alpha', agent, 'the seat first could not be created');
     fs.mkdirSync(path.join(ws, 'internal'), { recursive: true });
     fs.writeFileSync(path.join(ws, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
     const topic = path.join(ws, 'notebook', 'first', 'findings');
@@ -19874,6 +19923,8 @@ if (selected(214)) {
 // or across two, runs everything; a blank-only hunk selects nothing. The real selftest.ts parses into its sections.
 if (selected(215)) {
   try {
+    const sourceGuards = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'test', 'selftest.ts'), 'utf8');
+    check(!/^if \(selected\(\d+\) && (?!prerequisite\()/m.test(sourceGuards), 'a selected section guard does not declare its prerequisite');
     const select = await import('../../tools/section-select.mts');
     const covers = (sections: Record<string, string[]>) => select.parseCovers(JSON.stringify({ schema: 1, about: 'fixture', sections }));
     const map = covers({ '3': ['kernel/src/alpha.ts'], '5': ['kernel/src/alpha.ts', 'kernel/src/beta.ts'], '9': ['kernel/src/gamma.ts'] });
@@ -20267,6 +20318,726 @@ if (selected(217)) {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+// --- 218. THE PARALLEL GATE'S VERDICTS, DEADLINES, OWNERSHIP AND LIVE LOCK (c2 Unit A) -----------------------
+// Every fault runs against a fixture suite, never the real one. Fixture locks have unique names and no inherited token.
+if (selected(218) && prerequisite(218, () => !isCompiled(), 'requires source runner fixtures')) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-parallel-gate-')));
+  const failureBaseline = failures.length;
+  const children: ReturnType<typeof spawn>[] = [];
+  const savedLock = { token: process.env['DESKPOST_GATE_LOCK'], name: process.env['DESKPOST_GATE_LOCK_NAME'] };
+  try {
+    const runnerPath = path.join(PROGRAM_ROOT, 'kernel', 'test', 'run-parallel.ts');
+    const lockPath = path.join(PROGRAM_ROOT, 'kernel', 'test', 'gate-lock.ts');
+    const runner = await import(pathToFileURL(runnerPath).href);
+    const locks = await import(pathToFileURL(lockPath).href);
+    const selectionTools=await import('../../tools/section-select.mts');
+    const selftestSource=fs.readFileSync(path.join(PROGRAM_ROOT,'kernel/test/selftest.ts'),'utf8');
+    const thisRange=selectionTools.sectionRanges(selftestSource).filter((r)=>r.section===218);
+    equal(thisRange.length,1,'section 218 did not have exactly one selection range');
+    const lateLine=selftestSource.split(/\r?\n/).findIndex((line)=>line.trimStart().startsWith('const intervals = both.map'))+1;
+    check(thisRange[0]!==undefined&&thisRange[0].start<=lateLine&&lateLine<=thisRange[0].end,'fixture text cut section 218 selection off early');
+    const fixture = path.join(root, 'suite.mjs');
+    fs.writeFileSync(fixture, `import {spawn} from 'node:child_process';
+    import fs from 'node:fs';
+    const wanted=(process.env.LIBRARY_SELFTEST_SECTIONS||'').split(',').filter(Boolean).map(Number);
+    const selected=(n)=>!wanted.length||wanted.includes(n); let checks=0, failures=[];
+    if (selected(1)) { checks+=2; }
+    if (selected(2)) { checks++; failures.push('planted failure'); }
+    if (selected(3)) { throw Error('planted crash'); }
+    if (selected(4)) { /* empty section */ }
+    if (selected(5)) { console.log('SKIP section 5: fixture unavailable'); }
+    if (selected(6)) {
+      const c=spawn(process.execPath,['-e','setTimeout(()=>{},120000)'],{stdio:'inherit',detached:true,windowsHide:true});
+      fs.writeFileSync(process.env.DESKPOST_FIXTURE_PIDS,JSON.stringify([process.pid,c.pid]));
+      await new Promise(r=>setTimeout(r,120000));
+    }
+    if (selected(7)) {
+      const c=spawn(process.execPath,['-e','setTimeout(()=>{},120000)'],{stdio:'inherit',detached:true,windowsHide:true});
+      fs.writeFileSync(process.env.DESKPOST_FIXTURE_PIDS,JSON.stringify([c.pid]));
+      console.log('kernel self-test passed (1 checks).');
+      await new Promise(r=>setTimeout(r,300)); process.exit(0);
+    }
+    if (selected(8)) { console.log('malformed verdict'); process.exit(0); }
+    if (selected(9)) { console.log('ERROR: another failure'); console.log('SKIP section 9: fixture unavailable'); failures.push('LIBRARY_SELFTEST_SECTIONS selected no checks: 9'); }
+    if (selected(10)) { checks=3; failures.push('multiline failure\\nsecond line'); }
+    if(wanted.length&&checks===0&&!failures.length) failures.push('LIBRARY_SELFTEST_SECTIONS selected no checks: '+wanted.join(','));
+    if(failures.length){console.error('kernel self-test FAILED ('+failures.length+' of '+checks+'): '+failures.join('; ')); process.exitCode=1;}
+    else console.log('kernel self-test passed ('+checks+' checks).');
+    `.replace(/^    /gm, ''));
+    const baseEnv = { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_GATE_LOCK: '', DESKPOST_GATE_LOCK_NAME: `deskpost-gate-test-${process.pid}-${Date.now()}`, DESKPOST_FIXTURE_PIDS: path.join(root, 'pids.json') };
+    const start = (args: string[], extra: Record<string, string> = {}) => {
+      const child = spawn(process.execPath, args, { env: { ...baseEnv, ...extra }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child); let output = ''; let exited: number | null = null;
+      const logNumber=children.length;
+      child.stdout.on('data', (chunk) => { output += String(chunk); }); child.stderr.on('data', (chunk) => { output += String(chunk); });
+      const done = new Promise<{ exit: number | null; output: string }>((resolve, reject) => {
+        const timer = setTimeout(() => { child.kill(); reject(Error('fixture did not end within 90 seconds')); }, 90_000);
+        child.on('error', (error) => { clearTimeout(timer); reject(error); });
+        child.on('exit', (code) => { exited = code; });
+        child.on('close', (code) => { clearTimeout(timer); fs.writeFileSync(path.join(root,`fixture-${logNumber}.log`),output); resolve({ exit: code, output }); });
+      });
+      return { child, done, output: () => output, exited: () => exited };
+    };
+    const runFixture = async (selection: string, args: string[] = []) => start([runnerPath, '--suite', fixture, '--workers', '2', '--keep-logs', ...args], { LIBRARY_SELFTEST_SECTIONS: selection }).done;
+    const resultOf = (output: string) => {
+      const folder = /^runner log: (.+)$/m.exec(output)?.[1]?.trim();
+      if (!folder) throw Error('runner did not name its log');
+      return { folder, record: JSON.parse(fs.readFileSync(path.join(folder, 'result.json'), 'utf8')) as { total: number; results: { section: number; verdict: string; checks: number }[] } };
+    };
+    const cases = await runFixture('1,2,3,4,5,8,9,10');
+    const casesRecord = resultOf(cases.output).record;
+    equal(cases.exit, 1, 'a fixture failure did not reach the runner exit');
+    equal(casesRecord.results.map((r) => `${r.section}:${r.verdict}:${r.checks}`).join(','), '1:PASS:2,2:FAIL:1,3:FAIL:0,4:FAIL:0,5:SKIP:0,8:FAIL:0,9:FAIL:0,10:FAIL:3', 'pass/failure/crash/empty/skip/malformed/extra-failure/multiline verdicts differ');
+    check(cases.output.includes('multiline failure | second line'),'multiline failure detail was lost or broke the final summary line');
+    const chosen = await runFixture('1'); equal(chosen.exit, 0, 'hand-typed passing selection failed');
+    equal(resultOf(chosen.output).record.results.length, 1, 'hand-typed selection ran extra sections');
+    equal(resultOf(chosen.output).record.total, 2, 'hand-typed selection changed check count');
+    const wholeFixture=await runFixture('1',['--workers','1']);
+    equal(wholeFixture.exit,0,'one-worker whole-suite route failed');
+    equal(resultOf(wholeFixture.output).record.results[0]!.section as unknown,'whole','one worker did not preserve the whole-suite route');
+    const splitFixture=await runFixture('1',['--split-serial']);
+    equal(splitFixture.exit,0,'split-serial fixture failed');
+    equal(resultOf(splitFixture.output).record.results[0]!.section,1,'split-serial did not split the suite');
+    equal(runner.parseOptions(['--split-serial']).workers,1,'--split-serial without a worker override remained parallel');
+    equal((await runFixture('999')).exit, 1, 'nonexistent hand-typed section passed');
+    equal((await runFixture('invalid')).exit, 2, 'malformed section selection was not refused');
+    equal(JSON.stringify(runner.sectionNumbers('if (selected(2)) {\nif (selected(1)) {\nif (selected(2)) {', '')), '[1,2]', 'section inventory is not ascending and deduplicated');
+    for (const args of [[], ['--test-snapshot-failure']]) {
+      const began = Date.now();
+      const timed = await runFixture('6', ['--section-timeout', '1500', ...args]);
+      equal(timed.exit, 1, 'sleeping fixture did not fail');
+      check(Date.now() - began < 45_000, 'sleeping fixture exceeded bounded diagnostics and cleanup');
+      const logged = resultOf(timed.output);
+      check(fs.existsSync(path.join(logged.folder, '6', args.length ? 'snapshot-error.txt' : 'snapshot.json')), 'timeout diagnostic was not written');
+      const pids = JSON.parse(fs.readFileSync(baseEnv.DESKPOST_FIXTURE_PIDS, 'utf8')) as number[];
+      const table = await runner.processTable();
+      check(pids.every((pid) => !table.some((row: { pid: number }) => row.pid === pid)), 'timed-out fixture root or child survived cleanup');
+    }
+    const controller = new AbortController();
+    const cancelFolder = path.join(root,'cancel-run'); fs.mkdirSync(cancelFolder);
+    const previousPids = process.env['DESKPOST_FIXTURE_PIDS']; process.env['DESKPOST_FIXTURE_PIDS']=baseEnv.DESKPOST_FIXTURE_PIDS;
+    const cancelTimer = setTimeout(()=>controller.abort(),1500);
+    try {
+      const cancelled = await runner.runSection(runner.parseOptions(['--suite',fixture]),6,cancelFolder,controller.signal);
+      equal(cancelled.verdict,'FAIL','cancellation did not fail the child'); check(cancelled.detail.includes('cancelled'),'cancellation reason was lost');
+      const cancelPids = JSON.parse(fs.readFileSync(baseEnv.DESKPOST_FIXTURE_PIDS,'utf8')) as number[];
+      const cancelTable = await runner.processTable();
+      check(cancelPids.every((pid)=>!cancelTable.some((row:{pid:number})=>row.pid===pid)),'cancelled fixture tree survived cleanup');
+    } finally {
+      clearTimeout(cancelTimer);
+      if(previousPids===undefined) delete process.env['DESKPOST_FIXTURE_PIDS']; else process.env['DESKPOST_FIXTURE_PIDS']=previousPids;
+    }
+    const began = Date.now(); const heldStream = await runFixture('7');
+    equal(heldStream.exit, 1, 'surviving grandchild output pipe was not a failure');
+    check(Date.now() - began < 45_000 && heldStream.output.includes('output streams did not close'), 'exited-root fixture did not meet the stream deadline');
+    const streamPids = JSON.parse(fs.readFileSync(baseEnv.DESKPOST_FIXTURE_PIDS, 'utf8')) as number[];
+    const streamTable = await runner.processTable();
+    check(streamPids.every((pid) => !streamTable.some((row: { pid: number }) => row.pid === pid)), 'output-holding grandchild survived cleanup');
+
+    const lockFixture = path.join(root, 'lock.mjs');
+    fs.writeFileSync(lockFixture, `import {acquireGateLock,lockAddress} from ${JSON.stringify(pathToFileURL(lockPath).href)};
+    import {spawn} from 'node:child_process';
+    import net from 'node:net';
+    if(process.argv.includes('--empty-handoff')) {
+     const server=net.createServer(c=>{c.end();server.close()});
+     await new Promise(r=>server.listen(lockAddress(),r));console.log('empty-holder-ready');
+     await new Promise(r=>server.on('close',r));process.exit(0);
+    }
+    try {
+     const lock=await acquireGateLock('fixture',process.argv.includes('--no-wait'));
+     console.log(JSON.stringify({held:true,pid:process.pid,token:process.env.DESKPOST_GATE_LOCK,inherited:lock.inherited,time:Date.now()}));
+     if(process.argv.includes('--orphan')) {
+      const c=spawn(process.execPath,['-e','setTimeout(()=>{},120000)','kernel/test/selftest.ts'],{detached:true,windowsHide:true,stdio:'ignore'}); c.unref();
+      console.log(JSON.stringify({orphan:c.pid}));
+     }
+     if(process.argv.includes('--nested')) {
+      const c=spawn(process.execPath,[${JSON.stringify(runnerPath)},'--suite',${JSON.stringify(fixture)},'--workers','2'],{env:{...process.env,LIBRARY_SELFTEST_SECTIONS:'1'},stdio:['ignore','pipe','pipe']});
+      let out=''; c.stdout.on('data',x=>out+=x);c.stderr.on('data',x=>out+=x);
+      const code=await new Promise(r=>c.on('close',r)); console.log('nested exit '+code+' '+out); process.exitCode=Number(code);
+     } else await new Promise(r=>setTimeout(r,Number(process.env.DESKPOST_FIXTURE_HOLD||300)));
+     console.log(JSON.stringify({releasing:true,time:Date.now()})); await lock.release();
+    } catch(e){console.error(e.message);process.exitCode=e.code||2}
+    `.replace(/^    /gm, ''));
+    const waitForOutput = async (p: ReturnType<typeof start>, needle: string) => {
+      const until = Date.now() + 10_000;
+      while (Date.now() < until && !p.output().includes(needle)) await new Promise((r) => setTimeout(r,25));
+      check(p.output().includes(needle), `fixture did not print ${needle}: ${p.output()}`);
+    };
+    const emptyHolder=start([lockFixture,'--empty-handoff']); await waitForOutput(emptyHolder,'empty-holder-ready');
+    const afterEmpty=await start([lockFixture]).done;
+    equal(afterEmpty.exit,0,'a release during an empty handshake failed instead of re-entering arbitration');
+    equal((await emptyHolder.done).exit,0,'empty-handshake fixture did not release');
+    const held = start([lockFixture], { DESKPOST_FIXTURE_HOLD: '120000' }); await waitForOutput(held, '"held":true');
+    const tierContender = await start([path.join(PROGRAM_ROOT,'tools','gate.ts'),'--tier','cut','--no-wait']).done;
+    equal(tierContender.exit,3,'the actual cut tier did not take the shared lock before work');
+    const denied = await start([lockFixture, '--no-wait']).done;
+    equal(denied.exit, 3, '--no-wait did not return exit 3'); check(denied.output.includes('waiting:'), 'contender did not report its holder');
+    const holderInfo = JSON.parse(held.output().split('\n').find((line) => line.startsWith('{'))!) as { token: string };
+    const inherited = await start([lockFixture], { DESKPOST_GATE_LOCK: holderInfo.token }).done;
+    equal(inherited.exit, 0, 'validated inherited lock waited or failed'); check(inherited.output.includes('"inherited":true'), 'child did not validate inherited token');
+    equal((await start([lockFixture], { DESKPOST_GATE_LOCK: 'wrong-token' }).done).exit, 2, 'mismatched inherited token was accepted');
+    const waiter1 = start([lockFixture], { DESKPOST_FIXTURE_HOLD: '1500' });
+    const waiter2 = start([lockFixture], { DESKPOST_FIXTURE_HOLD: '1500' });
+    await Promise.all([waitForOutput(waiter1, 'waiting:'),waitForOutput(waiter2, 'waiting:')]);
+    check(!waiter1.output().includes('"held":true') && !waiter2.output().includes('"held":true'), 'a waiter acquired the held lock');
+    held.child.kill(); await held.done;
+    const first = await Promise.race([waiter1.done,waiter2.done]); equal(first.exit,0,'first waiter failed after holder crash');
+    const both = await Promise.all([waiter1.done,waiter2.done]); check(both.every((r)=>r.exit===0), `two waiters did not serialize after holder crash: ${both.map((r)=>`exit ${r.exit}: ${r.output.replace(/"token":"[^"]+"/g,'"token":"fixture"')}`).join('; ')}`);
+    const intervals = both.map((r) => r.output.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line))).map((events) => ({start:events.find((e)=>e.held).time,end:events.find((e)=>e.releasing).time})).sort((a,b)=>a.start-b.start);
+    check(intervals[1]!.start>=intervals[0]!.end,'two waiter workloads overlapped');
+    const nested = await start([lockFixture,'--nested']).done;
+    equal(nested.exit,0,'cut tier -> runner nesting failed'); check(nested.output.includes('nested exit 0')&&!nested.output.includes('waiting:'),'nested runner retook its parent lock');
+    const precommitShape = await runFixture('1'); equal(precommitShape.exit,0,'pre-commit -> runner lock route failed');
+    const warningRows = [{pid:1,parentPid:0,start:'one',command:'kernel/test/run-parallel.ts'}, {pid:2,parentPid:1,start:'two',command:'tools/Invoke-LibraryChecks.ps1'}, {pid:3,parentPid:0,start:'three',command:'kernel/test/selftest.ts'}, {pid:4,parentPid:0,start:'four',command:'unrelated'}];
+    const warnings = locks.leftoverWarnings(warningRows,2);
+    check(warnings.length===1&&warnings[0].includes('3 three'),'warning scan did not exclude self/ancestors or report fixture leftover');
+    // Explicitly accepted crash limit: a live child survives its holder; the next test-namespace holder takes it.
+    const orphanHolder = start([lockFixture,'--orphan'], {DESKPOST_FIXTURE_HOLD:'120000'}); await waitForOutput(orphanHolder,'"orphan":');
+    const orphanPid = JSON.parse(orphanHolder.output().split('\n').find((line)=>line.startsWith('{"orphan":'))!).orphan as number;
+    const orphanIdentity = await runner.startIdentity(orphanPid);
+    orphanHolder.child.kill(); await orphanHolder.done;
+    const afterCrash = await start([lockFixture]).done; equal(afterCrash.exit,0,'crash did not free fixture lock');
+    check(orphanIdentity!==null && await runner.startIdentity(orphanPid)===orphanIdentity,'accepted orphan fixture did not survive the holder');
+    const orphanWarnings = locks.leftoverWarnings(await runner.processTable(),process.pid);
+    check(orphanWarnings.some((line:string)=>line.includes(`work: ${orphanPid} `)),'production warning predicate did not report the actual surviving fixture command line');
+    if(await runner.startIdentity(orphanPid)===orphanIdentity) {
+      if(process.platform==='win32') await runner.boundedCommand('taskkill.exe',['/PID',String(orphanPid),'/T','/F']);
+      else process.kill(orphanPid,'SIGKILL');
+    }
+    equal(await runner.startIdentity(orphanPid),null,'test-owned orphan was not ended');
+  } catch (error) {
+    failures.push(`section 218 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const child of children) { if(child.exitCode===null&&child.signalCode===null) child.kill(); }
+    if(savedLock.token===undefined) delete process.env['DESKPOST_GATE_LOCK']; else process.env['DESKPOST_GATE_LOCK']=savedLock.token;
+    if(savedLock.name===undefined) delete process.env['DESKPOST_GATE_LOCK_NAME']; else process.env['DESKPOST_GATE_LOCK_NAME']=savedLock.name;
+    if(failures.length===failureBaseline) fs.rmSync(root, {recursive:true,force:true});
+    else process.stderr.write(`section 218 fixture logs: ${root}\n`);
+  }
+}
+
+// --- 219. SHIPPED SKILLS SHARE OWNERSHIP RULES IN BOTH HARNESSES (parity 4d) ------------------
+if (selected(219)) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-dual-skills-'));
+  try {
+    const program = path.join(root, 'program');
+    const canonical = path.join(program, '.claude', 'skills', 'library-help');
+    fs.mkdirSync(path.join(canonical, 'references'), { recursive: true });
+    fs.writeFileSync(path.join(canonical, 'SKILL.md'), '---\nname: library-help\ndescription: Library procedures.\n---\nversion one\n');
+    fs.writeFileSync(path.join(canonical, 'references', 'guide.md'), 'guide one\n');
+    const apply = (ws: string) => {
+      const result = skillPlans(ws, program);
+      if (result.refusal) throw new Error(result.refusal);
+      const writes = result.plans.filter((row) => row.action === 'created' || row.action === 'updated');
+      writes.sort((a, b) => Number(!a.name.endsWith(SKILL_MANIFEST)) - Number(!b.name.endsWith(SKILL_MANIFEST)));
+      for (const row of writes) {
+        fs.mkdirSync(path.dirname(row.path), { recursive: true });
+        fs.writeFileSync(row.path, row.content!);
+      }
+      return result;
+    };
+    const ws = path.join(root, 'library');
+    apply(ws);
+    for (const location of SKILL_LOCATIONS) {
+      const folder = path.join(ws, ...location.split('/'), 'library-help');
+      equal(fs.readFileSync(path.join(folder, 'SKILL.md'), 'utf8'), fs.readFileSync(path.join(canonical, 'SKILL.md'), 'utf8'), `${location} differs from canonical content`);
+      check(!skillInstallationStatus(ws, program, location).startsWith('WARN:'), `${location} structural check failed after install`);
+    }
+    check(skillPlans(ws, program).plans.every((row) => row.action === 'unchanged'), 'dual install is not idempotent');
+    fs.appendFileSync(path.join(canonical, 'SKILL.md'), 'version two\n');
+    apply(ws);
+    for (const location of SKILL_LOCATIONS) {
+      const folder = path.join(ws, ...location.split('/'), 'library-help');
+      check(fs.readFileSync(path.join(folder, 'SKILL.md'), 'utf8').endsWith('version two\n'), `${location} did not upgrade an owned old hash`);
+      fs.appendFileSync(path.join(folder, 'SKILL.md'), 'reader edit\n');
+      check(skillInstallationStatus(ws, program, location).includes('changed since'), `${location} doctor did not name reader edit`);
+      fs.rmSync(path.join(folder, 'references', 'guide.md'));
+    }
+    const edited = apply(ws);
+    equal(edited.left.length, SKILL_LOCATIONS.length, 'not all edited copies were preserved and named');
+    for (const location of SKILL_LOCATIONS) {
+      const folder = path.join(ws, ...location.split('/'), 'library-help');
+      check(fs.readFileSync(path.join(folder, 'SKILL.md'), 'utf8').endsWith('reader edit\n') && fs.existsSync(path.join(folder, 'references', 'guide.md')), `${location} lost an edit or failed missing-file repair`);
+      const own = path.join(root, `own-${path.basename(location.split('/')[0]!)}`);
+      const collision = path.join(own, ...location.split('/'), 'library-help');
+      fs.mkdirSync(collision, { recursive: true });
+      fs.writeFileSync(path.join(collision, 'SKILL.md'), 'user skill\n');
+      apply(own);
+      check(fs.readFileSync(path.join(collision, 'SKILL.md'), 'utf8') === 'user skill\n' && !fs.existsSync(path.join(collision, SKILL_MANIFEST)), `${location} adopted a collision`);
+      const interrupted = path.join(root, `interrupted-${location.split('/')[0]}`);
+      const planned = skillPlans(interrupted, program);
+      for (const row of planned.plans.filter((row) => row.name.endsWith(SKILL_MANIFEST))) {
+        fs.mkdirSync(path.dirname(row.path), { recursive: true });
+        fs.writeFileSync(row.path, row.content!);
+      }
+      apply(interrupted);
+      check(skillPlans(interrupted, program).plans.every((row) => row.action === 'unchanged'), 'manifest-first interrupted install did not resume');
+      const retired = path.join(ws, ...location.split('/'), 'retired-name');
+      fs.mkdirSync(retired);
+      fs.writeFileSync(path.join(retired, SKILL_MANIFEST), '{"schema":1,"files":{}}\n');
+      check(skillPlans(ws, program).left.some((line) => line.startsWith(`${location}/retired-name/`)), `${location} did not report retired skill`);
+      check(skillInstallationStatus(ws, program, location).includes('retired-name/'), `${location} doctor omitted retirement when an edited skill also warns`);
+      const invalid = path.join(root, `invalid-${location.split('/')[0]}`);
+      apply(invalid);
+      const invalidFolder = path.join(invalid, ...location.split('/'), 'library-help');
+      fs.writeFileSync(path.join(invalidFolder, SKILL_MANIFEST), '{"schema":1,"files":{"../escape":["invalid-hash"]}}');
+      fs.writeFileSync(path.join(invalidFolder, 'SKILL.md'), 'reader collision\n');
+      apply(invalid);
+      equal(fs.readFileSync(path.join(invalidFolder, 'SKILL.md'), 'utf8'), 'reader collision\n', `${location} adopted an invalid ownership manifest`);
+      const rootLinked = path.join(root, `root-link-${location.split('/')[0]}`);
+      fs.mkdirSync(rootLinked);
+      fs.symlinkSync(path.join(ws, location.split('/')[0]!), path.join(rootLinked, location.split('/')[0]!), 'junction');
+      check(skillPlans(rootLinked, program).refusal !== null && skillPlans(rootLinked, program).plans.length === 0, `${location} followed a harness-root junction`);
+      // Junctions need no symlink privilege on Windows. Both directories and individual files are guarded.
+      const linked = path.join(root, `linked-${location.split('/')[0]}`);
+      fs.mkdirSync(path.join(linked, ...location.split('/')), { recursive: true });
+      fs.symlinkSync(canonical, path.join(linked, ...location.split('/'), 'library-help'), 'junction');
+      check(skillPlans(linked, program).refusal !== null && skillPlans(linked, program).plans.length === 0, `${location} wrote through interim junction`);
+      const vanished = path.join(root, `vanished-${location.split('/')[0]}`);
+      fs.mkdirSync(vanished);
+      const dangling = path.join(root, `dangling-${location.split('/')[0]}`);
+      fs.mkdirSync(path.join(dangling, ...location.split('/')), { recursive: true });
+      fs.symlinkSync(vanished, path.join(dangling, ...location.split('/'), 'library-help'), 'junction');
+      fs.rmdirSync(vanished);
+      check(skillPlans(dangling, program).refusal !== null, `${location} followed a dangling junction`);
+      const nested = path.join(root, `nested-${location.split('/')[0]}`);
+      apply(nested);
+      const refs = path.join(nested, ...location.split('/'), 'library-help', 'references');
+      fs.rmSync(refs, { recursive: true });
+      fs.symlinkSync(path.join(canonical, 'references'), refs, 'junction');
+      check(skillPlans(nested, program).refusal !== null, `${location} followed a nested junction`);
+      for (const name of ['SKILL.md', SKILL_MANIFEST]) {
+        const blocked = path.join(root, `file-slot-${location.split('/')[0]}-${name}`);
+        apply(blocked);
+        const slot = path.join(blocked, ...location.split('/'), 'library-help', name);
+        fs.unlinkSync(slot);
+        fs.mkdirSync(slot);
+        check(skillPlans(blocked, program).refusal !== null, `${location} accepted a directory in the ${name} file slot`);
+        check(skillInstallationStatus(blocked, program, location).startsWith('WARN:'), `${location} doctor ignored a blocked file slot`);
+        const fileLinked = path.join(root, `file-link-${location.split('/')[0]}-${name}`);
+        apply(fileLinked);
+        const destination = path.join(fileLinked, ...location.split('/'), 'library-help', name);
+        fs.unlinkSync(destination);
+        // A junction occupying a file slot is also a file-write escape; no Windows symlink privilege required.
+        fs.symlinkSync(path.join(canonical, 'references'), destination, 'junction');
+        check(skillPlans(fileLinked, program).refusal !== null, `${location} followed a link at ${name}`);
+      }
+    }
+    fs.rmSync(path.join(canonical, 'references', 'guide.md'));
+    check(skillPlans(ws, program).left.filter((line) => line.includes('retired file')).length === SKILL_LOCATIONS.length, 'retired files were not retained and named in both harnesses');
+    fs.rmSync(path.join(canonical, 'SKILL.md'));
+    check(skillPlans(ws, program).refusal !== null, 'missing shipped source silently succeeded');
+    check(SHIPPED_SKILLS.includes('library-help') && !(SHIPPED_SKILLS as readonly string[]).includes('dashboard'), 'prototype dashboard entered shipped inventory');
+    // Exercise the actual init planner and writer, not only a stand-in applying skill plans.
+    const initialized = path.join(root, 'initialized');
+    const registry = path.join(root, 'registry');
+    const options = { workspacePath: initialized, programRoot: PROGRAM_ROOT, registryRoot: registry };
+    runLibraryInit(options);
+    for (const location of SKILL_LOCATIONS) {
+      const folder = path.join(initialized, ...location.split('/'), 'library-help');
+      check(fs.existsSync(path.join(folder, 'SKILL.md')), `init did not install ${location}`);
+      const interrupted = path.join(root, `real-interrupted-${location.split('/')[0]}`);
+      const incompleteOptions = { ...options, workspacePath: interrupted };
+      const plan = planLibraryInit(incompleteOptions);
+      const manifest = plan.writes.find((write) => write.relative === `${location}/library-help/${SKILL_MANIFEST}`)!;
+      fs.mkdirSync(path.dirname(manifest.path), { recursive: true });
+      fs.writeFileSync(manifest.path, manifest.content);
+      applyLibraryInit(planLibraryInit(incompleteOptions));
+      check(!skillInstallationStatus(interrupted, PROGRAM_ROOT, location).startsWith('WARN:'), `real init did not resume ${location}`);
+    }
+    const realPlan = planLibraryInit(options);
+    check(!realPlan.writes.some((write) => SKILL_LOCATIONS.some((location) => write.relative.startsWith(location + '/'))), 'real init rewrote an unchanged skill');
+    const previousRegistry = process.env['LIBRARY_WORKSPACES'];
+    try {
+      process.env['LIBRARY_WORKSPACES'] = registry;
+      const removal = libraryEdits(PROGRAM_ROOT);
+      check(removal.edits.length > 0, 'uninstall retention fixture reached no registrations');
+      check(!removal.edits.some((edit) => SKILL_LOCATIONS.some((location) => edit.file.includes(location.replaceAll('/', path.sep)))), 'uninstall planned skill removal');
+      for (const edit of removal.edits) if (edit.content !== null) fs.writeFileSync(edit.file, edit.content);
+      for (const location of SKILL_LOCATIONS) check(fs.existsSync(path.join(initialized, ...location.split('/'), 'library-help', SKILL_MANIFEST)) &&
+        fs.existsSync(path.join(initialized, ...location.split('/'), 'library-help', 'SKILL.md')), `${location} did not survive uninstall registration removal`);
+    } finally {
+      if (previousRegistry === undefined) delete process.env['LIBRARY_WORKSPACES'];
+      else process.env['LIBRARY_WORKSPACES'] = previousRegistry;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// S118 ROW 2: `shared list-entry` ON A LOCAL LIBRARY SETS A BOOK'S ONE CATALOG LINE (2nd-b-vault-dev's Report of
+// 2026-10-11: it refused, so a stale local Catalog Summary had no route). A preview writes nothing; the apply replaces
+// only that line, through the writer a publication uses; a Catalog changed after the preview and an unknown Book are
+// each refused with nothing written.
+if (selected(220)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-list-entry-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the fixture Library did not initialise');
+    const wiki = path.join(lib, 'collection', 'books', 'atlas', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Atlas\n\nA fixture Book.\n');
+    fs.writeFileSync(path.join(wiki, '_index.md'), '# Atlas\n\n- [[books/atlas/wiki/start|Start]]\n');
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nWhere to begin.\n');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, 'the fixture Book was not rebuilt');
+    const catalogFile = path.join(lib, 'collection', 'books', 'README.md');
+    const stale = '- [[books/atlas/wiki/_book|Atlas]] — The 2026-08-29 compilation.';
+    const other = '- [[books/beta/wiki/_book|Beta]] — Another Book.';
+    fs.writeFileSync(catalogFile, `# Books\n\nThe Books in this workspace's local collection.\n\n## Reference\n\n${stale}\n${other}\n\n## Open a Book\n`);
+    const before = fs.readFileSync(catalogFile, 'utf8');
+    const listArgs = ['shared', 'list-entry', 'atlas', '--summary', 'The 2026-08-31 compilation.'];
+    const entry = '- [[books/atlas/wiki/_book|Atlas]] — The 2026-08-31 compilation.';
+    const planOf = (): Record<string, unknown> => {
+      const ran = cli([...listArgs, '--preflight', '--json']);
+      equal(ran.exit, 0, `the list-entry preflight failed: ${ran.stderr.trim().slice(0, 300)}`);
+      return JSON.parse(ran.stdout) as Record<string, unknown>;
+    };
+
+    // THE PREVIEW: the line it would write and the one it replaces, and nothing written.
+    const plan = planOf();
+    const planId = String(plan['plan_id'] ?? '');
+    check(/^list-entry-[0-9a-f]{64}$/.test(planId), `the list-entry preflight issued no plan id: ${planId}`);
+    check(plan['action'] === 'replaced' && plan['entry'] === entry && plan['previous_entry'] === stale && plan['heading'] === '## Reference', `the preview did not plan this Book's line in place: ${JSON.stringify(plan)}`);
+    equal(fs.readFileSync(catalogFile, 'utf8'), before, 'the preview wrote the Catalog');
+
+    // NO ID AND A STALE ID: each refused, nothing written.
+    const noId = cli([...listArgs, '--user-confirmed', '--json']);
+    check(noId.exit !== 0 && noId.stderr.includes('--plan-id'), `a listing with no plan id was not refused by name: ${noId.stderr.trim()}`);
+    const changed = before.replace(other, '- [[books/beta/wiki/_book|Beta]] — Another Book, edited.');
+    fs.writeFileSync(catalogFile, changed);
+    const staleRun = cli([...listArgs, '--user-confirmed', '--plan-id', planId, '--json']);
+    check(staleRun.exit !== 0 && staleRun.stderr.includes('rerun the current preflight'), `a stale plan id was not refused: ${staleRun.stderr.trim()}`);
+    equal(fs.readFileSync(catalogFile, 'utf8'), changed, 'a stale plan id wrote the Catalog');
+
+    // THE FRESH ID: only this Book's line changes, where it stands.
+    const fresh = String(planOf()['plan_id'] ?? '');
+    check(fresh !== planId, 'a changed Catalog gave the same plan id');
+    const applied = cli([...listArgs, '--user-confirmed', '--plan-id', fresh, '--json']);
+    equal(applied.exit, 0, `the fresh plan id did not apply: ${applied.stderr.trim().slice(0, 300)}`);
+    const beforeLines = changed.split('\n');
+    const afterLines = fs.readFileSync(catalogFile, 'utf8').split('\n');
+    equal(afterLines.length, beforeLines.length, 'the apply added or removed a Catalog line');
+    const differing = afterLines.map((line, index) => (line === beforeLines[index] ? -1 : index)).filter((index) => index >= 0);
+    check(differing.length === 1 && beforeLines[differing[0]!] === stale && afterLines[differing[0]!] === entry, `the apply changed more than this Book's line: ${JSON.stringify(differing)}`);
+    equal(String((JSON.parse(cli([...listArgs, '--preflight', '--json']).stdout) as Record<string, unknown>)['action']), 'already-current', 'the applied line is not read as current');
+
+    // AN UNKNOWN BOOK: refused at the preview, nothing written.
+    const unknown = cli(['shared', 'list-entry', 'ghost', '--summary', 'No such Book.', '--preflight', '--json']);
+    check(unknown.exit !== 0 && unknown.stderr.includes("Book 'ghost' is not in this Library's collection"), `an unknown Book was not refused: ${unknown.stderr.trim()}`);
+    check(!fs.readFileSync(catalogFile, 'utf8').includes('ghost'), 'an unknown Book reached the Catalog');
+  } catch (error) {
+    failures.push(`section 220 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+
+// --- 221. C5: launch record, planner and the one seated CLI launch -----------------------------------------
+if (selected(221)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-launch-')));
+  try {
+    const { emptyLaunchRecord, launchDigest, planSeatLaunch, readSeatLaunch, escapedArgv } = await import('../src/seatlaunch.ts');
+    const id = 'a'.repeat(32), record = emptyLaunchRecord(id);
+    const state = path.join(root, '.claude'), dir = path.join(state, 'seats', 'first');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'launch.json');
+    equal(readSeatLaunch(state, 'first', id).state, 'unset', 'absent launch record');
+    record.assistant = 'codex'; record.args.codex = ['-a', 'never', '-s', 'danger-full-access'];
+    record.approved.codex = { plan_id: 'seat-launch-' + 'b'.repeat(64), utc: new Date().toISOString(), args_sha256: launchDigest(JSON.stringify(record.args.codex)) };
+    fs.writeFileSync(file, JSON.stringify(record));
+    const read = readSeatLaunch(state, 'first', id);
+    equal(read.state, 'valid', 'strict valid record');
+    const uuid = '00000000-0000-4000-8000-000000000001';
+    const input = { seat: 'first', row: { seat_id: id }, record: read, intent: 'new' as const, fallback: 'claude' as const,
+      mintedId: uuid, dirs: ['D:/fixture'], inbound: ['--settings', 'fixture'], letters: 0, passthrough: ['--color=never'] };
+    const plan = planSeatLaunch(input);
+    equal(plan.command, 'codex', 'stored assistant selects executable');
+    equal(JSON.stringify(plan.args), JSON.stringify(['--add-dir', 'D:/fixture', '--no-daemon', ...record.args.codex, '--color=never']), 'Codex argument order');
+    equal(planSeatLaunch({ ...input, resume: uuid }).args[0], 'resume', 'explicit Codex resume');
+    equal(planSeatLaunch({ ...input, command: 'claude' }).assistant, 'claude', 'explicit command wins');
+    check(!planSeatLaunch({ ...input, command: 'claude' }).args.includes('-a'), 'Codex flags reached Claude');
+    for (const change of [{ command: 'claude', assistant: 'codex' }, { sessionId: uuid }, { passthrough: ['--sandbox=read-only'] },
+      { passthrough: ['--no-daemon'] }, { passthrough: ['--remote=host'] }, { passthrough: ['-c', 'daemon_auto_start=true'] }]) {
+      let refused = false; try { planSeatLaunch({ ...input, ...change }); } catch { refused = true; }
+      check(refused, 'planner accepted conflicting launch ' + JSON.stringify(change));
+    }
+    equal(readSeatLaunch(state, 'first', 'c'.repeat(32)).state, 'invalid', 'foreign incarnation accepted');
+    record.approved.codex!.args_sha256 = 'bad'; fs.writeFileSync(file, JSON.stringify(record));
+    equal(readSeatLaunch(state, 'first', id).state, 'invalid', 'unapproved flags accepted');
+    fs.writeFileSync(file, '{'); equal(readSeatLaunch(state, 'first', id).state, 'invalid', 'malformed record accepted');
+    check(escapedArgv(['a b', 'x\ny']).includes('\\x0a'), 'escaped preview lost control characters');
+
+    const lib = path.join(root, 'lib');
+    const fakeBin = path.join(root, 'bin'); fs.mkdirSync(fakeBin); fakeAssistant(fakeBin, 'codex', path.join(root, 'agent.log'));
+    const fixturePath = fakeBin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', PATH: fixturePath, Path: fixturePath };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'launch fixture init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'launch fixture Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'launch fixture seat');
+    const started = cli(['seat', 'start', 'first', '--command', 'codex', '--no-launch']);
+    equal(started.exit, 0, 'Codex CLI preview: ' + started.stderr);
+    const result = JSON.parse(started.stdout) as { command_args: string[]; launch_line: string };
+    check(result.command_args.includes('--no-daemon'), 'Codex CLI omitted isolation default');
+    equal(escapedArgv(['codex', ...result.command_args]), escapedArgv(['codex', '--no-daemon']), 'CLI argv differs from default planner');
+    const resumed = cli(['seat', 'start', 'first', '--command', 'codex', '--resume', uuid, '--no-launch']);
+    check(resumed.exit === 0 && (JSON.parse(resumed.stdout) as { command_args: string[] }).command_args.includes('--no-daemon'), 'resumed Codex lost isolation default');
+    const conflicting = cli(['seat', 'start', 'first', '--command', 'codex', '--assistant', 'claude', '--no-launch']);
+    check(conflicting.exit !== 0 && conflicting.stderr.includes('conflicts'), 'CLI command classification conflict');
+    const registry = JSON.parse(fs.readFileSync(path.join(lib, '.claude', 'seats', '_registry.json'), 'utf8')) as { seats: { seat_id: string }[] };
+    const savedAssistant = emptyLaunchRecord(registry.seats[0]!.seat_id); savedAssistant.assistant = 'codex';
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'launch.json'), JSON.stringify(savedAssistant));
+    const classified = cli(['seat', 'start', 'first', '--assistant', 'codex', '--no-launch']);
+    check(classified.exit === 0 && (JSON.parse(classified.stdout) as { command: string }).command === 'codex', 'classification ran before saved executable selection');
+    const custom = cli(['seat', 'start', 'first', '--command', process.execPath, '--assistant', 'codex', '--resume', uuid, '--no-launch']);
+    check(custom.exit === 0, 'custom executable lost explicit classification: ' + custom.stderr);
+  } catch (error) { failures.push('section 221 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+
+// --- 222. C5: flag table, settings approvals and incarnation/rename barriers -------------------------------
+if (selected(222)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-launch-settings-')));
+  try {
+    const { LAUNCH_FLAG_TABLE, validateStoredFlags } = await import('../src/seatlaunch.ts');
+    for (const assistant of ['claude', 'codex'] as const) {
+      const valueOption = assistant === 'codex' ? '-m' : '--model';
+      for (const name of LAUNCH_FLAG_TABLE[assistant].forbidden) {
+        for (const args of [[name], [name + '=x'], [valueOption, name], ['--unknown=' + name], ['-m' + name]]) {
+          let refused = false; try { validateStoredFlags(assistant, args); } catch { refused = true; }
+          check(refused, assistant + ' accepted forbidden spelling ' + JSON.stringify(args));
+        }
+      }
+      for (const args of [['resume'], ['--'], ['--unknown', 'prompt'], ['-pc'], ['-ac'], ['--model'], ['--model', '--unknown'],
+        ['--x=a\nb'], ['--x=a\x7fb'], ['--x=a%b'], ['--x=a"b']]) {
+        let refused = false; try { validateStoredFlags(assistant, args); } catch { refused = true; }
+        check(refused, assistant + ' accepted malformed flags ' + JSON.stringify(args));
+      }
+      for (const args of [[], ['--unknown'], ['--unknown=value'], ['--model', 'model-name'], ['-mmodel-name']]) {
+        let accepted = true; try { validateStoredFlags(assistant, args); } catch { accepted = false; }
+        check(accepted, assistant + ' rejected valid flags ' + JSON.stringify(args));
+      }
+    }
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'settings fixture init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'settings fixture Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'settings fixture seat');
+    // Workspace must be before --, whose remainder belongs to the stored assistant.
+    const settings = (args: string[]) => runCli(['seat', 'settings', 'first', '--workspace', lib, ...args], { cwd: root, env });
+    const file = path.join(lib, '.claude', 'seats', 'first', 'launch.json');
+    const read = () => JSON.parse(fs.readFileSync(file, 'utf8')) as { seat_id: string; assistant: string | null; args: { claude: string[]; codex: string[] }; approved: { claude: unknown; codex: { plan_id: string; utc: string } | null } };
+    const flags = ['-a', 'never', '-s', 'danger-full-access'];
+    const preview = (mode: string[], values: string[] = []) => {
+      const ran = settings([...mode, '--preflight', ...(values.length ? ['--', ...values] : [])]);
+      equal(ran.exit, 0, 'settings preview ' + ran.stderr);
+      return (JSON.parse(ran.stdout) as { plan_id: string }).plan_id;
+    };
+    const apply = (mode: string[], id: string, values: string[] = []) => settings([...mode, '--plan-id', id, ...(values.length ? ['--', ...values] : [])]);
+    equal(settings(['--assistant', 'codex']).exit, 0, 'instant assistant setting');
+    equal(read().assistant, 'codex', 'assistant was not saved');
+    const before = fs.readFileSync(file, 'utf8');
+    const previewAt = Date.now();
+    const id = preview(['--flags', 'codex'], flags);
+    equal(fs.readFileSync(file, 'utf8'), before, 'flag preview wrote');
+    check(/^seat-launch-[a-f0-9]{64}$/.test(id), 'flag id shape');
+    check(settings(['--flags', 'codex', '--', ...flags]).exit !== 0, 'flag setting without approval');
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    equal(apply(['--flags', 'codex'], id, flags).exit, 0, 'approved flags apply');
+    equal(read().approved.codex!.plan_id, id, 'record lost applied approval id');
+    check(Number.isFinite(Date.parse(read().approved.codex!.utc)), 'record approval timestamp');
+    check(Date.parse(read().approved.codex!.utc) >= previewAt + 1000, 'delayed apply was not proved after the clock moved');
+    const approved = JSON.stringify(read().approved.codex);
+    equal(settings(['--assistant', 'claude']).exit, 0, 'assistant change after approval');
+    equal(JSON.stringify(read().approved.codex), approved, 'assistant update lost flag approval');
+    const stale = preview(['--flags', 'codex'], ['--model', 'second']);
+    equal(settings(['--assistant', 'codex']).exit, 0, 'racing assistant update');
+    check(apply(['--flags', 'codex'], stale, ['--model', 'second']).exit !== 0, 'stale flags plan overwrote assistant update');
+    equal(apply(['--flags', 'codex'], preview(['--flags', 'codex'], flags), flags).exit, 0, 'fresh flags retry');
+    const clear = preview(['--clear-flags', 'codex']), reset = preview(['--reset-launch']);
+    check(apply(['--reset-launch'], clear).exit !== 0 && apply(['--clear-flags', 'codex'], reset).exit !== 0, 'operations shared approval id');
+    const modes = [['--inbound', 'accept'], ['--assistant', 'codex'], ['--flags', 'codex'], ['--clear-flags', 'codex'], ['--reset-launch']];
+    const unchanged = fs.readFileSync(file, 'utf8');
+    for (let a = 0; a < modes.length; a++) for (let b = a + 1; b < modes.length; b++) {
+      const ran = settings([...modes[a]!, ...modes[b]!, '--preflight']);
+      check(ran.exit !== 0 && ran.stderr.includes('mutually exclusive'), 'combined settings modes accepted');
+      equal(fs.readFileSync(file, 'utf8'), unchanged, 'mode refusal wrote');
+    }
+    check(settings(['--assistant', 'codex', '--preflight']).exit !== 0, 'assistant preflight accepted');
+    equal(apply(['--clear-flags', 'codex'], clear).exit, 0, 'clear flags');
+    check(read().args.codex.length === 0 && read().approved.codex === null, 'empty args approval state');
+    fs.writeFileSync(file, '{malformed');
+    check(settings(['--clear-flags', 'codex', '--preflight']).exit !== 0, 'malformed selective clear accepted');
+    equal(apply(['--reset-launch'], preview(['--reset-launch'])).exit, 0, 'digest-bound malformed reset');
+    check(!fs.existsSync(file), 'reset kept file');
+    fs.mkdirSync(file);
+    const unreadable = settings(['--reset-launch', '--preflight']);
+    check(unreadable.exit !== 0 && unreadable.stderr.includes('no plan id'), 'unreadable bytes got reset id');
+    fs.rmdirSync(file);
+    equal(settings(['--assistant', 'codex']).exit, 0, 'restore fixture assistant');
+    const seatId = read().seat_id;
+    const journals = path.join(lib, 'internal', 'seat-rename-journals'); fs.mkdirSync(journals, { recursive: true });
+    const journal = path.join(journals, seatId + '.json');
+    fs.writeFileSync(journal, JSON.stringify({ old: 'first', new: 'second', state: 'in-progress' }));
+    for (const name of ['first', 'second']) for (const mode of modes) {
+      const ran = runCli(['seat', 'settings', name, '--workspace', lib, ...mode, ...(mode[0] === '--assistant' ? [] : ['--preflight'])], { cwd: root, env });
+      check(ran.exit !== 0 && ran.stderr.includes('being renamed'), 'rename barrier did not stop ' + name + ' ' + mode[0]);
+    }
+  } catch (error) { failures.push('section 222 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+
+// --- 223. C5: menu preferences, copying, previews, lifecycle and the locked launch snapshot ----------------
+if (selected(223)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-launch-menu-')));
+  try {
+    const { splitMenuFlags } = await import('../src/menu.ts');
+    const { emptyLaunchRecord, readSeatLaunch, launchDigest, seatLaunchPreview, escapedArgv } = await import('../src/seatlaunch.ts');
+    const { enterSeatRegistryLock, exitBookLock } = await import('../src/locks.ts');
+    equal(JSON.stringify(splitMenuFlags('  -a   never\t-s danger-full-access  ')), JSON.stringify(['-a', 'never', '-s', 'danger-full-access']), 'menu whitespace splitting');
+    const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+    const log = path.join(root, 'agents.log'); fakeAssistant(bin, 'claude', log); fakeAssistant(bin, 'codex', log);
+    const onPath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', PATH: onPath, Path: onPath, NO_COLOR: '1', DESKPOST_UPDATE_CHECK: '0' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'menu launch init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'menu launch Hub');
+    equal(cli(['hub', 'new', 'second-work', '--title', 'Second Work']).exit, 0, 'second seat Hub');
+    for (const name of ['first', 'second']) equal(cli(['seat', 'start', name, '--project', name === 'first' ? 'work' : 'second-work', '--no-launch']).exit, 0, 'menu launch seat ' + name);
+    let turn = 0;
+    const menu = (answers: string[]) => {
+      const script = path.join(root, 'answers-' + (++turn) + '.txt'); fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['menu', '--workspace', lib, '--script', script], { cwd: root, env });
+    };
+    const recordFile = (seat: string) => path.join(lib, '.claude', 'seats', seat, 'launch.json');
+    const record = (seat: string) => JSON.parse(fs.readFileSync(recordFile(seat), 'utf8')) as { seat_id: string; assistant: string | null; args: { codex: string[] }; approved: { codex: { plan_id: string } } };
+    const first = menu(['s1', 'a', 'codex', 'f', 'codex', '-a never -s danger-full-access', '', 'q', '1']);
+    check(first.exit === 0 && first.stdout.includes('Planned launch:') && first.stdout.includes('approved'), 'settings screen failed: ' + first.stdout.slice(-500) + first.stderr);
+    equal(record('first').assistant, 'codex', 'menu did not save assistant');
+    check(fs.readFileSync(log, 'utf8').includes('"--no-daemon" "-a" "never" "-s" "danger-full-access"'), 'menu flags did not reach Codex argv');
+    const oldApproval = record('first').approved.codex.plan_id;
+    const cancelled = menu(['s1', 'x', 'codex', 'q', 'q', 'q']);
+    check(cancelled.exit === 0 && record('first').approved.codex.plan_id === oldApproval, 'cancelled preview changed flags');
+    const copy = menu(['s2', 'a', 'codex', 'c', 'codex', 'first', '', 'q', 'n2']);
+    check(copy.exit === 0 && JSON.stringify(record('second').args.codex) === JSON.stringify(record('first').args.codex), 'copy did not preserve named seat flags');
+    check(record('second').approved.codex.plan_id !== oldApproval, 'copy inherited source approval instead of approving destination');
+    const uuid = '00000000-0000-4000-8000-000000000223';
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'activity.json'), JSON.stringify({ session_id: uuid, assistant: 'codex', conversation_recorded_utc: new Date().toISOString() }));
+    const resumeWithFlags = menu(['1']);
+    check(resumeWithFlags.exit === 0 && resumeWithFlags.stdout.includes('Stored flags for codex:') && fs.readFileSync(log, 'utf8').includes('"resume" "' + uuid + '" "--no-daemon" "-a" "never"'), 'resumed menu launch lost flags');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'activity.json'), JSON.stringify({ session_id: uuid, assistant: 'claude', conversation_recorded_utc: new Date().toISOString() }));
+    const cross = menu(['1']);
+    check(cross.exit === 0 && cross.stdout.includes("Claude Code's; 1 starts Codex") && cross.stdout.includes('stays resumable there'), 'cross-owner row or launch explanation missing: ' + cross.stdout.slice(-600));
+    const dirs = cli(['seat', 'dirs', 'first', '--list']);
+    check(dirs.exit === 0 && !dirs.stdout.includes('resume ' + uuid) && dirs.stdout.includes('--no-daemon'), 'dirs resumed a foreign conversation');
+    const exact = cli(['seat', 'start', 'first', '--intent', 'resume', '--no-launch']);
+    const planned = seatLaunchPreview(lib, 'first');
+    equal((JSON.parse(exact.stdout) as { launch_line: string }).launch_line, escapedArgv([planned.command, ...planned.args]), 'settings planner preview differs from seat start');
+    const otherId = '00000000-0000-4000-8000-000000000999';
+    const explicit = cli(['seat', 'start', 'first', '--resume', otherId, '--no-launch']);
+    const explicitArgs = (JSON.parse(explicit.stdout) as { command_args: string[] }).command_args;
+    check(explicitArgs[0] === 'resume' && explicitArgs[1] === otherId && !explicitArgs.includes(uuid), 'explicit UUID lost to recorded conversation');
+    const codexRecord = fs.readFileSync(recordFile('first'), 'utf8');
+    const claudeRecord = JSON.parse(codexRecord); claudeRecord.assistant = 'claude'; fs.writeFileSync(recordFile('first'), JSON.stringify(claudeRecord));
+    const transcripts = path.join(root, 'transcripts'); fs.mkdirSync(transcripts);
+    const mask = (line: string) => line.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>');
+    const newPreview = seatLaunchPreview(lib, 'first', undefined, 'claude', 'new', transcripts);
+    const newRun = cli(['seat', 'start', 'first', '--intent', 'new', '--transcript-root', transcripts, '--no-launch']);
+    equal(mask((JSON.parse(newRun.stdout) as { launch_line: string }).launch_line), mask(escapedArgv([newPreview.command, ...newPreview.args])), 'new-conversation preview differs from argv');
+    equal(cli(['seat', 'start', 'first', '--intent', 'new', '--transcript-root', transcripts]).exit, 0, 'fixture Claude conversation was not minted');
+    const restartPreview = seatLaunchPreview(lib, 'first', undefined, 'claude', 'resume', transcripts);
+    const restartRun = cli(['seat', 'start', 'first', '--intent', 'resume', '--transcript-root', transcripts, '--no-launch']);
+    equal((JSON.parse(restartRun.stdout) as { launch_line: string }).launch_line, escapedArgv([restartPreview.command, ...restartPreview.args]), 'restart preview differs from argv');
+    check(restartPreview.action === 'restart', 'restart equality case never reached restart');
+    const unsetAssistant = JSON.parse(codexRecord); unsetAssistant.assistant = null;
+    fs.writeFileSync(recordFile('first'), JSON.stringify(unsetAssistant));
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'settings.json'), JSON.stringify({ crossSessionInbound: 'accept' }));
+    const previewPathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
+    const previousPreviewPath = process.env[previewPathKey];
+    let ownerPreview: ReturnType<typeof seatLaunchPreview>;
+    try { process.env[previewPathKey] = onPath; ownerPreview = seatLaunchPreview(lib, 'first', undefined, 'codex', 'resume', transcripts); }
+    finally { if (previousPreviewPath === undefined) delete process.env[previewPathKey]; else process.env[previewPathKey] = previousPreviewPath; }
+    const ownerRun = cli(['seat', 'start', 'first', '--intent', 'resume', '--fallback-assistant', 'codex', '--transcript-root', transcripts, '--no-launch']);
+    equal(ownerPreview.command, 'claude', 'null preference ignored the recorded conversation owner');
+    equal((JSON.parse(ownerRun.stdout) as { launch_line: string }).launch_line, escapedArgv([ownerPreview.command, ...ownerPreview.args]), 'null-preference preview differs from actual owner argv');
+    fs.writeFileSync(recordFile('first'), codexRecord);
+    // A malformed source is never listed by copy; doctor names it and its reset route.
+    const saved = fs.readFileSync(recordFile('first'), 'utf8'); fs.writeFileSync(recordFile('first'), '{');
+    const invalidCopy = menu(['s2', 'c', 'codex', 'first', 'q', 'q']);
+    check(invalidCopy.stdout.includes('no valid stored flags'), 'copy allowed an invalid source');
+    const doctor = cli(['doctor', '--json']);
+    check(doctor.stdout.includes('seats.launch-record.first') && doctor.stdout.includes('--reset-launch'), 'doctor omitted malformed launch WARN');
+    fs.writeFileSync(recordFile('first'), saved);
+
+    // Help creates its assistant under the wrapped creation gate; its later menu launch carries its stored flags.
+    const help = menu(['a', 'h', '']);
+    check(help.exit === 0 && record('deskpost-help').assistant === 'codex', 'help seat assistant was not recorded: ' + help.stdout.slice(-500) + help.stderr);
+    const helpFlags = menu(['s1', 'c', 'codex', 'first', '', 'q', 'a', 'h', '']);
+    check(helpFlags.exit === 0 && helpFlags.stdout.includes('Stored flags for codex:'), 'help launch did not carry flags: ' + helpFlags.stdout.slice(-500));
+    // A creation preview is bound to its assistant as well as its prior choices.
+    equal(cli(['hub', 'new', 'wizard', '--title', 'Wizard']).exit, 0, 'wizard Hub');
+    const creation = cli(['seat', 'start', 'wizard', '--project', 'wizard', '--record-assistant', 'codex', '--command', 'codex', '--preflight']);
+    const id = (JSON.parse(creation.stdout) as { plan_id: string }).plan_id;
+    const changed = cli(['seat', 'start', 'wizard', '--project', 'wizard', '--record-assistant', 'claude', '--command', 'claude', '--plan-id', id, '--no-launch']);
+    check(changed.exit !== 0 && !fs.existsSync(recordFile('wizard')), 'creation assistant was not bound to approval');
+    const created = cli(['seat', 'start', 'wizard', '--project', 'wizard', '--record-assistant', 'codex', '--command', 'codex', '--plan-id', id, '--no-launch']);
+    check(created.exit === 0 && record('wizard').assistant === 'codex', 'approved creation lost assistant');
+    equal(cli(['hub', 'new', 'faulted', '--title', 'Faulted']).exit, 0, 'faulted creation Hub');
+    const faultPreview = cli(['seat', 'start', 'faulted', '--project', 'faulted', '--record-assistant', 'codex', '--command', 'codex', '--preflight']);
+    const faultId = (JSON.parse(faultPreview.stdout) as { plan_id: string }).plan_id;
+    const faulted = runCli(['seat', 'start', 'faulted', '--project', 'faulted', '--record-assistant', 'codex', '--command', 'codex', '--plan-id', faultId, '--workspace', lib], { cwd: root, env: { ...env, LIBRARY_SEAT_START_FAULT: 'launch-record' } });
+    check(faulted.exit === 0 && faulted.stdout.includes('codex') && faulted.stderr.includes('s<number>') && !fs.existsSync(recordFile('faulted')), 'assistant-record failure did not create and launch with the selected assistant');
+
+    // The child reads the old snapshot, then blocks on our registry lock; only the locked record may launch.
+    const ready = path.join(root, 'snapshot-ready');
+    const lock = enterSeatRegistryLock(lib, 10);
+    let pending: Promise<{ exit: number; stdout: string; stderr: string }>;
+    try {
+      pending = runCliAsync(['seat', 'start', 'first', '--workspace', lib, '--no-launch'], { cwd: root, env: { ...env, LIBRARY_SEAT_LAUNCH_READY: ready } });
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      check(fs.existsSync(ready), 'launch never read pre-lock snapshot');
+      const next = emptyLaunchRecord(record('first').seat_id); next.assistant = 'claude';
+      fs.writeFileSync(recordFile('first'), JSON.stringify(next));
+    } finally { exitBookLock(lock); }
+    const raced = await pending!;
+    check(raced.exit === 0 && (JSON.parse(raced.stdout) as { assistant: string }).assistant === 'claude', 'launch used stale pre-lock assistant: ' + raced.stderr);
+    fs.writeFileSync(recordFile('first'), saved);
+
+    // Retirement carries launch.json; a recreated slug gets an empty record state for its new incarnation.
+    const old = record('second');
+    const retirePreview = cli(['seat', 'retire', 'second', '--preflight']);
+    const retireId = (JSON.parse(retirePreview.stdout) as { plan_id: string }).plan_id;
+    const retired = cli(['seat', 'retire', 'second', '--plan-id', retireId]);
+    check(retired.exit === 0 && retired.stdout.includes('launch'), 'retirement did not carry launch record');
+    equal(cli(['seat', 'start', 'second', '--project', 'second-work', '--no-launch']).exit, 0, 'recreated fixture slug');
+    fs.writeFileSync(recordFile('second'), JSON.stringify(old));
+    const registry = JSON.parse(fs.readFileSync(path.join(lib, '.claude', 'seats', '_registry.json'), 'utf8')) as { seats: { seat: string; seat_id: string }[] };
+    equal(readSeatLaunch(path.join(lib, '.claude'), 'second', registry.seats.find(r => r.seat === 'second')!.seat_id).state, 'invalid', 'recreated slug inherited old record');
+    const renamePreview = cli(['seat', 'rename', 'first', 'renamed', '--preflight']);
+    const renameId = (JSON.parse(renamePreview.stdout) as { plan_id: string }).plan_id;
+    const renamed = cli(['seat', 'rename', 'first', 'renamed', '--user-confirmed', '--plan-id', renameId]);
+    check(renamed.exit === 0 && fs.readFileSync(recordFile('renamed'), 'utf8') === saved && !fs.existsSync(recordFile('first')), 'rename did not carry launch record byte for byte');
+    const wizardMenu = menu(['+', 'Wizard Menu', '', '', '', 'a', '']);
+    check(wizardMenu.exit === 0 && record('wizard-menu').assistant === 'codex', 'wizard preview assistant was not recorded: ' + wizardMenu.stdout.slice(-600) + wizardMenu.stderr);
+    const codexFile = path.join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+    fs.renameSync(codexFile, codexFile + '.disabled');
+    try {
+      const limitedPath = [bin, path.dirname(process.execPath), ...(process.platform === 'win32' ? [path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32'), path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0')] : ['/usr/bin', '/bin'])].join(path.delimiter);
+      const missing = runCli(['seat', 'start', 'renamed', '--workspace', lib, '--no-launch'], { cwd: root, env: { ...env, PATH: limitedPath, Path: limitedPath, USERPROFILE: root, HOME: root } });
+      check(missing.exit !== 0 && missing.stderr.includes('is set to Codex') && missing.stderr.includes('not found here'), 'missing recorded assistant silently fell back: ' + missing.stderr);
+    } finally { fs.renameSync(codexFile + '.disabled', codexFile); }
+  } catch (error) { failures.push('section 223 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 // --- the verdict ----------------------------------------------------------------------------------------

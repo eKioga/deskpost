@@ -4953,6 +4953,39 @@
       "kernel/src/hookregistry.ts",
       "kernel/src/hooksearchhit.ts",
       "kernel/src/hookseatstart.ts"
+    ],
+    "218": [],
+    "219": [
+      "kernel/src/doctor.ts",
+      "kernel/src/init.ts",
+      "kernel/src/lifecycle.ts",
+      "kernel/src/skillcopy.ts"
+    ],
+    "220": [
+      "kernel/src/collection.ts",
+      "kernel/src/localcatalog.ts",
+      "kernel/src/locallistentry.ts",
+      "kernel/src/publish.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "221": [
+      "kernel/src/seatlaunch.ts",
+      "kernel/src/seat.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "222": [
+      "kernel/src/seatlaunch.ts",
+      "kernel/src/seatinbound.ts",
+      "kernel/src/seat.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "223": [
+      "kernel/src/seatlaunch.ts",
+      "kernel/src/menu.ts",
+      "kernel/src/seatdirs.ts",
+      "kernel/src/doctor.ts",
+      "kernel/src/seat.ts",
+      "kernel/src/verbs.ts"
     ]
   }
 }

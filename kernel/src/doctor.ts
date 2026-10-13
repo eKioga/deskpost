@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
 import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { SKILL_LOCATIONS, skillInstallationStatus } from './skillcopy.ts';
 import { argumentTable } from './verbs.ts';
 import { fileDoctorFindings } from './doctorreport.ts';
 import { releaseTuple } from './programroot.ts';
@@ -60,6 +61,9 @@ import { readNotebookLayout, seatNotebookRoots } from './notebooklayout.ts';
 import { librariesServedByRoot, sameFolder } from './installs.ts';
 import { asList, codexHookShapeFaults, enabledClaudePluginHooks, codexRegistrationProblems, claudeHookShapeFaults, hookRegistrationProblems, isObject, REQUIRED_HOOKS, type Json } from './hookregistry.ts';
 import { COMMAND_NAME, findAssistant, installRootOf, installShim, ownedRegistration, programOfBinary, programRelation, readInstallReceipt, resolveOnPath } from './machine.ts';
+
+import { readSeatLaunch } from './seatlaunch.ts';
+import { readRegistryRows, registryFilePath } from './seatregistry.ts';
 
 const WORKSPACE_ABSENT_REASON =
   'no reader workspace is attached, so nothing was read from a Shelf, a Notebook or ' +
@@ -1655,6 +1659,9 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
   // THE PROGRAM'S OWN CHECKS RUN WITH OR WITHOUT A LIBRARY (F4), in their own list: `checks` stays the workspace checks
   // the PowerShell runner's -WorkspaceOnly reports, which the acceptance matrix compares row for row.
   const programChecks: CheckResult[] = [
+    ...SKILL_LOCATIONS.map((location) => workspace
+      ? runCheck(`workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, () => skillInstallationStatus(workspace, program, location))
+      : { check: `workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, status: 'skipped', detail: 'no Library here, so no workspace skills to check' }),
     runCheck('program.command-resolves', () => commandResolves(program)),
     runCheck('program.assistant-present', assistantPresent),
     // KEPT IN THIS LIST, NOT `checks` (1.2.5): the PowerShell runner has no added folders to check, and `checks` is
@@ -1680,6 +1687,10 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('notebook.links-resolve', () => notebookLinksResolve(workspace)) : { check: 'notebook.links-resolve', status: 'skipped', detail: 'no Library here, so no Hub or Shelf Book links to check' },
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
     runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
+    ...(workspace ? (() => { try { return readRegistryRows(registryFilePath(path.join(workspace, '.claude'))).flatMap(row => {
+      const seat = String(row['seat']), read = readSeatLaunch(path.join(workspace, '.claude'), seat, String(row['seat_id'] ?? ''));
+      return read.state === 'invalid' || read.state === 'unreadable' ? [{ check: 'seats.launch-record.' + seat, status: 'warn', detail: read.reason + '; reset with deskpost seat settings ' + seat + ' --reset-launch --preflight, then its --plan-id' }] : [];
+    }); } catch { return []; /* The existing registry checks name a malformed registry. */ } })() : []),
     ...refreshUnfinished(program),
   ];
   return { results, programChecks };

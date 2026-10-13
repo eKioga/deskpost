@@ -41,8 +41,15 @@ flowchart TD
     C --> F
 ```
 
-`deskpost seat start` is the way in that works everywhere, for Claude Code and for Codex
-(`--command codex`). A seatless Claude Code session can also bind a seat when you answer its
+The main menu, `deskpost`, opens each seat in its saved assistant. `s<number>` chooses that
+assistant with `a`, sets flags with `f`, or copies them from a named seat with `c`; each flag
+change shows a launch preview for approval. A number resumes there, or starts a new conversation
+when the last one belongs to the other assistant; the row says so and keeps that older
+conversation resumable in its owner. The new-seat preview's `a` saves its assistant on Enter.
+Every Codex launch gets `--no-daemon` automatically.
+
+`deskpost seat start` also works for Claude Code and for Codex (`--command codex` for that launch).
+A seatless Claude Code session can bind a seat when you answer its
 question. That session lists the seats that exist, and a resumed conversation is put
 back at the seat it last held when nobody else is sitting there.
 

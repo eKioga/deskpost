@@ -36,6 +36,7 @@ import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
 import { hubRename } from './hubrename.ts';
 import { localSharedArchive } from './localarchive.ts';
+import { localSharedListEntry } from './locallistentry.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
 
@@ -449,7 +450,7 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
   }
 }
 
-/** `library shared <archive|list-entry>`: the collection's own Catalog, against Basic Memory only. */
+/** `library shared <archive|list-entry>`: the collection's own Catalog, in Basic Memory or a local Library's files. */
 export async function runSharedVerb(argv: string[], workspace: string): Promise<HubResult> {
   const action = argv[0] ?? '';
   try {
@@ -457,12 +458,8 @@ export async function runSharedVerb(argv: string[], workspace: string): Promise<
     const local = marker !== null && String(marker['backend'] ?? '') === 'local';
     // A LOCAL LIBRARY ARCHIVES ITS OWN COLLECTION'S BOOKS (PLAN-basic-memory.md step 1): the same verb, a file writer.
     if (local && action === 'archive') return { refusal: null, value: localSharedArchive(argv.slice(1), workspace) };
-    if (local && action === 'list-entry') {
-      refuse(
-        `library shared ${action} acts on a shared collection, and this workspace uses its local collection: there is no ` +
-          'shared Book Catalog to change. Nothing was changed.',
-      );
-    }
+    // AND LISTS ITS OWN COLLECTION'S BOOKS (S118; 2nd-b-vault-dev's Report): a Book's one line in `collection/books/README.md`.
+    if (local && action === 'list-entry') return { refusal: null, value: localSharedListEntry(argv.slice(1), workspace) };
     switch (action) {
       case 'archive':
         return { refusal: null, value: await sharedArchive(argv.slice(1), workspace) };

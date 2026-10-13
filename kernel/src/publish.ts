@@ -75,14 +75,12 @@ import {
 } from './recallrecord.ts';
 import {
   composeFrontmatter,
-  ensureHeading,
-  insertUnderHeading,
   LOCAL_BOOKS_CATALOG_TEXT,
   localPublicationState,
   ownedLines,
+  placeOwnedEntry,
   readCatalogOrTemplate,
   splitLocalFrontmatter,
-  withoutLine,
   writeCatalog,
 } from './localcatalog.ts';
 
@@ -939,27 +937,21 @@ async function localCandidateConfirmed(
       const catalogFile = fileFor('books/README.md');
       const entry = `- [[${candidate.bookRoot}/_book|${input.title}]] — ${input.summary}`;
       const target = `${candidate.bookRoot}/_book`;
-      let catalog = readCatalogOrTemplate(catalogFile, LOCAL_BOOKS_CATALOG_TEXT).text;
       const targetHeading = input.collection ? `## ${input.collection}` : '## Open a Book';
-      catalog = ensureHeading(catalog, targetHeading, input.collection ? '## Open a Book' : null).text;
-      const owned = ownedLines(catalog, [target]);
-      let catalogEntryState = 'already-current';
-      let movedFrom: string | null = null;
-      if (owned.length === 0) {
-        catalog = insertUnderHeading(catalog, targetHeading, entry);
-        catalogEntryState = 'inserted';
-      } else if (owned.length > 1) {
-        refuse(`The Book Catalog carries ${owned.length} entry lines linking '${target}'; it will not guess which one this publication owns.`);
-      } else if (input.collection && owned[0]!.heading !== targetHeading) {
-        movedFrom = owned[0]!.heading;
-        catalog = insertUnderHeading(withoutLine(catalog, owned[0]!.index), targetHeading, entry);
-        catalogEntryState = 'moved';
-      } else if (owned[0]!.line !== entry) {
-        const lines = catalog.replace(/\r\n/g, '\n').split('\n');
-        lines[owned[0]!.index] = entry;
-        catalog = lines.join('\n');
-        catalogEntryState = 'replaced';
+      const placed = placeOwnedEntry(
+        readCatalogOrTemplate(catalogFile, LOCAL_BOOKS_CATALOG_TEXT).text,
+        target,
+        entry,
+        targetHeading,
+        input.collection ? '## Open a Book' : null,
+        Boolean(input.collection),
+      );
+      if (placed.state === 'duplicate') {
+        refuse(`The Book Catalog carries ${placed.count} entry lines linking '${target}'; it will not guess which one this publication owns.`);
       }
+      let catalog = placed.text;
+      const catalogEntryState = placed.state;
+      const movedFrom = placed.movedFrom;
       const before = readCatalogOrTemplate(catalogFile, '').text;
       const catalogUpdated = catalog !== before;
       if (catalogUpdated) catalog = writeCatalog(catalogFile, catalog);

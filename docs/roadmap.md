@@ -25,7 +25,7 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **S114** (in progress): 1.4.3.
+- **c6/c7** (in progress): 1.4.4.
 
 ## Next
 
@@ -412,6 +412,18 @@ A fix release.
 - Upgrading keeps a Library whose Codex config already carries these guards.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
+
+### 1.4.4: Codex seats from the main menu (released 2026-10-12)
+
+- **Codex seats from the main menu:** `s<number>` saves the assistant and approved launch flags;
+  `c` copies flags to another seat. A number opens the saved assistant, and every Codex launch gets
+  `--no-daemon`.
+- The shipped Library skills are installed for both Claude Code and Codex.
+- `shared list-entry` works in a Library whose collection is on this computer.
+- Codex no longer asks before each validated-reader call; `deskpost init` repairs the configuration
+  that `deskpost doctor` reports would prevent Codex from starting.
+- Seat-start and search-hit reminders appear once when the Claude plugin is also installed.
+- A seat hold allows a short grace after its deadline before releasing its claim.
 
 ### Earlier releases
 

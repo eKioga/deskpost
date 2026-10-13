@@ -68,8 +68,8 @@ import {
 } from './seatclaim.ts';
 import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
 import { nativeProcessCalls, nativeWaitForExit } from './win32proc.ts';
-import { agentExecutable, installRootOf, resolveOnPath } from './machine.ts';
-import { ASSISTANT_LABEL, isConversationId, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
+import { agentExecutable, findAssistant, installRootOf, resolveOnPath } from './machine.ts';
+import { ASSISTANT_LABEL, isConversationId, seatConversationView, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 import { addedDirArguments, addedDirsPath, addedDirsStatus, lettersPromptArguments, nameArguments, seatDirsResult } from './seatdirs.ts';
 import { seatStatusText } from './human.ts';
@@ -92,6 +92,8 @@ import { seatCardsResult, seatCardsText } from './seatcards.ts';
 import { assertNoSeatRename, seatRenameJournals } from './seatpaths.ts';
 import { seatRenameResult } from './seatrename.ts';
 import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
+
+import { classifyCommand, emptyLaunchRecord, escapedArgv, planSeatLaunch, readSeatLaunch, seatLaunchPath, writeSeatLaunch } from './seatlaunch.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -120,6 +122,9 @@ function seconds(from: number): number {
 // its deadline is what makes every launch self-abandoning.
 
 const HOLDER_ATTEMPT_STATES = ['pending', 'committed', 'abandoned'];
+
+/** How long past its deadline a holder still waits for the verb's commit (see `seatHold`, step 3). */
+const HOLDER_COMMIT_GRACE_MS = 10000;
 
 export function seatHolderAttemptPath(stateDirectory: string, seat: string): string {
   return path.join(deskStateDirectory(stateDirectory, seat), 'holder-attempt.json');
@@ -302,7 +307,7 @@ async function startSeatClaimHolder(options: {
 
 /**
  * Commit a readied attempt. THE BINDING COMMITS FIRST AND THE ATTEMPT SECOND: a verb that dies
- * between the two leaves a committed binding whose holder abandons itself at its deadline, which
+ * between the two leaves a committed binding whose holder abandons itself after its deadline's grace, which
  * reads `orphaned` and is repaired by the same agent's next enter. The reverse order leaves a held
  * handle over a binding nothing can recognise.
  */
@@ -1063,9 +1068,15 @@ async function seatHold(argv: string[]): Promise<number> {
     return 5;
   }
   try {
-    // --- 3. Wait for the commit; abandon at the deadline.
+    // --- 3. Wait for the commit; abandon after the deadline's grace.
+    // THE GRACE IS THE POINT. The verb waits for this handle until the deadline and commits as soon as it
+    // sees it, so a holder that took the handle just before the deadline -- a slow start under load -- is
+    // committed just after it. Abandoning AT the deadline let go of a seat the verb had reported bound,
+    // which then read `orphaned` (S116's Report). The verb writes `committed` or `abandoned` either way, so
+    // waiting longer costs only a dead verb's seat, which is held for the grace and then released.
     let committed = false;
-    while (Date.now() < deadline) {
+    const giveUp = deadline + HOLDER_COMMIT_GRACE_MS;
+    while (Date.now() < giveUp) {
       let current: HolderAttempt | null;
       try {
         current = readSeatHolderAttempt(stateDirectory, seat);
@@ -1134,9 +1145,7 @@ export class SeatPlanChanged extends SeatRefusal {}
  * started with exactly the arguments it was given, and nothing is minted or recorded for it.
  */
 export function commandAssistant(command: string, explicit?: string): Assistant | null {
-  if (explicit === 'codex' || explicit === 'claude') return explicit;
-  const name = path.basename(command).replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
-  return name === 'codex' ? 'codex' : name === 'claude' ? 'claude' : null;
+  return classifyCommand(command, explicit);
 }
 
 /**
@@ -1217,12 +1226,14 @@ function plannedStart(
   rows: Record<string, PsJsonValue>[],
   seat: string,
   project: string,
-  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; inbound?: string | undefined },
+  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; inbound?: string | undefined; recordAssistant?: Assistant | undefined },
   registryFile: string,
   workspace: string,
 ): SeatStartPlan {
   try {
-    return seatStartPlan(rows, seat, project, { ...options, programRoot: programRoot(), workspace, registryDigest: registryFileDigest(registryFile) });
+    const planned = seatStartPlan(rows, seat, project, { ...options, programRoot: programRoot(), workspace, registryDigest: registryFileDigest(registryFile) });
+    if (options.recordAssistant) planned.planId = 'seat-start-' + crypto.createHash('sha256').update(JSON.stringify({ creation: planned.planId, assistant: options.recordAssistant })).digest('hex');
+    return planned;
   } catch (error) {
     if (error instanceof SeatStartPlanRefusal) refuse(error.message);
     throw error;
@@ -1240,9 +1251,9 @@ function planJson(plan: SeatStartPlan): Record<string, PsJsonValue> {
  * `registry-write` in place of its registry replace; both before the row, so the creation must leave no seat. A real
  * run never sets it.
  */
-function seatStartFault(phase: 'book-open' | 'registry-write'): void {
+function seatStartFault(phase: 'book-open' | 'registry-write' | 'launch-record'): void {
   if ((process.env['LIBRARY_SEAT_START_FAULT'] ?? '').trim() === phase) {
-    throw new Error(`FAULT INJECTED ${phase === 'book-open' ? 'while opening a chosen Book' : 'in place of the registry replace'} (a real run never reaches this).`);
+    throw new Error(`FAULT INJECTED ${phase === 'book-open' ? 'while opening a chosen Book' : phase === 'launch-record' ? 'in place of the launch record' : 'in place of the registry replace'} (a real run never reaches this).`);
   }
 }
 
@@ -1293,8 +1304,10 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   if (resolved.status !== 'named') refuse(resolved.message);
   const seat = resolved.seat!;
   const project = parsed.options.get('project') ?? '';
-  const command = parsed.options.get('command') ?? 'claude';
+  let command = parsed.options.get('command') ?? 'claude';
   const noLaunch = parsed.flags.has('no-launch');
+  if (parsed.options.has('intent') && !['new', 'resume'].includes(parsed.options.get('intent')!)) refuse('--intent takes new or resume.');
+  if (parsed.options.has('fallback-assistant') && !['claude', 'codex'].includes(parsed.options.get('fallback-assistant')!)) refuse('--fallback-assistant takes claude or codex.');
   const planId = parsed.options.get('plan-id') ?? '';
   // THE FIVE OPTIONS ONLY A PREVIEW CAN SET (S97 row 1, PLAN-seats-team.md session 2 item 2): `seat start` otherwise
   // creates a seat with no approval step, so a department, role, card, template or Book is never set outside one.
@@ -1306,8 +1319,10 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     openBooks: parsed.lists.get('open-book') ?? [],
     // kickoffs/s108 ruling 6: a new seat's inbound policy, under the same preview and wrapped plan id.
     inbound: parsed.options.get('inbound'),
+    recordAssistant: parsed.options.get('record-assistant') as Assistant | undefined,
   };
-  const withOptions = SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
+  if (parsed.options.has('record-assistant') && !['claude', 'codex'].includes(startOptions.recordAssistant!)) refuse('--record-assistant takes claude or codex.');
+  const withOptions = !!startOptions.recordAssistant || SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
   if (withOptions && !parsed.flags.has('preflight')) {
     if (!planId) {
       refuse(
@@ -1322,18 +1337,10 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       );
     }
   }
-  const assistant = commandAssistant(command, parsed.options.get('assistant'));
-  const resumeId = parsed.options.get('resume') ?? '';
+  // The shared planner resolves classification after the saved assistant selects the executable.
+  let assistant: Assistant | null = commandAssistant(command);
+  let resumeId = parsed.options.get('resume') ?? '';
   let sessionId = parsed.options.get('session-id') ?? '';
-  if (resumeId && sessionId) refuse('--resume and --session-id are two different conversations; pass one.');
-  for (const [flag, value] of [['--resume', resumeId], ['--session-id', sessionId]] as const) {
-    if (value && !isConversationId(value)) refuse(`${flag} takes a conversation id (a uuid); got '${value}'.`);
-  }
-  if ((resumeId || sessionId) && assistant === null) {
-    refuse(`--resume and --session-id are for Claude Code or Codex, and '${command}' is neither; pass --assistant claude|codex if it is one of them.`);
-  }
-  // A CLAUDE CODE CONVERSATION IS MINTED HERE when nothing else chose one, so every launch is resumable from the menu.
-  if (!resumeId && !sessionId && assistant === 'claude' && !choosesConversation(passthrough)) sessionId = newConversationId();
   // THE SEAT'S ADDED FOLDERS, ON EVERY LAUNCH AND IN ONE PLACE (1.2.5, ADR-0061): the menu's resume, new and restart all
   // come here. After the conversation arguments and before the reader's own passthrough, so explicit arguments still come
   // last; Claude Code and Codex both take `--add-dir`, Codex's `resume <id>` included (`codex resume --help`, 0.159.2). A
@@ -1347,7 +1354,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     unreadableDirs = (error as Error).message;
   }
   const missingDirs = recordedDirs.filter((dir) => !dir.exists).map((dir) => dir.path);
-  const appliedDirs = assistant === null ? [] : recordedDirs.filter((dir) => dir.exists).map((dir) => dir.path);
+  let appliedDirs = assistant === null ? [] : recordedDirs.filter((dir) => dir.exists).map((dir) => dir.path);
   // THE SEAT'S INBOUND POLICY, ON EVERY LAUNCH AND IN THE SAME PLACE (1.3.1, kickoffs/s79 row 3, ADR-0062): read and
   // validated here, and only the VALUE passed, after the added folders and before the reader's passthrough. Claude Code
   // only: Codex has no inbox. A file that fails validation is never passed, and the launch says so; the seat still
@@ -1361,7 +1368,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     }
   };
   inbound = readInbound();
-  const inboundCommandScript = (() => {
+  let inboundCommandScript = (() => {
     if (process.platform !== 'win32') return false;
     const searchPath = process.env[Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'] ?? '';
     const file = agentExecutable(command, searchPath).file;
@@ -1380,20 +1387,44 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   } catch {
     lettersWaiting = 0;
   }
-  const firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
-  const buildAgentArguments = (): string[] => [
-    ...(assistant === null ? [] : assistantArguments(assistant, { resume: resumeId, sessionId })),
-    ...nameArguments(assistant, seat, passthrough),
-    ...firstPrompt,
-    ...addedDirArguments(appliedDirs),
-    ...inboundArguments,
-    ...passthrough,
-  ];
-  let agentArguments = buildAgentArguments();
-  const conversationId = resumeId || sessionId;
-  // THE TERMINAL HANDLE IS RESOLVED ONCE, here: an empty one renames nothing, which is how a suite opts out.
+  const mintedId = sessionId || newConversationId();
+  const replanLaunch = (row: { seat_id?: unknown } | null) => {
+    const record = readSeatLaunch(stateDirectory, seat, String(row?.['seat_id'] ?? ''));
+    const preview = planSeatLaunch({ seat, row, record,
+      command: parsed.options.get('command'), assistant: parsed.options.get('assistant'),
+      resume: parsed.options.get('resume'), sessionId: parsed.options.get('session-id'), noLaunch,
+      intent: parsed.options.get('intent') === 'resume' ? 'resume' : 'new',
+      fallback: parsed.options.get('fallback-assistant') === 'codex' ? 'codex' : 'claude',
+      view: row ? seatConversationView(stateDirectory, seat, { transcriptRoot: parsed.options.get('transcript-root') }) : undefined,
+      mintedId, dirs: recordedDirs.filter(dir => dir.exists).map(dir => dir.path),
+      inbound: inboundArgumentsFor(inbound), letters: lettersWaiting, passthrough });
+    // Inbound encoding depends on the executable selected by the planner.
+    command = preview.command; assistant = preview.assistant;
+    if (!parsed.options.has('command') && record.state === 'valid' && record.record.assistant && findAssistant(record.record.assistant) === null) {
+      refuse('Seat ' + seat + ' is set to ' + ASSISTANT_LABEL[record.record.assistant] + ', which is not found here; change it with s<number>.');
+    }
+    const searchPath = process.env[Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH'] ?? '';
+    const executable = agentExecutable(command, searchPath).file;
+    inboundCommandScript = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolveOnPath(executable, searchPath) ?? executable);
+    inboundArguments = inboundArgumentsFor(inbound);
+    const final = planSeatLaunch({ seat, row, record,
+      command: parsed.options.get('command'), assistant: parsed.options.get('assistant'),
+      resume: parsed.options.get('resume'), sessionId: parsed.options.get('session-id'), noLaunch,
+      intent: parsed.options.get('intent') === 'resume' ? 'resume' : 'new',
+      fallback: parsed.options.get('fallback-assistant') === 'codex' ? 'codex' : 'claude',
+      view: row ? seatConversationView(stateDirectory, seat, { transcriptRoot: parsed.options.get('transcript-root') }) : undefined,
+      mintedId, dirs: recordedDirs.filter(dir => dir.exists).map(dir => dir.path),
+      inbound: inboundArguments, letters: lettersWaiting, passthrough });
+    resumeId = final.resume; sessionId = final.sessionId;
+    appliedDirs = assistant === null ? [] : recordedDirs.filter(dir => dir.exists).map(dir => dir.path);
+    return { ...final, record };
+  };
+  let launchPlan = replanLaunch(readRegistryRows(path.join(seatsDirectory(stateDirectory), '_registry.json')).find(row => String(row['seat']) === seat) ?? null);
+  let agentArguments = launchPlan.args;
+  let firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+  let conversationId = resumeId || sessionId;
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
-  const conversationAction = resumeId ? 'resume' : parsed.options.has('session-id') ? 'new' : sessionId ? 'minted' : 'named';
+  let conversationAction = launchPlan.action;
   const deskDirectory = deskStateDirectory(stateDirectory, seat);
   if (fs.existsSync(path.join(stateDirectory, '.open-books')) && !fs.existsSync(deskDirectory)) {
     refuse(
@@ -1407,6 +1438,9 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   // registry row removes only a folder it made.
   const folderExisted = fs.existsSync(deskDirectory);
   let rowWritten = false;
+  // A fixture can signal that the pre-lock snapshot was read, to test a concurrent record change.
+  const snapshotReady = process.env['LIBRARY_SEAT_LAUNCH_READY'] ?? '';
+  if (snapshotReady) writeAtomicText(snapshotReady, 'ready\n');
   const lock = enterSeatRegistryLock(workspace, Math.ceil(deadlineSeconds));
   let claim: HeldClaim | null = null;
   let existing: Record<string, PsJsonValue> | null = null;
@@ -1419,6 +1453,12 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     const rows = readRegistryRows(registryFile);
     existing = rows.find((row) => String(row['seat']) === seat) ?? null;
     otherSeats = rows.map((row) => String(row['seat'])).filter((other) => other !== seat);
+    // Always read the incarnation and the exact parsed record bytes under the registry lock.
+    launchPlan = replanLaunch(existing);
+    agentArguments = launchPlan.args;
+    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+    conversationId = resumeId || sessionId;
+    conversationAction = launchPlan.action;
     if (existing === null) {
       assertNewSeatIsCreatable({ workspace, stateDirectory, rows, seat, project, activeProjects: activeProjectSlugs(workspace) });
       // ONE PLANNER, under the lock, from the registry this creation commits against (S97 row 1).
@@ -1482,6 +1522,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
           legacy_desk_retired: false,
           other_seats: otherSeats,
           launch: noLaunch ? 'none' : command,
+          ...(launchPlan.record.state === 'valid' ? { command_args: agentArguments, launch_line: escapedArgv([command, ...agentArguments]) } : {}),
           // What a launch would do to the Notebook's layout (S67), read and never written here.
           notebook_activation: noLaunch ? 'none' : notebookActivationPreview(workspace),
           shared_library_write: false,
@@ -1554,6 +1595,15 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       seatStartFault('registry-write');
       writeSeatRegistry(stateDirectory, [...rows, row]);
       rowWritten = true;
+      if (startOptions.recordAssistant) {
+        try {
+          seatStartFault('launch-record');
+          const launchRecord = emptyLaunchRecord(seatId); launchRecord.assistant = startOptions.recordAssistant;
+          writeSeatLaunch(workspace, seat, launchRecord);
+        } catch (error) {
+          process.stderr.write('Seat ' + seat + ' was created without its assistant record: ' + (error as Error).message + '; use s<number> to finish it.\n');
+        }
+      }
       if (attempt !== null) appendHistoryCommit(workspace, attempt);
       // THE INBOUND POLICY THE PREVIEW NAMED (kickoffs/s108 ruling 6), written as `seat settings` writes it, after the row,
       // so this very launch passes it. `unset` writes nothing.
@@ -1561,7 +1611,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         writeAtomicText(inboundSettingsPath(stateDirectory, seat), JSON.stringify({ crossSessionInbound: plan!.inbound }, null, 2) + '\n');
         inbound = readInbound();
         inboundArguments = inboundArgumentsFor(inbound);
-        agentArguments = buildAgentArguments();
+        launchPlan = replanLaunch(readRegistryRows(registryFile).find(row => String(row['seat']) === seat) ?? null);
+        agentArguments = launchPlan.args;
       }
     }
     // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
@@ -1629,6 +1680,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       conversation_recorded: !noLaunch && conversationId !== '',
       command: command,
       command_args: agentArguments,
+      ...(launchPlan.record.state === 'valid' ? { launch_line: escapedArgv([command, ...agentArguments]) } : {}),
+      ...(launchPlan.record.state === 'invalid' || launchPlan.record.state === 'unreadable' ? { launch_record_ignored: launchPlan.record.reason } : {}),
       ...(recordedDirs.length
         ? {
             added_dirs: appliedDirs,
@@ -1683,7 +1736,11 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     } catch (error) {
       result['notebook_activation'] = `not activated: ${(error as Error).message}`;
     }
+    if (launchPlan.record.state === 'invalid' || launchPlan.record.state === 'unreadable') process.stderr.write('Ignored launch record: ' + launchPlan.record.reason + '\n');
+    if (launchPlan.notice) process.stdout.write(launchPlan.notice + '\n');
     if (options.human) {
+      process.stdout.write('Launch: ' + escapedArgv([command, ...agentArguments]) + '\n');
+      if (launchPlan.approval) process.stdout.write('Stored flags for ' + assistant + ': approved ' + launchPlan.approval.utc + ' (plan ' + launchPlan.approval.plan_id.slice(0, 24) + ')\n');
       const what = conversationAction === 'resume' ? `resuming conversation ${conversationId}` : conversationId ? `conversation ${conversationId}` : 'a new conversation';
       process.stdout.write(`Starting ${assistant ? ASSISTANT_LABEL[assistant] : command} at seat '${seat}' (Project ${bound}), ${what}.\n`);
     } else process.stdout.write(psConvertToJson(result) + '\n');
@@ -1895,6 +1952,7 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
       { kind: 'added-dirs', file: addedDirsPath(stateDirectory, seat) },
       // AND ITS INBOUND POLICY (1.3.1), the same kind of launch setting.
       { kind: 'inbound-settings', file: inboundSettingsPath(stateDirectory, seat) },
+      { kind: 'launch', file: seatLaunchPath(stateDirectory, seat) },
     ];
     const recordsPresent = records.filter((record) => isFile(record.file)).map((record) => record.kind);
 
@@ -2078,6 +2136,7 @@ export interface SeatStartChoices {
   openBooks: string[];
   /** The new seat's inbound policy (kickoffs/s108 ruling 6): the wizard's preview offers `accept` for Claude Code. */
   inbound?: string | undefined;
+  recordAssistant?: Assistant | undefined;
 }
 
 /** The `seat start` arguments that carry a wizard's choices, in one order. */
@@ -2089,6 +2148,7 @@ export function seatStartChoiceArguments(choices: SeatStartChoices): string[] {
     ...(choices.card !== undefined ? ['--card', choices.card] : []),
     ...choices.openBooks.flatMap((slug) => ['--open-book', slug]),
     ...(choices.inbound !== undefined ? ['--inbound', choices.inbound] : []),
+    ...(choices.recordAssistant ? ['--record-assistant', choices.recordAssistant] : []),
   ];
 }
 
@@ -2203,13 +2263,16 @@ export async function runSeatVerb(
       }
       case 'settings': {
         // GATED (kickoffs/s79 row 3): it changes what reaches a seat, so a change previews and takes the plan id.
-        const parsed = parseArguments(rest, argumentTable('seat', 'settings'));
+        const split = rest.indexOf('--');
+        const parsed = parseArguments(split < 0 ? rest : rest.slice(0, split), argumentTable('seat', 'settings'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         emitResult(
           seatSettingsResult({
             workspace,
             seat: parsed.positional[0] ?? '',
             inbound: parsed.options.get('inbound'),
+            assistant: parsed.options.get('assistant'), flags: parsed.options.get('flags'), clearFlags: parsed.options.get('clear-flags'),
+            resetLaunch: parsed.flags.has('reset-launch'), args: split < 0 ? [] : rest.slice(split + 1),
             preflight: parsed.flags.has('preflight'),
             planId: parsed.options.get('plan-id') ?? '',
           }),

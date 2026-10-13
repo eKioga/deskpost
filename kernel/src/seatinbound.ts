@@ -20,9 +20,11 @@ import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { deskStateDirectory, resolveSeatName } from './seatdesk.ts';
-import { assertNoSeatRename, seatFilePaths } from './seatpaths.ts';
+import { beginSeatMutation, recheckSeatMutation, assertNoSeatRename, seatFilePaths } from './seatpaths.ts';
 import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
+
+import { launchSettingsResult, SeatLaunchRefusal, type LaunchSettingsOptions } from './seatlaunch.ts';
 
 export const INBOUND_KEY = 'crossSessionInbound';
 export const INBOUND_VALUES = ['accept', 'hold', 'refuse'] as const;
@@ -142,7 +144,12 @@ const UNSET_NOTE =
  * file's current digest, so an approval never writes over a file that changed since it was shown. `unset` deletes the
  * file. It changes what reaches a seat, so it takes a yes; it applies from the seat's next launch.
  */
-export function seatSettingsResult(options: { workspace: string; seat: string; inbound?: string; preflight: boolean; planId: string }): Record<string, PsJsonValue> {
+export function seatSettingsResult(options: LaunchSettingsOptions & { inbound?: string }): Record<string, PsJsonValue> {
+  const modes = [options.inbound !== undefined, options.assistant !== undefined, options.flags !== undefined, options.clearFlags !== undefined, !!options.resetLaunch].filter(Boolean).length;
+  if (modes > 1) throw new SeatLaunchRefusal('Inbound, assistant, flags, clear-flags and reset-launch are mutually exclusive modes. Nothing was changed.');
+  if (options.assistant !== undefined && (options.preflight || options.planId)) throw new SeatLaunchRefusal('--assistant is instant; it cannot take --preflight or --plan-id. Nothing was changed.');
+  if (options.args?.length && options.flags === undefined) throw new SeatLaunchRefusal('Arguments after -- require --flags. Nothing was changed.');
+  if (options.assistant !== undefined || options.flags !== undefined || options.clearFlags !== undefined || options.resetLaunch) return launchSettingsResult(options);
   const stateDirectory = path.join(options.workspace, '.claude');
   const seat = liveSeat(options.workspace, stateDirectory, options.seat);
   const file = inboundSettingsPath(stateDirectory, seat);
@@ -157,7 +164,7 @@ export function seatSettingsResult(options: { workspace: string; seat: string; i
   };
   if (options.inbound === undefined) {
     if (options.preflight || options.planId) refuse('Name the change: deskpost seat settings <seat> --inbound accept|hold|refuse|unset. Nothing was changed.');
-    return { ...base, ...(current.state === 'unset' ? { note: UNSET_NOTE } : {}), shared_library_write: false };
+    return { ...base, ...launchSettingsResult(options), ...(current.state === 'unset' ? { note: UNSET_NOTE } : {}), shared_library_write: false };
   }
   const value = options.inbound.trim();
   if (value !== 'unset' && !(INBOUND_VALUES as readonly string[]).includes(value)) {
@@ -182,10 +189,12 @@ export function seatSettingsResult(options: { workspace: string; seat: string; i
     };
   }
   if (!options.planId) refuse('Nothing was changed: run with --preflight, show the reader what it reports, and rerun with its exact --plan-id after one clear yes.');
+  const mutation = beginSeatMutation(options.workspace, seat);
   const lock = enterSeatRegistryLock(options.workspace, 10);
   try {
     // THE SEAT, CHECKED AGAIN UNDER THE LOCK (kickoffs/s109 ruling 7): no rename stands at it.
-    assertNoSeatRename(options.workspace, seat);
+    recheckSeatMutation(mutation);
+    liveSeat(options.workspace, stateDirectory, seat);
     if (options.planId !== planIdFor(seat, value, fileDigest(file))) {
       refuse("Nothing was changed: that plan_id does not match this seat, this value and the seat's settings file as it is now. Rerun the preflight, which shows the file as it stands, and pass its plan_id.");
     }

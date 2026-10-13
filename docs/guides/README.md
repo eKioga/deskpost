@@ -37,8 +37,13 @@ deskpost seat start <seat> --project <project-slug>
 ```
 
 That line makes the seat the first time. After that, `deskpost seat start <seat>` is enough. Add
-`--command codex` to work in Codex instead of Claude Code. Or type just `deskpost`: the main menu lists your
-seats, a number resumes one, and `+` makes a new one after one confirmation.
+`--command codex` to work in Codex instead of Claude Code for that launch. Or type just `deskpost`:
+the main menu lists your seats, a number opens one in its saved assistant, and `+` makes a new one
+after one confirmation. In the new-seat preview, `a` chooses the assistant and Enter saves it.
+For an existing seat, `s<number>` saves its assistant with `a`; `f` sets launch flags after a
+preview, and `c` copies flags from another named seat after a new preview. Every Codex launch gets
+`--no-daemon`. If the last conversation belongs to the other assistant, the row says so and starts
+the saved assistant while keeping that older conversation resumable in its owner.
 
 > Then ask **"What's on my desk?"** to see your seat, what is open on it, and what is waiting for
 > you.

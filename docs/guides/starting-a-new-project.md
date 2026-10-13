@@ -74,7 +74,10 @@ deskpost seat start fallout --project fallout-settlements
 ```
 
 That makes the seat, binds it to the Project, opens the Hub on its Desk, and starts your assistant
-there. Add `--command codex` for Codex. Next time, `deskpost seat start fallout` is enough, or type `deskpost` and pick its number.
+there. Add `--command codex` for a Codex launch. To save Codex for later visits, type `deskpost`,
+then `s<number>` for this seat, `a`, and `codex`. Its number then opens the saved assistant.
+The settings screen's `f` saves flags after a launch preview; `c` copies them from a named seat
+after a fresh preview. Every Codex launch gets `--no-daemon` automatically.
 
 **Or from the menu, in one go.** Type `deskpost`, then `+`, and name the project. The menu makes the Hub
 and the seat together and asks four more things, each with `[Enter]` for "none":
@@ -89,8 +92,9 @@ and the seat together and asks four more things, each with `[Enter]` for "none":
 - **Shelf Books** to have open from the start, by number.
 
 Then it shows **one preview** of everything it is about to do, with one `plan_id`, and waits for
-`[Enter]`. If anything about the seats changed while the preview was open, it shows you the new one
-instead of going ahead.
+`[Enter]`. Use `a` in that preview to choose Claude Code or Codex; Enter saves the assistant for
+the new seat, initially with no extra flags. If anything about the seats changed while the preview
+was open, it shows you the new one instead of going ahead.
 
 The same choices work from a terminal, previewed first:
 

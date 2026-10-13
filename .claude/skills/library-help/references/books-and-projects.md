@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.3/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.4/docs/seats.md).
 
 ## Books
 
@@ -96,6 +96,11 @@ proves the source has not moved, and never that an article reflects it.
 (it takes no Book name: it rebuilds `shelf/_catalog.md` from every Book's entry, and is safe to rerun) and
 `deskpost shelf rebuild <slug>`. Run `shelf render` after any `_catalog-entry.md` edit. `shelf rebuild` alone
 rewrites only the manifest, and an edit to the entry does not mark the Book stale.
+
+**A collection Book's Catalog line** (its title and Summary in the collection's Book Catalog) changes with
+`deskpost shared list-entry <slug> --summary "<s>" [--title "<t>"] --preflight`, then the same with
+`--user-confirmed --plan-id <id>`. On a local Library it sets that Book's one line in `collection/books/README.md`,
+where it stands, or adds it when it is missing; no other line changes.
 
 ## Project Hubs
 

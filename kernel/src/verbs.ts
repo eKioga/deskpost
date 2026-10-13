@@ -683,6 +683,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '[--card "<one line>"] [--open-book <shelf-slug>]... [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>]; ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
+      'library seat settings <name> --assistant claude|codex|none; ' +
+      'library seat settings <name> --flags claude|codex [--preflight | --plan-id <id>] -- <flags...>; ' +
+      'library seat settings <name> (--clear-flags claude|codex | --reset-launch) [--preflight | --plan-id <id>]; ' +
       'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--nickname "<n>"] [--clear-department] [--clear-role] [--clear-card] [--clear-nickname] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
       'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
       'library seat rename <old> <new> [--preflight | --user-confirmed --plan-id <id>] [--workspace <path>] [--json]; ' +
@@ -705,6 +708,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
         '--inbound accept lets other seats\' rings reach a new Claude Code seat at once; an existing seat takes it from seat settings.',
       ],
       dirs: ['--list is the default: with neither --add nor --remove, dirs lists the seat\'s folders, and --list changes nothing.'],
+      settings: [
+        'With no mutation mode, lists inbound, the saved assistant, flags and approvals. --assistant is instant and takes no preflight.',
+        'Flag set, clear and reset each require --preflight, then that preview\'s exact --plan-id after approval; mutation modes cannot be combined.',
+        'In the main menu s<number> opens these settings; c copies flags from a named live seat with a valid record. Every Codex launch includes --no-daemon.',
+      ],
     },
     arguments: {
       cards: { valued: ['seat'], boolean: ['all'], positionals: 0 },
@@ -729,12 +737,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
       },
       rename: { valued: ['plan-id', 'resume', 'rollback'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
       retire: { valued: ['plan-id'], boolean: ['preflight'], positionals: 1 },
-      settings: { valued: ['inbound', 'plan-id'], boolean: ['preflight'], positionals: 1 },
+      settings: { valued: ['inbound', 'assistant', 'flags', 'clear-flags', 'plan-id'], boolean: ['preflight', 'reset-launch'], positionals: 1, passthrough: true },
       // EVERYTHING AFTER A BARE `--` IS THE AGENT'S, never checked. The two legacy names are read only to be refused.
       start: {
         valued: [
           'project', 'command', 'plan-id', 'assistant', 'resume', 'session-id', 'department', 'role', 'card', 'template', 'inbound',
-          'deadline-seconds', 'restore-desk-from-archive',
+          'deadline-seconds', 'restore-desk-from-archive', 'intent', 'fallback-assistant', 'record-assistant', 'transcript-root',
         ],
         repeatable: ['open-book'],
         boolean: ['no-launch', 'preflight', 'retire-legacy-desk'],
@@ -799,16 +807,18 @@ export const VERBS: Record<string, VerbDeclaration> = {
     summary: "The collection's Catalog: `collection/` on a local Library, Basic Memory on one attached to it. List an entry, archive a Book.",
     usage:
       'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight; ' +
-      'library shared archive <slug> [--kind book] --user-confirmed --plan-id <id>',
+      'library shared archive <slug> [--kind book] --user-confirmed --plan-id <id>; ' +
+      'library shared list-entry <slug> [--title <t>] [--summary <s>] [--collection <c>] --user-confirmed --plan-id <id>',
     details: {
       archive: ['On a local Library, --plan-id is the plan_id the preflight issued.'],
+      'list-entry': ["On a local Library, it sets the Book's one line in collection/books/README.md, and --plan-id is the plan_id the preflight issued."],
     },
     actions: ['archive', 'list-entry'],
     positional: false,
     arguments: {
       // Both backends' names: a local Library reads `--kind` and `--plan-id`; Basic Memory's preflight reads neither.
       archive: { valued: ['kind', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
-      'list-entry': { valued: ['title', 'summary', 'kind', 'collection'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      'list-entry': { valued: ['title', 'summary', 'kind', 'collection', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
     },
     // Both preflights, against Basic Memory (S34); a confirmed run names the PowerShell helper.
     ported: true,

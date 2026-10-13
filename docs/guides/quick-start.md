@@ -50,15 +50,18 @@ launch. It shows what it will make and waits for Enter:
   open, what was decided. An existing Hub of that name is reused.
 - a **seat** of the same name, bound to that Project, with the Hub open on its Desk.
 
-Then it starts Claude Code there (or Codex, if that is the one you chose; `a` switches).
+In the preview, `a` chooses Claude Code or Codex. Enter saves that choice for the seat and starts
+it there. The first launch has no extra flags; every Codex launch gets `--no-daemon` automatically.
 
 **Next time, `deskpost` shows your seats**, one numbered line each with its Project, whether anyone is
 at it, when it was last used, and what its last conversation was called:
 
 | Type | And |
 | --- | --- |
-| a number | you are back in that seat's last conversation, in the assistant it was held with |
-| `n` and a number | a new conversation at that seat |
+| a number | resume in the seat's saved assistant, or start there when its last conversation belongs to the other assistant |
+| `n` and a number | a new conversation in that seat's saved assistant |
+| `s` and a number | choose that seat's assistant and launch flags |
+| `a` | change the default assistant for seats with no saved choice |
 | `+` | a new seat |
 | `r` and a number | retire that seat, after it shows you what it archives |
 | `l` | what the Library holds: its Books and Projects by title, without a seat (`deskpost browse`) |
@@ -67,6 +70,12 @@ at it, when it was last used, and what its last conversation was called:
 
 A seat already in use by another session is shown as held, and choosing it says so: one session per
 seat. Seats cost nothing, so start another.
+
+**Set Codex once for an existing seat.** Type `s<number>`, choose `a`, then `codex`. To save flags,
+choose `f`, then `codex`, and enter them on one line; Enter approves the shown launch preview.
+`c` copies flags from a named seat and shows a fresh preview for the destination. `q` returns to
+the menu. Its number then opens Codex with those flags. If the last conversation belongs to Claude
+Code, the row says so before selection and keeps that conversation resumable in Claude Code.
 
 Made the program without a Library (`-Library none`)? `deskpost setup <folder>` makes one, shown
 first and made on one Enter.

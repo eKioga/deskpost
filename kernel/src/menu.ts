@@ -52,6 +52,9 @@ import { loadSeatTemplate, type SeatTemplate } from './seattemplates.ts';
 import { pendingLetterCounts } from './desk.ts';
 import { seatNameHistory } from './seatincarnation.ts';
 
+import { readSeatLaunch, seatLaunchPreview, escapedArgv } from './seatlaunch.ts';
+import { seatSettingsResult } from './seatinbound.ts';
+
 // --- the conversation with the reader -------------------------------------------------------------------------------
 
 class MenuQuit extends Error {}
@@ -182,6 +185,8 @@ export interface MenuRow {
   view: ConversationView;
   /** How many added folders the seat is started with (1.2.5); 0 when it has none or its record cannot be read. */
   folders: number;
+  launchAssistant?: Assistant | null;
+  launchFlags?: boolean;
   /** Its role and department as one phrase, and its card (1.3.8, kickoffs/s96 row 1), through the one projection; '' for none. */
   role?: string;
   card?: string;
@@ -274,6 +279,11 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       const activity = readSeatActivity(stateDirectory, seat);
       if (activity && typeof activity['last_seen_utc'] === 'string') row.last_active_utc = activity['last_seen_utc'];
       row.view = seatConversationView(stateDirectory, seat, { transcriptRoot: options.transcriptRoot, skipTitle: options.skipTitles });
+      const record = readSeatLaunch(stateDirectory, seat, String(entry['seat_id'] ?? ''));
+      if (record.state === 'valid') {
+        row.launchAssistant = record.record.assistant;
+        row.launchFlags = record.record.args[record.record.assistant ?? row.view.assistant].length > 0;
+      }
       // A RECORD THAT CANNOT BE READ MARKS NOTHING HERE: `f<N>` and `seat start` say why, and the roster stays up.
       try {
         row.folders = readAddedDirs(stateDirectory, seat).length;
@@ -383,12 +393,15 @@ function stateMark(state: string, glyphs: Glyphs, palette: Palette): { mark: str
 /** A Codex conversation says so on its row; a Claude Code one is the unmarked case, as every pre-1.1 one is. */
 function conversationText(row: MenuRow, glyphs: Glyphs): string {
   const cell = conversationCell(row.view, glyphs.ellipsis);
-  return row.view.assistant === 'codex' && row.view.session_id ? `${cell} [Codex]` : cell;
+  const mismatch = row.launchAssistant && row.view.session_id && row.launchAssistant !== row.view.assistant
+    ? " (" + ASSISTANT_LABEL[row.view.assistant] + "'s; " + row.index + ' starts ' + ASSISTANT_LABEL[row.launchAssistant] + ')' : '';
+  const mark = row.launchAssistant === 'codex' || (!row.launchAssistant && row.view.assistant === 'codex' && row.view.session_id) ? ' [Codex]' : '';
+  return row.launchAssistant ? (mark.trim() + mismatch + ' ' + cell).trim() : cell + mark;
 }
 
 /** The numbered table lines. THE CELLS ARE BUILT BEFORE THE WIDTHS ARE MEASURED, so a state note cannot misalign them. */
 export function tableLines(rows: MenuRow[], glyphs: Glyphs): string[] {
-  const cells = rows.map((row) => ({ index: row.index, seat: seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
+  const cells = rows.map((row) => ({ index: row.index, seat: seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + (row.launchFlags ? ' flags' : '') + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
   const width = (key: 'seat' | 'project' | 'state' | 'last') => Math.max(0, ...cells.map((cell) => cell[key].length));
   const widths = { seat: width('seat'), project: width('project'), state: width('state'), last: width('last') };
   return cells.map(
@@ -407,7 +420,7 @@ export function cardLines(rows: MenuRow[], width: number, glyphs: Glyphs, palett
     const marker = stateMark(row.state, glyphs, palette);
     // THE PLAIN HEAD IS MEASURED, NOT THE COLOURED ONE: an escape has no visible width.
     const prefix = `  ${String(row.index).padStart(2)} ${marker.mark} `;
-    const seat = fit(seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
+    const seat = fit(seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + (row.launchFlags ? ' flags' : '') + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
     const gap = Math.max(1, width - prefix.length - seat.length - row.state.length - 1);
     lines.push(`  ${String(row.index).padStart(2)} ${marker.color}${marker.mark}${palette.reset} ${palette.bold}${seat}${palette.reset}${' '.repeat(gap)}${marker.color}${row.state}${palette.reset}`);
     const fields: [string, string][] = [];
@@ -456,7 +469,7 @@ export function footerLines(both: boolean, assistant: Assistant | null): string[
   // aborted first start -- trust refused, a launch that failed, an empty conversation -- never loses it.
   // `l` BROWSES THE LIBRARY (PLAN-correct-and-find.md D5), within 80 columns with the four keys beside it.
   const lines = ['  +  new seat    h  Show me around    l  browse    b  Basic Memory    q  quit'];
-  const second = ['  n<number>  new conversation', '   r<number>  retire', '   f<number>  folders'];
+  const second = ['  n<number>  new conversation', '   r<number>  retire', '   f<number>  folders', '   s<number>  settings'];
   if (both && assistant) second.push(`   a  new conversations use ${ASSISTANT_LABEL[assistant]}; a switches to ${ASSISTANT_LABEL[assistant === 'claude' ? 'codex' : 'claude']}`);
   lines.push(second.join(''));
   return lines;
@@ -467,7 +480,7 @@ export const FIRST_HINT = 'Pick a seat to continue its last session, or n<number
 // --- the choice grammar ---------------------------------------------------------------------------------------------
 
 export interface Choice {
-  action: 'resume' | 'new' | 'retire' | 'folders' | 'create' | 'basic-memory' | 'help' | 'browse' | 'switch' | 'upgrade' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
+  action: 'resume' | 'new' | 'retire' | 'folders' | 'settings' | 'create' | 'basic-memory' | 'help' | 'browse' | 'switch' | 'upgrade' | 'quit' | 'reprompt' | 'invalid' | 'out-of-range';
   index: number;
   reason: string;
 }
@@ -498,8 +511,11 @@ export function resolveChoice(typed: string, rowCount: number, updateReady = fal
   } else if (/^f\s*\d+$/i.test(text)) {
     action = 'folders';
     digits = text.substring(1).trim();
+  } else if (/^s\s*\d+$/i.test(text)) {
+    action = 'settings';
+    digits = text.substring(1).trim();
   } else if (!/^\d+$/.test(text)) {
-    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, +, h, l, b${updateReady ? ', u' : ''} or q` };
+    return { action: 'invalid', index: 0, reason: `'${text}' is not one of the commands: a number, n<number>, r<number>, f<number>, s<number>, +, h, l, b${updateReady ? ', u' : ''} or q` };
   }
   const number = Number(digits);
   if (rowCount <= 0) return { action: 'invalid', index: 0, reason: 'no seat exists in this Library yet, so no number applies; type + to create one' };
@@ -739,6 +755,9 @@ async function menuLoop(state: MenuState): Promise<number> {
       case 'retire':
         await retire(state, target!);
         break;
+      case 'settings':
+        await launchSettingsScreen(state, target!);
+        break;
       case 'folders':
         await folders(state, target!);
         break;
@@ -761,7 +780,7 @@ async function menuLoop(state: MenuState): Promise<number> {
       case 'switch':
         if (state.claude && state.codex) {
           state.assistant = state.assistant === 'claude' ? 'codex' : 'claude';
-          talk.say(`New conversations now use ${ASSISTANT_LABEL[state.assistant]}.`);
+          talk.say(`New conversations now use ${ASSISTANT_LABEL[state.assistant]}. This default applies only to seats with no recorded assistant.`);
         } else talk.say(state.assistant ? `Only ${ASSISTANT_LABEL[state.assistant]} is found here, so there is nothing to switch to.` : NO_ASSISTANT);
         break;
       case 'resume':
@@ -791,6 +810,21 @@ async function sitDown(state: MenuState, row: MenuRow, action: 'resume' | 'new')
   if (refusal) {
     talk.say(refusal);
     return null;
+  }
+  if (row.launchAssistant) {
+  const chosen = row.launchAssistant;
+  if (chosen === null) { talk.say(NO_ASSISTANT); return null; }
+  if (!(chosen === 'claude' ? state.claude : state.codex)) {
+    talk.say("Seat " + row.seat + ' is set to ' + ASSISTANT_LABEL[chosen] + ', which is not found here; change it with s' + row.index + '.'); return null;
+  }
+  if (action === 'resume' && row.view.entry_action === 'restart' && row.view.assistant === chosen) talk.say('Conversation ' + row.view.session_id + ' started at this seat and recorded nothing, so it is being started rather than resumed.');
+  if (action === 'new' && row.view.session_id && row.view.assistant !== chosen) talk.say('This starts a new ' + ASSISTANT_LABEL[chosen] + ' conversation; the last one stays resumable there.');
+  try {
+    const outcome = await startSeat([row.seat, '--workspace', state.workspace, '--intent', action,
+      '--fallback-assistant', state.assistant ?? chosen,
+      ...(state.options.transcriptRoot ? ['--transcript-root', state.options.transcriptRoot] : [])], { human: true });
+    return outcome.exitCode;
+  } catch (error) { talk.say((error as Error).message); return null; }
   }
   const view = row.view;
   if (action === 'resume') {
@@ -1082,7 +1116,7 @@ async function preview(
   let acceptRings = true;
   for (;;) {
     const hubExists = projects.includes(plan.slug);
-    const choices: SeatStartChoices = { ...plan.choices, inbound: state.assistant === 'claude' && acceptRings ? 'accept' : undefined };
+    const choices: SeatStartChoices = { ...plan.choices, recordAssistant: state.assistant ?? undefined, inbound: state.assistant === 'claude' && acceptRings ? 'accept' : undefined };
     const verdict = newSeatVerdict(workspace, plan.seat, plan.slug, hubExists ? projects : [...projects, plan.slug], false, choices);
     if (!verdict.creatable) {
       talk.say(verdict.reason);
@@ -1413,21 +1447,26 @@ export async function showMeAround(state: MenuState): Promise<number | null> {
       return null;
     }
   }
-  const verdict = seatRow ? null : newSeatVerdict(workspace, HELP_SEAT, HELP_SEAT, hubExists ? projects : [...projects, HELP_SEAT]);
+  const verdict = seatRow ? null : newSeatVerdict(workspace, HELP_SEAT, HELP_SEAT, hubExists ? projects : [...projects, HELP_SEAT], false, { openBooks: [], recordAssistant: state.assistant });
   if (verdict !== null && !verdict.creatable) {
     talk.say(`${verdict.reason} Nothing was created.`);
     return null;
   }
   // AN EXISTING SEAT RESUMES; the tour prompt goes only to a conversation that recorded nothing, or a first one.
+  // The help seat uses its own preference, just like numbered entries.
+  const helpAssistant = row?.launchAssistant ?? state.assistant;
+  if (row?.launchAssistant) {
+    if (!(row.launchAssistant === 'claude' ? state.claude : state.codex)) { talk.say('Seat ' + HELP_SEAT + ' is set to ' + ASSISTANT_LABEL[row.launchAssistant] + ', which is not found here; change it with s' + row.index + '.'); return null; }
+  }
   const view = row?.view;
-  const resumable = view !== undefined && Boolean(view.session_id) && view.entry_action === 'resume' && view.assistant === state.assistant;
+  const resumable = view !== undefined && Boolean(view.session_id) && view.entry_action === 'resume' && view.assistant === helpAssistant;
   const local = String((readMarker(workspace) ?? {})['backend'] ?? '') === 'local';
   talk.say('');
   talk.say(`  Hub   projects/${HELP_SEAT}, "${HELP_TITLE}"${hubExists ? ' (it exists, and is reused)' : ' (new)'}`);
   talk.say(`  Seat  ${HELP_SEAT}${seatRow ? ' (it exists, and is reused)' : ' (new)'}`);
   if (!hubExists && !local) talk.say('  Touches  the SHARED collection, for the Hub (this Library reads Basic Memory)');
-  talk.say(`  Then  ${ASSISTANT_LABEL[state.assistant]} ${resumable ? 'resumes your last conversation there' : 'starts there, as your guide'}`);
-  const firstStart = firstStartLine(state.assistant);
+  talk.say(`  Then  ${ASSISTANT_LABEL[helpAssistant]} ${resumable ? 'resumes your last conversation there' : 'starts there, as your guide'}`);
+  const firstStart = firstStartLine(helpAssistant);
   if (firstStart) talk.say(`        ${firstStart}`);
   const key = (await talk.ask('[Enter] go   [q] not now › ')).toLowerCase();
   if (key !== '' && key !== 'y') {
@@ -1447,15 +1486,15 @@ export async function showMeAround(state: MenuState): Promise<number | null> {
   if (resumable) {
     args = [HELP_SEAT, '--resume', view!.session_id];
     passthrough = [];
-  } else if (view !== undefined && view.session_id && view.entry_action === 'restart' && view.assistant === state.assistant) {
+  } else if (view !== undefined && view.session_id && view.entry_action === 'restart' && view.assistant === helpAssistant) {
     args = [HELP_SEAT, '--session-id', view.session_id];
   } else {
-    args = seatRow ? [HELP_SEAT] : [HELP_SEAT, '--project', HELP_SEAT, '--plan-id', verdict!.plan_id];
-    if (state.assistant === 'claude') args.push('--session-id', newConversationId());
+    args = seatRow ? [HELP_SEAT] : [HELP_SEAT, '--project', HELP_SEAT, '--plan-id', verdict!.plan_id, '--record-assistant', helpAssistant];
+    if (helpAssistant === 'claude') args.push('--session-id', newConversationId());
   }
   talk.say(`  ${COMMAND_NAME} seat start ${args.join(' ')}`);
   try {
-    return await launch(state, args, state.assistant, passthrough);
+    return await launch(state, args, helpAssistant, passthrough);
   } catch (error) {
     if (error instanceof SeatPlanChanged) {
       talk.say(`${error.message} Nothing was started; choose Show me around again to see what changed.`);
@@ -1568,4 +1607,74 @@ export function runLibraryVerb(argv: string[]): { refusal: string | null; value:
     };
   }
   return { refusal: `${COMMAND_NAME} library has no action '${action}'. It has: default, list.`, value: null };
+}
+
+
+/** One-line menu flags have no quoting grammar: CLI settings preserves richer argv. */
+export function splitMenuFlags(line: string): string[] { return line.trim() ? line.trim().split(/\s+/) : []; }
+async function launchSettingsScreen(state: MenuState, row: MenuRow): Promise<void> {
+  const { talk, workspace } = state;
+  const settings = (extra: Record<string, unknown> = {}) => seatSettingsResult({ workspace, seat: row.seat, preflight: false, planId: '', transcriptRoot: state.options.transcriptRoot, fallbackAssistant: state.assistant ?? 'claude', ...extra });
+  const showLaunch = (value: Record<string, PsJsonValue>) => talk.say('Planned launch: ' + String(value['launch_line']));
+  for (;;) {
+    try {
+      const current = settings();
+      const preview = seatLaunchPreview(workspace, row.seat, undefined, state.assistant ?? 'claude', 'resume', state.options.transcriptRoot);
+      talk.say('Seat ' + row.seat + ': assistant ' + (current['assistant'] ?? 'menu default'));
+      const flags = current['flags_preview'] as Record<string, string>;
+      const approvals = current['approvals'] as Record<string, { utc: string; plan_id: string } | null> | null;
+      for (const assistant of ['claude', 'codex'] as const) {
+        talk.say('  ' + ASSISTANT_LABEL[assistant] + ' flags: ' + (flags[assistant] || '(none)'));
+        const approval = approvals?.[assistant];
+        if (approval) talk.say('    approved ' + approval.utc + ' (plan ' + approval.plan_id.slice(0, 24) + ')');
+      }
+      if (current['launch_record_ignored']) talk.say('Ignored launch record: ' + String(current['launch_record_ignored']));
+      talk.say('Planned launch: ' + escapedArgv([preview.command, ...preview.args]));
+      const key = (await talk.ask('[a] assistant  [f] flags  [c] copy flags  [x] clear flags  [r] reset launch  [q] back › ')).toLowerCase();
+      if (key === 'q' || key === '') return;
+      if (key === 'a') {
+        const assistant = (await talk.ask('Assistant: claude, codex or none › ')).toLowerCase();
+        const changed = settings({ assistant });
+        talk.say('Assistant saved: ' + (changed['assistant'] ?? 'menu default'));
+        showLaunch(changed); continue;
+      }
+      if (!['f', 'c', 'x', 'r'].includes(key)) { talk.say('Use a key above.'); continue; }
+      let change: Record<string, unknown>;
+      if (key === 'r') change = { resetLaunch: true };
+      else {
+        const assistant = (await talk.ask('Flags for claude or codex › ')).toLowerCase();
+        if (assistant !== 'claude' && assistant !== 'codex') { talk.say('Name claude or codex.'); continue; }
+        if (key === 'x') change = { clearFlags: assistant };
+        else {
+          let args: string[];
+          if (key === 'c') {
+            const seats = readRegistryRows(registryFilePath(path.join(workspace, '.claude'))).flatMap(entry => {
+              const seat = String(entry['seat']);
+              const read = readSeatLaunch(path.join(workspace, '.claude'), seat, String(entry['seat_id'] ?? ''));
+              return read.state === 'valid' && read.record.args[assistant].length ? [{ seat, args: read.record.args[assistant] }] : [];
+            });
+            talk.say('Copy from a live registered seat: ' + seats.map(s => s.seat).join(', '));
+            const name = await talk.ask('Seat name (q cancels) › ');
+            if (name === 'q') continue;
+            const source = seats.find(s => s.seat === name);
+            if (!source) { talk.say('That seat has no valid stored flags for this assistant.'); continue; }
+            args = [...source.args];
+          } else {
+            talk.say('Enter one line split on whitespace, with no quoting. Use seat settings --flags from the command line for a value with spaces or quotes.');
+            args = splitMenuFlags(await talk.ask('Flags › '));
+          }
+          change = { flags: assistant, args };
+        }
+      }
+      const proposed = settings({ ...change, preflight: true });
+      const proposedFlags = proposed['proposed_flags'] as Record<string, string> | null;
+      if (proposedFlags) for (const assistant of ['claude', 'codex'] as const) talk.say('  ' + ASSISTANT_LABEL[assistant] + ' flags after this change: ' + (proposedFlags[assistant] || '(none)'));
+      else talk.say('Reset the assistant and both assistants\' flags.');
+      showLaunch(proposed);
+      talk.say('Preview: ' + String(proposed['plan_id']));
+      const approve = await talk.ask('[Enter] apply this preview  [q] cancel › ');
+      if (approve === '') { const changed = settings({ ...change, planId: String(proposed['plan_id']) }); talk.say('Launch settings saved.'); showLaunch(changed); }
+      else talk.say('Nothing was changed.');
+    } catch (error) { talk.say((error as Error).message); }
+  }
 }

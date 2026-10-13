@@ -11,8 +11,7 @@
  *   exit 0  every check passed (a WARN passes, as the runner's does);
  *   exit 1  a check failed;
  *   exit 2  the gate itself failed (an unknown argument, git or a child that could not run, a malformed claim map);
- *   exit 3  reserved for waiting refused under --no-wait. There is no gate lock yet: it comes in a later session
- *           (the plan's Session 1 item 4), so --no-wait is accepted and does nothing.
+ *   exit 3  waiting refused under --no-wait. Cut, push and release take the c2 machine-wide live gate lock.
  *
  * NOTHING CALLS THIS BUT A PERSON in S113: no hook and no runner. It ports no check (session 2 does). What each tier
  * runs today:
@@ -34,6 +33,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { childEnv } from '../kernel/test/gate-env.ts';
+import { acquireGateLock, LockError } from '../kernel/test/gate-lock.ts';
+import { startIdentity, terminateOwnedTree } from '../kernel/test/run-parallel.ts';
 import { COVERS_PATH, SELFTEST_PATH, parseCovers, parseHunks, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
 
 const EXIT_PASS = 0;
@@ -57,13 +59,15 @@ interface Outcome {
 }
 
 class GateError extends Error {}
+let interrupted = false;
 
 const USAGE = 'Usage: node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>]';
 
-function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null } {
+function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null; noWait: boolean } {
   let tier: Tier | null = null;
   let json = false;
   let commit: string | null = null;
+  let noWait = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === '--tier' && i + 1 < argv.length) {
@@ -71,29 +75,15 @@ function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string 
       if (!(TIERS as readonly string[]).includes(value)) throw new GateError(`--tier is one of ${TIERS.join(', ')}; got '${value}'. ${USAGE}`);
       tier = value as Tier;
     } else if (arg === '--json') json = true;
-    else if (arg === '--no-wait') {
-      // Accepted and inert: the gate lock (and exit 3) come in a later session.
-    } else if (arg === '--commit' && i + 1 < argv.length) commit = argv[++i]!;
+    else if (arg === '--no-wait') noWait = true;
+    else if (arg === '--commit' && i + 1 < argv.length) commit = argv[++i]!;
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write(`${USAGE}\nThe lock that --no-wait refuses to wait for comes in a later session; today --no-wait does nothing.\n`);
+      process.stdout.write(`${USAGE}\nCut, push and release serialize participating live gates; --no-wait exits 3 on contention.\n`);
       process.exit(EXIT_PASS);
     } else throw new GateError(`unknown argument '${arg}'. ${USAGE}`);
   }
   if (tier === null) throw new GateError(`name a tier. ${USAGE}`);
-  return { tier, json, commit };
-}
-
-/** The hook's environment for every child (see the header). */
-function childEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '' };
-  delete env['DESKPOST_UPDATE_CHECK'];
-  const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
-  const separator = process.platform === 'win32' ? ';' : ':';
-  env[key] = (env[key] ?? '')
-    .split(separator)
-    .filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost')))
-    .join(separator);
-  return env;
+  return { tier, json, commit, noWait };
 }
 
 function git(root: string, args: string[]): string {
@@ -104,14 +94,32 @@ function git(root: string, args: string[]): string {
 
 /** Run a child to its end, keeping its output; awaited, so a later lock can keep answering while it runs. */
 function runChild(command: string, args: string[], root: string, extraEnv: Record<string, string> = {}): Promise<{ status: number | null; output: string; seconds: number }> {
+  if (interrupted) throw new GateError('gate cancelled');
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: root, env: { ...childEnv(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const identity = child.pid ? startIdentity(child.pid).catch(() => null) : Promise.resolve(null);
     let output = '';
+    let finished = false;
+    let cancelling = false;
+    const finish = (status: number | null, detail = '') => {
+      if (finished) return; finished = true;
+      process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel);
+      child.stdout.destroy(); child.stderr.destroy(); child.unref();
+      resolve({ status, output: output + detail, seconds: (Date.now() - started) / 1000 });
+    };
+    const cancel = async () => {
+      if (cancelling) return;
+      cancelling = true; interrupted = true;
+      try { if (child.pid) await terminateOwnedTree(child.pid, started, await identity); }
+      catch (error) { output += `cleanup failed: ${String(error)}\n`; }
+      finish(1, 'cancelled\n');
+    };
+    process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
     child.stdout.on('data', (chunk) => (output += String(chunk)));
     child.stderr.on('data', (chunk) => (output += String(chunk)));
-    child.on('error', (error) => resolve({ status: null, output: `${output}${error.message}`, seconds: (Date.now() - started) / 1000 }));
-    child.on('close', (status) => resolve({ status, output, seconds: (Date.now() - started) / 1000 }));
+    child.on('error', (error) => finish(null, error.message));
+    child.on('close', (status) => { if (!cancelling) finish(status); });
   });
 }
 
@@ -209,7 +217,7 @@ function clock(seconds: number): string {
   return whole < 60 ? `${whole}s` : `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, '0')}s`;
 }
 
-async function main(argv: string[]): Promise<number> {
+async function runTier(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
   const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
   const started = Date.now();
@@ -253,10 +261,16 @@ async function main(argv: string[]): Promise<number> {
   return exit;
 }
 
+async function main(argv: string[]): Promise<number> {
+  const options = parseArgs(argv);
+  const say = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
+  const lock = options.tier === 'commit' ? null : await acquireGateLock(options.tier, options.noWait, say);
+  try { return await runTier(argv); } finally { await lock?.release(); }
+}
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (error: unknown) => {
     process.stderr.write(`gate: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(EXIT_GATE);
+    process.exit(error instanceof LockError ? error.code : EXIT_GATE);
   },
 );

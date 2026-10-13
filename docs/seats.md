@@ -333,6 +333,52 @@ same roster, numbers and keys, plus `b` (Basic Memory) and `a` (which assistant 
 conversation); the tab is still titled `seat: <name>` once the claim is held. A per-seat button, one
 Quick Command that opens one seat directly, remains out of scope.
 
+
+#### Codex and Claude Code seats from the main menu
+
+Each seat may save its own assistant. Type `s<number>` to open its settings, `a` there to choose
+`claude`, `codex` or `none`, and `f` to enter flags for that assistant. Enter the flags on one
+line split on whitespace, with no quoting. The screen shows escaped argv and the planned launch;
+Enter applies that preview's plan id and `q` cancels. Use `c` to copy flags from a named live seat
+with a valid record; the destination gets its own preview and approval. `x` clears one assistant's
+flags and `r` resets the launch record, each through the same preview.
+
+For an existing Codex seat: `s<number>`, `a`, `codex`, then `f`, `codex`, enter the flags you chose,
+and Enter. To use Eric's chosen flags, enter `-a never -s danger-full-access`; these are his choice,
+never Deskpost defaults. For subsequent seats, `c` copies them. A new seat records the wizard preview's
+assistant; use `s<number>` afterwards to set or copy flags. Show me around records its assistant too.
+
+A number resumes the last conversation when its owner matches the saved assistant. When they differ,
+the row explains which assistant owns that conversation and which one the number starts; the launch
+starts a new conversation in the saved assistant and keeps the old one resumable there. `n<number>`
+starts the saved assistant. The menu-wide `a` changes only the default for seats with no saved assistant.
+A saved assistant missing from this machine is refused by name. Every Codex launch gets `--no-daemon`.
+
+The command-line form preserves argv with spaces. These are separate calls, with the preview's exact id:
+
+```powershell
+deskpost seat settings <seat>                         # inbound, assistant, flags and approvals
+deskpost seat settings <seat> --assistant codex        # instant; none restores caller choice
+deskpost seat settings <seat> --flags codex --preflight -- -a never -s danger-full-access
+deskpost seat settings <seat> --flags codex --plan-id <issued-id> -- -a never -s danger-full-access
+deskpost seat settings <seat> --clear-flags codex --preflight
+deskpost seat settings <seat> --clear-flags codex --plan-id <issued-id>
+deskpost seat settings <seat> --reset-launch --preflight
+deskpost seat settings <seat> --reset-launch --plan-id <issued-id>
+```
+
+Flag set, clear and reset all need approval; removing a flag can change the client's defaults.
+Inbound, assistant, set, clear and reset are mutually exclusive. Assistant changes take no preflight.
+The approval binds the operation, incarnation and current bytes. A changed record or seat requires a
+fresh preview. It is a protocol, not protection against a process running as the same user.
+
+The launcher prints escaped argv and the stored approval before starting the agent. Invalid records
+are ignored and named; doctor WARNs with `seat settings <seat> --reset-launch`. A malformed readable
+record can be reset; a file whose bytes cannot be read gets no reset plan id. Retirement archives
+`launch.json`, rename carries it, and a new incarnation does not inherit it. `seat dirs` shows the
+saved assistant and flags and omits resume arguments for a conversation owned by another assistant;
+the exact planner line is the one in settings and at launch. See [ADR-0076](adr/0076-a-seat-records-its-assistant-and-approved-launch-flags.md).
+
 **Expect the last-conversation column to be empty at a seat entered with a typed `-Seat`.** The
 launcher can only record a conversation it *minted*, which is the picker's own `n<number>` route — a
 reader who typed `-Seat` started a conversation whose id the launcher never saw. That is the honest
@@ -636,6 +682,7 @@ ownership rather than by the seatless rule.
 .claude/seats/<seat>/conversations.json  every conversation that has sat here; registry-locked
 .claude/seats/<seat>/activity.json       advisory, and never a gate
 .claude/seats/<seat>/added-dirs.json     the folders the seat's sessions start with (seat dirs)
+.claude/seats/<seat>/launch.json         the saved assistant, argv and per-assistant approvals (ADR-0076)
 .claude/seats/<seat>/settings.json       the seat's own crossSessionInbound, one key (seat settings --inbound)
 .claude/seats/<seat>/launch-settings.json  that key as the launcher writes it for one launch on the claude.cmd route
 .claude/seats/_registry.json             which seats exist, and the Project each is bound to

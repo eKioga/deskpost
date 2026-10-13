@@ -15,15 +15,20 @@ summarises the boundaries; that file governs the code.
 
 ## Start here
 
-The current development goal is the Shelf's exit ramp. Read
-[The Shelf is a staging area, not storage](docs/shelf-lifecycle.md) before planning any Shelf or
-archive work — it records design intent stated by the reader that is **not derivable from the
-code**, and the absence of which is why the Shelf grew an entrance and no exit.
+Development runs in sessions from a **Kickoff**, by [The Dev Session Loop](docs/dev-session-loop.md):
+one Kickoff at a time, its rows as commits, a handback, then stop. Read that page before any work; it
+holds the roles (builder, integrator, support), what each may do, and the differences between Claude
+Code and Codex. A unit reaches a build seat only as a Kickoff, never by letter or a list on a Hub.
 
-The `library-dev` Project Hub is the durable source of current development state. When it is open
-on the Desk, read it through the validated reader and keep its `Now` section current through exact
-Basic Memory writes to `projects/library-dev/...`. When it is closed, ask the reader to open it;
-never bypass the Desk with a direct content reader.
+The build seats' Project Hubs are the durable source of current development state:
+`deskpost-dev` (Claude Code; builder and integrator) and `deskpost-codex-dev` (Codex; builder).
+`deskpost-desk` (support) writes their Kickoffs and keeps the backlog; the order of work is
+[docs/roadmap.md](docs/roadmap.md). Read a Hub through the validated reader while it is open on the
+Desk; when it is closed, ask the reader to open it, and never bypass the Desk with a direct content
+reader.
+
+Read [The Shelf is a staging area, not storage](docs/shelf-lifecycle.md) before planning any Shelf or
+archive work: it records design intent stated by the reader that is **not derivable from the code**.
 
 ## Where things live
 
@@ -77,20 +82,33 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
 
 ## The gate
 
+**In a Kickoff, a commit's pass mark is the pre-commit hook's own run, made from a clean tree** (the
+working tree equal to the index), with the commit SHA it ran for reported in the handback: see "The
+gates" in [The Dev Session Loop](docs/dev-session-loop.md). The full command below is the push gate and
+the acceptance test outside a Kickoff, run from the checkout with the seat variables blank and the installed
+`bin` off PATH:
+
 ```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1 -WorkspacePath .
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1
 ```
 
-Run it after any change to a tool, a hook, or the reader, and again before reporting done. Paste
+**No `-WorkspacePath` from the checkout.** That flag attaches a folder as a reader's Library, and the
+checkout is not one: three workspace checks then FAIL on its missing `shelf/` and `notebook/` (S115,
+2026-10-11). Pass it only to check a real Library workspace.
+
+Outside a Kickoff, run it after any change to a tool, a hook, or the reader, and again before reporting
+done; inside one, the pass mark above replaces both runs and the full command is run only where the
+Kickoff's CHARTER names a push. Paste
 the final summary line. `WARN` is acceptable; `FAIL` is not. This suite is the acceptance test —
 it is more authoritative than your own reading of the diff, and it is why your report can be
 short. A fix without a regression check that proves it stays fixed is a fix that comes back.
 
 **`-Fast` while you work; the full run is a phase gate, and NEVER an interactive wait.** `-Fast` is
-exactly what the pre-commit hook fires. It took 23 seconds for 98 checks on 2026-09-17. Since the
-kernel self-test joined it (1766 checks at S72, 2026-09-30), it takes **about 6-7 minutes**, so
+exactly what the pre-commit hook fires. It took 23 seconds for 98 checks on 2026-09-17. Since c2
+(2026-10-11), the kernel self-test uses eight isolated section workers; its first commit and
+quick gate took **8 minutes 47 seconds** (the target is 8 minutes), so
 finish a change before committing it rather than committing to test it. The bare command above
-spawns ~50 helper self-tests as child processes and takes **20+ minutes**. Every static check is registered above the `if ($Fast)` branch and therefore runs in
+spawns ~50 helper self-tests as child processes and takes **about 27 minutes** (S118, 2026-10-12, at `35f09b3`; `docs/dev-session-loop.md`, "Measured times", keeps the figures). Every static check is registered above the `if ($Fast)` branch and therefore runs in
 *both* modes, so `-Fast` answers almost any question worth asking mid-session — including whether a
 static check you just added passes. When the full run is genuinely warranted, background it and keep
 working; do not make the reader sit through it, and never start either variant merely to orient. On

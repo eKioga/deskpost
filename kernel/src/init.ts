@@ -1444,7 +1444,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       }
     }
 
-    // THE SKILL THE INSTRUCTIONS NAME, OWNED FILE BY FILE (PLAN-assistant-onboarding.md step 7; skillcopy.ts).
+    // SHIPPED SKILLS IN BOTH HARNESSES, OWNED FILE BY FILE (PLAN-assistant-onboarding.md step 7; skillcopy.ts).
     // Reported under result.skill, not result.files: the PowerShell initializer (the oracle) writes no Skill, and a
     // list of its own keeps every other file's entry where the acceptance matrix compares it.
     const skill = skillPlans(workspace, programRoot);

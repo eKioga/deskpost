@@ -113,6 +113,9 @@ export function addedDirArguments(dirs: string[]): string[] {
   return dirs.flatMap((dir) => ['--add-dir', dir]);
 }
 
+import { readSeatLaunch } from './seatlaunch.ts';
+import { readRegistryRows, registryFilePath } from './seatregistry.ts';
+
 function quoted(argument: string): string {
   return /[\s"]/.test(argument) ? `"${argument}"` : argument;
 }
@@ -158,9 +161,14 @@ export function lettersPromptArguments(assistant: Assistant | null, lettersWaiti
 export function launchLine(stateDirectory: string, seat: string, dirs: string[]): string {
   const activity = readSeatActivity(stateDirectory, seat);
   const session = typeof activity?.['session_id'] === 'string' ? (activity['session_id'] as string) : '';
-  const assistant: Assistant = activity?.['assistant'] === 'codex' ? 'codex' : 'claude';
-  const conversation = session ? (assistant === 'codex' ? ['resume', session] : ['--resume', session]) : [];
-  return [assistant, ...conversation, ...nameArguments(assistant, seat, []), ...addedDirArguments(dirs)].map(quoted).join(' ');
+  const owner: Assistant = activity?.['assistant'] === 'codex' ? 'codex' : 'claude';
+  const row = readRegistryRows(registryFilePath(stateDirectory)).find(r => r['seat'] === seat);
+  const record = readSeatLaunch(stateDirectory, seat, String(row?.['seat_id'] ?? ''));
+  const assistant = record.state === 'valid' ? record.record.assistant ?? owner : owner;
+  const conversation = session && owner === assistant ? (assistant === 'codex' ? ['resume', session] : ['--resume', session]) : [];
+  const stored = record.state === 'valid' ? record.record.args[assistant] : [];
+  const label = record.state === 'valid' && session && owner !== assistant ? 'New conversation: ' : '';
+  return label + [assistant, ...conversation, ...nameArguments(assistant, seat, []), ...addedDirArguments(dirs), ...(assistant === 'codex' ? ['--no-daemon'] : []), ...stored].map(quoted).join(' ');
 }
 
 /** The seat, named and live. A retired seat and an unknown one are refused, each by name. */

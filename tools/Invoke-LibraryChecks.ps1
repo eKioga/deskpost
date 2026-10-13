@@ -5592,7 +5592,7 @@ Invoke-Check 'kernel.selftest' {
     if (-not $node) {
         return 'WARN: node is not on PATH, so the kernel self-test did not run. Install Node 22+ to run it.'
     }
-    $out = & node $suite 2>&1
+    $out = & node (Join-Path $program 'kernel/test/run-parallel.ts') 2>&1
     if ($LASTEXITCODE -ne 0) { throw ((@($out) | Select-Object -Last 4) -join ' | ') }
     ((@($out) | Select-Object -Last 1) | Out-String).Trim()
 }

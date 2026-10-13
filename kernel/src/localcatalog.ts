@@ -145,6 +145,36 @@ export function ownedLines(text: string, targets: string[]): { index: number; li
   return owned;
 }
 
+/**
+ * THE CATALOG LINE A BOOK OWNS, identified by its link target, placed: inserted under `heading` when absent (the
+ * heading inserted, before `beforeHeading`, when it is missing), moved there when `move` and it sits under another,
+ * replaced where it stands when it differs. Two owned lines are returned as `duplicate` for the caller to refuse in
+ * its own words. A publication to the local collection and `shared list-entry` on a local Library both place it here.
+ */
+export function placeOwnedEntry(
+  text: string,
+  target: string,
+  entry: string,
+  heading: string,
+  beforeHeading: string | null,
+  move: boolean,
+): { text: string; state: 'already-current' | 'inserted' | 'moved' | 'replaced' | 'duplicate'; movedFrom: string | null; count: number } {
+  let catalog = ensureHeading(text, heading, beforeHeading).text;
+  const owned = ownedLines(catalog, [target]);
+  if (owned.length > 1) return { text, state: 'duplicate', movedFrom: null, count: owned.length };
+  if (owned.length === 0) return { text: insertUnderHeading(catalog, heading, entry), state: 'inserted', movedFrom: null, count: 0 };
+  if (move && owned[0]!.heading !== heading) {
+    return { text: insertUnderHeading(withoutLine(catalog, owned[0]!.index), heading, entry), state: 'moved', movedFrom: owned[0]!.heading, count: 1 };
+  }
+  if (owned[0]!.line !== entry) {
+    const lines = catalog.replace(/\r\n/g, '\n').split('\n');
+    lines[owned[0]!.index] = entry;
+    catalog = lines.join('\n');
+    return { text: catalog, state: 'replaced', movedFrom: null, count: 1 };
+  }
+  return { text: catalog, state: 'already-current', movedFrom: null, count: 1 };
+}
+
 /** The catalog with one line removed, by its index. */
 export function withoutLine(text: string, index: number): string {
   const eol = endingOf(text);

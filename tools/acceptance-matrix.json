@@ -151,11 +151,11 @@
       "match": { "field_pattern": "^result\\.library_checks(\\[|\\.|$)" }
     },
     "kernel-init-writes-library-help": {
-      "reason": "PLAN-assistant-onboarding.md step 7 (S57): every Library's instructions name the library-help Skill, and only the opt-in plugin carried it, so the kernel's init copies it into .claude/skills/library-help/ with an ownership manifest. The PowerShell initializer, the oracle, writes no Skill. Only the Skill's own files and init's result.skill report are the kernel's; every other file init writes, and result.files in its fixed order, are still compared. Kernel self-test section 55 judges the copy itself: its contents, a second run's idempotence, an edited file left and named, and a hand-made Skill left whole.",
-      "approved_by": "PLAN-assistant-onboarding.md step 7 and its step 6 matrix note, signed off by the reader in S57",
-      "approved_on": "2026-09-27",
+      "reason": "PLAN-assistant-onboarding.md step 7 (S57), extended by Codex parity step 4d: the kernel's init installs the canonical library-help Skill in .claude/skills/library-help/ and .agents/skills/library-help/, with independent ownership manifests. The PowerShell initializer writes no Skill. Only library-help's own files and result.skill are exempt; every other file and result.files entry stays compared. Sections 55, 107 and 219 judge canonical content, idempotence, edit/collision preservation, upgrades, repair, interruption, retirement, links and uninstall retention. This exemption covers no other skill.",
+      "approved_by": "PLAN-assistant-onboarding.md step 7 (S57), extended to both harnesses by Eric's approved c3 charter for Codex parity step 4d",
+      "approved_on": "2026-10-12",
       "applies_to": ["area:workspace"],
-      "match": { "field_pattern": "^(effect\\.\\.claude/skills/library-help/|result\\.skill(\\.|\\[|$))" }
+      "match": { "field_pattern": "^(effect\\.\\.(claude|agents)/skills/library-help/|result\\.skill(\\.|\\[|$))" }
     },
     "a-local-librarys-own-books-are-its-collection": {
       "reason": "PLAN-basic-memory.md step 1 (1.1): a Book under a local Library's own books/ is in its collection, and the Desk overview names that place collection, as the Desk context hook and desk open (S65) do. The PowerShell arm, the oracle, predates local collections and can only call books/<slug> shared. Measured S66: this row mismatched in this one field alone, at HEAD and at 8b92654 before S65's changes. The slug, root and shelf are still compared, and a Shelf Book named as either place still differs, because the value must be shared or collection on both sides.",
@@ -2858,6 +2858,30 @@
       "kernel": { "steps": [ { "command": ["selftest", "hooks", "--workspace", "{workspace}"] } ] }
     },
     {
+      "id": "harness.codex-discovers-installed-library-help",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "After init in a disposable fresh Library, a real Codex session lists library-help when asked to list available skill names without tools.",
+      "reason": "Parity step 4d: structural installation is not live discovery. Record a verdict for the exact release binary; source-fixture discovery is separate evidence, recorded in the c3 handback.",
+      "recorded_verdict": true,
+      "fixture": "bare-folder",
+      "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--json"] } ] }
+    },
+    {
+      "id": "harness.claude-discovers-installed-library-help",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "After init in a disposable fresh Library, a real Claude Code session lists library-help when asked to list available skill names without tools.",
+      "reason": "Parity step 4d: identical files do not prove harness discovery. Enable only the Skill tool so skills are advertised, invoke no tools, and record a verdict for the exact release binary. Source-fixture evidence belongs in the c3 handback.",
+      "recorded_verdict": true,
+      "fixture": "bare-folder",
+      "powershell": { "steps": [ { "script": "tools/Initialize-LibraryWorkspace.ps1", "args": ["-Path", "{workspace}", "-Json"] } ] },
+      "kernel": { "steps": [ { "command": ["init", "{workspace}", "--json"] } ] }
+    },
+    {
       "id": "harness.a-post-compaction-session-still-knows-where-it-is",
       "area": "harness",
       "class": "success",
@@ -2868,6 +2892,193 @@
       "fixture": "workspace-open-book",
       "powershell": { "steps": [ { "script": "tools/Test-LibraryHooks.ps1", "args": [] } ] },
       "kernel": { "steps": [ { "command": ["selftest", "session-start", "--workspace", "{workspace}"] } ] }
+    },
+    {
+      "id": "seat.saved-launch-record-and-codex-isolation",
+      "area": "seat",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "A seat launch validates its incarnation-bound record, honors explicit requests, orders stored flags before passthrough, and adds --no-daemon to new and resumed Codex launches.",
+      "reason": "c5, ADR-0076; judged by kernel self-test section 221. The PowerShell launcher has no saved assistant/flags contract to compare.",
+      "judge": {
+        "command": [
+          "node",
+          "kernel/test/selftest.ts"
+        ],
+        "environment": {
+          "LIBRARY_SELFTEST_KERNEL": "{kernel}",
+          "LIBRARY_SELFTEST_SECTIONS": "221"
+        }
+      },
+      "fixture": "workspace-seated",
+      "powershell": {
+        "steps": [
+          {
+            "script": "tools/Start-LibrarySeat.ps1",
+            "args": [
+              "-Seat",
+              "{seat}",
+              "-WorkspacePath",
+              "{workspace}",
+              "-Preflight",
+              "-Json"
+            ]
+          }
+        ]
+      },
+      "kernel": {
+        "steps": [
+          {
+            "command": [
+              "seat",
+              "start",
+              "{seat}",
+              "--workspace",
+              "{workspace}",
+              "--preflight",
+              "--json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "seat.launch-flags-preview-and-approval",
+      "area": "seat",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "Every flag set, clear or reset is previewed and bound to its operation, seat incarnation and current bytes; malformed reset and unreadable refusal, all flag-table positions and mode conflicts are proved.",
+      "reason": "c5, ADR-0076; judged by kernel self-test section 222. The PowerShell launcher has no saved assistant/flags contract to compare.",
+      "judge": {
+        "command": [
+          "node",
+          "kernel/test/selftest.ts"
+        ],
+        "environment": {
+          "LIBRARY_SELFTEST_KERNEL": "{kernel}",
+          "LIBRARY_SELFTEST_SECTIONS": "222"
+        }
+      },
+      "fixture": "workspace-seated",
+      "powershell": {
+        "steps": [
+          {
+            "script": "tools/Start-LibrarySeat.ps1",
+            "args": [
+              "-Seat",
+              "{seat}",
+              "-WorkspacePath",
+              "{workspace}",
+              "-Preflight",
+              "-Json"
+            ]
+          }
+        ]
+      },
+      "kernel": {
+        "steps": [
+          {
+            "command": [
+              "seat",
+              "start",
+              "{seat}",
+              "--workspace",
+              "{workspace}",
+              "--preflight",
+              "--json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "seat.menu-settings-copy-and-record-lifecycle",
+      "area": "seat",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "The menu honors saved assistants, displays cross-owner behavior, copies valid flags with a fresh destination approval, binds wizard and help creation, and rechecks changed launch records under the lock.",
+      "reason": "c5, ADR-0076; judged by kernel self-test section 223. The PowerShell launcher has no saved assistant/flags contract to compare.",
+      "judge": {
+        "command": [
+          "node",
+          "kernel/test/selftest.ts"
+        ],
+        "environment": {
+          "LIBRARY_SELFTEST_KERNEL": "{kernel}",
+          "LIBRARY_SELFTEST_SECTIONS": "223"
+        }
+      },
+      "fixture": "workspace-seated",
+      "powershell": {
+        "steps": [
+          {
+            "script": "tools/Start-LibrarySeat.ps1",
+            "args": [
+              "-Seat",
+              "{seat}",
+              "-WorkspacePath",
+              "{workspace}",
+              "-Preflight",
+              "-Json"
+            ]
+          }
+        ]
+      },
+      "kernel": {
+        "steps": [
+          {
+            "command": [
+              "seat",
+              "start",
+              "{seat}",
+              "--workspace",
+              "{workspace}",
+              "--preflight",
+              "--json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "harness.codex-menu-launch-holds-seat-with-daemon-running",
+      "area": "harness",
+      "class": "success",
+      "oracle": "independent",
+      "operation": "With the shared daemon running, a real Codex fixture seat launched through seat start holds its own seat and records the CLI version.",
+      "reason": "c5 source-fixture proof is recorded in its Handback. Exact-release proof remains for the release rehearsal; never substitute copied login files or a real Library seat.",
+      "recorded_verdict": true,
+      "fixture": "workspace-seated",
+      "powershell": {
+        "steps": [
+          {
+            "script": "tools/Start-LibrarySeat.ps1",
+            "args": [
+              "-Seat",
+              "{seat}",
+              "-WorkspacePath",
+              "{workspace}",
+              "-Preflight",
+              "-Json"
+            ]
+          }
+        ]
+      },
+      "kernel": {
+        "steps": [
+          {
+            "command": [
+              "seat",
+              "start",
+              "{seat}",
+              "--workspace",
+              "{workspace}",
+              "--preflight",
+              "--json"
+            ]
+          }
+        ]
+      }
     }
   ]
 }
