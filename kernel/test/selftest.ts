@@ -4979,12 +4979,12 @@ if (selected(51)) {
     // WITH A TRANSCRIPT, THE SAME NUMBER RESUMES IT, AND ITS TITLE IS ON THE ROW.
     fs.writeFileSync(path.join(transcripts, 'some-project', `${minted}.jsonl`), '{"type":"user"}\n{"type":"ai-title","aiTitle":"Wiring the home lab"}\n');
     const resumed = menu(['1'], ['--workspace', library, '--width', '200']);
-    check(resumed.stdout.includes('Seats in this Library:') && resumed.stdout.includes('"Wiring the home lab"'), `a wide terminal did not show the table with the title: ${resumed.stdout.slice(0, 900)}`);
+    check(resumed.stdout.includes('Deskpost seats') && resumed.stdout.includes('1. home-lab: Claude Code,'), `a wide terminal did not show the table with the title: ${resumed.stdout.slice(0, 900)}`);
     check(logLines().some((line) => line.includes('--resume') && line.includes(minted)), `a number did not resume the recorded Claude Code conversation: ${logLines().join(' | ')}`);
     // BELOW 120 COLUMNS, CARDS: SAME NUMBERS, ONE FIELD PER LINE.
     const narrow = menu(['q'], ['--workspace', library, '--width', '80']);
-    check(!narrow.stdout.includes('Seats in this Library:') && /^\s+1 o home-lab/m.test(narrow.stdout) && /^\s+Project\s+home-lab/m.test(narrow.stdout), `a narrow terminal did not get cards: ${narrow.stdout.slice(0, 900)}`);
-    check(narrow.stdout.includes('+  new seat    h  Show me around    l  browse    b  Basic Memory    q  quit') && narrow.stdout.includes('h  Show me around   a deskpost-help seat') && narrow.stdout.includes('Pick a seat to continue its last session, or n<number> for a new one.'), `the tools footer or the first hint is missing: ${narrow.stdout}`);
+    check(narrow.stdout.includes('Deskpost seats') && /^1\. home-lab: Claude Code,/m.test(narrow.stdout) && !/^\s+Project\s+home-lab/m.test(narrow.stdout), `a narrow terminal did not get cards: ${narrow.stdout.slice(0, 900)}`);
+    check(narrow.stdout.includes('2. Make a new seat') && narrow.stdout.includes('3. Help and more') && narrow.stdout.includes('Type a number or part of a name.'), `the tools footer or the first hint is missing: ${narrow.stdout}`);
 
     // THE GRAMMAR'S REFUSALS EACH SAY THEIR OWN THING, AND THE LOOP GOES ON.
     const grammar = menu(['x', '9', '', 'q'], ['--workspace', library]);
@@ -5001,7 +5001,7 @@ if (selected(51)) {
     fs.rmSync(payload);
     // A NUMBER RESUMES THE CODEX CONVERSATION IN CODEX, AND ITS TITLE IS A RECORDED REASON.
     const codexResume = menu(['1'], ['--workspace', library, '--width', '200']);
-    check(codexResume.stdout.includes('a Codex conversation; its title is not read') && logLines().some((line) => line.includes('codex') && line.includes('resume') && line.includes(codexSession)), `the Codex conversation was not resumed in Codex: ${codexResume.stdout.slice(-500)} ${logLines().join(' | ')}`);
+    check(codexResume.stdout.includes('home-lab: Codex,') && logLines().some((line) => line.includes('codex') && line.includes('resume') && line.includes(codexSession)), `the Codex conversation was not resumed in Codex: ${codexResume.stdout.slice(-500)} ${logLines().join(' | ')}`);
     // ONLY THE LAUNCHER'S DIRECT AGENT MAY REPORT (post-build inspection #1): planted trees, walked as the hook walks them.
     {
       const { launcherDirectAgent } = await import('../src/procstart.ts');
@@ -5049,7 +5049,7 @@ if (selected(51)) {
     fs.writeFileSync(nestedFlag, '');
     menu(['1'], ['--workspace', library]);
     const nestedText = fs.existsSync(nestedLog) ? fs.readFileSync(nestedLog, 'utf8') : '';
-    check(nestedText.includes('held') && nestedText.includes("Seat 'home-lab' is in use") && nestedText.includes('No seat was chosen.'), `a held seat was not refused by the menu: ${nestedText.slice(-600)}`);
+    check(nestedText.includes('in another window') && nestedText.includes("Seat 'home-lab' is in use") && nestedText.includes('No seat was chosen.'), `a held seat was not refused by the menu: ${nestedText.slice(-600)}`);
 
     // + ON A PROJECT THAT ALREADY HAS A SEAT SAYS SO; b IS THE RESERVED SLOT; r<number> RETIRES THROUGH ITS PREFLIGHT.
     const taken = menu(['+', 'home-lab', 'q'], ['--workspace', library]);
@@ -5209,7 +5209,7 @@ if (selected(52)) {
     const script = path.join(root, 'menu.txt');
     fs.writeFileSync(script, '1\n');
     const fromMenu = runCli(['menu', '--script', script, '--transcript-root', path.dirname(transcripts), '--width', '200'], { cwd: library, env });
-    check(fromMenu.stdout.includes('deskpost-help') && fromMenu.stdout.includes('"The Deskpost tour"') && lines().some((line) => line.includes('--resume') && line.includes(lastId)), `the tutorial seat did not resume from the menu: ${fromMenu.stdout.slice(-600)} ${lines().join(' | ')}`);
+    check(fromMenu.stdout.includes('deskpost-help: Claude Code,') && lines().some((line) => line.includes('--resume') && line.includes(lastId)), `the tutorial seat did not resume from the menu: ${fromMenu.stdout.slice(-600)} ${lines().join(' | ')}`);
 
     // NO ASSISTANT: ONLY THE MENU AND LATER.
     const bare = path.join(root, 'empty-bin');
@@ -7190,10 +7190,11 @@ if (selected(78)) {
     check(accepted.exit === 0 && fs.existsSync(record) && fs.readFileSync(record, 'utf8').includes(JSON.stringify(repo).slice(1, -1)), `an accepted folder was not saved: ${accepted.stdout.slice(-900)} ${accepted.stderr}`);
     check(accepted.stdout.includes("load in seat 'alpha' only, from its next launch"), `saving did not say where the folder applies: ${accepted.stdout.slice(-600)}`);
     check(accepted.stdout.includes('is not an absolute path') && accepted.stdout.includes('No seat was chosen.'), `an invalid path was not refused with seat dirs' reason, or the menu did not go on: ${accepted.stdout.slice(-900)}`);
-    check(/alpha \+1 folder/.test(accepted.stdout), `the seat row was not marked +1 folder after saving: ${accepted.stdout.slice(-900)}`);
+    check(accepted.stdout.includes('1. alpha: Claude Code,'), `the plain seat sentence is missing after saving: ${accepted.stdout.slice(-900)}`);
     check(accepted.stdout.includes("'x' is not one of the commands: a number, n<number>, r<number>, f<number>"), `the invalid-choice message does not name f<number>: ${accepted.stdout.slice(-600)}`);
     const narrow = run(['q']);
-    check(/alpha \+1 folder/.test(narrow.stdout) && narrow.stdout.includes('f<number>  folders'), `a fresh menu did not mark the row, or its footer does not offer f<number>: ${narrow.stdout.slice(0, 900)}`);
+    const { menuRows } = await import('../src/menu.ts');
+    check(narrow.stdout.includes('1. alpha: Claude Code,') && menuRows(lib)[0]?.folders === 1, `a fresh plain menu lost the row or its saved folder count: ${narrow.stdout.slice(0, 900)}`);
   } catch (error) {
     failures.push(`section 78 stopped early: ${(error as Error).message}`);
   } finally {
@@ -12444,12 +12445,13 @@ if (selected(140)) {
       check(compileSource.includes('`--content-path ${request.contentPath} is not a file (resolved to') && !compileSource.includes('ContentPath is not'), 'compile.ts does not name --content-path and the resolved path');
     }
 
-    // 2. page_size_warning: the size after the edit, on the preflight and on the write.
+    // 2. page_size_warning: sizes before and after the edit, on the preflight and on the write.
     const big = path.join(root, 'big.md');
     fs.writeFileSync(big, `${Array.from({ length: 900 }, (_, i) => `- [ ] Item ${i} carries a line long enough to grow the page.`).join('\n')}\n`);
+    const pageBytesBefore = Buffer.byteLength(fs.readFileSync(path.join(lib, 'collection', 'projects', 'work', '_project.md'), 'utf8'));
     const pre = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', big, '--preflight']);
     const warning = (json(pre)['page_size_warning'] ?? {}) as Record<string, unknown>;
-    check(typeof warning['size_after_bytes'] === 'number' && warning['size_after_bytes'] === warning['size_bytes'] && Number(warning['size_after_bytes']) > 40000, `page_size_warning does not give size_after_bytes with its alias: ${JSON.stringify(warning).slice(0, 300)}`);
+    check(typeof warning['size_after_bytes'] === 'number' && warning['size_before_bytes'] === pageBytesBefore && !('size_bytes' in warning) && Number(warning['size_after_bytes']) > 40000, `page_size_warning does not give the sizes before and after: ${JSON.stringify(warning).slice(0, 300)}`);
     check(pre.stderr.includes(`would be ${warning['size_after_bytes']} bytes after this edit`), `the preflight's warning does not say the size after the edit: ${pre.stderr.slice(0, 300)}`);
     const wrote = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', big]);
     check(wrote.exit === 0 && wrote.stderr.includes(`is ${warning['size_after_bytes']} bytes after this edit`), `the write's warning does not say the size after the edit: ${said(wrote).slice(0, 300)}`);
@@ -13790,16 +13792,21 @@ if (selected(154)) {
 // tsc"). `tsc -p tsconfig.json --noEmit`, run through this Node with the TypeScript and Node types kernel/package-lock.json
 // pins (`npm ci --offline` in kernel/), over src/ and test/ alike; any error fails the section, naming the first ones, so
 // the -Fast gate's kernel self-test carries the check. TypeScript not installed is a failure that says how to install
-// it. A compiled suite has no source tree to check, and skips.
+// it. C11 also checks tools/tsconfig.json, with the same pinned compiler and Node types, so the commit and push
+// tiers both cover the gate tools. A compiled suite has no source tree to check, and skips.
 if (selected(155) && prerequisite(155, () => !isCompiled(), 'requires source suite')) {
   const kernelRoot = path.join(PROGRAM_ROOT, 'kernel');
   const tsc = path.join(kernelRoot, 'node_modules', 'typescript', 'bin', 'tsc');
   if (!fs.existsSync(tsc)) {
     failures.push(`section 155: TypeScript is not installed at ${path.dirname(path.dirname(tsc))}; run npm ci --offline in kernel/ (package-lock.json pins it), then the self-test again`);
   } else {
-    const ran = spawnSync(process.execPath, [tsc, '-p', path.join(kernelRoot, 'tsconfig.json'), '--noEmit', '--pretty', 'false'], { cwd: kernelRoot, encoding: 'utf8', timeout: 600000 });
-    const errors = `${ran.stdout ?? ''}\n${ran.stderr ?? ''}`.split(/\r?\n/).filter((line) => /error TS\d+/.test(line));
-    check(ran.status === 0 && errors.length === 0, `tsc found ${errors.length} type error(s) in the kernel (exit ${ran.status}): ${errors.slice(0, 8).join(' | ')}`);
+    for (const folder of ['kernel', 'tools']) {
+      const ran = spawnSync(process.execPath, [tsc, '-p', path.join(PROGRAM_ROOT, folder, 'tsconfig.json'), '--noEmit', '--pretty', 'false'], { cwd: kernelRoot, encoding: 'utf8', timeout: 600000 });
+      const errors = (String(ran.stdout ?? '') + '\n' + String(ran.stderr ?? '')).split(/\r?\n/).filter(line => /error TS\d+/.test(line));
+      const passed = ran.status === 0 && errors.length === 0;
+      process.stdout.write('typecheck: ' + folder + ': ' + (passed ? 'PASS' : 'FAIL') + '\n');
+      check(passed, 'tsc found ' + errors.length + ' type error(s) in ' + folder + ' (exit ' + ran.status + '): ' + errors.slice(0, 8).join(' | '));
+    }
   }
 }
 
@@ -14427,7 +14434,7 @@ if (selected(162)) {
       "This seat is the orchestrator of its department, working on {project}. It answers or routes every letter addressed to the department, and keeps the product's plan and a record of its progress on this Hub. It passes upward, with evidence, what keeps failing or needs the reader's decision. It does not do the department's main build work while a performer exists for it, and it answers short messages between tasks. Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk. When no seat card fits a question, it says so and asks the reader rather than guess. Read and close your letters before other work. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: orchestrator v3.";
 
     // BOTH LOAD, AND FILL.
-    equal(seatTemplateNames(checkout).join(','), 'auditor,ideas,orchestrator,performer', 'the program tree does not carry exactly the four built-in templates');
+    equal(seatTemplateNames(checkout).join(','), 'auditor,developer,ideas,orchestrator,performer,planner', 'the program tree does not carry exactly the six built-in templates');
     for (const [name, expected] of [['performer', performerText], ['orchestrator', orchestratorText]] as const) {
       const template = loadSeatTemplate(checkout, name);
       equal(JSON.stringify(Object.keys(JSON.parse(fs.readFileSync(path.join(checkout, 'templates', 'seats', `${name}.json`), 'utf8')) as object)), '["schema","name","version","role","purpose"]', `${name}.json carries other keys or another order`);
@@ -15634,7 +15641,7 @@ if (selected(173)) {
     equal(forLead['count'], 8, 'letters_for_this_seat.count changed its meaning');
     equal(forLead['oldest_pending'], day(12), 'the oldest pending letter is not the aged one');
     equal(forLead['stuck'], 2, `stuck did not count the old department letter (2-day Book) and the aged one (9-day Book) only: ${JSON.stringify(forLead)}`);
-    equal(forLead['route'], "library desk open book letters --location shelf, then read section 'Pending review' of its reader map (_index) and its letters under '### For lead' there, or list them with library triage inventory --pending", 'the route does not name where the letters are listed');
+    equal(forLead['route'], 'library triage inventory --pending', 'the route does not name where the letters are listed');
     const leadDirectory = lead['directory'] as Record<string, unknown>;
     equal(Object.keys(leadDirectory).at(-1), 'stuck_letters', 'stuck_letters is not the last key of the directory');
     // old (letters), aged (notices) and the one routed to qa; not the legacy (no date), malformed or marketing ones.
@@ -19500,7 +19507,7 @@ if (selected(211)) {
       fs.writeFileSync(script, answers.join('\n') + '\n');
       return runCli(['menu', '--workspace', lib, '--script', script, '--width', '200'], { cwd: root, env });
     };
-    const keys = 'Template   [p] performer  [o] orchestrator  [a] auditor  [i] ideas  [Enter] none › ';
+    const keys = 'Template   [p] performer  [o] orchestrator  [a] auditor  [i] ideas  [d] developer  [l] planner  [Enter] none › ';
     for (const [project, key, name, seat] of [['Audit Work', 'a', 'auditor', 'qa-audit'], ['Idea Work', 'i', 'ideas', 'qa-ideas']] as const) {
       const ran = menu(['+', project, 'qa', key, '', '', '', '']);
       const out = ran.stdout;
@@ -20084,7 +20091,7 @@ if (selected(216)) {
     check(posixNone.includes('env_vars = ["LIBRARY_SEAT", "LIBRARY_SEAT_CLAIM", "DESKPOST_ASSISTANT", "DESKPOST_LAUNCHER_PID"]'), `the reader does not forward the seat variables: ${posixNone.slice(-500)}`);
     check(posixNone.includes('default_tools_approval_mode = "approve"') && !posixNone.includes('default_tools_approval_mode = "auto"'), 'the reader is not rendered with approval mode "approve"');
     check(!posixNone.includes('shell_environment_policy') && !posixOne.includes('shell_environment_policy'), 'a posix render excludes the Path');
-    check(winNone.includes('[shell_environment_policy]\nexclude = ["Path"]\n'), `a win32 render does not exclude the inherited Path: ${winNone.slice(-400)}`);
+    check(winNone.includes('[shell_environment_policy]\nexclude = []\n') && !winNone.includes('exclude = ["Path"]'), `a win32 render does not preserve the inherited Path: ${winNone.slice(-400)}`);
     check(!posixNone.includes('Turned off in this Library') && !winNone.includes('Turned off in this Library'), 'a render with no user config turned something off');
     check(posixOne.includes('\n[mcp_servers.solo]\nenabled = false\n') && posixOne.includes('Derived by `deskpost init` on 2026-10-11'), `one server was not turned off: ${posixOne.slice(-400)}`);
     const tail = winSeveral.substring(winSeveral.indexOf('# Turned off in this Library'));
@@ -20206,6 +20213,7 @@ if (selected(216)) {
     if (process.platform === 'win32') {
       equal(upgraded.exit, 0, `this Library's hand-edited Codex config did not upgrade in place: ${upgraded.stderr.slice(0, 400)}`);
       equal(configOf(library), rendered, 'the hand-edited Codex config was not brought to the render');
+      check(configOf(library).includes('[shell_environment_policy]\nexclude = []\n'), 'the hand-added Path exclusion survived refresh');
     } else {
       // Off Windows the render carries no Path exclusion, so that one hand-added guard is refused in its own words.
       check(upgraded.exit !== 0 && upgraded.stderr.includes('`shell_environment_policy.exclude` looks like a guard someone added by hand') && !upgraded.stderr.includes('Move them into'), `a posix Library's hand-added Path guard was not refused as a guard: ${upgraded.stderr.slice(0, 400)}`);
@@ -20447,7 +20455,7 @@ if (selected(218) && prerequisite(218, () => !isCompiled(), 'requires source run
     }
     try {
      const lock=await acquireGateLock('fixture',process.argv.includes('--no-wait'));
-     console.log(JSON.stringify({held:true,pid:process.pid,token:process.env.DESKPOST_GATE_LOCK,inherited:lock.inherited,time:Date.now()}));
+     console.log(JSON.stringify({held:true,pid:process.pid,token:process.env.DESKPOST_GATE_LOCK,inherited:lock.inherited,wait:lock.wait,time:Date.now()}));
      if(process.argv.includes('--orphan')) {
       const c=spawn(process.execPath,['-e','setTimeout(()=>{},120000)','kernel/test/selftest.ts'],{detached:true,windowsHide:true,stdio:'ignore'}); c.unref();
       console.log(JSON.stringify({orphan:c.pid}));
@@ -20487,6 +20495,8 @@ if (selected(218) && prerequisite(218, () => !isCompiled(), 'requires source run
     const both = await Promise.all([waiter1.done,waiter2.done]); check(both.every((r)=>r.exit===0), `two waiters did not serialize after holder crash: ${both.map((r)=>`exit ${r.exit}: ${r.output.replace(/"token":"[^"]+"/g,'"token":"fixture"')}`).join('; ')}`);
     const intervals = both.map((r) => r.output.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line))).map((events) => ({start:events.find((e)=>e.held).time,end:events.find((e)=>e.releasing).time})).sort((a,b)=>a.start-b.start);
     check(intervals[1]!.start>=intervals[0]!.end,'two waiter workloads overlapped');
+    const waits = both.map(r => JSON.parse(r.output.split('\n').find(line => line.startsWith('{"held":true'))!).wait);
+    check(waits.every(wait => wait && wait.seconds > 0 && wait.started <= wait.ended && wait.seat === 'unseated' && wait.tier === 'fixture'), 'lock wait record lost its holder, duration or start/end');
     const nested = await start([lockFixture,'--nested']).done;
     equal(nested.exit,0,'cut tier -> runner nesting failed'); check(nested.output.includes('nested exit 0')&&!nested.output.includes('waiting:'),'nested runner retook its parent lock');
     const precommitShape = await runFixture('1'); equal(precommitShape.exit,0,'pre-commit -> runner lock route failed');
@@ -20501,7 +20511,7 @@ if (selected(218) && prerequisite(218, () => !isCompiled(), 'requires source run
     const afterCrash = await start([lockFixture]).done; equal(afterCrash.exit,0,'crash did not free fixture lock');
     check(orphanIdentity!==null && await runner.startIdentity(orphanPid)===orphanIdentity,'accepted orphan fixture did not survive the holder');
     const orphanWarnings = locks.leftoverWarnings(await runner.processTable(),process.pid);
-    check(orphanWarnings.some((line:string)=>line.includes(`work: ${orphanPid} `)),'production warning predicate did not report the actual surviving fixture command line');
+    check(orphanWarnings.some((line:string)=>line.includes(`(it may be live, or left over): ${orphanPid} `)),'production warning predicate did not report the actual surviving fixture command line');
     if(await runner.startIdentity(orphanPid)===orphanIdentity) {
       if(process.platform==='win32') await runner.boundedCommand('taskkill.exe',['/PID',String(orphanPid),'/T','/F']);
       else process.kill(orphanPid,'SIGKILL');
@@ -20770,7 +20780,7 @@ if (selected(221)) {
     record.approved.codex!.args_sha256 = 'bad'; fs.writeFileSync(file, JSON.stringify(record));
     equal(readSeatLaunch(state, 'first', id).state, 'invalid', 'unapproved flags accepted');
     fs.writeFileSync(file, '{'); equal(readSeatLaunch(state, 'first', id).state, 'invalid', 'malformed record accepted');
-    check(escapedArgv(['a b', 'x\ny']).includes('\\x0a'), 'escaped preview lost control characters');
+    check(escapedArgv(['a b', 'x\ny']).includes('\n'), 'quoted preview lost an argument character');
 
     const lib = path.join(root, 'lib');
     const fakeBin = path.join(root, 'bin'); fs.mkdirSync(fakeBin); fakeAssistant(fakeBin, 'codex', path.join(root, 'agent.log'));
@@ -20920,14 +20930,14 @@ if (selected(223)) {
     };
     const recordFile = (seat: string) => path.join(lib, '.claude', 'seats', seat, 'launch.json');
     const record = (seat: string) => JSON.parse(fs.readFileSync(recordFile(seat), 'utf8')) as { seat_id: string; assistant: string | null; args: { codex: string[] }; approved: { codex: { plan_id: string } } };
-    const first = menu(['s1', 'a', 'codex', 'f', 'codex', '-a never -s danger-full-access', '', 'q', '1']);
+    const first = menu(['s1', 'a', 'codex', 'f', '-a never -s danger-full-access', '', 'q', '1']);
     check(first.exit === 0 && first.stdout.includes('Planned launch:') && first.stdout.includes('approved'), 'settings screen failed: ' + first.stdout.slice(-500) + first.stderr);
     equal(record('first').assistant, 'codex', 'menu did not save assistant');
     check(fs.readFileSync(log, 'utf8').includes('"--no-daemon" "-a" "never" "-s" "danger-full-access"'), 'menu flags did not reach Codex argv');
     const oldApproval = record('first').approved.codex.plan_id;
-    const cancelled = menu(['s1', 'x', 'codex', 'q', 'q', 'q']);
+    const cancelled = menu(['s1', 'x', 'q', 'q', 'q']);
     check(cancelled.exit === 0 && record('first').approved.codex.plan_id === oldApproval, 'cancelled preview changed flags');
-    const copy = menu(['s2', 'a', 'codex', 'c', 'codex', 'first', '', 'q', 'n2']);
+    const copy = menu(['s2', 'a', 'codex', 'c', 'first', '', 'q', 'n2']);
     check(copy.exit === 0 && JSON.stringify(record('second').args.codex) === JSON.stringify(record('first').args.codex), 'copy did not preserve named seat flags');
     check(record('second').approved.codex.plan_id !== oldApproval, 'copy inherited source approval instead of approving destination');
     const uuid = '00000000-0000-4000-8000-000000000223';
@@ -20936,7 +20946,7 @@ if (selected(223)) {
     check(resumeWithFlags.exit === 0 && resumeWithFlags.stdout.includes('Stored flags for codex:') && fs.readFileSync(log, 'utf8').includes('"resume" "' + uuid + '" "--no-daemon" "-a" "never"'), 'resumed menu launch lost flags');
     fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', 'activity.json'), JSON.stringify({ session_id: uuid, assistant: 'claude', conversation_recorded_utc: new Date().toISOString() }));
     const cross = menu(['1']);
-    check(cross.exit === 0 && cross.stdout.includes("Claude Code's; 1 starts Codex") && cross.stdout.includes('stays resumable there'), 'cross-owner row or launch explanation missing: ' + cross.stdout.slice(-600));
+    check(cross.exit === 0 && cross.stdout.includes("its last conversation was Claude Code's") && cross.stdout.includes('stays resumable there'), 'cross-owner row or launch explanation missing: ' + cross.stdout.slice(-600));
     const dirs = cli(['seat', 'dirs', 'first', '--list']);
     check(dirs.exit === 0 && !dirs.stdout.includes('resume ' + uuid) && dirs.stdout.includes('--no-daemon'), 'dirs resumed a foreign conversation');
     const exact = cli(['seat', 'start', 'first', '--intent', 'resume', '--no-launch']);
@@ -20972,7 +20982,7 @@ if (selected(223)) {
     fs.writeFileSync(recordFile('first'), codexRecord);
     // A malformed source is never listed by copy; doctor names it and its reset route.
     const saved = fs.readFileSync(recordFile('first'), 'utf8'); fs.writeFileSync(recordFile('first'), '{');
-    const invalidCopy = menu(['s2', 'c', 'codex', 'first', 'q', 'q']);
+    const invalidCopy = menu(['s2', 'c', 'first', 'q', 'q']);
     check(invalidCopy.stdout.includes('no valid stored flags'), 'copy allowed an invalid source');
     const doctor = cli(['doctor', '--json']);
     check(doctor.stdout.includes('seats.launch-record.first') && doctor.stdout.includes('--reset-launch'), 'doctor omitted malformed launch WARN');
@@ -20981,7 +20991,7 @@ if (selected(223)) {
     // Help creates its assistant under the wrapped creation gate; its later menu launch carries its stored flags.
     const help = menu(['a', 'h', '']);
     check(help.exit === 0 && record('deskpost-help').assistant === 'codex', 'help seat assistant was not recorded: ' + help.stdout.slice(-500) + help.stderr);
-    const helpFlags = menu(['s1', 'c', 'codex', 'first', '', 'q', 'a', 'h', '']);
+    const helpFlags = menu(['s1', 'c', 'first', '', 'q', 'a', 'h', '']);
     check(helpFlags.exit === 0 && helpFlags.stdout.includes('Stored flags for codex:'), 'help launch did not carry flags: ' + helpFlags.stdout.slice(-500));
     // A creation preview is bound to its assistant as well as its prior choices.
     equal(cli(['hub', 'new', 'wizard', '--title', 'Wizard']).exit, 0, 'wizard Hub');
@@ -21038,6 +21048,1008 @@ if (selected(223)) {
     } finally { fs.renameSync(codexFile + '.disabled', codexFile); }
   } catch (error) { failures.push('section 223 stopped early: ' + (error as Error).message); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 224. C8: committed creation plan, legacy launch settings and guard-loading flags ---------------------
+if (selected(224)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c8-launch-')));
+  try {
+    const { GUARDED_CODEX_CONFIG, validateStoredFlags } = await import('../src/seatlaunch.ts');
+    const refuses = (assistant: 'claude' | 'codex', args: string[]) => {
+      let reason = ''; try { validateStoredFlags(assistant, args); } catch (error) { reason = (error as Error).message; }
+      check(reason.includes('owned') || reason.includes('profile'), 'guard override accepted: ' + JSON.stringify(args));
+    };
+    for (const key of GUARDED_CODEX_CONFIG) {
+      for (const value of [key + '=false', key + '.child=false', "'" + key + "'.child=false"])
+        for (const args of [['-c', value], ['--config', value], ['--config=' + value], ['-c' + value], ['-c=' + value]]) refuses('codex', args);
+      for (const option of ['--enable', '--disable']) for (const args of [[option, key], [option + '=' + key]]) refuses('codex', args);
+    }
+    for (const args of [['-p', 'other'], ['--profile', 'other'], ['--profile=other'], ['-pother'], ['-p=other']]) refuses('codex', args);
+    for (const option of ['--mcp-config', '--strict-mcp-config']) for (const args of [[option], [option + '=other']]) refuses('claude', args);
+    for (const args of [['-c', 'model=fixture'], ['--config=model=fixture'], ['-cmodel=fixture'], ['--enable', 'fast_mode'], ['--disable=fast_mode']]) {
+      let ok = true; try { validateStoredFlags('codex', args); } catch { ok = false; }
+      check(ok, 'ordinary override refused: ' + JSON.stringify(args));
+    }
+    const lib = path.join(root, 'lib'), bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+    fakeAssistant(bin, 'codex', path.join(root, 'agent.log'));
+    const fixturePath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', ORCA_TERMINAL_HANDLE: '', PATH: fixturePath, Path: fixturePath };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'c8 fixture init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'c8 fixture Hub');
+    const creationArgs = ['seat', 'start', 'first', '--project', 'work', '--record-assistant', 'codex', '--no-launch'];
+    const creationPreview = cli([...creationArgs, '--preflight']);
+    equal(creationPreview.exit, 0, 'record assistant creation preview: ' + creationPreview.stderr);
+    const created = cli([...creationArgs, '--plan-id', JSON.parse(creationPreview.stdout).plan_id]);
+    equal(created.exit, 0, 'record assistant creation: ' + created.stderr);
+    const result = JSON.parse(created.stdout);
+    equal(result.command, 'codex', 'creation launched pre-record fallback');
+    check(result.command_args.includes('--no-daemon'), 'creation omitted Codex isolation');
+    equal(result.conversation, '', 'creation retained minted Claude conversation');
+    equal(result.conversation_action, 'named', 'creation retained Claude conversation action');
+    const registryFile = path.join(lib, '.claude', 'seats', '_registry.json');
+    const launchFile = path.join(lib, '.claude', 'seats', 'first', 'launch.json');
+    const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
+    delete registry.seats[0].seat_id; fs.writeFileSync(registryFile, JSON.stringify(registry)); fs.rmSync(launchFile);
+    const settings = (args: string[]) => runCli(['seat', 'settings', 'first', '--workspace', lib, ...args], { cwd: root, env });
+    const before = fs.readFileSync(registryFile, 'utf8');
+    const preview = settings(['--flags', 'codex', '--preflight', '--', '--model', 'fixture']);
+    equal(preview.exit, 0, 'legacy flags preview: ' + preview.stderr);
+    equal(fs.readFileSync(registryFile, 'utf8'), before, 'legacy preview assigned id');
+    const applied = settings(['--flags', 'codex', '--plan-id', JSON.parse(preview.stdout).plan_id, '--', '--model', 'fixture']);
+    equal(applied.exit, 0, 'legacy flags apply: ' + applied.stderr);
+    const id = JSON.parse(fs.readFileSync(registryFile, 'utf8')).seats[0].seat_id;
+    check(/^[a-f0-9]{32}$/.test(id), 'legacy id differs from new-seat format');
+    equal(JSON.parse(fs.readFileSync(launchFile, 'utf8')).seat_id, id, 'legacy launch record incarnation mismatch');
+    equal(settings(['--assistant', 'codex']).exit, 0, 'legacy assistant subsequent write');
+    equal(JSON.parse(fs.readFileSync(registryFile, 'utf8')).seats[0].seat_id, id, 'legacy id changed on next write');
+  } catch (error) { failures.push('section 224 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 225. C8: launch display, current menu choice, repeatable options, Catalog inputs and atomic claims ----
+if (selected(225)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c8-review-')));
+  const savedEnv = { ...process.env };
+  try {
+    const { escapedArgv, emptyLaunchRecord, launchDigest, planSeatLaunch } = await import('../src/seatlaunch.ts');
+    const { menuRows, runMenu } = await import('../src/menu.ts');
+    const { claimHookOnce } = await import('../src/hookledger.ts');
+    equal(escapedArgv(['a b', 'a"b', 'C:\\work\\', 'C:\\two words\\'], 'win32'), '"a b" "a\\"b" C:\\work\\ "C:\\two words\\\\"', 'Windows display quoting');
+    equal(escapedArgv(['a b', "it's", 'C:\\work\\'], 'linux'), "'a b' 'it'\\''s' 'C:\\work\\'", 'POSIX display quoting');
+    const record = emptyLaunchRecord('a'.repeat(32)); record.assistant = 'codex';
+    record.args.codex = ['-c', 'model=first', '--enable', 'fast_mode', '--disable', 'feature_a', '--model', 'first'];
+    const input = { seat: 'first', row: { seat_id: record.seat_id }, record: { state: 'valid' as const, digest: 'fixture', record }, intent: 'new' as const,
+      fallback: 'claude' as const, mintedId: '00000000-0000-4000-8000-000000000001', dirs: [], inbound: [], letters: 0, passthrough: [] as string[] };
+    for (const typed of [['--config=model=second'], ['-cmodel=second'], ['--enable=feature_b'], ['--disable', 'feature_b']]) {
+      let accepted = true; try { planSeatLaunch({ ...input, passthrough: typed }); } catch { accepted = false; }
+      check(accepted, 'repeatable Codex option refused: ' + JSON.stringify(typed));
+    }
+    let refused = false; try { planSeatLaunch({ ...input, passthrough: ['-msecond'] }); } catch { refused = true; }
+    check(refused, 'nonrepeatable model override accepted');
+    const claudeRecord = emptyLaunchRecord(record.seat_id); claudeRecord.assistant = 'claude';
+    claudeRecord.args.claude = ['--plugin-dir', 'first', '--plugin-url', 'https://example.test/first.zip'];
+    for (const typed of [['--plugin-dir=second'], ['--plugin-url=https://example.test/second.zip']]) {
+      let accepted = true; try { planSeatLaunch({ ...input, record: { state: 'valid', digest: 'fixture', record: claudeRecord }, passthrough: typed }); } catch { accepted = false; }
+      check(accepted, 'repeatable Claude option refused: ' + JSON.stringify(typed));
+    }
+    const lib = path.join(root, 'lib'), bin = path.join(root, 'bin'), log = path.join(root, 'agents.log'); fs.mkdirSync(bin);
+    fakeAssistant(bin, 'claude', log); fakeAssistant(bin, 'codex', log);
+    const fixturePath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', DESKPOST_UPDATE_CHECK: '0', PATH: fixturePath, Path: fixturePath };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'review fixture init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'review fixture Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'review fixture seat');
+    const state = path.join(lib, '.claude'), file = path.join(state, 'seats', 'first', 'launch.json');
+    const id = JSON.parse(fs.readFileSync(path.join(state, 'seats', '_registry.json'), 'utf8')).seats[0].seat_id;
+    const setting = emptyLaunchRecord(id); setting.assistant = 'codex'; setting.args.claude = ['--model', 'fixture'];
+    setting.approved.claude = { plan_id: 'seat-launch-' + 'b'.repeat(64), utc: new Date().toISOString(), args_sha256: launchDigest(JSON.stringify(setting.args.claude)) };
+    fs.writeFileSync(file, JSON.stringify(setting));
+    equal(menuRows(lib)[0]!.launchFlags, false, 'Codex row marked Claude flags');
+    setting.assistant = null; fs.writeFileSync(file, JSON.stringify(setting));
+    equal(menuRows(lib, { fallbackAssistant: 'codex' })[0]!.launchFlags, false, 'fallback Codex row marked Claude flags');
+    fs.rmSync(file);
+    for (const key of Object.keys(process.env).filter(key => key.toUpperCase() === 'PATH')) delete process.env[key];
+    for (const [key, value] of Object.entries(env)) if (key !== 'Path') process.env[key] = value;
+    let changedAfterDraw = false;
+    const menuExit = await runMenu({ explicit: lib, cwd: root, assistant: 'claude', plain: true }, {
+      scripted: true, say: () => {}, ask: async prompt => {
+        if (!changedAfterDraw && prompt.includes('Seat')) {
+          changedAfterDraw = true; const next = emptyLaunchRecord(id); next.assistant = 'codex';
+          fs.writeFileSync(file, JSON.stringify(next)); return 'n1';
+        }
+        return 'q';
+      },
+    });
+    equal(menuExit, 0, 'stale-menu fixture launch');
+    check(changedAfterDraw && fs.readFileSync(log, 'utf8').startsWith('codex '), 'drawn fallback launched instead of freshly saved Codex');
+    const configured = emptyLaunchRecord(id); configured.assistant = 'codex'; configured.args.codex = ['--model', 'fixture'];
+    configured.approved.codex = { plan_id: 'seat-launch-' + 'b'.repeat(64), utc: new Date().toISOString(), args_sha256: launchDigest(JSON.stringify(configured.args.codex)) };
+    fs.writeFileSync(file, JSON.stringify(configured));
+    const dirs = cli(['seat', 'dirs', 'first', '--list', '--json']);
+    const preflight = cli(['seat', 'start', 'first', '--preflight', '--json']);
+    equal(dirs.exit, 0, 'planner dirs: ' + dirs.stderr); equal(preflight.exit, 0, 'planner preflight: ' + preflight.stderr);
+    equal(JSON.parse(dirs.stdout).launch_line, JSON.parse(preflight.stdout).launch_line, 'dirs and preflight argv differ');
+    check(JSON.parse(dirs.stdout).launch_line.includes('fixture'), 'dirs equality case did not include stored flags');
+    const book = path.join(lib, 'collection', 'books', 'atlas', 'wiki'); fs.mkdirSync(book, { recursive: true }); fs.writeFileSync(path.join(book, '_book.md'), '# Atlas\n');
+    const catalog = path.join(lib, 'collection', 'books', 'README.md'), catalogBefore = fs.readFileSync(catalog, 'utf8');
+    for (const option of ['--title', '--summary']) for (const value of ['a\nb', 'a\rb', 'a\tb', 'a\x7fb', 'a\x01b']) {
+      const ran = cli(['shared', 'list-entry', 'atlas', option, value, '--preflight', '--json']);
+      check(ran.exit !== 0 && ran.stderr.includes('control'), 'Catalog preview accepted ' + option + ' ' + JSON.stringify(value));
+      equal(fs.readFileSync(catalog, 'utf8'), catalogBefore, 'invalid Catalog preview wrote');
+    }
+    const claims = path.join(root, 'claims');
+    const moduleUrl = pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'src', 'hookledger.ts')).href;
+    const claim = () => new Promise<string>((resolve, reject) => {
+      const child = spawn('node', ['--input-type=module', '-e', `import {claimHookOnce} from ${JSON.stringify(moduleUrl)};console.log(claimHookOnce('event-1',${JSON.stringify(claims)}));`], { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '', err = ''; child.stdout.on('data', chunk => out += chunk); child.stderr.on('data', chunk => err += chunk);
+      child.on('error', reject); child.on('close', code => code === 0 ? resolve(out.trim()) : reject(new Error(err)));
+    });
+    const winners = await Promise.all([claim(), claim()]);
+    equal(winners.filter(value => value === 'true').length, 1, 'concurrent event claim did not have exactly one winner');
+    const claimFile = path.join(claims, fs.readdirSync(claims)[0]!); const old = new Date(Date.now() - 20_000); fs.utimesSync(claimFile, old, old);
+    equal(claimHookOnce('event-1', claims), false, 'event claim reopened after former ten-second expiry');
+    equal(claimHookOnce('event-2', claims), true, 'different event withheld');
+  } catch (error) { failures.push('section 225 stopped early: ' + (error as Error).message); }
+  finally {
+    for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+    Object.assign(process.env, savedEnv);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 226. C8: saved-assistant flags and the installed clients' access value lists -------------------------
+if (selected(226)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c8-menu-')));
+  try {
+    const { validateStoredFlags, LAUNCH_ACCESS_VALUES } = await import('../src/seatlaunch.ts');
+    const cases = [
+      ['codex', ['-a', '--ask-for-approval'], ['on-request', 'never']],
+      ['codex', ['-s', '--sandbox'], ['read-only', 'workspace-write', 'danger-full-access']],
+      ['claude', ['--permission-mode'], ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan']],
+    ] as const;
+    for (const [assistant, names, values] of cases) {
+      equal(JSON.stringify(LAUNCH_ACCESS_VALUES[assistant][names[names.length - 1]!]), JSON.stringify(values), 'access table differs from captured installed help');
+      for (const name of names) {
+        const forms = (value: string) => [[name, value], [name + '=' + value], ...(/^-[^-]$/.test(name) ? [[name + value]] : [])];
+        for (const value of values) for (const args of forms(value)) {
+          let accepted = true; try { validateStoredFlags(assistant, args); } catch { accepted = false; }
+          check(accepted, 'valid access value refused: ' + JSON.stringify(args));
+        }
+        for (const value of ['', 'typo', values[0] + '.']) for (const args of forms(value)) {
+          let reason = ''; try { validateStoredFlags(assistant, args); } catch (error) { reason = (error as Error).message; }
+          // A missing separate/attached value is the parser's missing-value refusal, before the enum.
+          check(value === '' && args.length === 1 && args[0] === name ? !!reason : reason.includes(values.join(', ')), 'access refusal omitted allowed values: ' + JSON.stringify(args));
+        }
+      }
+    }
+    const lib = path.join(root, 'lib'), bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+    fakeAssistant(bin, 'claude', path.join(root, 'agents.log')); fakeAssistant(bin, 'codex', path.join(root, 'agents.log'));
+    const onPath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', DESKPOST_UPDATE_CHECK: '0', PATH: onPath, Path: onPath };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'menu fix init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, 'menu fix Hub');
+    equal(cli(['hub', 'new', 'second-work', '--title', 'Second Work']).exit, 0, 'menu fix second Hub');
+    for (const seat of ['first', 'second']) equal(cli(['seat', 'start', seat, '--project', seat === 'first' ? 'work' : 'second-work', '--no-launch']).exit, 0, 'menu fix seat ' + seat);
+    let turn = 0;
+    const menu = (answers: string[]) => {
+      const script = path.join(root, 'answers-' + (++turn) + '.txt'); fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['menu', '--workspace', lib, '--script', script], { cwd: root, env });
+    };
+    const saved = menu(['s1', 'a', 'codex', 'f', '-a never -s danger-full-access', '', 'q', 'q']);
+    check(saved.exit === 0 && saved.stdout.includes('Flags ›') && !saved.stdout.includes('Flags for claude or codex'), 'saved assistant flags asked again: ' + saved.stderr);
+    const fallback = menu(['s2', 'f', 'codex', '--model fixture', 'q', 'q', 'q']);
+    check(fallback.exit === 0 && fallback.stdout.includes('Flags for claude or codex'), 'menu default flags no longer ask which assistant');
+    const file = path.join(lib, '.claude', 'seats', 'first', 'launch.json'), before = fs.readFileSync(file, 'utf8');
+    const typo = runCli(['seat', 'settings', 'first', '--workspace', lib, '--flags', 'codex', '--preflight', '--', '-s', 'danger-full-access.'], { cwd: root, env });
+    check(typo.exit !== 0 && typo.stderr.includes('read-only, workspace-write, danger-full-access'), 'typo preview did not name sandbox choices');
+    equal(fs.readFileSync(file, 'utf8'), before, 'typo preview wrote launch record');
+  } catch (error) { failures.push('section 226 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 227. C8: built-release runner launches every fixture with empty PATH and refuses incomplete proof -----
+if (selected(227) && prerequisite(227, () => process.platform === 'win32' && fs.existsSync(path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')), 'Windows PowerShell is required for the existing release runner')) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c8-release-runner-')));
+  try {
+    const source = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools', 'Test-BuiltRelease.ps1'), 'utf8');
+    const names = [...source.matchAll(/file\s*=\s*'([^']+\.ps1)'/g)].map(match => match[1]!);
+    check(names.length > 0, 'release runner declared no fixtures');
+    const tools = path.join(root, 'tools'), release = path.join(root, 'release'); fs.mkdirSync(tools); fs.mkdirSync(release);
+    fs.writeFileSync(path.join(release, 'SHA256SUMS'), 'fixture metadata\n');
+    const runner = path.join(tools, 'Test-BuiltRelease.ps1'); fs.writeFileSync(runner, source);
+    for (const name of names) fs.writeFileSync(path.join(tools, name), "Write-Output 'fixture passed'\nexit 0\n");
+    const shell = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const env = { ...process.env };
+    for (const key of Object.keys(env).filter(key => key.toUpperCase() === 'PATH')) delete env[key]; env['PATH'] = '';
+    let turn = 0;
+    const run = () => spawnSync(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner, '-Release', release, '-PreviousRelease', release, '-Work', path.join(root, 'work-' + (++turn))], { cwd: root, env, encoding: 'utf8', timeout: 30_000 });
+    const passed = run();
+    check(passed.status === 0 && passed.stdout.includes(`All ${names.length} release fixtures passed`), 'empty-PATH runner did not launch every fixture: ' + passed.stderr);
+    check(names.every(name => passed.stdout.includes(path.basename(name, '.ps1'))), 'runner omitted a fixture row');
+    const failing = names[0]!; fs.writeFileSync(path.join(tools, failing), "Write-Output 'fixture failed'\nexit 7\n");
+    const failed = run();
+    check(failed.status !== 0 && failed.stdout.includes('FAIL (7)'), 'failed fixture was accepted as release proof');
+    fs.writeFileSync(runner, source.replace(/\$script:Fixtures = @\([\s\S]*?\r?\n\)/, '$script:Fixtures = @()'));
+    const zero = run();
+    check(zero.status !== 0 && (zero.stdout + zero.stderr).includes('nonempty complete run') && !zero.stdout.includes('All 0 release fixtures passed'), 'zero-fixture runner reported success');
+  } catch (error) { failures.push('section 227 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 228. K2: developer/planner templates and their effects through the new-seat wizard ------------------
+if (selected(228)) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-k2-templates-')));
+  try {
+    const { WIZARD_TEMPLATE_KEYS } = await import('../src/menu.ts');
+    const checkout = path.resolve(HERE, '..', '..');
+    const common = [
+      'Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter.',
+      'A Codex seat has no inbox, so its letters wait for its Desk.',
+      'Read and close your letters before other work.',
+      'Reports, letters and Hubs never carry a secret: name the 1Password item, never its value.',
+      'Building software with seats', 'No permission level is a default.',
+    ];
+    const lib = path.join(root, 'lib'), bin = path.join(root, 'bin'), home = path.join(root, 'home');
+    fs.mkdirSync(bin); fs.mkdirSync(home);
+    fakeAssistant(bin, 'claude', path.join(root, 'agents.log'));
+    const onPath = bin + path.delimiter + (process.env['PATH'] ?? process.env['Path'] ?? '');
+    const env: Record<string, string> = {
+      HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'roaming'), LOCALAPPDATA: path.join(home, 'local'),
+      LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '',
+      ORCA_TERMINAL_HANDLE: '', CLAUDE_PID: '', NO_COLOR: '1', LIBRARY_MENU_TOUCH_REGISTRY: '', DESKPOST_UPDATE_CHECK: '0', PATH: onPath, Path: onPath,
+    };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'K2 fixture init');
+    const rows = (): Record<string, unknown>[] => JSON.parse(fs.readFileSync(path.join(lib, '.claude', 'seats', '_registry.json'), 'utf8')).seats;
+    let turn = 0;
+    const menu = (answers: string[]) => {
+      const script = path.join(root, `answers-${++turn}.txt`); fs.writeFileSync(script, answers.join('\n') + '\n');
+      return runCli(['menu', '--workspace', lib, '--script', script, '--width', '200'], { cwd: root, env });
+    };
+    // Resolve an input from the current menu table; assertions concern the template's effect, not its letter.
+    const inputFor = (name: string) => {
+      const input = WIZARD_TEMPLATE_KEYS.find(([, template]) => template === name)?.[0];
+      if (!input) throw new Error(`no wizard input for ${name}`);
+      return input;
+    };
+    for (const [name, role, project, slug, seat] of [
+      ['developer', 'performer', 'Build Work', 'build-work', 'engineering-dev'],
+      ['planner', 'orchestrator', 'Plan Work', 'plan-work', 'engineering-plan'],
+    ] as const) {
+      const template = loadSeatTemplate(checkout, name);
+      equal(template.version, 1, `${name} version`); equal(template.role, role, `${name} role`);
+      check(common.every(rule => template.purpose.includes(rule)) && template.purpose.endsWith(`Seat template: ${name} v1.`), `${name} omitted shared rules or provenance`);
+      const ran = menu(['+', project, 'engineering', inputFor(name), '', '', '', '']);
+      check(ran.exit === 0 && ran.stdout.includes(`Seat name   [Enter] ${seat}`), `${name} proposed name/creation failed: ${ran.stderr} ${ran.stdout.slice(-1800)}`);
+      const row = rows().find(row => row['seat'] === seat) ?? {};
+      equal(`${row['department']}|${row['role']}|${row['template']}|${row['project']}`, `engineering|${role}|${name}@1|${slug}`, `${name} registry effect`);
+      const hub = fs.readFileSync(path.join(lib, 'collection', 'projects', slug, '_project.md'), 'utf8');
+      check(hub.includes(fillSeatTemplate(template, slug)) && !hub.includes('{project}'), `${name} did not write the filled purpose`);
+    }
+    // A planner in this department is refused by the same rule as any other orchestrator template.
+    const refused = menu(['+', 'Plan Two', 'engineering', inputFor('planner'), inputFor('developer'), '', '', '', '']);
+    check(refused.exit === 0 && refused.stdout.includes("Department 'engineering' already has an orchestrator, 'engineering-plan'"), 'second planner was not refused');
+    const second = rows().find(row => row['project'] === 'plan-two') ?? {};
+    equal(`${second['role']}|${second['template']}`, 'performer|developer@1', 'refused planner still made an orchestrator');
+    equal(rows().filter(row => row['department'] === 'engineering' && row['role'] === 'orchestrator').length, 1, 'planner refusal changed department uniqueness');
+  } catch (error) { failures.push('section 228 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 229. C9: help, seat Project routes, and capture metadata ------------------------------------------
+if (selected(229)) {
+  const w = await seatClaimWorkspace('c9-help', { pin: false });
+  try {
+    const ws = w.workspace, agent = w.startAgent();
+    w.seatMade('reader', 'alpha', agent, 'C9 reader seat');
+    const cli = (args: string[]) => w.as(agent, [...args, '--workspace', ws]);
+    const described = cli(['seat', 'describe', 'reader', '--json']);
+    equal(described.exit, 0, 'C9 describe');
+    equal(JSON.parse(described.stdout).project, 'alpha', 'describe omitted the bound Project');
+    const refused = cli(['desk', 'open', 'project', 'reader']);
+    check(refused.exit !== 0 && refused.stderr.includes("Seat reader's Project is alpha: deskpost desk open project alpha"), 'missing Project refusal omitted the seat route: ' + refused.stderr);
+    const ordinary = cli(['desk', 'open', 'project', 'unknown']);
+    check(ordinary.exit !== 0 && !ordinary.stderr.includes("Seat unknown's Project"), 'unknown Project invented a seat route');
+    const initHelp = runCli(['init', '--help']).stdout;
+    for (const flag of ['--workspace', '--mcp-url', '--collection-id', '--registry-root', '--writable', '--json']) check(initHelp.includes(flag), 'init help omitted ' + flag);
+    const retireHelp = runCli(['seat', 'retire', '--help']).stdout;
+    check(retireHelp.includes('seat retire <name> (--preflight | --plan-id <id>)') && retireHelp.includes('the menu cannot bring it back'), 'retire help omitted usage or archive consequence');
+    check(runCli(['seat', 'hold', '--help']).stdout.includes('internal: started by seat enter'), 'hold not identified as internal');
+    equal(cli(['shelf', 'new', 'captures', '--title', 'Captures', '--summary', 'Proof', '--capture']).exit, 0, 'C9 capture Book creation');
+    const metadata = fs.readFileSync(path.join(ws, 'shelf', 'captures', 'wiki', '_book.md'), 'utf8');
+    check(metadata.includes('deskpost capture') && !metadata.includes('Add-ShelfNote.ps1'), 'capture Limits name an unshipped tool');
+    const collision = path.join(w.root, 'collision');
+    fs.mkdirSync(path.join(collision, '.agents', 'skills'), { recursive: true });
+    fs.writeFileSync(path.join(collision, '.agents', 'skills', 'library-help'), 'reader file');
+    const status = skillInstallationStatus(collision, PROGRAM_ROOT, '.agents/skills');
+    check(status.includes('nothing has been written. Run deskpost init') && !status.includes('.. Run'), 'joined skill refusal has doubled punctuation: ' + status);
+  } catch (error) { failures.push('section 229 stopped early: ' + (error as Error).message); }
+  finally { w.dispose(); }
+}
+
+// --- 230. C9: stale reads, removal previews, sizes, closed answers, and claim pruning -------------------
+if (selected(230)) {
+  const w = await seatClaimWorkspace('c9-writes', { pin: false });
+  try {
+    const ws = w.workspace, reader = w.startAgent(), writer = w.startAgent();
+    w.seatMade('reader', 'alpha', reader, 'C9 writing reader');
+    w.seatMade('writer', 'beta', writer, 'C9 letter writer');
+    const cli = (args: string[], agent = reader) => w.as(agent, [...args, '--workspace', ws, '--json']);
+    const json = (run: { exit: number; stdout: string; stderr: string }): Record<string, any> => {
+      if (run.exit !== 0) throw Error(run.stderr);
+      return JSON.parse(run.stdout);
+    };
+    const textFile = (name: string, text: string) => { const full = path.join(w.root, name); fs.writeFileSync(full, text); return full; };
+    equal(cli(['shelf', 'new', 'guide', '--title', 'Guide', '--summary', 'C9 proof']).exit, 0, 'C9 curated Book');
+    equal(cli(['desk', 'open', 'book', 'guide', '--location', 'shelf']).exit, 0, 'C9 open curated Book');
+    const original = textFile('original.md', '# Guide\n\nKeep.\nDrop one.\nDrop two.\n');
+    equal(cli(['book', 'add-page', 'guide', 'start', '--content-path', original]).exit, 0, 'C9 original page');
+    const page = path.join(ws, 'shelf', 'guide', 'wiki', 'start.md');
+    const digest = () => createHash('sha256').update(fs.readFileSync(page, 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')).digest('hex');
+    const readHash = digest();
+    const replacement = textFile('replacement.md', '# Guide\n\nKeep.\n');
+    const replace = (extra: string[]) => cli(['book', 'replace-page', 'guide', 'start', '--content-path', replacement, ...extra]);
+    const preview = json(replace(['--preflight', '--expect-sha256', readHash]));
+    equal(preview.current_sha256, readHash, 'preflight not bound to the prior read');
+    equal(preview.removed_lines, 2, 'removed count');
+    equal(JSON.stringify(preview.removed_lines_preview), JSON.stringify(['Drop one.', 'Drop two.']), 'removed lines preview');
+    fs.appendFileSync(page, 'Other writer.\n');
+    const changed = fs.readFileSync(page, 'utf8');
+    const stale = replace(['--preflight', '--expect-sha256', readHash]);
+    check(stale.exit !== 0 && stale.stderr.includes('changed since your read'), 'stale read accepted: ' + stale.stderr);
+    equal(fs.readFileSync(page, 'utf8'), changed, 'stale preflight wrote the page');
+    check(replace(['--base-sha256', readHash]).exit !== 0, 'stale apply accepted');
+    check(replace(['--preflight', '--expect-sha256', 'bad']).exit !== 0, 'invalid expected hash accepted');
+    check(replace(['--base-sha256', digest(), '--expect-sha256', digest()]).exit !== 0, 'expect hash accepted outside preflight');
+    const fresh = json(replace(['--preflight', '--expect-sha256', digest()]));
+    equal(replace(['--base-sha256', String(fresh.current_sha256)]).exit, 0, 'fresh replacement refused');
+    equal(fs.readFileSync(page, 'utf8'), fs.readFileSync(replacement, 'utf8'), 'fresh replacement text');
+    fs.writeFileSync(page, '# Guide\n\nKeep.\n' + ('x'.repeat(350) + '\n').repeat(7));
+    const bounded = json(replace(['--preflight', '--expect-sha256', digest()]));
+    equal(bounded.removed_lines, 7, 'repeated removed lines undercounted');
+    check(bounded.removed_lines_preview.length === 5 && bounded.removed_lines_preview.every((line: string) => line.length === 240), 'removal preview exceeds its line or character limit');
+    check(runCli(['book', 'replace-page', '--help']).stdout.includes('--expect-sha256'), 'replace help omitted expected read hash');
+    const hub = path.join(ws, 'collection', 'projects', 'alpha', '_project.md');
+    const beforeSize = Buffer.byteLength(fs.readFileSync(hub, 'utf8'));
+    const next = textFile('next.md', '- [ ] C9 append.\n');
+    const planned = json(cli(['hub', 'edit', 'alpha', '--mode', 'append-section', '--section', 'Next', '--content-path', next, '--preflight']));
+    equal(planned.page_size_warning.size_before_bytes, beforeSize, 'page size before not current bytes');
+    check(planned.page_size_warning.size_after_bytes > beforeSize && !('size_bytes' in planned.page_size_warning), 'page size before/after ambiguous');
+    for (const agent of [reader, writer]) equal(cli(['desk', 'open', 'book', 'letters', '--location', 'shelf'], agent).exit, 0, 'C9 open letters');
+    const letter = (title: string) => String(json(cli(['capture', 'letters', '--for', 'reader', '--title', title, '--body', 'Please answer.'], writer)).note_page).replace(/^.*\/wiki\//, '');
+    const letterFile = (name: string) => path.join(ws, 'shelf', 'letters', 'wiki', name + '.md');
+    const answer = (name: string, agent = reader) => cli(['capture', 'letters', '--answers', name, '--title', 'Answer', '--body', 'Answered.'], agent);
+    const own = letter('Close then answer');
+    fs.writeFileSync(letterFile(own), fs.readFileSync(letterFile(own), 'utf8').replace(/\n/g, '\r\n'));
+    equal(cli(['letters', 'close', own, '--note', 'read']).exit, 0, 'C9 close on read');
+    check(answer(own, writer).exit !== 0, 'other seat answered a closed letter');
+    const replied = answer(own);
+    equal(replied.exit, 0, 'same seat could not answer its own close: ' + replied.stderr);
+    const closedText = fs.readFileSync(letterFile(own), 'utf8').replace(/\r\n/g, '\n');
+    check(/^review: done$/m.test(closedText) && /^answered_by: notes\//m.test(closedText), 'answer reopened or did not link original');
+    check(answer(own).exit !== 0, 'closed answer could be answered twice');
+    const triaged = letter('Closed by triage');
+    fs.writeFileSync(letterFile(triaged), fs.readFileSync(letterFile(triaged), 'utf8').replace(/^review: pending$/m, 'review: done'));
+    check(answer(triaged).exit !== 0, 'ordinary closed letter accepted');
+    const moved = letter('Wrong closing incarnation');
+    equal(cli(['letters', 'close', moved]).exit, 0, 'C9 close wrong-id control');
+    const movedText = fs.readFileSync(letterFile(moved), 'utf8');
+    fs.writeFileSync(letterFile(moved), movedText.replace(/^closed_by_seat_id: .*$/m, 'closed_by_seat_id: ' + '0'.repeat(32)));
+    check(answer(moved).exit !== 0, 'wrong closing incarnation accepted');
+    fs.writeFileSync(letterFile(moved), movedText + '\nAnother closure or edit.\n');
+    check(answer(moved).exit !== 0, 'changed closed letter accepted using stale closure proof');
+    fs.writeFileSync(letterFile(moved), movedText.replace(/^closed_by_seat_id: (.*)$/m, 'closed_by_seat_id: $1\nclosed_by_seat_id: $1'));
+    check(answer(moved).exit !== 0, 'duplicate closing identity accepted');
+    const { claimHookOnce } = await import('../src/hookledger.ts');
+    const claims = path.join(w.root, 'claims'); fs.mkdirSync(claims);
+    const keyFile = (key: string) => path.join(claims, createHash('sha256').update(key).digest('hex').slice(0, 32));
+    fs.writeFileSync(keyFile('old'), 'old'); fs.utimesSync(keyFile('old'), new Date(0), new Date(0));
+    fs.writeFileSync(keyFile('fresh'), 'fresh');
+    const unrelated = path.join(claims, 'reader-file'); fs.writeFileSync(unrelated, 'keep'); fs.utimesSync(unrelated, new Date(0), new Date(0));
+    equal(claimHookOnce('new', claims), true, 'new claim refused');
+    check(!fs.existsSync(keyFile('old')) && fs.existsSync(keyFile('fresh')) && fs.existsSync(unrelated), 'claim prune removed fresh/unrelated file or kept old');
+    equal(claimHookOnce('fresh', claims), false, 'fresh event reopened');
+    equal(claimHookOnce('new', claims), false, 'new event reopened');
+  } catch (error) { failures.push('section 230 stopped early: ' + (error as Error).message); }
+  finally { w.dispose(); }
+}
+
+// 231: the push tier's pool (PLAN-fast-gates.md Unit B, S119). The pool's suite list is the -Fast roster that
+// gate.fast-roster-matches-suites proves; `Invoke-LibraryChecks.ps1 -Only` reports exactly one result and fails an
+// unknown name; an exclusive item starts only after every shared item has exited; a child past its limit fails with
+// its name and leaves no process behind.
+if (selected(231) && prerequisite(231, () => !isCompiled() && process.platform === 'win32' && fs.existsSync(path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')), 'Windows PowerShell and the source runner are required for the push pool')) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-push-pool-')));
+  try {
+    const runner = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'run-parallel.ts')).href);
+    const { childEnv } = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'gate-env.ts')).href);
+    const checksScript = path.join(PROGRAM_ROOT, 'tools', 'Invoke-LibraryChecks.ps1');
+    const onlyRun = (args: string[]) => {
+      const ran = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', checksScript, ...args, '-Json'], { encoding: 'utf8', env: childEnv(), windowsHide: true, timeout: 120_000 });
+      const line = `${ran.stdout ?? ''}`.trim().split(/\r?\n/).reverse().find((text) => text.startsWith('{'));
+      return { status: ran.status, checks: line ? (JSON.parse(line).checks as { check: string; status: string; detail: string }[]) : null };
+    };
+
+    // The pool's list is the roster, read where the AST check reads it; that check passes and counts the same names.
+    const roster: string[] = runner.fastRoster(fs.readFileSync(checksScript, 'utf8'));
+    check(roster.length > 0 && new Set(roster).size === roster.length, 'the -Fast roster read for the pool is empty or repeats a name');
+    const rosterCheck = onlyRun(['-Fast', '-Only', 'gate.fast-roster-matches-suites']);
+    equal(rosterCheck.checks?.length, 1, '-Only gate.fast-roster-matches-suites did not report exactly one result');
+    equal(rosterCheck.checks?.[0]?.status, 'pass', 'gate.fast-roster-matches-suites did not pass');
+    check((rosterCheck.checks?.[0]?.detail ?? '').startsWith(`${roster.length} -Fast roster name(s) and ${roster.length} spawned suite(s)`), `the pool's ${roster.length} suites are not the AST check's count: ${rosterCheck.checks?.[0]?.detail}`);
+    const suiteRow = onlyRun(['-Fast', '-Only', roster[0]!]);
+    check(suiteRow.status === 0 && suiteRow.checks?.length === 1 && suiteRow.checks[0]!.check === roster[0] && suiteRow.checks[0]!.status === 'skipped', `-Fast -Only ${roster[0]} did not report its one roster row`);
+    let reshaped = '';
+    try { runner.fastRoster('if ($Fast) {\r\n    foreach ($suite in @(\'a\')) {'); } catch (error) { reshaped = String(error); }
+    check(reshaped.includes('not where gate.fast-roster-matches-suites reads it'), 'a reshaped -Fast branch did not stop the roster read');
+    equal(runner.rosterProblems(['a', 'b'], ['a', 'b']).length, 0, 'equal pool and roster reported a problem');
+    const drift: string[] = runner.rosterProblems(['a', 'extra'], ['a', 'unrun']);
+    check(drift.length === 2 && drift[0]!.includes('unrun') && drift[1]!.includes('extra'), `roster drift was not reported both ways: ${drift.join(' / ')}`);
+
+    // An unknown -Only name is one FAIL, named, never an empty pass.
+    const unknown = onlyRun(['-Only', 'no.such-check-231']);
+    equal(unknown.status, 1, '-Only with an unknown name did not exit 1');
+    check(unknown.checks?.length === 1 && unknown.checks[0]!.check === 'no.such-check-231' && unknown.checks[0]!.status === 'fail', '-Only with an unknown name did not report exactly one FAIL under that name');
+    const staticOnly = onlyRun(['-Only', 'settings.parse']);
+    check(staticOnly.status === 0 && staticOnly.checks?.length === 1 && staticOnly.checks[0]!.check === 'settings.parse', '-Only settings.parse did not report exactly its own result');
+
+    // An exclusive item, listed first, waits until every shared item has exited.
+    const times: Record<string, [number, number]> = {};
+    const item = (name: string, exclusive: boolean, ms: number) => ({ name, exclusive, run: async () => { const start = Date.now(); await new Promise((resolve) => setTimeout(resolve, ms)); times[name] = [start, Date.now()]; return name; } });
+    const ran: string[] = await runner.runPool([item('lane', true, 20), item('a', false, 300), item('b', false, 200), item('c', false, 250), item('d', false, 100)], 2, new AbortController().signal);
+    equal(ran.length, 5, 'the pool did not run every item');
+    const sharedEnd = Math.max(...['a', 'b', 'c', 'd'].map((name) => times[name]![1]));
+    check(times['lane']![0] >= sharedEnd, `the exclusive item started ${sharedEnd - times['lane']![0]}ms before the last shared item exited`);
+    check(times['c']![0] >= Math.min(times['a']![1], times['b']![1]), 'the pool started a third shared item with only two slots');
+
+    // A child past its limit fails with its name, and the tree it started is gone.
+    const pidFile = path.join(root, 'pids.json');
+    const sleeper = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setTimeout(()=>{},120000)'],{stdio:'ignore',windowsHide:true});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify([process.pid,c.pid]));setTimeout(()=>{},120000);`;
+    const bounded = await runner.runBounded({ label: 'fixture.sleeps-past-limit', command: process.execPath, args: ['-e', sleeper], env: childEnv(), cwd: root, limit: 3000, folder: path.join(root, 'bounded') }, new AbortController().signal);
+    check(bounded.problem.startsWith('fixture.sleeps-past-limit: exceeded its limit of 3s'), `a child past its limit did not fail with its name: ${bounded.problem}`);
+    check(!bounded.problem.includes('cleanup failed'), `the timed-out tree was not cleaned up: ${bounded.problem}`);
+    check(fs.existsSync(path.join(root, 'bounded', 'snapshot.json')) || fs.existsSync(path.join(root, 'bounded', 'snapshot-error.txt')), 'a timed-out child left no snapshot record');
+    const pids: number[] = fs.existsSync(pidFile) ? JSON.parse(fs.readFileSync(pidFile, 'utf8')) : [];
+    equal(pids.length, 2, 'the fixture did not record its process and its grandchild');
+    const alive = pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+    equal(alive.length, 0, `processes of the timed-out child are still alive: ${alive.join(', ')}`);
+  } catch (error) { failures.push('section 231 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 240. A KICKOFF IS COMPLETE BEFORE IT IS WRITTEN (docs/kickoff-template.md; the dev loop review, 2026-10-13) ------
+// tools/kickoff-check.mts's rules, judged on fixtures shaped like the drift found in real Kickoffs, and on the template
+// itself. (a) The template's own block passes: every section, in order, each row with "Done when:", CLOSE ending
+// **Stop.** (b) A section named the old way ("WHY FIRST", "PARTS") is missing, not accepted. (c) A section that points
+// to another Kickoff ("as kickoffs/s118's") is named. (d) A row with no "Done when:" is named by its number. (e) A CLOSE
+// without **Stop.** is named. (f) Two sections swapped are named out of order.
+if (selected(240)) {
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    const templateDoc = fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'kickoff-template.md'), 'utf8');
+    const block = kc.templateBlock(templateDoc);
+    check(block.length > 0, 'docs/kickoff-template.md has no ```markdown block');
+    equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(block))), '[]', 'the template itself does not pass the check');
+    check(templateDoc.includes('node tools/kickoff-check.mts'), 'the template does not tell the planner to run the check');
+
+    const body = (sections: Record<string, string>) => Object.entries(sections).map(([name, text]) => `${name}: ${text}`).join('\n');
+    const good: Record<string, string> = Object.fromEntries(kc.REQUIRED_SECTIONS.map((name: string) => [name, 'filled']));
+    good['ROWS'] = '\n1. **First row**: change a.\n   Done when: section 1 passes.\n2. **Second row**: change b.\n   Done when: the hook passes.';
+    good['CLOSE'] = '\n- the Handback.\n- **Stop.**';
+    equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(body(good)))), '[]', 'a complete fixture Kickoff did not pass');
+
+    // (b) The old names: WHY FIRST and PARTS in place of WHY NOW and ROWS.
+    const old: Record<string, string> = {};
+    for (const [name, text] of Object.entries(good)) old[name === 'WHY NOW' ? 'WHY FIRST' : name === 'ROWS' ? 'PARTS' : name] = text;
+    const oldProblems = kc.checkKickoff(body(old));
+    equal(JSON.stringify(oldProblems.missing), '["WHY NOW","ROWS"]', `the old section names were accepted: ${JSON.stringify(oldProblems)}`);
+
+    // (c) A pointer to another Kickoff in place of its text.
+    const pointer = kc.checkKickoff(body({ ...good, RULES: "as kickoffs/s118's. Never filter `hub edit`'s output." }));
+    check(pointer.pointers.length === 1 && pointer.pointers[0]!.includes("as kickoffs/s118's"), `a pointer to another Kickoff was not named: ${JSON.stringify(pointer)}`);
+    check(kc.describeProblems(pointer).some((line: string) => line.startsWith('points to another Kickoff')), 'the pointer has no problem line');
+
+    // (d) A row without Done when, named by its number.
+    const noDone = kc.checkKickoff(body({ ...good, ROWS: '\n1. **First**: a.\n   Done when: x.\n2. **Second**: b.\n3. **Third**: c.\n   Done when: y.' }));
+    equal(JSON.stringify(noDone.rowsWithoutDone), '[2]', `a row with no "Done when:" was not named: ${JSON.stringify(noDone)}`);
+
+    // (e) CLOSE without the Stop.
+    check(kc.checkKickoff(body({ ...good, CLOSE: '\n- the Handback.' })).noStop, 'a CLOSE without **Stop.** passed');
+
+    // (f) Two sections swapped.
+    const swapped: Record<string, string> = {};
+    for (const name of ['SIZE', 'WHY NOW', ...kc.REQUIRED_SECTIONS.slice(2)]) swapped[name] = good[name]!;
+    const order = kc.checkKickoff(body(swapped));
+    check(order.missing.length === 0 && order.outOfOrder.length > 0, `swapped sections were not named out of order: ${JSON.stringify(order)}`);
+
+    // A section heading with a parenthesis, as real Kickoffs write them, still counts.
+    const starts = kc.sectionStarts('WHERE THINGS STAND (2026-10-13; checked read-only):\n- x\nCHARTER (effective only on the yes): y');
+    equal(JSON.stringify(starts.map((s: { name: string }) => s.name)), '["WHERE THINGS STAND","CHARTER"]', 'a heading with a parenthesis was not read');
+  } catch (error) {
+    failures.push(`section 240 stopped early: ${(error as Error).message}`);
+  }
+}
+
+
+// --- 232. C10: familiar controls and terminal lifecycle -------------------------------------------------
+if (selected(232)) {
+  const { screenState, reduceScreen, drawScreen, screenDecoder, askScreen, terminalRestore, plainRequired } = await import('../src/menuscreen.ts');
+  const { EventEmitter } = await import('node:events');
+  const model = { title: 'Deskpost', items: Array.from({ length: 30 }, (_, i) => ({ id: String(i), text: 'Seat ' + i })), search: true };
+  let state = screenState(model, 60, 14);
+  state = reduceScreen(state, { kind: 'down' });
+  equal(state.index, 1, 'Down moves once');
+  state = reduceScreen(state, { kind: 'up' });
+  equal(state.index, 0, 'Up moves back');
+  equal(reduceScreen(state, { kind: 'enter' }).result, '0', 'Enter chooses');
+  state = reduceScreen(state, { kind: 'text', text: 'q' });
+  equal(state.text, 'q', 'letters search rather than act');
+  check(!state.result, 'q acted');
+  state = reduceScreen(state, { kind: 'escape' });
+  equal(state.text, '', 'Esc clears search first');
+  equal(reduceScreen(state, { kind: 'escape' }).result, 'back', 'Esc backs out after clearing');
+  const firstRow = [...drawScreen(state).itemRows][0]![0];
+  state = reduceScreen(state, { kind: 'click', row: firstRow, at: 100 });
+  check(!state.result, 'focus click chose');
+  equal(reduceScreen(state, { kind: 'click', row: firstRow, at: 200 }).result, '0', 'double click chooses');
+  for (let i = 0; i < 29; i++) state = reduceScreen(state, { kind: 'down' });
+  const scrolled = drawScreen(state);
+  check(scrolled.lines.length <= 14 && scrolled.lines.some(l => l.includes('more above')), 'long list exceeds height or no above count');
+  check(scrolled.lines.some(l => l.includes('Seat 29')), 'last highlighted item not visible');
+  check(drawScreen(screenState(model, 60, 14)).lines.some(l => l.includes('more below')), 'no below count');
+  const decode = screenDecoder();
+  equal(decode('\x1b[20').length, 0, 'partial paste marker waits');
+  equal(decode('0~hello\n').length, 0, 'paste waits for closing marker');
+  const pasted = decode('world\x1b[201~');
+  equal(pasted.length, 1, 'paste is one event');
+  state = reduceScreen(screenState({ title: 'Name', field: { label: 'Name' }, items: [] }), pasted[0]!);
+  equal(state.text, 'helloworld', 'paste newline never submits');
+  check(!state.result, 'pasted newline submitted');
+  equal(decode('\x1b[A')[0]!.kind, 'up', 'arrow decoded');
+  equal(decode('\x1b[<64;2;7M')[0]!.kind, 'wheel', 'wheel decoded');
+  check(plainRequired(59, 30) && plainRequired(60, 13) && !plainRequired(60, 14), 'minimum pane bounds');
+  for (const ending of ['interrupt', 'error', 'enter'] as const) {
+    const input = new EventEmitter() as any;
+    const modes: boolean[] = [], output: string[] = [];
+    input.setRawMode = (raw: boolean) => modes.push(raw); input.resume = () => {}; input.pause = () => {};
+    const answer = askScreen(model, { terminal: { input, output: { write: s => output.push(s) } }, colour: false });
+    if (ending === 'error') input.emit('error', new Error('fixture failure'));
+    else input.emit('data', ending === 'interrupt' ? '\x03' : '\r');
+    try { const result = await answer; equal(result.id, ending === 'interrupt' ? 'interrupt' : '0', 'terminal result'); }
+    catch (error) { equal((error as Error).message, 'fixture failure', 'error preserved'); }
+    equal(JSON.stringify(modes), '[true,false]', 'raw mode restored after ' + ending);
+    equal(output.at(-1), terminalRestore, 'cursor/mouse/paste restored after ' + ending);
+    equal(input.listenerCount('data'), 0, 'input listener removed');
+  }
+}
+
+// --- 233. C10: first screen, search, and seat actions at 60 columns --------------------------------------
+if (selected(233)) {
+  const { firstMenuScreen, seatActionScreen, menuDate, plausibleSeatName } = await import('../src/menu.ts');
+  const { drawScreen, screenState } = await import('../src/menuscreen.ts');
+  const now = new Date(2026, 9, 12, 21, 0);
+  const makeRow = (seat: string, state: string, date: Date, assistant: 'claude' | 'codex' = 'claude', conversation = true): any => ({
+    index: 1, seat, project: seat, state, state_note: '', agent_pid: 0, last_active_utc: date.toISOString(), folders: 1, launchAssistant: assistant,
+    view: { session_id: conversation ? 'fixture-conversation' : '', assistant, entry_action: conversation ? 'resume' : 'none' }, letters: 0,
+  });
+  const vault = makeRow('2nd-b-vault-dev', 'free', new Date(2026, 9, 11, 20, 38)); vault.letters = 1; vault.launchArgs=['--permission-mode','manual'];
+  const game = makeRow('game-admin', 'free', new Date(2026, 9, 11, 19, 23));
+  const busy = makeRow('deskpost-desk', 'held', new Date(2026, 9, 12, 18, 29));
+  const fresh = makeRow('menu-design', 'free', new Date(2026, 9, 12, 19, 0), 'codex', false);
+  const registry = [busy, game, vault];
+  const screen = (model: any, height = 30, text = '') => drawScreen(screenState(model, 60, height, text)).lines.map(s => s.trimEnd());
+  // Pinned to sources/deskpost-menu-01-first-screen, with a three-seat fixture and the drawn groups.
+  const first = firstMenuScreen(registry, '', now);
+  equal(first.items[0]!.text, 'Continue 2nd-b-vault-dev (yesterday 20:38)', 'screen 01 continuation');
+  equal(first.items.map(i => i.id).join('|'), 'continue:2nd-b-vault-dev|seat:2nd-b-vault-dev|seat:game-admin|seat:deskpost-desk|create|help|quit', 'screen 01 free/newest before busy/actions');
+  check(screen(first).every(line => line.length <= 60), 'screen 01 wraps');
+  equal(firstMenuScreen(registry, 'vualt', now).items[0]!.id, 'seat:2nd-b-vault-dev', 'screen 02 near miss');
+  equal(firstMenuScreen(registry, 'q', now).items.map(i => i.text).join('|'), 'Quit', 'screen 03 old quit habit');
+  equal(firstMenuScreen(registry, '7', now).items.length, 0, 'screen 03 number creates nothing');
+  equal(firstMenuScreen(registry, 'menu-design', now).items[0]!.text, '+ Make a new seat called menu-design', 'screen 04 new name');
+  for (const bad of ['a', 'ab', '7abc', 'Menu Design', '-abc']) check(!plausibleSeatName(bad), 'implausible search creates ' + bad);
+  const actions = seatActionScreen(vault, now);
+  equal(screen(actions).join('\n'), [' 2nd-b-vault-dev','', '   Claude Code   Ask me first   1 folder',
+    '   1 letter waiting (it reads it when it starts)','', ' > Continue last conversation (yesterday 20:38)',
+    '   Start a new conversation','   Settings','   Back','', '   Arrows move   Enter choose   Esc go back'].join('\n'), 'screen 05 rendered source snapshot, markup aside');
+  equal(actions.items.map(i => i.text).join('|'), 'Continue last conversation (yesterday 20:38)|Start a new conversation|Settings|Back', 'screen 05 action lines against source');
+  check(actions.before!.includes('   1 letter waiting (it reads it when it starts)'), 'screen 05 letters');
+  equal(seatActionScreen(fresh, now).items.map(i => i.text).join('|'), 'Start its first conversation|Settings|Back', 'screen 06 never started');
+  const occupied = seatActionScreen(busy, now);
+  equal(occupied.items.map(i => i.text).join('|'), 'Back|Settings|Open it here anyway', 'screen 07 busy actions');
+  check(occupied.before!.includes('   Switch to that window to keep working.'), 'screen 07 explains lock');
+  check(!occupied.before!.some(line => /since/.test(line)), 'last activity claimed as window start');
+  busy.opened_utc = new Date(2026,9,12,18,29).toISOString();
+  check(seatActionScreen(busy,now).before!.includes('   Open in another window since 18:29.'), 'screen 07 binding time wording');
+  const unknown = seatActionScreen({...busy,state:'unreadable',state_note:'fixture read failed'},now);
+  check(unknown.before!.some(line=>line.includes('could not be checked'))&&!unknown.items.some(item=>item.id==='reopen'),'unreadable seat claimed to have another window');
+  const long = firstMenuScreen(Array.from({length: 40}, (_, i) => makeRow('seat-' + i, 'free', new Date(2026, 9, 10))), '', now);
+  const compact = screen(long, 14);
+  check(compact.length <= 14 && compact.some(l => l.includes('more below')), 'screen 20 capped list');
+  equal(menuDate(new Date(2026, 9, 12, 19).toISOString(), now), 'today 19:00', 'today date');
+  equal(menuDate(new Date(2026, 9, 10).toISOString(), now), '10 October', 'older date');
+  for (const model of [actions, occupied, seatActionScreen(fresh, now), firstMenuScreen(registry, 'vualt', now), firstMenuScreen(registry, 'q', now)]) {
+    check(screen(model).every(line => line.length <= 60), 'source state exceeds width 60');
+    check(screen(model).at(-1)!.startsWith('   Arrows move   Enter choose   Esc '), 'inconsistent bottom controls');
+  }
+}
+
+// --- 234. C10: new seat screens and exact access selection -----------------------------------------------
+if (selected(234)) {
+  const { assistantMenuScreen, accessMenuScreen, newSeatReadyScreen, menuNameSuggestion } = await import('../src/menu.ts');
+  const { MENU_ACCESS, fullAccessSettings, accessName } = await import('../src/menuaccess.ts');
+  const { drawScreen, screenState, reduceScreen } = await import('../src/menuscreen.ts');
+  const { validateStoredFlags } = await import('../src/seatlaunch.ts');
+  const assistant = assistantMenuScreen('menu-design', { claude: true, codex: false });
+  equal(assistant.items.map(i => i.text).join('|'), 'Claude Code   (usual choice)|Codex   not installed|Back', 'screen 09 source choices and missing program');
+  check(!!assistant.items[1]!.disabled, 'missing Codex can be selected');
+  let missing = screenState(assistant); missing.index = 1;
+  check(!reduceScreen(missing, { kind: 'enter' }).result, 'Enter starts missing assistant');
+  for (const kind of ['claude', 'codex'] as const) {
+    const model = accessMenuScreen('menu-design', kind);
+    equal(model.items.map(i => i.id).join('|'), MENU_ACCESS[kind].map(i => i.id).join('|') + '|custom|back', 'screens 10/11 exact access lines');
+    for (const access of MENU_ACCESS[kind]) {
+      validateStoredFlags(kind, [...access.args]);
+      const entry = model.items.find(i => i.id === access.id)!;
+      equal(entry.detail!.join('\n'), access.detail.map(l => '   ' + l).join('\n'), 'screen access explanation/settings equals table');
+      equal(accessName(kind, access.args), access.name, 'plain access name');
+      equal(fullAccessSettings(kind, access.args), !!access.full, 'full access only when specified');
+      const s = screenState(model); s.index = model.items.indexOf(entry);
+      check(drawScreen(s).lines.every(l => l.length <= 60), 'access screen wraps at 60');
+    }
+  }
+  const ready = newSeatReadyScreen('menu-design', 'codex', ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request']);
+  equal(ready.items.map(i => i.text).join('|'), 'Make it and start Codex|Make it, but do not start it yet|More choices (department, template)|Back', 'screen 12 ready source lines');
+  check(ready.before!.includes('   Access     Work in its own folders'), 'ready access name');
+  for (const flags of [['--sandbox', 'danger-full-access'], ['--sandbox=danger-full-access'], ['-sdanger-full-access'], ['--dangerously-bypass-approvals-and-sandbox']]) check(fullAccessSettings('codex', flags), 'screen 13 typed full access bypass: ' + flags);
+  check(fullAccessSettings('claude', ['--dangerously-skip-permissions']), 'Claude typed full bypass');
+  equal(menuNameSuggestion('Menu Design.'), 'menu-design', 'screen 14 near miss suggestion');
+}
+
+// --- 235. C10: one access value table, consumed by the existing validator ---------------------------------
+if (selected(235)) {
+  const { MENU_ACCESS, LAUNCH_ACCESS_VALUES: menuValues } = await import('../src/menuaccess.ts');
+  const { LAUNCH_ACCESS_VALUES: launchValues, validateStoredFlags } = await import('../src/seatlaunch.ts');
+  check(menuValues === launchValues, 'launch validator has another access value table');
+  for (const assistant of ['claude', 'codex'] as const) {
+    for (const entry of MENU_ACCESS[assistant]) {
+      validateStoredFlags(assistant, [...entry.args]);
+      for (let i = 0; i < entry.args.length; i += 2) check(launchValues[assistant][entry.args[i]!]!.includes(entry.args[i + 1]!), 'table uses a rejected client value');
+    }
+    for (const [option, values] of Object.entries(launchValues[assistant])) {
+      for (const value of values) validateStoredFlags(assistant, [option, value]);
+      let refused = false; try { validateStoredFlags(assistant, [option, values[0] + '.']); } catch { refused = true; }
+      check(refused, 'near-missed flag value accepted without a fix');
+    }
+  }
+}
+
+// --- 236. C10: settings, retire, folders, help, first run and plain text sources ---------------------------
+if (selected(236)) {
+  const { settingsMenuScreen, foldersMenuScreen, helpMenuScreen, firstMenuScreen, plainSeatLines, RETIRE_MENU_TEXT, commandMenuScreen } = await import('../src/menu.ts');
+  const { drawScreen, screenState } = await import('../src/menuscreen.ts');
+  const row: any = { index: 7, seat: 'deskpost-codex-dev', state: 'held', folders: 2, launchAssistant: 'codex',
+    launchArgs: ['--sandbox','danger-full-access','--ask-for-approval','never'], view: {assistant:'codex',session_id:''} };
+  const model = settingsMenuScreen(row);
+  equal(drawScreen(screenState(model,60,30)).lines.map(line=>line.trimEnd()).join('\n'), [' Settings for deskpost-codex-dev','',
+    ' > Assistant      Codex','   Access         Full access (!)','   Folders        2 folders','   Exact command  show it',
+    '   Retire         take this seat off the list','   Back','', '   Changes apply the next time the seat starts.','',
+    '   Arrows move   Enter choose   Esc go back'].join('\n'), 'screen 15 rendered source snapshot, markup aside');
+  equal(model.items.map(i => i.text).join('\n'), ['Assistant      Codex', 'Access         Full access (!)', 'Folders        2 folders', 'Exact command  show it', 'Retire         take this seat off the list', 'Back'].join('\n'), 'screen 15 source lines');
+  equal(model.after!.join('\n'), '   Changes apply the next time the seat starts.', 'settings apply wording');
+  equal(RETIRE_MENU_TEXT('game-admin').map(l => l.trim()).join(' '), 'Retiring takes game-admin off the list. Its notes and desk are kept in an archive, but the menu cannot bring it back.', 'screen 16 exact consequence wording');
+  const folder = foldersMenuScreen('eric-post-com-dev', ['D:\\dev\\projects\\eric-post-com-design']);
+  equal(folder.items.map(i => i.text).join('|'), 'D:\\dev\\projects\\eric-post-com-design|+ Add a folder|Back', 'screen 17 source lines');
+  const help = helpMenuScreen();
+  equal(help.items.map(i => i.id).join('|'), 'tour|browse|basic-memory|plain|back', 'screen 18 visible actions');
+  check(help.items[3]!.text.includes('for this visit'), 'permanent preference claimed without storage');
+  const command = 'codex --no-daemon --sandbox workspace-write --ask-for-approval on-request --add-dir ' + 'folder-'.repeat(30);
+  const commandPage = commandMenuScreen('alpha', command);
+  equal(commandPage.items.slice(1).map(item=>item.text).join(''),command,'command viewer truncates arguments');
+  check(commandPage.items.slice(1).every(item=>item.text.length<=56&&item.disabled),'command viewer lines wrap or can launch');
+  equal(firstMenuScreen([]).items.map(i => i.text).join('|'), '+ Make your first seat|Show me around|Quit', 'screen 19 source first choices');
+  const now = new Date(2026,9,12,21);
+  const fixture: any[] = [
+    {index:1,seat:'2nd-b-vault-dev',state:'free',last_active_utc:new Date(2026,9,11,20,38).toISOString(),launchAssistant:'claude',view:{session_id:''},letters:1},
+    {index:2,seat:'game-admin',state:'free',last_active_utc:new Date(2026,9,11,19,23).toISOString(),launchAssistant:'claude',view:{session_id:''}},
+    row,
+  ];
+  equal(plainSeatLines(fixture,now).slice(0,4).join('\n'), [
+    'Deskpost seats','1. 2nd-b-vault-dev: Claude Code, yesterday 20:38, 1 letter',
+    '2. game-admin: Claude Code, yesterday 19:23','7. deskpost-codex-dev: Codex, full access, in another window'].join('\n'), 'screen 21 source sentences');
+  for (const page of [model,folder,help,firstMenuScreen([])]) check(drawScreen(screenState(page,60,30)).lines.every(l => l.length <= 60), 'screens 15-19 wrap at 60');
+  // The old n<number> enters through the CLI, not a duplicate choice reducer.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'kernel-c10-script-')));
+  try {
+    const home=path.join(root,'home'),bin=path.join(root,'bin'),lib=path.join(root,'lib'),script=path.join(root,'answers.txt'),log=path.join(root,'agents.log');
+    fs.mkdirSync(home);fs.mkdirSync(bin);fakeAssistant(bin,'claude',log);
+    const env: Record<string,string>={HOME:home,USERPROFILE:home,APPDATA:path.join(home,'roaming'),LOCALAPPDATA:path.join(home,'local'),
+      LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:'',ORCA_TERMINAL_HANDLE:'',LIBRARY_WORKSPACES:path.join(root,'registry'),
+      PATH:bin+path.delimiter+(process.env['PATH']??process.env['Path']??''),DESKPOST_UPDATE_CHECK:'0'};
+    equal(runCli(['init',lib],{cwd:root,env}).exit,0,'plain fixture init');
+    equal(runCli(['hub','new','alpha','--title','Alpha','--workspace',lib],{cwd:root,env}).exit,0,'plain fixture Hub');
+    equal(runCli(['seat','start','alpha','--project','alpha','--workspace',lib,'--no-launch'],{cwd:root,env}).exit,0,'plain fixture seat');
+    fs.writeFileSync(script,'n1\n');
+    const old=runCli(['menu','--plain','--width','60','--script',script,'--workspace',lib],{cwd:root,env});
+    check(old.exit===0 && fs.existsSync(log),'old n1 script no longer starts its seat: '+old.stderr);
+    const pipe=runCli(['menu','--workspace',lib],{cwd:root,env});
+    check(pipe.stdout.includes('Deskpost seats') && pipe.stderr.includes('cannot answer'),'non-terminal omits plain roster or waits');
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+}
+
+// --- 237. C10: disposable new-seat flow, approvals and cancellation ---------------------------------------
+if (selected(237)) {
+  const w = await seatClaimWorkspace('c10-menu-flow', { pin: false });
+  const saved = { ...process.env };
+  try {
+    const { screenWizard, menuRows } = await import('../src/menu.ts');
+    const { readSeatLaunch } = await import('../src/seatlaunch.ts');
+    const home = path.join(w.root, 'home'), bin = path.join(w.root, 'bin');
+    fs.mkdirSync(home); fs.mkdirSync(bin);
+    fakeAssistant(bin, 'codex', path.join(w.root, 'agents.log')); fakeAssistant(bin, 'claude', path.join(w.root, 'agents.log'));
+    for (const [key, value] of Object.entries({ HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'roaming'), LOCALAPPDATA: path.join(home, 'local'),
+      LIBRARY_WORKSPACES: path.join(w.root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', ORCA_TERMINAL_HANDLE: '',
+      PATH: bin + path.delimiter + (saved['PATH'] ?? saved['Path'] ?? '') })) process.env[key] = value;
+    const run = async (name: string, replies: {id: string; text?: string}[]) => {
+      const screens: any[] = [], receipts: string[] = [];
+      const state: any = { workspace: w.workspace, options: { cwd: w.workspace }, claude: true, codex: true, assistant: 'claude',
+        talk: { scripted: false, say: (line = '') => receipts.push(line), ask: async () => { throw Error('unexpected old prompt'); },
+          screen: async (model: any, text = '') => {
+            const page = typeof model === 'function' ? model(text) : model; screens.push(page);
+            const next = replies.shift(); if (!next) throw Error('screen replies ran out: ' + page.title);
+            if (!['submit','back','interrupt'].includes(next.id)) check(page.items.some((item: any) => item.id === next.id && !item.disabled), 'fixture chooses an unavailable action');
+            return { id: next.id, text: next.text ?? text };
+          } } };
+      const result = await screenWizard(state, name);
+      equal(replies.length, 0, 'unused flow answers');
+      return { result, screens, receipts };
+    };
+    const named = await run('named-full', [{id:'codex'}, {id:'full'}, {id:'submit',text:'oops'}, {id:'submit',text:'full'}, {id:'make'}]);
+    equal(named.result, null, 'make without launch returns to menu');
+    check(named.screens.filter(s => s.title === 'Full access').length === 2, 'mistyped confirmation bypassed full check');
+    check(named.receipts.includes('Made named-full. Ready for later.'), 'truthful no-launch receipt missing');
+    const rows = JSON.parse(fs.readFileSync(path.join(w.workspace, '.claude', 'seats', '_registry.json'), 'utf8')).seats;
+    const row = rows.find((r: any) => r.seat === 'named-full');
+    const read = readSeatLaunch(path.join(w.workspace, '.claude'), row.seat, row.seat_id);
+    check(read.state === 'valid' && read.record.assistant === 'codex' && read.record.args.codex.includes('danger-full-access') && !!read.record.approved.codex, 'approved access not persisted through existing writer');
+    check(!fs.existsSync(path.join(w.root, 'agents.log')), 'make-only launched an agent');
+    const custom = await run('typed-full', [{id:'codex'}, {id:'custom'}, {id:'submit',text:'--sandbox danger-full-access.'},
+      {id:'submit',text:'--sandbox danger-full-access.'}, {id:'submit',text:'full'}, {id:'make'}]);
+    check(custom.screens.some(s => s.title === 'These settings give full access.'), 'typed full settings bypass confirmation');
+    check(custom.screens.some(s => (s.after ?? []).some((line: string) => line.includes('or keep typing'))), 'near-missed value has no in-place fix');
+    const advanced = await run('model-project', [{id:'codex'}, {id:'work'}, {id:'more'}, {id:'submit',text:'engineering'}, {id:'developer'}, {id:'submit',text:'engineering-dev'}, {id:'make'}]);
+    const advancedRows = JSON.parse(fs.readFileSync(path.join(w.workspace,'.claude','seats','_registry.json'),'utf8')).seats;
+    const advancedRow = advancedRows.find((r:any)=>r.seat==='engineering-dev');
+    check(advancedRow?.project==='model-project' && advancedRow?.template==='developer@1' && advancedRow?.role==='performer', 'More choices changed the Project or lost the K2 template');
+    check(advanced.receipts.includes('Made engineering-dev. Ready for later.'), 'advanced receipt names the Project rather than the seat');
+    const cancelled = await run('cancelled-seat', [{id:'codex'}, {id:'work'}, {id:'back'}, {id:'back'}, {id:'back'}, {id:'back'}]);
+    check(!menuRows(w.workspace).some(r => r.seat === 'cancelled-seat'), 'cancel wrote a seat');
+    check(cancelled.receipts.length === 0, 'cancel claimed creation');
+    const rejected = await run('rejected-settings', [{id:'codex'}, {id:'custom'}, {id:'submit',text:'--sandbox nope'},
+      {id:'back'}, {id:'back'}, {id:'back'}, {id:'back'}]);
+    equal(rejected.result, null, 'Back after rejected settings returns without throwing');
+    equal(rejected.screens.filter(s => s.title === 'New seat  step 3 of 3').length, 2, 'Back after rejected settings shows the access list again');
+    check(!menuRows(w.workspace).some(r => r.seat === 'rejected-settings'), 'Back after rejected settings wrote a seat');
+  } catch (error) { failures.push('section 237 stopped early: ' + (error as Error).message); }
+  finally { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); w.dispose(); }
+}
+
+// --- 238. C10: window bounds, fragmented input, field modes and resize -----------------------------------
+if (selected(238)) {
+  const { screenState, reduceScreen, drawScreen, screenDecoder, askScreen, mouseMode, terminalRestore, screenNeedsPlain } = await import('../src/menuscreen.ts');
+  const { EventEmitter } = await import('node:events');
+  const grouped = {title:'Deskpost',search:true,items:Array.from({length:20},(_,i)=>({id:String(i),text:'Seat '+i,group:'Group '+i}))};
+  let state=screenState(grouped,60,14);
+  for(let index=0;index<20;index++) {
+    const drawing=drawScreen(state);
+    check([...drawing.itemRows.values()].includes(state.index),'highlight scrolled out with many groups');
+    check(drawing.lines.length<=14&&drawing.lines.every(l=>l.length<=60),'grouped screen exceeds pane');
+    state=reduceScreen(state,{kind:'down'});
+  }
+  const decoder=screenDecoder();
+  equal(decoder('\x1b[1;5D').length,0,'unhandled CSI became a letter action');
+  equal(decoder('q')[0]!.kind,'text','unhandled CSI blocked later input');
+  decoder('\x1b[200~partial');
+  equal(decoder('\x03')[0]!.kind,'interrupt','Ctrl+C inside partial paste cannot leave');
+  const input=new EventEmitter() as any, output=new EventEmitter() as any;
+  const writes:string[]=[],modes:boolean[]=[];
+  input.setRawMode=(raw:boolean)=>modes.push(raw);input.resume=()=>{};input.pause=()=>{};
+  output.write=(s:string)=>writes.push(s);output.columns=60;output.rows=30;
+  const field=askScreen({title:'Folder',field:{label:'Folder'},items:[]},{terminal:{input,output},colour:false});
+  check(writes.some(s=>s.includes(mouseMode(true))),'mouse reporting remains on in text field');
+  check(writes.some(s=>s.includes('\x1b[?25h')),'field cursor not shown');
+  const utf8=Buffer.from('caf\u00e9');input.emit('data',utf8.subarray(0,4));input.emit('data',utf8.subarray(4));
+  input.emit('data','\x1b[200~\n');input.emit('data','\x1b');
+  await new Promise(resolve=>setTimeout(resolve,40));
+  input.emit('data','[201~');input.emit('data','\r');
+  equal((await field).text,'caf\u00e9','fragmented UTF-8 or paste marker lost field input');
+  equal(writes.at(-1),terminalRestore,'field exit did not restore terminal');
+  const pane=askScreen(grouped,{terminal:{input,output},colour:false});
+  output.columns=59;output.emit('resize');
+  equal((await pane).id,'plain','shrinking pane did not fall back');
+  equal(output.listenerCount('resize'),0,'resize listener leaked after fallback');
+  equal(modes.at(-1),false,'resize fallback left raw mode on');
+  const cramped = screenState({title:'Access',before:['Name','Assistant','','Choose'],items:[{id:'work',text:'Work',detail:['one','two','three','four']}]},60,14);
+  check(screenNeedsPlain(cramped),'short access page can hide its selected row');
+}
+
+// --- 239. C10: settings approvals and retirement in a disposable Library ---------------------------------
+if (selected(239)) {
+  const w = await seatClaimWorkspace('c10-settings', { pin: false }), saved = { ...process.env };
+  try {
+    const { screenSettings, screenRetire, menuRows } = await import('../src/menu.ts');
+    const { readSeatLaunch } = await import('../src/seatlaunch.ts');
+    const home=path.join(w.root,'home'),bin=path.join(w.root,'bin'); fs.mkdirSync(home);fs.mkdirSync(bin);fakeAssistant(bin,'codex',path.join(w.root,'agent.log'));
+    Object.assign(process.env,{HOME:home,USERPROFILE:home,APPDATA:path.join(home,'roaming'),LOCALAPPDATA:path.join(home,'local'),
+      LIBRARY_WORKSPACES:path.join(w.root,'reg'),LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:'',ORCA_TERMINAL_HANDLE:'',
+      PATH:bin+path.delimiter+(saved['PATH']??saved['Path']??'')});
+    const creation = ['seat','start','alpha','--project','alpha','--workspace',w.workspace,'--no-launch','--record-assistant','codex'];
+    const preview = w.as(process.pid,[...creation,'--preflight']);
+    equal(preview.exit,0,'settings fixture creation preview');
+    equal(w.as(process.pid,[...creation,'--plan-id',String(JSON.parse(preview.stdout).plan_id)]).exit,0,'settings fixture seat');
+    const row=menuRows(w.workspace)[0]!;
+    const seatId=JSON.parse(fs.readFileSync(path.join(w.workspace,'.claude','seats','_registry.json'),'utf8')).seats.find((r:any)=>r.seat==='alpha').seat_id;
+    const launch=()=>readSeatLaunch(path.join(w.workspace,'.claude'),'alpha',seatId);
+    const flow=async(fn:(state:any,row:any)=>Promise<void>,answers:{id:string;text?:string}[])=>{
+      const receipts:string[]=[];
+      const state:any={workspace:w.workspace,options:{cwd:w.workspace},claude:false,codex:true,assistant:'codex',
+        talk:{scripted:false,say:(line='')=>receipts.push(line),ask:async()=>{throw Error('old prompt');},
+          screen:async(model:any,text='')=>{const page=typeof model==='function'?model(text):model; const next=answers.shift();if(!next)throw Error('answers ran out at '+page.title);return{id:next.id,text:next.text??text};}}};
+      await fn(state,row);equal(answers.length,0,'unused settings answers');return receipts;
+    };
+    await flow(screenSettings,[{id:'access'},{id:'work'},{id:'cancel'},{id:'back'}]);
+    const initial=launch();check(initial.state==='valid'&&initial.record.args.codex.length===0,'cancel wrote access');
+    await flow(screenSettings,[{id:'access'},{id:'full'},{id:'submit',text:'full'},{id:'save'},{id:'back'}]);
+    const full=launch();check(full.state==='valid'&&full.record.args.codex.includes('danger-full-access')&&!!full.record.approved.codex,'save did not bind full access approval');
+    await flow(screenRetire,[{id:'submit',text:'yes'},{id:'back'}]);
+    check(menuRows(w.workspace).some(r=>r.seat==='alpha'),'bare yes retired the seat');
+    const retired=await flow(screenRetire,[{id:'submit',text:'retire'}]);
+    check(!menuRows(w.workspace).some(r=>r.seat==='alpha'),'typed retire did not retire fixture seat');
+    check(retired.some(line=>line.includes('notes and desk are kept in an archive')),'retire receipt omits archive');
+    check(fs.readdirSync(path.join(w.workspace,'internal','seat-archive')).length>0,'retirement discarded rather than archived');
+  }catch(error){failures.push('section 239 stopped early: '+(error as Error).message);}
+  finally{for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);w.dispose();}
+}
+
+// --- 241. C11: Project roots have their own slug remedy, and Book roots keep theirs ----------------------
+if (selected(241)) {
+  const w = await seatClaimWorkspace('c11-project-root', { pin: false });
+  try {
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, 'Project-root refusal fixture');
+    for (const action of ['open', 'close']) {
+      for (const root of ['projects/x', 'archive/projects/x']) {
+        const before = w.snapshot(w.workspace);
+        const ran = w.as(agent, ['desk', action, 'project', root, '--workspace', w.workspace]);
+        check(ran.exit !== 0, action + ' accepted a Project root');
+        check(ran.stderr.includes("'" + root + "' is a Project root, not a slug. Pass its slug (x) instead."), action + ' Project-root remedy: ' + ran.stderr);
+        check(!ran.stderr.includes("Book slug 'projects/"), 'Project root got a malformed Book-slug remedy');
+        equal(w.snapshot(w.workspace), before, 'Project-root refusal changed fixture files');
+      }
+      const book = w.as(agent, ['desk', action, 'book', 'books/x', '--workspace', w.workspace]);
+      check(book.exit !== 0 && book.stderr.includes("'books/x' is a Book root, not a slug. Pass its slug (x) instead."), action + ' Book-root remedy changed: ' + book.stderr);
+    }
+  } finally { w.dispose(); }
+}
+
+// --- 242. C11: the push-tier type check rejects a planted error in a disposable tools copy ----------------
+if (selected(242) && prerequisite(242, () => !isCompiled(), 'requires source type-check fixture')) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c11-tools-type-')));
+  try {
+    const tools = path.join(root, 'tools'); fs.mkdirSync(tools);
+    for (const file of fs.readdirSync(path.join(PROGRAM_ROOT, 'tools'))) {
+      if (/\.(?:ts|mts)$/.test(file) || ['package.json', 'tsconfig.json'].includes(file))
+        fs.copyFileSync(path.join(PROGRAM_ROOT, 'tools', file), path.join(tools, file));
+    }
+    // Reuse pinned dependencies and the source kernel without copying or modifying either.
+    fs.symlinkSync(path.join(PROGRAM_ROOT, 'kernel'), path.join(root, 'kernel'), process.platform === 'win32' ? 'junction' : 'dir');
+    fs.appendFileSync(path.join(tools, 'gate.ts'), '\nconst c11PlantedTypeError: string = 42;\n');
+    const ran = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'kernel/test/selftest.ts')], {
+      cwd: PROGRAM_ROOT, env: { ...process.env, ...QUIET_TAB, LIBRARY_SELFTEST_SECTIONS: '155', LIBRARY_SELFTEST_PROGRAM_ROOT: root },
+      encoding: 'utf8', timeout: 600000,
+    });
+    const output = String(ran.stdout ?? '') + String(ran.stderr ?? '');
+    equal(ran.status, 1, 'section 155 accepted a planted tools type error: '+output);
+    check(output.includes('typecheck: kernel: PASS'), 'kernel config was not independently checked: '+output);
+    check(output.includes('typecheck: tools: FAIL'), 'tools config was not reported FAIL: '+output);
+    check(/gate\.ts\(\d+,\d+\): error TS2322/.test(output), 'planted tools/gate.ts error was not named: '+output);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 243. C11: the final runner line keeps a real two-process lock wait -----------------------------------
+if (selected(243) && prerequisite(243, () => !isCompiled(), 'requires source runner fixtures')) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c11-wait-')));
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const runnerPath = path.join(PROGRAM_ROOT, 'kernel/test/run-parallel.ts');
+    const locksPath = path.join(PROGRAM_ROOT, 'kernel/test/gate-lock.ts');
+    const runner = await import(pathToFileURL(runnerPath).href);
+    const locks = await import(pathToFileURL(locksPath).href);
+    const suite = path.join(root, 'suite.mjs'), holderPath = path.join(root, 'holder.mjs'), releaseFile = path.join(root, 'release');
+    fs.writeFileSync(suite, "const selected = n => true;\nif (selected(1)) { console.log('kernel self-test passed (1 checks).'); }\n");
+    fs.writeFileSync(holderPath, [
+      'import fs from "node:fs";',
+      'import {acquireGateLock} from ' + JSON.stringify(pathToFileURL(locksPath).href) + ';',
+      'const lock = await acquireGateLock("fixture"); console.log("holder-ready");',
+      'try { const until=Date.now()+20000; while(!fs.existsSync(process.argv[2])) { if(Date.now()>until) throw Error("release deadline"); await new Promise(r=>setTimeout(r,25)); } } finally { await lock.release(); }',
+    ].join('\n'));
+    const env = { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '',
+      DESKPOST_GATE_LOCK: '', DESKPOST_GATE_LOCK_NAME: 'deskpost-c11-wait-' + process.pid + '-' + Date.now(), LIBRARY_SELFTEST_SECTIONS: '1' };
+    const start = (args: string[], extra: Record<string, string> = {}) => {
+      const child = spawn(process.execPath, args, { env: { ...env, ...extra }, stdio: ['ignore','pipe','pipe'], windowsHide: true });
+      children.push(child); let output = '';
+      child.stdout.on('data', chunk => output += String(chunk)); child.stderr.on('data', chunk => output += String(chunk));
+      const done = new Promise<{code: number | null; output: string}>((resolve, reject) => {
+        const timer = setTimeout(() => { child.kill(); reject(Error('C11 wait fixture exceeded 30 seconds')); }, 30000);
+        child.on('error', error => { clearTimeout(timer); reject(error); });
+        child.on('close', code => { clearTimeout(timer); resolve({code, output}); });
+      });
+      return { child, done, output: () => output };
+    };
+    const waitFor = async (child: ReturnType<typeof start>, needle: string) => {
+      const until = Date.now()+10000;
+      while(!child.output().includes(needle) && Date.now()<until) await new Promise(r=>setTimeout(r,25));
+      if(!child.output().includes(needle)) throw Error('C11 fixture missed '+needle+': '+child.output());
+    };
+    const holder = start([holderPath, releaseFile], {LIBRARY_SEAT:'fixture-holder'});
+    await waitFor(holder, 'holder-ready');
+    const waiter = start([runnerPath, '--suite', suite, '--workers', '2']);
+    await waitFor(waiter, "waiting: fixture-holder's fixture gate");
+    fs.writeFileSync(releaseFile, 'release');
+    const [held, waited] = await Promise.all([holder.done, waiter.done]);
+    equal(held.code, 0, 'C11 fixture holder did not release normally');
+    equal(waited.code, 0, 'C11 waiter failed: '+waited.output);
+    const last = waited.output.trim().split(/\r?\n/).at(-1)!;
+    check(/^kernel self-test passed \(1 checks\) after waiting \d+(?:\.\d+)?s for fixture-holder's fixture gate\.$/.test(last), 'C11 final line lost the lock wait: '+last);
+    equal(runner.verdict('whole', 0, waited.output).verdict, 'PASS', 'runner rejected a waited success line');
+    equal(runner.verdict('whole', 0, 'kernel self-test passed (1 checks) after waiting nonsense.').verdict, 'FAIL', 'malformed waited line passed');
+    const plain = await start([runnerPath, '--suite', suite, '--workers', '2']).done;
+    equal(plain.code, 0, 'uncontended runner failed');
+    equal(plain.output.trim().split(/\r?\n/).at(-1), 'kernel self-test passed (1 checks).', 'uncontended final line changed');
+    const rows = [{pid:1,parentPid:0,start:'parent',command:'tools/Invoke-LibraryChecks.ps1'},
+      {pid:2,parentPid:1,start:'self',command:'kernel/test/run-parallel.ts'},
+      {pid:3,parentPid:0,start:'live',command:'kernel/test/selftest.ts'}];
+    equal(locks.leftoverWarnings(rows,2).join('\n'), "warning: another gate's work is running outside the lock (it may be live, or left over): 3 live kernel/test/selftest.ts", 'outside-lock warning assumes another gate is leftover');
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 244. C13: the first screen and plain menu carry the recorded update and upgrade ---------------------
+if (selected(244)) {
+  const { firstMenuScreen, plainSeatLines, resolveChoice } = await import('../src/menu.ts');
+  const { updateLineText } = await import('../src/upgrade.ts');
+  const now = new Date(2026, 9, 13, 18, 0);
+  const row: any = { index: 1, seat: 'alpha', project: 'alpha', state: 'free', letters: 0,
+    last_active_utc: now.toISOString(), launchAssistant: 'codex', view: { assistant: 'codex', session_id: '' } };
+  const update = updateLineText('1.4.5', '1.4.4');
+  for (const rows of [[], [row]]) {
+    const name = rows.length ? 'seated' : 'empty';
+    const screen = firstMenuScreen(rows, '', now, 'codex', update);
+    equal(screen.before!.filter(line => line === update).length, 1, name + ' screen update once');
+    equal(screen.items.filter(item => item.id === 'upgrade').length, 1, name + ' screen upgrade once');
+    equal(screen.items.find(item => item.id === 'upgrade')!.text, 'Upgrade to 1.4.5', name + ' screen version');
+    equal(screen.items.at(-2)!.id, rows.length ? 'help' : 'upgrade', name + ' upgrade placement');
+    if (rows.length) equal(screen.items.at(-3)!.id, 'upgrade', 'seated upgrade before Help');
+    const unchanged = firstMenuScreen(rows, '', now, 'codex');
+    check(!unchanged.before!.includes(update), name + ' screen no update notice');
+    check(!unchanged.items.some(item => item.id === 'upgrade'), name + ' screen no upgrade');
+    const plain = plainSeatLines(rows, now, 'codex', update);
+    equal(plain[0], update, name + ' plain update first');
+    equal(plain.filter(line => line === update).length, 1, name + ' plain update once');
+    equal(plain.filter(line => line.includes('Upgrade to')).length, 1, name + ' plain upgrade once');
+    equal(plain.slice(-5).join('|'), [(rows.length + 1) + '. Make a new seat', (rows.length + 2) + '. Upgrade to 1.4.5',
+      (rows.length + 3) + '. Help and more', (rows.length + 4) + '. Quit', 'Type a number or part of a name.'].join('|'), name + ' plain shifted choices');
+    const noUpdate = plainSeatLines(rows, now, 'codex');
+    check(!noUpdate.includes(update) && !noUpdate.some(line => line.includes('Upgrade to')), name + ' plain no update');
+    equal(noUpdate.slice(-4).join('|'), [(rows.length + 1) + '. Make a new seat', (rows.length + 2) + '. Help and more',
+      (rows.length + 3) + '. Quit', 'Type a number or part of a name.'].join('|'), name + ' plain original numbers');
+  }
+  equal(firstMenuScreen([row], 'upgrade', now, 'codex', update).items.map(item => item.id).join('|'), 'upgrade', 'search finds upgrade');
+  equal(resolveChoice('u', 1, true).action, 'upgrade', 'scripted upgrade key unchanged');
 }
 
 // --- the verdict ----------------------------------------------------------------------------------------

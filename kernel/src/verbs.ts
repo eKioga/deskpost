@@ -141,7 +141,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library book add-page <slug> <page> (--content-path <f> | --body <text>) [--title <t>] [--seat <s>] [--preflight]; ' +
       'library book add-page <slug> --from-folder raw/<batch> [--seat <s>] [--preflight]; ' +
       'library book graduate <slug> [--topic <t> | --source-path <p>] [--page-prefix <p>] [--recurse] [--seat <s>] [--preflight]; ' +
-      'library book replace-page <slug> <page> --content-path <f> [--sources-compiled <f>] (--preflight | --base-sha256 <h>) [--seat <s>]; ' +
+      'library book replace-page <slug> <page> --content-path <f> [--sources-compiled <f>] (--preflight [--expect-sha256 <h>] | --base-sha256 <h>) [--seat <s>]; ' +
       'library book reader-map <slug> [--seat <s>]; ' +
       'library book sources <slug> [(--set | --mark-compiled) --content-path <f> (--preflight | --base-sha256 <h>)] [--seat <s>]',
     actions: ['add-page', 'graduate', 'reader-map', 'replace-page', 'sources'],
@@ -158,7 +158,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'add-page': { valued: ['title', 'body', 'content-path', 'from-folder', 'seat'], boolean: ['preflight'], positionals: 2 },
       graduate: { valued: ['topic', 'source-path', 'page-prefix', 'seat'], boolean: ['recurse', 'preflight'], positionals: 1 },
       // `--body` and `--title` are read only to be refused by name: a correction takes a file and keeps its own H1.
-      'replace-page': { valued: ['content-path', 'base-sha256', 'sources-compiled', 'body', 'title', 'seat'], internal: ['body', 'title'], boolean: ['preflight'], positionals: 2 },
+      'replace-page': { valued: ['expect-sha256', 'content-path', 'base-sha256', 'sources-compiled', 'body', 'title', 'seat'], internal: ['body', 'title'], boolean: ['preflight'], positionals: 2 },
       // These two refuse a second word in their own sentences.
       'reader-map': { valued: ['seat'], positionals: 1, ownWords: true },
       sources: { valued: ['content-path', 'base-sha256', 'seat'], boolean: ['set', 'mark-compiled', 'preflight'], positionals: 1, ownWords: true },
@@ -432,7 +432,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   init: {
     summary: 'Make a folder a Library workspace, and tell this machine about it.',
-    usage: 'library init [<folder>] [--writable] [--json]',
+    usage: 'library init [<folder>] [--workspace <folder>] [--mcp-url <url>] [--collection-id <id>] [--registry-root <folder>] [--writable] [--json]',
     actions: [],
     positional: true,
     // INIT REFUSES AN UNKNOWN FLAG AND A SECOND FOLDER ITSELF, in its own sentences (S61), from this table; `--force`
@@ -523,7 +523,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S102',
   },
   menu: {
-    summary: 'The main menu, which bare `deskpost` opens: your seats, a number to resume one, n<number> for a new conversation, + for a new seat.',
+    summary: 'The main menu: arrows move, Enter chooses, Esc goes back, and typing searches seats and actions. --plain uses numbered choices; --script keeps old answers such as n7.',
     usage: 'library menu [--workspace <path>] [--width <n>] [--plain] [--assistant claude|codex] [--script <answers-file>]',
     actions: [],
     positional: false,
@@ -690,6 +690,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
       'library seat rename <old> <new> [--preflight | --user-confirmed --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat rename (--resume <seat> | --rollback <seat>) [--workspace <path>] [--json]; ' +
+      'library seat retire <name> (--preflight | --plan-id <id>); ' +
+      'library seat hold; ' +
       'library seat status [--seat <name>] [--text] [--workspace <path>]',
     // Every one answers; `start` is the one launcher the main menu uses (S55, ADR-0059), and `hold` is the claim holder
     // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), and `settings` its
@@ -698,6 +700,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
     actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'rename', 'retire', 'settings', 'start', 'status'],
     positional: false,
     details: {
+      retire: [
+        'Retiring takes <seat> off the list. Its notes and desk are kept in an archive, but the menu cannot bring it back.',
+      ],
+      hold: ['internal: started by seat enter'],
+      '*': ['hold is internal: started by seat enter.'],
       rename: [
         'One seat per run, by its id: its folder, its Notebook root, four files\' seat key and its registry row; the Project and Hub never change.',
         'A stopped rename stands as a barrier at the seat: --resume <seat> finishes it, --rollback <seat> puts it back (either name finds it).',

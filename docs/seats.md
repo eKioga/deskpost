@@ -42,6 +42,43 @@ Landed 2026-09-07 as `PLAN-multi-desk.md` Release 2, steps 7-30, in one release.
 phased: a half-migrated Desk leaves a Book **open for reading and closed for searching**, because the
 reader and the search helpers resolve the Desk independently.
 
+`LIBRARY_WORKSPACES` selects the machine registry folder used by `deskpost init` and workspace resolution; `--registry-root` selects it for one init call.
+
+## Seat templates
+
+The six shipped templates give a new seat a starting purpose and registry role:
+
+| Template | Registry role | Purpose |
+| --- | --- | --- |
+| `performer` | performer | Work its lane and record progress. |
+| `orchestrator` | orchestrator | Answer or route its department's letters. |
+| `auditor` | performer | Read-only audits, findings by letter. |
+| `ideas` | performer | Capture and develop ideas on request; never build. |
+| `developer` | performer | Build one approved software Kickoff and hand back. |
+| `planner` | orchestrator | Plan software units, assign roles and review handbacks. |
+
+Developer and planner purposes point to library-help's
+[Building software with seats](../.claude/skills/library-help/references/building-software-with-seats.md).
+The new-seat wizard offers them with a department and proposes `<department>-dev` and
+`<department>-plan`. Templates set purpose and provenance at creation; they grant no integration,
+Git or release authority. The Kickoff assigns development roles separately from registry roles.
+
+A department has at most one orchestrator. When it already has one, there are two distinct routes:
+
+1. Create a planner with `--template planner --department <separate-department>` through
+   `seat start`'s preview and exact plan id. This records the planner's purpose and `planner@1` provenance.
+2. Transfer the orchestrator role to an existing seat with
+   `deskpost seat describe <seat> --role orchestrator --from <current-orchestrator> --preflight`,
+   then apply that approved preview with its exact `--plan-id`. This changes the role and keeps
+   the seat's own purpose and template provenance; it does not make it a `planner@1` seat.
+
+Init preserves a user's own skill folder or edited managed files in either harness; doctor WARNs
+instead of replacing them. If that leaves an older library-help copy, read the canonical guide in
+the installed program tree at `.claude/skills/library-help/references/building-software-with-seats.md`.
+Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.4.5/.claude/skills/library-help/SKILL.md)
+is the matching online entry point. Resolve the collision yourself and run `deskpost init` again;
+do not overwrite your copy as a shortcut.
+
 ## There is no default seat
 
 *(Ruled by Eric, 2026-09-07.)* The cosmetic tier had locked `main`, which collided with
@@ -336,23 +373,33 @@ Quick Command that opens one seat directly, remains out of scope.
 
 #### Codex and Claude Code seats from the main menu
 
-Each seat may save its own assistant. Type `s<number>` to open its settings, `a` there to choose
-`claude`, `codex` or `none`, and `f` to enter flags for that assistant. Enter the flags on one
-line split on whitespace, with no quoting. The screen shows escaped argv and the planned launch;
-Enter applies that preview's plan id and `q` cancels. Use `c` to copy flags from a named live seat
-with a valid record; the destination gets its own preview and approval. `x` clears one assistant's
-flags and `r` resets the launch record, each through the same preview.
+The 1.4.5 menu uses arrows to move, Enter to choose, Esc to go back and typing to search seats and
+actions immediately. A single click highlights; a double-click chooses. Free seats appear newest
+first, with the most recent conversation at the top; seats open elsewhere sit in a separate group.
+Choose a seat, then Continue last conversation, Start a new conversation, Settings or Back.
+A seat with no conversation offers Start its first conversation instead.
+When a newer release is ready, the main screen shows an update line and **Upgrade to <version>** before Help and more (before Quit when there are no seats).
 
-For an existing Codex seat: `s<number>`, `a`, `codex`, then `f`, `codex`, enter the flags you chose,
-and Enter. To use Eric's chosen flags, enter `-a never -s danger-full-access`; these are his choice,
-never Deskpost defaults. For subsequent seats, `c` copies them. A new seat records the wizard preview's
-assistant; use `s<number>` afterwards to set or copy flags. Show me around records its assistant too.
+New seat takes name, installed assistant and access, then a ready screen. More choices reaches
+department and template; K2's proposed seat name does not rename the Project. Codex offers Look
+only, Work in its own folders (usual), Full access and Type my own settings. Claude Code offers
+Look only, Ask me first (usual), Edit freely, Auto mode, Full access and typed settings. The exact
+settings appear under the highlighted choice. Full access requires the typed word `full`, even
+when typed settings grant it, and saved full access carries `(!)`. The shared access table is
+`kernel/src/menuaccess.ts`; the launch validator reads its client value lists.
 
-A number resumes the last conversation when its owner matches the saved assistant. When they differ,
-the row explains which assistant owns that conversation and which one the number starts; the launch
-starts a new conversation in the saved assistant and keeps the old one resumable there. `n<number>`
-starts the saved assistant. The menu-wide `a` changes only the default for seats with no saved assistant.
-A saved assistant missing from this machine is refused by name. Every Codex launch gets `--no-daemon`.
+Settings has Assistant, Access, Folders, Exact command, Retire and Back. Access writes keep the
+existing preview and exact plan id. Settings apply at the next start. Retire says that notes and
+desk go to an archive the menu cannot restore, and requires `retire` or the seat's name.
+A different saved assistant starts a new conversation and leaves the older one resumable there.
+Every Codex launch still gets `--no-daemon`.
+
+Below 60 columns or 14 rows, or with `--plain`, use numbered sentences. A shrinking pane hands
+the terminal back before changing to plain text. `--script` retains old answers such as `n7`
+and the old creation and settings protocols; their launch behavior is unchanged. A non-terminal
+prints a plain roster and refuses to wait, naming `seat start`. Help and more can select plain
+text for this visit. Saving that choice permanently is parked: no existing menu preference format
+can hold it, and c10 does not add a format. Use `deskpost menu --plain` each time.
 
 The command-line form preserves argv with spaces. These are separate calls, with the preview's exact id:
 
@@ -369,15 +416,33 @@ deskpost seat settings <seat> --reset-launch --plan-id <issued-id>
 
 Flag set, clear and reset all need approval; removing a flag can change the client's defaults.
 Inbound, assistant, set, clear and reset are mutually exclusive. Assistant changes take no preflight.
+Access values are checked before preview: Codex approval is `on-request` or `never`; sandbox is
+`read-only`, `workspace-write` or `danger-full-access`. Claude Code permission mode is `acceptEdits`,
+`auto`, `bypassPermissions`, `manual`, `dontAsk` or `plan`. A typo is refused with the allowed values.
 The approval binds the operation, incarnation and current bytes. A changed record or seat requires a
 fresh preview. It is a protocol, not protection against a process running as the same user.
 
-The launcher prints escaped argv and the stored approval before starting the agent. Invalid records
-are ignored and named; doctor WARNs with `seat settings <seat> --reset-launch`. A malformed readable
+The launcher prints escaped argv and the stored approval before starting the agent.
+Display uses Windows argument quoting on Windows and POSIX shell quoting elsewhere. Repeatable Codex
+`-c`/`--config`, `--enable` and `--disable`, and Claude Code `--plugin-dir` and `--plugin-url`, may occur
+in both stored and typed flags; other duplicate options are refused. Codex 0.162.1 accepted repeated
+`-c` in a fixture `features list` run, with the last override taking effect.
+
+Invalid records are ignored and named; doctor WARNs with `seat settings <seat> --reset-launch`. A malformed readable
 record can be reset; a file whose bytes cannot be read gets no reset plan id. Retirement archives
 `launch.json`, rename carries it, and a new incarnation does not inherit it. `seat dirs` shows the
 saved assistant and flags and omits resume arguments for a conversation owned by another assistant;
 the exact planner line is the one in settings and at launch. See [ADR-0076](adr/0076-a-seat-records-its-assistant-and-approved-launch-flags.md).
+
+Stored guard-loading flags are refused before preview, in separate, equals and attached forms:
+
+| Assistant | Refused overrides |
+| --- | --- |
+| Claude Code | `--mcp-config`, `--strict-mcp-config`, and the existing launcher-owned settings and conversation options. |
+| Codex | `-p`/`--profile`; `-c`/`--config` for `hooks`, `mcp_servers`, `plugins`, `features`, `profiles`, `profile`, `shell_environment_policy` or their children; `--enable`/`--disable` for those guard-loading names. |
+
+The named config roots and their reason are in [ADR-0076's C8 amendment](adr/0076-a-seat-records-its-assistant-and-approved-launch-flags.md).
+A legacy seat without `seat_id` receives that existing field on its first launch-setting write under the registry lock.
 
 **Expect the last-conversation column to be empty at a seat entered with a typed `-Seat`.** The
 launcher can only record a conversation it *minted*, which is the picker's own `n<number>` route — a

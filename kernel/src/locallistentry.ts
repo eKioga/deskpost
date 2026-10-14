@@ -53,8 +53,12 @@ export function localSharedListEntry(argv: string[], workspace: string): Record<
   const bookDirectory = `books/${slug}`;
   const rootFile = path.join(workspace, 'collection', 'books', slug, 'wiki', '_book.md');
   if (!fs.existsSync(rootFile)) refuse(`Book '${slug}' is not in this Library's collection (no ${bookDirectory}/wiki/_book.md); nothing was listed.`);
-  const title = (parsed.options.get('title') ?? '').trim() || firstHeading(readUtf8(rootFile)) || slug;
-  const summary = (parsed.options.get('summary') ?? '').trim();
+  const suppliedTitle = parsed.options.get('title') ?? '';
+  const suppliedSummary = parsed.options.get('summary') ?? '';
+  for (const value of [suppliedTitle, suppliedSummary]) if (/[\x00-\x1f\x7f]/.test(value)) refuse('Catalog title and summary cannot hold control characters or DEL. Nothing was listed.');
+  const title = suppliedTitle.trim() || firstHeading(readUtf8(rootFile)) || slug;
+  const summary = suppliedSummary.trim();
+  if (/[\x00-\x1f\x7f]/.test(title)) refuse('Catalog title cannot hold control characters or DEL. Nothing was listed.');
   const target = `${bookDirectory}/wiki/_book`;
   const entry = summary ? `- [[${target}|${title}]] — ${summary}` : `- [[${target}|${title}]]`;
   const catalogFile = path.join(workspace, 'collection', 'books', 'README.md');

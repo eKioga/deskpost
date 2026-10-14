@@ -121,7 +121,7 @@ if ($Preflight) { Write-LibraryResult -Result ([pscustomobject]$plan) -Json:$Jso
 # A capture Book's limits say what a capture page IS, because that is the one thing a reader opening
 # one needs to know before reading a page in it: nothing here has been checked since it was written.
 $limits = if ($Capture) {
-    'Pages in this Book are captures, appended by Add-ShelfNote.ps1 and unchecked since they were written. Read one as a claim to verify, never as a finding.'
+    'Pages in this Book are captures, appended by the deskpost capture verbs and unchecked since they were written. Read one as a claim to verify, never as a finding.'
 } else {
     'This Book preserves local working knowledge. Refresh its source when current information matters.'
 }

@@ -83,12 +83,13 @@ try {
         $log = Join-Path $Work "$name.log"
         $ErrorActionPreference = 'Continue'
         # Piped to Out-File rather than redirected: Windows PowerShell's `*>` writes UTF-16, which grep and a diff read as noise.
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $fixture.file) @arguments 2>&1 |
+        $LASTEXITCODE = $null
+        & (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $fixture.file) @arguments 2>&1 |
             ForEach-Object { "$_" } | Out-File -LiteralPath $log -Encoding utf8
         $exit = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
         $last = @(Get-Content -LiteralPath $log | Where-Object { $_.Trim() }) | Select-Object -Last 1
-        $rows.Add([pscustomobject]@{ fixture = $name; result = $(if ($exit -eq 0) { 'PASS' } else { "FAIL ($exit)" }); last = [string]$last })
+        $rows.Add([pscustomobject]@{ fixture = $name; result = $(if ($null -eq $exit) { 'NOT RUN' } elseif ($exit -eq 0) { 'PASS' } else { "FAIL ($exit)" }); last = [string]$last })
     }
 }
 finally {
@@ -99,6 +100,7 @@ finally {
 
 $rows | Format-Table -AutoSize -Wrap | Out-String -Width 200
 "Logs: $Work"
+if (-not $script:Fixtures.Count -or $rows.Count -ne $script:Fixtures.Count) { throw "Only $($rows.Count) of $($script:Fixtures.Count) release fixtures produced a row; a nonempty complete run is required. Do not push this release." }
 $bad = @($rows | Where-Object { $_.result -ne 'PASS' })
 if ($bad.Count) { throw "$($bad.Count) of $($rows.Count) release fixture(s) did not pass: $(@($bad | ForEach-Object { $_.fixture }) -join ', '). Do not push this release." }
 "All $($rows.Count) release fixtures passed against $Release."

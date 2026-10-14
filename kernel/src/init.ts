@@ -731,7 +731,7 @@ function codexTomlArray(values: string[]): string {
  * Codex merges `$CODEX_HOME/config.toml` underneath the workspace file, so every server and plugin the reader turned on
  * there would be live in a Library session: each is turned off here by name, except the validated reader. Only names
  * the user config defines are written, because a table for a server defined nowhere else stops Codex loading any
- * config (measured, "invalid transport"). On Windows the inherited `Path` is excluded as well.
+ * config (measured, "invalid transport"). On Windows an empty exclusion list preserves the inherited `Path`.
  */
 export interface CodexWorkspaceGuards {
   win32: boolean;
@@ -747,9 +747,9 @@ function codexWorkspaceGuardsText(guards: CodexWorkspaceGuards): string {
   let text = '';
   if (guards.win32) {
     text +=
-      '\n# Windows only: Codex adds its own PATH beside the inherited Path, so a command saw both and PowerShell\'s\n' +
-      '# Start-Process failed ("Item has already been added"). Excluding the inherited Path leaves one.\n' +
-      '[shell_environment_policy]\nexclude = ["Path"]\n';
+      '\n# Windows only: Codex 0.162.1 keeps one working Path. Excluding Path removes it entirely.\n' +
+      '# An empty exclusion list replaces the earlier managed exclusion without fixing machine paths here.\n' +
+      '[shell_environment_policy]\nexclude = []\n';
   }
   if (guards.userConfig.tables === null) return text;
   const on = codexTurnedOn(guards.userConfig.tables);

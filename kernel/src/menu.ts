@@ -52,8 +52,10 @@ import { loadSeatTemplate, type SeatTemplate } from './seattemplates.ts';
 import { pendingLetterCounts } from './desk.ts';
 import { seatNameHistory } from './seatincarnation.ts';
 
-import { readSeatLaunch, seatLaunchPreview, escapedArgv } from './seatlaunch.ts';
+import { readSeatLaunch, seatLaunchPreview, escapedArgv, validateStoredFlags } from './seatlaunch.ts';
+import { MENU_ACCESS, LAUNCH_ACCESS_VALUES, accessName, fullAccessSettings, accessOptionValue } from './menuaccess.ts';
 import { seatSettingsResult } from './seatinbound.ts';
+import { askScreen, plainRequired, type ScreenModel, type ScreenItem } from './menuscreen.ts';
 
 // --- the conversation with the reader -------------------------------------------------------------------------------
 
@@ -63,6 +65,8 @@ export interface Talk {
   scripted: boolean;
   say: (text?: string) => void;
   ask: (prompt: string) => Promise<string>;
+  /** Injectable screen input for disposable fixture proofs; ordinary callers use the terminal. */
+  screen?: (model: ScreenModel | ((text: string) => ScreenModel), text?: string) => Promise<{ id: string; text: string }>;
 }
 
 /**
@@ -182,11 +186,13 @@ export interface MenuRow {
   state_note: string;
   agent_pid: number;
   last_active_utc: string;
+  opened_utc?: string;
   view: ConversationView;
   /** How many added folders the seat is started with (1.2.5); 0 when it has none or its record cannot be read. */
   folders: number;
   launchAssistant?: Assistant | null;
   launchFlags?: boolean;
+  launchArgs?: string[];
   /** Its role and department as one phrase, and its card (1.3.8, kickoffs/s96 row 1), through the one projection; '' for none. */
   role?: string;
   card?: string;
@@ -237,7 +243,7 @@ export function lettersMark(row: MenuRow): string {
 }
 
 /** One row per registered seat, sorted by name, numbered from 1. One unreadable seat does not take the roster down. */
-export function menuRows(workspace: string, options: { transcriptRoot?: string; skipTitles?: boolean; now?: Date } = {}): MenuRow[] {
+export function menuRows(workspace: string, options: { transcriptRoot?: string; skipTitles?: boolean; now?: Date; fallbackAssistant?: Assistant } = {}): MenuRow[] {
   const now = options.now ?? new Date();
   const stateDirectory = path.join(workspace, '.claude');
   const entries = [...seatRegistryRows(workspace)].sort((left, right) => psSortCompare(String(left['seat']), String(right['seat'])));
@@ -275,6 +281,7 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       const state = getSeatClaimState(stateDirectory, seat);
       row.state = state.state;
       row.agent_pid = Number(state.agentPid) || 0;
+      row.opened_utc = state.bindingStale ? '' : state.boundUtc;
       if (state.state === 'orphaned') row.state_note = `agent ${row.agent_pid} alive, claim holder gone`;
       const activity = readSeatActivity(stateDirectory, seat);
       if (activity && typeof activity['last_seen_utc'] === 'string') row.last_active_utc = activity['last_seen_utc'];
@@ -282,7 +289,9 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
       const record = readSeatLaunch(stateDirectory, seat, String(entry['seat_id'] ?? ''));
       if (record.state === 'valid') {
         row.launchAssistant = record.record.assistant;
-        row.launchFlags = record.record.args[record.record.assistant ?? row.view.assistant].length > 0;
+        const chosen = record.record.assistant ?? (row.view.session_id ? row.view.assistant : options.fallbackAssistant ?? 'claude');
+        row.launchFlags = record.record.args[chosen].length > 0;
+        row.launchArgs = [...record.record.args[chosen]];
       }
       // A RECORD THAT CANNOT BE READ MARKS NOTHING HERE: `f<N>` and `seat start` say why, and the roster stays up.
       try {
@@ -606,7 +615,8 @@ export async function runMenu(options: MenuOptions, talk: Talk): Promise<number>
       .finally(() => clearTimeout(timer));
   }
   try {
-    return await menuLoop(state);
+    state.options.plain = options.plain || !interactive() || plainRequired(options.width ?? process.stdout.columns ?? 60, process.stdout.rows ?? 30);
+    return talk.scripted ? await menuLoop(state) : await screenMenuLoop(state);
   } catch (error) {
     if (error instanceof MenuQuit) {
       talk.say(error.message);
@@ -669,10 +679,8 @@ function updateLineDue(state: MenuState): string | null {
 
 async function menuLoop(state: MenuState): Promise<number> {
   const { talk, workspace } = state;
-  let bannerDrawn = false;
-  let hinted = false;
   for (;;) {
-    const rows = menuRows(workspace, { transcriptRoot: state.options.transcriptRoot });
+    const rows = menuRows(workspace, { transcriptRoot: state.options.transcriptRoot, fallbackAssistant: state.assistant ?? undefined });
     // FIRST TIME, WITH NO SEATS: THE FORK, whatever route made the Library (PLAN-assistant-onboarding.md step 5, amending
     // ADR-0059's "only the wizard"): an assistant's install reaches the same Show me around a terminal install offers.
     if (!rows.length) {
@@ -713,34 +721,10 @@ async function menuLoop(state: MenuState): Promise<number> {
         talk.say(`'${key}' is not one of the keys above.`);
       }
     }
-    // SHOW ME AROUND IS PROMINENT UNTIL ITS SEAT EXISTS; after that it stays in the footer.
-    const helpSeatExists = rows.some((row) => row.seat === HELP_SEAT);
-    const measured = renderPlan(state.options);
-    const plan = renderPlan(state.options, Math.max(0, ...tableLines(rows, measured.glyphs).map((line) => line.length)));
-    if (!bannerDrawn) {
-      for (const line of bannerLines(plan.width, plan.glyphs, plan.palette, rows.length, rows.filter((row) => row.state === 'held').length)) write(state, plan, line);
-      write(state, plan, `  Library  ${workspace}`);
-      const update = updateLineDue(state);
-      if (update !== null) write(state, plan, update);
-      if (!helpSeatExists) write(state, plan, `  h  Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
-      bannerDrawn = true;
-    }
-    write(state, plan, '');
-    if (plan.mode === 'cards') {
-      for (const line of cardLines(rows, plan.width, plan.glyphs, plan.palette)) write(state, plan, line);
-    } else {
-      write(state, plan, 'Seats in this Library:');
-      for (const line of tableLines(rows, plan.glyphs)) write(state, plan, line);
-      write(state, plan, '');
-    }
-    // A CHECK THAT FINISHED AFTER THE FIRST DRAW shows its line here, once.
-    const lateUpdate = updateLineDue(state);
-    if (lateUpdate !== null) write(state, plan, lateUpdate);
-    for (const line of footerLines(state.claude && state.codex, state.assistant)) write(state, plan, line);
-    if (!hinted) {
-      write(state, plan, FIRST_HINT);
-      hinted = true;
-    }
+    talk.say('Library  ' + workspace);
+    for (const line of plainSeatLines(rows, new Date(), state.assistant ?? 'claude')) talk.say(plainText(line));
+    const update = updateLineDue(state);
+    if (update !== null) talk.say(update);
     const choice = resolveChoice(await talk.ask('Seat › '), rows.length, readyVersion(state.installRoot, state.running) !== null);
     const target = choice.index > 0 ? rows[choice.index - 1]! : null;
     switch (choice.action) {
@@ -806,6 +790,9 @@ function occupied(row: MenuRow): string | null {
 /** A number resumes that seat's last conversation, in the assistant that owns it; `n<number>` starts a new one. */
 async function sitDown(state: MenuState, row: MenuRow, action: 'resume' | 'new'): Promise<number | null> {
   const { talk } = state;
+  // A reader can change settings while the menu waits for input. Its drawn row is only a preview.
+  row = menuRows(state.workspace, { transcriptRoot: state.options.transcriptRoot, fallbackAssistant: state.assistant ?? undefined })
+    .find(current => current.seat === row.seat) ?? row;
   const refusal = occupied(row);
   if (refusal) {
     talk.say(refusal);
@@ -813,7 +800,6 @@ async function sitDown(state: MenuState, row: MenuRow, action: 'resume' | 'new')
   }
   if (row.launchAssistant) {
   const chosen = row.launchAssistant;
-  if (chosen === null) { talk.say(NO_ASSISTANT); return null; }
   if (!(chosen === 'claude' ? state.claude : state.codex)) {
     talk.say("Seat " + row.seat + ' is set to ' + ASSISTANT_LABEL[chosen] + ', which is not found here; change it with s' + row.index + '.'); return null;
   }
@@ -939,10 +925,12 @@ export const WIZARD_TEMPLATE_KEYS: readonly (readonly [string, string])[] = [
   ['o', 'orchestrator'],
   ['a', 'auditor'],
   ['i', 'ideas'],
+  ['d', 'developer'],
+  ['l', 'planner'],
 ];
 
-/** The job a template gives the proposed seat name, `<department>-<job>`; no template is `dev`. */
-const WIZARD_JOBS: Record<string, string> = { performer: 'dev', orchestrator: 'lead', auditor: 'audit', ideas: 'ideas' };
+/** The job a template gives the proposed seat name; performer and developer both propose `<department>-dev`. */
+const WIZARD_JOBS: Record<string, string> = { performer: 'dev', orchestrator: 'lead', auditor: 'audit', ideas: 'ideas', developer: 'dev', planner: 'plan' };
 
 /** Where a department's letters go, in the wizard's words. */
 function destinationWords(destination: DepartmentDestination): string {
@@ -1386,6 +1374,10 @@ export async function runWelcome(options: { workspace: string; assistant?: Assis
   const workspace = requireWorkspace({ explicit: options.workspace });
   const found = assistants(options.assistant);
   const state: MenuState = { workspace, talk, options: { cwd: workspace, registryRoot: options.registryRoot }, ...found, installRoot: null, running: '', updateShown: false };
+  if (!talk.scripted && interactive()) {
+    state.options.plain = plainRequired(process.stdout.columns ?? 60, process.stdout.rows ?? 30);
+    return screenMenuLoop(state);
+  }
   talk.say('');
   if (state.assistant === null) {
     talk.say(`  [m]     Main menu        your seats; type \`${COMMAND_NAME}\` any time to come back here`);
@@ -1547,7 +1539,12 @@ export async function runMenuVerb(argv: string[]): Promise<MenuVerbResult> {
   };
   try {
     const script = readScript(parsed.options.get('script'));
-    if (script === null && !interactive()) return { refusal: nonInteractiveRefusal(options), exitCode: 1 };
+    if (script === null && !interactive()) {
+      const workspace = options.explicit?.trim() ? requireWorkspace({ explicit: options.explicit }) : findWorkspaceByMarker(options.cwd);
+      const rows = workspace ? menuRows(workspace, { skipTitles: true, fallbackAssistant: options.assistant }) : [];
+      for (const line of plainSeatLines(rows, new Date(), options.assistant)) process.stdout.write(plainText(line) + '\n');
+      return { refusal: nonInteractiveRefusal(options), exitCode: 1 };
+    }
     return { refusal: null, exitCode: await runMenu(options, makeTalk(script)) };
   } catch (error) {
     return { refusal: (error as Error).message, exitCode: 1 };
@@ -1572,6 +1569,458 @@ export async function runWelcomeVerb(argv: string[]): Promise<MenuVerbResult> {
 /** Whether bare `deskpost` opens the menu: only where a person can answer (step 5a); anywhere else it prints usage. */
 export function menuIsInteractive(): boolean {
   return interactive();
+}
+
+/** Dates people can read at a glance, in the terminal's local calendar. */
+export function menuDate(utc: string, now = new Date()): string {
+  const at = new Date(utc);
+  if (!utc || Number.isNaN(at.getTime())) return 'not started';
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(day); yesterday.setDate(day.getDate() - 1);
+  const tomorrow = new Date(day); tomorrow.setDate(day.getDate() + 1);
+  const time = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
+  if (at >= day && at < tomorrow) return 'today ' + time;
+  if (at >= yesterday && at < day) return 'yesterday ' + time;
+  return at.getDate() + ' ' + at.toLocaleString('en', { month: 'long' });
+}
+export function plausibleSeatName(name: string): boolean { return /^[a-z][a-z0-9-]{2,}$/.test(name); }
+function nearMatch(text: string, query: string): boolean {
+  text = text.toLowerCase(); query = query.toLowerCase();
+  if (text.includes(query)) return true;
+  // A single adjacent transposition, such as vualt, is still the same search.
+  for (let i = 0; i < query.length - 1; i++) {
+    const swapped = query.slice(0, i) + query[i + 1] + query[i] + query.slice(i + 2);
+    if (text.includes(swapped)) return true;
+  }
+  return false;
+}
+function rowAssistant(row: MenuRow, fallback: Assistant = 'claude'): Assistant {
+  return row.launchAssistant ?? (row.view.session_id ? row.view.assistant : fallback);
+}
+function updateMenuItem(update: string | null): ScreenItem[] {
+  const version = update?.match(/Deskpost (\S+) is ready/)?.[1];
+  return version ? [{ id: 'upgrade', text: 'Upgrade to ' + version }] : [];
+}
+export function firstMenuScreen(rows: MenuRow[], search = '', now = new Date(), fallback: Assistant = 'claude', update: string | null = null): ScreenModel {
+  const upgrade = updateMenuItem(update);
+  const actions: ScreenItem[] = [{ id: 'create', text: '+ New seat' }, ...upgrade, { id: 'help', text: 'Help and more' }, { id: 'quit', text: 'Quit' }];
+  if (!rows.length && !search) return {
+    title: 'Deskpost', before: [...(update ? [update] : []), '   A seat is a place for one line of work: its own', '   assistant, its own folders and its own notes.', '   You have none yet.', ''],
+    items: [{ id: 'create', text: '+ Make your first seat' }, { id: 'tour', text: 'Show me around' }, ...upgrade, actions.at(-1)!], esc: 'quit',
+  };
+  const free = rows.filter(row => row.state === 'free').sort((a, b) => b.last_active_utc.localeCompare(a.last_active_utc) || a.seat.localeCompare(b.seat));
+  const busy = rows.filter(row => row.state !== 'free').sort((a, b) => b.last_active_utc.localeCompare(a.last_active_utc));
+  const items: ScreenItem[] = [];
+  if (!search && free[0]?.view.session_id && rowAssistant(free[0], fallback) === free[0].view.assistant) items.push({ id: 'continue:' + free[0].seat, text: 'Continue ' + seatLabel(free[0].seat, free[0].nickname) + (fullAccessSettings(rowAssistant(free[0], fallback), free[0].launchArgs ?? []) ? ' (!)' : '') + ' (' + menuDate(free[0].last_active_utc, now) + ')', group: 'Most recent free seat' });
+  for (const row of [...free, ...busy]) {
+    const name = seatLabel(row.seat, row.nickname) + (fullAccessSettings(rowAssistant(row, fallback), row.launchArgs ?? []) ? ' (!)' : '');
+    const when = row.state === 'free' ? menuDate(row.last_active_utc, now) : row.state === 'unreadable' ? 'could not be checked' : row.opened_utc ? 'since ' + menuDate(row.opened_utc, now).replace(/^today /, '') : 'in another window';
+    const letters = row.letters ? '  ' + row.letters + ' letter' + (row.letters === 1 ? '' : 's') : '';
+    if (!search || nearMatch(name, search)) items.push({ id: 'seat:' + row.seat, text: name.padEnd(24) + when + letters,
+      group: search ? undefined : row.state === 'free' ? 'Seats' : row.state === 'unreadable' ? 'Could not be checked' : 'Open in another window', dim: row.state !== 'free', nameLength: name.length });
+  }
+  items.push(...actions.filter(item => !search || nearMatch(item.text, search)));
+  if (search && !items.length && plausibleSeatName(search)) items.push({ id: 'create:' + search, text: '+ Make a new seat called ' + search });
+  if (search && items.length) items[0]!.group = items[0]!.id.startsWith('create:') ? 'No seat called ' + search : items.length + ' match' + (items.length === 1 ? '' : 'es');
+  const fullRows = rows.filter(row => items.some(item => item.id === 'seat:' + row.seat) && fullAccessSettings(rowAssistant(row, fallback), row.launchArgs ?? []));
+  const allNeverAsk = fullRows.every(row => rowAssistant(row, fallback) === 'claude' || (row.launchArgs ?? []).includes('--dangerously-bypass-approvals-and-sandbox') || accessOptionValue(row.launchArgs ?? [], '--ask-for-approval', '-a') === 'never');
+  return { title: 'Deskpost', search: true, items, before: update ? [update] : [], esc: 'quit',
+    after: search && !items.length ? ['   No seat or action matches ' + search + '.'] : fullRows.length ? [allNeverAsk ? '   (!) full access: never asks before acting' : '   (!) full access: can act outside this seat'] : [] };
+}
+export function seatActionScreen(row: MenuRow, now = new Date(), fallback: Assistant = 'claude'): ScreenModel {
+  const assistant = rowAssistant(row, fallback);
+  const before = ['   ' + ASSISTANT_LABEL[assistant] + '   ' + accessName(assistant, row.launchArgs ?? []) + '   ' + (row.folders || 0) + ' folder' + (row.folders === 1 ? '' : 's')];
+  if (row.letters) before.push('   ' + row.letters + ' letter' + (row.letters === 1 ? '' : 's') + ' waiting (it reads it when it starts)');
+  if (row.card) before.push('   ' + row.card);
+  before.push('');
+  if (row.state === 'unreadable') return { title: row.seat, before: [...before, ...menuMessageLines('This seat could not be checked: ' + row.state_note)], items: [{ id: 'back', text: 'Back' }, { id: 'settings', text: 'Settings' }] };
+  if (row.state !== 'free') return { title: seatLabel(row.seat, row.nickname), before: [...before,
+    '   Open in another window' + (row.opened_utc ? ' since ' + menuDate(row.opened_utc, now).replace(/^today /, '') : '') + '.',
+    '   Switch to that window to keep working.', ''], items: [{ id: 'back', text: 'Back' }, { id: 'settings', text: 'Settings' }, { id: 'reopen', text: 'Open it here anyway' }] };
+  const sameAssistant = row.view.assistant === assistant;
+  const resume = !!row.view.session_id && sameAssistant;
+  if (!row.view.session_id) before.push('   No conversations yet.', '');
+  else if (!sameAssistant) before.push('   The last conversation uses ' + ASSISTANT_LABEL[row.view.assistant] + '.', '   This seat now starts ' + ASSISTANT_LABEL[assistant] + '.', '');
+  return { title: seatLabel(row.seat, row.nickname), before, items: [
+    ...(resume ? [{ id: 'resume', text: 'Continue last conversation (' + menuDate(row.last_active_utc, now) + ')' }] : []),
+    { id: 'new', text: row.view.session_id ? 'Start a new conversation' : 'Start its first conversation' },
+    { id: 'settings', text: 'Settings' }, { id: 'back', text: 'Back' }] };
+}
+async function chooseScreen(state: MenuState, model: ScreenModel | ((text: string) => ScreenModel), text = ''): Promise<{ id: string; text: string }> {
+  const result = state.talk.screen ? await state.talk.screen(model, text) : state.options.plain ? await choosePlainScreen(state, model, text) : await askScreen(model, { width: state.options.width, text });
+  if (result.id === 'interrupt') throw new MenuQuit('No seat was chosen.');
+  if (result.id === 'plain') { state.options.plain = true; return choosePlainScreen(state, model, result.text); }
+  return result;
+}
+async function screenNotice(state: MenuState, title: string, lines: string[]): Promise<void> {
+  await chooseScreen(state, { title, before: lines, items: [{ id: 'back', text: 'Back' }] });
+}
+async function seatActionMenu(state: MenuState, original: MenuRow): Promise<number | null> {
+  for (;;) {
+    const row = menuRows(state.workspace, { fallbackAssistant: state.assistant ?? undefined, transcriptRoot: state.options.transcriptRoot }).find(r => r.seat === original.seat);
+    if (!row) return null;
+    const answer = await chooseScreen(state, seatActionScreen(row, new Date(), state.assistant ?? 'claude'));
+    if (answer.id === 'back') return null;
+    if (answer.id === 'settings') { await screenSettings(state, row); continue; }
+    if (answer.id === 'reopen') {
+      const confirmation = await chooseScreen(state, { title: row.seat, before: ['   Is the other window closed? Two windows in one', '   seat tangle its conversation.'], field: { label: 'Open it here? y/N >' }, items: [] });
+      if (confirmation.id === 'back' || confirmation.text.toLowerCase() !== 'y') continue;
+      // Confirmation never steals a live claim. The existing claim detector releases dead holders.
+      const current = menuRows(state.workspace).find(r => r.seat === row.seat);
+      if (!current || current.state !== 'free') { await screenNotice(state, row.seat, ['   Close its other window first, then try again.']); continue; }
+      const started = await sitDown(state, current, current.view.session_id ? 'resume' : 'new');
+      if (started !== null) return started;
+      continue;
+    }
+    const messages: string[] = [];
+    const launchState = { ...state, talk: { ...state.talk, say: (message = '') => { messages.push(message); state.talk.say(message); } } };
+    const started = await sitDown(launchState, row, answer.id === 'resume' ? 'resume' : 'new');
+    if (started !== null) return started;
+    await screenNotice(state, row.seat, messages.length ? messages.flatMap(message => menuMessageLines(message, state.options.width)) : ['   The seat could not start. Choose Settings', '   to check its assistant, or try again.']);
+  }
+}
+async function screenMenuLoop(state: MenuState): Promise<number> {
+  const update = updateLineDue(state);
+  for (;;) {
+    const rows = menuRows(state.workspace, { fallbackAssistant: state.assistant ?? undefined, transcriptRoot: state.options.transcriptRoot });
+    const answer = state.options.plain ? await plainMainChoice(state, rows, update) : await chooseScreen(state, text => firstMenuScreen(rows, text, new Date(), state.assistant ?? 'claude', update));
+    if (answer.id === 'quit' || answer.id === 'back') return 0;
+    if (answer.id === 'upgrade') { const result = await upgradeFromMenu(state); if (result !== null) return result; continue; }
+    if (answer.id === 'tour') { const result = await showMeAround(state); if (result !== null) return result; continue; }
+    if (answer.id === 'help') {
+      const help = await chooseScreen(state, helpMenuScreen());
+      if (help.id === 'tour') { const result = await showMeAround(state); if (result !== null) return result; }
+      else if (help.id === 'browse') await screenBrowse(state);
+      else if (help.id === 'basic-memory') await screenBasicMemory(state);
+      else if (help.id === 'plain') state.options.plain = true;
+      continue;
+    }
+    if (answer.id === 'create' || answer.id.startsWith('create:')) { const result = await screenWizard(state, answer.id.startsWith('create:') ? answer.id.slice(7) : ''); if (result !== null) return result; continue; }
+    const name = answer.id.slice(answer.id.indexOf(':') + 1), row = rows.find(r => r.seat === name);
+    if (!row) continue;
+    const result = answer.id.startsWith('continue:') ? await sitDown(state, row, 'resume') : answer.id.startsWith('new:') ? await sitDown(state, row, 'new') : await seatActionMenu(state, row);
+    if (result !== null) return result;
+  }
+}
+
+export function assistantMenuScreen(name: string, installed: { claude: boolean; codex: boolean }): ScreenModel {
+  return { title: 'New seat  step 2 of 3', before: ['   Name  ' + name, '', '   Which assistant should this seat use?', ''], items: [
+    { id: 'claude', text: 'Claude Code   (usual choice)' + (installed.claude ? '' : '   not installed'), disabled: !installed.claude,
+      detail: installed.claude ? ["   Anthropic's coding assistant. It runs as the", '   claude command in this terminal.'] : ['   The claude command was not found. Install it,', '   then come back.'] },
+    { id: 'codex', text: 'Codex' + (installed.codex ? '' : '   not installed'), disabled: !installed.codex,
+      detail: installed.codex ? ['   OpenAI coding assistant. It runs as the', '   codex command in this terminal.'] : ['   The codex command was not found. Install it,', '   then come back.'] },
+    { id: 'back', text: 'Back' }] };
+}
+export function accessMenuScreen(name: string, assistant: Assistant, settings = false): ScreenModel {
+  return { title: settings ? 'Access for ' + name : 'New seat  step 3 of 3',
+    before: ['   Name  ' + name + '   Assistant  ' + ASSISTANT_LABEL[assistant], '',
+      '   How much may ' + (assistant === 'claude' ? 'Claude' : 'Codex') + ' do without asking you?', ''],
+    items: [...MENU_ACCESS[assistant].map(access => ({ id: access.id, text: access.name + (access.usual ? '   (usual choice)' : '') + (access.full ? ' (!)' : ''),
+      detail: access.detail.map(line => '   ' + line) })),
+      { id: 'custom', text: 'Type my own settings', detail: ['   Type command settings; each value is checked.'] }, { id: 'back', text: 'Back' }],
+    initial: MENU_ACCESS[assistant].find(access => access.usual)?.id };
+}
+export function newSeatReadyScreen(name: string, assistant: Assistant, args: string[], warning = ''): ScreenModel {
+  return { title: 'New seat  ready', before: ['   Name       ' + name, '   Assistant  ' + ASSISTANT_LABEL[assistant],
+    '   Access     ' + accessName(assistant, args), ...(warning ? ['', '   ' + warning] : []), ''],
+    items: [{ id: 'start', text: 'Make it and start ' + ASSISTANT_LABEL[assistant] }, { id: 'make', text: 'Make it, but do not start it yet' },
+      { id: 'more', text: 'More choices (department, template)' }, { id: 'back', text: 'Back' }] };
+}
+export function menuNameSuggestion(typed: string): string { return slugFrom(typed.replace(/\.+$/, '')); }
+function menuMessageLines(text: string, width = 60): string[] {
+  const lines: string[] = [];
+  let rest = text;
+  const room = Math.max(10, width - 3);
+  while (rest.length > room) {
+    const space = rest.lastIndexOf(' ', room);
+    const end = space > 0 ? space : room;
+    lines.push('   ' + rest.slice(0, end)); rest = rest.slice(end).trimStart();
+  }
+  if (rest) lines.push('   ' + rest);
+  return lines;
+}
+async function inputScreen(state: MenuState, title: string, label: string, text = '', hint = '', error = '', errorColour = true): Promise<{ id: string; text: string }> {
+  return chooseScreen(state, { title, field: { label, hint, enter: label === 'Folder' ? 'add' : 'next', allowEmpty: label === 'Department' || label.endsWith(' settings') }, items: [], after: error ? menuMessageLines(error, state.options.width) : label === 'Name' ? ['         Lowercase letters, numbers and dashes.'] : [], afterKind: error && errorColour ? 'error' : 'detail', esc: 'cancel' }, text);
+}
+async function confirmFullAccess(state: MenuState, assistant: Assistant, custom = false): Promise<boolean> {
+  let text = '', error = '';
+  for (;;) {
+    const answer = await chooseScreen(state, { title: custom ? 'These settings give full access.' : 'Full access', warning: true, afterKind: error ? 'error' : 'detail',
+      before: custom ? [] : ['   ' + ASSISTANT_LABEL[assistant] + ' can change or delete any file on this computer', '   and run any command, and never stops to ask you.', ''],
+      field: { label: 'Type full and press Enter:', hint: '_', enter: null }, items: [], after: menuMessageLines(error, state.options.width), esc: 'go back and choose again' }, text);
+    if (answer.id === 'back') return false;
+    if (answer.text.trim().toLowerCase() === 'full') return true;
+    text = answer.text; error = 'Type full to continue, or Esc to choose again.';
+  }
+}
+async function pickAccess(state: MenuState, name: string, assistant: Assistant, settings = false): Promise<string[] | null> {
+  for (;;) {
+    const answer = await chooseScreen(state, accessMenuScreen(name, assistant, settings));
+    if (answer.id === 'back') return null;
+    let args: string[];
+    if (answer.id === 'custom') {
+      let text = '', error = '', suggestion = '';
+      for (;;) {
+        const typed = await inputScreen(state, ASSISTANT_LABEL[assistant] + ' settings', ASSISTANT_LABEL[assistant] + ' settings', text, '_ type settings', error);
+        if (typed.id === 'back') break;
+        if (suggestion && typed.text === text) text = suggestion; else text = typed.text;
+        try { const tokens = splitMenuFlags(text); validateStoredFlags(assistant, tokens); args = tokens; break; }
+        catch (problem) {
+          error = (problem as Error).message;
+          const tokens = splitMenuFlags(text), last = tokens.at(-1) ?? '';
+          const trimmed = last.replace(/[.,;:]+$/, '');
+          suggestion = Object.values(LAUNCH_ACCESS_VALUES[assistant]).some(values => values.includes(trimmed)) && trimmed !== last ?
+            [...tokens.slice(0, -1), trimmed].join(' ') : '';
+          if (suggestion) error += ' Enter uses ' + trimmed + ', or keep typing.';
+        }
+      }
+      if (args! === undefined) continue;
+    } else args = [...MENU_ACCESS[assistant].find(access => access.id === answer.id)!.args];
+    validateStoredFlags(assistant, args!);
+    if (fullAccessSettings(assistant, args!) && !(await confirmFullAccess(state, assistant, answer.id === 'custom'))) continue;
+    return args!;
+  }
+}
+export async function screenWizard(state: MenuState, initialName = ''): Promise<number | null> {
+  let name = initialName, projectName = initialName, assistant: Assistant | null = null, args: string[] | null = null;
+  let step = initialName ? 2 : 1, error = '', suggestion = '';
+  let choices: SeatStartChoices = { openBooks: [] };
+  for (;;) {
+    if (step === 1) {
+      const answer = await inputScreen(state, 'New seat  step 1 of 3', 'Name', name, '_ type a name', error);
+      if (answer.id === 'back') return null;
+      if (suggestion && answer.text === name) name = suggestion; else name = answer.text.trim();
+      suggestion = '';
+      const projects = activeProjects(state.workspace);
+      const verdict = newSeatVerdict(state.workspace, name, name, projects.includes(name) ? projects : [...projects, name], true);
+      if (!verdict.creatable || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+        suggestion = menuNameSuggestion(name);
+        if (suggestion === name) suggestion = '';
+        error = seatRegistryRows(state.workspace).some(row => row['seat'] === name) ? 'There is already a seat called ' + name + '. Type another name.' :
+          'Names use lowercase letters, numbers and dashes.' + (suggestion ? ' Did you mean ' + suggestion + '? Enter uses it, or keep typing.' : ' ' + verdict.reason);
+        continue;
+      }
+      projectName = name; error = ''; step = 2;
+    }
+    if (step === 2) {
+      const answer = await chooseScreen(state, assistantMenuScreen(name, state));
+      if (answer.id === 'back') { step = 1; continue; }
+      assistant = answer.id as Assistant; step = 3;
+    }
+    if (step === 3) {
+      args = await pickAccess(state, name, assistant!);
+      if (args === null) { step = 2; continue; }
+      step = 4;
+    }
+    const answer = await chooseScreen(state, newSeatReadyScreen(name, assistant!, args!, error));
+    if (answer.id === 'back') { step = 3; error = ''; continue; }
+    if (answer.id === 'more') {
+      const department = await inputScreen(state, 'More choices', 'Department', choices.department ?? '', '_ leave empty for none');
+      if (department.id === 'back') continue;
+      const problem = department.text ? departmentProblem(department.text) : null;
+      if (problem) { error = problem; continue; }
+      choices = { openBooks: [], ...(department.text ? { department: department.text } : {}) };
+      if (department.text) {
+        const template = await chooseScreen(state, { title: 'Template', items: [
+          { id: 'none', text: 'No template' }, ...WIZARD_TEMPLATE_KEYS.map(([, template]) => ({ id: template, text: template.charAt(0).toUpperCase() + template.slice(1) })),
+          { id: 'back', text: 'Back' }] });
+        if (template.id !== 'none' && template.id !== 'back') {
+          choices.template = template.id;
+          // Existing K2 jobs propose the department's name, and the existing planner checks every choice.
+          const base = choices.department + '-' + WIZARD_JOBS[template.id];
+          let proposed = base, suffix = 2;
+          const projects = activeProjects(state.workspace);
+          while (!newSeatVerdict(state.workspace, proposed, projectName, [...projects, projectName], true, choices).creatable && suffix < 20) proposed = base + '-' + suffix++;
+          const changed = await inputScreen(state, 'Seat name', 'Name', proposed, '', 'Project stays ' + projectName + '.', false);
+          if (changed.id !== 'back') name = changed.text;
+        }
+      }
+      error = ''; continue;
+    }
+    try {
+      const projects = activeProjects(state.workspace), hubExists = projects.includes(projectName);
+      const approvedChoices = { ...choices, recordAssistant: assistant! };
+      const planned = newSeatVerdict(state.workspace, name, projectName, hubExists ? projects : [...projects, projectName], false, approvedChoices);
+      if (!planned.creatable) { error = planned.reason; continue; }
+      if (!hubExists) {
+        const made = await runHubVerb(['new', projectName, '--title', projectName, ...(planned.plan!.purpose ? ['--purpose', planned.plan!.purpose] : []), '--workspace', state.workspace], state.workspace);
+        if (made.refusal) { error = made.refusal; continue; }
+      }
+      await startSeat([name, '--project', projectName, '--workspace', state.workspace, '--plan-id', planned.plan_id, ...seatStartChoiceArguments(approvedChoices), '--no-launch']);
+      // The ready choice approves these exact access flags. The existing writer binds them to the newly created incarnation.
+      const setting = { workspace: state.workspace, seat: name, flags: assistant!, args: args!, preflight: true, planId: '', fallbackAssistant: assistant! };
+      const access = seatSettingsResult(setting);
+      seatSettingsResult({ ...setting, preflight: false, planId: String(access['plan_id']) });
+      state.talk.say('Made ' + name + '.' + (answer.id === 'start' ? ' Starting ' + ASSISTANT_LABEL[assistant!] + '.' : ' Ready for later.'));
+      if (answer.id === 'make') return null;
+      const row = menuRows(state.workspace).find(row => row.seat === name)!;
+      return sitDown(state, row, 'new');
+    } catch (problem) {
+      error = (problem as Error).message;
+      if (seatRegistryRows(state.workspace).some(row => row['seat'] === name)) {
+        await screenNotice(state, name, ['   The seat was made, but could not finish starting.', '   ' + error, '   Choose Settings before starting it again.']); return null;
+      }
+    }
+  }
+}
+
+export const RETIRE_MENU_TEXT = (seat: string): string[] => [
+  '   Retiring takes ' + seat + ' off the list. Its notes and',
+  '   desk are kept in an archive, but the menu cannot',
+  '   bring it back.',
+];
+export function settingsMenuScreen(row: MenuRow, fallback: Assistant = 'claude'): ScreenModel {
+  const assistant = rowAssistant(row, fallback);
+  return { title: 'Settings for ' + row.seat, items: [
+    { id: 'assistant', text: 'Assistant      ' + ASSISTANT_LABEL[assistant] },
+    { id: 'access', text: 'Access         ' + accessName(assistant, row.launchArgs ?? []) + (fullAccessSettings(assistant, row.launchArgs ?? []) ? ' (!)' : '') },
+    { id: 'folders', text: 'Folders        ' + row.folders + ' folder' + (row.folders === 1 ? '' : 's') },
+    { id: 'command', text: 'Exact command  show it' }, { id: 'retire', text: 'Retire         take this seat off the list' }, { id: 'back', text: 'Back' }],
+    after: ['   Changes apply the next time the seat starts.'] };
+}
+export function foldersMenuScreen(seat: string, dirs: string[]): ScreenModel {
+  return { title: 'Folders for ' + seat, before: ['   The assistant may also work in these folders:', ''],
+    items: [...dirs.map((dir, index) => ({ id: String(index), text: dir })), { id: 'add', text: '+ Add a folder' }, { id: 'back', text: 'Back' }] };
+}
+export function helpMenuScreen(): ScreenModel {
+  return { title: 'Help and more', items: [
+    { id: 'tour', text: 'Show me around (a guided seat with a helper)' }, { id: 'browse', text: 'Browse what the Library holds' },
+    { id: 'basic-memory', text: 'Basic Memory (the shared notes server)' },
+    { id: 'plain', text: 'Use plain text menus for this visit', detail: ['   Applies until you leave this menu.', '   Use deskpost menu --plain each time.'] }, { id: 'back', text: 'Back' }] };
+}
+export function commandMenuScreen(seat: string, command: string, width = 60): ScreenModel {
+  const room = Math.max(10, width - 4);
+  const chunks: ScreenItem[] = [];
+  for (let at = 0; at < command.length; at += room) chunks.push({ id: 'command:' + at, text: command.slice(at, at + room), disabled: true, group: 'Command (read only)' });
+  return { title: 'Exact command for ' + seat, items: [{ id: 'back', text: 'Back' }, ...chunks] };
+}
+export function plainSeatLines(rows: MenuRow[], now = new Date(), fallback: Assistant = 'claude', update: string | null = null): string[] {
+  const upgrade = updateMenuItem(update);
+  return [...(update ? [update] : []), 'Deskpost seats', ...rows.map(row => {
+    const assistant = rowAssistant(row, fallback);
+    const access = fullAccessSettings(assistant, row.launchArgs ?? []) ? ', full access' : '';
+    return row.index + '. ' + seatLabel(row.seat, row.nickname) + formerlyMark(row) + ': ' + ASSISTANT_LABEL[assistant] + access + ', ' +
+      (row.state === 'free' ? menuDate(row.last_active_utc, now) : 'in another window') +
+      (row.letters ? ', ' + row.letters + ' letter' + (row.letters === 1 ? '' : 's') : '');
+  }), (rows.length + 1) + '. Make a new seat', ...upgrade.map(item => (rows.length + 2) + '. ' + item.text), (rows.length + 2 + upgrade.length) + '. Help and more', (rows.length + 3 + upgrade.length) + '. Quit', 'Type a number or part of a name.'];
+}
+async function choosePlainScreen(state: MenuState, model: ScreenModel | ((text: string) => ScreenModel), text = ''): Promise<{ id: string; text: string }> {
+  for (;;) {
+    const page = typeof model === 'function' ? model(text) : model;
+    state.talk.say(page.title);
+    for (const line of page.before ?? []) state.talk.say(plainText(line));
+    if (page.field) {
+      for (const line of page.after ?? []) state.talk.say(plainText(line));
+      const answer = await state.talk.ask(page.field.label + ' (Esc or blank cancels): ');
+      if ((!answer && !page.field.allowEmpty) || answer === '\x1b') return { id: 'back', text };
+      return { id: 'submit', text: answer };
+    }
+    page.items.forEach((item, index) => state.talk.say((index + 1) + '. ' + plainText(item.text) + (item.disabled ? ' (unavailable)' : '')));
+    for (const line of page.after ?? []) state.talk.say(plainText(line));
+    const typed = await state.talk.ask('Choose (blank goes back): ');
+    if (!typed || typed === '\x1b') return { id: 'back', text };
+    const item = /^\d+$/.test(typed) ? page.items[Number(typed) - 1] : page.items.find(i => i.text.toLowerCase().includes(typed.toLowerCase()));
+    if (item && !item.disabled) return { id: item.id, text };
+    if (typeof model === 'function') { text = typed; continue; }
+    state.talk.say('Choose one of the numbered lines, or leave it blank to go back.');
+  }
+}
+async function screenFolders(state: MenuState, row: MenuRow): Promise<void> {
+  for (;;) {
+    try {
+      const current = planSeatDirs({ workspace: state.workspace, seat: row.seat }).dirs;
+      const choice = await chooseScreen(state, foldersMenuScreen(row.seat, current));
+      if (choice.id === 'back') return;
+      const value = choice.id === 'add' ? await inputScreen(state, 'Add a folder', 'Folder', '', '_ type or paste a path') : null;
+      if (value?.id === 'back') continue;
+      const change = value ? { add: value.text } : { remove: current[Number(choice.id)]! };
+      const planned = planSeatDirs({ workspace: state.workspace, seat: row.seat, ...change });
+      const confirm = await chooseScreen(state, { title: value ? 'Add this folder?' : 'Remove this folder?', before: menuMessageLines(value?.text ?? current[Number(choice.id)]!, state.options.width), field: { label: 'Save this? y/N >', hint: '_ No unless you type y' }, items: [] });
+      if (confirm.id === 'back' || confirm.text.toLowerCase() !== 'y') continue;
+      const saved = changeSeatDirs({ workspace: state.workspace, seat: row.seat, ...change });
+      state.talk.say(seatDirsSentence(saved)); row.folders = planned.dirs.length;
+    } catch (error) { await screenNotice(state, row.seat, ['   ' + (error as Error).message]); }
+  }
+}
+export async function screenRetire(state: MenuState, row: MenuRow): Promise<void> {
+  try {
+    const plan = retireSeat([row.seat, '--workspace', state.workspace, '--preflight']);
+    let error = '';
+    for (;;) {
+      const typed = await chooseScreen(state, { title: 'Retire ' + row.seat + '?', warning: true, afterKind: error ? 'error' : 'detail', before: [...RETIRE_MENU_TEXT(row.seat), ''], items: [],
+        field: { label: 'Type retire and press Enter:', enter: null }, after: error ? ['   ' + error] : [] });
+      if (typed.id === 'back') return;
+      if (typed.text.toLowerCase() !== 'retire' && typed.text !== row.seat) { error = 'Type retire, or press Esc to go back.'; continue; }
+      retireSeat([row.seat, '--workspace', state.workspace, '--plan-id', String(plan['plan_id'])]);
+      state.talk.say('Retired ' + row.seat + '. Its notes and desk are kept in an archive.'); return;
+    }
+  } catch (error) { await screenNotice(state, 'Retire ' + row.seat, ['   ' + (error as Error).message]); }
+}
+export async function screenSettings(state: MenuState, original: MenuRow): Promise<void> {
+  for (;;) {
+    const row = menuRows(state.workspace, { fallbackAssistant: state.assistant ?? undefined }).find(r => r.seat === original.seat);
+    if (!row) return;
+    const choice = await chooseScreen(state, settingsMenuScreen(row, state.assistant ?? 'claude'));
+    if (choice.id === 'back') return;
+    try {
+      const assistant = rowAssistant(row, state.assistant ?? 'claude');
+      if (choice.id === 'assistant') {
+        const selected = await chooseScreen(state, { ...assistantMenuScreen(row.seat, state), title: 'Assistant for ' + row.seat });
+        if (selected.id !== 'back') seatSettingsResult({ workspace: state.workspace, seat: row.seat, assistant: selected.id, preflight: false, planId: '' });
+      } else if (choice.id === 'access') {
+        const args = await pickAccess(state, row.seat, assistant, true);
+        if (!args) continue;
+        const options = { workspace: state.workspace, seat: row.seat, flags: assistant, args, preflight: true, planId: '', fallbackAssistant: assistant };
+        const preview = seatSettingsResult(options);
+        const approval = await chooseScreen(state, { title: 'Save access for ' + row.seat + '?', before: ['   ' + accessName(assistant, args), ...(MENU_ACCESS[assistant].find(a => a.name === accessName(assistant, args))?.detail.map(l => '   ' + l) ?? []),
+          '   Exact settings: ' + escapedArgv(args)], items: [{ id: 'cancel', text: 'Cancel' }, { id: 'save', text: 'Save these settings' }] });
+        if (approval.id === 'save') seatSettingsResult({ ...options, preflight: false, planId: String(preview['plan_id']) });
+      } else if (choice.id === 'folders') await screenFolders(state, row);
+      else if (choice.id === 'retire') { await screenRetire(state, row); if (!menuRows(state.workspace).some(r => r.seat === row.seat)) return; }
+      else if (choice.id === 'command') {
+        const preview = seatLaunchPreview(state.workspace, row.seat, undefined, state.assistant ?? 'claude', 'resume', state.options.transcriptRoot);
+        await chooseScreen(state, commandMenuScreen(row.seat, escapedArgv([preview.command, ...preview.args]), state.options.width));
+      }
+    } catch (error) { await screenNotice(state, row.seat, ['   ' + (error as Error).message]); }
+  }
+}
+async function screenBrowse(state: MenuState): Promise<void> {
+  const data = browseData(state.workspace, false), entries = browseEntries(data);
+  for (;;) {
+    const chosen = await chooseScreen(state, query => ({ title: 'Browse what the Library holds', search: true, items: [
+      ...filterBrowse(entries, query).map(entry => ({ id: 'entry:' + entries.indexOf(entry), text: entry.title + ' (' + entry.slug + ')' })), { id: 'back', text: 'Back' }] }));
+    if (chosen.id === 'back') return;
+    const entry = entries[Number(chosen.id.slice(6))];
+    if (entry) await screenNotice(state, entry.title, browseEntryLines(entry));
+  }
+}
+async function screenBasicMemory(state: MenuState): Promise<void> {
+  const connection = markerConnection(state.workspace);
+  await screenNotice(state, 'Basic Memory', connection ? [
+    '   Connected to ' + connection.url, '   Collection ' + (connection.collection_name || connection.collection_id), '   Compare with: deskpost basic-memory status'] :
+    ['   Basic Memory shares Books across machines.', '   Set it up with:', '   deskpost basic-memory setup --url <mcp-url>', '     --collection <name> --preflight']);
+}
+
+async function plainMainChoice(state: MenuState, rows: MenuRow[], update: string | null = null): Promise<{ id: string; text: string }> {
+  if (!rows.length) return choosePlainScreen(state, firstMenuScreen([], '', new Date(), state.assistant ?? 'claude', update));
+  rows = [...rows].sort((a,b) => Number(a.state !== 'free') - Number(b.state !== 'free') || b.last_active_utc.localeCompare(a.last_active_utc) || a.seat.localeCompare(b.seat)).map((row,index)=>({...row,index:index+1}));
+  const upgrade = updateMenuItem(update).length;
+  for (const line of plainSeatLines(rows, new Date(), state.assistant ?? 'claude', update)) state.talk.say(plainText(line));
+  for (;;) {
+    const typed = await state.talk.ask('Seat: ');
+    const number = Number(typed);
+    if (number === rows.length + 1) return { id: 'create', text: '' };
+    if (upgrade && number === rows.length + 2) return { id: 'upgrade', text: '' };
+    if (number === rows.length + 2 + upgrade) return { id: 'help', text: '' };
+    if (number === rows.length + 3 + upgrade || /^q(uit)?$/i.test(typed)) return { id: 'quit', text: '' };
+    if (/^n\d+$/i.test(typed)) {
+      const row = rows.find(row => row.index === Number(typed.slice(1)));
+      if (row) return { id: 'new:' + row.seat, text: '' };
+    }
+    const matches = /^\d+$/.test(typed) ? rows.filter(row => row.index === number) : typed ? rows.filter(row => nearMatch(seatLabel(row.seat,row.nickname),typed)) : [];
+    if (matches.length === 1) return { id: 'seat:' + matches[0]!.seat, text: '' };
+    state.talk.say('Choose a listed number or name; q quits.');
+  }
 }
 
 // --- deskpost library default ---------------------------------------------------------------------------------------
@@ -1642,7 +2091,8 @@ async function launchSettingsScreen(state: MenuState, row: MenuRow): Promise<voi
       let change: Record<string, unknown>;
       if (key === 'r') change = { resetLaunch: true };
       else {
-        const assistant = (await talk.ask('Flags for claude or codex › ')).toLowerCase();
+        const savedAssistant = settings()['assistant'];
+        const assistant = savedAssistant ? String(savedAssistant) : (await talk.ask('Flags for claude or codex › ')).toLowerCase();
         if (assistant !== 'claude' && assistant !== 'codex') { talk.say('Name claude or codex.'); continue; }
         if (key === 'x') change = { clearFlags: assistant };
         else {

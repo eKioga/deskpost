@@ -27,7 +27,24 @@ codex exec --skip-git-repo-check -s read-only "Do not run any command or tool. L
 claude -p --tools Skill "Do not invoke any tool. List, by name only, every skill available to you."
 ```
 
-Use isolated harness state for the probes. Record unavailable harness checks as stalls with their exact output, never as a passing discovery result or a unit failure. Source-fixture observations are separate from certification of an exact release binary; release-matrix verdicts remain pending until that binary is observed. Include these discovery checks in the step 4b upgrade rehearsal alongside seat holding, reader response, closed-Book denials and a sandbox shell command.
+Use the fixture recipe below. K1b's signed-in discovery row is unverified; its fallback is the
+release rehearsal. Record unavailable harness checks as stalls with their exact output, never as
+a passing discovery result or a unit failure. Source-fixture observations are separate from
+certification of an exact release binary; release-matrix verdicts remain pending until that binary
+is observed. Include discovery checks in the upgrade rehearsal alongside seat holding, reader
+response, closed-Book denials and a sandbox shell command.
+
+## Fixtures
+
+Ordinary tests keep fake homes: isolated `HOME`, `USERPROFILE`, `APPDATA` and `LOCALAPPDATA`.
+Only a named live proof that needs a signed-in harness runs it against the reader's real home and
+login, which are never copied, with a fixture workspace and registry and the fewest tools the proof
+needs. Do not change the real home's configuration unless the Kickoff names it, Eric separately
+approves it, and the proof restores it and shows restoration by path and matching hash or sanitized
+comparison, never contents. The program that makes a fixture removes it in `finally`, under its
+session's temp folder. After an abnormal end, the handback names residue paths and their contents'
+kind; the reader or a later run of that same program removes them, never a shell delete. A refused
+cleanup is a stall, not permission to retry another way.
 
 ## Evidence location
 

@@ -25,7 +25,7 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **c6/c7** (in progress): 1.4.4.
+- **c12/c13** (in progress): 1.4.5.
 
 ## Next
 
@@ -413,10 +413,24 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.4.5: A new main menu (released 2026-10-13)
+
+- **A new main menu:** arrows move, Enter chooses, Esc goes back, and typing searches seats and
+  actions. Choose a seat, then what to do; access choices have plain names. A new seat takes name,
+  assistant and access, with department and template under More choices. Small terminals use plain
+  menus, and scripts keep their existing answers.
+- Seat launches keep the plan you approved and use saved assistant flags. Access values are
+  checked, and saved flags cannot turn off the Library's guards.
+- Developer and planner seat templates, with a guide to building software through seats.
+- On Windows, Codex keeps its shell PATH after `deskpost init`.
+- Help names the Projects open on a seat's Desk.
+- A write is tied to the read before it; replies still work after a seat closes its own letter.
+- `desk open` and `desk close` say what to pass when given a Project root.
+
 ### 1.4.4: Codex seats from the main menu (released 2026-10-12)
 
 - **Codex seats from the main menu:** `s<number>` saves the assistant and approved launch flags;
-  `c` copies flags to another seat. A number opens the saved assistant, and every Codex launch gets
+  `c` copies flags from a named seat. A number opens the saved assistant, and every Codex launch gets
   `--no-daemon`.
 - The shipped Library skills are installed for both Claude Code and Codex.
 - `shared list-entry` works in a Library whose collection is on this computer.

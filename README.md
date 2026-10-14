@@ -130,8 +130,7 @@ scriptblock form, not the `| iex` line: `& ([scriptblock]::Create((irm …/insta
 | `deskpost rollback` | `-Rollback` | Switches back to the version installed before this one. |
 | `--json` | `-Json` | Prints one JSON result on stdout; everything else goes to stderr. |
 
-**Upgrading.** From 1.3.6 on, type `deskpost upgrade` in a terminal, or press `u` in the main menu when it says a
-new version is ready.
+**Upgrading.** From 1.3.6 on, type `deskpost upgrade` in a terminal, or choose **Upgrade to <version>** in the main menu when a newer release is ready.
 
 To reach 1.3.6, and at any time after, the line you installed with also upgrades, either one, with **no options**,
 even when Deskpost is installed somewhere other than the default folder: the line finds the install and upgrades it
@@ -150,7 +149,8 @@ that cannot be brought up to date, such as one holding hooks Deskpost did not wr
 `deskpost init <folder>` line that finishes it.
 
 **Updates.** The main menu checks GitHub for a newer release at most once a day, by downloading the release's public
-`SHA256SUMS` file, and says so in one line when there is one. Set `DESKPOST_UPDATE_CHECK=0` to turn the check off.
+`SHA256SUMS` file. When a newer release is ready, the interactive and plain menus show an update line and an
+**Upgrade to <version>** item. Set `DESKPOST_UPDATE_CHECK=0` to turn the menu's background check off.
 
 The same version is not reinstalled unless you add `--repair` (`-Repair`). **`deskpost uninstall`** shows what it will remove, removes only what Deskpost put there
 -- its entries in your Libraries, its PATH entry and its program files -- and never your Libraries.
@@ -164,7 +164,8 @@ Your Library always keeps its own Books and Project Hubs, in its own `collection
 [Basic Memory](https://github.com/basicmachines-co/basic-memory) server is an optional **connection**: a
 second place the Library can read from, to open a Book shared from another machine or to import an older
 Basic Memory workspace. Nothing is ever written to Basic Memory. Connect with
-`deskpost basic-memory setup --url <mcp-url> --collection <name>`, or press `b` in the main menu; the
+`deskpost basic-memory setup --url <mcp-url> --collection <name>`, or choose **Help and more**, then
+**Basic Memory** in the main menu; the
 [Basic Memory guide](docs/guides/basic-memory.md) has the rest.
 
 ## Using it
@@ -203,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.4.4**. The full roadmap, with what each milestone carries and how far
+The current release is **1.4.5**. The full roadmap, with what each milestone carries and how far
 along it is, is [`docs/roadmap.md`](docs/roadmap.md). In short:
 
 - **Next: Libraries on more than one computer**, its plan signed off: 1.5.0 gives each Library a

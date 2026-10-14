@@ -476,13 +476,12 @@ export function pageSizeRemedy(pagePath: string): string {
   return 'Move detail onto a linked page and keep this one to what a reader needs on arrival.';
 }
 
-function pageSizeStatus(body: string, pagePath: string): Record<string, PsJsonValue> {
+function pageSizeStatus(body: string, pagePath: string, previousBody: string): Record<string, PsJsonValue> {
   const size = utf8Length(body);
   const exempt = sizeExempt(pagePath);
   const oversized = size > PAGE_SIZE_THRESHOLD;
-  // THE SIZE AFTER THE EDIT, SAID AS SUCH (PLAN-one-step-upgrade.md small fix 7): a preflight's `size_bytes` read as the
-  // page's size now. `size_after_bytes` names it; `size_bytes` stays as its alias for this release.
-  return { size_after_bytes: size, size_bytes: size, threshold_bytes: PAGE_SIZE_THRESHOLD, oversized, exempt, warn: oversized && !exempt };
+  // Both sides of the proposed edit, measured from the same bodies used to plan it.
+  return { size_after_bytes: size, size_before_bytes: utf8Length(previousBody), threshold_bytes: PAGE_SIZE_THRESHOLD, oversized, exempt, warn: oversized && !exempt };
 }
 
 function sectionSizes(body: string): { section: string; size_bytes: number }[] {
@@ -931,7 +930,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
 
   // Computed BEFORE the preflight return, from the proposed body, so a preflight can report them.
   const sizeWarnings = [
-    pageSizeStatus(proposedBody, pagePath),
+    pageSizeStatus(proposedBody, pagePath, currentBody),
     sectionSizeStatus(proposedBody, pagePath, currentBody),
     entrySizeStatus(proposedBody, pagePath, currentBody),
   ];

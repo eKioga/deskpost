@@ -1,11 +1,11 @@
 # Releasing Deskpost
 
-How a release goes from `master` to the public download, and the exact commands that publish it. Recorded in S74
+How a reviewed release candidate goes to the public download, and the exact commands that publish it. Recorded in S74
 (1.2.5), because the push commands for 1.2.3 were never written down.
 
 ## The path
 
-1. **Bump the version** on `master` in its own commit: `kernel/package.json` and the two root `version` lines of
+1. **Bump the version** on the release's `int/<kickoff>` branch in its own gated commit: `kernel/package.json` and the two root `version` lines of
    `kernel/package-lock.json` (the package's own and its `packages[""]` entry), `.codex-plugin/plugin.json`,
    `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` (two lines), `llms-install.md` (its release base
    and every `download/v<version>` URL), and the `blob/v<version>` links in `.claude/skills/library-help/SKILL.md`
@@ -17,7 +17,16 @@ How a release goes from `master` to the public download, and the exact commands 
    The same commit checks `docs/guides/` against the milestones the release carries: a guide that is wrong or
    silent about one is fixed before the bump. It also moves the README's `Status:` line to the release's minor
    version.
-2. **Prepare, locally, in a publish folder** outside the checkout (`<publish>`). It holds the publish script, its
+   This commit and the release-notes text form the candidate. Record the second reader's review
+   of that exact candidate SHA by [the loop's rule](dev-session-loop.md#the-second-reader) before
+   any credential-bearing step. Then check routes: `git ls-remote` and reading the mirror workflow
+   prove connectivity and read access only. Read Forgejo `permissions.push` where available; record
+   authorization without a non-mutating source as unverified until publish. Secrets resolve only
+   through `deskpost_secrets.py`'s service-account route, without printed values or bare `op`.
+2. **Prepare that candidate, locally, in a publish folder** outside the checkout (`<publish>`),
+   under a release-preparation Kickoff. A changed candidate returns to step 1 and invalidates review.
+   A failed review or route check means a Report and deskpost-dev prepares after its weekly usage reset.
+   The folder holds the publish script, its
    archive audit, `pub-commit.txt` (the release notes, which become the public commit's text) and `pub-tag.txt`. The
    script:
    - clones the public repository, `Kioga/deskpost`, with `-c core.autocrlf=false`;
@@ -30,8 +39,8 @@ How a release goes from `master` to the public download, and the exact commands 
    - audits and scans the extracted archives, and runs `tools/Test-BuiltRelease.ps1` against the previous release;
    - writes `refs/releases/v<version>`, one parentless commit holding exactly the release files;
    - prints `READY: main <sha>, tag v<version>, refs/releases/v<version>; nothing pushed`.
-3. **Publish, on the reader's explicit yes**: one atomic push from the publish clone. Nothing else publishes a
-   release.
+3. **Publish, on Eric's separate named `publish X`**: one atomic push from the publish clone, bound
+   to the reviewed candidate SHA and the exact READY refs. Refuse if either moved. Nothing else publishes a release.
 4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
    `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
    the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.
@@ -42,6 +51,10 @@ How a release goes from `master` to the public download, and the exact commands 
    steps and the script: "Starting the mirror" below, which any release seat can read (it ran green in S107).
 
 ## Proving a release (steps 1-2 in practice)
+
+Re-read installed `codex --help` and `claude --help`: compare their approval, sandbox and permission-mode
+values with `LAUNCH_ACCESS_VALUES` beside `LAUNCH_FLAG_TABLE` in `kernel/src/seatlaunch.ts`. A changed list
+needs a source correction and its tests before the release candidate is judged.
 
 The checks every release session has run since 1.3.8 (S100, S107, S111, S113, S114), written here so that any release
 seat, Codex or Claude Code, reads one recipe instead of a chain of Kickoffs on another seat's Hub. `<new>` is the
@@ -140,7 +153,8 @@ refs/releases/v<new>` gives each versioned zip and its twin the same blob; the p
 clone, not a CRLF checkout) says "The current release is **`<new>`**"; the public roadmap has `<new>` under Released.
 
 **The publish question**, asked as its own question once READY prints: first, in its own call,
-`git -C <pf>/v<new>/pub rev-parse main v<new>^{commit} refs/releases/v<new>` and show the three SHAs match READY; then
+`git -C <pf>/v<new>/pub rev-parse main v<new>^{commit} refs/releases/v<new>` and show the three SHAs match READY;
+also verify the source HEAD still equals the reviewed candidate SHA; then
 the one push command ("The push" below). It runs only on a reply that names the action ("publish `<new>`"), never a
 bare "yes". After the push, start the mirror ("Starting the mirror").
 
@@ -205,7 +219,7 @@ written here.
 - Then ONE `GET /api/v1/repos/Kioga/deskpost-ops/actions/runs/{id}`. Right after dispatch it reads `waiting`.
 - A 500 "workflow not found" means a wrong file name, not scope. **A 403 means the token lost its scope: record it,
   tell home-lab-admin, never retry with another token.**
-- Before the yes, check that the ops clone's `.forgejo/workflows/publish.yml` exists and declares `workflow_dispatch:`.
+- Before the yes, use Git's stored login to run `git ls-remote https://<origin-host>/Kioga/deskpost-ops.git refs/heads/main`, then `git clone --depth 1 --no-checkout https://<origin-host>/Kioga/deskpost-ops.git <scratch>/ops`. Read `.forgejo/workflows/publish.yml` with `git -C <scratch>/ops show HEAD:.forgejo/workflows/publish.yml` and check `workflow_dispatch:`. Run this in one program's temporary-directory context so it removes the scratch clone after its child processes exit; do not read or print a credential.
 
 **The script.** Save it to the session's scratch folder as `mirror_start.py` and run `python -I mirror_start.py`
 from this checkout (it reads the host from `origin`). Read it end to end first: S107's first green read was wasted by
@@ -267,7 +281,6 @@ base = f"https://{EXPECTED_HOST}/api/v1/repos/{REPO}/actions"
 status, text = call("POST", f"{base}/workflows/publish.yml/dispatches", {"ref": "main", "return_run_info": True})
 print(f"dispatch: HTTP {status}")
 if status not in (200, 201, 204):
-    print(f"dispatch body: {text[:300]}")
     raise SystemExit(1)
 run_id = None
 if text.strip():
@@ -282,8 +295,6 @@ print(f"status read: HTTP {status}")
 if status == 200:
     run = json.loads(text)
     print(f"run {run.get('id')}: status {run.get('status')}, conclusion {run.get('conclusion')}")
-else:
-    print(f"status body: {text[:300]}")
 ```
 
 **Afterwards.** Record the run id, run number and the one status on the attempt page. Give no upgrade line: the

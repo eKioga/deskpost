@@ -1,6 +1,7 @@
 # ADR-0059: Bare `deskpost` is the main menu, and `seat start` is its one launcher
 
 **Status:** accepted
+**Superseded in part by ADR-0077:** [The main menu offers access by plain name](0077-the-main-menu-offers-access-by-plain-name.md).
 **Date:** 2026-09-27
 **Effective from:** 1.1 (S55, `PLAN-install-onboarding.md` steps 5 and 5a)
 **Relates to:** [ADR-0021](0021-a-cosmetic-reversible-action-is-performed-not-offered.md) (the tab title),

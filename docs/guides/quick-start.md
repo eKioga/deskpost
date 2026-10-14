@@ -22,60 +22,46 @@ deskpost
 ```
 
 Type it in any terminal. Inside a Library it opens that Library; anywhere else it opens your
-**default Library**, the first one you made. The first time, with no seats yet, it offers two ways
-to start (a terminal install offers the same choice as it ends):
-
-```
-This Library has no seats yet. A seat is a place to work, with its own Desk and one Project.
-  [h, Enter] Show me around   a deskpost-help seat with the Librarian as your guide
-  [+]        Your first seat  name a project, and start working in it
-  [l]        Browse           what the Library holds, without a seat
-  [q]        Later
-```
+**default Library**, the first one you made. With no seats yet, choose **Make your first seat**,
+**Show me around**, or **Quit**. Use arrows to move and Enter to choose. Esc goes back; on a search
+screen it clears your search first. A single click highlights a choice; a double-click chooses it.
 
 **Show me around** starts the Librarian in a seat called `deskpost-help`, as your guide; it is an
-ordinary seat you can come back to, and `h` offers it again from the menu any time. **`+`** makes a
-seat for your own project:
+ordinary seat you can come back to. Once seats exist, find it under **Help and more**.
 
-```
-Your first seat. A seat is a place to work, with its own Desk and one Project.
-Name your project (empty to cancel) › Home lab
-```
+**Make your first seat** asks for three things: a name such as `home-lab`, an installed assistant
+(Claude Code or Codex), and how much access it should have. The access choices use plain names,
+with their exact settings shown underneath. Codex's usual choice is **Work in its own folders**;
+Claude Code's is **Ask me first**. Full access requires typing `full` to confirm.
 
-Then it asks four more questions, each skipped with Enter: a template (performer or orchestrator), a
-department, a one-line card saying what the seat handles, and the Shelf Books to open at its first
-launch. It shows what it will make and waits for Enter:
+The ready screen lets you make and start the seat, make it for later, or choose **More choices**
+for a department and template. It makes:
 
 - a **Project Hub**, `home-lab`: the durable record of one piece of work, what it is for, what is
   open, what was decided. An existing Hub of that name is reused.
 - a **seat** of the same name, bound to that Project, with the Hub open on its Desk.
 
-In the preview, `a` chooses Claude Code or Codex. Enter saves that choice for the seat and starts
-it there. The first launch has no extra flags; every Codex launch gets `--no-daemon` automatically.
+Your assistant and access are saved before the seat starts. Every Codex launch gets `--no-daemon`
+automatically.
 
-**Next time, `deskpost` shows your seats**, one numbered line each with its Project, whether anyone is
-at it, when it was last used, and what its last conversation was called:
+**Next time, `deskpost` shows your seats**, with the most recently used free seats first and seats
+open in another window grouped below. Type to search seats and actions immediately. Choose a seat,
+then **Continue last conversation**, **Start a new conversation**, **Settings**, or **Back**.
+A seat with no conversation offers **Start its first conversation**. The most recent free seat can
+also have a **Continue** choice at the top of the main screen.
 
-| Type | And |
-| --- | --- |
-| a number | resume in the seat's saved assistant, or start there when its last conversation belongs to the other assistant |
-| `n` and a number | a new conversation in that seat's saved assistant |
-| `s` and a number | choose that seat's assistant and launch flags |
-| `a` | change the default assistant for seats with no saved choice |
-| `+` | a new seat |
-| `r` and a number | retire that seat, after it shows you what it archives |
-| `l` | what the Library holds: its Books and Projects by title, without a seat (`deskpost browse`) |
-| `b` | Basic Memory, which shares your Books across machines (optional) |
-| `q` | nothing; you stay where you are |
+Choose **New seat** to make another. **Help and more** offers the guided seat, **Browse what the
+Library holds**, **Basic Memory**, and plain text menus for this visit. **Quit** leaves the menu.
+A seat open elsewhere tells you to switch to its other window; a live claim cannot be taken over.
 
-A seat already in use by another session is shown as held, and choosing it says so: one session per
-seat. Seats cost nothing, so start another.
+**Set Codex once for an existing seat.** Choose the seat, **Settings**, **Assistant**, then **Codex**.
+**Access** saves a named choice or **Type my own settings** after a preview. Settings also offers
+**Folders**, **Exact command**, and **Retire**. Changes apply at the next start. If the last
+conversation belongs to Claude Code, starting Codex leaves it resumable in Claude Code.
 
-**Set Codex once for an existing seat.** Type `s<number>`, choose `a`, then `codex`. To save flags,
-choose `f`, then `codex`, and enter them on one line; Enter approves the shown launch preview.
-`c` copies flags from a named seat and shows a fresh preview for the destination. `q` returns to
-the menu. Its number then opens Codex with those flags. If the last conversation belongs to Claude
-Code, the row says so before selection and keeps that conversation resumable in Claude Code.
+For a small terminal, or `deskpost menu --plain`, the same choices use numbered sentences: type
+a listed number or part of a seat's name. Plain text can also be selected under **Help and more**
+for this visit. Scripts using `--script` retain the older typed commands and creation protocol.
 
 Made the program without a Library (`-Library none`)? `deskpost setup <folder>` makes one, shown
 first and made on one Enter.

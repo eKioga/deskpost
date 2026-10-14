@@ -19,7 +19,6 @@ import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { assertNoSeatRename, seatFilePaths } from './seatpaths.ts';
 import { readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
-import { readSeatActivity } from './seatclaim.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import type { Assistant } from './conversation.ts';
 
@@ -113,12 +112,7 @@ export function addedDirArguments(dirs: string[]): string[] {
   return dirs.flatMap((dir) => ['--add-dir', dir]);
 }
 
-import { readSeatLaunch } from './seatlaunch.ts';
-import { readRegistryRows, registryFilePath } from './seatregistry.ts';
-
-function quoted(argument: string): string {
-  return /[\s"]/.test(argument) ? `"${argument}"` : argument;
-}
+import { seatLaunchPreview, escapedArgv } from './seatlaunch.ts';
 
 /**
  * THE LAUNCH LINE THE RECORD WOULD PRODUCE, for a reader to check before it is saved: the seat's recorded conversation
@@ -159,16 +153,10 @@ export function lettersPromptArguments(assistant: Assistant | null, lettersWaiti
 }
 
 export function launchLine(stateDirectory: string, seat: string, dirs: string[]): string {
-  const activity = readSeatActivity(stateDirectory, seat);
-  const session = typeof activity?.['session_id'] === 'string' ? (activity['session_id'] as string) : '';
-  const owner: Assistant = activity?.['assistant'] === 'codex' ? 'codex' : 'claude';
-  const row = readRegistryRows(registryFilePath(stateDirectory)).find(r => r['seat'] === seat);
-  const record = readSeatLaunch(stateDirectory, seat, String(row?.['seat_id'] ?? ''));
-  const assistant = record.state === 'valid' ? record.record.assistant ?? owner : owner;
-  const conversation = session && owner === assistant ? (assistant === 'codex' ? ['resume', session] : ['--resume', session]) : [];
-  const stored = record.state === 'valid' ? record.record.args[assistant] : [];
-  const label = record.state === 'valid' && session && owner !== assistant ? 'New conversation: ' : '';
-  return label + [assistant, ...conversation, ...nameArguments(assistant, seat, []), ...addedDirArguments(dirs), ...(assistant === 'codex' ? ['--no-daemon'] : []), ...stored].map(quoted).join(' ');
+  // Folder edits do not start a conversation or allocate its future id; all known arguments still
+  // come from the launch planner. Codex and recorded resumable conversations need no placeholder.
+  const plan = seatLaunchPreview(path.dirname(stateDirectory), seat, undefined, 'claude', 'resume', undefined, dirs.filter(dir => fs.existsSync(dir)), '');
+  return escapedArgv([plan.command, ...plan.args]);
 }
 
 /** The seat, named and live. A retired seat and an unknown one are refused, each by name. */

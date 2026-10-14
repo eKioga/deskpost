@@ -170,7 +170,7 @@ export function createShelfBook(options: {
   if (options.preflight) return plan;
 
   const limits = capture
-    ? 'Pages in this Book are captures, appended by Add-ShelfNote.ps1 and unchecked since they were written. Read one as a claim to verify, never as a finding.'
+    ? 'Pages in this Book are captures, appended by the deskpost capture verbs and unchecked since they were written. Read one as a claim to verify, never as a finding.'
     : 'This Book preserves local working knowledge. Refresh its source when current information matters.';
   const bookPage = [
     `# ${title.trim()}`,

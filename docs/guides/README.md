@@ -38,12 +38,13 @@ deskpost seat start <seat> --project <project-slug>
 
 That line makes the seat the first time. After that, `deskpost seat start <seat>` is enough. Add
 `--command codex` to work in Codex instead of Claude Code for that launch. Or type just `deskpost`:
-the main menu lists your seats, a number opens one in its saved assistant, and `+` makes a new one
-after one confirmation. In the new-seat preview, `a` chooses the assistant and Enter saves it.
-For an existing seat, `s<number>` saves its assistant with `a`; `f` sets launch flags after a
-preview, and `c` copies flags from another named seat after a new preview. Every Codex launch gets
-`--no-daemon`. If the last conversation belongs to the other assistant, the row says so and starts
-the saved assistant while keeping that older conversation resumable in its owner.
+the main menu uses arrows to move, Enter to choose, Esc to go back, and typing to search. Choose
+a seat, then continue its last conversation, start a new one, or open Settings. New seat asks for
+a name, installed assistant and access, then shows a ready screen; More choices offers department
+and template. Settings saves an Assistant and named Access after its preview, and offers Folders,
+Exact command and Retire. Every Codex launch gets `--no-daemon`. Choosing a different assistant
+starts a new conversation and keeps the older one resumable in its owner. Small terminals and
+`deskpost menu --plain` use numbered sentences for the same choices.
 
 > Then ask **"What's on my desk?"** to see your seat, what is open on it, and what is waiting for
 > you.
@@ -67,7 +68,8 @@ history, and its old name points the way to the new one.
 To give a seat a nickname, run `deskpost seat describe <seat> --nickname "<nickname>"`: the menu and the
 tab show it, but letters still go to the seat's name, never to the nickname.
 
-To see what the Library holds without sitting at a seat, press `l` in the main menu, or run
+To see what the Library holds without sitting at a seat, choose **Help and more**, then
+**Browse what the Library holds**, or run
 `deskpost browse`. To correct one page of a Shelf Book, ask the Librarian: it uses `deskpost book
 replace-page`, shows the change first, and keeps the old text so the page can be put back.
 
@@ -79,7 +81,7 @@ deleting it, and asking **"what survived the reset?"** works even in a session w
 
 ## Upgrading
 
-From 1.3.6, `deskpost upgrade` upgrades Deskpost, or `u` in the main menu when it says a new version is ready.
+From 1.3.6, `deskpost upgrade` upgrades Deskpost from a terminal; the main menu also offers **Upgrade to <version>** when a newer release is ready.
 The one line you installed with also upgrades, with no options, even for an install outside the default folder (the
 README's [Upgrading](../../README.md#install-options)). An open seat session no longer stops it: the upgrade names
 what to close and waits until it is closed. From 1.3.2, that one

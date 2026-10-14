@@ -1611,10 +1611,15 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         writeAtomicText(inboundSettingsPath(stateDirectory, seat), JSON.stringify({ crossSessionInbound: plan!.inbound }, null, 2) + '\n');
         inbound = readInbound();
         inboundArguments = inboundArgumentsFor(inbound);
-        launchPlan = replanLaunch(readRegistryRows(registryFile).find(row => String(row['seat']) === seat) ?? null);
-        agentArguments = launchPlan.args;
       }
     }
+    // Creation may have saved a different assistant or inbound policy. Use that committed record
+    // on every entry route, including the conversation fields written below.
+    launchPlan = replanLaunch(readRegistryRows(registryFile).find(row => String(row['seat']) === seat) ?? null);
+    agentArguments = launchPlan.args;
+    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+    conversationId = launchPlan.resume || launchPlan.sessionId;
+    conversationAction = launchPlan.action;
     // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
     // lock this block already holds, and only when a conversation is actually started. `source` is `launcher`: a
     // locator, never identity.
@@ -2292,25 +2297,28 @@ export async function runSeatVerb(
         // GATED (kickoffs/s96 row 2, ruling 4): a seat's department, role and card change only under the reader's yes.
         const parsed = parseArguments(rest, argumentTable('seat', 'describe'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
-        emitResult(
-          seatDescribeResult({
-            workspace,
-            seat: parsed.positional[0] ?? '',
-            request: {
-              department: parsed.options.get('department'),
-              role: parsed.options.get('role'),
-              card: parsed.options.get('card'),
-              nickname: parsed.options.get('nickname'),
-              clearDepartment: parsed.flags.has('clear-department'),
-              clearRole: parsed.flags.has('clear-role'),
-              clearCard: parsed.flags.has('clear-card'),
-              clearNickname: parsed.flags.has('clear-nickname'),
-              from: parsed.options.get('from'),
-            },
-            preflight: parsed.flags.has('preflight'),
-            planId: parsed.options.get('plan-id') ?? '',
-          }),
-        );
+        const described = seatDescribeResult({
+          workspace,
+          seat: parsed.positional[0] ?? '',
+          request: {
+            department: parsed.options.get('department'),
+            role: parsed.options.get('role'),
+            card: parsed.options.get('card'),
+            nickname: parsed.options.get('nickname'),
+            clearDepartment: parsed.flags.has('clear-department'),
+            clearRole: parsed.flags.has('clear-role'),
+            clearCard: parsed.flags.has('clear-card'),
+            clearNickname: parsed.flags.has('clear-nickname'),
+            from: parsed.options.get('from'),
+          },
+          preflight: parsed.flags.has('preflight'),
+          planId: parsed.options.get('plan-id') ?? '',
+        });
+        if (described['operation'] === 'Describe a Library seat') {
+          const entry = readSeatRegistry(path.join(workspace, '.claude')).find(row => row.seat === described['seat']);
+          described['project'] = entry?.project ?? null;
+        }
+        emitResult(described);
         return 0;
       }
       default:

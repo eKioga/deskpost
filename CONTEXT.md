@@ -157,7 +157,7 @@ what it stays out of, its rows, and the CLOSE it owes. Its **CHARTER** section n
 the one private push the session may make; the reader's yes at the session's gate, bound to the
 page's path and content hash, makes it the reader's explicit request for them. A Charter is a
 section of a Kickoff, not a kind of Approval: every previewed action still takes its own. A revision
-is a new page, never an edit.
+is a new page, never an edit. Every Kickoff starts from `docs/kickoff-template.md`.
 _Avoid_: ticket, brief, task list, standing approval
 
 **Handback**:
@@ -165,6 +165,76 @@ The `## Handback` section a build session adds to its attempt page at close: wha
 parked, the Reports filed, the merge state, the stall log, and a draft scope for the next Kickoff. It
 is what the support seat writes the next Kickoff from.
 _Avoid_: report, summary, status update
+
+**Planner** (a dev seat's role):
+The seat that writes the Kickoffs, keeps the backlog, triages, designs and makes small fixes on
+`desk/*` branches; it never builds a Kickoff's rows. Deskpost's planner is `deskpost-desk`.
+_Avoid_: orchestrator, lead, B (the letter names a seat, not the role)
+
+**Builder** (a dev seat's role):
+A seat that runs one Kickoff: its gate, its rows as commits on its own unit branch, the Handback,
+then stops. Either harness can build.
+_Avoid_: worker, executor, A or C (letters name seats, not the role)
+
+**Integrator** (a dev seat's role):
+The one builder a Kickoff names to merge the named branches, gate the result and push `origin`.
+The planner's Hub records it in one line, `Integrator: <seat>` or `Integrator: none`.
+_Avoid_: merger, release manager (a release takes its own Kickoff)
+
+**Unit**:
+A piece of planned work sized for one Kickoff, as a plan divides it ("Fast gates Unit B"). A unit
+reaches a builder only as a Kickoff.
+_Avoid_: ticket, task, feature
+
+**Row**:
+One numbered item in a Kickoff's ROWS: one reader-visible change, ending with a `Done when:` line
+that names the check proving it.
+_Avoid_: part, step (a step is a numbered instruction in OPEN or CLOSE), task
+
+**Cut**:
+The rows committed together as one commit, because one gate tests them together; the commit's
+pre-commit hook is the cut's pass mark.
+_Avoid_: batch, chunk
+
+**Attempt page**:
+The page `notes/<date>-<kickoff>-a<k>` a builder writes on its Hub for one try at a Kickoff: its
+`## Run` (the Kickoff hash, the yes, the seat and session), progress, standing answers applied,
+and at close the Handback. A restart is a new attempt page naming its predecessor.
+_Avoid_: log, run record, session page
+
+**Charter**:
+A Kickoff's CHARTER section: the commits and the one private push the reader's yes at the gate
+requests, beside NOT CHARTERED, what the yes does not cover. It is a section of a Kickoff, not a
+kind of Approval.
+_Avoid_: permission, standing approval, scope
+
+**Standing answers**:
+A Kickoff's numbered decisions given in advance, so a builder decides and records instead of
+waiting: the template's defaults, then the unit's own. Each one applied is recorded on the
+attempt page under `## Standing answers applied`.
+_Avoid_: defaults, assumptions, policy
+
+**"Needs you" list**:
+The Handback's list of what only the reader can do: every deferred yes, every parked piece, and
+every step only the reader can take. `/closeout` uses the same name. It was called the morning
+list until 2026-10-13.
+_Avoid_: morning list, todo, blockers
+
+**Stall log**:
+The Handback's list of what stopped or slowed the session, each with its cause: Deskpost, or the
+harness (a permission prompt, the auto-mode classifier). An extra is built when a logged stall
+names it.
+_Avoid_: error log, blocker list
+
+**OWNS**:
+A Kickoff's list of the files, and the new self-test section and ADR numbers, its rows may change.
+Two open Kickoffs never own the same file unless the planner says both may, at separate places.
+_Avoid_: scope, allowlist, CODEOWNERS
+
+**MERGE** (a Kickoff section):
+The branches an integrator merges, in order, each with its base, tip and gate digest (the gate's
+summary line at the tip, with `git config core.bare` after it), or `none`.
+_Avoid_: merge list, integration plan
 
 **Catalog**:
 The browsable list of a collection's Books or Projects. Reading a catalog is browsing, not reading a

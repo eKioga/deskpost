@@ -122,8 +122,6 @@ $ErrorActionPreference = 'Stop'
 # STEP 21: the shared-collection write fence. tools/CollectionOwnership.ps1.
 . (Join-Path $PSScriptRoot 'CollectionOwnership.ps1')
 $WorkspacePath = Resolve-ToolWorkspace -Explicit $WorkspacePath -Anchor (Split-Path -Parent $PSScriptRoot)
-$McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'triaging a Shelf note'
-$ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
 $workspace = (Resolve-Path -LiteralPath $WorkspacePath).Path
 
 # The kinds that reach the shared collection or destroy something. These are the ones a single note
@@ -234,6 +232,12 @@ $script:TriageSeatState = Resolve-SeatName -Seat $Seat -StateDirectory (Join-Pat
 if ($script:TriageSeatState.status -ceq 'named') { $script:TriageSeatName = [string]$script:TriageSeatState.seat }
 
 $actions = @(Resolve-TriagePlanActions -Actions $requested -Workspace $workspace -CaptureDate $CaptureDate -Seat ([string]$script:TriageSeatName))
+
+# Local actions need no endpoint or shared write fence. Shared destinations retain both checks.
+if (@($actions | Where-Object { $_.kind -cin @('project', 'book') }).Count -gt 0) {
+    $McpUrl = Resolve-LibraryWriteEndpoint -McpUrl $McpUrl -WorkspacePath $WorkspacePath -Operation 'triaging a Shelf note'
+    $ProjectId = Resolve-LibraryCollectionId -CollectionId $ProjectId
+}
 
 # A stored plan is evidence about what was approved. Checking the re-resolved digests against it is
 # what turns "the file says so" into "the file and the disk agree".

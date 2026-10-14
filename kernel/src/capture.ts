@@ -282,8 +282,9 @@ function supersededNote(book: ShelfBook, page: string, seat: SeatIncarnation): S
 /**
  * THE LETTER `--answers`, `--routes` OR `letters close` NAMES (kickoffs/s98 rows 1 and 2; PLAN-seats-team.md session 3
  * items 1 and 2; kickoffs/s108 ruling 2): it
- * exists, its frontmatter is whole, it is addressed to this seat by the recipient predicate, and it is still pending
- * with no closing link. Checked before the lock and again under it, so a letter answered or routed in between is
+ * exists, its frontmatter is whole, it is addressed to this seat by the recipient predicate, and it is pending or
+ * (for an answer) unchanged since this seat closed it, with no closing link. Checked before and under the lock.
+ * A letter answered or routed in between is
  * refused, never closed twice. Mutation is strict where display is tolerant: a malformed letter is refused here.
  */
 function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes' | 'letters close'): ShelfNoteRow {
@@ -307,7 +308,17 @@ function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, fl
           : `${page} is addressed to no seat, so it is not a letter ${flag} can ${act}. ${nothing}`,
     );
   }
-  if (note.review === 'done') refuse(`${page} is already closed (review: done), so ${flag} refuses it. ${nothing}`);
+  if (note.review === 'done') {
+    // Only letters close records this incarnation and the exact closed text; a triage close has no such proof.
+    const text = readUtf8(note.fullPath).replace(/\r\n/g, '\n');
+    const head = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(text)?.[1] ?? '';
+    const ids = [...head.matchAll(/^closed_by_seat_id:[ \t]*([^\n]*)$/gm)].map(match => match[1]!.trim());
+    const hashes = [...head.matchAll(/^closed_read_hash:[ \t]*([^\n]*)$/gm)].map(match => match[1]!.trim());
+    const ownClose = flag === '--answers' && /^[0-9a-f]{32}$/.test(seat.seatId) &&
+      ids.length === 1 && ids[0] === seat.seatId && hashes.length === 1 &&
+      hashes[0] === sha256OfText(setNoteField(text, 'closed_read_hash', null));
+    if (!ownClose) refuse(`${page} is already closed (review: done), so ${flag} refuses it. ${nothing}`);
+  }
   if (note.answeredBy || note.routedTo) {
     refuse(`${page} was reopened and still carries ${note.answeredBy ? 'answered_by' : 'routed_to'}: reopen is for triage, not for a second ${act}; write a new letter. ${nothing}`);
   }
@@ -697,7 +708,7 @@ export function captureVerb(
 
     // AN ANSWER (kickoffs/s98 row 1; PLAN-seats-team.md session 3 item 1): `--answers notes/<page>` writes a reply to the
     // letter's first asker and closes the letter `answered_by` the reply, as `--supersedes` closes and links. The Book is
-    // open on this seat's Desk, this seat is the letter's recipient, the letter is pending with no link, and its asker is
+    // open on this seat's Desk, this seat is the letter's recipient, it is pending or this seat's unchanged close with no link, and its asker is
     // the same incarnation the registry names now; the reply is stamped with that validated id.
     const answers = (parsed.options.get('answers') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
     let asker: SeatIncarnation | null = null;
@@ -1076,6 +1087,9 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
       let closed = setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp());
       // A REOPENED LETTER'S OLD NOTE IS NOT CARRIED INTO THIS CLOSE: replaced by the new one, or removed with none.
       closed = setNoteField(closed, 'closed_note', note || null);
+      closed = setNoteField(closed, 'closed_by_seat_id', self.seatId || null);
+      closed = setNoteField(closed, 'closed_read_hash', null);
+      closed = setNoteField(closed, 'closed_read_hash', sha256OfText(closed.replace(/\r\n/g, '\n')));
       if (!/^review: done/m.test(closed)) refuse(`${letter.page} has no review field to close.`);
       writeAtomicText(letter.fullPath, closed);
       pendingCount = updateShelfNoteIndex(book).pendingCount;
@@ -1754,7 +1768,7 @@ function sourcesVerb(argv: string[], workspace: string): WriterResult {
 // --- book replace-page -----------------------------------------------------------------------------
 
 const REPLACE_PAGE_USAGE =
-  'deskpost book replace-page <slug> <page> --content-path <file> [--sources-compiled <id-to-sha256.json>] (--preflight | --base-sha256 <the preflight\'s current_sha256>)';
+  'deskpost book replace-page <slug> <page> --content-path <file> [--sources-compiled <id-to-sha256.json>] (--preflight [--expect-sha256 <the read\'s sha256>] | --base-sha256 <the preflight\'s current_sha256>)';
 
 /** A test hook, named in the self-test that uses it: where to stop a replace after its journal is written. */
 function replacePageFault(): string {
@@ -1780,6 +1794,10 @@ function replacePage(argv: string[], workspace: string): WriterResult {
     refuse('book replace-page takes no --title: the page keeps or changes its own H1 in the text you give. Nothing was written.');
   }
   const preflight = parsed.flags.has('preflight');
+  const expected = (parsed.options.get('expect-sha256') ?? '').trim().toLowerCase();
+  if (parsed.options.has('expect-sha256') || parsed.flags.has('expect-sha256')) {
+    if (!preflight || !/^[0-9a-f]{64}$/.test(expected)) refuse('--expect-sha256 requires --preflight and the 64 hex characters returned by the page read. Nothing was written.');
+  }
   const base = (parsed.options.get('base-sha256') ?? '').trim().toLowerCase();
   if (preflight === (base !== '')) {
     refuse(`book replace-page needs exactly one of --preflight or --base-sha256 <the preflight's current_sha256>: ${REPLACE_PAGE_USAGE}.`);
@@ -1818,13 +1836,23 @@ function replacePage(argv: string[], workspace: string): WriterResult {
   const rendered = renderPageBody(body, '');
 
   const currentText = readUtf8(fullPath);
-  const currentSha256 = pageComparisonSha256(fs.readFileSync(fullPath, 'utf8'));
+  const currentSha256 = pageComparisonSha256(currentText);
+  if (expected && currentSha256 !== expected) refuse('The page changed since your read (its hash is not --expect-sha256). Nothing was written; read the current page before proposing a replacement.');
   const proposedSha256 = pageComparisonSha256(rendered.body);
   const titleBefore = readerMapLabel(currentText, relative);
   const titleAfter = rendered.title;
   const mapPath = path.join(book.wikiPath, '_index.md');
   const mapIsGenerated = testGeneratedReaderMap(mapPath);
   const counts = changeCounts(currentText.replace(/\r\n/g, '\n'), rendered.body.replace(/\r\n/g, '\n'));
+  // The same multiset comparison as changeCounts, keeping removed lines in their original order.
+  const keptLines = new Map<string, number>();
+  for (const line of rendered.body.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) keptLines.set(line, (keptLines.get(line) ?? 0) + 1);
+  const removedPreview: string[] = [];
+  for (const line of currentText.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) {
+    const count = keptLines.get(line) ?? 0;
+    if (count) keptLines.set(line, count - 1);
+    else if (removedPreview.length < 5) removedPreview.push(line.slice(0, 240));
+  }
   const lineCount = (text: string) => (text.replace(/\r\n/g, '\n').replace(/\n$/, '') === '' ? 0 : text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length);
   const applyLine =
     `deskpost book replace-page ${slug} ${page} --content-path ${contentPath}` +
@@ -1843,6 +1871,7 @@ function replacePage(argv: string[], workspace: string): WriterResult {
     proposed_lines: lineCount(rendered.body),
     added_lines: counts.added_lines,
     removed_lines: counts.removed_lines,
+    removed_lines_preview: removedPreview,
     title_before: titleBefore,
     title_after: titleAfter,
     reader_map: mapIsGenerated ? 'regenerated' : 'curated: unchanged',

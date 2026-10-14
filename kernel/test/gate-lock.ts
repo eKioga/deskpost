@@ -9,7 +9,8 @@ const NAME = 'deskpost-gate-machine';
 const HANDSHAKE = 5_000;
 export class LockError extends Error { code: number; constructor(message: string, code = 2) { super(message); this.code = code; } }
 interface Holder { seat: string; tier: string; pid: number; start: string; token: string }
-export interface GateLock { inherited: boolean; release(): Promise<void> }
+export interface GateWait { seconds: number; seat: string; tier: string; started: string; ended: string }
+export interface GateLock { inherited: boolean; wait: GateWait | null; release(): Promise<void> }
 export function lockAddress(): string {
   const name = process.env['DESKPOST_GATE_LOCK_NAME'] || NAME;
   if (!/^[a-zA-Z0-9._-]+$/.test(name)) throw new LockError('DESKPOST_GATE_LOCK_NAME must be a simple pipe name');
@@ -47,7 +48,7 @@ export function leftoverWarnings(rows: ProcessRow[], pid: number): string[] {
   let current: number | undefined = pid;
   while (current !== undefined && !excluded.has(current)) { excluded.add(current); current = rows.find((row) => row.pid === current)?.parentPid; }
   return rows.filter((row) => !excluded.has(row.pid) && /kernel[\\/]test[\\/](selftest|run-parallel)\.ts|tools[\\/]Invoke-LibraryChecks\.ps1/i.test(row.command))
-    .map((row) => `warning: possible leftover gate work: ${row.pid} ${row.start} ${row.command}`);
+    .map((row) => `warning: another gate's work is running outside the lock (it may be live, or left over): ${row.pid} ${row.start} ${row.command}`);
 }
 async function warnLeftovers(say: (line: string) => void): Promise<void> {
   // Fixture namespaces must never scan their surrounding production workload.
@@ -55,7 +56,7 @@ async function warnLeftovers(say: (line: string) => void): Promise<void> {
   try {
     const { processTable } = await import('./run-parallel.ts');
     for (const line of leftoverWarnings(await processTable(), process.pid)) say(line);
-  } catch (error) { say(`warning: could not check possible leftover gate work: ${String(error)}`); }
+  } catch (error) { say(`warning: could not check work running outside the gate lock: ${String(error)}`); }
 }
 export async function acquireGateLock(tier: string, noWait = false, say = (line: string) => process.stdout.write(line + '\n')): Promise<GateLock> {
   const address = lockAddress();
@@ -63,10 +64,12 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
   if (inherited) {
     const holder = await readHolder(address).catch((error: unknown) => { throw new LockError(`inherited gate lock could not be validated: ${String(error)}`); });
     if (holder.token !== inherited) throw new LockError('inherited gate lock token does not match its holder');
-    return { inherited: true, release: async () => {} };
+    return { inherited: true, wait: null, release: async () => {} };
   }
   const holder: Holder = { seat: process.env['LIBRARY_SEAT'] || 'unseated', tier, pid: process.pid, start: new Date().toISOString(), token: randomBytes(24).toString('hex') };
   let lastNotice = '';
+  let waitStarted = 0;
+  let waitedFor: Holder | null = null;
   for (;;) {
     const clients = new Set<net.Socket>();
     const server = net.createServer((client) => {
@@ -78,6 +81,11 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
       server.listen(address, () => resolve(true));
     });
     if (listened) {
+      const acquired = Date.now();
+      const wait: GateWait | null = waitedFor ? {
+        seconds: (acquired - waitStarted) / 1000, seat: waitedFor.seat, tier: waitedFor.tier,
+        started: new Date(waitStarted).toISOString(), ended: new Date(acquired).toISOString(),
+      } : null;
       process.env['DESKPOST_GATE_LOCK'] = holder.token;
       // Establish release BEFORE scanning, so any failure also leaves the OS-held pipe cleanly.
       const release = async () => {
@@ -89,7 +97,7 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
         });
       };
       await warnLeftovers(say);
-      return { inherited: false, release };
+      return { inherited: false, release, wait };
     }
     let previous: Holder | null = null;
     try { previous = await readHolder(address); } catch (error) {
@@ -98,6 +106,8 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
       if (code !== 'ENOENT' && code !== 'ECONNREFUSED' && code !== 'ECONNRESET') throw error;
     }
     if (previous) {
+      if (!waitStarted) waitStarted = Date.now();
+      waitedFor = previous;
       const notice = `waiting: ${previous.seat}'s ${previous.tier} gate, started ${previous.start} (pid ${previous.pid})`;
       if (notice !== lastNotice) { say(notice); lastNotice = notice; }
     }

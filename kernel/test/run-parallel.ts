@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { childEnv } from './gate-env.ts';
-import { acquireGateLock, LockError } from './gate-lock.ts';
+import { acquireGateLock, LockError, type GateWait } from './gate-lock.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SERIAL_SECTIONS = [29, 31, 113];
@@ -59,7 +59,7 @@ export async function processTable(detail = false): Promise<ProcessRow[]> {
     return m ? [{ pid: Number(m[1]), parentPid: Number(m[2]), start: m[3]!, command: m[4]! }] : [];
   });
 }
-function descendants(rows: ProcessRow[], root: number, since: number): ProcessRow[] {
+export function descendants(rows: ProcessRow[], root: number, since: number): ProcessRow[] {
   const owned = new Set([root]);
   // Parent links are retained by the OS even after an exited root. Ignore earlier PID incarnations.
   let added = true;
@@ -72,7 +72,8 @@ function descendants(rows: ProcessRow[], root: number, since: number): ProcessRo
 }
 export async function startIdentity(pid: number): Promise<string | null> {
   if (process.platform !== 'win32') return (await processTable()).find((row) => row.pid === pid)?.start ?? null;
-  const text = await powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p){$p.StartTime.ToUniversalTime().ToString('o')}; exit 0`);
+  // An exiting process can still answer Get-Process with no StartTime (S119, under the push pool's load): it is gone.
+  const text = await powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p -and $p.StartTime){$p.StartTime.ToUniversalTime().ToString('o')}; exit 0`);
   return text.trim() || null;
 }
 async function endOwned(rows: ProcessRow[]): Promise<void> {
@@ -80,8 +81,8 @@ async function endOwned(rows: ProcessRow[]): Promise<void> {
   if (process.platform === 'win32') {
     const identities = Buffer.from(JSON.stringify(rows.map(({ pid, start }) => ({ pid, start })))).toString('base64');
     await powershell(`$ErrorActionPreference='Stop'; $owned = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${identities}')) | ConvertFrom-Json;
-      foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){ & taskkill.exe /PID $row.pid /T /F | Out-Null }}
-      $until=[DateTime]::UtcNow.AddSeconds(25); do { $live=@(foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){$row.pid}}); if(!$live.Count){exit 0}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $until); throw ('owned processes still alive: '+($live -join ','))`, CLEANUP_LIMIT);
+      foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){ & taskkill.exe /PID $row.pid /T /F | Out-Null }}
+      $until=[DateTime]::UtcNow.AddSeconds(25); do { $live=@(foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){$row.pid}}); if(!$live.Count){exit 0}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $until); throw ('owned processes still alive: '+($live -join ','))`, CLEANUP_LIMIT);
   } else {
     for (const row of rows) {
       if (await startIdentity(row.pid) === row.start) {
@@ -138,7 +139,7 @@ export function sectionNumbers(text: string, selection = process.env['LIBRARY_SE
 export interface Result { section: number | 'whole'; verdict: 'PASS' | 'FAIL' | 'SKIP'; checks: number; seconds: number; detail: string; output: string }
 export function verdict(section: number | 'whole', status: number | null, output: string): Pick<Result, 'verdict' | 'checks' | 'detail'> {
   const last = output.trim().split(/\r?\n/).at(-1) ?? '';
-  const pass = /^kernel self-test passed \((\d+) checks\)\.$/.exec(last);
+  const pass = /^kernel self-test passed \((\d+) checks\)(?: after waiting \d+(?:\.\d+)?s for .+'s .+ gate)?\.$/.exec(last);
   if (status === 0 && pass && Number(pass[1]) > 0) return { verdict: 'PASS', checks: Number(pass[1]), detail: '' };
   // A failing assertion can contain a multiline CLI response. Its canonical header carries the count;
   // the final physical line can be ordinary fixture text, never a zero-check inference.
@@ -225,7 +226,80 @@ export async function runSection(options: Options, section: number | 'whole', ru
   if (problem) parsed = { ...parsed, verdict: 'FAIL', detail: `${problem}; ${parsed.detail}` };
   return { section, ...parsed, seconds: (Date.now() - started) / 1000, output };
 }
-export async function run(options: Options): Promise<number> {
+/** Unit B: one bounded child of the push tier's pool. On its limit, a cancel or a stream that will not close, the
+ * snapshot is written beside its log, then the tree it owns is ended and checked gone; `problem` names `label`. */
+export interface Bounded { status: number | null; output: string; problem: string; seconds: number }
+export async function runBounded(spec: { label: string; command: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; limit: number; folder: string }, signal: AbortSignal): Promise<Bounded> {
+  const started = Date.now();
+  fs.mkdirSync(spec.folder, { recursive: true });
+  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  const identity = child.pid ? startIdentity(child.pid).catch(() => null) : Promise.resolve(null);
+  const log = fs.createWriteStream(path.join(spec.folder, 'output.log'));
+  let output = '', problem = '', status: number | null = null;
+  child.stdout.on('data', (chunk) => { output += String(chunk); log.write(chunk); });
+  child.stderr.on('data', (chunk) => { output += String(chunk); log.write(chunk); });
+  await new Promise<void>((resolve) => {
+    let done = false, stream: ReturnType<typeof setTimeout> | undefined;
+    const finish = (why = '') => { if (done) return; done = true; problem = why; clearTimeout(timer); clearTimeout(stream); signal.removeEventListener('abort', cancel); resolve(); };
+    const cancel = () => finish(`${spec.label}: cancelled`);
+    const timer = setTimeout(() => finish(`${spec.label}: exceeded its limit of ${Math.round(spec.limit / 1000)}s`), spec.limit);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+    child.on('error', (error) => finish(`${spec.label}: could not start: ${error.message}`));
+    child.on('exit', (code) => { status = code; stream = setTimeout(() => finish(`${spec.label}: output streams did not close within ${STREAM_LIMIT}ms`), STREAM_LIMIT); });
+    child.on('close', (code) => { status = code; finish(); });
+  });
+  const expected = await identity;
+  if (problem && child.pid) {
+    try {
+      const rows = descendants(await processTable(true), child.pid, started);
+      fs.writeFileSync(path.join(spec.folder, 'snapshot.json'), JSON.stringify({ reason: problem, runner: process.pid, processes: rows.map((row) => ({ ...row, command: decodedCommand(row.command) })) }, null, 2));
+    } catch (error) { fs.writeFileSync(path.join(spec.folder, 'snapshot-error.txt'), String(error)); }
+    try { await terminateOwnedTree(child.pid, started, expected); } catch (error) { problem += `; cleanup failed: ${String(error)}`; }
+  }
+  child.stdout.destroy(); child.stderr.destroy(); child.unref(); log.end();
+  return { status, output, problem, seconds: (Date.now() - started) / 1000 };
+}
+/** Unit B's one pool: shared items `slots` at a time, in the order given; then each exclusive item alone, after every
+ * shared item has exited (the lane's global barrier). An item that throws stops new starts; the error is rethrown once
+ * every started item has ended. */
+export interface PoolItem<T> { name: string; exclusive: boolean; run(signal: AbortSignal): Promise<T> }
+export async function runPool<T>(items: PoolItem<T>[], slots: number, signal: AbortSignal): Promise<T[]> {
+  const shared = items.filter((item) => !item.exclusive);
+  const results: T[] = [];
+  let next = 0, error: unknown = null;
+  const take = async (item: PoolItem<T>) => { try { results.push(await item.run(signal)); } catch (thrown) { error ??= thrown; } };
+  await Promise.all(Array.from({ length: Math.min(slots, shared.length) }, async () => {
+    while (next < shared.length && !signal.aborted && error === null) await take(shared[next++]!);
+  }));
+  for (const item of items.filter((candidate) => candidate.exclusive)) {
+    if (signal.aborted || error !== null) break;
+    await take(item);
+  }
+  if (error !== null) throw error;
+  return results;
+}
+/** The -Fast roster as gate.fast-roster-matches-suites reads it: the one foreach's array under the bare if ($Fast),
+ * whose AST check proves it equals every registration in the else arm. A reshaped branch throws, never an empty list. */
+export function fastRoster(runnerSource: string): string[] {
+  const found = /^if \(\$Fast\) \{\r?\n\s*foreach \(\$name in @\(([^)]*)\)\) \{/m.exec(runnerSource);
+  if (!found) throw new Error('the -Fast roster is not where gate.fast-roster-matches-suites reads it (the foreach under the bare if ($Fast))');
+  const names = [...found[1]!.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
+  if (!names.length) throw new Error('the -Fast roster is empty');
+  const twice = names.filter((name, index) => names.indexOf(name) !== index);
+  if (twice.length) throw new Error(`the -Fast roster names ${twice.join(', ')} more than once`);
+  return names;
+}
+/** The pool's suite list against the roster a -Fast run reported: empty when they are equal both ways. */
+export function rosterProblems(pool: readonly string[], reported: readonly string[]): string[] {
+  const problems: string[] = [];
+  const unrun = reported.filter((name) => !pool.includes(name));
+  const extra = pool.filter((name) => !reported.includes(name));
+  if (unrun.length) problems.push(`the -Fast run reports ${unrun.join(', ')}, which the pool does not run`);
+  if (extra.length) problems.push(`the pool runs ${extra.join(', ')}, which the -Fast run does not report`);
+  return problems;
+}
+export async function run(options: Options, wait: GateWait | null = null): Promise<number> {
   const sections = sectionNumbers(fs.readFileSync(options.suite, 'utf8'));
   if (!sections.length) throw new Error('suite has no sections');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-gate-'));
@@ -262,13 +336,13 @@ export async function run(options: Options): Promise<number> {
   // Keep compact per-section evidence on success too; bulky child output is needed only on failure or request.
   if (!bad && !options.keepLogs) for (const result of results) fs.rmSync(path.join(folder, String(result.section)), { recursive: true, force: true });
   if (bad) process.stderr.write(`kernel self-test FAILED (${failed.length || 1} of ${total}): ${failed.map((r) => `section ${r.section}: ${flatten(r.detail)}`).join('; ') || 'cancelled'}\n`);
-  else process.stdout.write(`kernel self-test passed (${total} checks).\n`);
+  else process.stdout.write(`kernel self-test passed (${total} checks)${wait ? ` after waiting ${wait.seconds.toFixed(1)}s for ${wait.seat}'s ${wait.tier} gate` : ''}.\n`);
   return bad ? 1 : 0;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   (async () => {
     const options = parseOptions(process.argv.slice(2));
     const lock = options.workers > 1 ? await acquireGateLock('parallel self-test', options.noWait) : null;
-    try { return await run(options); } finally { await lock?.release(); }
+    try { return await run(options, lock?.wait); } finally { await lock?.release(); }
   })().then((code) => { process.exitCode = code; }, (error: unknown) => { process.stderr.write(`runner: ${String(error)}\n`); process.exitCode = error instanceof LockError ? error.code : 2; });
 }

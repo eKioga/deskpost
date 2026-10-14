@@ -64,6 +64,7 @@ route.
 in the seat's count and the reader map, keeps the Desk's letters line coming, and the letters Book fills
 with stale mail. Closing needs no reader's yes: it is the seat's own mail (ADR-0071).
 
+- After closing on read, you may still use `deskpost capture letters --answers notes/<page>` for a letter this same seat closed with `letters close`; it records the answer and leaves the original closed.
 - Answered or routed: done, since both close the original.
 - Otherwise, close it in one step with a one-line note saying what became of it:
   `deskpost letters close notes/<page> --note "on Hub Next"`. It needs the letters Book open on your Desk,

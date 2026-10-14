@@ -81,37 +81,33 @@ export function setHookServed(stateDirectory: string, sessionId: string, key: st
  * `.claude/settings.local.json` and in the plugin's `hooks/hooks.json` -- and Claude Code runs both, at once, on the same
  * payload, so a session was given the seat-start text and the search reminder twice (measured on 1.4.3's Eric-layout
  * fixture). The serve ledger above is read-modify-write, so two hooks started together would both see "not served";
- * this claim is one exclusive file create instead: the first to create the key's file serves, and a second within
- * `windowMs` stays silent. Every failure answers "serve": a claim that cannot be made never withholds guidance.
+ * this claim is one exclusive file create by event identity: the first serves and later deliveries stay silent.
+ * Claims are retained for a day; each key is an event identity, and older events are no longer delivered.
+ * Other failures answer "serve" so unavailable scratch storage never withholds guidance.
  */
-export function claimHookOnce(key: string, windowMs = 10_000): boolean {
-  const directory = path.join(os.tmpdir(), 'deskpost-hook-once');
+export function claimHookOnce(key: string, directory = path.join(os.tmpdir(), 'deskpost-hook-once')): boolean {
   const file = path.join(directory, createHash('sha256').update(key).digest('hex').slice(0, 32));
   try {
     fs.mkdirSync(directory, { recursive: true });
-    const now = Date.now();
-    for (const name of fs.readdirSync(directory)) {
-      try {
-        const old = path.join(directory, name);
-        if (now - fs.statSync(old).mtimeMs > 86_400_000) fs.rmSync(old, { force: true });
-      } catch {
-        // another hook removed it first
-      }
-    }
   } catch {
     return true;
   }
+  // Prune only our regular claim files; fresh claims, unrelated entries and links stay untouched.
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const name of fs.readdirSync(directory)) {
+      if (!/^[0-9a-f]{32}$/.test(name)) continue;
+      try {
+        const candidate = path.join(directory, name);
+        const stat = fs.lstatSync(candidate);
+        if (stat.isFile() && stat.mtimeMs < cutoff) fs.unlinkSync(candidate);
+      } catch { /* another claim or prune may have changed it */ }
+    }
+  } catch { /* pruning must not withhold this event's guidance */ }
   try {
     fs.writeFileSync(file, String(Date.now()), { flag: 'wx' });
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return true;
-    try {
-      if (Date.now() - fs.statSync(file).mtimeMs < windowMs) return false;
-      fs.writeFileSync(file, String(Date.now()));
-    } catch {
-      // unreadable or gone: serve
-    }
-    return true;
+    return (error as NodeJS.ErrnoException).code !== 'EEXIST';
   }
 }

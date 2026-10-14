@@ -386,10 +386,8 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           count: tally.count,
           by_book: tally.byBook,
           oldest_pending: tally.oldest,
-          // WHERE THEY ARE LISTED (kickoffs/s99 row 4, ruling 2): the reader map's group for this seat, or the inventory.
-          // THE SECTION THE READER CAN READ (kickoffs/s110 ruling 6): its `section` takes a `##` heading, so the route
-          // names `## Pending review` and the `### For <seat>` group to look for inside it.
-          route: `library desk open book ${Object.keys(tally.byBook)[0]} --location shelf, then read section 'Pending review' of its reader map (_index) and its letters under '### For ${seat}' there, or list them with library triage inventory --pending`,
+          // Inventory locates the seat's pending letters; each letter is read through the validated reader.
+          route: 'library triage inventory --pending',
           // STUCK (kickoffs/s99 row 4, ruling 2), the last key: its department letters older than their own Book's age.
           stuck: mine.filter(({ book, note }) => isStuckLetter(note, book)).length,
         }
@@ -1271,7 +1269,9 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
       const projectRoot = options.shelf === 'archive' ? `archive/projects/${options.slug}` : `projects/${options.slug}`;
       if (options.action === 'open') {
         if (localCollection && !fs.existsSync(path.join(localCollection.root, ...projectRoot.split('/'), '_project.md'))) {
-          refuse(`No Project Hub '${options.slug}' exists in this workspace's local collection at collection/${projectRoot}/_project.md.`);
+          const entry = readSeatRegistry(stateDirectory).find(row => row.seat === options.slug);
+          const route = entry ? ` Seat ${entry.seat}'s Project is ${entry.project}: deskpost desk open project ${entry.project}.` : '';
+          refuse(`No Project Hub '${options.slug}' exists in this workspace's local collection at collection/${projectRoot}/_project.md.${route}`);
         }
         if (!openProjects.includes(projectRoot)) openProjects.push(projectRoot);
       } else {
@@ -1323,6 +1323,9 @@ function assertBookSlug(slug: string): void {
   if (SLUG_PATTERN.test(slug)) return;
   if (BOOK_ROOT_PATTERN.test(slug)) {
     refuse(`'${slug}' is a Book root, not a slug. Pass its slug (${splitBookRoot(slug).slug}) instead.`);
+  }
+  if (PROJECT_ROOT_PATTERN.test(slug)) {
+    refuse(`'${slug}' is a Project root, not a slug. Pass its slug (${slug.split('/').at(-1)}) instead.`);
   }
   refuse(
     `Book slug '${slug}' is malformed. A slug is lowercase letters, digits and hyphens, starting with a letter or a digit.`,

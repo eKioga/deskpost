@@ -45,6 +45,12 @@ param(
     # those are suites, PowerShell test harnesses that drive PowerShell helpers, and a doctor is not a
     # test runner. So a workspace-only report is the same with or without -Fast.
     [switch]$WorkspaceOnly,
+    # ONE CHECK, BY NAME (PLAN-fast-gates.md Unit B step 1): `gate.ts --tier push` runs each suite as its own
+    # child through this. A filter that adds no check: every other check is not run, every result path
+    # (Invoke-Check, Invoke-WorkspaceCheck, the -Fast roster and the -IncludeShared stand-ins) keeps only this
+    # name, and a run reports exactly one result for it. A name nothing registers is a FAIL, not an empty pass.
+    # One name per invocation: a list would not survive `powershell.exe -File` and the console relaunch below.
+    [string]$Only,
     [switch]$Json
 )
 
@@ -183,6 +189,7 @@ function Use-DeploymentEnvironment {
 $results = [Collections.Generic.List[object]]::new()
 
 function Add-Result([string]$Name, [string]$Status, [string]$Detail) {
+    if ($Only -and $Name -cne $Only) { return }
     [void]$results.Add([pscustomobject]@{ check = $Name; status = $Status; detail = $Detail })
 }
 
@@ -199,6 +206,7 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
     # of them take seconds, and a doctor that paid for a scan of this program's source to throw the
     # answer away would be slow for nothing.
     if ($WorkspaceOnly -and -not $script:InWorkspaceCheck) { return }
+    if ($Only -and $Name -cne $Only) { return }
     try {
         $detail = & $Body
         if ($null -eq $detail) { $detail = 'ok' }
@@ -237,6 +245,7 @@ function Invoke-WorkspaceCheck([string]$Name, [scriptblock]$Body) {
     # A SUITE IS NOT A DOCTOR'S CHECK even when it reads the workspace, so -WorkspaceOnly drops it
     # without running it -- and without recording its name, so the report does not carry it either.
     if ($WorkspaceOnly -and $script:InSuiteBranch) { return }
+    if ($Only -and $Name -cne $Only) { return }
     [void]$script:WorkspaceCheckNames.Add($Name)
     if ([string]::IsNullOrWhiteSpace($workspace)) {
         Add-Result $Name 'skipped' $script:WorkspaceAbsentReason
@@ -6805,7 +6814,17 @@ if ($WorkspaceOnly) {
     $results = [Collections.Generic.List[object]]::new()
     foreach ($row in $kept) { [void]$results.Add($row) }
 }
-$failed = @($results | Where-Object { $_.status -eq 'fail' })
+# -Only reports exactly one result. Add-Result has already dropped every other name, so none means no check
+# is registered under it (or this mode does not reach it), and more than one means it is registered twice.
+if ($Only -and $results.Count -ne 1) {
+    $found = $results.Count
+    $results = [Collections.Generic.List[object]]::new()
+    if ($found -eq 0) {
+        Add-Result $Only 'fail' "no check named '$Only' ran in this mode; -Only takes one registered check name"
+    }
+    else { Add-Result $Only 'fail' "'$Only' reported $found results; -Only expects exactly one" }
+}
+$failed =@($results | Where-Object { $_.status -eq 'fail' })
 $summary = [pscustomobject]@{
     operation            = 'Library Checks'
     # BOTH ROOTS, because since step 22 they are two answers and a report naming one of them

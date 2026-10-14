@@ -1,6 +1,7 @@
 # ADR-0076: A seat records its assistant and approved launch flags
 
 **Status:** accepted
+**Superseded in part by ADR-0077:** [The main menu offers access by plain name](0077-the-main-menu-offers-access-by-plain-name.md).
 **Date:** 2026-10-12
 **Effective from:** the release that carries c5 (planned 1.4.4)
 **Relates to:** [ADR-0059](0059-bare-deskpost-is-the-main-menu-and-seat-start-is-its-one-launcher.md),
@@ -50,3 +51,22 @@ The flag table reserves conversation, name, folders, root, guard loading and cla
 Unknown bare options or --x=value remain the reader's choice; no sandbox or approval mode is recommended
 or judged. Release rehearsal checks the table against the installed clients. Sections 221–223 prove the
 record, CLI, settings and menu contracts; a real-client fixture proof and the release rehearsal complement them.
+
+## C8 amendment: guard-loading values (2026-10-12)
+
+The launcher reserves Codex config roots `hooks`, `mcp_servers`, `plugins`, `features`, `profiles`,
+`profile` and `shell_environment_policy`. Stored `-c`/`--config` cannot replace those tables or their
+children. The Library config enables `features.hooks`, registers the validated reader, disables
+inherited servers and plugins, and excludes inherited Windows Path. `.codex/hooks.json` registers
+the read, shell and patch guards and context hooks. Those registrations must survive seated launches.
+
+Stored `-p`/`--profile` is refused because it layers another config file. `--enable`/`--disable` cannot
+toggle any of the reserved names above; `daemon_auto_start` remains reserved. Other feature values
+remain available. Validation covers separate, equals and attached short values. Claude's
+`--mcp-config` and `--strict-mcp-config` are reserved because they can replace the reader's servers.
+Ordinary model overrides remain available. Previously stored guard overrides make the record invalid
+and follow the existing named reset route.
+
+Legacy registry rows receive the existing `seat_id` field on their first launch-setting write under
+the registry lock. Preview assigns no id; its approval binds the original legacy row. Section 224
+proves these boundaries and creation's final assistant and conversation plan.

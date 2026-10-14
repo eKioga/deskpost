@@ -75,26 +75,25 @@ deskpost seat start fallout --project fallout-settlements
 
 That makes the seat, binds it to the Project, opens the Hub on its Desk, and starts your assistant
 there. Add `--command codex` for a Codex launch. To save Codex for later visits, type `deskpost`,
-then `s<number>` for this seat, `a`, and `codex`. Its number then opens the saved assistant.
-The settings screen's `f` saves flags after a launch preview; `c` copies them from a named seat
-after a fresh preview. Every Codex launch gets `--no-daemon` automatically.
+choose this seat, then **Settings**, **Assistant**, and **Codex**. **Access** saves a named choice
+or your own typed settings after a preview. Every Codex launch gets `--no-daemon` automatically.
 
-**Or from the menu, in one go.** Type `deskpost`, then `+`, and name the project. The menu makes the Hub
-and the seat together and asks four more things, each with `[Enter]` for "none":
+**Or from the menu, in one go.** Type `deskpost`, choose **New seat** (or **Make your first seat**),
+and enter a name such as `fallout-settlements`. Use arrows to move, Enter to choose, and Esc to go
+back. When seats exist, typing searches seats and actions. The next two screens ask for an
+installed assistant and its access. Exact settings appear below each access choice; Full access
+requires typing `full`.
 
-- **A template**: `[p]` performer, a seat that works its own lane, or `[o]` orchestrator, the one seat
-  of a department that answers and routes letters to it. The template's role text becomes the new
-  Hub's Purpose, with your project's name filled in. An existing Hub keeps its own Purpose.
-- **A department**: a short slug that groups seats, such as `engineering`. The menu lists the ones
-  that exist, says when yours is new, and tells a performer who its orchestrator is. A role needs a
-  department, and a department has one orchestrator; the menu says so and offers the way round.
-- **A seat card**: one line on what this seat handles, which other seats read in `deskpost seat cards`.
-- **Shelf Books** to have open from the start, by number.
+The ready screen offers **Make it and start**, **Make it, but do not start it yet**, and
+**More choices (department, template)**. More choices asks for a department such as `engineering`,
+then offers the six templates: performer, orchestrator, auditor, ideas, developer and planner.
+Developer and planner propose a seat name from the department; the Project keeps the name you
+entered first. An existing Hub keeps its Purpose. The menu makes the Hub and seat, saves the
+assistant and access, and starts only after saving succeeds. If it makes the seat but cannot
+finish starting, it directs you to Settings.
 
-Then it shows **one preview** of everything it is about to do, with one `plan_id`, and waits for
-`[Enter]`. Use `a` in that preview to choose Claude Code or Codex; Enter saves the assistant for
-the new seat, initially with no extra flags. If anything about the seats changed while the preview
-was open, it shows you the new one instead of going ahead.
+Seat cards and Books to open at creation can be set with the command-line form below.
+Small terminals and `deskpost menu --plain` use numbered sentences for the same menu choices.
 
 The same choices work from a terminal, previewed first:
 

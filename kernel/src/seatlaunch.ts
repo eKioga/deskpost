@@ -1,7 +1,7 @@
 /** A seat's launch record and the shared, pure launch planner (ADR-0076). */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { writeAtomicText } from './fsx.ts';
 import { enterSeatRegistryLock, exitBookLock, assertSeatRegistryLockHeld } from './locks.ts';
 import { beginSeatMutation, recheckSeatMutation, seatFilePaths } from './seatpaths.ts';
@@ -9,12 +9,14 @@ import { addedDirsStatus, addedDirArguments, lettersPromptArguments, nameArgumen
 import { ASSISTANT_LABEL, isConversationId, type Assistant, type ConversationView } from './conversation.ts';
 
 import { resolveSeatName } from './seatdesk.ts';
-import { readRegistryRows, registryFilePath } from './seatregistry.ts';
+import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatregistry.ts';
 import { readInboundSettings, inboundSettingsArguments } from './seatinbound.ts';
 import { seatConversationView, newConversationId } from './conversation.ts';
 import { agentExecutable, resolveOnPath } from './machine.ts';
 import { pendingLetterPagesForSeat } from './desk.ts';
 import type { PsJsonValue } from './psjson.ts';
+import { LAUNCH_ACCESS_VALUES } from './menuaccess.ts';
+export { LAUNCH_ACCESS_VALUES } from './menuaccess.ts';
 
 export class SeatLaunchRefusal extends Error {}
 export const launchDigest = (bytes: string | Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -73,14 +75,30 @@ export function writeSeatLaunch(workspace: string, seat: string, record: LaunchR
 /** One table for forbidden names, aliases and value-taking options; unknown bare flags remain possible. */
 export const LAUNCH_FLAG_TABLE = {
   claude: {
-    forbidden: ['--resume', '-r', '--session-id', '--continue', '-c', '--fork-session', '--teleport', '--from-pr', '--name', '-n', '--add-dir', '--settings', '-i', '--image', '-w', '--worktree', '--bare', '--safe-mode', '--setting-sources', '--bg', '--background', '--desktop', '--tmux', '--no-daemon', 'daemon_auto_start'],
-    values: ['--model', '--permission-mode', '--effort', '--agent', '--output-format', '--input-format', '--max-budget-usd', '--fallback-model', '--system-prompt', '--append-system-prompt', '-m'],
+    forbidden: ['--resume', '-r', '--session-id', '--continue', '-c', '--fork-session', '--teleport', '--from-pr', '--name', '-n', '--add-dir', '--settings', '--mcp-config', '--strict-mcp-config', '-i', '--image', '-w', '--worktree', '--bare', '--safe-mode', '--setting-sources', '--bg', '--background', '--desktop', '--tmux', '--no-daemon', 'daemon_auto_start'],
+    values: ['--model', '--permission-mode', '--effort', '--agent', '--output-format', '--input-format', '--max-budget-usd', '--fallback-model', '--system-prompt', '--append-system-prompt', '--plugin-dir', '--plugin-url', '-m'],
   },
   codex: {
     forbidden: ['--last', '--name', '-n', '--add-dir', '-i', '--image', '-C', '--cd', '--worktree', '--remote', '--remote-auth-token-env', '--no-daemon', 'daemon_auto_start'],
     values: ['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-p', '--profile', '-c', '--config', '--enable', '--disable', '--color'],
   },
 } as const;
+/** The launcher owns these config roots (ADR-0076 C8 amendment), including whole-table replacements. */
+export const GUARDED_CODEX_CONFIG = ['hooks', 'mcp_servers', 'plugins', 'features', 'profiles', 'profile', 'shell_environment_policy'] as const;
+function validateFlagValue(assistant: Assistant, option: string, value: string): void {
+  const allowed = LAUNCH_ACCESS_VALUES[assistant][ALIASES[option] ?? option];
+  if (allowed && !allowed.includes(value)) throw new SeatLaunchRefusal(`${option} takes ${allowed.join(', ')}; got ${JSON.stringify(value)}. Nothing was saved.`);
+  if (assistant !== 'codex') return;
+  if (option === '-p' || option === '--profile') throw new SeatLaunchRefusal(`${option} loads another config profile; profiles are owned by the seated launcher.`);
+  if (option === '-c' || option === '--config') {
+    const key = value.split('=')[0]!.trim();
+    const root = key.split('.')[0]!.replace(/^['"]|['"]$/g, '').trim();
+    if ((GUARDED_CODEX_CONFIG as readonly string[]).includes(root)) throw new SeatLaunchRefusal(`${root} is owned by the seated launcher; it cannot be overridden in stored flags.`);
+  }
+  // --enable/--disable are feature overrides. Guard-loading features cannot be toggled here.
+  if ((option === '--enable' || option === '--disable') && (GUARDED_CODEX_CONFIG as readonly string[]).includes(value))
+    throw new SeatLaunchRefusal(`${value} is owned by the seated launcher; it cannot be toggled in stored flags.`);
+}
 function forbiddenIn(assistant: Assistant, token: string): string | undefined {
   const equals = token.indexOf('=');
   if (equals >= 0) { const inside = forbiddenIn(assistant, token.slice(equals + 1)); if (inside) return inside; }
@@ -89,7 +107,7 @@ function forbiddenIn(assistant: Assistant, token: string): string | undefined {
 }
 export function validateStoredFlags(assistant: Assistant, args: string[]): void {
   const table = LAUNCH_FLAG_TABLE[assistant];
-  let expectsValue = false;
+  let expectsValue = '';
   for (const arg of args) {
     if (/[\x00-\x1f\x7f"%]/.test(arg)) throw new SeatLaunchRefusal('Stored flags cannot hold control characters, DEL, " or %: the launch must preserve each argument.');
     const forbidden = forbiddenIn(assistant, arg);
@@ -97,7 +115,8 @@ export function validateStoredFlags(assistant: Assistant, args: string[]): void 
     if (arg === '--') throw new SeatLaunchRefusal('A bare -- cannot be stored: it could introduce a prompt or subcommand.');
     if (expectsValue) {
       if (arg.startsWith('-')) throw new SeatLaunchRefusal(`Expected one value before ${arg}.`);
-      expectsValue = false; continue;
+      validateFlagValue(assistant, expectsValue, arg);
+      expectsValue = ''; continue;
     }
     if (!arg.startsWith('-') || arg === '-') throw new SeatLaunchRefusal(`Stored token ${JSON.stringify(arg)} is a prompt or subcommand, not an option value.`);
     if (/^-[^-].+/.test(arg)) {
@@ -106,9 +125,12 @@ export function validateStoredFlags(assistant: Assistant, args: string[]): void 
       if (!(table.values as readonly string[]).includes(arg.slice(0, 2))) throw new SeatLaunchRefusal(`Grouped short options (${arg}) are refused; use one option per token.`);
       const hidden = forbiddenIn(assistant, arg.slice(2));
       if (hidden) throw new SeatLaunchRefusal(`${hidden} cannot be stored as an attached value.`);
+      validateFlagValue(assistant, arg.slice(0, 2), arg.slice(2).replace(/^=/, ''));
       continue;
     }
-    expectsValue = !arg.includes('=') && (table.values as readonly string[]).includes(arg);
+    const equals = arg.indexOf('=');
+    if (equals >= 0) validateFlagValue(assistant, arg.slice(0, equals), arg.slice(equals + 1));
+    expectsValue = equals < 0 && (table.values as readonly string[]).includes(arg) ? arg : '';
   }
   if (expectsValue) throw new SeatLaunchRefusal('The last stored option needs one value.');
 }
@@ -119,12 +141,10 @@ function optionNames(args: string[]): string[] {
     return ALIASES[name] ?? name;
   });
 }
-export function escapedArgv(args: string[]): string {
-  return args.map(arg => '"' + [...arg].map(ch => {
-    const code = ch.charCodeAt(0);
-    if (code < 32 || code === 127) return '\\x' + code.toString(16).padStart(2, '0');
-    return ch === '"' ? '\\"' : ch === '\\' ? '\\\\' : ch;
-  }).join('') + '"').join(' ');
+export function escapedArgv(args: string[], platform: NodeJS.Platform = process.platform): string {
+  return args.map(arg => platform === 'win32'
+    ? arg && !/[\s"]/.test(arg) ? arg : '"' + arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"'
+    : /^[a-zA-Z0-9_@%+=:,./-]+$/.test(arg) ? arg : "'" + arg.replace(/'/g, "'\\''") + "'").join(' ');
 }
 function canonicalLaunchJson(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonicalLaunchJson).join(',') + ']';
@@ -177,7 +197,8 @@ export function planSeatLaunch(input: LaunchInput): {
     sessionId = input.mintedId; action = notice ? 'new' : 'minted';
   }
   const stored = assistant ? record?.args[assistant] ?? [] : [];
-  const names = optionNames(stored), duplicate = optionNames(typed).find(n => names.includes(n));
+  const repeatable = assistant === 'codex' ? ['--config', '--enable', '--disable'] : assistant === 'claude' ? ['--plugin-dir', '--plugin-url'] : [];
+  const names = optionNames(stored), duplicate = optionNames(typed).find(n => names.includes(n) && !repeatable.includes(n));
   if (duplicate) throw new SeatLaunchRefusal(`${duplicate} occurs in stored flags (${escapedArgv(stored)}) and typed passthrough (${escapedArgv(typed)}); change s<number> or leave it out of the typed arguments.`);
   const conversation = resume ? (assistant === 'codex' ? ['resume', resume] : ['--resume', resume]) : sessionId ? ['--session-id', sessionId] : [];
   const args = [...conversation, ...nameArguments(assistant, input.seat, typed), ...lettersPromptArguments(assistant, input.letters, typed),
@@ -188,14 +209,14 @@ export function planSeatLaunch(input: LaunchInput): {
 
 
 /** The exact planner preview used by settings: no record, Desk or generated settings file is written. */
-export function seatLaunchPreview(workspace: string, seat: string, recordOverride?: LaunchRecord | null, fallback: Assistant = 'claude', intent: 'new' | 'resume' = 'resume', transcriptRoot?: string) {
+export function seatLaunchPreview(workspace: string, seat: string, recordOverride?: LaunchRecord | null, fallback: Assistant = 'claude', intent: 'new' | 'resume' = 'resume', transcriptRoot?: string, dirsOverride?: string[], mintedId = newConversationId()) {
   const state = path.join(workspace, '.claude');
   const row = readRegistryRows(registryFilePath(state)).find(r => r['seat'] === seat) ?? null;
   const record: LaunchRead = recordOverride === undefined ? readSeatLaunch(state, seat, String(row?.['seat_id'] ?? '')) :
     recordOverride === null ? { state: 'unset', digest: 'absent' } : { state: 'valid', digest: launchDigest(JSON.stringify(recordOverride)), record: recordOverride };
-  let dirs: string[] = []; try { dirs = addedDirsStatus(state, seat).filter(d => d.exists).map(d => d.path); } catch { /* launch names malformed folders separately */ }
+  let dirs: string[] = dirsOverride ?? []; if (dirsOverride === undefined) try { dirs = addedDirsStatus(state, seat).filter(d => d.exists).map(d => d.path); } catch { /* launch names malformed folders separately */ }
   const inbound = readInboundSettings(state, seat);
-  const input: LaunchInput = { seat, row, record, intent, fallback, view: seatConversationView(state, seat, { transcriptRoot }), mintedId: newConversationId(),
+  const input: LaunchInput = { seat, row, record, intent, fallback, view: seatConversationView(state, seat, { transcriptRoot }), mintedId,
     dirs, inbound: [], letters: pendingLetterPagesForSeat(workspace, seat).length, passthrough: [] };
   // The conversation owner can select the executable when no assistant is saved. Its actual route decides encoding.
   const command = planSeatLaunch(input).command;
@@ -253,7 +274,8 @@ export function launchSettingsResult(options: LaunchSettingsOptions): Record<str
       const approved = semantic['approved'] as Record<string, Record<string, string> | null>;
       if (approved[scope]) { delete approved[scope]!['plan_id']; delete approved[scope]!['utc']; }
     }
-    return 'seat-launch-' + launchDigest(canonicalLaunchJson({ operation, scope, seat, seat_id: seatId, current_sha256: read.digest, proposed: semantic }));
+    return 'seat-launch-' + launchDigest(canonicalLaunchJson({ operation, scope, seat, seat_id: seatId,
+      ...(seatId ? {} : { legacy_row: row }), current_sha256: read.digest, proposed: semantic }));
   };
   const read = readSeatLaunch(state, seat, seatId), proposed = propose(read);
   const planId = idFor(read, proposed);
@@ -267,18 +289,26 @@ export function launchSettingsResult(options: LaunchSettingsOptions): Record<str
   const lock = enterSeatRegistryLock(options.workspace, 10);
   try {
     recheckSeatMutation(start);
-    const live = readRegistryRows(registryFilePath(state)).find(r => r['seat'] === seat);
-    if (!live || live['seat_id'] !== seatId) throw new SeatLaunchRefusal('The live seat incarnation changed; nothing was written.');
+    const rows = readRegistryRows(registryFilePath(state));
+    const live = rows.find(r => r['seat'] === seat);
+    if (!live || String(live['seat_id'] ?? '') !== seatId ||
+      (!seatId && canonicalLaunchJson(live) !== canonicalLaunchJson(row))) throw new SeatLaunchRefusal('The live seat incarnation changed; nothing was written.');
     const locked = readSeatLaunch(state, seat, seatId), next = propose(locked);
     if (options.assistant === undefined && idFor(locked, next) !== options.planId) throw new SeatLaunchRefusal('That plan_id does not match this operation, seat incarnation and current launch record; rerun --preflight. Nothing was changed.');
     if (next) {
+      if (!seatId) {
+        // The same UUID format as new seats; existing schema 1 already permits this field.
+        next.seat_id = randomUUID().replace(/-/g, '');
+        live['seat_id'] = next.seat_id;
+        writeSeatRegistry(state, rows);
+      }
       if (options.assistant === undefined) {
         const approval = next.approved[scope as Assistant];
         if (approval) { approval.plan_id = options.planId; approval.utc = new Date().toISOString(); }
       }
       writeSeatLaunch(options.workspace, seat, next);
     } else fs.rmSync(file, { force: true });
-    const after = readSeatLaunch(state, seat, seatId);
+    const after = readSeatLaunch(state, seat, String(live['seat_id'] ?? ''));
     const planned = seatLaunchPreview(options.workspace, seat, undefined, options.fallbackAssistant ?? 'claude', 'resume', options.transcriptRoot);
     return { ...base, ...describe(after), changed: true, launch_line: escapedArgv([planned.command, ...planned.args]), confirmation_required: false };
   } finally { exitBookLock(lock); }

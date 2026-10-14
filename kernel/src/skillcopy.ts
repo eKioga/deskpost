@@ -202,5 +202,5 @@ export function skillInstallationStatus(workspace: string, programRoot: string, 
     }
   }
   if (safeToEnumerate) problems.push(...retiredSkills(workspace, location));
-  return problems.length ? `WARN: ${problems.join('; ')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.` : `${SHIPPED_SKILLS.join(', ')} installed in ${location}; structural check only, live discovery not tested`;
+  return problems.length ? `WARN: ${problems.join('; ').replace(/[.]+$/, '')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.` : `${SHIPPED_SKILLS.join(', ')} installed in ${location}; structural check only, live discovery not tested`;
 }

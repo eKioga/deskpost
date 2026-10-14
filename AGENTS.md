@@ -17,12 +17,12 @@ summarises the boundaries; that file governs the code.
 
 Development runs in sessions from a **Kickoff**, by [The Dev Session Loop](docs/dev-session-loop.md):
 one Kickoff at a time, its rows as commits, a handback, then stop. Read that page before any work; it
-holds the roles (builder, integrator, support), what each may do, and the differences between Claude
+holds the roles (planner, builder, integrator), what each may do, and the differences between Claude
 Code and Codex. A unit reaches a build seat only as a Kickoff, never by letter or a list on a Hub.
 
 The build seats' Project Hubs are the durable source of current development state:
-`deskpost-dev` (Claude Code; builder and integrator) and `deskpost-codex-dev` (Codex; builder).
-`deskpost-desk` (support) writes their Kickoffs and keeps the backlog; the order of work is
+`deskpost-dev` (Claude Code) and `deskpost-codex-dev` (Codex), either a builder or the one named
+integrator as its Kickoff assigns. `deskpost-desk` (planner) writes their Kickoffs and keeps the backlog; the order of work is
 [docs/roadmap.md](docs/roadmap.md). Read a Hub through the validated reader while it is open on the
 Desk; when it is closed, ask the reader to open it, and never bypass the Desk with a direct content
 reader.
@@ -84,9 +84,10 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
 
 **In a Kickoff, a commit's pass mark is the pre-commit hook's own run, made from a clean tree** (the
 working tree equal to the index), with the commit SHA it ran for reported in the handback: see "The
-gates" in [The Dev Session Loop](docs/dev-session-loop.md). The full command below is the push gate and
-the acceptance test outside a Kickoff, run from the checkout with the seat variables blank and the installed
-`bin` off PATH:
+gates" in [The Dev Session Loop](docs/dev-session-loop.md). A chartered push's gate is
+`node tools/gate.ts --tier push` (about 13 minutes since S119; the same checks and verdicts as the serial run).
+The full command below is that serial reference and the acceptance test outside a Kickoff, run from the
+checkout with the seat variables blank and the installed `bin` off PATH:
 
 ```
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1

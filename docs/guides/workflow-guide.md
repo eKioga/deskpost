@@ -41,12 +41,13 @@ flowchart TD
     C --> F
 ```
 
-The main menu, `deskpost`, opens each seat in its saved assistant. `s<number>` chooses that
-assistant with `a`, sets flags with `f`, or copies them from a named seat with `c`; each flag
-change shows a launch preview for approval. A number resumes there, or starts a new conversation
-when the last one belongs to the other assistant; the row says so and keeps that older
-conversation resumable in its owner. The new-seat preview's `a` saves its assistant on Enter.
-Every Codex launch gets `--no-daemon` automatically.
+The main menu, `deskpost`, uses arrows to move, Enter to choose, Esc to go back, and typing to
+search. Choose a seat, then continue its last conversation, start a new one, or choose Settings.
+Settings offers Assistant, Access, Folders, Exact command and Retire; access changes show a
+preview before saving. Choosing a different assistant starts a new conversation and keeps the
+older conversation resumable in its owner. New seat asks for name, installed assistant and access,
+then offers a ready screen with More choices for department and template. Small terminals and
+`deskpost menu --plain` use numbered sentences. Every Codex launch gets `--no-daemon` automatically.
 
 `deskpost seat start` also works for Claude Code and for Codex (`--command codex` for that launch).
 A seatless Claude Code session can bind a seat when you answer its
