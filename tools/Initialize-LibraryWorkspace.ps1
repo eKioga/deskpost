@@ -1602,7 +1602,7 @@ function Invoke-LibraryWorkspaceInitSelfTest {
         $codexPaths = @(@($codexDoc.hooks.PSObject.Properties) | ForEach-Object {
             foreach ($block in @($_.Value)) { foreach ($entry in @($block.hooks)) { (Get-HookEntryText $entry) } }
         })
-        Check ($codexPaths.Count -eq 8) "init registered $($codexPaths.Count) Codex hook(s) rather than 8"
+        Check ($codexPaths.Count -eq 12) "init registered $($codexPaths.Count) Codex hook(s) rather than 12"
         foreach ($text in $codexPaths) {
             foreach ($token in @($text -split '\s+')) {
                 $candidate = $token.Trim('"')

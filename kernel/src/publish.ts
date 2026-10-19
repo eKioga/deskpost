@@ -52,7 +52,7 @@ import { getShelfBook } from './shelfbook.ts';
 import { ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogEntryPath, singleTrailingNewline, testShelfCatalogEntryText } from './shelfcatalog.ts';
 import { assertShelfBookOpen } from './triage.ts';
 import { removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
-import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
+import { judgeWriteResult, McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { programRoot } from './programroot.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
@@ -422,9 +422,9 @@ function field(object: unknown, name: string): unknown {
   return (object as Record<string, unknown>)[name];
 }
 
+/** The one judge (kickoffs/s121 row 7): a refused edit_note is an ordinary result, so isError alone is never trusted. */
 function toolRejected(response: unknown): boolean {
-  const error = field(response, 'error');
-  return (error !== undefined && error !== null) || field(field(response, 'result'), 'isError') === true;
+  return judgeWriteResult(response).refused;
 }
 
 /** `[string]` of a value ConvertFrom-Json produced, as `Meta` renders it: `True`/`False` for a boolean. */

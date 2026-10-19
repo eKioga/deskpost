@@ -25,8 +25,9 @@ closing and the letter counts are in [Letters, departments and seat cards](lette
    **letter**: `deskpost capture letters --for <seat>`, and the message only rings for it (ADR-0062,
    ADR-0071).
 3. **Ring a seat by its `message_name` from your Desk**, replies included, never by the `from` address a
-   message arrived with: a pipe address can outlive its session, and it names no seat. At most one message
-   per open question, and one batched notice per session otherwise. Each delivered message costs the
+   message arrived with: a pipe address can outlive its session, and it names no seat. A bare name refused
+   with a ` (N)` suggestion for the same seat (`deskpost-desk (2)`) is that seat: send to the suggested ref.
+   At most one message per open question, and one batched notice per session otherwise. Each delivered message costs the
    receiver a turn.
 4. **After a session's last notice, the other side sends it nothing.** A message that arrives later is
    noted in one line, answered by nothing (a reply would start a turn in an idle session), and left for
@@ -73,7 +74,7 @@ From deskpost-desk: a letter for you, `letters` `notes/<page>`
 If it is null, the capture's `recipient_message_name_reason` says why: `closed`, `codex` or `not yet
 named` (the session is up and has had no prompt; read once more on your next turn). The letter waits
 either way, and the recipient hears of it when it opens: the launcher's first prompt, or its Desk's
-letters line.
+letters line. A seat in another Library is never rung: its Library collects the letter at its next session.
 
 **A held or denied ring is not resent.** `SendMessage` says when a message was held or denied; the
 letter is already written, so nothing more is needed. A recipient never acknowledges a ring: its answer

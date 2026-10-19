@@ -27,14 +27,14 @@
  *   - workspace.no-foreign-install, reset.vocabulary-routes, retrieval.hit-is-a-location,
  *     codex.delegation-runs-hooks: their document halves, ported. Their fixture halves exercise PowerShell helpers
  *     a document cannot change.
- *   - public.identity-scan: tools/DeploymentScan.ps1's own Invoke-IdentityScan, over the staged blobs (and the commit
+ *   - public.identity-scan: tools/scan.ts's identity scan, over the staged blobs (and the commit
  *     message with --commit-message-file; .githooks/commit-msg scans the message on every commit as before).
- *   - public.no-deployment-defaults: the same file's Find-DeploymentScanHits, over the staged documents its product
- *     file set holds, against Get-DeploymentScanDenylist from the workspace the runner would resolve.
- *   - kernel.selftest: section 119 only, the one section that reads repository documents (the rules register's homes
- *     and anchors).
- * Both scans run in one `powershell.exe -NoProfile -Command` that dot-sources the existing files: one denylist, never
- * two, and no PowerShell file changes.
+ *   - public.no-deployment-defaults: tools/scan.ts's deployment scan, over the staged documents its product
+ *     file set holds, against configured values from the workspace the runner would resolve.
+ *   - kernel.selftest: section 119 only (the rules register's homes and anchors), the one section this gate runs. Other
+ *     sections read documents too; a document one of them reads is a contract document below, so the full runner
+ *     checks it (section 240 and docs/kickoff-template.md, kickoffs/s127 row 3).
+ * Both scans run in one Node process; the PowerShell oracle remains unchanged.
  *
  * Usage: node tools/docs-gate.ts [--commit-message-file <file>]
  */
@@ -61,6 +61,7 @@ const CONTRACT_DOCUMENTS: ReadonlyArray<{ match: (p: string) => boolean; why: st
   { match: (p) => p === 'docs/adr/0003-decisions-follow-their-subject.md', why: 'hub.dev-template-seeds-sections reads it' },
   { match: (p) => p === 'docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close.md', why: 'hub.sections-name-their-destinations reads it' },
   { match: (p) => p === 'docs/supported-operation-matrix.md', why: 'acceptance.matrix-doc-matches-rows renders it from the matrix' },
+  { match: (p) => p === 'docs/kickoff-template.md', why: 'self-test section 240 reads its fenced block and runs tools/kickoff-check.mts on it' },
 ];
 
 type Outcome = { check: string; status: 'pass' | 'warn' | 'fail'; detail: string };
@@ -407,63 +408,25 @@ function delegationRunsHooks(index: Index): Outcome {
   return { check, status: 'pass', detail: `${commands} delegation command(s) across ${surfaces.length} surface(s) carry ${trustFlag}, and both name the CODEX_HOME precondition` };
 }
 
-/**
- * The two scans, through tools/DeploymentScan.ps1's own functions in one PowerShell process. The values travel in
- * environment variables, so nothing is quoted into the command text.
- */
-const SCANS_COMMAND = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$program = $env:DOCS_GATE_PROGRAM
-. (Join-Path $program 'tools/LibraryDeployment.ps1')
-. (Join-Path $program 'tools/DeploymentScan.ps1')
-$result = [ordered]@{}
-try {
-    $scan = Invoke-IdentityScan -Workspace $program -CommitMessageFile $env:DOCS_GATE_MESSAGE
-    $result.identity = [ordered]@{ status = [string]$scan.status; detail = [string]$scan.detail }
-} catch { $result.identity = [ordered]@{ status = 'fail'; detail = "the identity scan threw: $_" } }
-try {
-    $resolved = Resolve-LibraryWorkspace -Explicit ''
-    if ([string]$resolved.kind -ceq 'conflict') { throw ([string]$resolved.reason) }
-    $denylistRoot = if ([string]$resolved.kind -ceq 'none') { $program } else { (Resolve-Path -LiteralPath ([string]$resolved.workspace)).Path }
-    $product = @(Get-DeploymentScanFiles -Workspace $program)
-    $staged = @($env:DOCS_GATE_FILES -split "\n" | Where-Object { $_ })
-    $files = [string[]]@($staged | Where-Object { $product -contains $_ })
-    $denylist = [string[]]@(Get-DeploymentScanDenylist -Workspace $denylistRoot)
-    $hits = @(Find-DeploymentScanHits -Workspace $program -Files $files -Denylist $denylist)
-    if ($hits.Count) {
-        $named = @($hits | ForEach-Object { "$($_.file):$($_.line) [$($_.kind)] $($_.match)" } | Sort-Object -Unique)
-        $result.deployment = [ordered]@{ status = 'fail'; detail = ("$($hits.Count) deployment default(s) in product files: " + ($named -join '; ') + '. These ship. Move the value into generated state and resolve it through tools/LibraryDeployment.ps1.') }
-    } else {
-        $result.deployment = [ordered]@{ status = 'pass'; detail = "$($files.Count) staged product document(s) clean against $($denylist.Count) configured value(s) from $denylistRoot and the structural detectors" }
-    }
-} catch { $result.deployment = [ordered]@{ status = 'fail'; detail = "the deployment scan threw: $_" } }
-[Console]::Out.WriteLine('DOCS-GATE-SCANS ' + ($result | ConvertTo-Json -Compress -Depth 4))
-`;
-
+/** Both scans share the TypeScript port; DeploymentScan.ps1 stays the parity oracle. */
 function scans(root: string, documents: string[], messageFile: string): Outcome[] {
-  const ran = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', SCANS_COMMAND], {
-    cwd: root,
-    env: { ...process.env, DOCS_GATE_PROGRAM: root, DOCS_GATE_FILES: documents.join('\n'), DOCS_GATE_MESSAGE: messageFile },
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 1 << 26,
+  const ran = spawnSync(process.execPath, [path.join(root, 'tools/scan.ts'), '--identity', '--deployment', '--files', documents.join('\n'), ...(messageFile ? ['--commit-message-file', messageFile] : []), '--json'], {
+    cwd: root, env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26,
   });
-  const line = (ran.stdout ?? '').split(/\r?\n/).find((entry) => entry.startsWith('DOCS-GATE-SCANS '));
-  if (!line) {
-    const why = `${(ran.stderr ?? '').trim() || (ran.error ? String(ran.error) : `exit ${ran.status}`)}`.slice(0, 600);
+  try {
+    if (ran.error || ran.status === 2 || ran.status === null) throw Error(ran.stderr || String(ran.error));
+    const parsed = JSON.parse(ran.stdout) as Record<'identity' | 'deployment', { status: string; detail: string }>;
+    return (['identity', 'deployment'] as const).map(name => ({
+      check: name === 'identity' ? 'public.identity-scan' : 'public.no-deployment-defaults (staged documents)',
+      status: parsed[name].status === 'pass' ? 'pass' : parsed[name].status === 'warn' ? 'warn' : 'fail',
+      detail: parsed[name].detail,
+    }));
+  } catch (error) {
     return [
-      { check: 'public.identity-scan', status: 'fail', detail: `the scans did not run, so nothing scanned the staged blobs: ${why}` },
+      { check: 'public.identity-scan', status: 'fail', detail: 'the scans did not run, so nothing scanned the staged blobs: ' + String(error).slice(0, 600) },
       { check: 'public.no-deployment-defaults', status: 'fail', detail: 'the scans did not run' },
     ];
   }
-  const parsed = JSON.parse(line.slice('DOCS-GATE-SCANS '.length)) as Record<'identity' | 'deployment', { status: string; detail: string }>;
-  const as = (check: string, entry: { status: string; detail: string }): Outcome => ({
-    check,
-    status: entry.status === 'pass' ? 'pass' : entry.status === 'warn' ? 'warn' : 'fail',
-    detail: entry.detail,
-  });
-  return [as('public.identity-scan', parsed.identity), as('public.no-deployment-defaults (staged documents)', parsed.deployment)];
 }
 
 function rulesRegister(root: string): Outcome {

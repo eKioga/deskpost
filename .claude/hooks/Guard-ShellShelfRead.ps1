@@ -194,7 +194,7 @@ function Get-ShelfTokens([string]$Command) {
 # read of one, and that will not change: nothing in a command's text tells `grep -rn "shelf/demo" .`
 # from `grep -rn x shelf/demo`. What the reader needs is the route that is NOT refused, and there is
 # one -- `Guard-ShelfBookRead` reads the Grep tool's `path` and `glob` and never its `pattern`.
-$script:PatternRemedy = 'If that text is a search pattern rather than a path, the Grep tool is judged on its path and glob, never on its pattern.'
+$script:PatternRemedy = 'If that text is a search pattern rather than a path, use the Grep tool: its path must be one open root, a glob does not narrow that path, and its pattern is never judged.'
 
 function Format-MatchedText([string]$Text) {
     if ($Text.Length -gt 120) { return "'" + $Text.Substring(0, 117) + "...'" }

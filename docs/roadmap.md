@@ -25,12 +25,16 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **c12/c13** (in progress): 1.4.5.
+- **s135** (in progress): 1.5.0.
+- **c36** (on deskpost-codex-dev): five small fixes for after 1.5.0, beside s135.
+- **The gate lock**: c30's experiment says two seats' gates can run at once (its word: drop), so one heavy check
+  at a time is to become something a seat asks for rather than the rule.
 
 ## Next
 
-In order: the first half of **Development without PowerShell**'s first session, then **1.5.0: Libraries that
-write to each other**, then the rest of **Development without PowerShell**, then **1.6.0** (Eric, 2026-10-10).
+In order: the rest of **Development without PowerShell** (its first session's first half shipped in
+S113, before 1.5.0), then **1.6.0**
+(Eric, 2026-10-10).
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -67,25 +71,6 @@ one collection.
 Hard limits: **no accounts, no database, no internet service** of Deskpost's own. It follows the
 remaining sessions of **Seats you can rename**, and it comes in two releases, each worth keeping even
 if the next never ships. Moving the development tools off PowerShell may come between them.
-
-#### 1.5.0: Libraries that write to each other (0 of about 2 sessions)
-
-- **A Library card**: a display name for a Library, with no account and no server behind it. The
-  card is a label, not a credential and not an address. The Desk and `collection owner --status` name
-  a Library by its card, with its id beside it.
-- **A Postbox in Basic Memory**: `deskpost postbox setup` connects a Library to a Basic Memory server,
-  previewed and on your yes, and registers the Library there, so other Libraries can address it.
-- **Letters between Libraries**: `capture letters --for <seat> --library <card>` leaves a letter for
-  a seat in another Library, on another computer or another Claude account. It is delivered exactly
-  once, even after a timeout or a retry, and it waits in the Postbox until the other Library collects
-  it, as a letter waits for a closed seat today. An answer closes the asker's own letter, however many
-  seats passed it on.
-- **Never in the way**: the Postbox is checked at most once per session, in the background, so a
-  session never waits for the server. The Desk counts letters waiting to send, letters received
-  (each naming its Library), and any that could not be delivered; `library doctor` names a Postbox
-  it cannot reach.
-- **Another computer's seats** appear on the Desk only as Claude Code itself lists them, and a seat
-  may ring one when a letter is waiting. Deskpost starts or steers nothing on another computer.
 
 #### 1.6.0: One collection for the household (0 of about 2-3 sessions)
 
@@ -139,8 +124,10 @@ backup as easy, and as encouraged, as it can be, without Deskpost becoming a sto
 
 Smaller improvements, each waiting for a short design before it is scheduled:
 
-- **Editing a Project Hub in fewer steps**: show one section, replace one paragraph, make several
-  edits on one preview, and move old entries to a dated page in one step.
+- **Editing a Project Hub in fewer steps**: show one section, replace one paragraph, and make
+  several edits on one preview. Moving decided items to a dated history page in one step is built:
+  `deskpost hub tidy` moves ticked items, and any whole section you name, word for word, with one
+  preview and one yes (s125, ADR-0082).
 - **Archiving that works everywhere**: archive a Project Hub in a Library with a local collection,
   preview every archive, clear an archived Book from every Desk, and treat a Book that is already
   archived as nothing to do.
@@ -155,9 +142,10 @@ Smaller improvements, each waiting for a short design before it is scheduled:
   out" hint in `library doctor`.
 - **The guards' remaining cases**: a command that names a path in an unusual spelling (a drive
   root, `/d/`, after a `cd`, inside a heredoc or quotes) is judged, never let through.
-- **Upkeep you can see**: `library desk` reports Hub sizes and the Notebook's size, age and
-  growth, with size limits that fit each kind of page; `library doctor` warns when a Notebook keeps
-  growing; a stale Notebook index is caught when it happens.
+- **Upkeep you can see**: built for Hubs: `library desk` reports each open Hub's page sizes
+  against limits that fit how often a page is read, and the ticked items waiting on `_project`
+  (s125, ADR-0082). Still to come: the Notebook's size, age and growth on the Desk, a `library
+  doctor` warning when a Notebook keeps growing, and a stale Notebook index caught when it happens.
 - **Refusals under `--json`** are one object on standard output, so a script reads them as it
   reads everything else.
 
@@ -413,7 +401,37 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
-### 1.4.5: A new main menu (released 2026-10-13)
+### 1.5.0: Libraries that write to each other (released 2026-10-18)
+
+- **A Library card**: a display name for a Library, with no account and no server behind it. The
+  card is a label, not a credential and not an address. The Desk and `collection owner --status` name
+  a Library by its card, with its id beside it.
+- **A Postbox in Basic Memory**: `deskpost postbox setup` connects a Library to a Basic Memory server,
+  previewed and on your yes, and registers the Library there, so other Libraries can address it.
+- **Letters between Libraries**: `capture letters --for <seat> --library <card>` leaves a letter for
+  a seat in another Library, on another computer or another Claude account. It is delivered exactly
+  once, even after a timeout or a retry, and it waits in the Postbox until the other Library's next
+  session collects it; no seat rings another computer. An answer closes the asker's own letter,
+  however many seats passed it on.
+- **Never in the way**: the Postbox is checked at most once per session, in the background, so a
+  session never waits for the server. The Desk counts letters waiting to send, letters received
+  (each naming its Library), and any that could not be delivered; `library doctor` names a Postbox
+  it cannot reach, and passes a Library that has written to another.
+- A session the `deskpost` launcher cannot prove (a Claude Code background job, for one) has no
+  seat, for reading as for writing.
+- A seat corrects or withdraws its own pending Report: `deskpost reports amend` and `withdraw`.
+- `deskpost hub tidy` moves decided Hub items to a history page in one step; Hub pages have size
+  limits by kind, and the Desk shows each open Hub's size.
+- `deskpost book get-page` exports an open Book page with the hash a correction needs.
+- `deskpost letters list` shows this seat's open letters.
+- A page name cut short gets "Did you mean", and capture's answer gives the page to quote.
+- `hub edit` refuses a `##` heading inside a section's text.
+- `doctor` says when a Codex hook review was made before the hooks changed.
+- Codex seats get save and closeout skills, checked by the Library.
+- The new seat's ready screen shows the typed settings and marks full access; a search hit on a
+  deeper heading names its `##` section; a held Report says so.
+
+### 1.4.5: A new main menu (released 2026-10-14)
 
 - **A new main menu:** arrows move, Enter chooses, Esc goes back, and typing searches seats and
   actions. Choose a seat, then what to do; access choices have plain names. A new seat takes name,

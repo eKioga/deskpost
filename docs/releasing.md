@@ -62,6 +62,18 @@ version being released, `<prev>` the one before it, `<pf>` the publish folder `D
 Kickoff adds the checks its own release needs (the reads of what it ships) and may override anything here; where it
 is silent, this section holds.
 
+**Each step's child PATH.** Release proofs run in child processes with an explicit PATH, so the installed Deskpost
+never answers for the candidate. Start every child from the base (`C:/Windows/System32`,
+`C:/Windows/System32/WindowsPowerShell/v1.0`, `C:/Program Files/Git/cmd`, `C:/Program Files/nodejs`) and add only
+what the step runs: the build adds Bun's folder (`Build-KernelRelease.ps1` stops with "bun is not on PATH"); the
+preparation (`prepare.ps1`) adds gitleaks's folder (`%USERPROFILE%/scoop/shims` on the release PC), and confirms
+`gitleaks version` answers before it runs, since c19's two scans could not start and still printed "no leaks found";
+the mirror step runs Python through `C:/Windows/py.exe -3`, named in full ("Starting the mirror");
+a seated or upgrade rehearsal adds the installed assistants' folders (`%USERPROFILE%/.local/bin`, `%APPDATA%/npm`),
+or a saved seat reports its assistant "not found here"; a compiled self-test adds `C:/Program Files/Git/usr/bin`
+first when `command -v sh` finds nothing; a fixture's own commands put that fixture's install `bin` first. Record
+each child's PATH beside its result (c16, c17 and c19 each lost a run to a missing entry).
+
 **The bump commit** ("Deskpost `<new>`", step 1): `<prev>` to `<new>` at every site and nowhere else. Find the sites
 with `git grep -n "<prev>"` (escape the dots); what is left afterwards is history (the roadmap's earlier entries, plans,
 ADRs, kernel comments, `kernel/test/`, `tools/`, examples), listed in the commit message. If the release seat's build
@@ -106,7 +118,10 @@ substituted line. Nothing installs, upgrades, rolls back or repairs the real ins
 
 **The upgrade from `<prev>`**, in a fixture laid out as a long-time reader's install: `<prev>` installed by
 `<pf>\v<prev>\rel\install.ps1` at a non-default root, its `bin` on the twin key; a Library with Hubs, a Shelf Book with
-a topic folder, two seats (one with `added-dirs.json`, one with inbound `hold`), one letter for a seat and one for a
+a topic folder, a Claude seat and a Codex seat, each made by `seat start <name> --project <slug> --no-launch` and then
+given its assistant by `seat settings <name> --assistant <claude|codex>`, read back with `seat settings <name> --json`
+(`seat start --assistant` picks it for one launch and saves nothing), one with `added-dirs.json`, one
+with inbound `hold`, one letter for a seat and one for a
 department, and the Library's own keys in `.claude/settings.local.json`; a copy of the registry's bytes. Two copies:
 
 - **`deskpost upgrade`** from the fixture's own `bin` (`<prev>`'s binary doing the upgrade): dry run, `--yes`, then the
@@ -119,11 +134,18 @@ Each checked item by item: exactly one "Upgrading Deskpost `<prev>` to `<new>` a
 shims as the previous release left them plus `<new>`; the twin key's entry present once; the Library's own keys
 untouched; the registry unchanged unless the release means to change it. **Then the hooks:** every hook and
 status-line command in the fixture Library's `.claude/settings.json` and `.claude/settings.local.json`, and
-`.codex/hooks.json`'s (PowerShell strings: run them through `powershell.exe -NoProfile -Command`), once each against
-the installed `<new>` with a minimal JSON payload of that event's shape. **None may be refused**; a refusal is
-release-blocking. Record each command and its exit. Then the Kickoff's own reads. From Git Bash with the fixture's
+`.codex/hooks.json`'s (PowerShell strings: run them through `powershell.exe -NoProfile -Command`), each run twice
+with the same JSON payload of that event's real shape and `LIBRARY_SEAT` set to a fixture seat for that child only
+(a seatless run is refused by design): against the installed `<prev>` before the upgrade, and against `<new>` after
+it. **Each pair must agree** on exit and decision (`"permissionDecision":"deny"`, `"decision":"block"`, or neither);
+a refusal or block from `<new>` that `<prev>` did not give is release-blocking. In a local fixture with no Desk pin,
+the Basic Memory read guard refuses under both by design (`Virtual Desk configuration is missing .library-project`,
+read from `.claude/.library-project`): a matching pair, not a blocker (c18 parked on it as "None may be refused";
+c19 matched all 17 pairs). Record each command, its two exits and its two decisions. Then the Kickoff's own reads. From Git Bash with the fixture's
 `bin` first on PATH (the `/c/...` form), `deskpost --version` prints `<new>`. Then two forwarder dry runs with
-`DESKPOST_LIBRARY=<A>`: without `-Library` the plan's Library row names A, with `-Library <B>` it names B. **Rollback
+`DESKPOST_LIBRARY=<A>`: without `-Library` the plan's Library row names A, with `-Library <B>` it names B. The
+installer is then at the same version as the install, so each dry run takes `-Repair -DryRun` to print a plan (plain
+`-DryRun` answers "already at `<new>`"); the repair is never applied. **Rollback
 to `<prev>` last** (the first copy, `versions\<new>\bin\library.exe rollback --yes --json`), and `library desk` and
 doctor under `<prev>` on what `<new>` wrote: each exit and its first refusal or WARN line. A `<prev>` that refuses is
 not a blocker; it is a "How to upgrade" line and a morning item.
@@ -140,8 +162,9 @@ not a blocker; it is a "How to upgrade" line and a morning item.
 
 Both `HOME`s deleted afterwards by the program that made them; the distro stopped again if it was stopped.
 
-**The compiled arm**: `tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel <rel's win-x64 library.exe>`, no
-`-IncludeShared`, alone. Every differential row green except the two known init-rerun rows. A difference the release
+**The compiled arm**: `tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel <rel's win-x64 library.exe> -KeepFixtures
+-WorkDirectory <evidence folder>\matrix`, no `-IncludeShared`, alone; without `-KeepFixtures` each row's folder is
+deleted after its verdict, and a mismatch cannot be diagnosed from the summary alone. Every differential row green except the two known init-rerun rows. A difference the release
 means (a Kickoff or an attempt page names the field) is approved as a delta with `approved_by` naming the Kickoff,
 value patterns at absent, null, `0`, `all` or `none` where they can, in one commit, `acceptance.matrix-shape` green,
 the rows rerun green. Any other difference is a defect. **A delta commit changes the release commit**: build and judge
@@ -208,7 +231,7 @@ the mirror's daily run (cron `0 12 * * *`, 12:00 UTC) publishes within a day; sa
   password).
 - Never print, log or export the Forgejo token, not even its length. Send it only as `Authorization: token <value>`.
 - To check the route without reading the item:
-  `python D:\dev\projects\deskpost-secrets\deskpost_secrets.py check` (names only: token found, `op` version, signed
+  `C:/Windows/py.exe -3 -I D:\dev\projects\deskpost-secrets\deskpost_secrets.py check` (names only: token found, `op` version, signed
   in as `SERVICE_ACCOUNT`, item titles).
 
 **The calls.** The Forgejo host is the one this checkout's `origin` names (`git remote get-url origin`); it is not
@@ -221,10 +244,13 @@ written here.
   tell home-lab-admin, never retry with another token.**
 - Before the yes, use Git's stored login to run `git ls-remote https://<origin-host>/Kioga/deskpost-ops.git refs/heads/main`, then `git clone --depth 1 --no-checkout https://<origin-host>/Kioga/deskpost-ops.git <scratch>/ops`. Read `.forgejo/workflows/publish.yml` with `git -C <scratch>/ops show HEAD:.forgejo/workflows/publish.yml` and check `workflow_dispatch:`. Run this in one program's temporary-directory context so it removes the scratch clone after its child processes exit; do not read or print a credential.
 
-**The script.** Save it to the session's scratch folder as `mirror_start.py` and run `python -I mirror_start.py`
-from this checkout (it reads the host from `origin`). Read it end to end first: S107's first green read was wasted by
-a leftover line that crashed after the read and before the call, and a syntax check (`python -I -m py_compile`) does
-not catch that. The one change from S107's script: `EXPECTED_HOST` comes from `origin` instead of a literal.
+**The script.** Save it to the session's scratch folder as `mirror_start.py` and run
+`C:/Windows/py.exe -3 -I mirror_start.py` from this checkout (it reads the host from `origin`; the Python launcher
+lives in `C:/Windows`, outside the base child PATH, so it is named in full: c20 searched for a `python.exe`). Read it
+end to end first: S107's first green read was wasted by a leftover line that crashed after the read and before the
+call, and a syntax check (`py -3 -I -m py_compile`) does not catch that. The changes from S107's script:
+`EXPECTED_HOST` comes from `origin` instead of a literal, and an error response's body is never printed and each HTTP
+status only when it is not a success (as c20 ran it).
 
 ```python
 # Start publish-mirror on Kioga/deskpost-ops: ONE 1Password read, ONE workflow_dispatch call, ONE status read.
@@ -274,12 +300,13 @@ def call(method, url, body=None):
         with urllib.request.urlopen(req, timeout=60) as resp:
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace")
+        return e.code, ""
 
 
 base = f"https://{EXPECTED_HOST}/api/v1/repos/{REPO}/actions"
 status, text = call("POST", f"{base}/workflows/publish.yml/dispatches", {"ref": "main", "return_run_info": True})
-print(f"dispatch: HTTP {status}")
+if status not in (200, 201, 204):
+    print(f"dispatch: HTTP {status}")
 if status not in (200, 201, 204):
     raise SystemExit(1)
 run_id = None
@@ -291,7 +318,8 @@ if run_id is None:
     print("No run id returned (204); no status read made.")
     raise SystemExit(0)
 status, text = call("GET", f"{base}/runs/{run_id}")
-print(f"status read: HTTP {status}")
+if status != 200:
+    print(f"status read: HTTP {status}")
 if status == 200:
     run = json.loads(text)
     print(f"run {run.get('id')}: status {run.get('status')}, conclusion {run.get('conclusion')}")
@@ -334,4 +362,6 @@ also refused branch amends and deletes on some days and allowed them on others; 
 worked: the reader's message names the exact action ("publish 1.4.0"), never a bare "yes"; the push runs as one
 plain command, with its checks in separate calls. Classifier rules live only in the reader's user settings, and a
 change to them is the reader's own edit, never one an agent writes or scripts. Log any new block with its reason,
-the Claude Code version and how many seats were open.
+the Claude Code version and how many seats were open. A block is a fault of that session, not a rule (Eric,
+2026-10-13): tell the reader that restarting the session may clear it, and the restarted session tries the step
+once more, the same way.

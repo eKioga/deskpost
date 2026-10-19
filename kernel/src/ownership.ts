@@ -533,6 +533,8 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
           mode: 'status',
           workspace,
           workspace_id: workspaceId,
+          // THE LIBRARY BY ITS CARD, beside its id (kickoffs/s121 row 8); null until a card is set.
+          library_card: markerField(readMarker(workspace), 'card').trim() || null,
           backend: backend.state,
           collection_root: backend.collection_root,
           harness_servers: harnessServers,
@@ -633,6 +635,8 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
         mode: 'status',
         workspace,
         workspace_id: workspaceId,
+        // THE LIBRARY BY ITS CARD, beside its id (kickoffs/s121 row 8); null until a card is set.
+        library_card: markerField(readMarker(workspace), 'card').trim() || null,
         backend: backend.state,
         collection_root: collectionRoot,
         harness_servers: harnessServers,

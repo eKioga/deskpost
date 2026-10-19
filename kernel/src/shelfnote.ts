@@ -33,6 +33,11 @@ export interface ShelfNoteRow {
   /** Provenance and the discipline fields. Null when the note does not carry the line. */
   reviewed: string | null;
   fromSeat: string | null;
+  /**
+   * The writer's `seat_id` when the note was written (kickoffs/s130 row 1): written by capture since 1.5.0 for a seated
+   * capture with a valid id. Null with no line, as every older note and every seatless one has.
+   */
+  fromSeatId: string | null;
   forSeat: string | null;
   why: string | null;
   filedTo: string | null;
@@ -53,6 +58,29 @@ export interface ShelfNoteRow {
   hops: number | null;
   /** What became of a letter its recipient closed with `letters close` (kickoffs/s108 ruling 2). Null with no line. */
   closedNote: string | null;
+  /**
+   * A Report or letter held open by triage (kickoffs/s121 row 5): the date it was held and the page that says why. Null
+   * with no line. A held note stays `review: pending`; these say it was read, not that it is closed.
+   */
+  held: string | null;
+  heldRecord: string | null;
+  /**
+   * A Report its filing seat amended (kickoffs/s130; ADR-0083): the UTC stamp of the latest `## Update` and how many
+   * there are. Null with no line.
+   */
+  updated: string | null;
+  updateCount: number | null;
+  /**
+   * A LETTER THAT NAMES A LIBRARY (kickoffs/s121 row 10; PLAN-many-libraries.md Stage 1 item 3). Null with no line, as
+   * every local letter is. `localLibraryId` is not a field: it is the id of the Library whose Book holds the note, read
+   * from that Library's marker, so the recipient and writer rules can tell this Library's letters from another's.
+   */
+  fromLibraryId: string | null;
+  fromLibraryCard: string | null;
+  forLibraryId: string | null;
+  originLibraryId: string | null;
+  originDeliveryId: string | null;
+  localLibraryId: string | null;
   /**
    * The reserved keys this note carries twice, or with a value of the wrong shape (`malformedNoteKeys`), sorted; empty
    * for a well-formed note. Display is tolerant and mutation strict: a malformed address reaches no seat.
@@ -118,10 +146,38 @@ export const RESERVED_NOTE_KEYS: readonly string[] = [
   'closed_note',
   // How a letter to a department was delivered (kickoffs/s110 ruling 7, ADR-0073): to its orchestrator or its only seat.
   'department_delivery',
+  // A note held open by triage (kickoffs/s121 row 5): when, and the page that records why.
+  'held',
+  'held_record',
+  // A letter that names a Library (kickoffs/s121 row 10; PLAN-many-libraries.md Stage 1 item 3). A local letter has none.
+  'from_library_id',
+  'from_library_card',
+  'for_library_id',
+  'origin_library_id',
+  'delivery_id',
+  'origin_delivery_id',
+  'answers_delivery_id',
+  'postbox_path',
+  'stale_delivery',
+  'postbox_damaged',
+  // The writer's seat id, and a Report's amendments by its filing seat (kickoffs/s130 row 1; ADR-0083).
+  'from_seat_id',
+  'updated',
+  'update_count',
+  // A delivered answer that could not match its asker's copy (kickoffs/c37 row 2).
+  'answer_unmatched',
 ];
+const LIBRARY_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A delivery id's alphabet (plan item 4): lowercase letters, digits and hyphens, so it is its own file name. */
+const DELIVERY_ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/;
 
 const NOTE_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const NOTE_LINK = /^notes\/[^/\s]+$/;
+/**
+ * WHERE A HELD NOTE'S RECORD IS (kickoffs/s121 row 5): a Library page path below a top folder, with no `..`, space,
+ * bracket or pipe, such as `projects/deskpost-desk/notes/2026-10-15-triage`. One rule for the triage action and the note.
+ */
+export const HELD_RECORD_SHAPE = /^(?!.*(?:^|\/)\.\.?(?:\/|$))[a-z0-9][a-z0-9._-]*(?:\/[A-Za-z0-9._-]+)+$/;
 /** The fields whose value has a shape (plan session 3 item 2): a value that does not fit it makes the note malformed. */
 const FIELD_SHAPES: Record<string, RegExp> = {
   for_seat_id: /^[0-9a-f]{32}$/,
@@ -137,6 +193,23 @@ const FIELD_SHAPES: Record<string, RegExp> = {
   // ONE LINE, NO CONTROL CHARACTER (capture's rule, kickoffs/s108 ruling 2): the line itself ends at the line break, so
   // what is left to judge is a tab or another control character inside it.
   closed_note: /^[^\u0000-\u001f\u007f-\u009f]+$/,
+  held: /^\d{4}-\d{2}-\d{2}$/,
+  held_record: HELD_RECORD_SHAPE,
+  from_library_id: LIBRARY_ID_SHAPE,
+  for_library_id: LIBRARY_ID_SHAPE,
+  origin_library_id: LIBRARY_ID_SHAPE,
+  // A card as `library card` takes it (kickoffs/s121 row 8): a label of one line.
+  from_library_card: /^[\p{L}\p{N}][\p{L}\p{N} '._&()-]{0,59}$/u,
+  delivery_id: DELIVERY_ID_SHAPE,
+  origin_delivery_id: DELIVERY_ID_SHAPE,
+  answers_delivery_id: DELIVERY_ID_SHAPE,
+  postbox_path: /^postbox\/[A-Za-z0-9._/-]+\.md$/,
+  stale_delivery: /^(true|false)$/,
+  postbox_damaged: /^(true|false)$/,
+  from_seat_id: /^[0-9a-f]{32}$/,
+  updated: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/,
+  update_count: /^[1-9]\d*$/,
+  answer_unmatched: /^(true|false)$/,
 };
 
 /**
@@ -191,18 +264,69 @@ export interface SeatIncarnation {
  * the close rule and the "may close" count all ask this, and nothing else compares a recipient. SINCE S103 (row 3) IT
  * ASKS THE ONE IDENTITY PROJECTION under the letters rule: that rule first, then a name the seat gave up by a rename.
  */
-export function isAddressedTo(note: Pick<ShelfNoteRow, 'forSeat' | 'forSeatId' | 'malformed'>, row: SeatIncarnation | null): boolean {
+export function isAddressedTo(
+  note: Pick<ShelfNoteRow, 'forSeat' | 'forSeatId' | 'malformed'> & Partial<Pick<ShelfNoteRow, 'forLibraryId' | 'localLibraryId'>>,
+  row: SeatIncarnation | null,
+): boolean {
   if (row === null || !note.forSeat) return false;
   if (note.malformed.includes('for_seat') || note.malformed.includes('for_seat_id')) return false;
+  // A LETTER TO ANOTHER LIBRARY IS NEVER A LOCAL SEAT'S (kickoffs/s121 row 10): the sender's own copy names a seat of
+  // that Library, and a seat here with the same slug is not it.
+  if (!isThisLibrary(note.forLibraryId, note.localLibraryId) || note.malformed.includes('for_library_id')) return false;
   return resolvesTo(note.forSeat, note.forSeatId, row, 'letters');
 }
 
 /**
  * WHETHER A SEAT WROTE A NOTE (the seat rule's writer, kickoffs/s103 row 3): its `from_seat` through the identity
- * projection, which carries no id, so the seat holding the name, or the one that gave it up by a rename.
+ * projection, so the seat holding the name, or the one that gave it up by a rename. SINCE s130 (row 1) WITH ITS
+ * `from_seat_id` where the note carries one, under the letters rule: a later seat reusing a retired name is not the
+ * writer, and a note with no id matches by name alone (the legacy rule). A malformed `from_seat_id` names no writer.
  */
-export function isWrittenBy(note: Pick<ShelfNoteRow, 'fromSeat'>, row: SeatIncarnation | null): boolean {
-  return note.fromSeat !== null && resolvesTo(note.fromSeat, null, row, 'letters');
+export function isWrittenBy(
+  note: Pick<ShelfNoteRow, 'fromSeat'> & Partial<Pick<ShelfNoteRow, 'fromSeatId' | 'malformed' | 'fromLibraryId' | 'localLibraryId'>>,
+  row: SeatIncarnation | null,
+): boolean {
+  // ONLY THE AUTHOR'S OWN LIBRARY ACTS AS ITS AUTHOR (kickoffs/s121 row 10): a letter written in another Library has no
+  // writer here, whatever its from_seat says.
+  if (!isThisLibrary(note.fromLibraryId, note.localLibraryId)) return false;
+  if (note.malformed?.includes('from_seat_id')) return false;
+  return note.fromSeat !== null && resolvesTo(note.fromSeat, note.fromSeatId ?? null, row, 'letters');
+}
+
+/**
+ * WHETHER A RECORDED LIBRARY ID IS THIS LIBRARY (kickoffs/s121 row 10): empty means this Library, as every letter
+ * before 1.5.0 is; otherwise it must equal the id of the Library holding the note. Unknown when that id cannot be read.
+ */
+export function isThisLibrary(recorded: string | null | undefined, local: string | null | undefined): boolean {
+  if (!recorded) return true;
+  return !!local && recorded === local;
+}
+
+const LIBRARY_IDS = new Map<string, string | null>();
+
+/** The id of the Library whose folder holds `fullPath`: the nearest `.library/workspace.json` above it, read once. */
+function libraryIdAbove(fullPath: string): string | null {
+  let folder = path.dirname(path.resolve(fullPath));
+  for (let depth = 0; depth < 12; depth += 1) {
+    const cached = LIBRARY_IDS.get(folder);
+    if (cached !== undefined) return cached;
+    const marker = path.join(folder, '.library', 'workspace.json');
+    if (fs.existsSync(marker)) {
+      let id: string | null = null;
+      try {
+        const value = (JSON.parse(fs.readFileSync(marker, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>)['id'];
+        id = typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+      } catch {
+        id = null;
+      }
+      LIBRARY_IDS.set(folder, id);
+      return id;
+    }
+    const parent = path.dirname(folder);
+    if (parent === folder) return null;
+    folder = parent;
+  }
+  return null;
 }
 
 function valueOr(fields: Map<string, string>, key: string, fallback: string): string {
@@ -229,6 +353,7 @@ export function parseShelfNote(name: string, fullPath: string, content: string):
     review: valueOr(fields, 'review', 'pending'),
     reviewed: valueOrNull(fields, 'reviewed'),
     fromSeat: valueOrNull(fields, 'from_seat'),
+    fromSeatId: valueOrNull(fields, 'from_seat_id'),
     forSeat: valueOrNull(fields, 'for_seat'),
     why: valueOrNull(fields, 'why'),
     filedTo: valueOrNull(fields, 'filed_to'),
@@ -244,6 +369,16 @@ export function parseShelfNote(name: string, fullPath: string, content: string):
     routedFrom: valueOrNull(fields, 'routed_from'),
     hops: /^[0-3]$/.test(fields.get('hops') ?? '') ? Number(fields.get('hops')) : null,
     closedNote: valueOrNull(fields, 'closed_note'),
+    held: valueOrNull(fields, 'held'),
+    heldRecord: valueOrNull(fields, 'held_record'),
+    updated: valueOrNull(fields, 'updated'),
+    updateCount: /^[1-9]\d*$/.test(fields.get('update_count') ?? '') ? Number(fields.get('update_count')) : null,
+    fromLibraryId: valueOrNull(fields, 'from_library_id'),
+    fromLibraryCard: valueOrNull(fields, 'from_library_card'),
+    forLibraryId: valueOrNull(fields, 'for_library_id'),
+    originLibraryId: valueOrNull(fields, 'origin_library_id'),
+    originDeliveryId: valueOrNull(fields, 'origin_delivery_id'),
+    localLibraryId: ['from_library_id', 'for_library_id', 'origin_library_id'].some((key) => fields.has(key)) ? libraryIdAbove(fullPath) : null,
     malformed: malformedNoteKeys(content),
   };
 }
@@ -355,7 +490,7 @@ export function isStuckLetter(
  * `from_seat`. A route copies its original's origin, so it stays the first asker's and never becomes the router's. A
  * malformed letter started from no seat.
  */
-export function isStartedBy(note: Pick<ShelfNoteRow, 'fromSeat' | 'originSeat' | 'originSeatId' | 'malformed'>, row: SeatIncarnation | null): boolean {
+export function isStartedBy(note: Pick<ShelfNoteRow, 'fromSeat' | 'originSeat' | 'originSeatId' | 'malformed'> & Partial<Pick<ShelfNoteRow, 'fromSeatId'>>, row: SeatIncarnation | null): boolean {
   if (row === null || note.malformed.length) return false;
   if (note.originSeat !== null) return resolvesTo(note.originSeat, note.originSeatId, row, 'letters');
   return isWrittenBy(note, row);
@@ -370,7 +505,8 @@ export function isStartedBy(note: Pick<ShelfNoteRow, 'fromSeat' | 'originSeat' |
  * refusal, so each verb reports it the way it reports every other.
  */
 export function assertSeatMayClose(
-  note: Pick<ShelfNoteRow, 'page' | 'fromSeat' | 'forSeat' | 'forSeatId' | 'malformed'>,
+  note: Pick<ShelfNoteRow, 'page' | 'fromSeat' | 'forSeat' | 'forSeatId' | 'malformed'> &
+    Partial<Pick<ShelfNoteRow, 'fromSeatId' | 'fromLibraryId' | 'forLibraryId' | 'localLibraryId'>>,
   book: { slug: string; closedBy: ClosedBy },
   seat: SeatIncarnation | null,
   otherSeat: string | null,

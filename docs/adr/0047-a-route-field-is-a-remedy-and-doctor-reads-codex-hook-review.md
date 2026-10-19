@@ -7,6 +7,8 @@
 kernel says its own remedies), [ADR-0046](0046-a-compiled-windows-init-registers-the-kernels-own-hooks.md) (a compiled
 Windows init registers the kernel's own hooks)
 
+**Addendum, 2026-10-17 (C34):** the kernel now distinguishes a current command-hook review from an out-of-date one using Codex `rust-v0.163.0`'s rule: normalize the event, supported matcher and single handler, then SHA-256 the compact JSON with sorted keys (`codex-rs/hooks/src/engine/discovery.rs:478-581,747-813` and `codex-rs/config/src/fingerprint.rs:54-66` in `openai/codex`). The offline probe reproduced all 26 extant saved reviews; four entries named missing files. Doctor keeps the existing unreviewed-hook warning and also names reviews made before a hook changed, which Codex skips until reviewed again. Unknown stored forms, fields or handler kinds remain reviewed but not checked, counted in a WARN's detail; a later Codex rule must be rechecked against its source before extending this comparison. The check reads and never writes trust; the PowerShell oracle remains presence-only, and launcher preflight remains a later unit.
+
 ## Context
 
 **Route fields.** S48's Linux run found `library desk`'s `notebook.quarantine.list_route` naming

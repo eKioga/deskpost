@@ -189,9 +189,9 @@ try {
     Assert ($null -ne $globbed -and $globbed.Contains('shelf*/demo/wiki/_index.md')) 'the refusal did not quote the glob the command carried'
     # AND IT NAMES THE ROUTE THAT IS NOT REFUSED. A refusal is an instruction surface: told only to
     # open a Book, a reader with a search pattern opens something irrelevant and is refused again.
-    Assert ($null -ne $typed -and $typed.Contains('never on its pattern')) 'the refusal did not name the route a search pattern should take'
+    Assert ($null -ne $typed -and $typed.Contains('its pattern is never judged')) 'the refusal did not name the route a search pattern should take'
     $spanReason = Get-HookField-FromOutput (Invoke-Shell 'ls shelf/*/wiki') 'permissionDecisionReason'
-    Assert ($null -ne $spanReason -and $spanReason.Contains('never on its pattern')) 'the span refusal did not name the route a search pattern should take'
+    Assert ($null -ne $spanReason -and $spanReason.Contains('its pattern is never judged')) 'the span refusal did not name the route a search pattern should take'
 
     # --- Heredoc bodies are data ------------------------------------------------------------------
     # Found by real use within an hour of the guard shipping: it refused a commit message quoting the

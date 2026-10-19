@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.4.5/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/seats.md).
 
 ## Books
 
@@ -136,6 +136,11 @@ Book's is `[[shelf/<slug>/wiki/<page>|label]]`. A Book that changes often is bes
 there, because its pages are corrected in place with no yes (`book replace-page`); changing an existing page of a
 collection Book is `collection replace-page`, which takes a yes.
 
+**Correcting a Shelf Book page without retyping it.** `book get-page <slug> <page> --out <file>` copies an open
+Shelf Book's page into a new file, byte for byte, and prints its `sha256` and the next command. Edit the copy, run
+`book replace-page <slug> <page> --content-path <file> --preflight --expect-sha256 <that sha256>`, then apply with
+the preflight's `--base-sha256`. It replaces the whole page; there is no section mode yet.
+
 ### A Hub for development work
 
 `--dev` seeds two extra sections. They are **optional and specific to development**: a Hub created
@@ -192,6 +197,10 @@ refuses while a seat is bound to the old Hub, or while a session holds a seat th
 - **What `replace-item` replaces:** on a paragraph line, that one line; on a list item, the item with its nested
   sub-items. `check-item` ticks the item's first line only.
 - **`## Now` takes checkboxes or paragraphs.** A list entry at column zero without `- [ ]` or `- [x]` is refused.
+- **Ticked items leave `## Now` and `## Next` with `deskpost hub tidy <slug>`.** Its `--preflight` lists what moves
+  and the history page it makes, and runs the kernel's proof; the apply takes `--user-confirmed --plan-id <id>`. It
+  never moves an unticked item, and each section keeps one pointer to the newest history page. A whole closed section
+  of another page moves with `--page <p> --section <s>`.
 - **Removing text needs the reader's yes** (`--user-confirmed`). To change the state of an item without one, append a
   new item that says it updates the one above.
 - **Preview an append to `## Decisions` with `--preflight`**: it reports `entry_size_warning` from the proposed text
@@ -200,7 +209,13 @@ refuses while a seat is bound to the old Hub, or while a session holds a seat th
   (`page_size_warning`, `section_size_warning`, `entry_size_warning`) from the whole result.
 - **Read the page back through the validated reader.** For a page too large for one read, `library mcp call
   read_open_project_page --slug <s> --page <p>` prints the reader's answer, which a script can compare with the
-  content file.
+  content file. The reader's `sha256:` line hashes the page with any BOM removed and CRLF line ends folded to LF,
+  the value `book replace-page` calls `current_sha256`; `hub edit`'s `current_sha256` and `written_sha256` hash the
+  text exactly as written and without the page's front matter, so the two agree only on a page whose line ends are
+  all LF and that has no front matter.
+- **A Hub page's file times are its last write, not its first.** `hub edit` replaces the file on every write, so
+  its creation time is the last edit's. When a page was first written is in the Library's publication journal:
+  `internal/publication-journals/project-new-page-<slug>-<page path with / as ->-<YYYYMMDD-HHMMSS UTC>-<id>.json`.
 
 ## Why "closed" matters
 

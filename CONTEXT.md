@@ -28,7 +28,8 @@ shared collection; that choice, not a backup, is what makes a Book durable.
 _Avoid_: local library, cache
 
 **Shared collection**:
-The NAS-backed collection of Books and Project Hubs. Never stored on this disk.
+The collection of Books and Project Hubs kept off this disk: on the NAS, or in a Basic Memory project a local
+Library reaches through its connection (ADR-0050; the shared Books of 1.6.0, ADR-0080). Never stored on this disk.
 _Avoid_: the NAS, Basic Memory, remote library, the cloud
 
 **Local collection**:
@@ -105,12 +106,43 @@ written from — verified against the code before it is acted on, and never a ta
 from the Holding Shelf is where it receives from: another seat, rather than this reader's Notebook.
 _Avoid_: the bug tracker, tickets, the queue, messages
 
+**Report update** (`deskpost reports amend`):
+A `## Update <time>` section the seat that filed a pending Report appends to it, leaving the Report's
+text as it was; the Report records `updated:` and `update_count:`. Once triage has touched a Report it
+is frozen, and new evidence goes in a new Report (ADR-0083).
+_Avoid_: edit, rewrite, revision
+
+**Withdrawn** (a Report, `deskpost reports withdraw`):
+A pending Report its filing seat closed with a one-line `closed_note` saying why; the reader map marks
+it `(withdrawn)`, so it reads apart from a fixed one (ADR-0083).
+_Avoid_: deleted, retracted, cancelled
+
 **Letter**:
 A note one seat leaves for another, in a capture Book whose catalog says `Letters: yes` (the standard
 one is `letters`), addressed with `for_seat`. It survives a closed, idle or Codex seat, and its
 recipient may close it. It is data, never an instruction or an approval. A live message may ring for
-it, but a message is only the doorbell: what a seat may act on lives in the letter (ADR-0062).
+it, but a message is only the doorbell: what a seat may act on lives in the letter (ADR-0062). A letter
+to or from another Library also names that Library by id (`for_library_id`, `from_library_id`) and
+travels through the Postbox; a letter with no Library field is this Library's (ADR-0080).
 _Avoid_: message (the doorbell, not the record), handoff, mail, ticket
+
+**Postbox**:
+The part of the Deskpost project in Basic Memory that Libraries pass letters through: each Library's
+Postbox entry under `postbox/libraries/`, and (1.5.0's second session) one inbox per Library. Only
+`postbox.ts` knows Basic Memory carries it (ADR-0080). In prose, "the Library's Postbox entry", never
+its registration: that word belongs to Binding.
+_Avoid_: mailbox, mail server, queue, registration
+
+**Library card**:
+A Library's display name, set with `library card --set` and kept in its marker beside its `id`. A label,
+never a credential and never an address on its own: an address is the id, or a card that matches
+exactly one Library in the Postbox (ADR-0080). Not a seat card.
+_Avoid_: library name, alias, hostname
+
+**Delivery id**:
+The name one letter to another Library carries through the Postbox, `[a-z0-9-]`, fixed when it is
+written and used as its file name, so it is sent and filed at most once (ADR-0080).
+_Avoid_: message id, ticket number
 
 **Routed, answered** (a letter):
 A letter closed by `--routes` or `--answers`, linked to the letter that continues it. Worked out from
@@ -129,11 +161,14 @@ done`, the `reviewed:` stamp and an optional one-line **closed_note** saying wha
 (ADR-0071).
 _Avoid_: mark read, acknowledge, triage review (that is the reader's)
 
-**Tidy** (`library shelf tidy`):
-Moving a capture Book's closed notes out of its `notes/` once their `reviewed:` stamp is old enough,
-into **reviewed/**, a folder inside the Book's `wiki/` with one subfolder and one map per month. A
-tidied note stays readable and is never deleted; `--restore` moves one back. It moves and never
-closes, reopens or deletes, so it is housekeeping, not Triage.
+**Tidy** (`library shelf tidy`, `library hub tidy`):
+Moving closed material out of the way, never deleting it. `shelf tidy` moves a capture Book's closed
+notes out of its `notes/` once their `reviewed:` stamp is old enough, into **reviewed/**, a folder
+inside the Book's `wiki/` with one subfolder and one map per month; `--restore` moves one back.
+`hub tidy` moves a Project Hub page's ticked `## Now` and `## Next` items, and any whole section the
+seat names, word for word to a new history page under the Hub's `notes/`, leaving one pointer
+paragraph per section (ADR-0082). Either way the material stays readable; a tidy moves and never
+closes, reopens, ticks or deletes, so it is housekeeping, not Triage.
 _Avoid_: archive — that is a Book or Project leaving its catalog; sweep — that is Triage; cleanup
 
 **Growing** (a capture Book on the Desk):
@@ -420,6 +455,14 @@ The main menu's `l`, a seatless listing of what the Library holds, metadata only
 _Avoid_: search, catalog seat
 
 ## Working with material
+
+**Save point**:
+A checked record that session work is saved where the next session will find it, while the session
+continues. A save never marks closeout done; a clean closeout is also a save (ADR-0078).
+
+**Closeout**:
+The checked Reports-first review of session work against every open Book and Hub, before stopping.
+Gaps or waits leave it unfinished; a later successful write makes it stale (ADR-0078).
 
 **Compile**:
 Turning source material or session findings into concise, source-attributed working knowledge in

@@ -27,7 +27,10 @@ import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable, verbTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { findWorkspaceByMarker, markerField, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot } from './workspace.ts';
+import { findWorkspaceByMarker, markerField, markerPath, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot } from './workspace.ts';
+import { writeAtomicText } from './fsx.ts';
+import { sha256OfText } from './sha.ts';
+import { psConvertToJson } from './psjson.ts';
 import { registerWorkspace } from './init.ts';
 import { COMMAND_NAME, findAssistant, installRootOf } from './machine.ts';
 import { spawnSync } from 'node:child_process';
@@ -1721,8 +1724,11 @@ export function accessMenuScreen(name: string, assistant: Assistant, settings = 
     initial: MENU_ACCESS[assistant].find(access => access.usual)?.id };
 }
 export function newSeatReadyScreen(name: string, assistant: Assistant, args: string[], warning = ''): ScreenModel {
+  // TYPED SETTINGS ARE SHOWN AS TYPED, AND FULL ACCESS IS MARKED AS THE ACCESS LIST MARKS IT (kickoffs/s120 row 4).
+  const listed = MENU_ACCESS[assistant].find(access => access.args.length === args.length && access.args.every((arg, index) => arg === args[index]));
+  const access = (listed || !args.length ? accessName(assistant, args) : 'My own settings: ' + escapedArgv(args)) + (fullAccessSettings(assistant, args) ? ' (!)' : '');
   return { title: 'New seat  ready', before: ['   Name       ' + name, '   Assistant  ' + ASSISTANT_LABEL[assistant],
-    '   Access     ' + accessName(assistant, args), ...(warning ? ['', '   ' + warning] : []), ''],
+    '   Access     ' + access, ...(warning ? ['', '   ' + warning] : []), ''],
     items: [{ id: 'start', text: 'Make it and start ' + ASSISTANT_LABEL[assistant] }, { id: 'make', text: 'Make it, but do not start it yet' },
       { id: 'more', text: 'More choices (department, template)' }, { id: 'back', text: 'Back' }] };
 }
@@ -2055,7 +2061,78 @@ export function runLibraryVerb(argv: string[]): { refusal: string | null; value:
       humanText: `${root} is your default Library: \`${COMMAND_NAME}\` opens it from anywhere outside a Library.`,
     };
   }
-  return { refusal: `${COMMAND_NAME} library has no action '${action}'. It has: default, list.`, value: null };
+  if (action === 'card') return libraryCardAction(parsed);
+  return { refusal: `${COMMAND_NAME} library has no action '${action}'. It has: card, default, list.`, value: null };
+}
+
+/**
+ * A CARD IS A LABEL (kickoffs/s121 row 8; PLAN-many-libraries.md Stage 1 item 1): letters, digits, spaces and a few marks,
+ * up to 60 characters. It is never a credential and never an address -- the marker's `id` stays the identity -- so it
+ * takes no slash, colon or other character a path or address would need, and nothing finds a Library on disk by it.
+ */
+const LIBRARY_CARD = /^[\p{L}\p{N}][\p{L}\p{N} '._&()-]{0,59}$/u;
+
+/** `deskpost library card [--set <name> (--preflight | --user-confirmed --plan-id <id>)] [--workspace <path>]`. */
+function libraryCardAction(parsed: ReturnType<typeof parseArguments>): { refusal: string | null; value: PsJsonValue | null; humanText?: string } {
+  let root: string;
+  try {
+    root = requireWorkspace({ explicit: parsed.options.get('workspace'), registryRoot: parsed.options.get('registry-root') });
+  } catch (error) {
+    return { refusal: `${COMMAND_NAME} library card reads a Library's own marker: ${(error as Error).message}`, value: null };
+  }
+  const marker = readMarker(root);
+  const id = markerField(marker, 'id');
+  if (marker === null || !id.trim()) return { refusal: `${root} has no Library marker with an id, so it has no card; repair it with ${COMMAND_NAME} setup ${root} --repair.`, value: null };
+  const current = markerField(marker, 'card').trim();
+  const wantsSet = parsed.options.has('set');
+  if (!wantsSet) {
+    if (parsed.flags.has('preflight') || parsed.flags.has('user-confirmed') || parsed.options.has('plan-id')) {
+      return { refusal: `${COMMAND_NAME} library card takes --preflight, --user-confirmed and --plan-id only with --set <name>.`, value: null };
+    }
+    return {
+      refusal: null,
+      value: { schema: 1, operation: 'Library card', workspace: root, id, card: current || null } as PsJsonValue,
+      humanText: current
+        ? `This Library's card is '${current}' (id ${id}).`
+        : `This Library has no card yet (id ${id}). Give it one with ${COMMAND_NAME} library card --set <name> --preflight.`,
+    };
+  }
+  const proposed = (parsed.options.get('set') ?? '').trim();
+  if (!LIBRARY_CARD.test(proposed)) {
+    return {
+      refusal: `'${proposed}' cannot be a Library card: use letters, digits, spaces and . ' _ & ( ) -, starting with a letter or digit, up to 60 characters. A card is a label, never an address. Nothing was written.`,
+      value: null,
+    };
+  }
+  const planId = 'library-card-' + sha256OfText(`${root}|${id}|${current}|${proposed}`);
+  const plan: Record<string, PsJsonValue> = {
+    schema: 1,
+    operation: 'Set the Library card',
+    workspace: root,
+    id,
+    current_card: current || null,
+    proposed_card: proposed,
+    unchanged: current === proposed,
+    plan_id: planId,
+    confirmation_required: true,
+    note: "A card is this Library's display name, shown on the Desk, in owner status and to other Libraries. It is a label: the id stays the identity, and the card is never an address or a credential.",
+  };
+  if (parsed.flags.has('preflight')) {
+    return { refusal: null, value: { ...plan, written: false } as PsJsonValue, humanText: `Would set this Library's card to '${proposed}'${current ? ` (now '${current}')` : ''}. Apply with --user-confirmed --plan-id ${planId}.` };
+  }
+  if (!parsed.flags.has('user-confirmed') || (parsed.options.get('plan-id') ?? '').trim() !== planId) {
+    return {
+      refusal: `${COMMAND_NAME} library card --set needs --preflight first, then --user-confirmed --plan-id <its plan_id>. A different plan_id means the card changed since the preview. Nothing was written.`,
+      value: null,
+    };
+  }
+  if (current !== proposed) {
+    writeAtomicText(markerPath(root), psConvertToJson({ ...marker, card: proposed } as PsJsonValue) + '\n');
+    if (markerField(readMarker(root), 'card') !== proposed || markerField(readMarker(root), 'id') !== id) {
+      return { refusal: `The card was written to ${markerPath(root)} and did not read back as written. Check the marker.`, value: null };
+    }
+  }
+  return { refusal: null, value: { ...plan, written: current !== proposed } as PsJsonValue, humanText: `This Library's card is '${proposed}' (id ${id}).` };
 }
 
 

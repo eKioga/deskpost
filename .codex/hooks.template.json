@@ -40,6 +40,7 @@
       }
     ],
     "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "__CHECKPOINT_COMMAND__", "commandWindows": "__CHECKPOINT_WINDOWS_COMMAND__", "timeout": 30 }] },
       {
         "hooks": [
           {
@@ -68,12 +69,19 @@
       }
     ],
     "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "__CHECKPOINT_COMMAND__", "commandWindows": "__CHECKPOINT_WINDOWS_COMMAND__", "timeout": 30 }] },
       {
         "matcher": "^(mcp__validated_book_reader__(discover_book_pages|search_open_books)|Bash|exec)$",
         "hooks": [
           { "type": "command", "command": "__SEARCH_HIT_COMMAND__", "commandWindows": "__SEARCH_HIT_COMMAND__", "timeout": 30, "statusMessage": "Checking search results" }
         ]
       }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "__CHECKPOINT_COMMAND__", "commandWindows": "__CHECKPOINT_WINDOWS_COMMAND__", "timeout": 30 }] }
+    ],
+    "Interrupt": [
+      { "hooks": [{ "type": "command", "command": "__CHECKPOINT_COMMAND__", "commandWindows": "__CHECKPOINT_WINDOWS_COMMAND__", "timeout": 3 }] }
     ]
   }
 }

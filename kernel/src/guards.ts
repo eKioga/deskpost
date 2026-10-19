@@ -736,8 +736,10 @@ export function collectionTokens(command: string): { token: string; text: string
   return hits;
 }
 
+// A GLOB NEVER NARROWS A Grep's PATH (kickoffs/s120 row 8): the path alone must be one open root.
 const PATTERN_REMEDY =
-  'If that text is a search pattern rather than a path, the Grep tool is judged on its path and glob, never on its pattern.';
+  'If that text is a search pattern rather than a path, use the Grep tool: its path must be one open root, a glob does ' +
+  'not narrow that path, and its pattern is never judged.';
 
 function formatMatchedText(text: string): string {
   if (text.length > 120) return `'${text.substring(0, 117)}...'`;
@@ -1165,7 +1167,9 @@ function settingsIntegrityGuard(options: GuardOptions, stdinText: string): strin
 
 // --- the verb ----------------------------------------------------------------------------------------
 
-export const HOOK_ACTIONS = ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'] as const;
+import { runCheckpointHook } from './checkpointverb.ts';
+
+export const HOOK_ACTIONS = ['checkpoint', 'shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'] as const;
 
 /**
  * Run one guard over one payload and return what goes on stdout: a deny document, or '' to allow.
@@ -1250,6 +1254,7 @@ export function runHookVerb(argv: string[]): { stdout: string; refusal: string |
   // Nor are the ledger clear, the search reminder and the seat-start roster: none ever denies (ADR-0064).
   if (action === 'compact-clear') return { stdout: runCompactClearVerb(argv.slice(1), stdinText), refusal: null };
   if (action === 'search-hit') return { stdout: runSearchHitVerb(argv.slice(1), stdinText), refusal: null };
+  if (action === 'checkpoint') return { stdout: runCheckpointHook(argv.slice(1), stdinText), refusal: null };
   if (action === 'seat-start') return { stdout: runSeatStartVerb(argv.slice(1), stdinText), refusal: null };
   const parsed = parseArguments(argv.slice(1), tableFor('hook', action));
   return {

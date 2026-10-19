@@ -140,3 +140,15 @@ after this ships.
   **Seat incarnation**, in the same commit series as the first line of code that needs them.
 
 Full design: `PLAN-seat-launch.md`. The seat model it extends: [Seats](../seats.md).
+
+## Addendum, 2026-10-18 (kickoffs/s134)
+
+`LIBRARY_SEAT` identifies a seat only when the launcher's claim proves this session or no launcher claim is made. A
+session whose environment sets both `LIBRARY_SEAT_CLAIM` and `DESKPOST_LAUNCHER_PID` claims the `deskpost` launcher
+started it; when the launcher proof answers that the token is not the seat's live claim, or that the launcher's direct
+agent is another process, the session resolves to no seat, and every verb that needs one refuses with that reason
+(`resolveSeatName`, `kernel/src/seatdesk.ts`). A proof that could not look keeps the environment's answer, and a session
+with either variable unset is named by `LIBRARY_SEAT` as before. The case is a Claude Code background job, which takes the
+environment of the session that started its daemon: on 2026-10-18 one wrote Reports as another seat (the Report "A seat
+moved to a Claude Code background job takes the environment of whichever seat started the shared daemon"). This still
+authenticates nothing; it stops a mistake from writing as the wrong seat.

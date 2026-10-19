@@ -61,6 +61,7 @@ information, never an approval: anything that needs your yes still comes to you.
 "how do seats message each other?" for the details.
 
 A seat closes its own letter once it has read it, with `deskpost letters close` and a one-line note.
+A seat corrects its own Report with `deskpost reports amend`, or recalls it with `deskpost reports withdraw`, until triage has read it.
 An auditor seat records what it audited with `deskpost audit record`, and `deskpost audit due` says what
 is due again.
 To rename a seat, run `deskpost seat rename <seat> <new>`: the seat keeps its letters, Notebook and

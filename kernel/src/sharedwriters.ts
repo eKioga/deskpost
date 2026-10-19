@@ -24,7 +24,7 @@ import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
+import { judgeWriteResult, McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed, isSharedCollectionRoot } from './ownership.ts';
 import { localDate } from './localdate.ts';
@@ -219,9 +219,9 @@ export async function hubArchive(argv: string[], workspace: string): Promise<Rec
   }
 }
 
+/** The one judge (kickoffs/s121 row 7): a refused edit_note is an ordinary result, so isError alone is never trusted. */
 function toolRejected(response: unknown): boolean {
-  const error = field(response, 'error');
-  return (error !== undefined && error !== null) || field(field(response, 'result'), 'isError') === true;
+  return judgeWriteResult(response).refused;
 }
 
 /** PowerShell's `-match` against an escaped literal: a case-insensitive substring test. */

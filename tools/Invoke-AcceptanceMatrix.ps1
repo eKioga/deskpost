@@ -1136,6 +1136,17 @@ function Invoke-AcceptanceRow {
     [pscustomobject]$verdict
 }
 
+# A MISMATCH NAMES ITS DIFFERENCES WHERE IT COUNTS THEM (s127 row 5): the plain run printed only "3 unapproved
+# difference(s)", so a reader reran the row with -Json to learn which fields. One indented line per unapproved
+# difference under the row's line, each value on one line and cut to 80 characters; -Json is unchanged.
+function Format-AcceptanceDifferenceLines($Verdict) {
+    if ([string]$Verdict.status -cne 'mismatch' -or @(Get-AcceptanceObjectKeys $Verdict) -cnotcontains 'comparison') { return @() }
+    $cut = { param([string]$Value) $Value = $Value -creplace '\r?\n', ' '; if ($Value.Length -gt 80) { $Value.Substring(0, 77) + '...' } else { $Value } }
+    @(@($Verdict.comparison.differences) | ForEach-Object {
+        '  {0}: powershell {1} / kernel {2}' -f [string]$_.field, (& $cut ([string]$_.powershell)), (& $cut ([string]$_.kernel))
+    })
+}
+
 # --- The self-test ----------------------------------------------------------------------------
 
 function Invoke-AcceptanceMatrixSelfTest {
@@ -1197,6 +1208,17 @@ function Invoke-AcceptanceMatrixSelfTest {
         $said = ConvertTo-AcceptanceKernelPlanIdFlag -Text $case[0]
         Check ($said -ceq $case[1]) "the oracle side said '$($case[0])' as '$said', not '$($case[1])'"
     }
+    # A MISMATCH NAMES ITS DIFFERENCES (s127 row 5): one indented line per unapproved difference, a long value cut to 80
+    # characters, and nothing under a row that is not a mismatch.
+    $differences = @(
+        [pscustomobject]@{ field = 'result.library.id'; powershell = '<absent>'; kernel = ('x' * 120); delta = '' },
+        [pscustomobject]@{ field = 'result.library.card'; powershell = '<absent>'; kernel = '<null>'; delta = '' }
+    )
+    $named = @(Format-AcceptanceDifferenceLines ([pscustomobject]@{ status = 'mismatch'; comparison = [pscustomobject]@{ differences = $differences } }))
+    Check ($named.Count -eq 2 -and $named[0] -ceq ('  result.library.id: powershell <absent> / kernel ' + ('x' * 77) + '...') -and
+        $named[1] -ceq '  result.library.card: powershell <absent> / kernel <null>') "a mismatch did not name its differences: $($named -join ' | ')"
+    $quiet = @(Format-AcceptanceDifferenceLines ([pscustomobject]@{ status = 'green'; comparison = [pscustomobject]@{ differences = @() } }))
+    Check ($quiet.Count -eq 0) "a green row printed difference lines: $($quiet -join ' | ')"
     # THE CONFIRMATION FLAG (S72 row 7): the oracle's switch is said as the kernel's flag, except in a PowerShell route.
     $confirmCases = @(
         @('review the preflight and rerun with -UserConfirmed.', 'review the preflight and rerun with --user-confirmed.'),
@@ -1561,7 +1583,7 @@ function Invoke-AcceptanceMatrixSelfTest {
             'the prose control for 3c did not produce prose, so a wrapped plan id is no longer exercised'
         Check ([int](Get-AcceptanceOptionalValue -Object $gatedVerdict -Name 'powershell_exit') -eq 0) `
             ("a gated row's confirming step did not run: " + [string]$gatedVerdict.detail + ' -- ' +
-             (' ' -join @(@((Get-AcceptanceOptionalValue -Object $gatedVerdict -Name 'powershell')).stderr)))
+             (@(Get-AcceptanceOptionalValue -Object (Get-AcceptanceOptionalValue -Object $gatedVerdict -Name 'powershell') -Name 'stderr') -join ' '))
 
         # --- 3d. A RESTORE ROW CARRIES THE QUARANTINE ITS RESET MADE ------------------------------
         #
@@ -1833,7 +1855,10 @@ foreach ($matrixRow in @($selected)) {
         -IncludeIndependent:$IncludeIndependent -IncludeShared:$IncludeShared -McpUrl $McpUrl -SharedKnowledgeRoot $SharedKnowledgeRoot `
         -KeepFixtures:$KeepFixtures -TimeoutSeconds $TimeoutSeconds
     [void]$verdicts.Add($verdict)
-    if (-not $Json) { '{0,-10} {1,-62} {2}' -f [string]$verdict.status, [string]$verdict.row, [string]$verdict.detail }
+    if (-not $Json) {
+        '{0,-10} {1,-62} {2}' -f [string]$verdict.status, [string]$verdict.row, [string]$verdict.detail
+        Format-AcceptanceDifferenceLines $verdict
+    }
 }
 
 $counts = [ordered]@{}

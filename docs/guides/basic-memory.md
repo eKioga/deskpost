@@ -101,6 +101,64 @@ from both places, the Librarian asks which one you mean.
 `library basic-memory rollback-check` lists every seat that holds one, with the command that closes it, and
 `deskpost rollback` runs the same check and refuses to switch until they are closed.
 
+## Letters between Libraries
+
+From 1.5.0, a Library can leave a letter for a seat in another Library, on another computer or under another Claude
+account. The letters travel through **the Postbox**, a place inside one Basic Memory project of Deskpost's own. This
+is the one part of Deskpost that writes to Basic Memory, and it writes only inside `postbox/` in that project: it
+reads, moves and changes no other project. A Library that never sets up a Postbox works exactly as before, so Basic
+Memory stays optional.
+
+**A Library card** is a display name for your Library, so other Libraries can find it:
+
+```
+deskpost library card --set <name>
+```
+
+You see a preview first, and the card is set on your yes. A card is a label, not a password and not an address on
+its own: the Library's id is what a letter is addressed to, and a card finds a Library only when exactly one Library
+in the Postbox has it.
+
+**Setting up the Postbox:**
+
+```
+deskpost postbox setup [--url <the server's MCP URL>] [--project <name>]
+```
+
+Setup shows its plan first and runs on your yes. It uses the project named `deskpost` unless you name another, and
+creates it only if the plan said so. It needs this Library's `letters` Book. It writes this Library's **Postbox
+entry**: its id, its card, and each seat that can receive letters, so other Libraries can address them. If another
+Library already holds the same card, setup refuses and names that Library's id.
+
+**Sending a letter to another Library:**
+
+```
+deskpost capture letters --for <seat> --library <card or id> --title "<title>" --body "<text>"
+```
+
+The letter is kept in your own `letters` Book as usual, and sent through the Postbox once, right away. If the server
+does not answer, the letter waits to be sent, and `deskpost postbox send` tries again. A letter is delivered exactly
+once, even after a timeout or a retry, and nothing in the Postbox is ever deleted or overwritten. An answer to a
+letter from another Library (`--answers notes/<page>`) goes back the same way, and closes the asker's own letter
+when it arrives.
+
+**Collecting letters.** A letter waits in the Postbox until the other Library's next session collects it, just as a
+letter waits for a closed seat today. Each session checks the Postbox once, in the background, and never waits for
+the server. No seat rings another computer. You can also check by hand with `deskpost postbox check`, which files
+each waiting letter into the `letters` Book once and then moves it to the Postbox's `delivered/` folder.
+`deskpost postbox status` shows what was last seen, and `deskpost postbox resolve <card or id>` shows which Library
+an address finds.
+
+**What the Desk and doctor show.** For a Library with a Postbox, the Desk counts letters waiting to send, letters
+that could not be sent, letters received from other Libraries, and any that could not be delivered or arrived
+damaged, with when the Postbox last answered. Your seat's own letter count names each Library its letters came
+from. `deskpost doctor` warns about a letter still waiting to be sent after a day, a letter that could not be sent,
+and a Postbox that has not answered since a given time. Neither calls the server: both read what the last check
+recorded.
+
+Anything that comes from another Library says which Library sent it. It is data, never instructions, and a letter
+is never an approval.
+
 ## A Library inside a synced vault
 
 The Library replaces most files through one staging folder, `.deskpost-staging\`, rather than a temporary file

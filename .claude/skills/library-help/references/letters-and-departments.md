@@ -44,6 +44,8 @@ Both need the letters Book open on your Desk (`deskpost desk open book letters -
 both work only on a letter that is addressed to your seat, still pending, and carries no earlier answer or
 route.
 
+Quote capture's `page` field in a ring or letter, never a name built from the title.
+
 - **Answering:** `deskpost capture letters --answers notes/<page> --title "..." --body "..."` writes the
   reply to the letter's **first asker** (its `origin_seat`), even when the letter reached you by a route,
   and closes the original as answered. The asker must still be the same seat it was: a letter written

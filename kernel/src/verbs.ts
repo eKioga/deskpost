@@ -140,11 +140,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library book add-page <slug> <page> (--content-path <f> | --body <text>) [--title <t>] [--seat <s>] [--preflight]; ' +
       'library book add-page <slug> --from-folder raw/<batch> [--seat <s>] [--preflight]; ' +
+      'library book get-page <slug> <page> --out <f> [--seat <s>]; ' +
       'library book graduate <slug> [--topic <t> | --source-path <p>] [--page-prefix <p>] [--recurse] [--seat <s>] [--preflight]; ' +
       'library book replace-page <slug> <page> --content-path <f> [--sources-compiled <f>] (--preflight [--expect-sha256 <h>] | --base-sha256 <h>) [--seat <s>]; ' +
       'library book reader-map <slug> [--seat <s>]; ' +
       'library book sources <slug> [(--set | --mark-compiled) --content-path <f> (--preflight | --base-sha256 <h>)] [--seat <s>]',
-    actions: ['add-page', 'graduate', 'reader-map', 'replace-page', 'sources'],
+    actions: ['add-page', 'get-page', 'graduate', 'reader-map', 'replace-page', 'sources'],
     positional: false,
     details: {
       '*': [CONTENT_PATH_RULE],
@@ -156,6 +157,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     arguments: {
       // Two forms: `<slug> <page>`, or `<slug> --from-folder raw/<batch>`, which refuses a second word itself.
       'add-page': { valued: ['title', 'body', 'content-path', 'from-folder', 'seat'], boolean: ['preflight'], positionals: 2 },
+      'get-page': { valued: ['out', 'seat'], positionals: 2 },
       graduate: { valued: ['topic', 'source-path', 'page-prefix', 'seat'], boolean: ['recurse', 'preflight'], positionals: 1 },
       // `--body` and `--title` are read only to be refused by name: a correction takes a file and keeps its own H1.
       'replace-page': { valued: ['expect-sha256', 'content-path', 'base-sha256', 'sources-compiled', 'body', 'title', 'seat'], internal: ['body', 'title'], boolean: ['preflight'], positionals: 2 },
@@ -176,11 +178,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // --answers, --routes and --for-department (S98) were accepted and named in no usage (kickoffs/s106 row 6a).
     usage:
       'library capture <book> --title <t> (--body <b> | --content-path <file>) [--why no-seat|no-home|needs-yes|reset-imminent|for-seat] ' +
-      '[--supersedes notes/<page>] [--for <seat> | --for-department <department>] [--answers notes/<page>] [--routes notes/<page>]',
+      '[--supersedes notes/<page>] [--for <seat> | --for-department <department>] [--library <id-or-card>] [--answers notes/<page>] [--routes notes/<page>]',
     details: {
       '*': [
         '--for names one seat a letter is for; --for-department names a department, and any seat in it may answer.',
-        '--answers notes/<page> answers that letter and closes it; --routes notes/<page> hands it on to the seat --for names and closes it.',
+        "--answers notes/<page> answers that letter and closes it; --routes notes/<page> hands it on to the seat --for names and closes it. --answers writes to the letter's first asker, so leave out --for and --for-department.",
+        "--library <id-or-card> with --for <seat> writes to a seat of another Library, through this Library's Postbox: sent once, right away, or later by deskpost postbox send. The address is resolved from the Postbox when the letter is written, so with no answer from it nothing is captured. An answer to a letter from another Library goes back the same way.",
         CONTENT_PATH_RULE,
       ],
     },
@@ -190,7 +193,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       '': {
         valued: [
           'title', 'body', 'content-path', 'why', 'supersedes', 'for', 'for-department', 'answers', 'routes',
-          'tags', 'source-paths', 'source-project', 'capture-date', 'require-note-file', 'seat',
+          'tags', 'source-paths', 'source-project', 'capture-date', 'require-note-file', 'seat', 'library',
         ],
         // `--seat` is read only to be refused: a capture's seat is the session's. The other two are triage batch's plumbing.
         internal: ['capture-date', 'require-note-file', 'seat'],
@@ -263,6 +266,24 @@ export const VERBS: Record<string, VerbDeclaration> = {
     },
     ported: true,
     row: 'S14',
+  },
+  checkpoint: {
+    summary: 'Request, observe and check a save or closeout for this seat and conversation.',
+    usage: 'library checkpoint request <save|closeout> --conversation <id> [--seat <name>] [--turn <id>] [--harness <codex|claude>]; library checkpoint observe --conversation <id> [--seat <name>]; library checkpoint check <save|closeout> --conversation <id> [--seat <name>] [--request-id <id>] [--turn <id>]; library checkpoint status --conversation <id> [--seat <name>]; library checkpoint cancel --conversation <id> [--seat <name>]',
+    actions: ['request', 'observe', 'check', 'status', 'cancel'],
+    positional: false,
+    arguments: {
+      request: { valued: ['conversation', 'seat', 'turn', 'harness'], positionals: 1 },
+      observe: { valued: ['conversation', 'seat'], positionals: 0 },
+      check: { valued: ['conversation', 'seat', 'turn', 'request-id'], positionals: 1 },
+      status: { valued: ['conversation', 'seat'], positionals: 0 },
+      cancel: { valued: ['conversation', 'seat'], positionals: 0 },
+    },
+    details: {
+      '*': ['observe reads one tool-result JSON object on stdin; check reads the answer on stdin.', 'request returns the request text in prompt and its request_id; check and status return verdict state and gaps as JSON.', 'No hooks are installed by this verb.'],
+    },
+    ported: true,
+    row: 'c21',
   },
   doctor: {
     summary: 'Every registered check, with one result each. A check that did not run reports skipped. --report files each FAIL (and each WARN with --warnings) once into the Report Inbox.',
@@ -346,13 +367,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   hook: {
     summary: "The Library's hooks: a harness payload on stdin, a decision or context on stdout.",
-    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
-    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'],
+    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start|checkpoint> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
+    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint'],
     positional: false,
     // ONE TABLE FOR EVERY HOOK, as the usage is one clause: a refused hook would fail a harness event, and a
     // registration written by an older release passes the same few names to each.
     arguments: Object.fromEntries(
-      ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'].map((action) => [
+      ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint'].map((action) => [
         action,
         {
           valued: ['seat', 'state-directory', 'agent-pid', 'deadline-seconds', 'reader-tool-prefix'],
@@ -378,8 +399,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library hub archive <slug> --preflight; ' +
       'library hub copy-pages <slug> --source <path> --title <t> --purpose <p> [--next-action <a>]... [--include-page <p>]... ' +
       '[--at-project-root | --destination-directory <d>] --preflight; ' +
-      'library hub rename <old-slug> <new-slug> --title <t> [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
-    actions: ['archive', 'copy-pages', 'edit', 'new', 'rename'],
+      'library hub rename <old-slug> <new-slug> --title <t> [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]; ' +
+      'library hub tidy <slug> [--page <p>] [--section <s>]... [--note-path <f>] [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
+    actions: ['archive', 'copy-pages', 'edit', 'new', 'rename', 'tidy'],
     // ONE LINE PER MODE (S85 rows 1 and 3): the usage names eight modes and said nothing of what each takes, so a
     // seat put the section's own `## ` heading into its content and was told the page held the section twice.
     details: {
@@ -395,11 +417,23 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
         '                   Its --preflight issues a plan_id: the apply takes it with --plan-id <id>, or runs without one.',
         '',
-        "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line.",
+        "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line, and use ### for a heading inside it (a '## ' line is refused).",
         'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
         "Gated means --preflight first, then --user-confirmed --plan-id <id> with the reader's yes.",
         'add-section, append-section and check-item given a --plan-id apply only when it is the one their --preflight gives now.',
         CONTENT_PATH_RULE,
+      ],
+      // ONE VERB FOR DECIDED HUB ITEMS (kickoffs/s125 row 3; ADR-0082): it moves, never ticks, rewrites or deletes.
+      tidy: [
+        'Moves decided items off a Hub page to a new history page, notes/<date>-<word>-history-tidy-<n>, word for word.',
+        '  (default)        every ticked top-level item of ## Now and ## Next, each whole with its nested lines.',
+        '  --section <s>    also a whole named section, heading and all; repeatable. Refused for Purpose, Now, Next,',
+        '                   Decisions, and any section still holding an unticked item.',
+        '  --page <p>       the page to tidy (default _project).',
+        "  --note-path <f>  a file whose text goes under '## Still open from them' on the history page.",
+        'Each shortened section keeps one pointer paragraph to the newest history page; each history page links the one before.',
+        "--preflight shows what moves, the history page, sizes after, lines that still name what moved, and the kernel's",
+        "proof; apply with --user-confirmed --plan-id <id> and the reader's yes. A local Library's collection only.",
       ],
     },
     positional: false,
@@ -423,6 +457,14 @@ export const VERBS: Record<string, VerbDeclaration> = {
         positionals: 1,
       },
       rename: { valued: ['title', 'plan-id', 'lock-timeout'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+      tidy: {
+        valued: ['page', 'note-path', 'plan-id', 'seat', 'lock-timeout'],
+        repeatable: ['section'],
+        boolean: ['preflight', 'user-confirmed'],
+        positionals: 1,
+        // hubtidy.ts refuses a second word in its own sentence, as hub edit does.
+        ownWords: true,
+      },
     },
     // `new` against both backends (S30 local, S33 Basic Memory); `edit` against both (S34); `archive`
     // (S34) and `copy-pages` (S35) against Basic Memory, their preflights, with the confirmed halves
@@ -479,38 +521,94 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S112',
   },
   letters: {
-    summary: 'Close a letter addressed to this seat, in one step and with no new note, once it has been dealt with.',
+    summary: "List this seat's open letters, or close one in one step and with no new note once it has been dealt with.",
     // kickoffs/s108 ruling 2 (the messaging plan r4, D3; ADR-0071): `--seat` is read only to be refused by name.
-    usage: 'library letters close notes/<page> [--note "<one line>"]',
+    usage: 'library letters list [--json]; library letters close notes/<page> [--note "<one line>"]',
     details: {
+      list: [
+        "Lists this seat's open letters in the letters Book (open on its Desk), oldest first: page, sender, capture time",
+        'and title. They are exactly the letters letters close would close. It writes nothing.',
+      ],
       close: [
         'Closes a letter for this seat in the letters Book (open on its Desk): review: done, the reviewed: stamp, and',
         '--note as closed_note, one line saying what became of it. It needs no reader\'s yes and writes no note.',
         'It refuses another seat\'s letter, a closed one, and one still carrying answered_by or routed_to.',
       ],
     },
-    actions: ['close'],
+    actions: ['close', 'list'],
     positional: false,
     arguments: {
       close: { valued: ['note', 'seat'], internal: ['seat'], positionals: 1 },
+      list: { positionals: 0 },
     },
     ported: true,
     row: 'S108',
   },
+  reports: {
+    summary: 'Amend or withdraw a Report this seat filed, while triage has not touched it.',
+    // kickoffs/s130 row 2 (the amend-and-withdraw plan r3; ADR-0083): `--seat` is read only to be refused by name.
+    usage: 'library reports amend notes/<page> --content-path <file>; library reports withdraw notes/<page> --note "<reason>"',
+    details: {
+      amend: [
+        'Adds one "## Update <time>" section to a pending Report this seat filed, in the reports Book (open on its Desk),',
+        "from the file, and sets updated: and update_count:. The Report's text and earlier updates stay as they were.",
+        "The file holds at most 16 KB, with no # or ## heading outside a fenced block. It needs no reader's yes.",
+      ],
+      withdraw: [
+        'Closes a pending Report this seat filed as withdrawn: review: done, the reviewed: stamp, and --note as',
+        "closed_note, one line saying why. The reader map marks it (withdrawn). It needs no reader's yes.",
+      ],
+    },
+    actions: ['amend', 'withdraw'],
+    positional: false,
+    arguments: {
+      amend: { valued: ['content-path', 'seat'], internal: ['seat'], positionals: 1 },
+      withdraw: { valued: ['note', 'seat'], internal: ['seat'], positionals: 1 },
+    },
+    ported: true,
+    row: 's130',
+  },
   library: {
-    summary: 'The Libraries registered on this machine, and which one bare `deskpost` opens from anywhere.',
-    usage: 'library library [list] [--json]; library library default <folder> [--json]',
-    actions: ['default', 'list'],
+    summary: "The Libraries registered on this machine, which one bare `deskpost` opens from anywhere, and a Library's card.",
+    usage: 'library library [list] [--json]; library library default <folder> [--json]; library library card [--set <name> (--preflight | --user-confirmed --plan-id <id>)] [--workspace <path>] [--json]',
+    actions: ['card', 'default', 'list'],
     positional: false,
     arguments: {
       '': { valued: ['registry-root'], internal: ['registry-root'], positionals: 0 },
       list: { valued: ['registry-root'], internal: ['registry-root'], positionals: 0 },
       default: { valued: ['registry-root'], internal: ['registry-root'], positionals: 1 },
+      // THE LIBRARY CARD (kickoffs/s121 row 8; PLAN-many-libraries.md Stage 1 item 1). The verb is machine-wide, so the
+      // card action names its own --workspace: argumentTable adds one only to a verb that runs against a workspace.
+      card: { valued: ['registry-root', 'set', 'plan-id', 'workspace'], boolean: ['preflight', 'user-confirmed'], internal: ['registry-root'], positionals: 0 },
     },
     workspace: false,
     // PLAN-install-onboarding.md step 5a (S55, ADR-0059): the default Library is one registry entry's `default: true`.
     ported: true,
     row: 'S55',
+  },
+  // A LIBRARY'S PLACE IN THE POSTBOX (kickoffs/s121 row 9; PLAN-many-libraries.md Stage 1 item 2; ADR-0080).
+  postbox: {
+    summary: "This Library's place in the Postbox, the Basic Memory project Libraries pass letters through: set it up, read what was cached, resolve an address, send what waits and file what came.",
+    usage:
+      'library postbox setup [--url <mcp-url>] [--project <name>] (--preflight | --user-confirmed --plan-id <id>); library postbox status; ' +
+      'library postbox resolve <library-id-or-card>; library postbox send [--only <delivery-id>]; library postbox check [--send-first]',
+    // SEND AND CHECK (kickoffs/s123 rows 2 and 3): every letter waiting in the outbox sent exactly once by its path, and
+    // every letter in this Library's inbox filed exactly once by its delivery id, then moved to delivered/.
+    details: {
+      send: ['Sends each letter waiting in the outbox. A letter already at its path, or already delivered, with the same digest counts as sent; a different note there is a refusal, and nothing is overwritten.'],
+      check: ["Files each letter in this Library's inbox into the letters Book, once by its delivery id, then moves it to delivered/. Nothing is deleted."],
+    },
+    actions: ['check', 'resolve', 'send', 'setup', 'status'],
+    positional: false,
+    arguments: {
+      setup: { valued: ['url', 'project', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 0 },
+      status: { positionals: 0 },
+      resolve: { positionals: 1 },
+      send: { valued: ['only'], positionals: 0 },
+      check: { boolean: ['send-first'], positionals: 0 },
+    },
+    ported: true,
+    row: 'S121',
   },
   browse: {
     summary: 'What the Library holds: Shelf Books, collection Books and Projects, by title, slug, summary and topics. Seatless, offline, metadata only; the menu shows it on l.',

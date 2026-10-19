@@ -188,9 +188,13 @@ function Use-DeploymentEnvironment {
 
 $results = [Collections.Generic.List[object]]::new()
 
+# A LINE PER CHECK AS IT IS RECORDED (s127 row 7): the table prints only at the end, so a -Fast run showed nothing for
+# minutes. Not in the table's "[ OK ] name" shape, which tools/gate.ts parses as an outcome and would count twice; not
+# under -Json, whose stdout is one document, nor -WorkspaceOnly, which filters the results later.
 function Add-Result([string]$Name, [string]$Status, [string]$Detail) {
     if ($Only -and $Name -cne $Only) { return }
     [void]$results.Add([pscustomobject]@{ check = $Name; status = $Status; detail = $Detail })
+    if (-not $Json -and -not $WorkspaceOnly) { Write-Host ('progress: {0} {1} {2}' -f (Get-Date -Format 'HH:mm:ss'), $Status, $Name) }
 }
 
 # THE NAMES REGISTERED THROUGH Invoke-WorkspaceCheck, collected as they run, so -WorkspaceOnly
@@ -4402,12 +4406,27 @@ Invoke-Check 'manifests.lock-failure-names-its-cause' {
 # The state checks DELIBERATELY DO NOT REPAIR: a check that fixed what it found would report a
 # healthy Library on every run while the writer that caused the drift stayed broken.
 
-Invoke-WorkspaceCheck 'notebook.master-index-renders' {
-    . (Join-Path $PSScriptRoot 'NotebookIndex.ps1')
-    $problems = @(Get-NotebookMasterIndexDrift -Workspace $workspace)
-    if ($problems.Count) { throw ($problems -join '; ') }
-    $topics = @(Get-NotebookTopicInventory -NotebookRoot (Join-Path $workspace 'notebook'))
-    "notebook/_master-index.md matches the $($topics.Count) topic(s) on disk and their headings"
+$skipSeatNotebookOracle = $false
+if ($workspace) {
+    $notebookLayoutFile = Join-Path $workspace 'internal/notebook-layout.json'
+    if (Test-Path -LiteralPath $notebookLayoutFile -PathType Leaf) {
+        try { $skipSeatNotebookOracle = (([IO.File]::ReadAllText($notebookLayoutFile) | ConvertFrom-Json).layout -ceq 'seat-owned') }
+        catch { } # An unreadable record does not opt out of the existing oracle.
+    }
+}
+if ($skipSeatNotebookOracle) {
+    if (-not $Only -or $Only -ceq 'notebook.master-index-renders') {
+        [void]$script:WorkspaceCheckNames.Add('notebook.master-index-renders')
+        Add-Result 'notebook.master-index-renders' 'skipped' "seat-owned Notebook (ADR-0029): the kernel's doctor checks each seat's index"
+    }
+} else {
+    Invoke-WorkspaceCheck 'notebook.master-index-renders' {
+        . (Join-Path $PSScriptRoot 'NotebookIndex.ps1')
+        $problems = @(Get-NotebookMasterIndexDrift -Workspace $workspace)
+        if ($problems.Count) { throw ($problems -join '; ') }
+        $topics = @(Get-NotebookTopicInventory -NotebookRoot (Join-Path $workspace 'notebook'))
+        "notebook/_master-index.md matches the $($topics.Count) topic(s) on disk and their headings"
+    }
 }
 
 Invoke-WorkspaceCheck 'shelf.catalog-renders-from-entries' {
@@ -6133,8 +6152,12 @@ Invoke-Check 'meter.parsers-agree' {
     # check for a reason that has nothing to do with the meter.
     $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
     if ($null -eq $gitCommand) { return 'skipped: git.exe is not on PATH, so Git Bash cannot be located' }
-    $bashExe = Join-Path (Split-Path -Parent (Split-Path -Parent $gitCommand.Source)) 'bin\bash.exe'
-    if (-not (Test-Path -LiteralPath $bashExe -PathType Leaf)) { return "skipped: no Git Bash at $bashExe" }
+    # The installation root of both layouts (kickoffs/s120 row 10): <root>\cmd\git.exe, and under a Git Bash parent
+    # <root>\mingw64\bin\git.exe. Either way Git Bash is <root>\bin\bash.exe.
+    $gitDir = Split-Path -Parent $gitCommand.Source
+    $bashCandidates = @((Join-Path (Split-Path -Parent $gitDir) 'bin\bash.exe'), (Join-Path (Split-Path -Parent (Split-Path -Parent $gitDir)) 'bin\bash.exe'))
+    $bashExe = @($bashCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+    if ($null -eq $bashExe) { return "skipped: no Git Bash at $($bashCandidates -join ' or ')" }
 
     $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ("meter-agree-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
     # Three levels below the sessions root, because the status line globs */*/*/rollout-*.jsonl

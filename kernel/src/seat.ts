@@ -22,6 +22,7 @@
  * `.claim` share-everything and `.claim.lock` share-nothing -- which `seatclaim.ts` explains.
  */
 
+import { startSessionCheck } from './postbox.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -1740,6 +1741,15 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       result['notebook_activation'] = activateFreshNotebookLayout(workspace).state;
     } catch (error) {
       result['notebook_activation'] = `not activated: ${(error as Error).message}`;
+    }
+    // THE POSTBOX, ONCE PER SESSION AND OUT OF THE WAY (kickoffs/s123 row 5; PLAN-many-libraries.md item 6): a detached
+    // send and check for a Library with a Postbox, at most once per conversation, never waited for and never a reason
+    // to refuse a launch. A Library with no Postbox says nothing.
+    try {
+      const postboxCheck = startSessionCheck(workspace, conversationId);
+      if (postboxCheck !== null) result['postbox_check'] = postboxCheck;
+    } catch (error) {
+      result['postbox_check'] = `not started: ${(error as Error).message}`;
     }
     if (launchPlan.record.state === 'invalid' || launchPlan.record.state === 'unreadable') process.stderr.write('Ignored launch record: ' + launchPlan.record.reason + '\n');
     if (launchPlan.notice) process.stdout.write(launchPlan.notice + '\n');

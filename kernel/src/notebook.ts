@@ -177,10 +177,10 @@ export function masterIndexDrift(workspace: string): string[] {
  */
 export function scopeIndexDrift(scope: NotebookScope): string[] {
   if (scope.layout === 'legacy') return masterIndexDrift(scope.workspace);
-  return indexDrift(scope.root, scope.relative, 'library notebook render', true);
+  return indexDrift(scope.root, scope.relative, 'library notebook render', true, scope.seat);
 }
 
-function indexDrift(notebookRoot: string, relative: string, repair: string, absentIsEmpty: boolean): string[] {
+function indexDrift(notebookRoot: string, relative: string, repair: string, absentIsEmpty: boolean, seat?: string | null): string[] {
   const masterPath = path.join(notebookRoot, SEAT_INDEX_NAME);
   if (!fs.existsSync(notebookRoot) || !fs.statSync(notebookRoot).isDirectory()) return absentIsEmpty ? [] : [`${relative}/ is missing`];
   if (!fs.existsSync(masterPath) || !fs.statSync(masterPath).isFile()) return [`${relative}/_master-index.md is missing`];
@@ -188,7 +188,10 @@ function indexDrift(notebookRoot: string, relative: string, repair: string, abse
   try {
     expected = masterIndexText(notebookRoot, relative);
   } catch (error) {
-    return [`a topic cannot be rendered: ${(error as Error).message}`];
+    const problem = `a topic cannot be rendered: ${(error as Error).message}`;
+    return [seat
+      ? `${relative}: ${problem}; it belongs to seat ${seat}: give that topic an _index.md with one H1 heading, or move the folder out of the Notebook, then run ${repair}`
+      : problem];
   }
   const problems: string[] = [];
   const bytes = fs.readFileSync(masterPath);

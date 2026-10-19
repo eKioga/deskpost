@@ -36,6 +36,8 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
+import { createOutboxEntry, newDeliveryId, inboxPath, payloadDigest, removeOutboxEntry, resolveRemoteSeat, sendAfterCapture } from './postbox.ts';
+import type { OutboxEntry, PostboxFiling, RemoteAddress } from './postbox.ts';
 import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { inlineCutWarning } from './inlinecut.ts';
@@ -50,8 +52,8 @@ import {
 } from './mutation.ts';
 import { pageComparisonSha256, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
-import { changeCounts } from './hubedit.ts';
-import { foldedMapLines, linkLabel, planTopicIndexLine, topicIndexPage, type MapPage, type TopicIndexPlan } from './maplines.ts';
+import { changeCounts, fillTimePlaceholders, hasTimePlaceholders, TIME_PLACEHOLDER_NOTE } from './hubedit.ts';
+import { foldedMapLines, linkLabel, planTopicIndexLine, readMap, topicIndexPage, type MapPage, type TopicIndexPlan } from './maplines.ts';
 import {
   ABSENT,
   markCompiled,
@@ -65,7 +67,7 @@ import {
 } from './booksources.ts';
 import { rawBatchOwner } from './rawowners.ts';
 import { archiveRecordPath, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
-import { assertSeatMayClose, isAddressedTo, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
+import { assertSeatMayClose, isAddressedTo, isWrittenBy, noteFrontmatter, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
 import { idsOf, incarnationOf, pastNameRefusal, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
 import { departmentProblem, destinationOf, readSeatMetadata } from './seatmeta.ts';
 
@@ -78,11 +80,11 @@ import { getSeatClaimState, launcherHoldsSeatForThisAgent } from './seatclaim.ts
 import { seatMessageAddress } from './conversation.ts';
 import { seatConversationRecord } from './desk.ts';
 import { notebookScope } from './notebooklayout.ts';
-import { assertInsideRoot, convertToBookPagePath, renderPageBody, type RenderedPage } from './pagepath.ts';
+import { assertInsideRoot, convertToBookPagePath, lexists, renderPageBody, type RenderedPage } from './pagepath.ts';
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { localDate } from './localdate.ts';
-import { controlCharacterInLine, strayControlRefusal } from './controlchars.ts';
+import { controlCharacterInLine, strayControlCharacter, strayControlRefusal } from './controlchars.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -368,10 +370,12 @@ function assertHopsLeft(note: ShelfNoteRow): void {
  * THE FIRST ASKER OF A ROUTED LETTER, AS RECORDED (kickoffs/s98 row 2): its `origin_seat` and `origin_seat_id`, or for a
  * letter written before 1.3.8 its `from_seat` and no id. A value that is not a seat name is recorded as missing.
  */
-function routedOrigin(note: ShelfNoteRow): SeatIncarnation {
+function routedOrigin(note: ShelfNoteRow): SeatIncarnation & { libraryId: string; deliveryId: string } {
+  // THE FIRST ASKER'S LIBRARY AND DELIVERY, CARRIED UNCHANGED THROUGH EVERY HOP (kickoffs/s121 row 10; plan item 3).
+  const library = { libraryId: note.originLibraryId ?? '', deliveryId: note.originDeliveryId ?? '' };
   const seat = note.originSeat ?? note.fromSeat ?? '';
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(seat)) return { seat: '', seatId: '' };
-  return { seat, seatId: note.originSeat ? note.originSeatId ?? '' : '' };
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(seat)) return { seat: '', seatId: '', ...library };
+  return { seat, seatId: note.originSeat ? note.originSeatId ?? '' : '', ...library };
 }
 
 /**
@@ -409,9 +413,14 @@ export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } 
     left.captured < right.captured ? 1 : left.captured > right.captured ? -1 : 0;
   const pending = notes.filter((note) => note.review !== 'done').sort(byCapturedDescending);
   const reviewed = notes.filter((note) => note.review === 'done').sort(byCapturedDescending);
+  // A REPORT ITS FILING SEAT AMENDED OR WITHDREW (kickoffs/s130 row 3; ADR-0083), marked after its title in a Book that
+  // takes no letters: "(updated <date>)" while pending, "(withdrawn)" once closed with a closed_note. A letter's
+  // closed_note is its recipient's, so a Book that takes letters marks nothing.
+  const mark = (note: ShelfNoteRow): string =>
+    book.takesLetters ? '' : note.review !== 'done' ? (note.updated ? ` (updated ${note.updated.slice(0, 10)})` : '') : note.closedNote ? ' (withdrawn)' : '';
   const lines = [`# ${book.title} - Reader Map`, '', '- [[_book|Book metadata and limits]]', '', '## Pending review', ''];
   if (!pending.length) lines.push('- Nothing is waiting for review.');
-  else if (!book.takesLetters) for (const note of pending) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
+  else if (!book.takesLetters) for (const note of pending) lines.push(`- [[${note.page}|${note.title}]]${mark(note)} - captured ${note.captured}`);
   else {
     // A BOOK THAT TAKES LETTERS GROUPS THEM BY RECIPIENT (S77 row 3, ADR-0062), seats in name order and then any note
     // addressed to no seat, so a recipient finds its own at once. `Update-ShelfNoteIndex` writes the same lines. THE
@@ -432,7 +441,7 @@ export function updateShelfNoteIndex(book: ShelfBook): { pendingCount: number } 
     });
   }
   lines.push('', '## Reviewed', '');
-  if (reviewed.length) for (const note of reviewed) lines.push(`- [[${note.page}|${note.title}]] - captured ${note.captured}`);
+  if (reviewed.length) for (const note of reviewed) lines.push(`- [[${note.page}|${note.title}]]${mark(note)} - captured ${note.captured}`);
   else lines.push('- No note has been reviewed yet.');
   // THE MONTHS `shelf tidy` MOVED CLOSED NOTES INTO (S77 row 1), newest first, and only when there is one, so a Book
   // never tidied keeps its map byte for byte. `Update-ShelfNoteIndex` writes the same lines.
@@ -536,9 +545,20 @@ export function captureVerb(
   workspace: string,
   // INTERNAL, NEVER A CLI FLAG (kickoffs/s104 row 3, D6): lines a caller in this program adds to the note's frontmatter,
   // after every line capture writes itself. `doctor --report` records `doctor_check` and `doctor_digest` with it.
-  internal: { extraFrontmatter?: [string, string][] } = {},
+  // THE POSTBOX'S FILING ROUTE (kickoffs/s123 row 3; PLAN-many-libraries.md Stage 1 items 3 and 5), never a flag: a letter
+  // delivered from another Library, filed with the author its sending Library named (`from_seat_source: postbox`) and
+  // only when no letter here carries its delivery id, checked under the Book's lock.
+  internal: { extraFrontmatter?: [string, string][]; postbox?: PostboxFiling } = {},
 ): WriterResult {
-  for (const [key, value] of internal.extraFrontmatter ?? []) {
+  const filing = internal.postbox ?? null;
+  // THE LETTER HERE THAT CARRIES A DELIVERY ID (kickoffs/s123 rows 3 and 4), read from each note's own frontmatter: with
+  // `sent`, one this Library sent (the asker's copy an answer closes); without, one filed here from another Library.
+  const letterWithDeliveryId = (book: ShelfBook, deliveryId: string, sent: boolean): ShelfNoteRow | null =>
+    shelfNotes(book).find((note) => {
+      const foreign = note.fromLibraryId !== null && note.fromLibraryId !== '' && note.fromLibraryId !== note.localLibraryId;
+      return foreign !== sent && noteFrontmatter(readUtf8(note.fullPath)).get('delivery_id') === deliveryId;
+    }) ?? null;
+  for (const [key, value] of [...(internal.extraFrontmatter ?? []), ...(filing?.fields ?? [])]) {
     if (!/^[a-z][a-z0-9_]*$/.test(key) || /[\r\n]/.test(value) || controlCharacterInLine(value) !== null) {
       return { refusal: `An internal frontmatter line '${key}' is not one plain line; nothing was captured.`, value: null };
     }
@@ -583,6 +603,18 @@ export function captureVerb(
     if (given('routes') && !given('for')) {
       refuse('--routes hands a letter on to one seat, named with --for: library capture letters --for <seat> --routes notes/<page> --title <t> --content-path <file>. Nothing was captured.');
     }
+    // A LETTER TO ANOTHER LIBRARY (kickoffs/s123 row 2; plan item 4): `--for <seat> --library <id-or-card>`, one seat
+    // there, never a department, a route or an answer (an answer finds its asker's Library itself).
+    const library = (parsed.options.get('library') ?? '').trim();
+    if (given('library')) {
+      if (!library) refuse('--library names the Library a letter is for, by its id or its card: --for <seat> --library <id-or-card>. Nothing was captured.');
+      if (!given('for') || given('for-department') || given('routes') || given('answers') || given('supersedes')) {
+        refuse('--library takes --for <seat> only: a letter to another Library names one of its seats, and is never a department letter, a route, an answer or a supersession. Nothing was captured.');
+      }
+    }
+    if (filing !== null && (given('for') || given('for-department') || given('answers') || given('routes') || given('supersedes') || given('library'))) {
+      refuse('A letter filed from the Postbox takes no address flag: its address is the delivered note\'s. Nothing was captured.');
+    }
     const slug = parsed.positional[0] ?? 'holding';
     const title = (parsed.options.get('title') ?? '').trim();
     // --title IS NEEDED ONLY WHEN THE BODY HAS NO H1 (S67, game-admin's Report): the H1 names the note either way.
@@ -595,7 +627,11 @@ export function captureVerb(
     }
     if (!fs.existsSync(book.wikiPath)) refuse(`Capture Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
 
-    const { body, source } = resolveBody(workspace, parsed.options.get('content-path'), parsed.options.get('body'), 'note');
+    const { body, source } = filing !== null ? { body: filing.body, source: 'postbox' } : resolveBody(workspace, parsed.options.get('content-path'), parsed.options.get('body'), 'note');
+    if (filing !== null) {
+      const stray = strayControlRefusal(body, `postbox ${filing.deliveryId}`);
+      if (stray !== null) refuse(stray);
+    }
     if (!body.trim()) refuse('The note body is empty; nothing was captured.');
     const bodyWarning = inlineBodyWarning(argv, source, body);
 
@@ -631,6 +667,12 @@ export function captureVerb(
     if (parsed.options.has('for') || parsed.flags.has('for')) {
       if (!book.takesLetters) refuseNoLetters('--for');
       if (!forSeat) refuse('--for names the seat a letter is for: --for <seat>. Nothing was captured.');
+    }
+    if ((parsed.options.has('for') || parsed.flags.has('for')) && library) {
+      // A SEAT OF ANOTHER LIBRARY IS NEVER LOOKED UP HERE: it must be in that Library's Postbox entry with its seat_id.
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(forSeat)) refuse(`--for '${forSeat}' is not a seat name. Nothing was captured.`);
+      if (!why) why = 'for-seat';
+    } else if (parsed.options.has('for') || parsed.flags.has('for')) {
       // THE RENAME BARRIER FIRST (kickoffs/s109 ruling 8): mid-rename, either name may have no folder yet.
       assertNoSeatRename(workspace, forSeat);
       // AN OLD NAME POINTS THE WAY (kickoffs/s110 ruling 5): a past name of a live seat is refused with its name now.
@@ -683,14 +725,18 @@ export function captureVerb(
     // seatless capture records no seat rather than the string 'unknown': empty is the real
     // pre-identity value, and a placeholder would be a claim nobody made.
     const seatState = resolveSeatName({ stateDirectory: stateDirectory(workspace) });
-    const fromSeat = seatState.status === 'named' ? seatState.seat! : '';
-    const seatSource = fromSeat ? seatState.source! : seatState.status;
+    // A FILED LETTER'S AUTHOR IS THE ONE ITS SENDING LIBRARY NAMED (plan item 3; ADR-0080's fourth source word), taken
+    // from the delivered note and never from a flag; capture still refuses a typed author.
+    const fromSeat = filing !== null ? filing.fromSeat : seatState.status === 'named' ? seatState.seat! : '';
+    const seatSource = filing !== null ? 'postbox' : fromSeat ? seatState.source! : seatState.status;
     // HOW THE AUTHOR WAS RESOLVED (S77 row 3, ADR-0062), in the resolver's own words and never as a proof: `binding`
     // from a committed binding, with no process walk; `launcher` from the environment while the launcher's claim token
     // and process check hold; `environment` from the environment alone. Nothing with no seat.
     const fromSeatSource = !fromSeat
       ? ''
-      : seatState.source === 'binding'
+      : filing !== null
+        ? 'postbox'
+        : seatState.source === 'binding'
         ? 'binding'
         : launcherHoldsSeatForThisAgent(stateDirectory(workspace), fromSeat)
           ? 'launcher'
@@ -698,7 +744,7 @@ export function captureVerb(
     // THE CONVERSATION READ NEVER BLOCKS A CAPTURE: a damaged record is carried as no id rather than
     // a wrong one, as the oracle carries it.
     let sessionId = '';
-    if (fromSeat) {
+    if (fromSeat && filing === null) {
       try {
         sessionId = seatConversationRecord(stateDirectory(workspace), fromSeat).sessionId;
       } catch {
@@ -706,22 +752,49 @@ export function captureVerb(
       }
     }
 
+    if (filing !== null) {
+      if (!book.takesLetters) refuseNoLetters('a letter from the Postbox');
+      forSeat = filing.forSeat;
+      if (!why) why = 'for-seat';
+    }
+    // A LETTER TO ANOTHER LIBRARY NEEDS A SEAT: its answer comes back to that seat (plan item 3).
+    if (library && !fromSeat) refuse(`--library sends a letter whose answer comes back to its writer, so it needs a seat. ${seatState.message ?? ''} Nothing was captured.`.replace(/ +/g, ' '));
+
     // AN ANSWER (kickoffs/s98 row 1; PLAN-seats-team.md session 3 item 1): `--answers notes/<page>` writes a reply to the
     // letter's first asker and closes the letter `answered_by` the reply, as `--supersedes` closes and links. The Book is
     // open on this seat's Desk, this seat is the letter's recipient, it is pending or this seat's unchanged close with no link, and its asker is
     // the same incarnation the registry names now; the reply is stamped with that validated id.
     const answers = (parsed.options.get('answers') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
     let asker: SeatIncarnation | null = null;
+    let remote: RemoteAddress | null = null;
+    let answersDeliveryId = '';
     if (given('answers')) {
       if (!book.takesLetters) refuseNoLetters('--answers');
       if (!/^notes\/[^/]+$/.test(answers)) refuse('--answers must name a letter of this Book as notes/<page>, for example notes/2026-10-07-a-question. Nothing was captured.');
       if (!fromSeat) refuse(`--answers names a letter, so it needs a seat. ${seatState.message ?? ''} Nothing was captured.`.replace(/ +/g, ' '));
       assertShelfBookOpen(workspace, slug, 'answering one of its letters with --answers', fromSeat);
       const view = readSeatIdentityView(stateDirectory(workspace));
-      asker = knownAsker(closableLetter(book, answers, seatIncarnation(stateDirectory(workspace), fromSeat, view), '--answers'), view);
+      const answered = closableLetter(book, answers, seatIncarnation(stateDirectory(workspace), fromSeat, view), '--answers');
+      // AN ASKER IN ANOTHER LIBRARY IS NEVER LOOKED UP HERE (kickoffs/s121 row 10, s123 row 4; plan item 3): the answer
+      // goes back through the Postbox to the first asker's Library and seat as the letter records them, carrying the
+      // asker's delivery id as `answers_delivery_id`, so the asker's Library closes its own copy when it files it.
+      if (answered.originLibraryId && answered.originLibraryId !== answered.localLibraryId) {
+        if (!answered.originSeat || !answered.originSeatId || !answered.originDeliveryId) {
+          refuse(`${answered.page} was asked from another Library (${answered.originLibraryId}) and does not record its asker's seat, seat_id and delivery id, so --answers cannot address the answer. Close it with deskpost letters close. Nothing was captured.`);
+        }
+        try {
+          remote = resolveRemoteSeat(workspace, answered.originLibraryId, answered.originSeat, answered.originSeatId);
+        } catch (error) {
+          refuse(`${answered.page} was asked from another Library (${answered.originLibraryId}), and its answer goes back through the Postbox: ${(error as Error).message.replace(/ Nothing was captured\.$/, '')} Close it with deskpost letters close, or route it to a seat here with --routes. Nothing was captured.`);
+        }
+        answersDeliveryId = answered.originDeliveryId;
+        asker = { seat: answered.originSeat, seatId: answered.originSeatId };
+      } else {
+        asker = knownAsker(answered, view);
+      }
       forSeat = asker.seat;
       if (!why) why = 'for-seat';
-      if ((process.env['LIBRARY_CAPTURE_ASKER_FAULT'] ?? '') === 'recreate') recreateAskerForTest(workspace, asker.seat);
+      if (remote === null && (process.env['LIBRARY_CAPTURE_ASKER_FAULT'] ?? '') === 'recreate') recreateAskerForTest(workspace, asker.seat);
     }
 
     // A ROUTE (kickoffs/s98 row 2; PLAN-seats-team.md session 3 item 2): `--for <seat> --routes notes/<page>` hands a
@@ -750,11 +823,16 @@ export function captureVerb(
     const seatIds = idsOf(identity);
     const self = fromSeat ? seatIncarnation(stateDirectory(workspace), fromSeat, identity) : null;
     // A ROUTE COPIES THE FIRST ASKER AS IT IS RECORDED: a letter written before 1.3.8 gives its from_seat and no id.
-    const originSeat = routed !== null ? routedOrigin(routed).seat : fromSeat;
-    const originSeatId = routed !== null ? routedOrigin(routed).seatId : letter && fromSeat ? seatIds.get(fromSeat) ?? '' : '';
-    const forSeatId = asker !== null ? asker.seatId : letter ? seatIds.get(forSeat) ?? '' : '';
+    const originSeat = filing !== null ? filing.originSeat : routed !== null ? routedOrigin(routed).seat : fromSeat;
+    const originLibraryId = routed !== null ? routedOrigin(routed).libraryId : '';
+    const originDeliveryId = routed !== null ? routedOrigin(routed).deliveryId : '';
+    const originSeatId = filing !== null ? filing.originSeatId : routed !== null ? routedOrigin(routed).seatId : letter && fromSeat ? seatIds.get(fromSeat) ?? '' : '';
+    // A LETTER TO ANOTHER LIBRARY (kickoffs/s123 row 2): its Library resolved through the Postbox now, before the lock,
+    // and the seat's id from that Library's entry; nothing about it is looked up in this Library's registry.
+    if (library) remote = resolveRemoteSeat(workspace, library, forSeat);
+    const forSeatId = filing !== null ? filing.forSeatId : asker !== null ? asker.seatId : remote !== null ? remote.seat_id : letter ? seatIds.get(forSeat) ?? '' : '';
     // THE RENAME BARRIER (kickoffs/s109 ruling 8): a letter to a seat being renamed, by either name, waits for the rename.
-    if (letter) assertNoSeatRename(workspace, forSeat);
+    if (letter && remote === null) assertNoSeatRename(workspace, forSeat);
 
     // A NEWER NOTE CLOSES AN OLDER ONE (S73 row 4): `--supersedes notes/<page>` names a note of this Book, so it needs
     // the Book open and a seat, where a capture without it stays seatless-capable. The note must exist, and the seat
@@ -772,6 +850,12 @@ export function captureVerb(
     // A body that already leads with its own H1 keeps it, so that heading -- not --title -- is what
     // the page, the reader map, the validated reader and triage's -MatchText all call this note.
     const normalisedBody = (routed ? routedBody(routed, routes, fromSeat, originSeat, body) : body).replace(/\s+$/, '');
+    // A BODY THAT OPENS WITH `---` WOULD BE MERGED INTO THE SERVER'S FRONTMATTER (probe S5), so a letter to another
+    // Library is refused before anything is written.
+    if (remote !== null && /^---[ \t]*\r?\n/.test(body)) {
+      refuse('A letter to another Library cannot open with a --- line: the Postbox would read it as the note\'s own frontmatter. Start it with a heading or a sentence. Nothing was captured.');
+    }
+    const deliveryId = remote !== null ? newDeliveryId(remote.from_library_id) : '';
     const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalisedBody);
     const keepsOwnHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
     if (!keepsOwnHeading && !title) refuse('Title is required: the body has no leading H1 to name the note, so pass --title.');
@@ -819,11 +903,14 @@ export function captureVerb(
       book: book.bookRoot,
       book_title: book.title,
       note_page: `${book.bookRoot}/wiki/${selected.page}`,
+      page: selected.page,
       note_title: pageTitle,
       title_source: keepsOwnHeading ? 'body H1' : '--title',
       ...(titleNote !== null ? { title_note: titleNote } : {}),
       body_characters: body.length,
       ...(bodyWarning !== null ? { body_warning: bodyWarning } : {}),
+      // THE TIME OF THE WRITE (kickoffs/s121 row 6): said here, filled only when the note is written.
+      ...(hasTimePlaceholders(body) ? { time_placeholders: TIME_PLACEHOLDER_NOTE } : {}),
       source,
       from_seat: fromSeat,
       ...(fromSeatSource ? { from_seat_source: fromSeatSource } : {}),
@@ -851,6 +938,8 @@ export function captureVerb(
       ...(letter ? { for_seat_id: forSeatId || null, origin_seat: originSeat || null, origin_seat_id: originSeatId || null } : {}),
       ...(answers ? { answers } : {}),
       ...(routed ? { routes, hops: (routed.hops ?? 0) + 1 } : {}),
+      ...(remote !== null ? { for_library_id: remote.library_id, for_library_card: remote.library_card, delivery_id: deliveryId, postbox_path: inboxPath(remote.library_id, deliveryId) } : {}),
+      ...(filing !== null ? { delivery_id: filing.deliveryId } : {}),
     };
     if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -858,6 +947,12 @@ export function captureVerb(
     if (fromSeat) frontmatter.push(`from_seat: ${fromSeat}`);
     if (fromSeatSource) frontmatter.push(`from_seat_source: ${fromSeatSource}`);
     if (sessionId) frontmatter.push(`session_id: ${sessionId}`);
+    // THE WRITER'S SEAT ID (kickoffs/s130 row 1; the amend-and-withdraw plan r3, decision 5), guarded as for_seat_id is:
+    // only a valid id the registry gives now, so a later seat reusing a retired name is not this note's writer. A filed
+    // letter's writer is another Library's seat, and a seatless capture has none. Beside the writer's other lines, so the
+    // lines a letter's own keys end with stay last.
+    const fromSeatId = fromSeat && filing === null ? seatIncarnation(stateDirectory(workspace), fromSeat).seatId : '';
+    if (fromSeatId) frontmatter.push(`from_seat_id: ${fromSeatId}`);
     if (forSeat) frontmatter.push(`for_seat: ${forSeat}`);
     const sourceProject = (parsed.options.get('source-project') ?? '').trim();
     const sourcePaths = (parsed.options.get('source-paths') ?? '').trim();
@@ -877,12 +972,24 @@ export function captureVerb(
     if (departmentDelivery) frontmatter.push(`department_delivery: ${departmentDelivery}`);
     if (answers) frontmatter.push(`answers: ${answers}`);
     if (routed) frontmatter.push(`routed_from: ${routes}`, `hops: ${(routed.hops ?? 0) + 1}`);
-    for (const [key, value] of internal.extraFrontmatter ?? []) frontmatter.push(`${key}: ${value}`);
+    // THE FIRST ASKER'S LIBRARY AND DELIVERY, after every older line and only when the routed letter carries them, so a
+    // local letter's frontmatter is unchanged (kickoffs/s121 row 10).
+    if (routed && originLibraryId) frontmatter.push(`origin_library_id: ${originLibraryId}`);
+    if (routed && originDeliveryId) frontmatter.push(`origin_delivery_id: ${originDeliveryId}`);
+    // A LETTER TO ANOTHER LIBRARY, the sender's record (kickoffs/s123 row 2): both Libraries, the delivery id and where it
+    // goes; an answer also the asker's delivery id it answers. After every older line, so a local letter is unchanged.
+    if (remote !== null) {
+      frontmatter.push(`from_library_id: ${remote.from_library_id}`, `from_library_card: ${remote.from_library_card}`, `for_library_id: ${remote.library_id}`, `delivery_id: ${deliveryId}`);
+      if (answersDeliveryId) frontmatter.push(`answers_delivery_id: ${answersDeliveryId}`);
+      frontmatter.push(`postbox_path: ${inboxPath(remote.library_id, deliveryId)}`);
+    }
+    for (const [key, value] of [...(internal.extraFrontmatter ?? []), ...(filing?.fields ?? [])]) frontmatter.push(`${key}: ${value}`);
     frontmatter.push('---');
 
-    const page = keepsOwnHeading
-      ? frontmatter.join('\n') + '\n\n' + normalisedBody + '\n'
-      : frontmatter.join('\n') + '\n\n' + `# ${pageTitle}\n\n` + normalisedBody + '\n';
+    // {now} AND {today} BECOME THE TIME OF THE WRITE (kickoffs/s121 row 6), in the body only, never its title or name.
+    const writtenBody = filing !== null ? normalisedBody : fillTimePlaceholders(normalisedBody);
+    const letterBody = keepsOwnHeading ? writtenBody + '\n' : `# ${pageTitle}\n\n` + writtenBody + '\n';
+    let page = frontmatter.join('\n') + '\n\n' + letterBody;
 
     const mapPath = path.join(book.wikiPath, '_index.md');
     let lock: BookLock | null = null;
@@ -890,6 +997,7 @@ export function captureVerb(
     let mutation: BookMutation | null = null;
     let pendingCount = 0;
     let manifestSummary = '';
+    let outboxCreated = '';
     try {
       lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
       fs.mkdirSync(book.notesPath, { recursive: true });
@@ -897,6 +1005,7 @@ export function captureVerb(
       // nobody excluded, so another session may have taken it since.
       selected = selectNoteFile();
       plan['note_page'] = `${book.bookRoot}/wiki/${selected.page}`;
+      plan['page'] = selected.page;
       // THE OLDER NOTE, AGAIN UNDER THE LOCK: it exists, and this seat may close it. Its prior bytes are journalled
       // with the new note's, so a failure restores both.
       const older = supersedes ? supersededNote(book, supersedes, self!) : null;
@@ -905,6 +1014,28 @@ export function captureVerb(
       // THE LETTER A ROUTE CLOSES, AGAIN UNDER THE LOCK, with its hop count.
       const routedAgain = routes ? closableLetter(book, routes, self!, '--routes') : null;
       if (routedAgain) assertHopsLeft(routedAgain);
+      // FILED ONCE BY DELIVERY ID (kickoffs/s123 row 3; plan item 5), under the lock, so two checks file one letter.
+      if (filing !== null) {
+        const already = letterWithDeliveryId(book, filing.deliveryId, false);
+        if (already !== null) {
+          plan['status'] = 'already-filed';
+          plan['note_page'] = `${book.bookRoot}/wiki/${already.page}`;
+          plan['page'] = already.page;
+          return { refusal: null, value: plan };
+        }
+      }
+      // AN ANSWER FROM ANOTHER LIBRARY CLOSES THE ASKER'S OWN LETTER (plan item 3), in this same window.
+      const askerCopy = filing !== null && filing.answersDeliveryId ? letterWithDeliveryId(book, filing.answersDeliveryId, true) : null;
+      // A delivery id locates a copy; the Library and asking seat must also match (kickoffs/c37 row 2).
+      // Older letters without an id on either side still match by seat name.
+      const askerMatches = askerCopy !== null && filing !== null
+        && askerCopy.forLibraryId === new Map(filing.fields).get('from_library_id')
+        && askerCopy.fromSeat === filing.forSeat
+        && (!askerCopy.fromSeatId || !filing.forSeatId || askerCopy.fromSeatId === filing.forSeatId);
+      if (filing?.answersDeliveryId && !askerMatches) {
+        page = setNoteField(page, 'answer_unmatched', 'true');
+        plan['answered'] = { page: askerCopy?.page ?? null, status: 'unmatched' };
+      }
 
       mutation = enterBookMutation({
         workspace,
@@ -917,7 +1048,7 @@ export function captureVerb(
         workspace,
         bookRoot: book.bookRoot,
         operation: `Capture note ${selected.name}`,
-        paths: [selected.full, mapPath, ...(older ? [older.fullPath] : []), ...(answered ? [answered.fullPath] : []), ...(routedAgain ? [routedAgain.fullPath] : [])],
+        paths: [selected.full, mapPath, ...(older ? [older.fullPath] : []), ...(answered ? [answered.fullPath] : []), ...(routedAgain ? [routedAgain.fullPath] : []), ...(askerCopy ? [askerCopy.fullPath] : [])],
       }).journalPath;
 
       // `wx` is CreateNew: a collision fails rather than overwrites, which is what makes the name
@@ -955,6 +1086,58 @@ export function captureVerb(
         writeAtomicText(routedAgain.fullPath, closed);
         plan['routed'] = { page: routedAgain.page, status: 'closed' };
       }
+      // CLOSED BY THE FILED ANSWER: `review: done`, the stamp, and `answered_by:` (kickoffs/s123 row 4). One already done
+      // or already linked is left as it is and said `unchanged`.
+      if (askerCopy && askerMatches) {
+        if (askerCopy.review === 'done' || askerCopy.answeredBy || askerCopy.routedTo) {
+          plan['answered'] = { page: askerCopy.page, status: 'unchanged' };
+        } else {
+          const text = readUtf8(askerCopy.fullPath);
+          const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'answered_by', selected.page);
+          if (!/^review: done/m.test(closed)) refuse(`${askerCopy.page} has no review field to close.`);
+          writeAtomicText(askerCopy.fullPath, closed);
+          plan['answered'] = { page: askerCopy.page, status: 'closed' };
+        }
+      }
+      // THE OUTBOX ENTRY, IN THE SAME WINDOW (kickoffs/s123 row 2; plan item 4): the delivery id, the path and the
+      // payload digest fixed now, with `wx`; the rollback below removes it with the note.
+      if (remote !== null) {
+        const metadata: Record<string, string> = {
+          delivery_id: deliveryId,
+          from_library_id: remote.from_library_id,
+          from_library_card: remote.from_library_card,
+          for_library_id: remote.library_id,
+          for_seat: forSeat,
+          for_seat_id: forSeatId,
+          from_seat: fromSeat,
+          ...(originSeat ? { origin_seat: originSeat } : {}),
+          ...(originSeatId ? { origin_seat_id: originSeatId } : {}),
+          ...(answersDeliveryId ? { answers_delivery_id: answersDeliveryId } : {}),
+          payload_digest: payloadDigest(letterBody),
+        };
+        const entry: OutboxEntry = {
+          schema: 1,
+          delivery_id: deliveryId,
+          created_utc: capturedAt,
+          letter_page: selected.page,
+          recipient_library_id: remote.library_id,
+          recipient_library_card: remote.library_card,
+          for_seat: forSeat,
+          for_seat_id: forSeatId,
+          path: inboxPath(remote.library_id, deliveryId),
+          digest: payloadDigest(letterBody),
+          title: pageTitle,
+          body: letterBody,
+          metadata,
+          state: 'unsent',
+          attempts: 0,
+          sent_utc: null,
+          sent_path: null,
+          refusal: null,
+          last_error: null,
+        };
+        outboxCreated = createOutboxEntry(workspace, entry);
+      }
       // Regenerated inside the same lock. An unlocked rewrite works from a listing that may already
       // be stale, dropping another session's note from the map while leaving its file on disk.
       pendingCount = updateShelfNoteIndex(book).pendingCount;
@@ -963,7 +1146,7 @@ export function captureVerb(
       mutation = null;
     } catch (error) {
       const failure = (error as Error).message;
-      const rollback = runRollback(journalPath);
+      const rollback = runRollback(journalPath, outboxCreated ? () => removeOutboxEntry(workspace, deliveryId) : undefined);
       settle(mutation, rollback);
       return { refusal: `The note was not captured. ${failure}. Rollback: ${rollback}.`, value: null };
     } finally {
@@ -974,7 +1157,10 @@ export function captureVerb(
     // between is found: its `message_name`, or null with why (`closed`, `codex`, `not yet named`). A fact for the
     // writer's ring, never a verdict; the kernel sends nothing. For --answers the first asker, for a department letter
     // its resolved orchestrator. A read that fails says nothing rather than guess.
-    if (forSeat) {
+    // SENT ONCE, RIGHT AFTER THE WRITE (plan item 4): a child `postbox send --only`; a letter it could not send waits in
+    // the outbox for `deskpost postbox send` or the next session's check.
+    if (remote !== null) plan['postbox'] = sendAfterCapture(workspace, deliveryId);
+    if (forSeat && remote === null && filing === null) {
       try {
         const desks = stateDirectory(workspace);
         const address = seatMessageAddress(desks, forSeat, getSeatClaimState(desks, forSeat).state);
@@ -1106,6 +1292,263 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
 
     plan['status'] = 'closed';
     plan['review'] = 'done';
+    plan['pending_count'] = pendingCount;
+    // THIS SEAT'S OWN COUNT beside the whole Book's (kickoffs/s120 row 3), read once the letter is closed.
+    plan['pending_for_this_seat'] = openLettersFor(book, self).length;
+    plan['journal'] = journalPath ? workspaceRelative(workspace, journalPath) : null;
+    plan['manifest'] = manifestSummary;
+    return { refusal: null, value: plan };
+  } catch (error) {
+    return { refusal: (error as Error).message, value: null };
+  }
+}
+
+/**
+ * THIS SEAT'S OPEN LETTERS (kickoffs/s120 row 3): exactly the letters `letters close` would close, by `closableLetter`'s
+ * own rule, unchanged. The address and status are read first, so the rule runs only on this seat's pending letters.
+ */
+function openLettersFor(book: ShelfBook, self: SeatIncarnation): ShelfNoteRow[] {
+  return shelfNotes(book).filter((row) => {
+    if (row.review === 'done' || row.malformed.length || !isAddressedTo(row, self)) return false;
+    try {
+      closableLetter(book, row.page, self, 'letters close');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * `deskpost letters list [--json]` (kickoffs/s120 row 3): this seat's open letters, oldest first, each with its page,
+ * sender, capture time and title. The seat is resolved, never typed, and the letters Book must be open on its Desk, as
+ * for `letters close`. It reads; it writes nothing.
+ */
+export function lettersListVerb(argv: string[], workspace: string): WriterResult & { text: string } {
+  parseArguments(argv, argumentTable('letters', 'list'));
+  try {
+    const book = getShelfBook(workspace, LETTERS_BOOK);
+    if (!book.isCapture || !book.takesLetters) {
+      refuse(`Shelf Book '${LETTERS_BOOK}' does not take letters (its catalog entry needs '- **Kind:** capture' and '- **Letters:** yes').`);
+    }
+    const seatState = resolveSeatName({ stateDirectory: stateDirectory(workspace) });
+    if (seatState.status !== 'named') refuse(`deskpost letters list lists the letters addressed to this seat, so it needs a seat. ${seatState.message ?? ''}`.replace(/ +/g, ' ').trim());
+    const seat = seatState.seat!;
+    assertShelfBookOpen(workspace, LETTERS_BOOK, 'listing its letters with deskpost letters list', seat);
+    const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
+    const letters = openLettersFor(book, self)
+      .sort((left, right) => left.captured.localeCompare(right.captured) || left.page.localeCompare(right.page))
+      .map((row) => ({ page: row.page, from: row.fromSeat, captured: row.captured, title: row.title }));
+    const value: Record<string, PsJsonValue> = {
+      schema: LIBRARY_OUTPUT_SCHEMA,
+      operation: 'Letters for this seat',
+      seat,
+      book: book.bookRoot,
+      count: letters.length,
+      letters,
+      shared_library_write: false,
+    };
+    const text = letters.length
+      ? [`${letters.length} open letter${letters.length === 1 ? '' : 's'} for seat '${seat}', oldest first:`,
+          ...letters.flatMap((letter) => [`  ${letter.captured}  from ${letter.from ?? 'no seat'}: ${letter.title}`, `    ${letter.page}`])].join('\n')
+      : `No open letters for seat '${seat}'.`;
+    return { refusal: null, value, text };
+  } catch (error) {
+    return { refusal: (error as Error).message, value: null, text: '' };
+  }
+}
+
+// --- reports amend and reports withdraw ------------------------------------------------------------
+
+const REPORTS_BOOK = 'reports';
+/** An update's own limit (the plan r3, decision 2): the kernel has no capture body limit, only the shim's warning. */
+const REPORT_UPDATE_LIMIT_BYTES = 16 * 1024;
+
+/**
+ * THE REPORT `reports amend` OR `reports withdraw` NAMES (kickoffs/s130 row 2; the amend-and-withdraw plan r3, decisions
+ * 4 and 5; ADR-0083): it exists, its frontmatter is whole, it has a writer, this seat wrote it by the one writer rule
+ * with its `from_seat_id`, and triage has not touched it: still pending and carrying no `filed_to`, `superseded_by`,
+ * `answered_by` or `routed_to`, a reopened note included. Checked before the lock and again under it, as
+ * `closableLetter` is. Once triaged a Report is frozen: new evidence goes in a new Report.
+ */
+function closableReport(book: ShelfBook, page: string, self: SeatIncarnation, verb: 'amend' | 'withdraw'): ShelfNoteRow {
+  const instead = verb === 'amend' ? 'File a new Report instead' : 'Ask triage to review it instead';
+  const note = shelfNotes(book).find((row) => row.page === page);
+  if (!note) refuse(`reports ${verb} names ${page}, and Book '${book.slug}' has no such note. Nothing was changed.`);
+  if (note.malformed.length) {
+    refuse(
+      `${page} carries frontmatter this program does not trust (${note.malformed.join(', ')}), so reports ${verb} refuses it: ` +
+        `repair the note's frontmatter by hand, or ask triage to review it. Nothing was changed.`,
+    );
+  }
+  if (!note.fromSeat) {
+    refuse(`${page} was filed by no seat (a seatless Report), so no seat can ${verb} it: triage review is its only close, and new evidence goes in a new Report. Nothing was changed.`);
+  }
+  if (!isWrittenBy(note, self)) {
+    refuse(
+      note.fromSeat === self.seat
+        ? `${page} was filed by an earlier seat named '${self.seat}' (its from_seat_id is not this seat's), so this seat cannot ${verb} it. ${instead}. Nothing was changed.`
+        : `${page} was filed by seat '${note.fromSeat}', not this seat '${self.seat}', and a seat may ${verb} only its own Report. ${instead}. Nothing was changed.`,
+    );
+  }
+  if (note.review === 'done') {
+    refuse(`${page} is already closed (review: done): triage has it, so it is frozen. New evidence goes in a new Report (capture reports --supersedes ${page}). Nothing was changed.`);
+  }
+  const link = note.filedTo ? 'filed_to' : note.supersededBy ? 'superseded_by' : note.answeredBy ? 'answered_by' : note.routedTo ? 'routed_to' : null;
+  if (link) {
+    refuse(`${page} carries ${link}: triage has touched it, so it is frozen even though it reads pending. File a new Report instead. Nothing was changed.`);
+  }
+  return note;
+}
+
+/**
+ * AN UPDATE'S TEXT, READ AND CHECKED (the plan r3, decision 2): not empty, at most 16 KB, no control character but tab and
+ * line ending, no `#` or `##` heading outside a fenced block (it would split the note's own sections), and no fence left
+ * open (it would swallow the `## Update` heading). Fences are read by the reader map's own rule (`readMap`), from a
+ * leading line break so a file that starts with `---` is never taken for frontmatter.
+ */
+function reportUpdateText(workspace: string, given: string): string {
+  if (!given.trim()) refuse('reports amend takes the update as --content-path <file>, a file holding the text to add. Nothing was changed.');
+  let full: string;
+  try {
+    full = resolveContentPath(workspace, given);
+  } catch (error) {
+    refuse(`${(error as Error).message} Nothing was changed.`);
+  }
+  const size = fs.statSync(full).size;
+  if (size > REPORT_UPDATE_LIMIT_BYTES) {
+    refuse(`--content-path ${given} is ${size} bytes, and an update holds at most 16 KB (${REPORT_UPDATE_LIMIT_BYTES} bytes): put the rest in a new Report. Nothing was changed.`);
+  }
+  const text = readUtf8(full).replace(/^﻿/, '').replace(/\r\n/g, '\n');
+  if (!text.trim()) refuse(`--content-path ${given} is empty: an update needs text. Nothing was changed.`);
+  const stray = strayControlCharacter(text);
+  if (stray !== null) {
+    refuse(`--content-path ${given} has a control character on line ${stray.line}: ${stray.codePoint} (${stray.name}); only a tab and line endings are allowed. Nothing was changed.`);
+  }
+  const reading = readMap(`\n${text}`);
+  if (reading.unclosedFence) {
+    refuse(`--content-path ${given} ends inside a fenced block, which would swallow the update's heading: close the fence. Nothing was changed.`);
+  }
+  const heading = reading.text.split('\n').find((line) => /^[ \t]{0,3}#{1,2}(?:[ \t]|$)/.test(line));
+  if (heading !== undefined) {
+    refuse(`--content-path ${given} holds the heading '${heading.trim().slice(0, 80)}': an update may use ### and deeper, or put a # line in a fenced block, since # and ## would split the Report. Nothing was changed.`);
+  }
+  return text.replace(/\s+$/, '');
+}
+
+/**
+ * `deskpost reports amend notes/<page> --content-path <file>` and `deskpost reports withdraw notes/<page> --note "<reason>"`
+ * (kickoffs/s130 row 2; the amend-and-withdraw plan r3, decisions 1-5; ADR-0083). THE FILING SEAT CORRECTS OR RECALLS
+ * ITS OWN PENDING REPORT, modelled on `letters close`: the seat is resolved, never typed; the standard `reports` Book is
+ * open on its Desk; the Report passes `closableReport` before the lock and again under it. Amend appends one
+ * `## Update <UTC stamp>` section and sets `updated` and `update_count`, leaving the body and earlier updates byte for
+ * byte. Withdraw closes it with `review: done`, `reviewed:` and `closed_note:`, so a withdrawn Report reads apart from a
+ * fixed one. Journalled with the reader map, a new manifest generation, and no reader's yes: a seat's own filing.
+ */
+export function reportsVerb(action: 'amend' | 'withdraw', argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('reports', action));
+  try {
+    if (parsed.options.has('seat') || parsed.flags.has('seat')) {
+      refuse(`deskpost reports ${action} does not take --seat: the filing seat is resolved from this session's binding or launcher, never typed, so no shell can change another seat's Report. Nothing was changed.`);
+    }
+    const page = (parsed.positional[0] ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
+    if (!/^notes\/[^/]+$/.test(page)) {
+      refuse(
+        action === 'amend'
+          ? 'deskpost reports amend names one Report as notes/<page>, for example deskpost reports amend notes/2026-10-17-a-fault --content-path update.md. Nothing was changed.'
+          : 'deskpost reports withdraw names one Report as notes/<page>, for example deskpost reports withdraw notes/2026-10-17-a-fault --note "not a defect: my setup". Nothing was changed.',
+      );
+    }
+    const note = (parsed.options.get('note') ?? '').trim();
+    if (action === 'withdraw') {
+      if (!note) refuse('reports withdraw needs --note "<reason>", one line saying why the Report is withdrawn, for example --note "not a defect: my setup". Nothing was changed.');
+      const stray = controlCharacterInLine(note);
+      if (stray !== null) {
+        refuse(`--note holds ${stray.name} (${stray.codePoint}): a closed_note is one line of text with no control character, since it is written into the Report's frontmatter. Nothing was changed.`);
+      }
+    }
+    const contentPath = parsed.options.get('content-path') ?? '';
+    if (action === 'amend') reportUpdateText(workspace, contentPath);
+
+    const book = getShelfBook(workspace, REPORTS_BOOK);
+    if (!book.isCapture) refuse(`Shelf Book '${REPORTS_BOOK}' is not a capture Book (its catalog entry needs '- **Kind:** capture'). Nothing was changed.`);
+    const seatState = resolveSeatName({ stateDirectory: stateDirectory(workspace) });
+    if (seatState.status !== 'named') refuse(`deskpost reports ${action} changes a Report this seat filed, so it needs a seat. ${seatState.message ?? ''} Nothing was changed.`.replace(/ +/g, ' '));
+    const seat = seatState.seat!;
+    assertShelfBookOpen(workspace, REPORTS_BOOK, action === 'amend' ? 'amending one of its Reports with deskpost reports amend' : 'withdrawing one of its Reports with deskpost reports withdraw', seat);
+    const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
+    closableReport(book, page, self, action);
+
+    const plan: Record<string, PsJsonValue> = {
+      schema: LIBRARY_OUTPUT_SCHEMA,
+      operation: action === 'amend' ? 'Amend a Report' : 'Withdraw a Report',
+      book: book.bookRoot,
+      report: page,
+      seat,
+      ...(action === 'withdraw' ? { closed_note: note } : {}),
+      confirmation_required: false,
+      shared_library_write: false,
+      scope:
+        action === 'amend'
+          ? `Appends one ## Update section to ${page} and sets updated: and update_count:, leaving its body and earlier updates byte for byte; regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`
+          : `Closes ${page} as withdrawn (review: done, reviewed:, closed_note:), regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`,
+    };
+
+    const mapPath = path.join(book.wikiPath, '_index.md');
+    let lock: BookLock | null = null;
+    let journalPath: string | null = null;
+    let mutation: BookMutation | null = null;
+    let pendingCount = 0;
+    let manifestSummary = '';
+    let stamp = '';
+    let count = 0;
+    try {
+      lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+      // AGAIN UNDER THE LOCK: still pending, still untouched by triage, still this seat's; the update's file read again.
+      const report = closableReport(book, page, self, action);
+      const update = action === 'amend' ? reportUpdateText(workspace, contentPath) : '';
+      const reason = `${action === 'amend' ? 'Amend' : 'Withdraw'} Report ${page}`;
+      mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason, lock });
+      journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: reason, paths: [report.fullPath, mapPath] }).journalPath;
+      const text = readUtf8(report.fullPath);
+      stamp = utcStamp();
+      let changed: string;
+      if (action === 'amend') {
+        count = (report.updateCount ?? 0) + 1;
+        const eol = text.includes('\r\n') ? '\r\n' : '\n';
+        const fields = setNoteField(setNoteField(text, 'updated', stamp), 'update_count', String(count));
+        if (fields === text) refuse(`${report.page} has no frontmatter block to record the update in. Nothing was changed.`);
+        // APPENDED, NEVER REWRITTEN: everything after the frontmatter stays as it was, and the update follows it.
+        const ended = /\n$/.test(fields) ? fields : fields + eol;
+        changed = ended + eol + `## Update ${stamp}` + eol + eol + update.split('\n').join(eol) + eol;
+      } else {
+        changed = setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', stamp);
+        changed = setNoteField(changed, 'closed_note', note);
+        if (!/^review: done/m.test(changed)) refuse(`${report.page} has no review field to close.`);
+      }
+      writeAtomicText(report.fullPath, changed);
+      // SELF-TEST ONLY: a fault between the Report and its map, which the journal must roll back whole.
+      if ((process.env['LIBRARY_REPORTS_FAULT'] ?? '') === 'after-note') throw new Error('LIBRARY_REPORTS_FAULT stopped the write after the Report and before the map');
+      pendingCount = updateShelfNoteIndex(book).pendingCount;
+      manifestSummary = completeBookMutation(mutation).summary;
+      mutation = null;
+    } catch (error) {
+      const failure = (error as Error).message;
+      const rollback = runRollback(journalPath);
+      settle(mutation, rollback);
+      return { refusal: `The Report was not ${action === 'amend' ? 'amended' : 'withdrawn'}. ${failure.replace(/\.$/, '')}. Rollback: ${rollback}.`, value: null };
+    } finally {
+      exitBookLock(lock);
+    }
+
+    plan['status'] = action === 'amend' ? 'amended' : 'withdrawn';
+    if (action === 'amend') {
+      plan['updated'] = stamp;
+      plan['update_count'] = count;
+    } else {
+      plan['review'] = 'done';
+      plan['reviewed'] = stamp;
+    }
     plan['pending_count'] = pendingCount;
     plan['journal'] = journalPath ? workspaceRelative(workspace, journalPath) : null;
     plan['manifest'] = manifestSummary;
@@ -1775,6 +2218,57 @@ function replacePageFault(): string {
   return (process.env['LIBRARY_BOOK_REPLACE_PAGE_FAULT'] ?? '').trim();
 }
 
+// --- book get-page: a byte-exact working copy, without changing the Book ------------------------------
+
+function getPage(argv: string[], workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('book', 'get-page'));
+  const slug = parsed.positional[0] ?? '';
+  const pagePath = parsed.positional[1] ?? '';
+  const givenOut = parsed.options.get('out')?.trim();
+  if (!slug || !pagePath || !givenOut) refuse('book get-page needs a Book slug, a page path and --out <file>: deskpost book get-page <slug> <page> --out <file> [--seat <s>]. Nothing was written.');
+  let book: ReturnType<typeof getShelfBook>;
+  try { book = getShelfBook(workspace, slug); }
+  catch (error) {
+    if (/^[a-z0-9][a-z0-9-]*$/.test(slug) && isLocalBackend(workspace) && collectionBookSlugs(workspace, 'active').includes(slug)) {
+      refuse(`'${slug}' is a Book in this Library's own collection, not on the Shelf. Nothing was written.`);
+    }
+    throw error;
+  }
+  if (book.isCapture) refuse(`Shelf Book '${slug}' is a capture Book; book get-page reads a page of a curated Book. Nothing was written.`);
+  if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
+  assertShelfBookOpen(workspace, slug, 'reading a page of it into a file');
+  const page = convertToBookPagePath(pagePath);
+  const relative = `${page}.md`;
+  assertInsideRoot(book.wikiPath, relative, `shelf/${slug}/wiki`);
+  const source = path.join(book.wikiPath, ...relative.split('/'));
+  if (!fs.existsSync(source) || !fs.statSync(source).isFile()) refuse(`shelf/${slug}/wiki/${relative} does not exist, so there is no page to read. Nothing was written.`);
+
+  const out = path.resolve(givenOut);
+  if (lexists(out)) refuse(`--out '${out}' already exists; book get-page never overwrites a file. Nothing was written.`);
+  const parent = path.dirname(out);
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) refuse(`--out folder '${parent}' does not exist. Nothing was written.`);
+  const resolvedOut = path.join(fs.realpathSync(parent), path.basename(out));
+  const inside = (root: string, file: string) => {
+    const relative = path.relative(root, file);
+    return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+  };
+  for (const name of ['shelf', 'internal', 'notebook']) {
+    const root = path.join(workspace, name);
+    if (inside(root, out) || (fs.existsSync(root) && inside(fs.realpathSync(root), resolvedOut))) {
+      refuse(`--out must be outside this Library's ${name}/ folder. Nothing was written.`);
+    }
+  }
+  const bytes = fs.readFileSync(source);
+  try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { refuse(`shelf/${slug}/wiki/${relative} is not valid UTF-8. Nothing was written.`); }
+  const sha256 = pageComparisonSha256(bytes.toString('utf8'));
+  fs.writeFileSync(out, bytes, { flag: 'wx' });
+  return { refusal: null, value: {
+    out, bytes: bytes.length, sha256,
+    next: `deskpost book replace-page ${slug} ${page} --content-path <your edited copy> --preflight --expect-sha256 ${sha256}`,
+  } };
+}
+
 /**
  * `deskpost book replace-page <slug> <page> --content-path <file> (--preflight | --base-sha256 <h>)` (ADR-0070, D1).
  *
@@ -2269,11 +2763,12 @@ export function runBookVerb(argv: string[], workspace: string): WriterResult {
   const action = argv[0] ?? '';
   try {
     if (action === 'add-page') return addPage(argv.slice(1), workspace);
+    if (action === 'get-page') return getPage(argv.slice(1), workspace);
     if (action === 'replace-page') return replacePage(argv.slice(1), workspace);
     if (action === 'reader-map') return readerMapVerb(argv.slice(1), workspace);
     if (action === 'sources') return sourcesVerb(argv.slice(1), workspace);
     if (action === 'graduate') return graduate(argv.slice(1), workspace);
-    return { refusal: `library book has no action '${action}'. It has: add-page, graduate, reader-map, replace-page, sources.`, value: null };
+    return { refusal: `library book has no action '${action}'. It has: add-page, get-page, graduate, reader-map, replace-page, sources.`, value: null };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };
   }

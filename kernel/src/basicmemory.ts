@@ -26,6 +26,19 @@ const PIN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 export class BasicMemoryRefusal extends Error {}
 
+/**
+ * A WRITE WHOSE SESSION DROPPED (kickoffs/s121 row 7; PLAN-many-libraries.md Stage 0, third bullet). The session is
+ * re-opened and the call is NOT sent again: the server may have committed it before it forgot the session, so whether it
+ * landed is judged by reading it back, never by retrying blind.
+ */
+export class SessionDropped extends BasicMemoryRefusal {}
+
+/**
+ * THE TOOLS THAT CHANGE THE SERVER. `callTool` never resends one of these after a dropped session (row 7), whichever
+ * writer calls it; a read is still resent once, as before.
+ */
+const WRITE_TOOLS = new Set(['write_note', 'edit_note', 'move_note', 'delete_note', 'create_memory_project', 'delete_project']);
+
 function refuse(message: string): never {
   throw new BasicMemoryRefusal(message);
 }
@@ -271,15 +284,24 @@ export class McpSession {
     try {
       return await this.once(method, params, false);
     } catch (error) {
-      if (!retry || !this.sessionId || !/Session not found/.test((error as Error).message)) throw error;
+      if (!this.sessionId || !/Session not found/.test((error as Error).message)) throw error;
+      // Re-opened either way, so the next call (the readback that judges a write) has a session.
       this.sessionId = null;
       await this.initialize();
+      if (!retry) {
+        const tool = String(field(params, 'name') ?? method);
+        throw new SessionDropped(
+          `The Basic Memory session dropped during ${tool}. It was re-opened and the call was not sent again, because the ` +
+            'server may already have made it; read it back to see whether it landed.',
+        );
+      }
       return await this.once(method, params, false);
     }
   }
 
+  /** A read is resent once after a dropped session; a write (WRITE_TOOLS) never is (kickoffs/s121 row 7). */
   async callTool(name: string, args: Record<string, Json>): Promise<unknown> {
-    return this.request('tools/call', { name, arguments: args });
+    return this.request('tools/call', { name, arguments: args }, !WRITE_TOOLS.has(name));
   }
 
   /**
@@ -335,6 +357,60 @@ function text(value: unknown): string {
   return value === undefined || value === null ? '' : String(value);
 }
 
+/** How a Basic Memory write was refused, by the form the refusal took (kickoffs/s121 row 7). */
+export type WriteRefusalForm = 'rpc-error' | 'is-error' | 'note-already-exists' | 'error-field' | 'conflict' | 'edit-failed' | 'error-heading';
+
+export interface WriteVerdict {
+  refused: boolean;
+  form: WriteRefusalForm | null;
+  detail: string;
+}
+
+/**
+ * THE ONE JUDGE OF A BASIC MEMORY WRITE (kickoffs/s121 row 7; PLAN-many-libraries.md Stage 0; B's Stage 0 probes,
+ * 2026-10-15). Basic Memory v0.23.2 reports most refusals as ORDINARY RESULTS, `isError: false`: with
+ * `output_format: json` a `result.error` (`NOTE_ALREADY_EXISTS` beside `action: conflict` for an existing note, `Text to
+ * replace not found: ...` for a refused edit_note), and in text a heading (`# Error: Note already exists`, `# Edit Failed
+ * - Text Not Found`). So `isError` alone is never trusted: any of these is a refusal, and the form is named. Every kernel
+ * write is still followed by its readback.
+ */
+export function judgeWriteResult(response: unknown): WriteVerdict {
+  const refused = (form: WriteRefusalForm, detail: string): WriteVerdict => ({ refused: true, form, detail: detail.substring(0, 300) });
+  if (isRpcError(response)) return refused('rpc-error', text(field(field(response, 'error'), 'message')));
+  const result = toolResult(response);
+  const content = field(result, 'content');
+  const block = Array.isArray(content) ? content.find((item) => field(item, 'type') === 'text') : undefined;
+  const firstText = text(field(block, 'text'));
+  if (field(result, 'isError') === true) return refused('is-error', firstText);
+  const record = structuredRecord(response);
+  const error = field(record, 'error');
+  if (error !== undefined && error !== null && text(error).trim() !== '') {
+    return refused(text(error) === 'NOTE_ALREADY_EXISTS' ? 'note-already-exists' : 'error-field', text(error));
+  }
+  if (text(field(record, 'action')) === 'conflict') return refused('conflict', 'action: conflict');
+  const heading = firstText.trimStart().split(/\r?\n/, 1)[0] ?? '';
+  if (/^#\s*Edit Failed\b/i.test(heading)) return refused('edit-failed', heading);
+  if (/^#\s*Error\b/i.test(heading)) return refused('error-heading', heading);
+  return { refused: false, form: null, detail: '' };
+}
+
+/**
+ * ONE WRITE, SENT ONCE AND JUDGED (kickoffs/s121 row 7). A refusal in any form refuses, naming it. A dropped session
+ * returns `dropped: true` with the session re-opened and nothing resent: the caller's readback decides.
+ */
+export async function sendWrite(session: McpSession, name: string, args: Record<string, Json>, label: string): Promise<{ dropped: boolean; response: unknown }> {
+  let response: unknown;
+  try {
+    response = await session.callToolOnce(name, args);
+  } catch (error) {
+    if (error instanceof SessionDropped) return { dropped: true, response: null };
+    throw error;
+  }
+  const verdict = judgeWriteResult(response);
+  if (verdict.refused) refuse(`${label} was refused (${verdict.form}${verdict.detail ? `: ${verdict.detail}` : ''}). Nothing was overwritten.`);
+  return { dropped: false, response };
+}
+
 /**
  * `Read-ExactOrNull` (New-ProjectHub.ps1): the note at exactly `relative` (with `.md`), or null when it
  * does not exist. A record for any other path is refused rather than read.
@@ -376,6 +452,66 @@ export async function readExactOrNull(
 }
 
 /**
+ * ONE READ THROUGH `read_content` (kickoffs/s123 row 2): the text the server answers for `relative`, or null when it
+ * says not found. NOT the file actually at a path (B's probe of the real server, 2026-10-17,
+ * `projects/deskpost-desk/notes/2026-10-17-postbox-probes`, findings 2-4): the server follows a permalink first, so a
+ * moved note's old path answers the moved note even once a new file is there, and a path with no file, in a folder that
+ * holds notes, answers another note from that folder; only a folder with no notes answers not found. The answer is
+ * `{type: "text", text, content_type, encoding}`. Presence is `list_directory`'s to judge; a listed file is read with
+ * `readPermalinkContent` below.
+ */
+export async function readContentOrNull(session: McpSession, projectId: string, relative: string): Promise<string | null> {
+  const response = await session.callTool('read_content', { project_id: projectId, path: relative });
+  if (isRpcError(response)) refuse(`Read '${relative}' failed: ${text(field(field(response, 'error'), 'message'))}`);
+  const result = toolResult(response);
+  const record = structuredRecord(response);
+  const said = JSON.stringify(record ?? field(result, 'content') ?? null);
+  if (field(result, 'isError') === true || field(record, 'type') === 'error') {
+    if (/not found|does not exist|no such/i.test(said)) return null;
+    refuse(`Read '${relative}' was rejected: ${said.substring(0, 300)}`);
+  }
+  const body = field(record, 'text');
+  if (typeof body !== 'string') refuse(`Read '${relative}' gave no text: ${said.substring(0, 300)}`);
+  return body;
+}
+
+/**
+ * ONE LISTED FILE BY ITS PERMALINK, CHECKED (kickoffs/s131 row 3; probe of 2026-10-17, findings 3, 4 and 6): the text
+ * `read_content` answers for the `permalink` a `list_directory` node gave, accepted only when the text's own
+ * `permalink:` line is that permalink, or that permalink without the project's name in front (STANDING ANSWER 12).
+ * Anything else is refused by name, never trusted: the real server answers a read it cannot match with another note.
+ * Null only when the server says not found. Presence is the listing's to judge, never this read's.
+ */
+export async function readPermalinkContent(session: McpSession, projectId: string, permalink: string): Promise<string | null> {
+  if (!permalink.trim()) refuse('A listed file came with no permalink, so it was not read and not trusted.');
+  const body = await readContentOrNull(session, projectId, permalink);
+  if (body === null) return null;
+  const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body);
+  const line = front ? /^permalink:[ \t]*['"]?(.*?)['"]?[ \t]*$/m.exec(front[1]!) : null;
+  const said = line ? line[1]! : '';
+  if (!said || (said !== permalink && !(permalink.endsWith(`/${said}`) && !permalink.slice(0, -said.length - 1).includes('/')))) {
+    refuse(`Read '${permalink}' answered a note whose permalink is '${said || '(none)'}', not the one listed, so it was not trusted.`);
+  }
+  return body;
+}
+
+/**
+ * `move_note` to a folder (kickoffs/s123 row 3; probe S6: the permalink stays at the old path), sent once and judged by
+ * the one judge. A refusal or a dropped session is returned, never thrown or resent: the caller lists both folders
+ * after it and judges by the files actually there (kickoffs/s131). An identifier that resolves to a note already in
+ * the destination answers `DESTINATION_SAME_AS_SOURCE` (probe of 2026-10-17, finding 5), returned as not moved.
+ */
+export async function moveNoteTo(session: McpSession, projectId: string, identifier: string, destinationFolder: string): Promise<{ moved: boolean; dropped: boolean; detail: string }> {
+  try {
+    const sent = await sendWrite(session, 'move_note', { project_id: projectId, identifier, destination_folder: destinationFolder, output_format: 'json' }, `Moving '${identifier}'`);
+    return { moved: !sent.dropped, dropped: sent.dropped, detail: '' };
+  } catch (error) {
+    if (error instanceof BasicMemoryRefusal) return { moved: false, dropped: false, detail: error.message };
+    throw error;
+  }
+}
+
+/**
  * `Write-Exact` (New-ProjectHub.ps1), with the S33 correction: a conflict is a refusal, and the page is
  * read back before the write is reported.
  */
@@ -387,25 +523,29 @@ export async function writeExact(
   body: string,
   overwrite: boolean,
 ): Promise<NoteRecord> {
-  const response = await session.callTool('write_note', {
-    project_id: projectId,
-    directory,
-    title,
-    content: body,
-    note_type: 'note',
-    overwrite,
-    output_format: 'json',
-  });
-  if (isRpcError(response) || field(toolResult(response), 'isError') === true) refuse(`Write '${directory}/${title}' was rejected.`);
-  const written = field(field(toolResult(response), 'structuredContent'), 'result');
-  if (text(field(written, 'action')) === 'conflict') {
-    refuse(
-      `Write '${directory}/${title}' was refused: a note already exists there, written by someone else since this run read ` +
-        'the collection. Nothing was overwritten.',
-    );
+  // SENT ONCE, JUDGED BY THE ONE JUDGE (kickoffs/s121 row 7). An existing note under `overwrite: false` keeps the
+  // sentence it always had; a dropped session is judged by the readback below, whose body must be this write's.
+  let sent: { dropped: boolean; response: unknown };
+  try {
+    sent = await sendWrite(session, 'write_note', { project_id: projectId, directory, title, content: body, note_type: 'note', overwrite, output_format: 'json' }, `Write '${directory}/${title}'`);
+  } catch (error) {
+    if (/\((note-already-exists|conflict)\b/.test((error as Error).message)) {
+      refuse(
+        `Write '${directory}/${title}' was refused: a note already exists there, written by someone else since this run read ` +
+          'the collection. Nothing was overwritten.',
+      );
+    }
+    throw error;
   }
   const record = await readExactOrNull(session, projectId, `${directory}/${title}.md`);
-  if (record === null) refuse(`Write '${directory}/${title}.md' did not become readable.`);
+  if (record === null) {
+    refuse(sent.dropped
+      ? `Write '${directory}/${title}.md' was not found after its session dropped, and it was not sent again. Run the command again.`
+      : `Write '${directory}/${title}.md' did not become readable.`);
+  }
+  if (sent.dropped && noteBody(record).replace(/\r\n/g, '\n').trim() !== body.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').replace(/\r\n/g, '\n').trim()) {
+    refuse(`Write '${directory}/${title}.md' cannot be confirmed: its session dropped, and the note there now is not this write's text. It was not sent again.`);
+  }
   return record;
 }
 

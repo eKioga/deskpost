@@ -23,7 +23,8 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
 import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
-import { growingState, isAddressedTo, isStartedBy, isStuckLetter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
+import { growingState, isAddressedTo, isStartedBy, isStuckLetter, noteFrontmatter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
+import { postboxCache } from './postbox.ts';
 import { incarnationOf, readSeatIdentityView, seatIncarnation, seatNameHistory, type SeatNameSpan } from './seatincarnation.ts';
 import {
   deskFileEntries,
@@ -55,6 +56,7 @@ import { seatMessageAddress } from './conversation.ts';
 import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 import { deskAuditFacts } from './audit.ts';
+import { hubPages } from './hubpages.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -381,6 +383,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     if (thisClaim.state !== 'held') return null;
     const mine = pendingNotes.filter(({ note }) => isAddressedTo(note, self));
     const tally = letterTally(mine);
+    // FROM OTHER LIBRARIES (kickoffs/s123 row 4; plan item 6): those of them filed from the Postbox, in the same count,
+    // with each sending Library named by its card (its id where it gave none). After every older key, only when any.
+    const foreign = mine.filter(({ note }) => isFromAnotherLibrary(note));
     return tally.count
       ? {
           count: tally.count,
@@ -390,6 +395,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           route: 'library triage inventory --pending',
           // STUCK (kickoffs/s99 row 4, ruling 2), the last key: its department letters older than their own Book's age.
           stuck: mine.filter(({ book, note }) => isStuckLetter(note, book)).length,
+          ...(foreign.length
+            ? { from_other_libraries: { count: foreign.length, libraries: [...new Set(foreign.map(({ note }) => note.fromLibraryCard || note.fromLibraryId || ''))].sort() } }
+            : {}),
         }
       : { count: 0 };
   })();
@@ -400,6 +408,27 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     if (thisClaim.state !== 'held') return null;
     const tally = letterTally(pendingNotes.filter(({ note }) => note.forSeat !== null && isStartedBy(note, self) && !isAddressedTo(note, self)));
     return tally.count ? { count: tally.count, by_book: tally.byBook, oldest_pending: tally.oldest } : { count: 0 };
+  })();
+  // THE POSTBOX, FROM ITS CACHE AND THE LETTERS HERE ALONE (kickoffs/s123 row 4; plan item 6): no server is called, so the
+  // overview stays synchronous. Only for a Library with a Postbox; a cache that cannot be read says nothing.
+  const postbox = ((): Record<string, PsJsonValue> | null => {
+    try {
+      const { state, outbox } = postboxCache(workspace);
+      if (state === null) return null;
+      const received = pendingNotes.filter(({ book, note }) => book.takesLetters === true && isFromAnotherLibrary(note));
+      const marked = (key: string) => received.filter(({ note }) => noteFrontmatter(readUtf8(note.fullPath)).get(key) === 'true').length;
+      return {
+        last_check: (state['last_check'] as PsJsonValue | undefined) ?? null,
+        unreachable_since: (state['unreachable_since'] as PsJsonValue | undefined) ?? null,
+        waiting_to_send: outbox.filter((entry) => entry.state === 'unsent').length,
+        could_not_send: outbox.filter((entry) => entry.state === 'refused').length,
+        received_from_other_libraries: received.length,
+        undeliverable: marked('stale_delivery'),
+        damaged: marked('postbox_damaged'),
+      };
+    } catch {
+      return null;
+    }
   })();
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.
@@ -477,15 +506,21 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     auditFacts = null;
   }
   const dueProjects = auditFacts === null ? [] : openProjects.map(String).filter((project) => auditFacts!.dueTargets.has(project));
+  // EACH OPEN HUB'S PAGES, MEASURED (kickoffs/s125 row 2; ADR-0082): sizes, kinds, limits and `_project`'s ticked Now and
+  // Next counts, read from a local collection's files on this call; null on a shared backend. Names and numbers only.
+  const hubPageRows = hubPages(workspace, openProjects.map(String));
 
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
     operation: 'Desk Overview',
     workspace,
+    // WHICH LIBRARY THIS IS (kickoffs/s121 row 8): its id and its card, null until one is set. A label, never an address.
+    library: libraryOfMarker(readMarker(workspace)),
     seat,
     this_seat: thisSeat,
     ...(lettersForThisSeat !== null ? { letters_for_this_seat: lettersForThisSeat } : {}),
     ...(lettersFromThisSeat !== null ? { letters_from_this_seat: lettersFromThisSeat } : {}),
+    ...(postbox !== null ? { postbox } : {}),
     other_seats: otherSeats,
     directory,
     ...(auditFacts !== null && auditFacts.auditsDue !== null ? { audits_due: auditFacts.auditsDue } : {}),
@@ -493,6 +528,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     open_books: auditFacts === null ? openBooks : openBooks.map((book) => (auditFacts!.dueTargets.has(auditTargetOf(book) ?? '') ? { ...book, audit_due: true } : book)),
     open_projects: openProjects,
     ...(dueProjects.length ? { audit_due_projects: dueProjects } : {}),
+    hub_pages: hubPageRows,
     capture_books: captureBooks,
     notebook: {
       path: notebookRoot,
@@ -527,7 +563,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
       'capture-Book note counts, the seat registry ' +
       'against the seat directories and the retirement records in internal/seat-archive/, and -- for ' +
       "THIS seat only -- its claim, its binding, and the head of its last conversation's transcript. " +
-      "No Book or Project page content was read, and no other seat's conversation was looked up.",
+      "No Book or Project page content was read, and no other seat's conversation was looked up." +
+      (Array.isArray(hubPageRows) && hubPageRows.length
+        ? " Exception: each open Hub's pages were read to measure their sizes and count _project's ticked Now and Next items; only those names and numbers are returned."
+        : ''),
     shared_library_write: false,
   };
 }
@@ -665,6 +704,11 @@ export function pendingLetterPagesForSeat(workspace: string, seat: string): stri
 export interface PendingNote {
   book: CaptureBookRow;
   note: ShelfNoteRow;
+}
+
+/** A letter filed here from another Library's Postbox: its `from_library_id` names a Library that is not this one. */
+function isFromAnotherLibrary(note: ShelfNoteRow): boolean {
+  return note.fromLibraryId !== null && note.fromLibraryId !== '' && note.fromLibraryId !== note.localLibraryId;
 }
 
 /** Every pending note of every capture Book, read once: the Desk's letter counts and `seat retire`'s check ask it. */
@@ -1336,3 +1380,12 @@ void getShelfBook;
 void readDeskFileLines;
 void assertNoMaintenanceBarrier;
 export type { DeskKind };
+
+/** The Desk's `library` (kickoffs/s121 row 8): the marker's id and card, each null when the marker has none. */
+function libraryOfMarker(marker: Record<string, unknown> | null): { id: string | null; card: string | null } {
+  const value = (name: string): string | null => {
+    const raw = marker?.[name];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  };
+  return { id: value('id'), card: value('card') };
+}

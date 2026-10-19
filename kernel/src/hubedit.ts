@@ -30,12 +30,13 @@ import { writeAtomicText } from './fsx.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
-import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
+import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
 import { strayControlRefusal } from './controlchars.ts';
+import { localDate } from './localdate.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -43,7 +44,25 @@ function refuse(message: string): never {
   throw new HubEditRefusal(message);
 }
 
-const PAGE_SIZE_THRESHOLD = 40000;
+/**
+ * A HUB PAGE'S LIMIT FOLLOWS HOW OFTEN IT IS READ (kickoffs/s125 row 1; ADR-0082). `_project` and `connections` at the
+ * Hub root are read on every return to the Hub, by every seat; every other page only when a seat asks for it. The
+ * on-demand figure is provisional (PLAN-tidy-redesign.md): a readability floor for one reader call, not a token budget.
+ * `notes/` pages and the `limits` page stay exempt (`sizeExempt`).
+ */
+export const PAGE_SIZE_LIMITS = { 'every-session': 40000, 'on-demand': 56000 } as const;
+export type PageKind = keyof typeof PAGE_SIZE_LIMITS;
+
+/** `every-session` for the Hub root's `_project` and `connections`, given bare or as `projects/<slug>/<page>.md`. */
+export function pageKind(pagePath: string): PageKind {
+  const normalized = pagePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  return /^(?:projects\/[^/]+\/)?(?:_project|connections)(?:\.md)?$/.test(normalized) ? 'every-session' : 'on-demand';
+}
+
+export function pageLimitBytes(pagePath: string): number {
+  return PAGE_SIZE_LIMITS[pageKind(pagePath)];
+}
+
 const SECTION_SIZE_THRESHOLD = 12000;
 const ENTRY_SIZE_THRESHOLD = 1200;
 
@@ -80,7 +99,7 @@ export function removeFrontmatter(text: string): string {
 }
 
 /** `Get-FencedLineMask`: a heading inside a fenced code block is content, not structure. */
-function fencedLineMask(lines: string[]): boolean[] {
+export function fencedLineMask(lines: string[]): boolean[] {
   const mask = new Array<boolean>(lines.length).fill(false);
   let fenceCharacter = '';
   let fenceLength = 0;
@@ -122,12 +141,12 @@ export function headings(lines: string[]): Heading[] {
   return found;
 }
 
-interface Span {
+export interface Span {
   start: number;
   end: number;
 }
 
-function sectionSpan(lines: string[], section: string): Span | null {
+export function sectionSpan(lines: string[], section: string): Span | null {
   const all = headings(lines);
   let start = -1;
   for (const heading of all) {
@@ -147,7 +166,7 @@ function sectionSpan(lines: string[], section: string): Span | null {
   return { start, end };
 }
 
-function sectionText(lines: string[], span: Span | null): string {
+export function sectionText(lines: string[], span: Span | null): string {
   if (span === null) return '';
   return removeTrailingBlank(lines.slice(span.start, span.end)).join('\n');
 }
@@ -162,13 +181,13 @@ function isListLine(line: string): boolean {
   return /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+/.test(line);
 }
 
-interface Entry {
+export interface Entry {
   index: number;
   line: string;
   hasStatus: boolean;
 }
 
-function topLevelEntries(lines: string[], start: number, end: number): Entry[] {
+export function topLevelEntries(lines: string[], start: number, end: number): Entry[] {
   const fenced = fencedLineMask(lines);
   const entries: Entry[] = [];
   for (let i = start; i < end; i++) {
@@ -211,7 +230,7 @@ function lastListEnd(lines: string[]): number {
   return end;
 }
 
-interface Block {
+export interface Block {
   start: number;
   end: number;
 }
@@ -228,7 +247,7 @@ function indentOf(line: string): number {
  * A nested item is a block of its own as well, so blocks may nest, and `findUniqueBlock` picks the innermost. Any
  * other line no item holds is a block of one line, as before.
  */
-function itemBlocks(lines: string[], start: number, end: number): Block[] {
+export function itemBlocks(lines: string[], start: number, end: number): Block[] {
   const blocks: Block[] = [];
   let heldUntil = -1;
   for (let index = start; index < end; index++) {
@@ -305,6 +324,16 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
     const heading = `## ${section}`;
     if (addition.some((line) => line.trim() === heading)) {
       refuse(`The content repeats the heading '${heading}'. --content and --content-path are the section's body only; remove that line.`);
+    }
+    // ANY OTHER LEVEL-TWO HEADING SPLITS THE SECTION (kickoffs/s122 row 2; the S120 Report "hub edit add-section accepts
+    // ## headings in its content"). The page gained a second section, sometimes one it already had (two `## Stall log`
+    // on s120-a1). Refused by line before the page is built; a `###` heading stays inside the section.
+    const split = addition.findIndex((line) => /^ {0,3}##[ \t]/.test(line));
+    if (split >= 0) {
+      refuse(
+        `Line ${split + 1} of the content is a level-two heading, '${addition[split]!.trim()}', which would end section '${section}' ` +
+          'and start another. Use ### inside a section, or add-section for a new one.',
+      );
     }
   }
 
@@ -459,11 +488,11 @@ export function changeCounts(oldBody: string, newBody: string): { added_lines: n
 
 // --- the three size warnings ------------------------------------------------------------------------
 
-function utf8Length(text: string): number {
+export function utf8Length(text: string): number {
   return Buffer.byteLength(text, 'utf8');
 }
 
-function sizeExempt(pagePath: string): boolean {
+export function sizeExempt(pagePath: string): boolean {
   return /(^|\/)(notes\/|limits(\.md)?$)/.test(pagePath.replace(/\\/g, '/'));
 }
 
@@ -476,12 +505,14 @@ export function pageSizeRemedy(pagePath: string): string {
   return 'Move detail onto a linked page and keep this one to what a reader needs on arrival.';
 }
 
-function pageSizeStatus(body: string, pagePath: string, previousBody: string): Record<string, PsJsonValue> {
+export function pageSizeStatus(body: string, pagePath: string, previousBody: string): Record<string, PsJsonValue> {
   const size = utf8Length(body);
   const exempt = sizeExempt(pagePath);
-  const oversized = size > PAGE_SIZE_THRESHOLD;
-  // Both sides of the proposed edit, measured from the same bodies used to plan it.
-  return { size_after_bytes: size, size_before_bytes: utf8Length(previousBody), threshold_bytes: PAGE_SIZE_THRESHOLD, oversized, exempt, warn: oversized && !exempt };
+  const kind = pageKind(pagePath);
+  const limit = PAGE_SIZE_LIMITS[kind];
+  const oversized = size > limit;
+  // Both sides of the proposed edit, measured from the same bodies used to plan it; `threshold_bytes` is this kind's limit.
+  return { size_after_bytes: size, size_before_bytes: utf8Length(previousBody), kind, threshold_bytes: limit, oversized, exempt, warn: oversized && !exempt };
 }
 
 function sectionSizes(body: string): { section: string; size_bytes: number }[] {
@@ -629,7 +660,8 @@ async function sharedStore(workspace: string): Promise<PageStore> {
     },
     async write(pagePath: string, body: string): Promise<void> {
       await ready();
-      const response = (await session.callTool('write_note', {
+      // SENT ONCE AND JUDGED (kickoffs/s121 row 7); a dropped session is judged by the apply's own readback.
+      await sendWrite(session, 'write_note', {
         project_id: projectId,
         directory: pagePath.substring(0, pagePath.lastIndexOf('/')),
         title: path.posix.basename(pagePath, '.md'),
@@ -637,9 +669,7 @@ async function sharedStore(workspace: string): Promise<PageStore> {
         note_type: 'note',
         overwrite: true,
         output_format: 'json',
-      })) as Record<string, unknown> | null;
-      const result = response?.['result'] as Record<string, unknown> | undefined;
-      if ((response?.['error'] ?? null) !== null || result?.['isError'] === true) refuse(`Write '${pagePath}' was rejected.`);
+      }, `Write '${pagePath}'`);
     },
   };
 }
@@ -732,20 +762,29 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       );
     }
     const timeout = Number(parsed.options.get('lock-timeout') ?? '20');
-    return hubNewPage(
-      {
-        slug,
-        page: parsed.options.get('page') ?? '',
-        content: parsed.options.get('content') ?? '',
-        planId: (parsed.options.get('plan-id') ?? '').trim(),
-        contentPath: parsed.options.get('content-path') ?? '',
-        title: parsed.options.get('title') ?? '',
-        seat: parsed.options.get('seat'),
-        preflight: parsed.flags.has('preflight'),
-        lockTimeout: Number.isFinite(timeout) ? timeout : 20,
-      },
-      workspace,
-    );
+    const newPage = {
+      slug,
+      page: parsed.options.get('page') ?? '',
+      content: parsed.options.get('content') ?? '',
+      planId: (parsed.options.get('plan-id') ?? '').trim(),
+      contentPath: parsed.options.get('content-path') ?? '',
+      title: parsed.options.get('title') ?? '',
+      seat: parsed.options.get('seat'),
+      preflight: parsed.flags.has('preflight'),
+      lockTimeout: Number.isFinite(timeout) ? timeout : 20,
+    };
+    // THE TIME OF THE WRITE, FILLED AT APPLY (kickoffs/s121 row 6). The preflight and its plan id cover the text as
+    // given, placeholders and all; the apply checks that plan id against the unfilled text, then writes the filled one.
+    const given = newPageText(newPage.content, newPage.contentPath, workspace);
+    if (given === null || !hasTimePlaceholders(given)) return hubNewPage(newPage, workspace);
+    if (newPage.preflight) return { ...(await hubNewPage(newPage, workspace)), time_placeholders: TIME_PLACEHOLDER_NOTE };
+    if (newPage.planId) {
+      const planned = (await hubNewPage({ ...newPage, preflight: true }, workspace)) as Record<string, PsJsonValue>;
+      // A stale plan id is refused by new-page itself, in its own words, with nothing written.
+      if (planned['plan_id'] !== newPage.planId) return hubNewPage(newPage, workspace);
+    }
+    const written = await hubNewPage({ ...newPage, content: fillTimePlaceholders(given), contentPath: '', planId: '' }, workspace);
+    return { ...(written as Record<string, PsJsonValue>), time_placeholders_filled: true };
   }
   const mode = MODE_WORDS[modeWord] ?? EDIT_MODES.find((name) => name.toLowerCase() === modeWord.toLowerCase());
   if (mode === undefined) {
@@ -939,6 +978,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   };
 
   if (parsed.flags.has('preflight')) {
+    if (hasTimePlaceholders(content)) plan['time_placeholders'] = TIME_PLACEHOLDER_NOTE;
     plan['page_size_warning'] = sizeWarnings[0]!;
     plan['section_size_warning'] = sizeWarnings[1]!;
     plan['entry_size_warning'] = sizeWarnings[2]!;
@@ -968,6 +1008,11 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
 
   const pageLabel = pageName.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
   const now = new Date();
+  // THE TIME OF THE WRITE (kickoffs/s121 row 6): the plan id above bound the text as given; only the new text is filled,
+  // never the page's existing lines, and the readback judges what was written.
+  const filling = hasTimePlaceholders(content);
+  const writtenBody = filling ? newProjectBody(currentBody, mode, section, fillTimePlaceholders(content, now), matchText, parsed.flags.has('uncheck')) : proposedBody;
+  const writtenHash = sha256OfText(writtenBody);
   const pad = (value: number): string => String(value).padStart(2, '0');
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   // `Join-Path $workspace "internal/publication-journals/..."`, which normalises every separator:
@@ -987,6 +1032,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       approved_plan_id: planId,
       previous_sha256: currentHash,
       proposed_sha256: proposedHash,
+      ...(filling ? { written_sha256: writtenHash } : {}),
       planned_records: notebookSource === null ? [] : [{ path: pagePath, source: notebookSource, sha256: notebookSourceHash }],
       previous_body: currentBody,
       error: errorText,
@@ -1009,10 +1055,10 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       );
     }
     saveJournal('pending', '');
-    await store.write(pagePath, proposedBody);
+    await store.write(pagePath, writtenBody);
     const readback = await store.read(pagePath);
     if (readback === null) refuse(`Write '${pagePath}' did not become readable.`);
-    if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(proposedBody.replace(/\r\n/g, '\n'))) {
+    if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(writtenBody.replace(/\r\n/g, '\n'))) {
       refuse(`Readback of '${pagePath}' did not match the approved text; the previous text is in ${journalPath}.`);
     }
     warn(true);
@@ -1043,7 +1089,8 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     match_text: ITEM_MODES.includes(mode) ? matchText : null,
     plan_id: planId,
     previous_sha256: currentHash,
-    written_sha256: proposedHash,
+    written_sha256: writtenHash,
+    ...(filling ? { approved_sha256: proposedHash, time_placeholders_filled: true } : {}),
     added_lines: counts.added_lines,
     removed_lines: counts.removed_lines,
     journal_path: journalPath,
@@ -1057,4 +1104,40 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     advice: null,
     shared_library_write: !shared ? false : true,
   };
+}
+
+// --- the time of the write (kickoffs/s121 row 6) ---------------------------------------------------------------------
+
+/**
+ * `{now}` AND `{today}`, FILLED WHEN THE WRITE IS APPLIED (the Report "Missing tool: hub edit cannot stamp the time of a
+ * write", 2026-10-14): seats typed clock times into Hub records and got them wrong. `{now}` is the local time with the
+ * system's zone (`2026-10-15 11:14 AM PDT`), `{today}` the local date; `{{now}}` and `{{today}}` write the word in
+ * single braces. Shared by `hub edit` (every mode) and `capture`.
+ */
+const TIME_PLACEHOLDER = /\{\{(now|today)\}\}|\{(now|today)\}/g;
+
+export const TIME_PLACEHOLDER_NOTE =
+  'The text holds {now} or {today}: they are shown here as written, and filled with the time and date of the write when it is applied ({{now}} writes {now}).';
+
+export function hasTimePlaceholders(text: string): boolean {
+  return new RegExp(TIME_PLACEHOLDER.source).test(text);
+}
+
+export function fillTimePlaceholders(text: string, now: Date = new Date()): string {
+  const hours = now.getHours();
+  const zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(now).find((part) => part.type === 'timeZoneName')?.value ?? '';
+  const time = `${localDate(now)} ${hours % 12 || 12}:${String(now.getMinutes()).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}${zone ? ` ${zone}` : ''}`;
+  return text.replace(TIME_PLACEHOLDER, (_match, escaped: string | undefined, word: string | undefined) =>
+    escaped !== undefined ? `{${escaped}}` : word === 'now' ? time : localDate(now));
+}
+
+/** new-page's text as given, read the way new-page reads it, or null when it cannot be read (new-page then says why). */
+function newPageText(content: string, contentPath: string, workspace: string): string | null {
+  if (content.trim() !== '') return content;
+  if (contentPath.trim() === '') return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(resolveContentPath(workspace, contentPath))).replace(/^\uFEFF/, '');
+  } catch {
+    return null;
+  }
 }

@@ -47,8 +47,8 @@ if [ $docs_status -eq 3 ]; then
     exit 1
 fi
 
-LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= PATH="$clean_path" \
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
+DESKPOST_GATE_SEAT="${LIBRARY_SEAT:-}" LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" \
+    node kernel/test/gate-lock.ts --tier commit -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
 status=$?
 
 if [ $status -ne 0 ]; then
@@ -56,6 +56,18 @@ if [ $status -ne 0 ]; then
     echo "pre-commit: Library checks failed. Commit aborted."
     echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
     exit 1
+fi
+
+# C25: ask with DESKPOST_GATE_COMPARE=1 git commit ...; observational, never blocks.
+# Off by default per Eric, 2026-10-15: c24 row 3 added 35 min 45 s.
+# Git's sh exposes SECONDS from hook startup (docs probe included); elsewhere time is unknown.
+if [ "${DESKPOST_GATE_COMPARE:-}" = "1" ]; then
+    LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= PATH="$clean_path" \
+        node tools/gate.ts --tier commit --compare-with "{\"status\":\"pass\",\"seconds\":${SECONDS:-null},\"checks\":[]}"
+    compare_status=$?
+    if [ $compare_status -ne 0 ]; then
+        echo "WARN: the new gate comparison could not finish (exit $compare_status); the old passing gate still decides."
+    fi
 fi
 
 exit 0

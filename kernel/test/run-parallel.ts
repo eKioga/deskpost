@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { childEnv } from './gate-env.ts';
-import { acquireGateLock, LockError, type GateWait } from './gate-lock.ts';
+import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from './gate-lock.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SERIAL_SECTIONS = [29, 31, 113];
@@ -76,6 +76,12 @@ export async function startIdentity(pid: number): Promise<string | null> {
   const text = await powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p -and $p.StartTime){$p.StartTime.ToUniversalTime().ToString('o')}; exit 0`);
   return text.trim() || null;
 }
+/** A survivor has the ID AND start time observed while the fixture was alive, as cleanup's `endOwned` checks.
+ * An ID reused before or after `runEnd` belongs to another process. An unreadable start time is an exiting
+ * process, gone, as `startIdentity` reads it; it cannot establish ownership. */
+export function survivorRows(rows: ProcessRow[], identities: Pick<ProcessRow, 'pid' | 'start'>[], runEnd: number): ProcessRow[] {
+  return rows.filter((row) => row.start !== '' && identities.some((owned) => owned.pid === row.pid && owned.start === row.start) && !(Date.parse(row.start) > runEnd));
+}
 async function endOwned(rows: ProcessRow[]): Promise<void> {
   // Before EACH PID-based kill compare its creation time again. Never kill by image or command-line match.
   if (process.platform === 'win32') {
@@ -139,6 +145,7 @@ export function sectionNumbers(text: string, selection = process.env['LIBRARY_SE
 export interface Result { section: number | 'whole'; verdict: 'PASS' | 'FAIL' | 'SKIP'; checks: number; seconds: number; detail: string; output: string }
 export function verdict(section: number | 'whole', status: number | null, output: string): Pick<Result, 'verdict' | 'checks' | 'detail'> {
   const last = output.trim().split(/\r?\n/).at(-1) ?? '';
+  const firstError = output.split(/\r?\n/).find(line => /Error|error:/.test(line));
   const pass = /^kernel self-test passed \((\d+) checks\)(?: after waiting \d+(?:\.\d+)?s for .+'s .+ gate)?\.$/.exec(last);
   if (status === 0 && pass && Number(pass[1]) > 0) return { verdict: 'PASS', checks: Number(pass[1]), detail: '' };
   // A failing assertion can contain a multiline CLI response. Its canonical header carries the count;
@@ -149,21 +156,27 @@ export function verdict(section: number | 'whole', status: number | null, output
   if (status === 1 && skip && !earlierFailure && failed && failed[1] === '1' && failed[2] === '0' && failed[3] === `LIBRARY_SELFTEST_SECTIONS selected no checks: ${section}`) {
     return { verdict: 'SKIP', checks: 0, detail: output.split(/\r?\n/).find((line) => line.startsWith(`SKIP section ${section}:`))! };
   }
-  return { verdict: 'FAIL', checks: failed ? Number(failed[2]) : pass ? Number(pass[1]) : 0, detail: `exit ${status}: ${failed ? `kernel self-test FAILED (${failed[1]} of ${failed[2]}): ${failed[3]}` : last || 'no verdict'}` };
+  return { verdict: 'FAIL', checks: failed ? Number(failed[2]) : pass ? Number(pass[1]) : 0, detail: `exit ${status}: ${failed ? `kernel self-test FAILED (${failed[1]} of ${failed[2]}): ${failed[3]}` : firstError?.trim() || last || 'no verdict'}` };
 }
 function decodedCommand(command: string): string {
   return command.replace(/(-InputJsonBase64\s+)["']?([A-Za-z0-9+/=]+)["']?/gi, (_m, prefix: string, data: string) => `${prefix}${Buffer.from(data, 'base64').toString('utf8')}`);
 }
-export async function runSection(options: Options, section: number | 'whole', runFolder: string, signal: AbortSignal): Promise<Result> {
-  const started = Date.now();
-  const folder = path.join(runFolder, String(section)); fs.mkdirSync(folder);
+export function sectionEnvironment(section: number | 'whole', folder: string): NodeJS.ProcessEnv {
   const env = childEnv();
   if (section !== 'whole') {
     for (const key of ['TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']) {
       const value = path.join(folder, key.toLowerCase()); fs.mkdirSync(value); env[key] = value;
     }
     env['LIBRARY_SELFTEST_SECTIONS'] = String(section);
+    const cacheFolder = path.join(folder, 'psmodule'); fs.mkdirSync(cacheFolder);
+    env['PSModuleAnalysisCachePath'] = path.join(cacheFolder, 'ModuleAnalysisCache');
   }
+  return env;
+}
+export async function runSection(options: Options, section: number | 'whole', runFolder: string, signal: AbortSignal): Promise<Result> {
+  const started = Date.now();
+  const folder = path.join(runFolder, String(section)); fs.mkdirSync(folder);
+  const env = sectionEnvironment(section, folder);
   let output = '', problem = '', status: number | null = null;
   const child = spawn(process.execPath, [options.suite], { env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   const identity = child.pid ? startIdentity(child.pid).catch(() => null) : Promise.resolve(null);
@@ -229,15 +242,15 @@ export async function runSection(options: Options, section: number | 'whole', ru
 /** Unit B: one bounded child of the push tier's pool. On its limit, a cancel or a stream that will not close, the
  * snapshot is written beside its log, then the tree it owns is ended and checked gone; `problem` names `label`. */
 export interface Bounded { status: number | null; output: string; problem: string; seconds: number }
-export async function runBounded(spec: { label: string; command: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; limit: number; folder: string }, signal: AbortSignal): Promise<Bounded> {
+export async function runBounded(spec: { label: string; command: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; limit: number; folder: string; onOutput?: (chunk: string) => void }, signal: AbortSignal): Promise<Bounded> {
   const started = Date.now();
   fs.mkdirSync(spec.folder, { recursive: true });
   const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   const identity = child.pid ? startIdentity(child.pid).catch(() => null) : Promise.resolve(null);
   const log = fs.createWriteStream(path.join(spec.folder, 'output.log'));
   let output = '', problem = '', status: number | null = null;
-  child.stdout.on('data', (chunk) => { output += String(chunk); log.write(chunk); });
-  child.stderr.on('data', (chunk) => { output += String(chunk); log.write(chunk); });
+  child.stdout.on('data', (chunk) => { output += String(chunk); log.write(chunk); spec.onOutput?.(String(chunk)); });
+  child.stderr.on('data', (chunk) => { output += String(chunk); log.write(chunk); spec.onOutput?.(String(chunk)); });
   await new Promise<void>((resolve) => {
     let done = false, stream: ReturnType<typeof setTimeout> | undefined;
     const finish = (why = '') => { if (done) return; done = true; problem = why; clearTimeout(timer); clearTimeout(stream); signal.removeEventListener('abort', cancel); resolve(); };
@@ -335,14 +348,17 @@ export async function run(options: Options, wait: GateWait | null = null): Promi
   const bad = failed.length || controller.signal.aborted;
   // Keep compact per-section evidence on success too; bulky child output is needed only on failure or request.
   if (!bad && !options.keepLogs) for (const result of results) fs.rmSync(path.join(folder, String(result.section)), { recursive: true, force: true });
-  if (bad) process.stderr.write(`kernel self-test FAILED (${failed.length || 1} of ${total}): ${failed.map((r) => `section ${r.section}: ${flatten(r.detail)}`).join('; ') || 'cancelled'}\n`);
+  if (bad) process.stderr.write(`kernel self-test FAILED (${failed.length || 1} of ${total}): ${failed.map((r) => `section ${r.section}: ${flatten(r.detail)}`).join('; ') || 'cancelled'}; evidence: ${folder}\n`);
   else process.stdout.write(`kernel self-test passed (${total} checks)${wait ? ` after waiting ${wait.seconds.toFixed(1)}s for ${wait.seat}'s ${wait.tier} gate` : ''}.\n`);
   return bad ? 1 : 0;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   (async () => {
     const options = parseOptions(process.argv.slice(2));
-    const lock = options.workers > 1 ? await acquireGateLock('parallel self-test', options.noWait) : null;
+    const say = (line: string) => process.stdout.write(line + '\n');
+    const lock = options.workers > 1 ? await acquireGateLock('parallel self-test', options.noWait, say) : null;
+    const notice = lock && gateLockOffNotice(lock);
+    if (notice) say(notice);
     try { return await run(options, lock?.wait); } finally { await lock?.release(); }
   })().then((code) => { process.exitCode = code; }, (error: unknown) => { process.stderr.write(`runner: ${String(error)}\n`); process.exitCode = error instanceof LockError ? error.code : 2; });
 }

@@ -43,7 +43,9 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
    servers from `.mcp.json`. Both use `.claude/hooks/Guard-BasicMemoryRead.ps1` as a `PreToolUse`
    guard. On a fresh session, confirm both servers appear in the tool catalog and that the Codex
    project hooks are trusted. A missing server or hook is a development-environment fault, not a
-   reason to work from pasted Hub state.
+   reason to work from pasted Hub state. That holds for sessions launched in this checkout: a seated
+   session runs in the Library workspace, which registers only the validated reader, and that is
+   expected.
 
    Read Book and Project content only through the validated reader. Direct Basic Memory
    `write_note` and `edit_note` are allowed only for exact paths inside an **open active Project
@@ -61,6 +63,9 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
    explicit request for the commits and the private push it names
    ([dev session loop](docs/dev-session-loop.md)). **Codex Desktop must run `git push` outside its sandbox**; when a requested
    commit includes a push, use the escalated route by default rather than waiting for a reminder.
+   **Every commit Codex writes ends with the line `Co-authored-by: Codex <noreply@openai.com>`**,
+   after a blank line, so the forge credits Codex as it credits Claude's own trailer (the address is
+   GitHub's `codex` account; Codex CLI 0.163.0 lists its own `codex_git_commit` trailer as removed).
    Never force-push, rewrite published history, create a tag, or discard unrelated
    work unless the reader separately and explicitly requests that exact operation.
 
@@ -92,6 +97,12 @@ checkout with the seat variables blank and the installed `bin` off PATH:
 ```
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1
 ```
+
+**From a seated session, run the gate by hand as `node tools/gate.ts --tier cut`** (or `--tier push`
+before a push). It blanks `LIBRARY_WORKSPACE`, `LIBRARY_SEAT` and `LIBRARY_SEAT_CLAIM` and drops the
+installed shim from PATH for each child itself (`childEnv`, `kernel/test/gate-env.ts`). Never edit
+those variables or PATH yourself: auto mode refuses it, and run bare, `Invoke-LibraryChecks.ps1`
+attaches the seat's Library before it clears them.
 
 **No `-WorkspacePath` from the checkout.** That flag attaches a folder as a reader's Library, and the
 checkout is not one: three workspace checks then FAIL on its missing `shelf/` and `notebook/` (S115,

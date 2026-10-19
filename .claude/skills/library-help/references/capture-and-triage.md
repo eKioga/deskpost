@@ -133,7 +133,9 @@ In a `writer` Book, a seat may close, reopen or delete only three kinds of note:
 Any other note is refused, and the refusal names the seat that wrote it. The rule covers every route
 that closes, reopens or deletes a note: `review`, `notebook`, the filing kinds, `discard` and
 `capture --supersedes`. An `any` Book, the Report Inbox, lets any seat close a note, because a Report
-is closed by the seat that triages the Inbox (see "The Report Inbox").
+is closed by the seat that triages the Inbox (see "The Report Inbox"). The seat that filed a pending
+Report may also amend it (`deskpost reports amend`) or withdraw it (`deskpost reports withdraw`) until
+triage touches it; from then it is frozen (ADR-0083).
 
 **The reader's override.** When the reader asks for another seat's notes to be sorted, add
 `"other_seat": "<the writing seat>"` to that action:
@@ -281,7 +283,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.4.5/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/cross-seat-reports.md).
 
 ## Adding another capture Book
 

@@ -24,7 +24,18 @@ import * as path from 'node:path';
 export const SKILL_RELATIVE = '.claude/skills/library-help';
 export const SKILL_MANIFEST = '.deskpost-managed.json';
 /** Released workspace skills only; prototypes enter this inventory when their command ships. */
-export const SHIPPED_SKILLS = ['library-help'] as const;
+export const SHIPPED_SKILLS = ['library-help', 'save', 'closeout'] as const;
+export const SKILLS_BY_LOCATION = {
+  '.claude/skills': ['library-help'],
+  '.agents/skills': SHIPPED_SKILLS,
+} as const;
+function skillsAt(location: string): readonly string[] {
+  if (location !== '.claude/skills' && location !== '.agents/skills') throw Error('Unknown skill installation location: ' + location);
+  return SKILLS_BY_LOCATION[location];
+}
+function skillSource(programRoot: string, skill: string): string {
+  return path.join(programRoot, skill === 'library-help' ? '.claude' : '.agents', 'skills', skill);
+}
 export const SKILL_LOCATIONS = ['.claude/skills', '.agents/skills'] as const;
 
 export interface SkillFilePlan {
@@ -56,7 +67,7 @@ function isReparsePoint(target: string): boolean {
 
 /** Every file of the program's copy of the Skill, relative and forward-slashed, sorted. */
 function programSkillFiles(programRoot: string, skill: string): string[] {
-  const root = path.join(programRoot, '.claude', 'skills', skill);
+  const root = skillSource(programRoot, skill);
   if (!fs.existsSync(root)) return [];
   const out: string[] = [];
   const walk = (folder: string) => {
@@ -126,7 +137,7 @@ function oneSkillPlans(workspace: string, programRoot: string, skill: string, lo
   const left: string[] = [];
   const next: Record<string, string[]> = {};
   for (const relative of files) {
-    const content = fs.readFileSync(path.join(programRoot, '.claude', 'skills', skill, ...relative.split('/')), 'utf8');
+    const content = fs.readFileSync(path.join(skillSource(programRoot, skill), ...relative.split('/')), 'utf8');
     const newSha = sha256(content);
     const shipped = new Set([...(known[relative] ?? []), newSha]);
     next[relative] = [...shipped].sort();
@@ -160,7 +171,7 @@ export function skillPlans(workspace: string, programRoot: string): { plans: Ski
   const plans: SkillFilePlan[] = [];
   const left: string[] = [];
   for (const location of SKILL_LOCATIONS) {
-    for (const skill of SHIPPED_SKILLS) {
+    for (const skill of skillsAt(location)) {
       const result = oneSkillPlans(workspace, programRoot, skill, location);
       if (result.refusal) return { plans: [], left: [], refusal: result.refusal };
       plans.push(...result.plans);
@@ -176,7 +187,7 @@ function retiredSkills(workspace: string, location: string): string[] {
   if (!fs.existsSync(root) || isReparsePoint(root) || isReparsePoint(path.dirname(root))) return [];
   const retired: string[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || SHIPPED_SKILLS.some((skill) => skill === entry.name)) continue;
+    if (!entry.isDirectory() || skillsAt(location).some((skill) => skill === entry.name)) continue;
     const folder = path.join(root, entry.name);
     const manifest = path.join(folder, SKILL_MANIFEST);
     if (!isReparsePoint(folder) && !isReparsePoint(manifest) && readManifest(manifest)) {
@@ -189,18 +200,20 @@ function retiredSkills(workspace: string, location: string): string[] {
 /** Structural installation check only: no claim about live harness discovery. */
 export function skillInstallationStatus(workspace: string, programRoot: string, location: string): string {
   const problems: string[] = [];
-  let safeToEnumerate = true;
-  for (const skill of SHIPPED_SKILLS) {
+  const refusals: string[] = [];
+  for (const skill of skillsAt(location)) {
     const result = oneSkillPlans(workspace, programRoot, skill, location);
     if (result.refusal) {
-      problems.push(result.refusal);
-      safeToEnumerate = false;
+      refusals.push(result.refusal);
     }
     else {
       problems.push(...result.left);
       problems.push(...result.plans.filter((plan) => plan.action !== 'unchanged').map((plan) => `${plan.name} needs ${plan.action === 'created' ? 'installation' : 'refresh'}`));
     }
   }
-  if (safeToEnumerate) problems.push(...retiredSkills(workspace, location));
-  return problems.length ? `WARN: ${problems.join('; ').replace(/[.]+$/, '')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.` : `${SHIPPED_SKILLS.join(', ')} installed in ${location}; structural check only, live discovery not tested`;
+  // An unsafe slot prevents the whole install. Report that barrier before missing files
+  // in other skills, which cannot be installed until the slot is fixed either.
+  if (refusals.length) return `WARN: ${refusals.map(reason => reason.replace(/[.]+$/, '')).join('; ')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.`;
+  problems.push(...retiredSkills(workspace, location));
+  return problems.length ? `WARN: ${problems.join('; ').replace(/[.]+$/, '')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.` : `${skillsAt(location).join(', ')} installed in ${location}; structural check only, live discovery not tested`;
 }

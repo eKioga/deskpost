@@ -9,6 +9,7 @@
  *   (b) no section points to another Kickoff in place of its text ("as kickoffs/s117's");
  *   (c) every numbered row under ROWS has a `Done when:` line;
  *   (d) CLOSE ends with **Stop.**
+ *   (e) every `ADR-NNNN` it names has a file `docs/adr/NNNN-*.md` (kickoffs/s127 row 2: s125's named one that did not).
  * It reads text only; it never writes.
  */
 
@@ -38,13 +39,20 @@ export type KickoffProblems = {
   noStop: boolean;
 };
 
-/** Where each section starts: a line at column 0 that is the section's name, an optional parenthesis, then a colon. */
+/**
+ * Where each section starts: a line at column 0 that is the section's name, an optional parenthesis, then a colon. The
+ * parenthesis may wrap: it then closes on a following line, and the colon comes right after it (kickoffs/s120 row 6).
+ */
 export function sectionStarts(text: string): { name: string; line: number }[] {
   const lines = text.split(/\r?\n/);
   const starts: { name: string; line: number }[] = [];
   lines.forEach((line, index) => {
     const m = /^([A-Z][A-Z ]*[A-Z])(?: \([^)]*\))?:/.exec(line);
-    if (m && REQUIRED_SECTIONS.includes(m[1]!)) starts.push({ name: m[1]!, line: index });
+    if (m && REQUIRED_SECTIONS.includes(m[1]!)) { starts.push({ name: m[1]!, line: index }); return; }
+    const open = /^([A-Z][A-Z ]*[A-Z]) \([^)]*$/.exec(line);
+    if (!open || !REQUIRED_SECTIONS.includes(open[1]!)) return;
+    const closing = lines.slice(index + 1).find((next) => next.includes(')'));
+    if (closing !== undefined && /^[^)]*\):/.test(closing)) starts.push({ name: open[1]!, line: index });
   });
   return starts;
 }
@@ -94,20 +102,56 @@ export function describeProblems(problems: KickoffProblems): string[] {
   return lines;
 }
 
+/** (e) The ADRs the Kickoff names that have no file among `adrFiles` (the names in `docs/adr/`), each once, in order. */
+export function missingAdrs(text: string, adrFiles: readonly string[]): string[] {
+  const named = [...new Set([...text.matchAll(/\bADR-(\d{4})\b/g)].map((m) => m[1]!))];
+  return named.filter((number) => !adrFiles.some((file) => file.startsWith(`${number}-`) && file.endsWith('.md'))).map((number) => `ADR-${number}`);
+}
+
+/** Rows asking for the required-sections verdict must name the flag that prints it. */
+export function missingRequiredSections(text: string): number[] {
+  const rows = sectionText(text, 'ROWS').split(/(?=^\d+\. )/m);
+  return rows.filter((row) => /^\d+\. /.test(row) && row.includes('gate.required-sections') && !row.includes('--require-sections'))
+    .map((row) => Number(/^(\d+)\./.exec(row)![1]));
+}
+
+export function describeMissingRequiredSections(rows: readonly number[]): string[] {
+  return rows.map((row) => `row ${row} asks for gate.required-sections but its command has no --require-sections <n,...>`);
+}
+
+/** One problem line per ADR with no file. */
+export function describeMissingAdrs(missing: readonly string[]): string[] {
+  return missing.map((adr) => `names ${adr}, which has no file docs/adr/${adr.slice('ADR-'.length)}-*.md`);
+}
+
 /** The fenced block in docs/kickoff-template.md: the template itself. */
 export function templateBlock(templateDoc: string): string {
   const m = /```markdown\r?\n([\s\S]*?)\r?\n```/.exec(templateDoc);
   return m ? m[1]! : '';
 }
 
+const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires';
+
 async function main(argv: string[]): Promise<number> {
   const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
   const file = argv[0];
-  if (!file || argv.length !== 1) {
-    process.stderr.write('usage: node tools/kickoff-check.mts <kickoff file>\n');
+  if (file === '--help' || file === '-h') {
+    process.stdout.write(`${USAGE}\n`);
     return 2;
   }
-  const problems = describeProblems(checkKickoff(fs.readFileSync(file, 'utf8')));
+  if (!file || argv.length !== 1) {
+    process.stderr.write(`usage: ${USAGE}\n`);
+    return 2;
+  }
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    process.stderr.write(`kickoff-check: no such file: ${file}\n`);
+    return 2;
+  }
+  const text = fs.readFileSync(file, 'utf8');
+  const adrFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'adr');
+  const problems = [...describeProblems(checkKickoff(text)), ...describeMissingAdrs(missingAdrs(text, fs.readdirSync(adrFolder))), ...describeMissingRequiredSections(missingRequiredSections(text))];
   if (problems.length === 0) {
     process.stdout.write(`kickoff-check: ${file} is complete (${REQUIRED_SECTIONS.length} sections, every row has "Done when:").\n`);
     return 0;

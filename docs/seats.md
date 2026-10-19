@@ -75,7 +75,7 @@ A department has at most one orchestrator. When it already has one, there are tw
 Init preserves a user's own skill folder or edited managed files in either harness; doctor WARNs
 instead of replacing them. If that leaves an older library-help copy, read the canonical guide in
 the installed program tree at `.claude/skills/library-help/references/building-software-with-seats.md`.
-Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.4.5/.claude/skills/library-help/SKILL.md)
+Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.0/.claude/skills/library-help/SKILL.md)
 is the matching online entry point. Resolve the collision yourself and run `deskpost init` again;
 do not overwrite your copy as a shortcut.
 

@@ -20,6 +20,8 @@
  * directly rather than through `Write-LibraryResult`, and this answers in the shape it answers in.
  */
 
+import { postboxCache } from './postbox.ts';
+import { codexHookHash } from './codexhooktrust.ts';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -42,7 +44,7 @@ import { deadNotebookLinks, NOTEBOOK_LINK_REPAIR } from './notebooklinks.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
-import { growingState, noteFrontmatter, shelfNotes } from './shelfnote.ts';
+import { growingState, isThisLibrary, noteFrontmatter, shelfNotes } from './shelfnote.ts';
 import {
   masterIndexDrift,
   scopeIndexDrift,
@@ -600,12 +602,15 @@ function codexTableKey(raw: string): string {
  * session wrote one `[hooks.state.'<hooks.json>:<event>:<i>:<j>']` table per hook, each with a `trusted_hash`, and
  * the same read was then blocked. The oracle's `Get-CodexUnreviewedHooks` asks the same question.
  *
- * PRESENCE ONLY. What the hash is taken over is Codex's and is not reproduced here, so a review that went stale
- * when a hook changed reads as reviewed; Codex asks again in that case. Read, never written.
+ * Codex rust-v0.163.0 hashes the normalized event, matcher and single command handler as canonical JSON:
+ * codex-rs/hooks/src/engine/discovery.rs:478-581, 747-813; config/src/fingerprint.rs:54-66 in openai/codex.
+ * codexHookHash reproduces that identity offline. A changed hash is out of date and Codex skips it until
+ * reviewed again. Unknown forms, fields or handler kinds remain reviewed but not checked (named in WARN
+ * detail), never called stale. Recheck this rule after a Codex change. Read, never written.
  */
-function codexUnreviewedHooks(hooksPath: string, document: unknown, config: string): string[] {
+function codexUnreviewedHooks(hooksPath: string, document: unknown, config: string): { unreviewed: string[]; stale: string[]; unchecked: string[] } {
   const normalise = (text: string) => text.replace(/\\/g, '/').toLowerCase();
-  const reviewed = new Set<string>();
+  const reviewed = new Map<string, string>();
   if (fs.existsSync(config) && fs.statSync(config).isFile()) {
     let current: string | null = null;
     for (const raw of fs.readFileSync(config, 'utf8').replace(/^﻿/, '').split(/\r?\n/)) {
@@ -615,23 +620,33 @@ function codexUnreviewedHooks(hooksPath: string, document: unknown, config: stri
         current = header ? codexTableKey(header[1]!) : null;
         continue;
       }
-      if (current !== null && /^trusted_hash\s*=\s*["'][^"']+["']\s*$/.test(text)) reviewed.add(normalise(current));
+      const hash = /^trusted_hash\s*=\s*["']([^"']+)["']\s*$/.exec(text);
+      if (current !== null && hash) reviewed.set(normalise(current), hash[1]!);
     }
   }
   const file = path.resolve(hooksPath);
   const unreviewed: string[] = [];
+  const stale: string[] = [];
+  const unchecked: string[] = [];
   const events = ((document as { hooks?: Record<string, unknown> }).hooks ?? {}) as Record<string, unknown>;
   for (const [event, value] of Object.entries(events)) {
     const snake = event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
     const groups = Array.isArray(value) ? value : [value];
     groups.forEach((group, i) => {
       const hooks = (group as { hooks?: unknown } | null)?.hooks;
-      (Array.isArray(hooks) ? hooks : hooks === undefined || hooks === null ? [] : [hooks]).forEach((_hook, j) => {
-        if (!reviewed.has(normalise(`${file}:${snake}:${i}:${j}`))) unreviewed.push(`${event} ${i}:${j}`);
+      (Array.isArray(hooks) ? hooks : hooks === undefined || hooks === null ? [] : [hooks]).forEach((hook, j) => {
+        const label = `${event} ${i}:${j}`;
+        const saved = reviewed.get(normalise(`${file}:${snake}:${i}:${j}`));
+        if (saved === undefined) unreviewed.push(label);
+        else {
+          const current = codexHookHash(event, group, hook);
+          if (!/^sha256:[0-9a-f]{64}$/.test(saved) || current === null) unchecked.push(label);
+          else if (saved !== current) stale.push(label);
+        }
       });
     });
   }
-  return unreviewed;
+  return { unreviewed, stale, unchecked };
 }
 
 /**
@@ -727,12 +742,15 @@ function codexGuardsRegistered(workspace: string, program: string): string {
     );
   }
   // THE THIRD GATE (S49): a trusted project's hooks still run only once that Codex home has reviewed them.
-  const unreviewed = codexUnreviewedHooks(hooksPath, document, trust.config);
-  if (unreviewed.length) {
+  const { unreviewed, stale, unchecked } = codexUnreviewedHooks(hooksPath, document, trust.config);
+  const notChecked = unchecked.length ? `; ${unchecked.length} reviewed hook(s) not checked: ${unchecked.join(', ')}` : '';
+  if (unreviewed.length || stale.length) {
     return (
-      `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but ${unreviewed.length} ` +
-      `have not been reviewed in ${trust.config}: ${unreviewed.join(', ')}. Codex skips an unreviewed hook ` +
-      'in SILENCE, so those bindings are inert. Open a Codex session in that folder once and accept its hook ' +
+      `WARN: ${workspace} registers ${registrations} trusted Codex hook(s) that resolve, but ` +
+      (unreviewed.length ? `${unreviewed.length} have not been reviewed in ${trust.config}: ${unreviewed.join(', ')}. Codex skips an unreviewed hook in SILENCE, so those bindings are inert. ` : '') +
+      (stale.length ? `${stale.length} were reviewed before the hook changed: ${stale.join(', ')} (out of date in ${trust.config}). Codex skips them until reviewed again. ` : '') +
+      (notChecked ? `${notChecked.slice(2)}. ` : '') +
+      'Open a Codex session in that folder once and accept its hook ' +
       'review; the review is per Codex home, like the trust grant.'
     );
   }
@@ -1238,16 +1256,21 @@ function seatRegistryFields(workspace: string): string {
  */
 function lettersRelationshipFields(workspace: string): string {
   const problems: string[] = [];
-  let letters = 0;
+  let notes = 0;
+  // EVERY CAPTURE BOOK SINCE s130 (row 3; the plan r3, decision 9), under the same registered name: a Report's reserved
+  // keys are checked as a letter's are, and an update_count that does not match its `## Update` sections is named.
   for (const book of captureBookRows(workspace)) {
-    if (!book.takesLetters) continue;
     for (const note of shelfNotes(book)) {
-      letters += 1;
+      notes += 1;
       if (note.malformed.length) problems.push(`${book.slug} ${note.page} carries ${note.malformed.join(', ')} twice or of the wrong shape; repair its frontmatter by hand, or close it with triage`);
+      if (note.updateCount !== null) {
+        const sections = (readUtf8(note.fullPath).match(/^## Update /gm) ?? []).length;
+        if (sections !== note.updateCount) problems.push(`${book.slug} ${note.page} records update_count ${note.updateCount} but has ${sections} ## Update section${sections === 1 ? '' : 's'}; repair its frontmatter by hand`);
+      }
     }
   }
   if (problems.length) return `WARN: ${problems.join('; ')}`;
-  return letters ? `${letters} letter${letters === 1 ? "'s" : "s'"} links and identity fields are whole` : 'no letter to check';
+  return notes ? `${notes} capture note${notes === 1 ? "'s" : "s'"} reserved fields are whole` : 'no capture note to check';
 }
 
 /**
@@ -1255,6 +1278,11 @@ function lettersRelationshipFields(workspace: string): string {
  * "What a stale delivery means"): a WARN for a pending letter whose `for_seat` is no longer in the registry, or whose
  * `for_seat_id` (written from session 3) names another incarnation of that slug. A letter with no `for_seat_id` matches
  * by slug, the legacy rule. Its writer closes it, or the reader with `other_seat`. Never a write.
+ *
+ * A SEAT IS JUDGED ONLY IN ITS OWN LIBRARY (kickoffs/s133 row 1; PLAN-many-libraries.md Stage 1 item 3): a letter whose
+ * `for_library_id` names another Library is this Library's copy of a letter to that Library's seat, so it is not judged
+ * against this registry; it is counted apart. An empty id is this Library's; a malformed one, or a note whose own
+ * Library's id cannot be read, keeps the judgement above, so an unreadable marker never hides a real WARN.
  */
 function lettersRecipientIncarnation(workspace: string): string {
   let registry: ReturnType<typeof readSeatRegistry>;
@@ -1265,12 +1293,18 @@ function lettersRecipientIncarnation(workspace: string): string {
   }
   const problems: string[] = [];
   let pending = 0;
+  let elsewhere = 0;
   // BY IDENTITY (kickoffs/s103 row 3): a letter the projection joins to a live seat, under its name or one the seat gave
   // up by a rename, is that seat's; otherwise its name says which of the two it is.
   const identity = identityView(registry, []);
   for (const book of captureBookRows(workspace)) {
     for (const note of shelfNotes(book)) {
       if (note.review === 'done' || !note.forSeat) continue;
+      // Another Library's side by `isThisLibrary`, and only once this Library's own id was read.
+      if (note.localLibraryId && !isThisLibrary(note.forLibraryId, note.localLibraryId) && !note.malformed.includes('for_library_id')) {
+        elsewhere += 1;
+        continue;
+      }
       pending += 1;
       const closes = `${note.fromSeat ? `its writer '${note.fromSeat}' closes it` : 'the reader closes it'}, or the reader with other_seat`;
       const forSeatId = (noteFrontmatter(readUtf8(note.fullPath)).get('for_seat_id') ?? '').trim();
@@ -1284,7 +1318,8 @@ function lettersRecipientIncarnation(workspace: string): string {
     }
   }
   if (problems.length) return `WARN: ${problems.join('; ')}`;
-  return pending ? `${pending} pending letter${pending === 1 ? ' is' : 's are'} each for a seat in the registry` : 'no pending letter is addressed to a seat';
+  const apart = elsewhere ? `; ${elsewhere} pending letter${elsewhere === 1 ? ' is' : 's are'} for another Library's seats, judged in that Library` : '';
+  return (pending ? `${pending} pending letter${pending === 1 ? ' is' : 's are'} each for a seat in the registry` : 'no pending letter is addressed to a seat') + apart;
 }
 
 /**
@@ -1294,6 +1329,12 @@ function lettersRecipientIncarnation(workspace: string): string {
  * cannot be read, and each letter whose `for_seat_id` or `origin_seat_id` names no seat in the registry and no retirement
  * record. A row with no id at all (pre-identity) is not a failure, and a malformed letter id is the relationship-fields
  * check's. Never a write: every repair is by hand.
+ *
+ * A SEAT ID BELONGS TO THE LIBRARY ITS SIDE NAMES (kickoffs/s133 row 1; PLAN-many-libraries.md Stage 1 item 3):
+ * `for_seat_id` is judged here only when `for_library_id` is this Library's, `origin_seat_id` only when
+ * `origin_library_id` is, and `from_seat_id` only when `from_library_id` is; an id on another Library's side cannot be in
+ * this registry, so it is counted apart and judged in that Library. An empty id is this Library's; a malformed one, or a
+ * note whose own Library's id cannot be read, keeps today's judgement, so an unreadable marker never hides a real FAIL.
  */
 function seatsIdentity(workspace: string): string {
   let registry: ReturnType<typeof readSeatRegistry>;
@@ -1330,17 +1371,28 @@ function seatsIdentity(workspace: string): string {
   problems.push(...retirement.faults);
   const known = new Set([...view.live.map((row) => row.seatId), ...retirement.records.map((record) => record.seat_id)].filter((id) => id !== ''));
   let recorded = 0;
+  let elsewhere = 0;
   for (const book of captureBookRows(workspace)) {
     for (const note of shelfNotes(book)) {
-      for (const [field, id] of [['for_seat_id', note.forSeatId], ['origin_seat_id', note.originSeatId]] as const) {
+      const sides = [
+        ['for_seat_id', note.forSeatId, 'for_library_id', note.forLibraryId],
+        ['origin_seat_id', note.originSeatId, 'origin_library_id', note.originLibraryId],
+        ['from_seat_id', note.fromSeatId, 'from_library_id', note.fromLibraryId],
+      ] as const;
+      for (const [field, id, libraryField, libraryId] of sides) {
         if (id === null || note.malformed.includes(field)) continue;
+        // The same rule as lettersRecipientIncarnation's.
+        if (note.localLibraryId && !isThisLibrary(libraryId, note.localLibraryId) && !note.malformed.includes(libraryField)) {
+          elsewhere += 1;
+          continue;
+        }
         recorded += 1;
         if (!known.has(id)) problems.push(`${book.slug} ${note.page} records ${field} ${id}, which names no seat in the registry and no retirement record`);
       }
     }
   }
   if (problems.length) throw new Error(problems.join('; '));
-  return `${view.live.length} seat${view.live.length === 1 ? '' : 's'}, each with ${view.live.every((row) => row.identity === 'valid') ? 'its own id' : 'its own id or none'} and its own names; ${recorded} recorded letter id${recorded === 1 ? '' : 's'}, each naming a seat or a retirement record`;
+  return `${view.live.length} seat${view.live.length === 1 ? '' : 's'}, each with ${view.live.every((row) => row.identity === 'valid') ? 'its own id' : 'its own id or none'} and its own names; ${recorded} recorded letter id${recorded === 1 ? '' : 's'}, each naming a seat or a retirement record${elsewhere ? `; ${elsewhere} letter id${elsewhere === 1 ? ' names' : 's name'} another Library's seats, judged in that Library` : ''}`;
 }
 
 /**
@@ -1540,6 +1592,42 @@ function runCheck(check: string, body: () => string): CheckResult {
   }
 }
 
+/**
+ * THE POSTBOX'S OUTBOX (kickoffs/s123 row 4; PLAN-many-libraries.md item 6), from the cache alone, never a server call: a
+ * WARN for a letter still waiting to be sent a day after it was written, and for one that could not be sent (a
+ * different note at its path). Inbox copies left beside their delivered twin are named, never a WARN. Skipped for a
+ * Library with no Postbox.
+ */
+function postboxOutbox(workspace: string): string {
+  const { state, outbox } = postboxCache(workspace);
+  if (state === null) return 'SKIP: this Library has no Postbox';
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const stale = outbox.filter((entry) => entry.state === 'unsent' && Date.parse(entry.created_utc) < dayAgo);
+  const refused = outbox.filter((entry) => entry.state === 'refused');
+  const left = Array.isArray(state['left_inbox_copies']) ? (state['left_inbox_copies'] as unknown[]).length : 0;
+  const leftLine = left ? `; ${left} inbox ${left === 1 ? 'copy' : 'copies'} left beside ${left === 1 ? 'its' : 'their'} delivered twin, counted once and never deleted` : '';
+  const problems: string[] = [];
+  if (stale.length) {
+    problems.push(`${stale.length} ${stale.length === 1 ? 'letter' : 'letters'} in the outbox older than a day and not yet sent (${stale.map((entry) => `${entry.delivery_id}, written ${entry.created_utc}`).join('; ')}): deskpost postbox send tries again`);
+  }
+  if (refused.length) {
+    problems.push(`${refused.length} ${refused.length === 1 ? 'letter' : 'letters'} could not be sent (${refused.map((entry) => `${entry.delivery_id}: ${entry.refusal ?? 'refused'}`).join('; ')}); nothing was overwritten`);
+  }
+  if (problems.length) return `WARN: ${problems.join('; ')}${leftLine}`;
+  const unsent = outbox.filter((entry) => entry.state === 'unsent').length;
+  return `${outbox.length} ${outbox.length === 1 ? 'letter' : 'letters'} in the outbox, ${unsent} waiting to be sent${leftLine}`;
+}
+
+/** THE POSTBOX ANSWERED AT ITS LAST CHECK (kickoffs/s123 row 4): a WARN, from the cache, naming since when it has not. */
+function postboxReachable(workspace: string): string {
+  const { state } = postboxCache(workspace);
+  if (state === null) return 'SKIP: this Library has no Postbox';
+  const since = String(state['unreachable_since'] ?? '');
+  if (since) return `WARN: the Postbox at ${String(state['url'] ?? '')} has not answered since ${since}: ${String(state['unreachable_detail'] ?? '')}`.trim();
+  const last = String(state['last_check'] ?? '');
+  return last ? `the Postbox answered at its last check, ${last}` : 'the Postbox has not been checked since setup';
+}
+
 // --- The runner -----------------------------------------------------------------------------------
 
 export interface DoctorResult {
@@ -1685,6 +1773,9 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('seats.identity', () => seatsIdentity(workspace)) : { check: 'seats.identity', status: 'skipped', detail: 'no Library here, so no seats whose identity to check' },
     // AND THIS ONE (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook path that is gone. A WARN.
     workspace ? runCheck('notebook.links-resolve', () => notebookLinksResolve(workspace)) : { check: 'notebook.links-resolve', status: 'skipped', detail: 'no Library here, so no Hub or Shelf Book links to check' },
+    // AND THESE TWO (kickoffs/s123 row 4): the Postbox's outbox and whether it answered, from its cache. Skipped with none.
+    workspace ? runCheck('postbox.outbox', () => postboxOutbox(workspace)) : { check: 'postbox.outbox', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
+    workspace ? runCheck('postbox.reachable', () => postboxReachable(workspace)) : { check: 'postbox.reachable', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
     runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
     ...(workspace ? (() => { try { return readRegistryRows(registryFilePath(path.join(workspace, '.claude'))).flatMap(row => {

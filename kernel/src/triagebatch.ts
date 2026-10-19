@@ -66,8 +66,8 @@ const LIBRARY_OUTPUT_SCHEMA = 1;
 /** `$script:TriagePlanSchema` in TriagePlanCommon.ps1. */
 const TRIAGE_PLAN_SCHEMA = 3;
 const CONFIRMING_KINDS = ['discard', 'project', 'book'];
-const INLINE_KINDS = ['review', 'notebook', 'discard'];
-const SHELF_KINDS = ['holding', 'shelf-book', 'review', 'discard', 'notebook'];
+const INLINE_KINDS = ['review', 'hold', 'notebook', 'discard'];
+const SHELF_KINDS = ['holding', 'shelf-book', 'review', 'hold', 'discard', 'notebook'];
 const SHARED_KINDS = ['project', 'book'];
 
 class TriageRefusal extends Error {}
@@ -274,7 +274,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   // Resolved one by one so each action keeps the reader's own request beside it -- the plan record stores
   // it, and the children are called with its words -- then checked as a set and put in execution order.
   // THE SEAT RESOLVED ABOVE IS THE ONE EVERY GATE READS (S73 row 4): the Desk, the Notebook scope and the seat rule.
-  const pairs: Resolved[] = requested.map((raw) => ({ action: convertToTriageAction(raw, workspace, captureDate, notebookRelative, seat), raw }));
+  // NUMBERED AS triage validate NUMBERS THEM (kickoffs/s121 row 1), so a refusal names which action it means.
+  const pairs: Resolved[] = requested.map((raw, index) => ({ action: convertToTriageAction(raw, workspace, captureDate, notebookRelative, seat, index + 1), raw }));
   assertWriteSetsDisjoint(pairs.map((pair) => pair.action));
   const ordered = executionOrder(pairs.map((pair) => pair.action)).map((action) => pairs.find((pair) => pair.action === action)!);
 
@@ -493,6 +494,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         note_page: action.source_note,
         current_review: String(action.metadata['current_review'] ?? ''),
         new_review: String(action.metadata['new_review'] ?? ''),
+        ...(action.kind === 'hold' ? { held_record: String(action.metadata['held_record'] ?? '') } : {}),
         write_set: action.write_set,
         delete_set: action.delete_set,
       };
@@ -900,6 +902,26 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Review ${note.page} as ${newState}`, lock });
         writeAtomicText(note.fullPath, updated);
         result['status'] = note.review === newState && newState === 'done' ? 'stamped' : 'updated';
+        result['pending_count'] = updateShelfNoteIndex(book).pendingCount;
+      } else if (action.kind === 'hold') {
+        // HELD, NOT CLOSED (kickoffs/s121 row 5): `review` is left as it is, and the two stamps are written, the date
+        // here at execution so no clock enters the action's digest. A closed note is not held: reopen it first.
+        const record = String(action.metadata['held_record'] ?? '');
+        result['held_record'] = record;
+        if (note.review === 'done') refuse(`${note.page} is closed (review: done), so it cannot be held; reopen it with a review action first. Nothing was written for this action.`);
+        const held = localDate();
+        result['held'] = held;
+        if (note.held === held && note.heldRecord === record) {
+          result['status'] = 'unchanged';
+          result['reader_map'] = `${book.bookRoot}/wiki/_index.md`;
+          return result;
+        }
+        const content = fs.readFileSync(note.fullPath, 'utf8');
+        const updated = setNoteField(setNoteField(content, 'held', held), 'held_record', record);
+        if (updated === content) refuse(`This note has no frontmatter to update: ${note.page}`);
+        mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Hold ${note.page} for ${record}`, lock });
+        writeAtomicText(note.fullPath, updated);
+        result['status'] = 'updated';
         result['pending_count'] = updateShelfNoteIndex(book).pendingCount;
       } else if (action.kind === 'notebook') {
         const topic = String(action.metadata['topic'] ?? '');

@@ -1,7 +1,7 @@
 /**
  * THE GATE BY TIERS (PLAN-powershell-free-development.md, Session 1 items 1-3; kickoffs/s113 rulings 14-15):
  *
- *   node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>]
+ *   node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>] [--compare-with <old-report-json>]
  *   npm --prefix kernel run gate -- --tier <tier> ...
  *
  * One line per check with its time (`PASS 6.3s kernel.typecheck`), then the total against the tier's budget
@@ -11,13 +11,16 @@
  *   exit 0  every check passed (a WARN passes, as the runner's does);
  *   exit 1  a check failed;
  *   exit 2  the gate itself failed (an unknown argument, git or a child that could not run, a malformed claim map);
- *   exit 3  waiting refused under --no-wait. Cut, push and release take the c2 machine-wide live gate lock.
+ *   exit 3  waiting refused under --no-wait. The machine-wide lock is off by default; DESKPOST_GATE_SERIAL=1 enables it.
  *
- * NOTHING CALLS THIS BUT A PERSON in S113: no hook and no runner. It ports no check (session 2 does). What each tier
- * runs today:
+ * The hook runs the commit tier beside the old gate only on request (DESKPOST_GATE_COMPARE=1). --compare-with
+ * appends its observations and exits 0 even on disagreement or new-gate error; the old gate still decides.
+ * Missing old check observations remain null.
+ * What each tier runs today:
  *   commit   the kernel type check (tsc --noEmit); the claim map's coverage (rule a); the docs gate as it is
  *            (`node tools/docs-gate.ts`, which judges a docs-only commit and says "not docs-only" for any other);
- *            the kernel self-test sections the changed files select (tools/section-select.mts, rules b-d).
+ *            the TypeScript identity/deployment scans; the kernel self-test sections the changed files select
+ *            (tools/section-select.mts, rules b-d). Comparisons also honor serial opt-in and fixture lock names.
  *   cut      the commit tier's checks, but every self-test section runs inside `Invoke-LibraryChecks.ps1 -Fast`, run
  *            as a child for everything not yet ported.
  *   push     today's full gate's check set, exactly, in one pool (PLAN-fast-gates.md Unit B, S119): the static checks
@@ -39,10 +42,11 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { childEnv } from '../kernel/test/gate-env.ts';
-import { acquireGateLock, LockError } from '../kernel/test/gate-lock.ts';
+import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from '../kernel/test/gate-lock.ts';
 import { SERIAL_SECTIONS, fastRoster, parseOptions, rosterProblems, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
 import { COVERS_PATH, SELFTEST_PATH, parseCovers, parseHunks, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
 
@@ -89,16 +93,48 @@ const STATIC_RUN_SECTION = '1';
 class GateError extends Error {}
 let interrupted = false;
 
-const USAGE = 'Usage: node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>]';
+const USAGE = 'Usage: node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>] [--compare-with <old-report-json>] [--require-sections <n,n,...>]; ' +
+  'node tools/gate.ts --sections-log <file> --require-sections <n,n,...>; the hook uses --compare-with only on request (DESKPOST_GATE_COMPARE=1)';
 
-function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null; noWait: boolean } {
+/**
+ * A SECTION A KICKOFF REQUIRES MUST PASS, NOT SKIP (kickoffs/s120 row 9; c14 ran two green gates that skipped section
+ * 149): each named section whose verdict in a sections.log is SKIP, or which the log does not name, is a problem.
+ */
+function requiredSectionProblems(logText: string, required: string[]): string[] {
+  const verdicts = new Map<string, string>();
+  for (const line of logText.split(/\r?\n/)) {
+    const m = /^section (\d+): (\S+)/.exec(line);
+    if (m) verdicts.set(m[1]!, m[2]!);
+  }
+  return required.flatMap((section) => {
+    const verdict = verdicts.get(section);
+    return verdict === undefined ? [`section ${section}: absent`] : verdict === 'SKIP' ? [`section ${section}: SKIP`] : [];
+  });
+}
+
+function requiredOutcome(logText: string, required: string[], tier: Tier): Outcome {
+  const problems = requiredSectionProblems(logText, required);
+  return { check: 'gate.required-sections', tier, status: problems.length ? 'fail' : 'pass', seconds: null, caught: 'c14: a required section 149 skipped under two green gates',
+    detail: problems.length ? `a section this gate was told to require did not pass: ${problems.join('; ')}` : `sections ${required.join(', ')} each ran with a verdict other than SKIP` };
+}
+
+function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null; noWait: boolean; requireSections: string[]; sectionsLog: string | null; compare: OldGate | null } {
   let tier: Tier | null = null;
   let json = false;
   let commit: string | null = null;
   let noWait = false;
+  let requireSections: string[] = [];
+  let sectionsLog: string | null = null;
+  let compare: OldGate | null = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === '--tier' && i + 1 < argv.length) {
+    if (arg === '--compare-with' && i + 1 < argv.length) compare = oldGate(argv[++i]!);
+    else if (arg === '--require-sections' && i + 1 < argv.length) {
+      const value = argv[++i]!;
+      if (!/^\d+(,\d+)*$/.test(value)) throw new GateError(`--require-sections takes section numbers separated by commas, such as 147,148; got '${value}'. ${USAGE}`);
+      requireSections = value.split(',');
+    } else if (arg === '--sections-log' && i + 1 < argv.length) sectionsLog = argv[++i]!;
+    else if (arg === '--tier' && i + 1 < argv.length) {
       const value = argv[++i]!;
       if (!(TIERS as readonly string[]).includes(value)) throw new GateError(`--tier is one of ${TIERS.join(', ')}; got '${value}'. ${USAGE}`);
       tier = value as Tier;
@@ -110,8 +146,14 @@ function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string 
       process.exit(EXIT_PASS);
     } else throw new GateError(`unknown argument '${arg}'. ${USAGE}`);
   }
+  if (compare && (tier !== 'commit' || sectionsLog !== null)) throw new GateError('--compare-with requires --tier commit');
+  if (sectionsLog !== null) {
+    if (tier !== null || !requireSections.length) throw new GateError(`--sections-log checks a written log against --require-sections, with no --tier. ${USAGE}`);
+    return { tier: 'push', json, commit, noWait, requireSections, sectionsLog, compare };
+  }
   if (tier === null) throw new GateError(`name a tier. ${USAGE}`);
-  return { tier, json, commit, noWait };
+  if (requireSections.length && tier !== 'push' && tier !== 'release') throw new GateError(`--require-sections reads the sections.log only the push and release tiers write. ${USAGE}`);
+  return { tier, json, commit, noWait, requireSections, sectionsLog, compare };
 }
 
 function git(root: string, args: string[]): string {
@@ -279,7 +321,7 @@ async function suiteChild(root: string, name: string, folder: string, signal: Ab
  * -Only verdict. The pool's suite list is read where gate.fast-roster-matches-suites reads it and must equal the roster
  * the static run reports, and that check (in the static run) proves the roster equals every else-arm registration.
  */
-async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void): Promise<void> {
+async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = []): Promise<void> {
   const options = parseOptions([]);
   const selftest = path.join(root, 'kernel', 'test', 'selftest.ts');
   const sections = sectionNumbers(fs.readFileSync(selftest, 'utf8'), '');
@@ -321,6 +363,7 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
   const failedSections = results.filter((result) => result.verdict === 'FAIL');
   const flatten = (value: string) => value.replace(/[\r\n]+/g, ' | ');
   fs.writeFileSync(path.join(folder, 'sections.log'), results.map((r) => `section ${r.section}: ${r.verdict} ${r.checks} checks ${r.seconds.toFixed(3)}s${r.detail ? ` ${flatten(r.detail)}` : ''}`).join('\n') + '\n');
+  if (requireSections.length) say(requiredOutcome(fs.readFileSync(path.join(folder, 'sections.log'), 'utf8'), requireSections, 'push'));
   const missingSections = sections.filter((section) => !results.some((result) => result.section === section));
   const selftestOutcome: Outcome = failedSections.length || missingSections.length || controller.signal.aborted
     ? { check: 'kernel.selftest', tier: 'push', status: 'fail', seconds: null, caught: RUNNER_CAUGHT, detail: `kernel self-test FAILED (${failedSections.length || 1} of ${total}): ${[...failedSections.map((r) => `section ${r.section}: ${flatten(r.detail)}`), ...missingSections.map((n) => `section ${n}: not run`)].join('; ').slice(0, 1200) || 'cancelled'}` }
@@ -366,7 +409,51 @@ function clock(seconds: number): string {
   return whole < 60 ? `${whole}s` : `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, '0')}s`;
 }
 
-async function runTier(argv: string[]): Promise<number> {
+interface OldGate { status: Status; seconds: number | null; checks: { check: string; status: Status; seconds?: number | null }[] }
+function oldGate(value: string): OldGate {
+  const parsed = JSON.parse(value) as OldGate;
+  const statuses = ['pass','warn','fail','skip'];
+  if (!parsed || !statuses.includes(parsed.status) || !(parsed.seconds === null || (Number.isFinite(parsed.seconds) && parsed.seconds >= 0)) || !Array.isArray(parsed.checks)
+    || parsed.checks.some(check => !check || typeof check.check !== 'string' || !statuses.includes(check.status))) throw new GateError('--compare-with requires {status, seconds: number|null, checks: [{check,status,seconds?}]}');
+  if (new Set(parsed.checks.map(check => check.check)).size !== parsed.checks.length) throw new GateError('--compare-with repeats a check name');
+  return parsed;
+}
+
+/** A pre-commit has no final commit object yet. Bind the row to its parent and exact staged diff.
+ * The handback records the resulting commit SHA beside this identity. Missing old observations stay missing. */
+function compareGates(root: string, old: OldGate, outcomes: Outcome[], seconds: number, exit: number, selection: unknown, error?: string, json = false): void {
+  const output = json ? process.stderr : process.stdout;
+  const normal = (name: string) => name.replace(' (selected sections)', '');
+  const newStatus: Status = exit === 0 ? 'pass' : 'fail';
+  const checks = outcomes.filter(outcome => !outcome.diagnostic).map(outcome => {
+    const prior = old.checks.find(check => normal(check.check) === normal(outcome.check));
+    return { check: normal(outcome.check), old: prior?.status ?? null, new: outcome.status, old_seconds: prior?.seconds ?? null, new_seconds: outcome.seconds };
+  });
+  const disagreements = checks.filter(check => check.old !== null && check.old !== check.new).map(check => check.check);
+  if (old.status !== newStatus) disagreements.unshift('gate verdict');
+  const gaps = old.checks.length ? [] : ['The old hook provides its passing aggregate verdict only; no old per-check observations are available.'];
+  const common = path.resolve(root, git(root, ['rev-parse','--git-common-dir']).trim());
+  const log = path.join(common, 'deskpost-gate-compare.log');
+  const record = { schema: 1, at: new Date().toISOString(), commit: { parent: git(root, ['rev-parse','HEAD']).trim(), staged_diff_sha256: createHash('sha256').update(git(root,['diff','--cached','--binary','--no-ext-diff'])).digest('hex') }, old: {status:old.status,seconds:old.seconds}, new: {status:newStatus,seconds,exit}, checks, selection, disagreements, gaps, ...(error ? {error} : {}) };
+  fs.appendFileSync(log, JSON.stringify(record)+'\n');
+  output.write(`gate comparison appended: ${log}; extra ${seconds.toFixed(1)}s\n`);
+  if (gaps.length) output.write(`WARN: gate comparison: ${gaps.join(' ')}\n`);
+  if (disagreements.length || exit === EXIT_GATE) output.write(`WARN: gate comparison ${exit === EXIT_GATE ? 'new gate failed to run' : 'disagrees'}: ${error ?? disagreements.join(', ')}; the old gate still decides.\n`);
+}
+
+async function scanChecks(root: string): Promise<Outcome[]> {
+  const ran = await runChild(process.execPath, [fs.realpathSync(path.join(root,'tools/scan.ts')),'--identity','--deployment','--root',root,'--json'],root,CHECK_LIMIT);
+  if (ran.status === 2 || ran.status === null) throw new GateError('the scans failed to run: '+lastLines(ran.output,2));
+  let parsed: Record<string,{status:Status;detail:string}>;
+  try { parsed=JSON.parse(ran.output) as typeof parsed; } catch { throw new GateError('the scans returned no JSON report: '+lastLines(ran.output,2)); }
+  return ['identity','deployment'].map(name => {
+    const result=parsed[name];
+    if (!result || !['pass','warn','fail'].includes(result.status)) throw new GateError('the scans omitted a verdict for '+name);
+    return { check: name==='identity'?'public.identity-scan':'public.no-deployment-defaults',tier:'commit',status:result.status,seconds:ran.seconds,detail:result.detail,caught:'DeploymentScan.ps1 oracle parity, section 262' };
+  });
+}
+
+async function runTier(argv: string[], tierWait: GateWait | null = null): Promise<number> {
   const options = parseArgs(argv);
   const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
   const started = Date.now();
@@ -390,9 +477,18 @@ async function runTier(argv: string[]): Promise<number> {
     process.stdout.write(`     self-test selection: ${what}${options.tier === 'commit' ? '' : pooled ? ' (this tier runs every section in its pool instead)' : ' (this tier runs every section in the runner child instead)'}\n`);
     for (const reason of chosen.selection.reasons) process.stdout.write(`       ${reason}\n`);
   }
-  if (options.tier === 'commit') say(await selftestSections(root, 'commit', chosen.selection));
+  if (options.tier === 'commit') {
+    for (const outcome of await scanChecks(root)) say(outcome);
+    // Wait outside the child's run limit; its inherited hold also covers opt-in whole-suite comparisons.
+    const lockSay = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
+    const selectionLock = chosen.selection.all || chosen.selection.sections.length > 0 ? await acquireGateLock(options.compare ? 'commit comparison' : 'commit', options.noWait, lockSay) : null;
+    const notice = selectionLock && gateLockOffNotice(selectionLock);
+    if (notice) lockSay(notice);
+    try { say(await selftestSections(root, 'commit', chosen.selection)); } finally { await selectionLock?.release(); }
+    if (selectionLock?.wait) tierWait = selectionLock.wait;
+  }
   else if (pooled) {
-    await pushChecks(root, say, (line) => (options.json ? process.stderr : process.stdout).write(line + '\n'));
+    await pushChecks(root, say, (line) => (options.json ? process.stderr : process.stdout).write(line + '\n'), options.requireSections);
     if (options.tier === 'release') releaseOnly().forEach(say);
   } else {
     if (!options.json) process.stdout.write(`     ${options.tier} tier: running tools/Invoke-LibraryChecks.ps1${options.tier === 'cut' ? ' -Fast' : ''} as a child for everything not yet ported${options.tier === 'cut' ? '; its kernel.selftest runs every section' : ''}\n`);
@@ -411,17 +507,33 @@ async function runTier(argv: string[]): Promise<number> {
     const count = (status: Status) => outcomes.filter((outcome) => outcome.status === status && !outcome.diagnostic).length;
     const diagnostics = outcomes.filter((outcome) => outcome.diagnostic);
     const aside = diagnostics.length ? ` Diagnostics, not acceptance: ${diagnostics.map((outcome) => `${outcome.check} ${outcome.status}`).join(', ')}.` : '';
-    process.stdout.write(`${options.tier} tier: ${clock(total)}${budget === null ? ' (measured; no budget yet)' : ` of ${clock(budget)}`}. ${count('pass')} passed, ${count('warn')} warned, ${failed} failed, ${count('skip')} skipped.${aside}\n`);
+    process.stdout.write(`${options.tier} tier: ${clock(total)}${budget === null ? ' (measured; no budget yet)' : ` of ${clock(budget)}`}. ${count('pass')} passed, ${count('warn')} warned, ${failed} failed, ${count('skip')} skipped${tierWait ? `, after a ${tierWait.seconds} s lock wait` : ''}.${aside}\n`);
     if (overBudget) process.stdout.write(`WARN: the ${options.tier} tier took ${clock(total)}, over its ${clock(budget!)} budget. Over budget is a warning, never a failure.\n`);
   }
+  if (options.compare) { compareGates(root, options.compare, outcomes, total, exit, { ...chosen.selection, changed: chosen.changed }, undefined, options.json); return EXIT_PASS; }
   return exit;
 }
 
 async function main(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
+  if (options.sectionsLog !== null) {
+    const outcome = requiredOutcome(fs.readFileSync(options.sectionsLog, 'utf8'), options.requireSections, 'push');
+    process.stdout.write(`${outcome.status.toUpperCase()} ${outcome.check}: ${outcome.detail}\n`);
+    return outcome.status === 'fail' ? EXIT_FAIL : EXIT_PASS;
+  }
   const say = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
   const lock = options.tier === 'commit' ? null : await acquireGateLock(options.tier, options.noWait, say);
-  try { return await runTier(argv); } finally { await lock?.release(); }
+  const notice = lock && gateLockOffNotice(lock);
+  if (notice) say(notice);
+  const started=Date.now();
+  try { return await runTier(argv, lock?.wait ?? null); }
+  catch (error) {
+    if (!options.compare) throw error;
+    const root=path.resolve(git(process.cwd(),['rev-parse','--show-toplevel']).trim());
+    compareGates(root,options.compare,[],(Date.now()-started)/1000,EXIT_GATE,null,error instanceof Error?error.message:String(error), options.json);
+    if (options.json) process.stdout.write(JSON.stringify({schema:1,tier:options.tier,exit:EXIT_GATE,error:String(error)})+String.fromCharCode(10));
+    return EXIT_PASS;
+  } finally { await lock?.release(); }
 }
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),

@@ -130,6 +130,8 @@ interface DiscoveryHit {
   heading: string | null;
   match_field: string;
   overlap: string | null;
+  /** The ## heading a ### or deeper heading hit sits under (kickoffs/s120 row 7); absent on every other hit. */
+  section?: string;
 }
 
 interface UnavailableBook {
@@ -390,11 +392,16 @@ function bookHits(options: {
     if (testSearchContains(page.title, options.needle)) {
       hits.push(newHit({ ...base, page: page.path, heading: page.title, matchField: 'page-title' }));
     }
+    // THE READER OPENS ONE ## SECTION (reader.ts), so a hit on a ### or deeper heading names the ## it sits under, and
+    // the reader can open it in one step (kickoffs/s120 row 7). A deeper heading before any ## names none.
+    let parent: string | null = null;
     for (const heading of page.headings) {
+      if (heading.level <= 2) parent = heading.level === 2 ? heading.text : null;
       // The page title IS the first H1, so reporting both would be one match twice.
       if (heading.level === 1 && page.title.length > 0 && heading.text === page.title) continue;
       if (testSearchContains(heading.text, options.needle)) {
-        hits.push(newHit({ ...base, page: page.path, heading: heading.text, matchField: 'heading' }));
+        const hit = newHit({ ...base, page: page.path, heading: heading.text, matchField: 'heading' });
+        hits.push(heading.level > 2 && parent !== null ? Object.assign(hit, { section: parent }) : hit);
       }
     }
   }
@@ -733,7 +740,9 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
       }
       const where = hit.page !== null ? hit.page : '(Book level)';
       const what = hit.heading !== null ? ` -- ${hit.heading}` : '';
-      lines.push(`  ${hit.match_field}: ${where}${what}`);
+      // A DEEPER HEADING'S ## SECTION, as the JSON carries it (kickoffs/s121 row 4), so the reader can open it in one step.
+      const within = hit.section !== undefined ? ` (section: ${hit.section})` : '';
+      lines.push(`  ${hit.match_field}: ${where}${what}${within}`);
     }
   }
   lines.push('');

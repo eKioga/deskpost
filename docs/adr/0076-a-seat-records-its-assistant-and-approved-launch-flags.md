@@ -57,7 +57,7 @@ record, CLI, settings and menu contracts; a real-client fixture proof and the re
 The launcher reserves Codex config roots `hooks`, `mcp_servers`, `plugins`, `features`, `profiles`,
 `profile` and `shell_environment_policy`. Stored `-c`/`--config` cannot replace those tables or their
 children. The Library config enables `features.hooks`, registers the validated reader, disables
-inherited servers and plugins, and excludes inherited Windows Path. `.codex/hooks.json` registers
+inherited servers and plugins, and keeps the inherited Windows Path (`exclude = []`, since `2f10bea`). `.codex/hooks.json` registers
 the read, shell and patch guards and context hooks. Those registrations must survive seated launches.
 
 Stored `-p`/`--profile` is refused because it layers another config file. `--enable`/`--disable` cannot

@@ -15,7 +15,7 @@
 # Installed via:  git config core.hooksPath .githooks
 # The denylist lives at %USERPROFILE%\.library\identity-denylist.txt and is never in a repository.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/DeploymentScan.ps1" -IdentityScan -CommitMessageFile "$1"
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= node tools/scan.ts --identity --commit-message-file "$1"
 status=$?
 
 if [ $status -ne 0 ]; then

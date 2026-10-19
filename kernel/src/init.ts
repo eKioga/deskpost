@@ -707,6 +707,18 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
     // of them would leave Codex reading the other on one platform only.
     text = expandCodexToken(text, '"' + entry.token + '"', psJsonString(command), entry.token === '__COMPACT_CLEAR_COMMAND__' ? 4 : 2);
   }
+  // Checkpoint hooks belong only to Codex. Source init uses the kernel's Node front door;
+  // compiled installs use the same binary as the other kernel hooks, never a script hook.
+  const checkpointRoot = programRoot ?? path.resolve(hookDirectory, '../..');
+  const compiled = kernelRegistersHooks(resources ?? checkpointRoot);
+  const source = path.join(checkpointRoot, 'kernel', 'src', 'cli.ts').replace(/\\/g, '/');
+  const shellLiteral = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  const checkpointPosix = compiled ? `${shellLiteral(kernelBinary(checkpointRoot))} hook checkpoint`
+    : `node ${shellLiteral(source)} hook checkpoint`;
+  const checkpointWindows = compiled ? `& ${powerShellLiteral(kernelBinary(checkpointRoot))} hook checkpoint`
+    : `& 'node' ${powerShellLiteral(source)} hook checkpoint`;
+  text = text.replaceAll('"__CHECKPOINT_COMMAND__"', psJsonString(checkpointPosix))
+    .replaceAll('"__CHECKPOINT_WINDOWS_COMMAND__"', psJsonString(checkpointWindows));
   if (/__[A-Z0-9_]+__/.test(text)) throw new Error('The rendered Codex hooks still contain a template token.');
   try {
     JSON.parse(text);

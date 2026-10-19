@@ -1,20 +1,23 @@
-# Shipped skills in both harnesses
+# Shipped workspace skills
 
 Parity plan step 4d. Reader benefit: the same Library procedures are available in Claude Code and Codex without a plugin or a manual copy. Safety boundary: init owns only proven files in this Library, never a reader's skill or a link's destination.
 
 ## Inventory and ownership
 
-- `SHIPPED_SKILLS` in `kernel/src/skillcopy.ts` is the explicit inventory of released workspace skills. It contains only `library-help`. Prototypes are excluded; another skill enters the inventory when its command ships.
-- The canonical content is `.claude/skills/<name>/` in the program. Init installs identical content in `.claude/skills/<name>/` and `.agents/skills/<name>/` in a Library. There is one authored copy. A declared skill without `SKILL.md` refuses the whole init before writes.
+- `SHIPPED_SKILLS` in `kernel/src/skillcopy.ts` names released skills; `SKILLS_BY_LOCATION` declares the per-harness inventory. `library-help` goes to both `.claude/skills` and `.agents/skills`; `save` and `closeout` go only to `.agents/skills`. Prototypes are excluded.
+- Canonical `library-help` content is `.claude/skills/library-help/` in the program; canonical Codex `save` and `closeout` content is `.agents/skills/<name>/`. There is one authored copy of each. A declared skill without `SKILL.md` refuses the whole init before writes. Claude Code keeps its deskpost-mods plugin's save and closeout commands; init adds no duplicate there.
 - Each destination has an independent `.deskpost-managed.json`, schema 1: relative file names and SHA-256 hashes Deskpost wrote. Missing files are created; files still matching an owned hash are upgraded; edited or unowned files are preserved and named. A nonempty skill directory with no valid manifest is a reader collision: leave it whole and warn while completing the remaining setup.
 - Ownership manifests are written before skill content so interrupted first installs resume. Init is idempotent and repairs missing files in either location independently.
 - Every destination directory and file, including the manifest, is checked before reading or planning writes. Junctions, symlinks, dangling links and wrong-shaped file or directory slots refuse the whole init without writes. This includes links at the harness root and nested reference folders. Init never removes a link itself. A Library reached through a parent junction is allowed.
 - Renamed or retired managed skills and files are retained with their ownership records. Init and doctor name obsolete managed content; neither deletes it or silently erases edits. Renaming ships a new name and retains the old copy, which may remain discoverable until the reader removes it explicitly.
-- Uninstall removes its existing hook and server registrations, retaining both skill copies, their manifests and reader edits, following [ADR-0058](adr/0058-uninstall-reaches-only-what-deskpost-wrote-and-sessions-close-first.md). Both harnesses have the same retention rule.
+- Uninstall removes its existing hook and server registrations, retaining managed skill copies, their manifests and reader edits, following [ADR-0058](adr/0058-uninstall-reaches-only-what-deskpost-wrote-and-sessions-close-first.md). Both harnesses have the same retention rule.
 
 ## Structural checks and live discovery
 
 Doctor's `workspace.claude-skills-installed` and `workspace.codex-skills-installed` rows report missing, outdated, edited, unowned, linked, blocked and retired copies. Doctor never writes. Structural success proves installation; it does not prove that a live harness discovered a skill.
+
+The Claude row names `library-help`; the Codex row names `library-help, save, closeout`.
+Section 249 proves the Codex-only installation, user collision preservation, repeat init and both doctor rows.
 
 Self-test section 219 covers both locations, canonical content, collisions, invalid ownership records, old-hash upgrades, reader edits, missing-file repair, interrupted installation, missing shipped sources, retirement, blocked file slots, linked roots/directories/file slots, actual init and uninstall retention. Section 107 compares interrupted init with a clean init in both skill locations. Existing section 55 retains its front-door ownership checks.
 

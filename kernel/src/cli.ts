@@ -22,9 +22,11 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
+import { runCheckpointVerb } from './checkpointverb.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
-import { captureVerb, lettersCloseVerb, runBookVerb } from './capture.ts';
+import { captureVerb, lettersCloseVerb, lettersListVerb, reportsVerb, runBookVerb } from './capture.ts';
+import { runPostboxVerb } from './postbox.ts';
 import { auditVerb } from './audit.ts';
 import { runRawSearch } from './rawsearch.ts';
 import { runRawOwners } from './rawowners.ts';
@@ -203,6 +205,16 @@ async function main(argv: string[]): Promise<number> {
       // LINES FOR A PERSON, THE DOCUMENT WITH --json (F7): until 1.1 `--json` was a no-op and a person got the document.
       emit(result as PsJsonValue, parsed.flags.has('json'), initText(result, written));
       return 0;
+    }
+
+    case 'checkpoint': {
+      try {
+        const result = runCheckpointVerb(rest);
+        emit(result.value, true);
+        return 0;
+      } catch (error) {
+        refuse((error as Error).message);
+      }
     }
 
     case 'desk': {
@@ -405,9 +417,9 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
-    // A SEAT'S OWN MAIL (kickoffs/s108 ruling 2): one action, `close`, read from the words after it.
+    // A SEAT'S OWN MAIL (kickoffs/s108 ruling 2; kickoffs/s120 row 3): `list` and `close`, read from the words after it.
     case 'letters': {
-      if (action !== 'close') refuse(`library letters has no action '${rest[0] ?? ''}'. It has: close.`);
+      if (action !== 'close' && action !== 'list') refuse(`library letters has no action '${rest[0] ?? ''}'. It has: list, close.`);
       const parsed = parseArguments(tail, table);
       let workspace: string;
       try {
@@ -415,7 +427,29 @@ async function main(argv: string[]): Promise<number> {
       } catch (error) {
         refuse(`library letters : ${(error as Error).message}`);
       }
+      if (action === 'list') {
+        const listed = lettersListVerb(tail, workspace);
+        if (listed.refusal !== null) refuse(listed.refusal);
+        emit(listed.value!, parsed.flags.has('json'), listed.text);
+        return 0;
+      }
       const result = lettersCloseVerb(tail, workspace);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, true);
+      return 0;
+    }
+
+    // A SEAT'S OWN REPORT (kickoffs/s130 row 2; ADR-0083): `amend` and `withdraw`, read from the words after it.
+    case 'reports': {
+      if (action !== 'amend' && action !== 'withdraw') refuse(`library reports has no action '${rest[0] ?? ''}'. It has: amend, withdraw.`);
+      const parsed = parseArguments(tail, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library reports : ${(error as Error).message}`);
+      }
+      const result = reportsVerb(action, tail, workspace);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
       return 0;
@@ -499,6 +533,21 @@ async function main(argv: string[]): Promise<number> {
       const result = runLibraryVerb(rest);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, rest.includes('--json'), result.humanText);
+      return 0;
+    }
+
+    // A LIBRARY'S PLACE IN THE POSTBOX (kickoffs/s121 row 9): setup writes to a server only on its plan id's yes.
+    case 'postbox': {
+      const parsed = parseArguments(rest, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library postbox : ${(error as Error).message}`);
+      }
+      const result = await runPostboxVerb(rest, workspace);
+      if (result.refusal !== null) refuse(result.refusal);
+      emit(result.value!, true);
       return 0;
     }
 

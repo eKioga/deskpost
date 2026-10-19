@@ -137,6 +137,8 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         sections.forEach((section) => chosen.add(section));
         reasons.push(`${listed(sections)}: claim ${file.slice('kernel/src/'.length)}`);
       }
+    } else if (!file.startsWith('kernel/')) {
+      reasons.push(`no section: ${file} is outside kernel/src and no section claims it`);
     }
   }
   if (input.changed.includes(SELFTEST_PATH)) {

@@ -356,8 +356,14 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
         // A LETTER'S STATUS, WORKED OUT (kickoffs/s98 row 3, ruling 5): the last key, on every note of a Book that takes
         // letters and on no other note.
         ...(book.takesLetters ? { letter_status: letterStatus(note) } : {}),
-        // WHAT BECAME OF IT, beside the status and never as one (kickoffs/s108 ruling 2): only on a letter closed with a note.
-        ...(book.takesLetters && note.closedNote && note.review === 'done' ? { closed_note: note.closedNote } : {}),
+        // WHAT BECAME OF IT, beside the status and never as one (kickoffs/s108 ruling 2): on a done note closed with a note,
+        // in any capture Book since s130 (row 3), so a withdrawn Report reads apart from a fixed one.
+        ...(note.closedNote && note.review === 'done' ? { closed_note: note.closedNote } : {}),
+        // AMENDED BY ITS FILING SEAT (kickoffs/s130 row 3; ADR-0083): the latest update and how many, only when present.
+        ...(note.updated ? { updated: note.updated } : {}),
+        ...(note.updateCount !== null ? { update_count: note.updateCount } : {}),
+        // HELD BY AN EARLIER TRIAGE (kickoffs/s121 row 5): when, and where its record is, on a pending note that says so.
+        ...(note.held && note.review !== 'done' ? { held: note.held, held_record: note.heldRecord } : {}),
       };
     }),
   );
@@ -387,6 +393,8 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
     holding_books: books.map((book) => book.slug),
     holding_note_count: holdingNotes.length,
     holding_pending_count: holdingPending.length,
+    // Of those pending, the ones an earlier triage held for a record (kickoffs/s121 row 5); the rest are unread.
+    holding_held_count: holdingPending.filter((note) => 'held' in note).length,
     holding_oldest_pending: holdingDates.length ? holdingDates[0]! : '',
     holding_no_known_copy_record_count: holdingNotes.filter((note) => note.copy_status === 'no-known-copy-record').length,
     unreadable_journals: journalErrors,

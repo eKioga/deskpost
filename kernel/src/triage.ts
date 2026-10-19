@@ -35,7 +35,7 @@ import { parseArguments } from './argv.ts';
 import { tableFor } from './verbs.ts';
 import { sha256OfText } from './sha.ts';
 import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
-import { assertSeatMayClose, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
+import { assertSeatMayClose, HELD_RECORD_SHAPE, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
 import { seatIncarnation } from './seatincarnation.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
@@ -52,17 +52,18 @@ const ARCHIVE_FOLDER = '_archive';
  * Cheapest and most reversible first, so a late failure never strands local material: a review
  * costs nothing to redo, a shared Book cannot be un-created, and a discard cannot be undone at all.
  */
-const EXECUTION_ORDER = ['review', 'holding', 'notebook', 'shelf-book', 'collection-book', 'project', 'book', 'discard'];
+const EXECUTION_ORDER = ['review', 'hold', 'holding', 'notebook', 'shelf-book', 'collection-book', 'project', 'book', 'discard'];
 
 /** Which kinds each source can reach. Data rather than scattered guards, so every cell has a message. */
 const SOURCE_KINDS: Record<string, string[]> = {
   notebook: ['holding', 'shelf-book', 'collection-book', 'project', 'book'],
-  holding: ['notebook', 'shelf-book', 'collection-book', 'project', 'book', 'review', 'discard'],
+  holding: ['notebook', 'shelf-book', 'collection-book', 'project', 'book', 'review', 'hold', 'discard'],
 };
 
 const REFUSAL_REASON: Record<string, string> = {
   'notebook|notebook': 'A notebook action is already in the Notebook. Name the topic folder directly instead.',
   'notebook|review': 'A review marks a capture-Book note reviewed. A Notebook article carries no review field.',
+  'notebook|hold': 'A hold marks a capture-Book note held for a record. A Notebook article carries no review field.',
   'notebook|discard':
     "There is no discard from the Notebook. A Reset quarantines notebook/ rather than deleting it (ADR-0016), so a " +
     'discard is not deleting it sooner -- it is strictly worse than the reset, destroying what the reset would have ' +
@@ -80,7 +81,7 @@ const REFUSAL_REASON: Record<string, string> = {
  * Notebook-sourced one names no note and so mutates none.
  */
 export const FILING_KINDS = ['shelf-book', 'collection-book'];
-const NOTE_MUTATING_KINDS = ['notebook', 'review', ...FILING_KINDS];
+const NOTE_MUTATING_KINDS = ['notebook', 'review', 'hold', ...FILING_KINDS];
 
 /** A filing kind, or a `project` that is a local Hub page (row 2b); a Basic Memory `project` files nothing. */
 function isFilingKind(kind: string, destination: string): boolean {
@@ -98,11 +99,21 @@ function refuse(message: string): never {
   throw new Refusal(message);
 }
 
-function triageValue(action: Record<string, unknown>, name: string): unknown {
+/**
+ * EVERY FIELD A TRIAGE ACTION'S SCHEMA READS (kickoffs/s121 row 2), and the only names `triageValue` accepts, so a field
+ * read in `convertToTriageAction` is in this list by construction and "Did you mean kind?" knows exactly these.
+ */
+export const TRIAGE_ACTION_FIELDS = [
+  'collection', 'include_pages', 'kind', 'next_actions', 'other_seat', 'page_path', 'purpose', 'record', 'reopen',
+  'replace_existing', 'slug', 'source', 'source_match', 'source_page', 'source_path', 'source_slug', 'summary', 'title', 'topic', 'why',
+] as const;
+type TriageActionField = (typeof TRIAGE_ACTION_FIELDS)[number];
+
+function triageValue(action: Record<string, unknown>, name: TriageActionField): unknown {
   return name in action ? action[name] : null;
 }
 
-function triageString(action: Record<string, unknown>, name: string): string {
+function triageString(action: Record<string, unknown>, name: TriageActionField): string {
   const value = triageValue(action, name);
   return value === null || value === undefined ? '' : String(value);
 }
@@ -410,11 +421,27 @@ export function convertToTriageAction(
   captureDate: string,
   notebookRelative = 'notebook',
   seat: string | null = null,
+  position: number | null = null,
 ): TriageAction {
   const kind = triageString(action, 'kind');
+  // A MISSING OR BLANK kind IS NAMED AS MISSING (kickoffs/s120 row 2), never as the unknown kind ''. A field this schema
+  // does not read (a plan written with `action` for `kind`, say) gets the likely slip named.
+  if (!kind.trim()) {
+    const stray = Object.keys(action).some((field) => !(TRIAGE_ACTION_FIELDS as readonly string[]).includes(field));
+    refuse(`${position === null ? 'An action' : `Action ${position}`} has no kind field; use one of: ${EXECUTION_ORDER.join(', ')}.${stray ? ' Did you mean kind?' : ''}`);
+  }
   let sourceKind = triageString(action, 'source');
   if (!sourceKind.trim()) sourceKind = 'notebook';
   assertKindReachable(kind, sourceKind);
+  // A HOLD NAMES ITS RECORD (kickoffs/s121 row 5), judged before the note is looked for, so a plan learns it first.
+  let heldRecord = '';
+  if (kind === 'hold') {
+    heldRecord = triageString(action, 'record').trim().replace(/^\[\[(.*)\]\]$/, '$1').replace(/\|.*$/, '').trim();
+    if (!heldRecord) refuse('A hold action needs record: the page that says why the note is held, such as projects/<hub>/notes/<page>.');
+    if (!HELD_RECORD_SHAPE.test(heldRecord)) {
+      refuse(`A hold action's record must be a Library page path such as projects/<hub>/notes/<page>, with no space or '..'; got '${heldRecord}'.`);
+    }
+  }
 
   // Rejected, not ignored. A batch that quietly dropped the flag would run a DIFFERENT operation
   // from the one the reader described, which is worse than refusing to run at all.
@@ -438,7 +465,7 @@ export function convertToTriageAction(
 
   // THE SEAT RULE'S INPUTS (row 4): the kinds that close, reopen or delete a note, and the reader's named override.
   const otherSeat = triageString(action, 'other_seat').trim() || null;
-  const closes = ['review', 'notebook', 'discard', ...FILING_KINDS].includes(kind) || (kind === 'project' && isLocalBackend(workspace));
+  const closes = ['review', 'hold', 'notebook', 'discard', ...FILING_KINDS].includes(kind) || (kind === 'project' && isLocalBackend(workspace));
 
   // Resolved once, before any kind branch, so every kind hashes its source the same way.
   const source =
@@ -507,6 +534,18 @@ export function convertToTriageAction(
       metadata.set('current_review', source.note!.review);
       destination = 'shelf';
       operation = 'set-review';
+      break;
+    }
+    case 'hold': {
+      // HELD, NOT CLOSED (kickoffs/s121 row 5): the note keeps `review: pending` and gains `held:` and `held_record:`.
+      // The record enters the digest; the date is the runner's, written at execution as `reviewed:` is.
+      slug = source.bookSlug;
+      touchSet = sortedCopy([source.relative, `${source.bookRoot}/wiki/_index.md`]);
+      metadata.set('book_root', source.bookRoot);
+      metadata.set('held_record', heldRecord);
+      metadata.set('current_review', source.note!.review);
+      destination = 'shelf';
+      operation = 'hold-note';
       break;
     }
     case 'discard': {
@@ -811,7 +850,7 @@ export function resolveTriagePlanActions(
   notebookRelative = 'notebook',
   seat: string | null = null,
 ): TriageAction[] {
-  const resolved = requested.map((action) => convertToTriageAction(action, workspace, captureDate, notebookRelative, seat));
+  const resolved = requested.map((action, index) => convertToTriageAction(action, workspace, captureDate, notebookRelative, seat, index + 1));
   if (!resolved.length) refuse('A Library Triage plan needs at least one action.');
   assertWriteSetsDisjoint(resolved);
   return executionOrder(resolved);

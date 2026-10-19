@@ -194,6 +194,18 @@ function New-CodexHooksDocument {
         $text = Expand-CodexTemplateToken -Text $text -Token ('"' + $entry.token + '"') `
             -Replacement ($command | ConvertTo-Json -Compress) -ExpectedCount $count
     }
+    # Keep the PowerShell writer at parity with the kernel's checkpoint commands, without a script hook.
+    $checkpointRoot = [IO.Path]::GetFullPath((Join-Path $HookDirectory '../..')).Replace('\', '/').TrimEnd('/')
+    $compiled = [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or (Test-Path -LiteralPath (Join-Path $checkpointRoot 'bin/library.exe') -PathType Leaf)
+    $checkpointTarget = if ($compiled) { $checkpointRoot + '/bin/library' } else { $checkpointRoot + '/kernel/src/cli.ts' }
+    $posixLiteral = "'" + $checkpointTarget.Replace("'", ("'" + [char]34 + "'" + [char]34 + "'")) + "'"
+    $windowsLiteral = "'" + $checkpointTarget.Replace("'", "''") + "'"
+    $checkpointPosix = if ($compiled) { $posixLiteral + ' hook checkpoint' } else { 'node ' + $posixLiteral + ' hook checkpoint' }
+    $checkpointWindows = if ($compiled) { '& ' + $windowsLiteral + ' hook checkpoint' } else { "& 'node' " + $windowsLiteral + ' hook checkpoint' }
+    $text = Expand-CodexTemplateToken -Text $text -Token '"__CHECKPOINT_COMMAND__"' `
+        -Replacement ($checkpointPosix | ConvertTo-Json -Compress) -ExpectedCount 4
+    $text = Expand-CodexTemplateToken -Text $text -Token '"__CHECKPOINT_WINDOWS_COMMAND__"' `
+        -Replacement ($checkpointWindows | ConvertTo-Json -Compress) -ExpectedCount 4
     if ($text -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex hooks still contain a template token.' }
 
     # JUDGED HERE, NOT BY THE CALLER, so that no caller can write a document Codex will refuse. The

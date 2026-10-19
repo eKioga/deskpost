@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 export function childEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', ORCA_TERMINAL_HANDLE: '' };
+  // DESKPOST_LAUNCHER_PID too (s135 row 2; Report "the gate's child environment keeps DESKPOST_LAUNCHER_PID").
+  const env: NodeJS.ProcessEnv = { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '', ORCA_TERMINAL_HANDLE: '' };
   delete env['DESKPOST_UPDATE_CHECK'];
   const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
   const separator = process.platform === 'win32' ? ';' : ':';

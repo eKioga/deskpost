@@ -31,6 +31,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, writeExact } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubEdit } from './hubedit.ts';
+import { hubTidy } from './hubtidy.ts';
 import { hubArchive, sharedArchive, sharedListEntry } from './sharedwriters.ts';
 import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
@@ -416,6 +417,9 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
         return { refusal: null, value: withInlineCutWarning(await hubNew(argv.slice(1), workspace), argv, 'purpose', PURPOSE_REMEDY) };
       case 'edit':
         return { refusal: null, value: await hubEdit(argv.slice(1), workspace) };
+      case 'tidy':
+        // DECIDED ITEMS TO A HISTORY PAGE IN ONE JOURNALED STEP (kickoffs/s125 rows 3-4, `hubtidy.ts`; local only).
+        return { refusal: null, value: await hubTidy(argv.slice(1), workspace) };
       case 'archive': {
         const marker = readMarker(workspace);
         if (marker !== null && String(marker['backend'] ?? '') === 'local') {
@@ -443,7 +447,7 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
           ),
         };
       default:
-        refuse(`library hub has no action '${action}'. It has: new, edit, archive, copy-pages, rename.`);
+        refuse(`library hub has no action '${action}'. It has: new, edit, archive, copy-pages, rename, tidy.`);
     }
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

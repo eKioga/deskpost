@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import { seatStatePath } from './seatpaths.ts';
 import { assertSeatRegistryLockHeld } from './locks.ts';
-import { seatBindingForAgent } from './seatclaim.ts';
+import { launcherProofDetail, seatBindingForAgent } from './seatclaim.ts';
 import { currentAgentProcessId } from './procstart.ts';
 
 export type DeskKind = 'books' | 'projects';
@@ -220,6 +220,13 @@ export interface SeatResolution {
  * no binding). A binding and a disagreeing LIBRARY_SEAT are a refusal naming both, never a silent
  * preference: the environment identifies and does not authenticate.
  *
+ * A LAUNCHER CLAIM THAT FAILS ITS PROOF NAMES NO SEAT (kickoffs/s134 row 1; ADR-0018's 2026-10-18 addendum). When
+ * LIBRARY_SEAT_CLAIM and DESKPOST_LAUNCHER_PID are both set, the session says the `deskpost` launcher started it, and
+ * LIBRARY_SEAT names the seat only if `launcherProofDetail` agrees; `other-agent` or `not-held` answer `unset`. The
+ * Report "A seat moved to a Claude Code background job takes the environment of whichever seat started the shared
+ * daemon" (2026-10-18) is the case: the job inherited another seat's three variables and wrote Reports as that seat.
+ * `unchecked` (the walk could not look) and a session with either variable unset keep the environment's answer.
+ *
  * Until S14's second half the middle source was a refusal, because this kernel could not read a
  * process start time. It can now (`procstart.ts`).
  */
@@ -319,6 +326,26 @@ export function resolveSeatName(options: {
 
   if (environmentSeat) {
     if (!SEAT_SLUG_PATTERN.test(environmentSeat)) return malformed(environmentSeat, '');
+    if ((process.env['LIBRARY_SEAT_CLAIM'] ?? '').trim() && (process.env['DESKPOST_LAUNCHER_PID'] ?? '').trim()) {
+      const proof = launcherProofDetail(options.stateDirectory, environmentSeat);
+      if (proof.outcome === 'other-agent' || proof.outcome === 'not-held') {
+        const why =
+          proof.outcome === 'other-agent'
+            ? `the launcher holds the seat for another agent process${proof.agentPid ? ` (PID ${proof.agentPid})` : ''}, not this one`
+            : "its claim token is not the seat's live claim";
+        return {
+          status: 'unset',
+          seat: null,
+          source: null,
+          message:
+            `LIBRARY_SEAT names seat '${environmentSeat}', and this session claims the deskpost launcher started it, but the ` +
+            `launcher's claim does not prove this session: ${why}. A Claude Code background job is one such session: it takes ` +
+            'the environment of the session that started its daemon. So no seat is resolved, and nothing is written as ' +
+            `'${environmentSeat}'. Start the seat from the deskpost launcher, or sit down at it with deskpost seat enter ${environmentSeat}.` +
+            (options.actingSeatOnly ? seatArgumentClause : ''),
+        };
+      }
+    }
     return { status: 'named', seat: environmentSeat, source: 'environment', message: '' };
   }
 
