@@ -21,6 +21,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { ensureDirectory } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
@@ -97,6 +98,8 @@ export function setBookManifestDirty(options: {
   slug: string;
   reason: string;
   collection?: string;
+  /** THE MARKER'S OWNER (kickoffs/s165 row 5): an undo clears only its own; a writer that names none gets a fresh one. */
+  operationId?: string;
 }): string {
   const directory = bookManifestStorePath(options.workspace, options.slug, options.collection ?? 'shelf');
   ensureDirectory(directory);
@@ -106,10 +109,23 @@ export function setBookManifestDirty(options: {
     reason: options.reason,
     pid: process.pid,
     started_utc: utcRoundTrip(),
+    operation_id: options.operationId ?? `op-${randomBytes(8).toString('hex')}`,
   };
   const file = path.join(directory, 'dirty.json');
   saveStoreFile(file, convertToStoreJson(marker));
   return file;
+}
+
+/** The dirty marker as written, or null when there is none; an unreadable one reads with no owner. */
+export function readBookManifestDirty(workspace: string, slug: string, collection = 'shelf'): { operationId: string | null; reason: string; file: string } | null {
+  const file = path.join(bookManifestStorePath(workspace, slug, collection), 'dirty.json');
+  if (!fs.existsSync(file)) return null;
+  try {
+    const marker = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+    return { operationId: typeof marker['operation_id'] === 'string' ? marker['operation_id'] : null, reason: String(marker['reason'] ?? ''), file };
+  } catch {
+    return { operationId: null, reason: '', file };
+  }
 }
 
 export function nextGeneration(workspace: string, slug: string, collection = 'shelf'): number {

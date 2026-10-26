@@ -17,6 +17,10 @@
  *
  * WHAT IS CONCEDED: `Get-ChildItem` without `-Force` skips hidden and system entries, which Node cannot
  * see; a transport failure's sentence is the runtime's own, and no row reaches one.
+ *
+ * NARROWER THAN THE ORACLE SINCE s164 (backlog "Code audit 3", findings 1 to 3): it needs a seat, compares only the
+ * Shelf Books open on that seat's Desk and never a capture Book, follows no redirect, and sends plain HTTP only inside
+ * the home network. The oracle is frozen and still reads every Book.
  */
 
 import * as fs from 'node:fs';
@@ -26,8 +30,21 @@ import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { requireWorkspace } from './workspace.ts';
 import { readStrictUtf8 } from './notebook.ts';
+import { assertNotRedirected, assertPlainHttpAllowed } from './netpolicy.ts';
+import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
+import { parseBookRoot } from './places.ts';
+import { captureBookRows } from './desk.ts';
 
 class DuplicatesRefusal extends Error {}
+
+/** The standard capture Books; any other the Shelf catalog marks `Kind: capture` is one too. */
+const CAPTURE_BOOKS = ['reports', 'letters', 'holding'];
+
+/** A test seam: called with each Shelf Book's name before its Desk check and its read. */
+let beforeBookRead: ((book: string) => void) | undefined;
+export function setBeforeBookRead(hook: ((book: string) => void) | undefined): void {
+  beforeBookRead = hook;
+}
 
 function refuse(message: string): never {
   throw new DuplicatesRefusal(message);
@@ -110,12 +127,29 @@ export async function shelfDuplicates(argv: string[]): Promise<Record<string, Ps
     refuse('No embedding API key. Pass -ApiKey, or set $env:TEI_API_KEY before running. Never hardcode the key in this script or paste it into chat/logs.');
   }
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+  // ONLY BOOKS OPEN ON THE SEAT THAT RUNS IT (kickoffs/s164 row 3; backlog "Code audit 3", finding 1): their text
+  // leaves the machine, so a closed Book's never does, and a capture Book's notes and indexes never do at all.
+  const stateDirectory = path.join(workspace, '.claude');
+  const seat = requireSeat({ stateDirectory });
   const shelfRoot = path.join(workspace, 'shelf');
   if (!fs.existsSync(shelfRoot) || !fs.statSync(shelfRoot).isDirectory()) refuse(`No Shelf found at ${shelfRoot}`);
 
-  const bookDirs = fs.readdirSync(shelfRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const capture = new Set([...CAPTURE_BOOKS, ...captureBookRows(workspace).map((row) => row.slug)]);
+  const openOnDesk = (book: string): boolean =>
+    deskEntriesForSeat(stateDirectory, seat, 'books').some((entry) => {
+      const parts = parseBookRoot(entry);
+      return parts !== null && parts.form === 'shelf' && parts.shelf === 'active' && parts.slug === book;
+    });
+  const shelfDirs = fs.readdirSync(shelfRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const bookDirs: string[] = [];
+  const leftOut: { book: string; reason: string }[] = [];
   const topics: Topic[] = [];
-  for (const book of bookDirs) {
+  for (const book of shelfDirs) {
+    beforeBookRead?.(book);
+    // The Desk is read again for each Book, just before its files, so one closed meanwhile is left out.
+    if (capture.has(book)) { leftOut.push({ book, reason: 'a capture Book, whose notes and indexes are never sent' }); continue; }
+    if (!openOnDesk(book)) { leftOut.push({ book, reason: `closed on seat '${seat}'` }); continue; }
+    bookDirs.push(book);
     const wikiRoot = path.join(shelfRoot, book, 'wiki');
     if (!fs.existsSync(wikiRoot) || !fs.statSync(wikiRoot).isDirectory()) continue;
     const bookMd = path.join(wikiRoot, '_book.md');
@@ -128,18 +162,29 @@ export async function shelfDuplicates(argv: string[]): Promise<Record<string, Ps
       topics.push({ book, topic: relativeDir, path: index, excerpt: excerpt(index) });
     }
   }
-  if (topics.length === 0) refuse(`No topics found under ${shelfRoot} (no Book has a wiki/_book.md or a subfolder _index.md).`);
+  if (topics.length === 0) {
+    refuse(
+      `No topics found in the Shelf Books open on seat '${seat}' (no open Book has a wiki/_book.md or a subfolder _index.md).` +
+        (leftOut.length ? ` Left out: ${leftOut.map((entry) => `${entry.book} (${entry.reason})`).join(', ')}.` : ''),
+    );
+  }
 
   const embeddings: number[][] = [];
   for (let i = 0; i < topics.length; i += batchSize) {
     const batch = topics.slice(i, i + Math.min(batchSize, topics.length - i));
     let response: unknown;
+    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2): the bearer key never crosses it unencrypted.
+    try { await assertPlainHttpAllowed(embeddingUrl, 'The embedding endpoint'); }
+    catch (error) { refuse((error as Error).message); }
     try {
+      // NO REDIRECT IS FOLLOWED (kickoffs/s164 row 1): a 307 or 308 would carry the excerpts elsewhere.
       const answer = await fetch(embeddingUrl, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ input: batch.map((topic) => topic.excerpt), model: embeddingModel }),
+        redirect: 'manual',
       });
+      assertNotRedirected(answer, embeddingUrl, 'The embedding endpoint');
       if (!answer.ok) throw new Error(`The remote server returned an error: (${answer.status}) ${answer.statusText}.`);
       response = await answer.json();
     } catch (error) {
@@ -173,7 +218,9 @@ export async function shelfDuplicates(argv: string[]): Promise<Record<string, Ps
     embedding_model: embeddingModel,
     similarity_threshold: threshold,
     topics_scanned: topics.length,
+    seat,
     books_scanned: bookDirs,
+    books_left_out: leftOut,
     candidate_pairs: pairs,
     guidance:
       'A high score is a lead, not a verdict — read both topics before deciding anything. See docs/duplicate-topic-resolution.md for the ' +

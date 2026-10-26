@@ -18,11 +18,11 @@ summarises the boundaries; that file governs the code.
 Development runs in sessions from a **Kickoff**, by [The Dev Session Loop](docs/dev-session-loop.md):
 one Kickoff at a time, its rows as commits, a handback, then stop. Read that page before any work; it
 holds the roles (planner, builder, integrator), what each may do, and the differences between Claude
-Code and Codex. A unit reaches a build seat only as a Kickoff, never by letter or a list on a Hub.
+Code and Codex; the planner's steps are on [its own page](docs/dev-loop-planner.md). A unit reaches a build seat only as a Kickoff, never by letter or a list on a Hub.
 
 The build seats' Project Hubs are the durable source of current development state:
 `deskpost-dev` (Claude Code) and `deskpost-codex-dev` (Codex), either a builder or the one named
-integrator as its Kickoff assigns. `deskpost-desk` (planner) writes their Kickoffs and keeps the backlog; the order of work is
+integrator as its Kickoff assigns. `deskpost-lead` (planner) writes their Kickoffs and keeps the backlog; the order of work is
 [docs/roadmap.md](docs/roadmap.md). Read a Hub through the validated reader while it is open on the
 Desk; when it is closed, ask the reader to open it, and never bypass the Desk with a direct content
 reader.
@@ -149,6 +149,8 @@ where this workspace is `/mnt/d/Library` rather than `D:\Library`. If that is yo
 invoke `powershell.exe` explicitly with a path its own shell understands, and check that the drive
 is mounted before assuming the run failed for a more interesting reason. Do not translate the
 command into a POSIX equivalent: there is one gate, and a substitute for it is not evidence.
+On Linux the builder's commit and cut tiers are evidence for the Handback, and the integrator's
+Windows push tier is the pass mark.
 
 ## No new PowerShell
 

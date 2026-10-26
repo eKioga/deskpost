@@ -176,6 +176,18 @@ Shelf only when none can take it. Capture itself is unchanged: still ungated, st
 the revision adds a choice and no gate. The kernel half (filing closes a note, a recorded `--why`,
 `--supersedes`, `shelf tidy`, a threshold signal) is `PLAN-holding-discipline.md`.
 
+## Report operations across Books
+
+Cross-Library Report work uses one lock order: **reports, then letters**. Recovery lists outstanding
+intent records, takes their required locks in that order and lists again under them. A larger fresh
+set releases all locks and reacquires the expanded set, bounded at three passes. Only the final
+locked listing drives recovery and allocation (`kernel/src/intent.ts`).
+
+Book-mutating stages receive the held locks and keep the existing journal/manifest window. Transport
+starts after those locks are released. In particular, ordinary `capture letters` holds only its own
+Book lock and never runs global recovery; its allocator skips names reserved by outstanding intents
+(`kernel/src/capture.ts`, `reportsend.ts`). See [ADR-0084](adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md).
+
 ## Key Takeaways
 
 - The Holding Shelf is the last resort: a note goes to its Hub, Book or Notebook first (ADR-0060).

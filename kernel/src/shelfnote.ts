@@ -166,11 +166,18 @@ export const RESERVED_NOTE_KEYS: readonly string[] = [
   'update_count',
   // A delivered answer that could not match its asker's copy (kickoffs/c37 row 2).
   'answer_unmatched',
+  // Reports across Libraries (kickoffs/c50 row 6; the step-5 wire/local contract).
+  'book', 'report_seq', 'report_seq_applied', 'report_seq_ids', 'outcome', 'outcome_gen',
+  'outcome_letter', 'outcome_superseded', 'closes_delivery_id', 'amends_delivery_id',
+  'withdraws_delivery_id', 'received_deskpost_version', 'received_mods_commit', 'sent_for',
+  'awaiting_sender', 'unexpected_report', 'close_unmatched', 'control_conflict',
+
 ];
 const LIBRARY_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** A delivery id's alphabet (plan item 4): lowercase letters, digits and hyphens, so it is its own file name. */
 const DELIVERY_ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/;
 
+const DELIVERY_IDS_SHAPE = /^\[\s*(?:"[a-z0-9][a-z0-9-]*"(?:\s*,\s*"[a-z0-9][a-z0-9-]*")*)?\s*\]$/;
 const NOTE_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const NOTE_LINK = /^notes\/[^/\s]+$/;
 /**
@@ -210,6 +217,25 @@ const FIELD_SHAPES: Record<string, RegExp> = {
   updated: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/,
   update_count: /^[1-9]\d*$/,
   answer_unmatched: /^(true|false)$/,
+  book: /^(letters|reports)$/,
+  report_seq: /^\d+$/,
+  report_seq_applied: /^\d+$/,
+  report_seq_ids: DELIVERY_IDS_SHAPE,
+  outcome: /^(confirmed|confirmed-by-design|not-reproduced|already-fixed|declined)$/,
+  outcome_gen: /^\d+$/,
+  outcome_letter: /^(?:notes\/[^/\s]+|reviewed\/\d{4}-\d{2}\/[^/\s]+)$/,
+  outcome_superseded: /^true$/,
+  closes_delivery_id: DELIVERY_ID_SHAPE,
+  amends_delivery_id: DELIVERY_ID_SHAPE,
+  withdraws_delivery_id: DELIVERY_ID_SHAPE,
+  received_deskpost_version: /^[^\u0000-\u001f\u007f-\u009f]+$/,
+  received_mods_commit: /^[0-9a-f]{40}$/,
+  sent_for: /^seatless$/,
+  awaiting_sender: /^true$/,
+  unexpected_report: /^true$/,
+  close_unmatched: /^true$/,
+  control_conflict: DELIVERY_IDS_SHAPE,
+
 };
 
 /**

@@ -26,6 +26,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { listFilesRecursive } from './shelfbook.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
@@ -115,17 +116,6 @@ function resolveLocalSourceRoot(workspace: string, sourcePath: string): SourceRo
   refuse(`SourcePath '${sourcePath}' must name a file or folder inside notebook/, or one note under a capture Book's wiki/notes/.`);
 }
 
-/** `Get-ChildItem -Recurse -File`: every file below `directory`, full paths. */
-function filesBelow(directory: string): string[] {
-  const found: string[] = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...filesBelow(full));
-    else if (entry.isFile()) found.push(full);
-  }
-  return found;
-}
-
 /** `Assert-ProjectTargetSafe`: the one rule for every composed target, on every route. */
 function assertProjectTargetSafe(target: string, slug: string): void {
   const prefix = `projects/${slug}/`;
@@ -200,7 +190,7 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   let allFiles: string[];
   if (isContainer) {
     // `$_.Extension -eq '.md'`, case-insensitive; `Sort-Object FullName`, the measured culture order.
-    allFiles = filesBelow(sourceFull)
+    allFiles = listFilesRecursive(sourceFull, { required: true, sorted: false })
       .filter((file) => path.extname(file).toLowerCase() === '.md')
       .sort(psSortCompare);
   } else {

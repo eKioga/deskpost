@@ -168,7 +168,8 @@ export function seatCardsText(report: Record<string, unknown>): string {
     lines.push(`${String(department['department'])}${destination['kind'] === 'only-seat' ? ` (only seat: ${String(destination['seat'])})` : department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
     for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width));
   }
-  if (report['view'] === 'all' || report['view'] === 'no-department') {
+  // THE `all` VIEW PRINTS NO EMPTY GROUP (kickoffs/s146 row 4): "No department" only when a seat lacks one.
+  if ((report['view'] === 'all' && without.length) || report['view'] === 'no-department') {
     lines.push(report['view'] === 'all' ? 'No department' : 'Other seats with no department');
     if (!without.length) lines.push('  (none)');
     for (const row of without) lines.push(...entryLine(row, width));

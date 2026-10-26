@@ -18,7 +18,9 @@ import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { requireWorkspace } from './workspace.ts';
-import { readUtf8, SLUG_PATTERN } from './shelfbook.ts';
+import { getShelfBook, readUtf8, SLUG_PATTERN } from './shelfbook.ts';
+import { enterBookLock, exitBookLock, isBookLockHeld, type BookLock } from './locks.ts';
+import { completeBookMutation, enterBookMutation } from './mutation.ts';
 import {
   ENTRY_NAME,
   invokeShelfCatalogRender,
@@ -237,9 +239,25 @@ export function createShelfBook(options: {
   plan['is_capture'] = capture;
   plan['catalog_entry_count'] = entryCount;
   plan['reader_map'] = `shelf/${slug}/wiki/_index.md`;
-  plan['manifest'] = capture
-    ? 'none yet: a new Book has no Discovery manifest until the first capture builds one.'
-    : 'none yet: a new Book has no Discovery manifest until the first book add-page builds one.';
+  // AN EMPTY BOOK HAS A DISCOVERY MANIFEST (kickoffs/s149 row 3): until s149 the first one came with the first note, so
+  // Discovery named a Book that never had one unread. Its first generation is committed through the one mutation window
+  // `shelf rebuild` uses. The Book stands if this fails: the plan says so and names the rebuild that repairs it. A caller
+  // that already holds the Book's lock (`shelf recall`) is inside its own window, and that window commits the manifest.
+  if (isBookLockHeld(workspace, `shelf/${slug}`)) {
+    plan['manifest'] = 'committed by the caller that holds the Book\'s lock, when its own write completes.';
+  } else {
+    let lock: BookLock | null = null;
+    try {
+      const book = getShelfBook(workspace, slug);
+      lock = enterBookLock(workspace, book.bookRoot);
+      const committed = completeBookMutation(enterBookMutation({ workspace, slug, bookRoot: book.bookRoot, reason: 'library shelf new', lock }));
+      plan['manifest'] = committed.status === 'committed' ? committed.summary : `${committed.summary}; run deskpost shelf rebuild ${slug} to write it.`;
+    } catch (error) {
+      plan['manifest'] = `not committed (${(error as Error).message}); run deskpost shelf rebuild ${slug} to write it.`;
+    } finally {
+      exitBookLock(lock);
+    }
+  }
   plan['next'] = capture
     ? `Capture into it with deskpost capture ${slug} --title <title> --content-path <file>. It is closed by default; open it with deskpost desk open book ${slug} --location shelf to read a page.`
     : `Add pages with deskpost book add-page ${slug} <page> --content-path <file>, which needs the Book open: deskpost desk open book ${slug} --location shelf.`;

@@ -243,8 +243,9 @@ is not a trigger.)*
 
 **The condition is a second seat that serves a support role**, the way `library-dev` does for the
 Library itself. That is what makes an unaddressed inbox work: a support seat is a **hub**, so
-"everyone → the maintainer" needs no `for_seat` field, no filtering, and no reply path, because the
-reply is the work itself. Two hubs would still be two unaddressed Books. It is *peer* traffic that
+"everyone → the maintainer" needs no `for_seat` field, no filtering, and no separate reply channel inside one Library, because the
+reply is the work itself. Across Libraries, a Report's triage outcome returns by letter and closes its
+sent copy; [ADR-0084](adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md) records that exception (`kernel/src/postbox.ts`, `reportsend.ts`, `capture.ts`). Two hubs would still be two unaddressed Books. It is *peer* traffic that
 would force addressing, and peer traffic is what the Library already answers another way — see
 below.
 
@@ -264,7 +265,8 @@ directly.)* Three shapes hide under that question and only one of them was missi
 
 The third is a genuine gap and is **deliberately left open**. An inbox per seat would close it with no
 new code, and would buy a `for_seat` field, a filtered overview, orphaned Books when a seat retires,
-and an invitation to converse in a medium with no reply path. The right time to choose is when a real
+and an invitation to converse in that original local medium. Across Libraries,
+[ADR-0084](adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md) now records the outcome return and frozen-control replies (`kernel/src/postbox.ts`, `reportsend.ts`). The right time to choose is when a real
 session wants it, because that incident also says whether the answer is an inbox at all — or whether
 those two subjects should share a Notebook topic, or are one project.
 

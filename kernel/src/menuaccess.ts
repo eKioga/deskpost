@@ -15,9 +15,9 @@ export const MENU_ACCESS: Record<Assistant, readonly MenuAccess[]> = {
   ],
   claude: [
     { id: 'look', name: 'Look only', args: ['--permission-mode', 'plan'], detail: ['Plans and reads, without changing files.', 'Claude Code: --permission-mode plan'] },
-    { id: 'ask', name: 'Ask me first', usual: true, args: ['--permission-mode', 'manual'], detail: ['Asks you before using tools.', 'Claude Code: --permission-mode manual'] },
+    { id: 'ask', name: 'Ask me first', args: ['--permission-mode', 'manual'], detail: ['Asks you before using tools.', 'Claude Code: --permission-mode manual'] },
     { id: 'edit', name: 'Edit freely', args: ['--permission-mode', 'acceptEdits'], detail: ['Edits files freely; asks before other commands.', 'Claude Code: --permission-mode acceptEdits'] },
-    { id: 'auto', name: 'Auto mode', args: ['--permission-mode', 'auto'], detail: ['Decides for itself what to do, and asks you', 'before anything risky.', 'Claude Code: --permission-mode auto'] },
+    { id: 'auto', name: 'Auto mode', usual: true, args: ['--permission-mode', 'auto'], detail: ['Decides for itself what to do, and asks you', 'before anything risky.', 'Claude Code: --permission-mode auto'] },
     { id: 'full', name: 'Full access', full: true, args: ['--permission-mode', 'bypassPermissions'], detail: ['Can change files and run commands without asking.', 'Claude Code: --permission-mode bypassPermissions'] },
   ],
 };

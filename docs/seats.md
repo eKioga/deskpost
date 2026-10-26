@@ -75,7 +75,7 @@ A department has at most one orchestrator. When it already has one, there are tw
 Init preserves a user's own skill folder or edited managed files in either harness; doctor WARNs
 instead of replacing them. If that leaves an older library-help copy, read the canonical guide in
 the installed program tree at `.claude/skills/library-help/references/building-software-with-seats.md`.
-Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.0/.claude/skills/library-help/SKILL.md)
+Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.1/.claude/skills/library-help/SKILL.md)
 is the matching online entry point. Resolve the collision yourself and run `deskpost init` again;
 do not overwrite your copy as a shortcut.
 
@@ -381,9 +381,9 @@ A seat with no conversation offers Start its first conversation instead.
 When a newer release is ready, the main screen shows an update line and **Upgrade to <version>** before Help and more (before Quit when there are no seats).
 
 New seat takes name, installed assistant and access, then a ready screen. More choices reaches
-department and template; K2's proposed seat name does not rename the Project. Codex offers Look
+department, template and card, and a new seat starts with its `letters` Book open when the Shelf has one; K2's proposed seat name does not rename the Project. Codex offers Look
 only, Work in its own folders (usual), Full access and Type my own settings. Claude Code offers
-Look only, Ask me first (usual), Edit freely, Auto mode, Full access and typed settings. The exact
+Look only, Ask me first, Edit freely, Auto mode (usual), Full access and typed settings. The exact
 settings appear under the highlighted choice. Full access requires the typed word `full`, even
 when typed settings grant it, and saved full access carries `(!)`. The shared access table is
 `kernel/src/menuaccess.ts`; the launch validator reads its client value lists.

@@ -3,29 +3,42 @@
 How a development Hub (one with `## Repo`) runs its seats: **build seats** that work long,
 uninterrupted sessions from a Kickoff, and a **planner seat** that stays open for conversation,
 triages, makes small fixes, keeps the backlog and writes the Kickoffs. It is the default for any dev
-Hub; each Hub adopts it when it chooses. Deskpost's seats are `deskpost-dev` ("A", Claude Code),
-`deskpost-codex-dev` ("C", Codex) and `deskpost-desk` (planner, "B"). The design and its review are
+Hub; each Hub adopts it when it chooses. Deskpost's seats are `deskpost-dev` (build seat, Claude Code),
+`deskpost-codex-dev` (build seat, Codex) and `deskpost-lead` (planner; its Hub slug stays `projects/deskpost-desk`). The design and its review are
 `PLAN-support-seats.md` and `PLAN-REVIEW-LOG-support-seats.md`; one loop for both harnesses is
 `PLAN-dev-loop-both-harnesses.md` and its review log.
 
-**Two builders, one planner (the reader's ruling, 2026-10-12).** A and C can build or integrate as
-their Kickoffs assign. B designs, writes plans and ADRs, triages, makes small fixes on `desk/*`,
+**Two builders, one planner (the reader's ruling, 2026-10-12).** Both build seats can build or integrate as
+their Kickoffs assign. The planner designs, writes plans and ADRs, triages, makes small fixes on `desk/*`,
 writes the Kickoffs and keeps the backlog. Integration has one named owner at a time. These are
 roles, not permanent powers of a harness. Deskpost Prompts belongs to `deskpost-prompts-dev`.
+
+**Where the rest went.** This page holds what a build seat reads to run a Kickoff. On 2026-10-20 (s148) the
+rest moved to two pages, each section whole and under its old heading:
+
+- "The Kickoff": [the planner's page](dev-loop-planner.md#the-kickoff).
+- "The second reader", with "The mirror source": [the planner's page](dev-loop-planner.md#the-second-reader).
+- "The planner's code: one integration branch per Kickoff" (until s148, "B's code: one integration branch per
+  Kickoff"): [the planner's page](dev-loop-planner.md#the-planners-code-one-integration-branch-per-kickoff).
+- "Assigning work by usage": [the planner's page](dev-loop-planner.md#assigning-work-by-usage).
+- "Setting up a planner seat": [the planner's page](dev-loop-planner.md#setting-up-a-planner-seat).
+- "What remains unproved": [history and limits](dev-loop-history.md#what-remains-unproved).
+- "Limits": [history and limits](dev-loop-history.md#limits).
+- The push gate's first run (S68), from "The gates": [history and limits](dev-loop-history.md#the-push-gates-first-run-s68).
 
 ## Roles
 
 One loop for every build seat, in either harness (Eric, 2026-10-11: "standardized between both codex
 and claude code dev seats"). What a seat may do follows from its role, not its harness:
 
-| Role | Assigned to | Does | Never |
+| Role | Assigned to | Does | Does not |
 |---|---|---|---|
-| planner | B | plans, Kickoffs and their pointers, the backlog, triage, `desk/*` branches | builds a Kickoff's rows |
+| planner | `deskpost-lead` | plans, Kickoffs and their pointers, the backlog, triage, `desk/*` branches | builds a Kickoff's rows |
 | builder | any build seat | runs one Kickoff: the gate, its rows as commits on its pinned unit branch, the handback, then stops | chooses its own next unit or merges as a builder |
 | integrator | the one build seat its Kickoff names | merges the named branches, gates the result, pushes `origin`; prepares a release only under a release-preparation Kickoff | resolves conflicts beyond the independent additions allowed below |
 
-**Reading this page.** Where a step below says "A", it is the **builder**'s step, and C takes it the same
-way. Steps marked **(integrator)** belong to the one seat the Kickoff names, in either harness:
+**Reading this page.** Every step below is the **builder**'s, in either harness, except those marked
+**(integrator)**. Steps marked **(integrator)** belong to the one seat the Kickoff names, in either harness:
 OPEN step 4 (Merge), OPEN step 6 (Hub upkeep), the CHARTER's push, and CLOSE step 1's push.
 
 **Two kinds of authority.** A Kickoff's CHARTER authorizes the **rows**: the commits on the builder's pinned
@@ -33,13 +46,13 @@ branch (and, for its named integrator, the merge and the one private push). The 
 standing authority of every builder under the one yes, not repeated per CHARTER: tick the Kickoff's pointer
 at OPEN; write and read back its attempt page and `## Handback`; make additive orientation edits to `## Now`;
 read and close letters addressed to it; file Reports to the Report Inbox; set unrelated work aside before a
-commit (a named stash, or a named commit on a local `<branch>-wip` branch, each recorded on the attempt page;
-see "The gates"); and send the handback letter. A Kickoff may add supporting actions to this list by name.
+commit (the changed files copied whole to the evidence folder, or a named stash where the Kickoff charters one,
+each recorded on the attempt page; see "The gates"); and send the handback letter. A Kickoff may add supporting actions to this list by name.
 Nothing else: no merge, push, tag, release, replace-mode Hub edit, `## Next` item, or letter to another seat
 beyond the handback.
 
 **Branches and one recorded integrator.** Every builder works on `<seat-prefix>/<kickoff>`:
-`dev/sNN` for A, `codex/cNN` for C, never `master`. The integrator creates `int/<kickoff>` in its own
+`dev/sNN` for `deskpost-dev`, `codex/cNN` for `deskpost-codex-dev`, never `master`. The integrator creates `int/<kickoff>` in its own
 checkout from the pinned `origin/master`, merges the named unit branches in the named order, gates
 the result, and pushes `int/<kickoff>:master` only as a fast-forward after checking the remote still
 equals the pinned base. A checkout holding local `master` fast-forwards it at its owning seat's next
@@ -50,9 +63,9 @@ or `Integrator: none`. The planner records it for every integrating Kickoff, inc
 also acting as integrator, and writes no second integrating Kickoff while the line names another.
 It returns to `none` only when that Kickoff's handback has been read. This is a convention, not a lock.
 
-**`## Next` on a builder's Hub is B's.** It holds only B's Kickoff pointers and the reader's own items. A
+**`## Next` on a builder's Hub is the planner's.** It holds only the planner's Kickoff pointers and the reader's own items. A
 builder's recommendations ("after this, closeout, then the HUD") go in its handback's draft scope and morning
-list, never in `## Next`, so no standing order can compete with the Kickoff.
+list, not in `## Next`, so no standing order can compete with the Kickoff.
 
 The loop needs **no kernel change**. It runs on existing verbs (`hub edit --mode new-page`,
 `append-section`, `check-item`, `add-section`, `seat status`), the policy in AGENTS.md item 2, and
@@ -70,82 +83,11 @@ variant is out of scope.
 
 ## Hub text goes in a file
 
-Every Hub write in the loop takes its text from a file with `--content-path`, never inline with
+Every Hub write in the loop takes its text from a file with `--content-path`, not inline with
 `--content`. That covers the Kickoff, the attempt page, the Handback and the `Now`/`Next` edits. On
 Windows the `deskpost` shim ends the command line at the first line break, so an inline value keeps
 only its first line and the writer still reports `written: true`. S68 lost two handback sections this
 way. Since S70 the result carries `inline_warning` when an inline value may have been cut.
-
-## The Kickoff
-
-B writes `kickoffs/sNN` on the build seat's Hub with `hub edit --mode new-page`. Segments are
-lowercase. B then appends one pointer to that Hub's `## Next`:
-
-```
-- [ ] Run sNN: [[projects/<hub>/kickoffs/sNN]]
-```
-
-Anything more the pointer says (a condition, `(supersedes ...)`) goes after the link, so the line still holds
-`Run sNN:` with its colon and the builder's `--match-text "Run <p><NN>:"` finds it (s128's pointer put a condition
-before the colon, and the Kickoff's match text found nothing).
-
-A's Kickoffs are `sNN`; C's are `cNN` on the `deskpost-codex-dev` Hub, by the same rules. A unit reaches a
-builder **only** as a Kickoff: never by letter, message or a list on its Hub.
-
-**A Kickoff is write-once by rule, not by construction.** `new-page` refuses to overwrite, but other
-modes can still edit a page, so no seat edits a `kickoffs/` page after creating it. A revision is a
-new page, `kickoffs/sNN-r2`. When B writes one, it ticks the old pointer and appends the new one,
-whose text says `(supersedes kickoffs/sNN)`. At most one pointer stays unticked.
-B revises only a Kickoff no builder has started: first it reads the builder's Hub for an attempt page
-naming that Kickoff. Once one exists, the Kickoff stands as Eric approved it, and a change is a
-follow-up Kickoff after its handback (c13, 2026-10-13: r2 replaced the pointer one minute after the
-builder's yes for r1).
-
-**Every Kickoff starts from `docs/kickoff-template.md`** (since 2026-10-13, the dev loop review). B fills the
-template in a file and runs `node tools/kickoff-check.mts <file>` before `new-page`; the check refuses a missing
-section, a section out of order, a pointer to another Kickoff, a row with no `Done when:` line, or a CLOSE that does
-not end with **Stop.** Self-test section 240 holds the check to the template. Every Kickoff carries these sections,
-in this order:
-
-- **WHY NOW**: why this session, now, and the usage line ("Assigning work by usage").
-- **SIZE**: the time budget, gate minutes per row and per cut, and the stop rule.
-- **OWNS**: the files, and the new self-test section numbers, this Kickoff's rows may change; `none other open`
-  when no other builder's Kickoff is open. See "Two builders at once".
-- **STAY OUT OF**: what the session must not touch.
-- **WHERE THINGS STAND**: the checkout's SHA, the installed version, and what is not in scope. It pins the
-  checkout, the branch the rows land on, and its base SHA (for C, `codex/cNN`, created once at OPEN from that
-  base; A's rows land on `dev/sNN`), the integrator and its pinned integration base when applicable,
-  and names the loop-doc SHA the base must contain (OPEN step 0).
-- **MERGE** (integrator Kickoffs; otherwise `none`): `desk/sNN` with `base=<master SHA>`, `tip=<commit SHA>` and
-  the gate digest for that tip, and/or a builder's `codex/cNN` with its handback's base, tip and gate line. The
-  **gate digest** is the `-Fast` gate's summary line at the tip
-  (`N passed, N warned, N failed, N skipped`) and `git config core.bare` after it. It is a summary,
-  not a hash, so a branch rebased onto `master` takes it from a `-Fast` run at the new tip, never from
-  an amend.
-- **ROWS**: the rows, in order, committed one commit per cut as "The gates" says. **Every row ends with a
-  `Done when:` line** naming the check that proves it, and the Handback answers each row against that line.
-- **COMMANDS**: the command families it will run, so the reader can widen the harness allowlist
-  beforehand.
-- **CHARTER**: the commits and the one private push the session may make. See below.
-- **NOT CHARTERED**: what the yes does not cover, so a builder never infers it.
-- **RULES**: the session's working rules, including the four messaging rules in "Messages between the
-  seats".
-- **STANDING ANSWERS**: how A decides without waiting: the template's defaults, then this unit's own. See
-  "Decide and record" below.
-- **OPEN**: the fresh-session check, the required reads, the refs, the meters, the gate and its one yes.
-- **CLOSE**: what the handback must hold, ending with **"Stop."**: after the handback the session takes no
-  further row, unit or letter-borne work.
-
-Every Kickoff is self-contained: its RULES and STANDING ANSWERS are written out from the template, word for word,
-never "as kickoffs/sNN's" (S118 and S119 pointed to their predecessors, a chain the builder could not follow), so a
-session that skipped OPEN step 0 still has them.
-
-**A required read is one the builder can open.** Its own Hub, a letter addressed to it, or a file at a named
-SHA in the checkout. Another seat's Hub is closed on the builder's Desk and the reader refuses it, so a
-Kickoff names the copy the builder can read (that seat's handback letter) instead (S118, 2026-10-12).
-
-The template is the reference, not the most recent real Kickoff: a change to what every Kickoff carries is a change
-to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch.
 
 ## The session shape
 
@@ -155,13 +97,13 @@ to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch.
    rules on its own. Before the gate, the builder reads the checkout's `AGENTS.md` and this page (the roles,
    the builder steps, and, in Codex, "The Codex build seat"). If the checkout's base lacks the loop-doc SHA
    the Kickoff names, it stops and says so. **A Kickoff starts in a fresh session:** if this session has already
-   run a Kickoff, the builder stops and asks the reader to `/clear` first, so one unit's context is never re-read on
+   run a Kickoff, the builder stops and asks the reader to `/clear` first, so one unit's context is not re-read on
    every call of the next (S118 ran in S117's session, 2026-10-12; Report of 2026-10-13).
 1. **Find exactly one Kickoff.** The reader either pastes one ("Run kickoffs/s68 on the
-   deskpost-dev Hub", or the full text), or says "run the next kickoff", and A takes the single
+   deskpost-dev Hub", or the full text), or says "run the next kickoff", and the builder takes the single
    unticked pointer. Several unticked pointers, a pointer older than the newest revision, or
-   pasted text that differs from the Hub page are all cases to **ask** about. A never guesses.
-   **With no unticked pointer**, A looks at its Hub's attempt pages that have `## Run`, no `## Handback`,
+   pasted text that differs from the Hub page are all cases to **ask** about. The builder asks rather than guesses.
+   **With no unticked pointer**, the builder looks at its Hub's attempt pages that have `## Run`, no `## Handback`,
    and no newer attempt (newer by yes time):
    - none: it answers "nothing is chartered" and does nothing else;
    - exactly one: it classifies it by "Running vs. interrupted" below and reports the result with its
@@ -170,18 +112,18 @@ to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch.
      existing branch from `git log`;
    - several, or any it cannot classify: it lists them and starts nothing.
 
-   A bare "proceed" or "continue" is never a restart and never a new unit.
-2. **The gate.** A reads the page once and computes the SHA-256 of its content. It shows the title,
+   A bare "proceed" or "continue" is neither a restart nor a new unit.
+2. **The gate.** The builder reads the page once and computes the SHA-256 of its content. It shows the title,
    `author_seat`, revision, hash prefix and CHARTER, preflights any yes-gated setup steps the
-   Kickoff names, and takes **one yes**. The yes covers exactly that path and that hash. A works
-   from the snapshot it read and never re-reads the Kickoff for instructions; a different hash on a
+   Kickoff names, and takes **one yes**. The yes covers exactly that path and that hash. The builder works
+   from the snapshot it read, without re-reading the Kickoff for instructions; a different hash on a
    restart is a new gate. With no yes, nothing in the CHARTER happens.
 3. **Record the attempt.** `hub edit --mode new-page` makes `notes/<date>-sNN-a<k>` (`k` the next
    unused attempt number) with a `## Run` section: the Kickoff path and hash, the yes time, the
    seat, its `seat_id` from `.claude/seats/_registry.json`, the session id or "unrecorded", the
    agent as `CLAUDE_PID` from the session's own environment where it is set, else "unrecorded" (with
    `deskpost seat status`'s `agent_pid` beside it only as the binding's: for a launcher-held seat it
-   can name an earlier binding's process), the predecessor attempt, and state `started`. Then A ticks the pointer with `check-item`:
+   can name an earlier binding's process), the predecessor attempt, and state `started`. Then the builder ticks the pointer with `check-item`:
    `--match-text "Run <p><NN>:"` (the exact pointer text, colon included), `--preflight`, then the
    same call with `--plan-id <its plan_id>`. The plan id binds the page as previewed, so a pointer
    changed in between refuses instead of ticking another Kickoff.
@@ -201,8 +143,8 @@ to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch.
 
    Other facts the Kickoff asks for (the installed version, the refs at the gate) follow as more lines.
    A seat with no `CLAUDE_PID` (Codex) writes `- Agent: unrecorded.` and adds `- Harness: codex.` and
-   `- Binding agent_pid: <n> | null.` (from `deskpost seat status`) as extra lines; the lines above never
-   change form.
+   `- Binding agent_pid: <n> | null.` (from `deskpost seat status`) as extra lines; the lines above keep
+   their form.
 4. **Merge (integrator).** Check that `origin/master` still equals the Kickoff's pinned integration
    base and each named branch still points at its recorded tip. A mismatch parks integration.
    Create `int/<kickoff>` from that base in the integrator's own checkout and merge the named tips
@@ -215,45 +157,53 @@ to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch.
    base, tip and hook line in the integrator's MERGE. The builder adds no `## Next` item for it.
    The integrator may resolve only independent additions with distinct identifiers the planner
    allocated (self-test sections, `section-covers.json` keys, ADR numbers). Keep each addition whole
-   in ascending identifier order and check the identifiers are distinct afterwards. Every other
+   in ascending identifier order; self-test section 412 (`sectionOrderProblems` in `tools/section-select.mts`) fails
+   on a section or key out of order or repeated, and ADR numbers are checked by hand. Every other
    conflict, including duplicate identifiers or a change to an existing function, policy or
    configuration, is aborted with `git merge --abort` and handed back for a reconciliation Kickoff.
 5. Reconcile the plan ledger with `git log`.
-6. **Hub upkeep (integrator), when the Kickoff charters it.** The gate already reads the installed version, so A ticks the
+6. **Hub upkeep (integrator), when the Kickoff charters it.** The gate already reads the installed version, so the integrator ticks the
    build Hub's `Now` items that the installed release meets (an item that closes "when X is released and
    installed", for a release at or below the installed version), and moves every ticked `Now` item to a dated
    `notes/` history page in one replace-section edit (`--preflight`, then `--user-confirmed --plan-id`), under
-   the Kickoff's CHARTER and STANDING ANSWERS. Nothing else leaves `Now` this way: an unticked item stays, and B's
-   check of `releases/latest` after a publish remains a notice to the reader, since B writes only `kickoffs/`
-   pages and one pointer on A's Hub. Until a Kickoff charters it, no step ticks a release's `Now` items (the
+   the Kickoff's CHARTER and STANDING ANSWERS. Nothing else leaves `Now` this way: an unticked item stays, and the planner's
+   check of `releases/latest` after a publish remains a notice to the reader, since the planner writes only
+   `kickoffs/` pages and one pointer on the builder's Hub. Until a Kickoff charters it, no step ticks a release's `Now` items (the
    Report of 2026-10-06, S94).
 
 ### Work
 
-A works the rows in order, committing per cut through the pre-commit gate (rows a cut tests together go in
+The builder works the rows in order, committing per cut through the pre-commit gate (rows a cut tests together go in
 one commit unless the Kickoff names a reason to split them; see "The gates").
+
+**The least code that works** (Decision 2026-10-21, after Ponytail's ladder, `DietrichGebert/ponytail`, MIT). Before
+writing code for a row, the builder asks in order: does it need to exist at all; does the codebase already do it
+(`git grep` first); does the standard library or an installed package do it; and only then, what is the least code
+that works. Never cut to save lines: validation at trust boundaries, error and data-loss handling, security, or a
+section's negative control. The Handback reports the measured `git diff --shortstat <base>..<tip> -- kernel/src`
+beside the Kickoff's `NET LINES:`.
 
 **Decide and record (the default since 2026-10-03).** Every Kickoff carries STANDING ANSWERS, so a
 session runs to its close without waiting on anyone. The reader's reason: they are not the developer,
 they take the recommended option almost every time, and resuming a cold session the next day only to
 say "the recommendation" costs tokens and a day. A problem found later in testing is handled then.
 S82 was the first session run this way.
-- **A spec question the Kickoff leaves open:** A takes the option it would recommend, if it stays
+- **A spec question the Kickoff leaves open:** the builder takes the option it would recommend, if it stays
   inside the CHARTER and the plan's intent, and goes on. It messages no one and does not wait. The
   attempt page records each one under `## Standing answers applied` (the question, the options, the
-  choice and why), and B reviews them all from the Handback before writing the next Kickoff.
+  choice and why), and the planner reviews them all from the Handback before writing the next Kickoff.
 - **What a standing answer cannot do:** anything under NOT CHARTERED, widen the CHARTER, change a
-  plan's decision or B's rulings, or add PowerShell. A question that needs one of those parks **that
-  piece only**, on the attempt page, and A continues with the next piece or row.
+  plan's decision or the planner's rulings, or add PowerShell. A question that needs one of those parks **that
+  piece only**, on the attempt page, and the builder continues with the next piece or row.
 - **The yes at OPEN is the only one** (Eric, 2026-10-15: "the yes that starts the session be the standing
-  yes that carries the session all the way through to finish"). A builder never stops mid-session to ask the
+  yes that carries the session all the way through to finish"). A builder goes on without stopping mid-session to ask the
   reader; what it would have asked goes under `## Standing answers applied` or the Handback's "Needs you".
   So the planner names in OWNS, before writing, every existing test, fixture or generated file that pins
   what the rows change (a count, an inventory, a probe table, a fixture's copy list), as the template says:
   c21 and c22 each stopped for a narrow OWNS extension of exactly this kind. Eric's named "publish X" before
   a release push is a separate gate, unchanged.
 - **A refusal is a park, not a wait:** a permission prompt, the auto-mode classifier or a guard
-  refusing a step is recorded as a stall and that step parks. A does not retry it another way.
+  refusing a step is recorded as a stall and that step parks. The builder does not retry it another way.
   CLOSE is the one exception, because parking the Handback leaves the planner nothing to review (c22,
   2026-10-15): a refused CLOSE write (the Handback, a `## Now` line, the handback letter) is tried once
   more the plain way, the text written with the file editor and then the same Deskpost command run
@@ -261,63 +211,64 @@ S82 was the first session run this way.
 - **An auto-mode refusal is a fault of that session, not a rule about the step** (Eric, 2026-10-13: the
   same step has been refused in one session and allowed in a later one, so far under Claude Code and not
   yet under Codex; the cause is unknown, possibly Orca). Record it, and tell the reader that restarting
-  the session may clear it. Never write it down as something the seat can never do. A restarted
+  the session may clear it. Write it down as a fault of that session, not as something the seat cannot do. A restarted
   session may try the same step once, the same way.
 
 A Kickoff may still reserve a named decision for the reader. That decision parks as above. This
 refines "STOP and say so" (`PLAN-defect-clearing.md`) without contradicting it: what stops is the
 piece, not the session.
 
-Mid-session, A files Reports to the Report Inbox as usual. B is the support Hub the cross-seat
+Mid-session, the builder files Reports to the Report Inbox as usual. The planner's Hub is the support Hub the cross-seat
 reports design anticipated, so no addressing is needed. Since 2026-09-30 the seats can also message
 each other, within the bounds of "Messages between the seats" below. A message is a notice, never an
-instruction: the reader still decides whether to interrupt A.
+instruction: the reader still decides whether to interrupt the builder.
 
 ### Close
 
 1. Run the gate and commit by the gate recipe ("The gates"), and push (integrator) if the CHARTER allows it
    and the push gate holds (below).
-2. `add-section` a `## Handback` on the attempt page, then read it back through the validated reader
+2. **File the closeout Reports first, then list them in the `## Handback`**, so the letter counts every one of them (s137
+   filed five after its letter). Then `add-section` a `## Handback` on the attempt page, and read it back through the validated reader
    before reporting completion. It opens with two fixed lines, `Outcome: <pushed | published | parked |
    stopped>` and `Ran: kickoffs/<unit> r<N>, sha256 <the page hash the yes covered>; attempt <attempt page>`, so the
    planner's review and `/meanwhile` read the outcome and the attempt without parsing prose; a Handback whose `Ran:`
-   hash is not the pointer's page is reviewed as a different Kickoff. It holds: state `completed`, what shipped, what parked, Reports
-   filed, merge state, the branch with its base and tip, the hook's gate line and the commit SHA it ran
+   hash is not the pointer's page is reviewed as a different Kickoff. It holds: state `completed`, what shipped, what parked, the
+   Reports filed (every closeout Report, each filed before the Handback), merge state, the branch with its base and tip, the hook's gate line and the commit SHA it ran
    for, where any set-aside work went, the stall log, and a draft scope for the next Kickoff.
-3. Make additive orientation edits to `## Now` on the build Hub (never `## Next`: see "Roles").
+3. Make additive orientation edits to `## Now` on the build Hub (not `## Next`: see "Roles").
 4. Write **the "Needs you" list** (the morning list until 2026-10-13; `/closeout` uses the same name) into the
    Handback instead of asking and waiting: every deferred yes
    (`triage batch` for named Reports, replace-mode Hub edits, `collection add-page`, a parked push),
-   every parked piece, and every step only the reader can take. The reader or B takes it from there.
+   every parked piece, and every step only the reader can take. The reader or the planner takes it from there.
 5. **The handback letter**, after the readback: every builder or integrator writes to its planner,
-   `--for deskpost-desk` here, naming the attempt page, branch, base, tip, changed files, hook line
+   `--for deskpost-lead` here, naming the attempt page, branch, base, tip, changed files, hook line
    and its commit SHA, parked pieces, standing answers and "Needs you" list. A Kickoff may name copies
-   to other builders; never write to yourself. Codex cannot ring.
-6. **Ring, then the reply.** Right after its letter, A messages the planner, as "Messages between the
+   to other builders; write none to yourself. Codex cannot ring.
+6. **Ring, then the reply.** Right after its letter, the builder messages the planner, as "Messages between the
    seats" says, if it is listed by name: the message names the letter and the attempt page and nothing else
    to act on, so it is the letter's **Ring** that CONTEXT.md makes mandatory for a recipient with a
-   `message_name`. C skips the message. Then the builder ends the reply with, in this order:
+   `message_name`. A Codex builder skips the message. Then the builder ends the reply with, in this order:
    - the handback summary;
-   - **what it sent**: the letters written (their pages), and for A the message's exact text, quoted, and whether
+   - **what it sent**: the letters written (their pages), and for a Claude Code builder the message's exact text, quoted, and whether
      the send went through, or that nothing was sent and why (not listed, the send failed, or Codex). The reader
-     must never learn of a message only from the planner;
+     learns of every message from the builder's own reply, not only from the planner;
    - one line for the reader to paste into the planner's session, **said to be needed whether or not the
-     message went through**: the message only tells B the Handback exists, and B starts the Kickoff on the reader's
+     message went through**: the message only tells the planner the Handback exists, and the planner starts the Kickoff on the reader's
      word, never on a message. The line names the Desk step as well as the task, because a Hub closed on the
-     planner's Desk makes it stop and ask, and A cannot open it there while B has no live session:
+     planner's Desk makes it stop and ask, and the builder cannot open it there while the planner has no live session:
 
    ```
    Open projects/<build hub> on your Desk, read the <P>NN handback there, and write kickoffs/<p><NN+1>.
    ```
 
-   `<P>`/`<p>` is the Kickoff prefix: `S`/`s` for A, `C`/`c` for C.
+   `<P>`/`<p>` is the Kickoff prefix: `S`/`s` for `deskpost-dev`, `C`/`c` for `deskpost-codex-dev`.
 7. **Stop.** The turn ends with the reply above. Nothing after it builds, and a later prompt is answered by
    OPEN step 1's rules.
 
 ### Running vs. interrupted
 
 An attempt page with `## Run` and no `## Handback` is classified from
-`deskpost seat status --seat <build seat>`, reading that seat's row. PID equality is never proof of
+`deskpost seat status --seat <build seat>`, reading that seat's row. PID equality is no proof of
 identity: a launcher-started seat can report `agent_pid: null`, and a PID can be reused.
 
 - **Interrupted:** the seat is `free`. That is not proof that no agent is still running: the
@@ -325,9 +276,9 @@ identity: a launcher-started seat can report `agent_pid: null`, and a PID can be
   **the restart gate also asks the reader to confirm that the earlier terminal is closed.** An
   attempt is also interrupted when a newer attempt exists for the same seat. Newer means a later yes
   time in its `## Run`, not a later name.
-- **Held:** the seat is `held` and no newer attempt exists. The attempt may be running. B reports it
+- **Held:** the seat is `held` and no newer attempt exists. The attempt may be running. The planner reports it
   as held and never acts on it.
-- **Unknown:** the seat is `orphaned`, or its state cannot be read. B reports it and never acts on
+- **Unknown:** the seat is `orphaned`, or its state cannot be read. The planner reports it and never acts on
   it.
 
 A restart is a new session: a new gate, a new yes, and a new attempt page naming its predecessor.
@@ -343,10 +294,10 @@ Do not infer a safe handover from the claim alone.
 
 Since 2026-09-30, the two seats can message each other through Claude Code's cross-session messaging
 (`ListAgents` and `SendMessage`). The design and its review are `PLAN-seat-messaging.md`. Eric ruled on it
-2026-09-30: build it all, the seat name is the session's title, A may apply B's bounded answers, and A messages B at
-close as well as printing the paste line.
+2026-09-30: build it all, the seat name is the session's title, the builder may apply the planner's bounded answers, and the builder
+messages the planner at close as well as printing the paste line.
 
-**How it works.** Same-machine messages go over a per-session named pipe, never through Anthropic servers. An idle
+**How it works.** Same-machine messages go over a per-session named pipe, not through Anthropic servers. An idle
 receiver starts a new turn with the message; a busy one reads it between tool calls. A message is plain text,
 capped at about a million characters, and repeats are throttled. The receiving session's permission mode decides
 delivery: a prompting session (default, auto, acceptEdits, dontAsk) accepts a message from another prompting one,
@@ -359,8 +310,8 @@ local `hold` holds them; a session that bypasses permissions was not tested, so 
 peer's messages behind its approval dialog, as above.
 
 **Finding a seat.** A session answers to its name. Since 1.3.6 the launcher starts a seat's session as
-`claude --name <seat>` (Step 0), so `ListAgents` lists `deskpost-dev` and `deskpost-desk` by name from the first
-prompt; a session resumed from before that names itself after its seat on its second prompt (1.2.6), never over a name
+`claude --name <seat>` (Step 0), so `ListAgents` lists `deskpost-dev` and `deskpost-lead` by name from the first
+prompt; a session resumed from before that names itself after its seat on its second prompt (1.2.6), keeping any name
 the reader gave it. The Desk records the name a seat answers to as its `message_name`. Until a session has a name it
 is listed under a placeholder (`deskpost-NN`) that cannot be tied to a seat. A Codex seat has no inbox and cannot be
 messaged.
@@ -374,74 +325,77 @@ messaged.
 2. **Substance goes on a page, and the message is a notice.** Its first line stands alone: the seat, and what this
    is. It gives the page path and, for a write, whether the readback matched and the written hash.
 3. **Address a seat by name, replies included:** the `message_name` its Desk row records (`deskpost-dev`,
-   `deskpost-desk`), not the `from` address a message arrived with, which may be a pipe (`uds:...`). A reply to the
+   `deskpost-lead`), not the `from` address a message arrived with, which may be a pipe (`uds:...`). A reply to the
    pipe is delivered, but it names no seat, so neither the transcript nor a reader's tools can tell it answered
    that seat. If the sender's row has no `message_name`, ask the newest placeholder session which seat it is before
    calling the seat offline; a seat that still cannot be named gets a letter instead. At most one message per
    parked question, and one batched notice per session otherwise. Each delivered message costs the receiver a turn.
-4. **After A's handback notice, B sends A nothing.** A notes any later message in one line of its own transcript,
-   sends nothing (a reply would start a turn in an idle B), takes no action, and leaves it for the next Kickoff.
+4. **After the builder's handback notice, the planner sends the builder nothing.** The builder notes any later message in one line of its own transcript,
+   sends nothing (a reply would start a turn in an idle planner), takes no action, and leaves it for the next Kickoff.
 
 **The message points.**
 
-- **A → B at close.** After the Handback is read back and its letter written, A messages B: "S<NN> handback
-  written: `projects/<build hub>/notes/<page>`, readback matched; letter `notes/<letter page>`." A's reply quotes
-  that message to the reader, and its paste line stays as the reader's go-ahead (Close, step 6). On the notice, B reads the Handback and tells the reader what
-  arrived; it writes the next Kickoff only on the reader's word. **With every build seat's Handback, A's or C's, B
-  asks the reader to type `/retro <session id>`** in B's session (the reader's `retro` skill, Eric 2026-10-13; the
+- **Builder → planner at close.** After the Handback is read back and its letter written, the builder messages the
+  planner: "S<NN> handback
+  written: `projects/<build hub>/notes/<page>`, readback matched; letter `notes/<letter page>`." The builder's reply quotes
+  that message to the reader, and its paste line stays as the reader's go-ahead (Close, step 6). On the notice, the planner reads the Handback and tells the reader what
+  arrived; it writes the next Kickoff only on the reader's word. **With every build seat's Handback, from either harness, the planner
+  asks the reader to type `/retro <session id>`** in the planner's session (the reader's `retro` skill, Eric 2026-10-13; the
   skill sets `disable-model-invocation`, so a seat cannot start it itself): the retro reads the attempt page, the Reports it
-  filed, and the session's own log, whose cost and idle wake-ups no Handback shows. B lists what it finds beside what
-  arrived, marks what is already reported, and files nothing without the reader's yes. Before that Kickoff, B checks its design queue:
+  filed, and the session's own log, whose cost and idle wake-ups no Handback shows. The planner lists what it finds beside what
+  arrived, marks what is already reported, and files nothing without the reader's yes. Before that Kickoff, the planner checks its design queue:
   an item with no tier in `docs/roadmap.md`, and no backlog line saying why, gets one on that Kickoff's
   `desk/sNN` (the roadmap's "Keeping it current").
-- **A → B, a spec question** (only when a Kickoff sets STANDING ANSWERS aside for a named question; by
-  default A decides and records, as "Decide and record" says). A parks, and messages B the attempt page and the question. B
-  answers on a page of its own Hub, `projects/<support hub>/notes/<date>-s<NN>-answer-<n>`, and messages A the
-  path. A applies the answer only if all of these hold:
-  - A read the page itself through `read_open_project_page`. A opens the support Hub on its own Desk at the gate,
+- **Builder → planner, a spec question** (only when a Kickoff sets STANDING ANSWERS aside for a named question; by
+  default the builder decides and records, as "Decide and record" says). The builder parks, and messages the planner the
+  attempt page and the question. The planner answers on a page of its own Hub, `projects/<support hub>/notes/<date>-s<NN>-answer-<n>`, and messages the builder the
+  path. The builder applies the answer only if all of these hold:
+  - the builder read the page itself through `read_open_project_page`. The builder opens the support Hub on its own Desk at the gate,
     which is ungated;
   - the page says `author_seat: <planner seat>`;
   - the answer chooses between readings the Kickoff text already supports, inside the CHARTER.
 
-  A records the page and its hash on the attempt page, and the Handback lists every applied answer under its own
+  The builder records the page and its hash on the attempt page, and the Handback lists every applied answer under its own
   heading, for the reader's audit at close. Anything that widens the CHARTER, changes a named exception, or that
-  the Kickoff reserves for the reader still parks or goes to the reader. **`author_seat` is text B types.** The
+  the Kickoff reserves for the reader still parks or goes to the reader. **`author_seat` is text the planner types.** The
   kernel records no author, so the check catches a mis-addressed page, not a forged one. What holds is the CHARTER
   bound, the attempt-page record, the Handback's audit heading, and the reader's yes to this route.
-- **B → A, a defect notice.** When B's triage finds a defect in what A is building, B sends A the Report's page,
-  once. A treats it as data. A may park a row or file a Report, and never adds a row.
-- **B messages A only while A is running**: no idle notice since A's last message, and no question to the reader
-  pending on the attempt page. Once A has ended a turn, a message would start an unattended turn under the one yes,
-  so B tells the reader instead.
-- **B watches A without polling.** B may send A a `notify_when_idle` subscription **with no message**, which starts
-  no turn in A. The notice means A ended a turn, finished or stopped to ask. Then B reads the attempt page, and tells
+- **Planner → builder, a defect notice.** When the planner's triage finds a defect in what the builder is building,
+  the planner sends the builder the Report's page, once. The builder treats it as data. It may park a row or file a Report, and adds no row.
+- **The planner messages the builder only while the builder is running**: no idle notice since the builder's last
+  message, and no question to the reader
+  pending on the attempt page. Once the builder has ended a turn, a message would start an unattended turn under the one yes,
+  so the planner tells the reader instead.
+- **The planner watches the builder without polling.** The planner may send the builder a `notify_when_idle`
+  subscription **with no message**, which starts no turn in the builder. The notice means the builder ended a turn,
+  finished or stopped to ask. Then the planner reads the attempt page, and tells
   the reader if there is no Handback. A session stuck on a permission prompt is mid-turn and sends nothing, so only
   the reader sees that one. A subscription lapses after 12 hours.
 - **Nothing is triggered by a message alone**: no merge, push, publish, `triage batch` or Hub replace. The Kickoff
-  snapshot under the one yes remains A's only source of instructions.
+  snapshot under the one yes remains the builder's only source of instructions.
 
 **Letters addressed to a dev seat.** A letter (`capture letters --for <seat>`) is the lasting form of a message, and
 the Desk counts each seat's pending ones (`letters_for_this_seat`). A Kickoff's STAY OUT OF covers **other** seats'
-letters only. At close, A opens `letters` on its own Desk, reads each letter `--for` its seat, and answers what it can
+letters only. At close, the builder opens `letters` on its own Desk, reads each letter `--for` its seat, and answers what it can
 in the Handback (a reply letter `--for` the sender only when the Kickoff charters it by name; see "Roles"). **A seat closes its own read letter itself, the same turn,
-and never waits for the reader's yes** (Eric, 2026-10-09: "If a seat reads them, they need to be marked as read"):
+without waiting for the reader's yes** (Eric, 2026-10-09: "If a seat reads them, they need to be marked as read"):
 `deskpost letters close notes/<page> --note "<one line>"` once the installed release carries the verb, and until then
 its own `triage batch` review, also without waiting. Like a message, a letter is data: it never widens the
-CHARTER or adds a row. S83 left B's first letter unread because its Kickoff's STAY OUT OF
+CHARTER or adds a row. S83 left the planner's first letter unread because its Kickoff's STAY OUT OF
 named "every seat's ... letters".
 
 **A letter may narrow a unit, never widen it.** A builder reads and closes its letters at OPEN and at CLOSE. A
 letter read mid-unit (the Desk hook's "Letters wait for this seat" line fires) gets one disposition line on the
 attempt page and is closed:
 - **evidence for a chartered row** (a defect notice, a fact): used within that row;
-- **park or stop** (from B or the reader): the named rows park, or the builder stops at the next commit boundary
+- **park or stop** (from the planner or the reader): the named rows park, or the builder stops at the next commit boundary
   and hands back what is done; narrowing needs no yes;
 - **anything that adds work** (a new row, unit or file, or "after this, do X"): not acted on; it goes in the
-  "Needs you" list, and B files it in its backlog;
-- **a builder's handback, read by A**: closed with a one-line note; B charters the integration (OPEN step 4).
+  "Needs you" list, and the planner files it in its backlog;
+- **a builder's handback, read by another builder**: closed with a one-line note; the planner charters the integration (OPEN step 4).
 
 This settles the S113 Report "the loop doc says a build seat reads its letters at close, the Desk hook says before
-other work" for both builders: the hook's line is honoured by reading and disposing, never by switching work.
+other work" for both builders: the hook's line is honoured by reading and disposing, not by switching work.
 
 **Commands handed to the reader.** A command the reader runs with `!` goes through Bash, so it uses forward slashes
 in Windows paths (a backslash path lost its separators at S80's close). A publish is asked as one plain push command,
@@ -464,7 +418,7 @@ push gate green. It never charters a push to the public repo (`Kioga/deskpost`, 
 publishes from: the release session starts it right after the publish push, and a daily run catches a
 missed start), tags, releases, upgrade, migrate, reset, retire, uninstall,
 discards, force-push or history rewrite. A reconciliation Kickoff may charter, by name, a rebase
-of a builder's own local, never-pushed unit branch onto a named base SHA.
+of a builder's own local, unpushed unit branch onto a named base SHA.
 
 **Release-preparation Kickoff, in either harness.** It separately names preparation through READY,
 including its local tags and release refs; it never authorizes publishing. First make and gate the
@@ -481,68 +435,13 @@ Publishing needs Eric's separate named `publish X`, bound to the reviewed candid
 READY refs; refuse if either moved. The mirror recipe is in `docs/releasing.md`. A failed review
 or route check means a Report and deskpost-dev prepares after its weekly usage reset.
 
-## The second reader
-
-A sensitive change touches guards or shell guards; hooks or their registration; seat launch flags,
-sandbox or approval settings; secrets or the 1Password route; release, publish or mirror tooling;
-or policy-bearing prose (`AGENTS.md`, `CLAUDE.md`, workspace instructions, seat-template purposes,
-library-help, or this loop's rules). The planner may name another sensitive path in a Kickoff.
-
-One review per release candidate covers all unreleased sensitive commits. A fresh read-only session
-of the other harness than each commit's author reads the whole sensitive diff from the release base,
-including how the commits combine in the final tree. A conflict resolution touching a sensitive
-path counts as the integrator's commit. Earlier review is optional; review is due before the first
-credential-bearing release step, and does not gate a merge or a private `origin` push.
-
-The planner's Hub review record names base and candidate SHA, reviewer and harness, commits and
-paths covered, and each finding's disposition. A later covered-path change voids that part of the
-record. An unresolved finding needs Eric's written acceptance.
-
-**Current one-way rule (2026-10-12, k1e-r2).** A Codex-authored sensitive commit is read by a fresh
-Claude Code session given only a staging folder of clean review files. The planner writes the two
-fixture files and launches this exact tested profile with the staging folder as working directory,
-using subprocess argv without a command shell (installation and fixture paths are generalized
-for publication; the flags and empty setting-source value are verbatim):
-
-```text
-<claude-executable> -p --safe-mode --restricted --disable-slash-commands --setting-sources "" --tools Read,Grep,Glob --strict-mcp-config --mcp-config <fixture>/empty-mcp.json --settings <fixture>/claude-settings.json --permission-mode dontAsk --output-format stream-json --verbose --include-hook-events --no-session-persistence
-```
-
-This is the tested `claude-1` profile; its original fixture paths were removed after the proof.
-For a real review, the planner supplies equivalent newly created fixture paths and the installed
-Claude executable, preserving every flag and the empty `--setting-sources` argv value. The settings
-file is `{"permissions":{"allow":["Read","Grep","Glob"]}}`; the MCP file is `{"mcpServers":{}}`.
-Only Read, Grep and Glob were exposed; no user skills, plugins, hooks or MCP servers loaded.
-Tested limits: Grep/Glob outside the folder, links and aliases untested; the environment reaches
-the child, but no tool can read it; built-in telemetry on.
-
-A Claude-authored sensitive commit has no proven second reader: Codex failed k1e-r2. The planner
-steers sensitive work to Codex where possible. A release still carrying Claude-authored sensitive
-work records Eric's written acceptance of this gap in its review record before its first credential
-step. The one-way rule ends only when a Codex profile passes k1e-r2's five criteria in a chartered proof.
-
-**The mirror source.** The chartered push is safe only because `Kioga/library` is not the mirror
-job's `SOURCE_REPO`. Its value is a secret on the `Kioga/deskpost-ops` repository and cannot be read
-back, and the workflow's files name only `${{ secrets.SOURCE_REPO }}`.
-
-**Confirmed 2026-09-29 (S68): `SOURCE_REPO` is `Kioga/deskpost`, not `Kioga/library`.** The private
-record of the S9 deployment (2026-09-20) holds the one API call that ever set it, with that value.
-Releases reach `Kioga/deskpost` as their own pushes from a release checkout, and the mirror publishes
-those: after the v1.2.3 release, the public side carried `Kioga/deskpost`'s `main`, not
-`Kioga/library`'s `master`. A push to `origin` therefore publishes nothing, and a push to
-`Kioga/deskpost` publishes when the mirror job next runs: the release session starts it right after
-the publish push, and its daily run catches a missed start. If the secret's timestamp on
-`Kioga/deskpost-ops` (Settings, Actions, Secrets) ever reads later than 2026-09-20, it was changed
-after S9, and this must be checked again before a chartered push.
-
-How a release is prepared, and the one push to `Kioga/deskpost` that publishes it, is in
-`docs/releasing.md`. That push is never chartered: it is its own question at a session's close.
-
 ## The gates (what "green" means)
 
 A merge with no conflicts commits without running the pre-commit hook, so the integrator runs `node tools/gate.ts --tier cut` on the merge result before pushing.
 
-- **B's commits:** the pre-commit `-Fast` gate (`.githooks/pre-commit`), which the hook runs with the
+On Linux the builder's commit and cut tiers are evidence for the Handback, and the integrator's Windows push tier is the pass mark.
+
+- **The planner's commits:** the pre-commit `-Fast` gate (`.githooks/pre-commit`), which the hook runs with the
   seat variables blanked.
 - **Any builder's commits and an integrator's merge:** the same `-Fast` gate.
 - **A docs-only commit runs only the document checks (since S104).** The hook runs `node tools/docs-gate.ts` first.
@@ -578,12 +477,8 @@ A merge with no conflicts commits without running the pre-commit hook, so the in
   profile, its own `TEMP`). The lane sections run after a barrier, alone. Every child has a limit: a suite 15
   minutes, the three slowest 25 (`acceptance.harness-selftest`, `library-helpers.boundary-suite`,
   `notebook.migration`), the static run 15, a section 10. Its type check is self-test section 155. **What it
-  only diagnoses:** the claim map's coverage and the staged docs gate, printed as `(diagnostic)` and never
+  only diagnoses:** the claim map's coverage and the staged docs gate, printed as `(diagnostic)` and not
   failing it. The pool's suite list must equal the roster the static run reports, or the tier exits 2.
-
-**First run, S68 (2026-09-29, at `4004cdc`):** `108 passed, 1 warned, 0 failed, 22 skipped`. The one
-WARN is `context.always-on-budget`. The workspace checks that S67 saw FAIL now SKIP with no workspace
-attached, as `Invoke-WorkspaceCheck` intends, so no defect was filed.
 
 **Gate time is budgeted** (Eric, 2026-10-08, after S103 spent about 4h 17m of 4h 47m in checks run one at a
 time: "we need to design kickoffs with how long it takes to clear these gates in mind. We should always ask
@@ -598,11 +493,16 @@ self-test about 17, the full gate about 35. Since c2's eight-worker self-test (S
   the sections the rows touch, by number;
 - **one gate recipe per cut:** the pre-commit hook's own run on the cut's commit is the pass mark, and no
   second `tools/gate.ts --tier cut` run is made on the same tree. The hook tests the working tree, so the
-  working tree must equal the index at commit time: stage exactly the cut, set everything else aside with
-  `git stash push --keep-index --include-untracked -m "<kickoff> set-aside"` (which keeps the staged cut) or a
-  named commit on a local `<branch>-wip` branch, then check that `git diff --exit-code` passes and
-  `git ls-files --others --exclude-standard` prints nothing before `git commit`. The attempt page records
-  where the set-aside work went, and the handback reports the hook's summary line with the commit SHA it ran
+  working tree must equal the index at commit time: stage exactly the cut, set everything else aside by copying
+  the changed files whole to the evidence folder with a SHA-256 list (or, where the Kickoff charters it,
+  `git stash push --keep-index --include-untracked -m "<kickoff> set-aside"`, which keeps the staged cut), then
+  check that `git diff --exit-code` passes and `git ls-files --others --exclude-standard` prints nothing before
+  `git commit`. A named commit on a local `<branch>-wip` branch is not a set-aside: its commit runs the full hook,
+  which refuses unfinished work by design (s159's Report: 19 minutes, then section 8 refused a verb with no probe
+  yet). When every row changes the same shared files (`selftest.ts` and the claim map) and the rows were proved
+  together, build each cut's tree from the base plus that cut's edits, and check that the last cut equals the
+  copies byte for byte (s156's `stage.py`). The attempt page
+  records where the set-aside work went, and the handback reports the hook's summary line with the commit SHA it ran
   for, which is the handback's tip;
 - a plan is committed once, at sign-off. Seats do not wait on each other's gates: on 2026-10-11 two `-Fast`
   self-tests at once used about 16 CPU-seconds each over about 20 minutes, one of 16 threads each, so the
@@ -665,56 +565,35 @@ Against the source kernel (`-Kernel 'node kernel/src/cli.ts'`), a row whose orac
 `tools/*.ps1` helper mismatches by design: the judge rewrites that sentence only for a compiled kernel, and
 self-test section 120 keeps the source naming only what ships. Such a row (today
 `reader.refuses-a-seatless-session`) is judged against a build of the same commit, never by a delta or by
-changing the source (S103 K1, closed by B 2026-10-08).
+changing the source (S103 K1, closed by the planner 2026-10-08).
 
 **Watching a long gate.** A builder that watches a running gate with a background monitor has it
 speak only on a flag: the gate exited, a process is stuck, or no CPU progress for a set time. Periodic
-status goes to the monitor's log file, never to the session: each event wakes the session and re-reads
+status goes to the monitor's log file, not to the session: each event wakes the session and re-reads
 its whole context to do nothing (S117: seven status events, 2.4 million context tokens). A builder
 that waits with a sleep tool (Codex) sleeps first for about the gate's usual time (a commit's hook
 about 7 minutes, the push tier about 13), then in waits of at least 2 minutes until it exits (c13: 36
 waits of 45 seconds re-read about 5 million context tokens).
 
-## B's code: one integration branch per Kickoff
-
-B works in its own worktree, `git worktree add -b desk/scratch <repo>-desk master`, and commits only
-on `desk/*` branches, never on `master` or in A's tree. The worktree shares `core.hooksPath`, so
-every commit there passes the same pre-commit gate. A new worktree needs its gitignored machine-local
-bindings once: run `tools/Initialize-CodexLibrary.ps1` in it, or the gate fails on
-`codex.project-access-config` (`.codex/config.toml is missing`). The script needs `-McpUrl` and
-`-CollectionId`, or the three gitignored state files `.claude/.library-mcp-url`,
-`.claude/.library-project` and `.claude/.library-shared-root` copied from an existing worktree; it has
-no default. Run `npm ci --offline` in `kernel/` once too, or self-test section 155 fails for want of
-TypeScript. A merge that changes the required Codex hooks (`CODEX_REQUIRED_HOOKS`,
-`kernel/src/hookregistry.ts`) needs the script re-run in **every** checkout before its next gate:
-`.codex/hooks.json` is gitignored, so no merge carries it.
-
-For each Kickoff, B assembles one branch, `desk/sNN`, rebased onto current `master`, and records its
-base and tip SHAs and the gate digest in MERGE. After recording the tip, B does not commit to
-`desk/sNN` again; later fixes go on the next Kickoff's branch. The independent-addition conflict
-rule in OPEN step 4 applies; other conflicts return to a chartered reconciliation. B deletes its
-merged branch only once the integrator's handback confirms the merge. Delete it without force with
-`git branch -u origin/master <branch> && git branch -d <branch>`, which still refuses a branch not merged.
-
 ## Two builders at once
 
-A and C may run Kickoffs at the same time, each on its own branch in its own worktree. Git keeps the two
+The two build seats may run Kickoffs at the same time, each on its own branch in its own worktree. Git keeps the two
 apart; what goes wrong is work, not the repository: two branches change the same file or claim the same
 self-test number and collide at merge (step 4d's section 216, 2026-10-11), or a change that passes alone
 fails once merged beside the other. Three practices, from the 2026-10-12 survey of how others run
 parallel coding agents (Eric: "make these practices default"):
 
 1. **One file, one owner.** Each Kickoff's OWNS names the files and the new section numbers its rows may
-   change. B gives out section numbers in order and records each in the Kickoff that takes it (c2 218,
+   change. The planner gives out section numbers in order and records each in the Kickoff that takes it (c2 218,
    c3 219, S118 220). Two open Kickoffs never own the same file. When both need one (`selftest.ts`,
    `section-covers.json`, a shared doc), only the first owns it and the second waits for its merge; a
-   file both append to at clearly separate places may be owned by both if B says so in each OWNS. A
+   file both append to at clearly separate places may be owned by both if the planner says so in each OWNS. A
    builder that needs a file it does not own parks that row and says so in its handback; it never edits
    the file.
 2. **Predict ownership, diagnose existing work.** OWNS and the planner's allocation of identifiers
    predict collisions before a second Kickoff. Compare both OWNS lists and resolve overlap by order.
    `git merge-tree --write-tree` on current tips diagnoses only work that already exists; it writes
-   Git objects, never refs or the index, and cannot predict future edits. The real check is the
+   Git objects, not refs or the index, and cannot predict future edits. The real check is the
    integrator's merge of the finished tips, one at a time, and the combined tree's gate.
 3. **Tell the other builder what merged.** When the integrator merges a builder's branch, its handback
    letter's copy goes to every other builder whose Kickoff is still open, naming the merged tip and the
@@ -729,42 +608,23 @@ including the full commit hook and a direct source section run. A waiting seat r
 lets the holder finish; it never stops another seat's run. Documents-only commits, including their
 section-119 document check, do not wait.
 
-## Assigning work by usage
-
-The planner reads both weekly meters with `orca account list --json`:
-`result.rateLimits.<harness>.weekly.usedPercent`, `resetsAt`, and the provider's `updatedAt`.
-Check the account by the login the seat uses (`claude auth status`), not by Orca's `activeAccountId`:
-on this PC `result.rateLimits.claude` follows the login in use, while the active label can name the
-other account (2026-10-13), so a label mismatch alone does not make a reading unknown.
-Missing, refused, older than about 15 minutes, or
-already past `resetsAt` means unknown; a Codex session log can fill only Codex's figure.
-Without Orca every reading is unknown unless that Codex fallback is available.
-
-With both known, give work either harness can do to the seat with more of its week left, weighing
-how far off each reset is. The percentages are different subscriptions, not equal amounts of work.
-A seat past about 90% gets no new unit, even one only it can do, unless Eric overrides. With an
-unknown reading the planner judges and says so. This is advisory, not automatic dispatch.
-
-WHY NOW carries one line: `Usage: Claude NN% / Codex NN% (Orca, updated HH:MM by date) -> <seat>: <reason>`.
-Use `unknown` for any unavailable reading. Record the meters at OPEN and CLOSE.
-
 ## The Codex build seat
 
-C (`deskpost-codex-dev`) runs this loop exactly as A does, as builder or integrator as its Kickoff
+`deskpost-codex-dev` runs this loop exactly as `deskpost-dev` does, as builder or integrator as its Kickoff
 assigns (see "Roles"). These are the
 only differences, and they come from the harness, not the role:
 
-| | Claude Code (A) | Codex (C) |
+| | Claude Code (`deskpost-dev`) | Codex (`deskpost-codex-dev`) |
 |---|---|---|
 | Messages | has an inbox; CLOSE step 6's message (the letter's Ring) applies | no inbox: letters only, read at OPEN and CLOSE; no Ring; CLOSE step 6's message is skipped, its summary and paste line are not |
 | Skills | `/name` | `$name` |
 | `## Run` agent line | `CLAUDE_PID` from its environment | `- Agent: unrecorded.` plus `- Harness: codex.` and `- Binding agent_pid:` (OPEN step 3) |
 | Rules file | Claude Code loads the Library's `CLAUDE.md`, not the checkout's | Codex loads the Library's `AGENTS.md` and `~/.codex/AGENTS.md`, not the checkout's; OPEN step 0 covers both |
 | Launch | saved seat settings | since 1.4.4 the launcher adds `--no-daemon`; choose sandbox and approval flags with `seat settings`, with no permission level a default |
-| Usage | both weekly meters at OPEN and CLOSE | see "Assigning work by usage" for readings, unknowns and thresholds |
+| Usage | both weekly meters at OPEN and CLOSE | see ["Assigning work by usage"](dev-loop-planner.md#assigning-work-by-usage) for readings, unknowns and thresholds |
 
-**Branches.** C's rows land on `codex/cNN`, created once at OPEN from the base its Kickoff pins, in
-`D:/dev/deskpost-codex-dev`. C never commits to `master`. As the named integrator it uses
+**Branches.** `deskpost-codex-dev`'s rows land on `codex/cNN`, created once at OPEN from the base its Kickoff pins, in
+`D:/dev/deskpost-codex-dev`. It never commits to `master`. As the named integrator it uses
 `int/<kickoff>` and makes only the merge and private push its CHARTER names; release preparation
 requires its own Kickoff, publication Eric's named word. It never rebases on its own: the planner
 charters any reconciliation. A restart continues the same branch.
@@ -789,40 +649,9 @@ session's temp folder. After an abnormal end, the handback names residue paths a
 kind; the reader or a later run of that same program removes them, never a shell delete. A refused
 cleanup is a stall, not permission to retry another way.
 
-## What remains unproved
-
-K1 passed code-mode guard enforcement and simultaneous new/resumed Codex seat isolation, but its
-resume proof used `exec resume` only. Interactive (TUI) Codex resume is unproved; do not advertise
-that result as a TUI proof. The second-reader limits are in "The second reader" above.
-
-K1b has not run. Its bounded delete rule, `codex queue` waking, and signed-in skill discovery are
-unverified. Use the fixture recipe for deletion; Eric pastes the handback line instead of relying
-on a queue wake; use the release rehearsal for signed-in discovery. A source-fixture observation
-does not certify an exact release binary.
-
-## Setting up a planner seat
-
-What S68 learned setting up `deskpost-desk` (stalls 1, 2, 4 and 5), in the order it has to happen:
-
-1. **`hub new` comes before `seat start`.** `seat start --preflight` refuses a seat whose Hub does
-   not exist yet, so the two cannot be preflighted together. Make the Hub (`--dev` for a dev Hub),
-   then preflight and start the seat (`--no-launch` when it should not start a session yet).
-2. **`seat start --preflight` issues a plan_id for a new seat; `hub new` issues none.** The seat's
-   plan_id is required with `--department`, `--role`, `--card`, `--template` or `--open-book`, and
-   accepted without them (since 1.3.8). A gate that covers both shows the commands it will run and
-   the seat's plan_id, and the reader's yes covers those commands.
-3. **A new worktree needs `tools/Initialize-CodexLibrary.ps1`**, run once in it, or its first commit
-   fails the gate on `codex.project-access-config` (see above).
-4. **The planner seat opens its own Desk from its first live session.** `desk open ... --seat <seat>`
-   refuses while that seat has no live session, so A cannot open it on B's behalf. B's first step is
-   to open the build Hub on its Desk.
-5. **Preflight a replace-mode edit after any additive edit to the same page.** An append, a
-   `check-item` or an `add-section` changes the page, so a replace plan_id preflighted before it goes
-   stale and needs a new yes.
-
 ## The stall log
 
-A keeps a stall log on each handback, and B collects it on the support Hub. Each entry names what
+The builder keeps a stall log on each handback, and the planner collects it on the support Hub. Each entry names what
 stopped the session and its cause: **Deskpost**, or **the harness** (a Claude Code permission prompt
 or the classifier). An extra is built as soon as a logged stall names it. Candidates:
 
@@ -830,15 +659,116 @@ or the classifier). An extra is built as soon as a logged stall names it. Candid
 - a Desk-overview line for the unticked Kickoff;
 - a `kickoffs/` size exemption.
 
-## Limits
 
-- Kickoff pages accumulate; pruning is out of scope.
-- Headless `claude -p` runs used as sandbox tests may be refused by auto mode ("Create Unsafe Agents"), and on
-  other days pass. Try the first run; if it is refused, say the plan needs manual mode or an allow rule, with the
-  reader approving each run. Never route around the classifier through another tool or a subagent.
-- The seats share one Codex quota. B uses Fable or Codex for design and plan reviews as it sees fit, and A
-  uses either when a Kickoff or its own judgment calls for it (Eric, 2026-10-06; this replaces "Fable is B's
-  default reviewer so that Codex quota stays with A"). Before any Codex run, use "Assigning work by usage"
-  for the meter reading and say it.
-- The harness can still stall A on a permission prompt. The COMMANDS section lets the reader widen
-  the allowlist beforehand, and the stall log measures what remains.
+## A builder in another office
+
+A cross-office unit uses a local Hub in each office.
+Letters carry the Kickoff and the full Handback between them.
+The exchange share carries a scanned source export and immutable patch generations.
+The integration Kickoff and the Handback letter supply trusted values; the share supplies bytes to check.
+
+### Receive and open
+
+1. Run `deskpost kickoff receive notes/<letter-page>` (from the release that carries s159).
+   It writes the Kickoff to your own Hub, adds its one Run pointer and closes the letter after readback.
+2. Work in `/config/dev/<id>/` on Webtop, which persists across recreation.
+   Copy the exported repository there from the Kickoff's EXPORT folder.
+   Compare `.deskpost-export.json` with the Kickoff's private base and export root.
+   The manifest is a convenience to compare, never authority to choose either SHA.
+3. Follow OPEN and take the one yes over the received page's path and hash.
+   The builder branch starts at the export root, rather than the private base.
+   Keep the checkout and its Git history under `/config`.
+4. Commit each row through the Linux hook.
+   Run `node tools/gate.ts --tier commit` and `node tools/gate.ts --tier cut` as the Kickoff requires.
+   Record their verdicts, times and the named Linux skips in the Handback.
+   These Linux runs are evidence; the integrator's Windows push tier is the pass mark.
+
+### Publish each committed row
+
+Run the command below from the persistent checkout after each row's commit.
+Copy the export root and HANDBACK FOLDER from the Kickoff into its two arguments.
+On Webtop the latter is `/mnt/exchange/handbacks/<id>/`.
+Keep the folder's single builder as its only publisher.
+
+The command performs the publication procedure in this order:
+
+1. Choose the next unused `gen-<n>` folder.
+2. Run `git format-patch --base=<export_root> --cover-letter <export_root>..HEAD -o <generation>/`.
+3. Hash the cover and ordered commit patches, then write `MANIFEST.json` last.
+4. Write `CURRENT.tmp` and rename that file over `CURRENT`, then read it back.
+
+```text
+node --input-type=module - '<export_root>' '/mnt/exchange/handbacks/<id>' <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+const [base, folder] = process.argv.slice(2);
+if (!/^[a-f0-9]{40}$/.test(base) || !path.isAbsolute(folder)) throw Error('use the Kickoff export root and absolute handback folder');
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+fs.mkdirSync(folder, { recursive: true });
+let number = 1;
+while (fs.existsSync(path.join(folder, `gen-${number}`))) number++;
+const generation = `gen-${number}`;
+const target = path.join(folder, generation);
+fs.mkdirSync(target);
+git('format-patch', `--base=${base}`, '--cover-letter', `${base}..HEAD`, '-o', target);
+const names = fs.readdirSync(target).filter(name => name.endsWith('.patch')).sort();
+if (names.length < 2 || !names[0].startsWith('0000-')) throw Error('expected a cover and commit patches');
+const entry = name => ({ name, sha256: createHash('sha256').update(fs.readFileSync(path.join(target, name))).digest('hex') });
+const manifest = { generation, head: git('rev-parse', 'HEAD'), cover: entry(names[0]), patches: names.slice(1).map(entry) };
+if (process.env.HANDBACK_SOURCE) fs.copyFileSync(process.env.HANDBACK_SOURCE, path.join(target, 'HANDBACK.md'));
+fs.writeFileSync(path.join(target, 'MANIFEST.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+fs.writeFileSync(path.join(folder, 'CURRENT.tmp'), generation + '\n');
+fs.renameSync(path.join(folder, 'CURRENT.tmp'), path.join(folder, 'CURRENT'));
+if (fs.readFileSync(path.join(folder, 'CURRENT'), 'utf8') !== generation + '\n') throw Error('CURRENT readback differs');
+console.log(JSON.stringify(manifest, null, 2));
+NODE
+```
+
+The manifest has this shape, using the actual filenames Git produced:
+
+```json
+{
+  "generation": "gen-<n>",
+  "head": "<full builder HEAD SHA>",
+  "cover": { "name": "0000-cover-letter.patch", "sha256": "<SHA-256>" },
+  "patches": [{ "name": "0001-<subject>.patch", "sha256": "<SHA-256>" }]
+}
+```
+
+The cover is separate from the ordered commit patches.
+All names are plain filenames: no separator, `..`, link or entry outside the generation.
+A row counts as committed for the cross-office loop only after this publication succeeds.
+Each published generation stays unchanged.
+
+After an interruption, `git log <export_root>..HEAD` in the persistent checkout is the record of local commits.
+Read `CURRENT` once to find the last complete publication.
+Repeat the command above; it creates the next unused generation, including when an earlier one is incomplete.
+The resulting patch series contains exactly the local committed rows, with no duplicate row applied.
+
+
+### Close and integrate
+
+At CLOSE, make a final fresh generation of the full series.
+Set `export HANDBACK_SOURCE=/config/dev/<id>/HANDBACK.md` to the completed Handback file, then repeat the publication command.
+Write `HANDBACK.md` there before writing its manifest and switching `CURRENT`.
+Include the base, cover letter, ordered patches and hashes, gates, skipped sections, and new or binary files.
+This keeps published generations immutable, including the final one.
+
+Send the full Handback by letter:
+
+Use the return Library card named by the Kickoff's CLOSE.
+
+`deskpost capture letters --library <return-library-card> --for deskpost-lead --title "<id> handback: <outcome> <head>" --content-path <handback-letter-file>`
+
+Send a copy with `--for deskpost-dev`.
+The letter carries one `## Manifest` section with exactly one fenced `json` block containing the final manifest above.
+The planner reviews the letter because it cannot read the other office's Hub.
+Its integration Kickoff names the private base, export root, original Kickoff envelope hash and exact Handback letter page.
+The integrator applies that letter's verified generation with:
+
+`node tools/apply-handback.ts <folder> --base <private-sha> --export-root <export-root-sha> --letter notes/<page> --onto int/<id>`
+
+The integrator checks the printed commits and diff against OWNS, runs the Windows push tier, then makes its chartered fast-forward push.
+An apply failure leaves Git's diagnostic state for review; follow the integration Kickoff's stop rule before retrying.

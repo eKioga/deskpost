@@ -46,7 +46,8 @@ search. Choose a seat, then continue its last conversation, start a new one, or 
 Settings offers Assistant, Access, Folders, Exact command and Retire; access changes show a
 preview before saving. Choosing a different assistant starts a new conversation and keeps the
 older conversation resumable in its owner. New seat asks for name, installed assistant and access,
-then offers a ready screen with More choices for department and template. Small terminals and
+then offers a ready screen with More choices for department, template and card; a new seat starts
+with its `letters` Book open. Small terminals and
 `deskpost menu --plain` use numbered sentences. Every Codex launch gets `--no-daemon` automatically.
 
 `deskpost seat start` also works for Claude Code and for Codex (`--command codex` for that launch).

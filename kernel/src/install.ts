@@ -36,7 +36,7 @@ import { writeAtomicText } from './fsx.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { COMMAND_NAME, resolveOnPath } from './machine.ts';
-import { liveSessions, ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_FILES, sessionsText, waitForSessionsToClose, withLifecycleLock, writeReceipt } from './lifecycle.ts';
+import { liveSessions, openSessionCount, ownerAlive, readReceipt, receiptPath, selfOwner, SHIM_FILES, sessionsText, waitForSessionsToClose, windowsProcesses, withLifecycleLock, writeReceipt } from './lifecycle.ts';
 import { addUserPath, handOffLeftovers, lastPathBroadcast, LEFTOVER, pruneVersions, removeTreeMovingRunning, removeUninstallList, removeUserPath, sweepLeftovers, userPathKey } from './finisher.ts';
 import { nativeUserPathRead } from './win32proc.ts';
 import { doctorText } from './human.ts';
@@ -984,7 +984,15 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
   if (args.dryRun) {
     // THE SESSIONS ROW (D3), beside the plan and outside what its id hashes, so the id does not move as sessions open.
     const open = switches ? lookSessions() : { seats: [], processes: [], unreadable: [] };
-    const openCount = open.seats.length + open.processes.length;
+    // SESSIONS, NOT LINES (kickoffs/s141 row 4): a seat and the hooks and mcp serve of its one session are one open.
+    let openCount = open.seats.length + open.processes.length;
+    if (open.processes.length) {
+      try {
+        openCount = openSessionCount(open, windowsProcesses());
+      } catch {
+        // The process list could not be read again: every line counts, as before.
+      }
+    }
     state.say(openCount ? `  Sessions    ${openCount} open: they must close before the switch\n${sessionsText(open)}` : '  Sessions    none open');
     step(state, 'Dry run: nothing was changed.');
     if (args.json) {

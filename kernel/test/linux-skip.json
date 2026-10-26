@@ -1,0 +1,4 @@
+{
+  "4": "judges Windows workspace roots: drive-root and separator trimming of C:\\ paths (confirmed in WSL by kickoffs/s153 row 6)",
+  "54": "judges the Windows user PATH as the registry stores it, ';'-separated with %NAME% expanded (confirmed in WSL by kickoffs/s153 row 6)"
+}

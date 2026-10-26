@@ -492,11 +492,16 @@ async function readValidatedBookPageContent(context: ReaderContext, slug: string
       // NEVER THERE, AND A SHELF BOOK OF THE SAME NAME (PLAN-one-step-upgrade.md small fix 4): a Desk entry can name a
       // Book that never reached the collection, and the reader's copy is often on the Shelf, so that route is named.
       const onShelf = fs.existsSync(path.join(context.workspace, 'shelf', slug, 'wiki', '_book.md'));
+      const localArchive = bookRoot.form !== 'shared' && isLocalCollection(context);
+      const archiveRoute = localArchive
+        ? `Close it with \`deskpost desk close book ${slug}\`, reopen with \`deskpost desk open book ${slug} --shelf archive\`, and read with \`place: collection\`.`
+        : 'Close it, or read it from the archive with `place: archive`.';
       refuse(
         'This Book is not in the collection: it was never added there, or it was archived or removed. ' +
           (onShelf
-            ? `A Shelf Book '${slug}' exists: open it with \`deskpost desk open book ${slug} --location shelf\`. Otherwise close this one, or read it from the archive with \`place: archive\`.`
-            : 'Close it, or read it from the archive with `place: archive`.'),
+            ? `A Shelf Book '${slug}' exists: open it with \`deskpost desk open book ${slug} --location shelf\`. Otherwise ` +
+              (localArchive ? archiveRoute.charAt(0).toLowerCase() + archiveRoute.slice(1) : 'close this one, or read it from the archive with `place: archive`.')
+            : archiveRoute),
       );
     }
     const local = bookRoot.form !== 'shared' && isLocalCollection(context);

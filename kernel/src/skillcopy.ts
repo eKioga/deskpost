@@ -20,8 +20,6 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-
-export const SKILL_RELATIVE = '.claude/skills/library-help';
 export const SKILL_MANIFEST = '.deskpost-managed.json';
 /** Released workspace skills only; prototypes enter this inventory when their command ships. */
 export const SHIPPED_SKILLS = ['library-help', 'save', 'closeout'] as const;

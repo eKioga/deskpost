@@ -18,9 +18,10 @@ export function inlineCutWarning(
 ): string | null {
   if (platform !== 'win32' || value === undefined || value === '' || /[\r\n]/.test(value)) return null;
   if (argv.length < 2 || argv[argv.length - 2] !== `--${option}` || argv[argv.length - 1] !== value) return null;
+  // WHAT ARRIVED COMES FIRST (kickoffs/s146 row 6): the reader can compare it with what they sent.
   return (
-    `On Windows the deskpost shim ends the command line at the first line break, so an inline --${option} keeps only ` +
-    `its first line and nothing after it arrives. If this value had more lines, they were not saved: ${remedy}`
+    `Saved 1 line, ${value.length} characters, from --${option}. On Windows the deskpost shim ends the command line at the ` +
+    `first line break, so if you sent more lines, they were cut: ${remedy}`
   );
 }
 

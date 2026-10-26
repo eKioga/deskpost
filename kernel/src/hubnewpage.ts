@@ -309,7 +309,7 @@ function nextAdvice(slug: string, page: string): string {
  * THE Next LINE FOR A NEW PAGE, ADVISED BY FILE (kickoffs/s94 row 5; the Report "Suspected: hub edit new-page's `next`
  * advice suggests an inline --content pointer line"): an inline value is cut at the shim's first line break, and the
  * dev session loop takes every Hub write from a file. A `kickoffs/sNN` page's line is the loop's pointer
- * (`docs/dev-session-loop.md`, "The Kickoff"); any other page's is its link.
+ * (`docs/dev-loop-planner.md`, "The Kickoff"); any other page's is its link.
  */
 function nextLine(slug: string, page: string): string {
   const kickoff = /^kickoffs\/(s[0-9a-z-]+)$/.exec(page);

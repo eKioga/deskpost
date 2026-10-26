@@ -22,7 +22,9 @@
  *            the TypeScript identity/deployment scans; the kernel self-test sections the changed files select
  *            (tools/section-select.mts, rules b-d). Comparisons also honor serial opt-in and fixture lock names.
  *   cut      the commit tier's checks, but every self-test section runs inside `Invoke-LibraryChecks.ps1 -Fast`, run
- *            as a child for everything not yet ported.
+ *            as a child for everything not yet ported. Where `powershell.exe` is absent (Linux; kickoffs/s157 row 7,
+ *            PLAN-cross-office-build-loop.md step 1.3): the commit tier's checks and every section the platform policy
+ *            selects, through `kernel/test/run-parallel.ts`. The push and release tiers then refuse by name.
  *   push     today's full gate's check set, exactly, in one pool (PLAN-fast-gates.md Unit B, S119): the static checks
  *            once (`Invoke-LibraryChecks.ps1 -Fast`), every kernel self-test section as its own child (Unit A's
  *            contract), and each -Fast roster suite as an `-Only <name>` child. Its kernel.selftest row is the
@@ -45,10 +47,11 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { childEnv } from '../kernel/test/gate-env.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from '../kernel/test/gate-lock.ts';
-import { SERIAL_SECTIONS, fastRoster, parseOptions, rosterProblems, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
-import { COVERS_PATH, SELFTEST_PATH, parseCovers, parseHunks, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
+import { SERIAL_SECTIONS, fastRoster, parseOptions, readPlatformSkips, requiredListRefusals, requiredSectionsVerdict, rosterProblems, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
+import { COVERS_PATH, SELFTEST_PATH, applyPlatformSkips, parseCovers, parseHunks, platformRefusals, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
 
 const EXIT_PASS = 0;
 const EXIT_FAIL = 1;
@@ -78,9 +81,10 @@ const CHECK_LIMIT = 10 * MINUTE;
 const RUNNER_LIMIT = 45 * MINUTE;
 const SUITE_LIMIT = 15 * MINUTE;
 const STATIC_LIMIT = 15 * MINUTE;
-/** The three slowest suites, measured 2026-10-11 (PLAN-fast-gates.md, "Measured"): 25 minutes each, started first. */
-const SLOW_SUITES: Record<string, string> = { 'acceptance.harness-selftest': '690 s', 'library-helpers.boundary-suite': '551 s', 'notebook.migration': '524 s' };
-const SLOW_SUITE_LIMIT = 25 * MINUTE;
+/** Slow suites start first. Acceptance passed 25 runs in 997.6-1259.5s; c62-r2 took 1503.1s under load.
+ * c63 measured 1069.94s alone (2026-10-25), so allow 40 minutes; the other times are from 2026-10-11. */
+const SLOW_SUITES: Record<string, string> = { 'acceptance.harness-selftest': '1069.94 s', 'library-helpers.boundary-suite': '551 s', 'notebook.migration': '524 s' };
+const SLOW_SUITE_LIMIT = 40 * MINUTE;
 /** Suites that start their own concurrency run alone, behind the barrier with the lane sections. None at b588e1e by
  * reading (S119): no roster suite starts a pool; library-helpers' nested -Fast run is against a scratch tree with no
  * kernel, and the rest start sleeper or lock-holder processes one or two at a time. A suite whose pooled verdict differs
@@ -96,26 +100,10 @@ let interrupted = false;
 const USAGE = 'Usage: node tools/gate.ts --tier commit|cut|push|release [--json] [--no-wait] [--commit <sha>] [--compare-with <old-report-json>] [--require-sections <n,n,...>]; ' +
   'node tools/gate.ts --sections-log <file> --require-sections <n,n,...>; the hook uses --compare-with only on request (DESKPOST_GATE_COMPARE=1)';
 
-/**
- * A SECTION A KICKOFF REQUIRES MUST PASS, NOT SKIP (kickoffs/s120 row 9; c14 ran two green gates that skipped section
- * 149): each named section whose verdict in a sections.log is SKIP, or which the log does not name, is a problem.
- */
-function requiredSectionProblems(logText: string, required: string[]): string[] {
-  const verdicts = new Map<string, string>();
-  for (const line of logText.split(/\r?\n/)) {
-    const m = /^section (\d+): (\S+)/.exec(line);
-    if (m) verdicts.set(m[1]!, m[2]!);
-  }
-  return required.flatMap((section) => {
-    const verdict = verdicts.get(section);
-    return verdict === undefined ? [`section ${section}: absent`] : verdict === 'SKIP' ? [`section ${section}: SKIP`] : [];
-  });
-}
-
+/** The required-sections check lives in run-parallel.ts, which a focused self-test run also uses (kickoffs/s140 row 4). */
 function requiredOutcome(logText: string, required: string[], tier: Tier): Outcome {
-  const problems = requiredSectionProblems(logText, required);
-  return { check: 'gate.required-sections', tier, status: problems.length ? 'fail' : 'pass', seconds: null, caught: 'c14: a required section 149 skipped under two green gates',
-    detail: problems.length ? `a section this gate was told to require did not pass: ${problems.join('; ')}` : `sections ${required.join(', ')} each ran with a verdict other than SKIP` };
+  const { status, detail } = requiredSectionsVerdict(logText, required);
+  return { check: 'gate.required-sections', tier, status, seconds: null, caught: 'c14: a required section 149 skipped under two green gates', detail };
 }
 
 function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null; noWait: boolean; requireSections: string[]; sectionsLog: string | null; compare: OldGate | null } {
@@ -152,7 +140,10 @@ function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string 
     return { tier: 'push', json, commit, noWait, requireSections, sectionsLog, compare };
   }
   if (tier === null) throw new GateError(`name a tier. ${USAGE}`);
-  if (requireSections.length && tier !== 'push' && tier !== 'release') throw new GateError(`--require-sections reads the sections.log only the push and release tiers write. ${USAGE}`);
+  if (requireSections.length && tier !== 'push' && tier !== 'release') {
+    const refusals = platformRefusals(requireSections, readPlatformSkips());
+    throw new GateError(refusals.length ? refusals.join('; ') : `--require-sections reads the sections.log only the push and release tiers write. ${USAGE}`);
+  }
   return { tier, json, commit, noWait, requireSections, sectionsLog, compare };
 }
 
@@ -229,12 +220,19 @@ function coverage(root: string, tier: Tier): Outcome {
   return { ...base, status: 'pass', detail: `every kernel/src file is claimed by a section in ${COVERS_PATH}` };
 }
 
-async function docsGate(root: string, tier: Tier): Promise<Outcome> {
+/** The docs gate's SKIP for a code commit. Without PowerShell no runner child runs the document checks, so it says so
+ * (kickoffs/s158 row 5); the Windows wording is unchanged. */
+export function docsSkipDetail(powerShell: boolean): string {
+  return powerShell ? 'not a docs-only commit: its document checks run in the runner child (cut and push tiers) until session 2 ports them'
+    : "not a docs-only commit: no document checks run on this platform; the integrator's Windows push tier runs them";
+}
+
+async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent()): Promise<Outcome> {
   const ran = await runChild(process.execPath, [path.join(root, 'tools', 'docs-gate.ts')], root, CHECK_LIMIT);
   const base = { check: 'docs.gate', tier, seconds: ran.seconds, caught: 'the document checks it names, for a docs-only commit (S104 row 0b)' };
   if (ran.status === 0) return { ...base, status: 'pass', detail: lastLines(ran.output, 1) };
   if (ran.status === 3) return { ...base, status: 'fail', detail: ran.output.split(/\r?\n/).filter((line) => line.startsWith('FAIL')).join(' | ') || lastLines(ran.output, 3) };
-  if (ran.status === 4) return { ...base, status: 'skip', detail: 'not a docs-only commit: its document checks run in the runner child (cut and push tiers) until session 2 ports them' };
+  if (ran.status === 4) return { ...base, status: 'skip', detail: docsSkipDetail(powerShell) };
   throw new GateError(`the docs gate could not decide (exit ${ran.status}): ${lastLines(ran.output, 2)}`);
 }
 
@@ -252,11 +250,44 @@ async function selftestSections(root: string, tier: Tier, chosen: Selection): Pr
   const check = 'kernel.selftest (selected sections)';
   const caught = 'every defect the kernel self-test catches, for the sections a commit touches';
   if (!chosen.all && chosen.sections.length === 0) return { check, tier, status: 'skip', seconds: 0, caught, detail: 'no change selects a section' };
-  const env: Record<string, string> = chosen.all ? {} : { LIBRARY_SELFTEST_SECTIONS: chosen.sections.join(',') };
+  // The platform's skips leave the selection (kickoffs/s153 row 6); on Windows nothing changes.
+  const skips = readPlatformSkips();
+  const policy = skips.size ? applyPlatformSkips(chosen.all ? sectionNumbers(fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8'), '') : chosen.sections, skips) : null;
+  if (policy?.line) process.stdout.write(`     ${policy.line}\n`);
+  if (policy && policy.sections.length === 0) return { check, tier, status: 'skip', seconds: 0, caught, detail: `every selected section is skipped here: ${policy.line}` };
+  const env: Record<string, string> = policy ? { LIBRARY_SELFTEST_SECTIONS: policy.sections.join(',') } : chosen.all ? {} : { LIBRARY_SELFTEST_SECTIONS: chosen.sections.join(',') };
   const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'selftest.ts')], root, RUNNER_LIMIT, env);
   const what = chosen.all ? 'every section' : `sections ${chosen.sections.join(', ')}`;
   if (ran.status === 0) return { check, tier, status: 'pass', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 1)}` };
   return { check, tier, status: 'fail', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 3).slice(0, 1200)}` };
+}
+
+/**
+ * WHERE A TIER RUNS (kickoffs/s157 row 7; PLAN-cross-office-build-loop.md step 1.3). Windows always has `powershell.exe`;
+ * elsewhere it is whatever PATH holds (a WSL run through tools/wsl-run.mts sees Linux's own folders only). Without it the
+ * commit tier is unchanged, the cut tier runs its sections through run-parallel.ts, and the push and release tiers,
+ * whose suites are PowerShell's, refuse: on Linux the builder's tiers are evidence, the integrator's push tier the pass mark.
+ */
+export function powerShellPresent(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform, exists: (file: string) => boolean = fs.existsSync): boolean {
+  if (platform === 'win32') return true;
+  return (env['PATH'] ?? '').split(':').filter(Boolean).some((folder) => exists(path.posix.join(folder, 'powershell.exe')));
+}
+export function tierRoute(tier: Tier, powerShell: boolean): { route: 'powershell' | 'node' } | { refusal: string } {
+  if (tier === 'commit') return { route: 'node' };
+  if (powerShell) return { route: 'powershell' };
+  if (tier === 'cut') return { route: 'node' };
+  return { refusal: `the ${tier} tier runs on Windows; hand back instead` };
+}
+
+/** The cut tier without PowerShell: every section the platform policy selects, as run-parallel.ts runs them. */
+async function parallelSections(root: string, tier: Tier): Promise<Outcome> {
+  const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'run-parallel.ts')], path.join(root, 'kernel'), RUNNER_LIMIT, { LIBRARY_SELFTEST_SECTIONS: '' });
+  const skipped = /^linux: .*$/m.exec(ran.output)?.[0];
+  if (skipped) process.stdout.write(`     ${skipped}\n`);
+  return {
+    check: 'kernel.selftest (every section, run-parallel.ts)', tier, status: ran.status === 0 ? 'pass' : 'fail', seconds: ran.seconds,
+    caught: 'every defect the kernel self-test catches', detail: ran.status === 0 ? lastLines(ran.output, 1) : `exit ${ran.status}: ${lastLines(ran.output, 3).slice(0, 1200)}`,
+  };
 }
 
 /** Invoke-LibraryChecks.ps1 as a child; each of its check lines becomes an outcome with no time of its own. */
@@ -324,7 +355,9 @@ async function suiteChild(root: string, name: string, folder: string, signal: Ab
 async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = []): Promise<void> {
   const options = parseOptions([]);
   const selftest = path.join(root, 'kernel', 'test', 'selftest.ts');
-  const sections = sectionNumbers(fs.readFileSync(selftest, 'utf8'), '');
+  const policy = applyPlatformSkips(sectionNumbers(fs.readFileSync(selftest, 'utf8'), ''), readPlatformSkips());
+  if (policy.line) note(`     ${policy.line}`);
+  const sections = policy.sections;
   const suites = fastRoster(fs.readFileSync(path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), 'utf8'));
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-push-'));
   fs.mkdirSync(path.join(folder, 'sections'));
@@ -467,6 +500,7 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   };
 
   const pooled = options.tier === 'push' || options.tier === 'release';
+  const route = tierRoute(options.tier, powerShellPresent());
   // Section 155 is the push tier's type check; its claim-map coverage and docs gate are reported, not acceptance.
   if (!pooled) for (const outcome of await typecheck(root, 'commit')) say(outcome);
   say({ ...coverage(root, 'commit'), diagnostic: pooled });
@@ -490,6 +524,10 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   else if (pooled) {
     await pushChecks(root, say, (line) => (options.json ? process.stderr : process.stdout).write(line + '\n'), options.requireSections);
     if (options.tier === 'release') releaseOnly().forEach(say);
+  } else if ('route' in route && route.route === 'node') {
+    if (!options.json) process.stdout.write(`     ${options.tier} tier: no powershell.exe here; the scans, then every section through kernel/test/run-parallel.ts\n`);
+    for (const outcome of await scanChecks(root)) say(outcome);
+    say(await parallelSections(root, options.tier));
   } else {
     if (!options.json) process.stdout.write(`     ${options.tier} tier: running tools/Invoke-LibraryChecks.ps1${options.tier === 'cut' ? ' -Fast' : ''} as a child for everything not yet ported${options.tier === 'cut' ? '; its kernel.selftest runs every section' : ''}\n`);
     for (const outcome of await runner(root, options.tier, options.tier === 'cut')) say(outcome);
@@ -501,8 +539,9 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   const failed = outcomes.filter((outcome) => outcome.status === 'fail' && !outcome.diagnostic).length;
   const overBudget = budget !== null && total > budget;
   const exit = failed ? EXIT_FAIL : EXIT_PASS;
+  const report = { schema: 1, tier: options.tier, commit: options.commit, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, selection: { ...chosen.selection, changed: chosen.changed }, checks: outcomes };
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ schema: 1, tier: options.tier, commit: options.commit, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, selection: { ...chosen.selection, changed: chosen.changed }, checks: outcomes })}\n`);
+    process.stdout.write(`${JSON.stringify(report)}\n`);
   } else {
     const count = (status: Status) => outcomes.filter((outcome) => outcome.status === status && !outcome.diagnostic).length;
     const diagnostics = outcomes.filter((outcome) => outcome.diagnostic);
@@ -510,8 +549,27 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
     process.stdout.write(`${options.tier} tier: ${clock(total)}${budget === null ? ' (measured; no budget yet)' : ` of ${clock(budget)}`}. ${count('pass')} passed, ${count('warn')} warned, ${failed} failed, ${count('skip')} skipped${tierWait ? `, after a ${tierWait.seconds} s lock wait` : ''}.${aside}\n`);
     if (overBudget) process.stdout.write(`WARN: the ${options.tier} tier took ${clock(total)}, over its ${clock(budget!)} budget. Over budget is a warning, never a failure.\n`);
   }
+  keepRecord(root, report, tierWait, options.json);
   if (options.compare) { compareGates(root, options.compare, outcomes, total, exit, { ...chosen.selection, changed: chosen.changed }, undefined, options.json); return EXIT_PASS; }
   return exit;
+}
+
+/** EVERY GATE RUN KEEPS ITS RECORD (kickoffs/s136 row 2; PLAN-develops-itself.md criterion 8): the object `--json` prints,
+ * with the lock waits the run recorded, at `.gate/runs/<UTC stamp>-<tier>.json` in the checkout (git-ignored). A failed
+ * write says so in one line and never changes the verdict or the exit code. */
+function keepRecord(root: string, report: { tier: string }, wait: GateWait | null, json: boolean): void {
+  const output = json ? process.stderr : process.stdout;
+  try {
+    const folder = path.join(root, '.gate', 'runs');
+    fs.mkdirSync(folder, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    let file = path.join(folder, `${stamp}-${report.tier}.json`);
+    for (let n = 2; fs.existsSync(file); n += 1) file = path.join(folder, `${stamp}-${report.tier}-${n}.json`);
+    fs.writeFileSync(file, JSON.stringify({ ...report, waits: wait ? [wait] : [] }) + '\n', { flag: 'wx' });
+    output.write(`gate record: ${path.relative(root, file).split(path.sep).join('/')}\n`);
+  } catch (error) {
+    output.write(`gate record not written: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -521,6 +579,15 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${outcome.status.toUpperCase()} ${outcome.check}: ${outcome.detail}\n`);
     return outcome.status === 'fail' ? EXIT_FAIL : EXIT_PASS;
   }
+  // A REQUIRED SECTION THAT CANNOT PASS HERE IS REFUSED BEFORE THE LOCK AND BEFORE ANY CHECK (kickoffs/s153 row 5): s152's
+  // first push tier ran 19m 43s to fail only on sections it skips by declaration. Exit 2, the gate's own failure.
+  if (options.requireSections.length) {
+    const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
+    const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8'));
+    if (refusals.length) throw new GateError(refusals.join('; '));
+  }
+  const route = tierRoute(options.tier, powerShellPresent());
+  if ('refusal' in route) throw new GateError(route.refusal);
   const say = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
   const lock = options.tier === 'commit' ? null : await acquireGateLock(options.tier, options.noWait, say);
   const notice = lock && gateLockOffNotice(lock);
@@ -535,7 +602,8 @@ async function main(argv: string[]): Promise<number> {
     return EXIT_PASS;
   } finally { await lock?.release(); }
 }
-main(process.argv.slice(2)).then(
+// Run as a program, not when a self-test imports the tier choice above (section 433); a junctioned path is the same file.
+if (process.argv[1] && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))) main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (error: unknown) => {
     process.stderr.write(`gate: ${error instanceof Error ? error.message : String(error)}\n`);

@@ -518,39 +518,6 @@ function assertExclusionEarned(workspace: string, topic: string, acceptReproduci
   }
 }
 
-// --- The writers' gate ------------------------------------------------------------------------------
-
-/**
- * May this seat write into this topic? A read: no lock, no throw, so a PREFLIGHT can report it.
- * Owned by this seat, shared, excluded and unmapped are all writable; only another seat's owned topic
- * is not, because that seat's ordinary reset would quarantine this material as its own. It compares
- * the SLUG, not the incarnation: two incarnations of one slug are never both live.
- */
-export function testNotebookTopicWritable(workspace: string, topic: string, seat: string): { writable: boolean; reason: string | null } {
-  const entry = topicOwnerEntry(readNotebookTopicOwners(workspace), topic);
-  if (entry === null) return { writable: true, reason: null };
-  const scope = String(entry['scope']);
-  const owner = scope === 'owned' ? String(entry['seat']) : null;
-  const project = scope === 'owned' && has(entry, 'project') && entry['project'] !== null ? String(entry['project']) : null;
-  if (scope !== 'owned' || owner === seat) return { writable: true, reason: null };
-  const projectNote = project && project.trim() ? ` for project '${project}'` : '';
-  return {
-    writable: false,
-    reason:
-      `notebook/${topic} is owned by seat '${owner}'${projectNote}, and seat '${seat}' may not write into it: that seat's ` +
-      `ordinary reset would quarantine this material as its own. Work at seat '${owner}' instead; or, if that seat ` +
-      `is dormant, reassign the topic with tools/Set-NotebookTopicOwner.ps1 -Topic ${topic} -Seat ${seat}; or declare ` +
-      'it shared with -Scope shared if it is genuinely common ground.',
-  };
-}
-
-/** The writers' gate under the topic's own lock, so the answer cannot change under the write it authorises. */
-export function assertNotebookTopicWritable(workspace: string, topic: string, seat: string): void {
-  assertNotebookTopicLockHeld(workspace, topic, 'Writing into a Notebook topic');
-  const verdict = testNotebookTopicWritable(workspace, topic, seat);
-  if (!verdict.writable) throw new Error(verdict.reason!);
-}
-
 // --- The ownership writer ---------------------------------------------------------------------------
 
 /**

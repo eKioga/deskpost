@@ -260,14 +260,18 @@ An agent at any seat that hits a Library defect files it here instead of interru
 or asking the reader to carry it. Examples are a refusal that names the wrong thing, a check that
 fails wrongly, or a gap where a verb should exist.
 
-**Who triages it.** A Report has no recipient. The seat whose card says it triages the Report Inbox
-(`deskpost seat cards --all`) verifies each Report, records the verdict on its own Hub, and closes it.
-If no card says so, ask the reader. Before routing a Report elsewhere, read your own Hub: it may
-already say where triage verdicts go.
+**Who triages it.** A local Report Inbox stays unaddressed. For cross-Library Reports, the triaging
+seat is named in that Library's Postbox entry and the filer pins it; `postbox status` shows the cached
+destination. Verify each claim, record the verdict on the fitting Hub, then close it with the applicable
+local or cross-Library workflow below. With no configured destination, use the local support seat/card and
+ask the reader if it is unclear (`kernel/src/postbox.ts`, `triage.ts`, `triagebatch.ts`).
 
 ```
 library capture reports --title "<what broke>" --content-path <local-markdown-file>
 ```
+
+`library reports list [--json]` names this seat's own pending Reports, oldest first, the ones it may still amend or
+withdraw; `library triage inventory --pending` lists every pending Report.
 
 Write the failing command, its arguments and its output **into the note**. That is the half that
 makes a report worth more than a summary: it is written while the context is still live, by the only
@@ -283,7 +287,68 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/cross-seat-reports.md).
+
+## Reports across Libraries
+
+`library postbox status` shows the cached triaging Library and any conflicting claims. In the Library that
+will triage, name an existing seat with `reports triager <seat> --preflight`, show that preview, then apply
+with `--user-confirmed --plan-id <id>`. Other Libraries pin one claimant at their next `postbox check`.
+If claims conflict, `reports triager --follow <library-id-or-card>` has the same preview/apply gate.
+Letters still travel while unsent Reports are held (`kernel/src/postbox.ts`).
+
+An original seated `capture reports` then sends a Report there and keeps a pending sent copy here.
+`--local` keeps it here on purpose. Include the failing command and output in the body: a path on this
+computer is context, not an attachment the other Library can open (`kernel/src/capture.ts`).
+
+Seatless captures destined for another triaging Library wait with `awaiting_sender: true` unless kept local.
+`reports send-pending --preflight` lists the pending
+local Reports, their authors and destination; apply only that preview's yes with `--user-confirmed --plan-id`.
+A seated author stays the author. An unauthored Report uses `sent_for: seatless` and the sending seat's
+`origin_seat`/`origin_seat_id` as its return address; it gains neither `from_seat` nor amend/withdraw rights.
+Unknown return addresses are refused (`kernel/src/capture.ts`, `shelfnote.ts`).
+
+```
+library reports amend notes/<sent-copy> --content-path <update-file>
+library reports withdraw notes/<sent-copy> --note "<reason>"
+```
+
+The filing seat may still correct its own untouched pending copy. The control uses that copy's recorded
+destination and a sequence bound to its delivery id. The receiver waits for the parent and earlier sequence,
+checks origin Library and seat incarnation, and applies once. A different id claiming an applied sequence
+records a conflict and returns an ordinary letter; the earlier binding stays (`kernel/src/reportsend.ts`, `postbox.ts`).
+
+If triage already touched the receiver's Report, an amendment is filed as a generated replacement Report;
+a withdrawal adds a `Withdrawal asked` section. The triage disposition stays as it was. Both return ordinary
+letters with no closing effect, and generated Reports are never dispatched (`kernel/src/capture.ts`, `reportsend.ts`).
+
+A received Report's terminal close uses `review`, an `outcome` and `outcome_note`. The five verdicts are
+`confirmed`, `confirmed-by-design`, `not-reproduced`, `already-fixed` and `declined`. Other terminal actions
+on a pending received Report are refused; a hold sends nothing. The outcome letter closes only the matching
+copy at a newer generation, using its recorded address even if the current pin changed. It is still a
+letter to read when it cannot match a copy (`kernel/src/triage.ts`, `triagebatch.ts`, `capture.ts`, `reportsend.ts`).
+
+| Desk count | What it means |
+| --- | --- |
+| `reports_unsent`, `reports_held` | Report/control entries waiting to send, including those held by triager policy |
+| `reports_awaiting_sender` | unauthored claims marked as awaiting a sender |
+| `reports_awaiting_outcome` | pending sent copies waiting for their verdict |
+| `unexpected_reports` | received Reports filed even though this Library did not advertise a triager |
+| `outcomes_received` | pending outcome letters addressed to this seat |
+| `controls_deferred` | controls waiting for a parent or predecessor, as last checked |
+| `records_incomplete` | intent records with a stage still pending |
+
+The Desk can also offer send-pending for older local Reports without an awaiting-sender flag. Its preview
+names the actual candidates (`kernel/src/desk.ts`, `capture.ts`).
+
+Desk and doctor read local facts/cache. Doctor names a control deferred over 24 hours, a sent copy pending
+over seven days and an intent incomplete over an hour. Run a normal `postbox check` to retry deferred
+deliveries. Recovery keeps identities and respects `reports` then `letters` locks; ordinary letter capture
+does no global recovery (`kernel/src/desk.ts`, `doctor.ts`, `postbox.ts`, `intent.ts`).
+
+Tidy keeps closed copies under `reviewed/`; delivery lookups include them. Check removes completed incoming
+records older than 30 days. Claims and ordinary letters remain data, and a return letter is never an approval.
+Design: ADR-0084; implementation in `kernel/src/shelftidy.ts`, `intent.ts`, `reportsend.ts`, `postbox.ts`.
 
 ## Adding another capture Book
 

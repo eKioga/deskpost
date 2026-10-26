@@ -21,7 +21,7 @@ roles at different times.
 **Decide within the approval and record the choice.** An open question inside the CHARTER is
 for the builder to decide and explain in its handback. Anything outside it parks with a
 reason. The builder neither waits for routine choices nor widens the work. Deskpost's
-[Decide and record](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/dev-session-loop.md#work)
+[Decide and record](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md#work)
 is a worked example.
 
 **Have a second reader inspect sensitive changes.** Before a release or any credential step,
@@ -53,7 +53,7 @@ Usage is advice about where to put work. If you have Orca, its `orca account lis
 reports weekly use, reset times and update times; check that its account matches the seat.
 An old, missing, refused or expired reading is unknown. Without Orca, say unknown; a Codex
 session log can fill only Codex's reading. Deskpost's
-[usage rule](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/dev-session-loop.md#assigning-work-by-usage)
+[usage rule](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md#assigning-work-by-usage)
 keeps its thresholds in one place. You can override the planner's advice.
 
 ## When you use fixtures
@@ -120,7 +120,7 @@ stopped a step, whether it came from the product or the harness, and what remain
 Choose gates that catch the unit's defects. Deskpost uses targeted test sections while
 working, the pre-commit hook on each clean staged cut, and a full gate before a chartered
 private push. Record each commit and its hook result together. Its
-[development loop](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/dev-session-loop.md)
+[development loop](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md)
 shows the full procedure; you need only the extras your project uses, but an adopted extra
 brings its safeguards with it.
 

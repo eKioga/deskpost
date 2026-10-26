@@ -40,8 +40,8 @@ That line makes the seat the first time. After that, `deskpost seat start <seat>
 `--command codex` to work in Codex instead of Claude Code for that launch. Or type just `deskpost`:
 the main menu uses arrows to move, Enter to choose, Esc to go back, and typing to search. Choose
 a seat, then continue its last conversation, start a new one, or open Settings. New seat asks for
-a name, installed assistant and access, then shows a ready screen; More choices offers department
-and template. Settings saves an Assistant and named Access after its preview, and offers Folders,
+a name, installed assistant and access, then shows a ready screen; More choices offers department,
+template and card, and a new seat starts with its `letters` Book open. Settings saves an Assistant and named Access after its preview, and offers Folders,
 Exact command and Retire. Every Codex launch gets `--no-daemon`. Choosing a different assistant
 starts a new conversation and keeps the older one resumable in its owner. Small terminals and
 `deskpost menu --plain` use numbered sentences for the same choices.

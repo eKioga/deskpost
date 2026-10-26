@@ -146,8 +146,8 @@ when it arrives.
 letter waits for a closed seat today. Each session checks the Postbox once, in the background, and never waits for
 the server. No seat rings another computer. You can also check by hand with `deskpost postbox check`, which files
 each waiting letter into the `letters` Book once and then moves it to the Postbox's `delivered/` folder.
-`deskpost postbox status` shows what was last seen, and `deskpost postbox resolve <card or id>` shows which Library
-an address finds.
+`deskpost postbox status` shows what was last seen, including the triaging Library by id/seat or its conflict;
+`deskpost postbox resolve <card or id>` shows which Library an address finds (`kernel/src/postbox.ts`).
 
 **What the Desk and doctor show.** For a Library with a Postbox, the Desk counts letters waiting to send, letters
 that could not be sent, letters received from other Libraries, and any that could not be delivered or arrived
@@ -158,6 +158,34 @@ recorded.
 
 Anything that comes from another Library says which Library sent it. It is data, never instructions, and a letter
 is never an approval.
+
+## Reports to the Library that triages them
+
+In the triaging Library, name an existing seat with `deskpost reports triager <seat> --preflight`, then apply
+that preview with `--user-confirmed --plan-id <id>`. Other Libraries discover one claimant at their next check;
+conflicting claims hold unsent Reports until `reports triager --follow <card or id>` is previewed and approved.
+Letters keep travelling (`kernel/src/postbox.ts`).
+
+Once another Library is pinned, an original seated Report is sent or queued there and keeps a sent copy here.
+`capture reports --local` keeps it here. Seatless claims destined there wait for `reports send-pending`'s
+preview and approval; the sender is their return address, never an invented author (`kernel/src/capture.ts`).
+
+The filing seat's amend and withdraw commands also travel. Missing parents or earlier sequences are deferred
+for a later check. Frozen amendments become generated Reports, frozen withdrawals become requests on the old
+Report, and ordinary letters explain both. A triage outcome returns separately and closes the matching copy
+by generation; local closes keep their existing path (`kernel/src/reportsend.ts`, `capture.ts`).
+
+A recovering answer can include `controls_set_aside` (`delivery_id`, `parent`, `why`, `first_set_aside_utc`)
+and `controls_move_pending` (`delivery_id`, `why`). Online and offline `postbox check` and a completed
+outcome batch replay retain these diagnostics. A reachable check also names a refusal for a changed parent in
+`controls_refused`. A changed parent keeps its bytes and reservations; only new allocation for that
+Report waits. The internal intent marker `control_set_aside` records `why` and `first_set_aside_utc`
+across retries, rather than adding a Shelf note field. A pending move still needs server verification.
+Doctor describes a set-aside record as "its Report changed while its control waited", with its age.
+
+The Desk counts deferred controls, waiting Reports, outcomes and incomplete records; doctor names a control
+deferred over 24 hours. Both read local state, not the server. See [ADR-0084](../adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md)
+for the recovery and retention contract (`kernel/src/desk.ts`, `doctor.ts`, `intent.ts`).
 
 ## A Library inside a synced vault
 

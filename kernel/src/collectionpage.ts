@@ -38,6 +38,7 @@ import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { strayControlRefusal } from './controlchars.ts';
+import { hasTimePlaceholders } from './hubedit.ts';
 import { linkLabel, mapLinksPage, mapWithLink, planTopicIndexLine, readMap, topicIndexPage } from './maplines.ts';
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -283,9 +284,23 @@ export function collectionAddPage(argv: string[], workspace: string): Record<str
   return withInlineCutWarning(collectionAddPageUnwarned(argv, workspace), argv, 'body', 'pass it with --content-path <file>.');
 }
 
+/**
+ * AN UNFILLED TIME PLACEHOLDER IS REFUSED, NOT STORED (kickoffs/s160 row 7): `hub edit` and `capture` fill {now} and
+ * {today}, and the page writers store text as given, so one written here was kept as the literal word. The doubled-brace
+ * literal ({{now}}) is accepted, as before. The refusal names each placeholder, or null when there is none.
+ */
+export function unfilledPlaceholderRefusal(text: string, writer: string): string | null {
+  const bare = text.replace(/\{\{(?:now|today)\}\}/g, '');
+  if (!hasTimePlaceholders(bare)) return null;
+  const words = ['{now}', '{today}'].filter((word) => bare.includes(word));
+  return `The page holds ${words.join(' and ')}, which ${writer} does not fill: it stores the text as given, so write the date itself. Nothing was written.`;
+}
+
 function collectionAddPageUnwarned(argv: string[], workspace: string): Record<string, PsJsonValue> {
   const parsed = parseArguments(argv, argumentTable('collection', 'add-page'));
   const plan = planAddPage(argv, workspace);
+  const placeholder = unfilledPlaceholderRefusal(plan.body, 'collection add-page');
+  if (placeholder !== null) refuse(placeholder);
   if (parsed.flags.has('preflight')) return plan.value;
   if (!parsed.flags.has('user-confirmed')) {
     refuse('A page added to a collection Book is not yet written: review the preview (--preflight) and rerun with --user-confirmed --plan-id <id>.');

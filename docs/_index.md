@@ -97,6 +97,8 @@ that decides where any given decision belongs.
 * [ADR-0082](adr/0082-a-hub-pages-limit-follows-how-often-it-is-read-and-a-hub-tidy-moves-only-what-is-already-decided.md) - A Hub page's limit follows how often it is read, and a Hub tidy moves only what is already decided: `_project` and `connections` every-session at 40000 bytes, every other page on-demand at 56000; the Desk measures each open Hub (`hub_pages`) and never infers; `hub tidy` moves ticked Now and Next items and named whole sections word for word, proved by the kernel at preflight and apply, one pointer per section, history pages chained (s125, 2026-10-16)
 * [ADR-0083](adr/0083-a-seat-amends-or-withdraws-its-own-pending-report-and-triage-freezes-it.md) - A seat amends or withdraws its own pending Report, and triage freezes it: `reports amend` appends a `## Update` section and `reports withdraw` closes with `closed_note`, only the filing seat by its `from_seat_id`, only while triage has not touched the Report; the map marks `(updated <date>)` and `(withdrawn)` (s130, 2026-10-17)
 
+* [ADR-0084](adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md) - A Report crosses Libraries to the one triaging seat, keeps a sent copy and returns an outcome letter; sequenced controls, frozen-case replies, durable intent recovery and the reports-then-letters lock order (c47–c50, 2026-10-20)
+
 ## Guides
 
 Written for the reader rather than for the Librarian, and kept together in
@@ -127,7 +129,9 @@ freeze. The `library-help` Skill offers the same five.
 * [Graduating a Page into a Shelf Book](shelf-book-graduation.md) - the additive open-Book write, the reader-map rule that keeps it additive, and the two capture races it closed
 * [Capture Books and the Library Help Skill](capture-book-model.md) - the Holding Shelf, ungated capture into a closed Book, pending-count resurfacing, gated triage, and help as a Skill
 * [Real-Session Verdicts in Windows Sandbox](real-session-verdicts-in-windows-sandbox.md) - how the four `recorded_verdict` rows are judged against a release in a fresh Sandbox: the job-runner kit, sign-ins opened for the reader, the plain-ask method with its labelled hook-level fallback, Codex's hook review, and the traps measured there (S49)
-* [The Dev Session Loop](dev-session-loop.md) - two seats on one dev Hub: the Kickoff and its one-yes gate, the per-attempt page, Open/Work/Close, park-don't-rule, what "gate green" means for commits and the chartered private push, and the stall log
+* [The Dev Session Loop](dev-session-loop.md) - the builder's page: the roles, the Kickoff's one-yes gate, the per-attempt page, Open/Work/Close, park-don't-rule, messages and letters, what "gate green" means for commits and the chartered private push, two builders at once, and the stall log
+* [The Dev Loop: the planner's page](dev-loop-planner.md) - writing and reviewing a Kickoff, the second reader and the mirror source, the planner's integration branch, assigning work by usage, and setting up a planner seat
+* [The Dev Loop: history and limits](dev-loop-history.md) - what the loop has not proved, its limits, and the records behind its rules
 * [Kickoff template](kickoff-template.md) - the sections every Kickoff carries, in order, with the rules and standing answers written out; `tools/kickoff-check.mts` checks a filled one
 * [Cross-Seat Agent Reports](cross-seat-reports.md) - the Report Inbox as the channel from any seat to `library-dev`, the two provenance fields that make a report better than a paste, why a report is a claim and never a task, why the transcript it names is deliberately not read, and the Shelf/Book naming collision folded in
 * [Book Archive Model](book-archive-model.md) - how working files and NAS Books fit together

@@ -267,7 +267,7 @@ export function shelfPatternTarget(pattern: string, openRoots: string[]): string
   if (!pattern || !pattern.trim()) return null;
   const normalised = trimStartDotsAndSlashes(pattern.replace(/\\/g, '/'));
   if (!/^shelf\//i.test(normalised)) return null;
-  const root = shelfRootForPath(normalised);
+  const root = shelfRootForPath(normalised) ?? shelfRootForPath(normalised.replace(/[.,;:)]+$/, ''));
   if (root) return openRoots.includes(root) ? null : root;
   return '*';
 }
@@ -356,8 +356,13 @@ export type CollectionPlacement = { kind: 'none' } | { kind: 'span' } | { kind: 
 
 const COLLECTION_CONTAINERS = ['collection', 'collection/books', 'collection/projects', 'collection/archive', 'collection/archive/projects'];
 
+/** Windows ignores trailing dots and spaces in a component. Dot navigation remains distinct from a slug. */
+function collectionPath(text: string): string {
+  return text.replace(/\\/g, '/').split('/').map((part) => part === '.' || part === '..' ? part : part.replace(/[. ]+$/, '')).join('/');
+}
+
 export function collectionRootForPath(relative: string): CollectionPlacement {
-  const text = relative.replace(/\\/g, '/').replace(/\/+$/, '');
+  const text = collectionPath(relative).replace(/\/+$/, '');
   if (!/^collection(?:\/|$)/i.test(text)) return { kind: 'none' };
   let match = /^collection\/archive\/projects\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i.exec(text);
   if (match) return { kind: 'root', root: `archive/projects/${match[1]!.toLowerCase()}`, desk: 'projects' };
@@ -373,7 +378,7 @@ export function collectionRootForPath(relative: string): CollectionPlacement {
 
 /** A pattern's reach into the collection: a root it names, `span` when a wildcard stands where a root would, or none. */
 export function collectionPatternPlacement(pattern: string): CollectionPlacement {
-  const normalised = trimStartDotsAndSlashes(pattern.replace(/\\/g, '/'));
+  const normalised = trimStartDotsAndSlashes(collectionPath(pattern));
   const placed = collectionRootForPath(normalised);
   if (placed.kind === 'root') return placed;
   if (/^collection(?:\/|$)/i.test(normalised) && /[*?[{]/.test(normalised)) return { kind: 'span' };
@@ -707,7 +712,11 @@ export function shelfTokens(command: string): { token: string; text: string }[] 
   const seen = new Set<string>();
   const hits: { token: string; text: string }[] = [];
   for (const match of normalised.text.matchAll(/(?<![A-Za-z0-9_.-])shelf\**\/[A-Za-z0-9_*?.[\]/-]+/gi)) {
-    const canonical = match[0].replace(/^(shelf)\*+\//i, '$1/').replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+    let canonical = match[0].replace(/^(shelf)\*+\//i, '$1/').replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+    if (!shelfRootForPath(canonical)) {
+      const sentencePath = canonical.replace(/[.,;:)]+$/, '');
+      if (shelfRootForPath(sentencePath)) canonical = sentencePath;
+    }
     if (canonical.toLowerCase() === 'shelf') continue;
     if (seen.has(canonical)) continue;
     seen.add(canonical);
@@ -736,10 +745,13 @@ export function collectionTokens(command: string): { token: string; text: string
   return hits;
 }
 
-// A GLOB NEVER NARROWS A Grep's PATH (kickoffs/s120 row 8): the path alone must be one open root.
+// A GLOB NEVER NARROWS A Grep's PATH (kickoffs/s120 row 8): the path alone must be one open root. The Grep tool cannot
+// read a commit or another repository, so the remedy also names the pattern-file route (kickoffs/s146 row 3): a pattern
+// in a file never appears in the command's text, and the guard judges only that text.
 const PATTERN_REMEDY =
   'If that text is a search pattern rather than a path, use the Grep tool: its path must be one open root, a glob does ' +
-  'not narrow that path, and its pattern is never judged.';
+  'not narrow that path, and its pattern is never judged. To search another repository or a commit for such a text, ' +
+  'put the pattern in a file and pass it with git grep -f <file> or rg -f <file>.';
 
 function formatMatchedText(text: string): string {
   if (text.length > 120) return `'${text.substring(0, 117)}...'`;
@@ -826,7 +838,7 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
     const quoted = formatMatchedText(hit.text);
     if (target === '*') {
       deny(
-        `This command's text ${quoted} spans Shelf Books that are closed. Narrow it to an open Book, or open the one you need with ` +
+        `This command's text ${quoted} does not name one open Shelf Book. Narrow it to an open Book, or open the one you need with ` +
           `deskpost desk open book <slug> --location shelf. ${PATTERN_REMEDY}`,
       );
     }

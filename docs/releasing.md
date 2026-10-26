@@ -17,8 +17,12 @@ How a reviewed release candidate goes to the public download, and the exact comm
    The same commit checks `docs/guides/` against the milestones the release carries: a guide that is wrong or
    silent about one is fixed before the bump. It also moves the README's `Status:` line to the release's minor
    version.
-   This commit and the release-notes text form the candidate. Record the second reader's review
-   of that exact candidate SHA by [the loop's rule](dev-session-loop.md#the-second-reader) before
+   This commit and the release-notes text form the candidate. Before its review, run the acceptance matrix against
+   the source kernel (`tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel 'node kernel/src/cli.ts'`, or one `-Row` per
+   call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
+   sentence names a `tools/*.ps1` helper is judged against a build ("The compiled arm"), never from source
+   ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Record the second reader's review
+   of that exact candidate SHA by [the loop's rule](dev-loop-planner.md#the-second-reader) before
    any credential-bearing step. Then check routes: `git ls-remote` and reading the mirror workflow
    prove connectivity and read access only. Read Forgejo `permissions.push` where available; record
    authorization without a non-mutating source as unverified until publish. Secrets resolve only
@@ -134,7 +138,8 @@ Each checked item by item: exactly one "Upgrading Deskpost `<prev>` to `<new>` a
 shims as the previous release left them plus `<new>`; the twin key's entry present once; the Library's own keys
 untouched; the registry unchanged unless the release means to change it. **Then the hooks:** every hook and
 status-line command in the fixture Library's `.claude/settings.json` and `.claude/settings.local.json`, and
-`.codex/hooks.json`'s (PowerShell strings: run them through `powershell.exe -NoProfile -Command`), each run twice
+`.codex/hooks.json`'s (on Windows Codex runs each hook's `commandWindows`, not its `command`: run that PowerShell
+string through `powershell.exe -NoProfile -Command`; the checkpoint hooks' `command` is the POSIX form), each run twice
 with the same JSON payload of that event's real shape and `LIBRARY_SEAT` set to a fixture seat for that child only
 (a seatless run is refused by design): against the installed `<prev>` before the upgrade, and against `<new>` after
 it. **Each pair must agree** on exit and decision (`"permissionDecision":"deny"`, `"decision":"block"`, or neither);
@@ -158,7 +163,10 @@ not a blocker; it is a "How to upgrade" line and a morning item.
   sh` with `~/.local/bin` not on PATH: exit 0, doctor's "Nothing failed", the PATH line last;
 - **the upgrade**: `<prev>` installed by its own `install.sh` with `DESKPOST_INSTALL_ROOT=$HOME/apps/deskpost`, then
   `<new>`'s line with no `DESKPOST_INSTALL_ROOT`: the first line names `$HOME/apps/deskpost`, `versions` holds both, the
-  `deskpost` link unchanged; doctor's program checks listed by name.
+  `deskpost` link unchanged; doctor's program checks listed by name. Without `DESKPOST_INSTALL_ROOT`, `install.sh` finds
+  the old install only through `command -v deskpost` (`install.sh`, "find the install"), so the folder that holds the
+  `deskpost` link, `~/.local/bin` (or `DESKPOST_BIN_DIR`), must be on PATH first; otherwise it installs fresh at the
+  default root.
 
 Both `HOME`s deleted afterwards by the program that made them; the distro stopped again if it was stopped.
 
@@ -173,7 +181,9 @@ again from it, and, where the release needs a review of the candidate first, the
 **`prepare.ps1` to READY**: run it from `<pf>\v<new>` to `READY: main <sha>, tag v<new>, refs/releases/v<new>; nothing
 pushed`. Then check: its `library.exe` byte-identical to the one judged; eight files in `rel`; `git ls-tree
 refs/releases/v<new>` gives each versioned zip and its twin the same blob; the public README (read from the clean
-clone, not a CRLF checkout) says "The current release is **`<new>`**"; the public roadmap has `<new>` under Released.
+clone, not a CRLF checkout) says "The current release is **<new>**" (no backticks), which
+`node tools/release-readme-check.ts <public tree folder> <version>` checks (exit 0 PASS, 1 FAIL naming the line it
+found); the public roadmap has `<new>` under Released.
 
 **The publish question**, asked as its own question once READY prints: first, in its own call,
 `git -C <pf>/v<new>/pub rev-parse main v<new>^{commit} refs/releases/v<new>` and show the three SHAs match READY;
@@ -186,7 +196,9 @@ a WSL run, a self-test run or a gate beside another. `DESKPOST_UPDATE_CHECK` uns
 gate. In Git Bash: a PATH entry in the `/c/...` form, never `C:/...`; `MSYS_NO_PATHCONV=1` where an argument starts
 with `/`; text holding backslashes written with an editor tool, never through a heredoc or `sed`. A fixture never names
 a real person, domain or account. Fixtures are made and removed by the one program that uses them. No `git fetch`;
-`npm` only with `--offline`; no network read beyond `prepare.ps1`'s clone of the public repository until the publish.
+`npm` only with `--offline`. Until the publish, the only network reads are step 1's `git ls-remote` route checks, the
+mirror check before the yes ("Starting the mirror"), `prepare.ps1`'s clone of the public repository, and any read the
+Kickoff names.
 
 ## The push (the only step that publishes)
 
@@ -207,7 +219,7 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
   `https://github.com/eKioga/deskpost/releases/latest` and the tag's release page before telling anyone to upgrade.
 
 `Kioga/library` (this checkout's `origin`) publishes nothing. A push there is ordinary development
-(`docs/dev-session-loop.md`, "The mirror source").
+(`docs/dev-loop-planner.md`, "The mirror source").
 
 ## Starting the mirror (step 4)
 
@@ -339,6 +351,9 @@ finished, then gives the reader the upgrade steps, starting with `deskpost upgra
   "Where should your Library live?" prompt.
 - **Every release is installed.** Never suggest skipping a version to test a later route; test a new route on the
   next upgrade instead.
+- **The release notice.** Once `releases/latest` names the new version with its assets, the planner sends one letter
+  to each seat (`deskpost capture letters --for <seat>`, one per seat): the version is out, and how to upgrade,
+  starting with `deskpost upgrade --dry-run`. It asks nothing, and each seat closes it for itself.
 
 ## Proving an install in a build session
 

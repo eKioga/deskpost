@@ -8,7 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { childEnv } from './gate-env.ts';
+import { agentProcessIdentity } from '../src/procstart.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from './gate-lock.ts';
+import { LINUX_SKIP_PATH, applyPlatformSkips, parseLinuxSkip, platformRefusals, platformSkips } from '../../tools/section-select.mts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SERIAL_SECTIONS = [29, 31, 113];
@@ -17,7 +19,9 @@ export const SERIAL_SECTIONS = [29, 31, 113];
 const SNAPSHOT_LIMIT = 30_000;
 const CLEANUP_LIMIT = 30_000;
 const STREAM_LIMIT = 10_000;
-export interface ProcessRow { pid: number; parentPid: number; start: string; command: string; cpu?: number; threads?: unknown }
+export interface ProcessRow { pid: number; parentPid: number; start: string; command: string; cpu?: number; threads?: unknown; group?: number; marker?: string }
+/** The variable that names the section a process was started for (kickoffs/s157 row 4): its run folder. */
+export const SECTION_MARKER = 'DESKPOST_GATE_SECTION';
 
 /** Small diagnostic commands also have exit and stream deadlines. No shell interpolation of caller text. */
 export function boundedCommand(command: string, args: string[], timeout = SNAPSHOT_LIMIT): Promise<string> {
@@ -53,15 +57,29 @@ export async function processTable(detail = false): Promise<ProcessRow[]> {
     }); ConvertTo-Json -InputObject $rows -Depth 5 -Compress`);
     return JSON.parse(text.trim() || '[]') as ProcessRow[];
   }
-  const text = await boundedCommand('ps', ['-eo', 'pid=,ppid=,lstart=,args=']);
+  const text = await boundedCommand('ps', ['-eo', 'pid=,ppid=,pgid=,lstart=,args=']);
   return text.split('\n').flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), parentPid: Number(m[2]), start: m[3]!, command: m[4]! }] : [];
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/.exec(line);
+    return m ? [{ pid: Number(m[1]), parentPid: Number(m[2]), group: Number(m[3]), start: m[4]!, command: m[5]!, ...sectionMarker(Number(m[1])) }] : [];
   });
 }
-export function descendants(rows: ProcessRow[], root: number, since: number): ProcessRow[] {
+/** A Linux process's section marker from its environment; an environment this user cannot read has none. */
+function sectionMarker(pid: number): { marker?: string } {
+  if (process.platform !== 'linux') return {};
+  try {
+    const found = fs.readFileSync(`/proc/${pid}/environ`, 'latin1').split('\0').find((entry) => entry.startsWith(`${SECTION_MARKER}=`));
+    return found === undefined ? {} : { marker: found.slice(SECTION_MARKER.length + 1) };
+  } catch { return {}; }
+}
+export function descendants(rows: ProcessRow[], root: number, since: number, marker?: string): ProcessRow[] {
   const owned = new Set([root]);
+  // AN ORPHAN THAT STARTED ITS OWN SESSION leaves the section's group too (kickoffs/s157 row 4), but it keeps the
+  // environment it was started with, and with it the section's marker.
+  if (marker !== undefined) for (const row of rows) if (row.marker === marker) owned.add(row.pid);
   // Parent links are retained by the OS even after an exited root. Ignore earlier PID incarnations.
+  // OFF WINDOWS AN ORPHAN IS RE-PARENTED and its link is gone (kickoffs/s156 row 2), but a section root leads its own
+  // process group (it is started detached), and an orphan that did not start its own session stays in it.
+  for (const row of rows) if (process.platform !== 'win32' && row.group === root && Date.parse(row.start) >= since - 1000) owned.add(row.pid);
   let added = true;
   while (added) {
     added = false;
@@ -70,7 +88,10 @@ export function descendants(rows: ProcessRow[], root: number, since: number): Pr
   }
   return rows.filter((row) => owned.has(row.pid));
 }
+/** A process's start identity. ON LINUX procstart.ts's, ticks since boot (kickoffs/s158 row 1): `ps lstart` moves whenever
+ * WSL2 steps its clock, so a section's root read as another process and cleanup ended nothing (section 218). */
 export async function startIdentity(pid: number): Promise<string | null> {
+  if (process.platform === 'linux') return agentProcessIdentity(pid, { fresh: true });
   if (process.platform !== 'win32') return (await processTable()).find((row) => row.pid === pid)?.start ?? null;
   // An exiting process can still answer Get-Process with no StartTime (S119, under the push pool's load): it is gone.
   const text = await powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p -and $p.StartTime){$p.StartTime.ToUniversalTime().ToString('o')}; exit 0`);
@@ -78,11 +99,14 @@ export async function startIdentity(pid: number): Promise<string | null> {
 }
 /** A survivor has the ID AND start time observed while the fixture was alive, as cleanup's `endOwned` checks.
  * An ID reused before or after `runEnd` belongs to another process. An unreadable start time is an exiting
- * process, gone, as `startIdentity` reads it; it cannot establish ownership. */
-export function survivorRows(rows: ProcessRow[], identities: Pick<ProcessRow, 'pid' | 'start'>[], runEnd: number): ProcessRow[] {
-  return rows.filter((row) => row.start !== '' && identities.some((owned) => owned.pid === row.pid && owned.start === row.start) && !(Date.parse(row.start) > runEnd));
+ * process, gone, as `startIdentity` reads it; it cannot establish ownership.
+ * ON LINUX AN IDENTITY RECORDED AS procstart.ts SPELLS IT DECIDES (kickoffs/s157 row 5): `ps lstart` moves
+ * whenever WSL2 steps its clock, so a live survivor read as another process; ticks since boot never move. */
+export function survivorRows(rows: ProcessRow[], identities: (Pick<ProcessRow, 'pid' | 'start'> & { identity?: string })[], runEnd: number): ProcessRow[] {
+  return rows.filter((row) => row.start !== '' && identities.some((owned) => owned.pid === row.pid &&
+    (process.platform === 'linux' && owned.identity !== undefined ? agentProcessIdentity(row.pid, { fresh: true }) === owned.identity : owned.start === row.start && !(Date.parse(row.start) > runEnd))));
 }
-async function endOwned(rows: ProcessRow[]): Promise<void> {
+export async function endOwned(rows: ProcessRow[]): Promise<void> {
   // Before EACH PID-based kill compare its creation time again. Never kill by image or command-line match.
   if (process.platform === 'win32') {
     const identities = Buffer.from(JSON.stringify(rows.map(({ pid, start }) => ({ pid, start })))).toString('base64');
@@ -90,8 +114,11 @@ async function endOwned(rows: ProcessRow[]): Promise<void> {
       foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){ & taskkill.exe /PID $row.pid /T /F | Out-Null }}
       $until=[DateTime]::UtcNow.AddSeconds(25); do { $live=@(foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){$row.pid}}); if(!$live.Count){exit 0}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $until); throw ('owned processes still alive: '+($live -join ','))`, CLEANUP_LIMIT);
   } else {
-    for (const row of rows) {
-      if (await startIdentity(row.pid) === row.start) {
+    // On Linux each row's identity is read once, here, just after the table that owned it: its `start` is `ps lstart`.
+    const linux = process.platform === 'linux';
+    const owned = linux ? await Promise.all(rows.map(async (row) => ({ ...row, start: await startIdentity(row.pid) ?? '' }))) : rows;
+    for (const row of owned) {
+      if (row.start !== '' && await startIdentity(row.pid) === row.start) {
         try { process.kill(-row.pid, 'SIGKILL'); } // Detached section roots own a process group.
         catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
@@ -101,8 +128,10 @@ async function endOwned(rows: ProcessRow[]): Promise<void> {
     }
     const until = Date.now() + CLEANUP_LIMIT;
     while (Date.now() < until) {
-      const now = await processTable();
-      if (!rows.some((row) => now.some((p) => p.pid === row.pid && p.start === row.start))) return;
+      const now = linux ? [] : await processTable();
+      const alive = linux ? (await Promise.all(owned.map(async (row) => row.start !== '' && await startIdentity(row.pid) === row.start))).some(Boolean)
+        : owned.some((row) => now.some((p) => p.pid === row.pid && p.start === row.start));
+      if (!alive) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error('owned processes still alive after cleanup');
@@ -111,19 +140,171 @@ async function endOwned(rows: ProcessRow[]): Promise<void> {
 export async function terminateOwnedTree(pid: number, since: number, identity: string | null): Promise<void> {
   const rows = descendants(await processTable(), pid, since);
   const root = rows.find((row) => row.pid === pid);
-  if (root && (identity === null || root.start !== identity || root.parentPid !== process.pid)) throw new Error('child identity changed or could not be read; no process ended');
+  if (root && (identity === null || (process.platform === 'linux' ? await startIdentity(root.pid) : root.start) !== identity || root.parentPid !== process.pid)) throw new Error('child identity changed or could not be read; no process ended');
   await endOwned(rows);
 }
-export interface Options { suite: string; workers: number; splitSerial: boolean; sectionTimeout: number; wholeTimeout: number; keepLogs: boolean; noWait: boolean; snapshotFailure: boolean }
+/**
+ * A SECTION A KICKOFF REQUIRES MUST PASS, NOT SKIP (kickoffs/s120 row 9; c14 ran two green gates that skipped section
+ * 149): each named section whose verdict in a sections.log is SKIP, or which the log does not name, is a problem.
+ * Moved here from tools/gate.ts so a focused run checks it with the same code (kickoffs/s140 row 4).
+ */
+export function requiredSectionProblems(logText: string, required: string[]): string[] {
+  const verdicts = new Map<string, string>();
+  for (const line of logText.split(/\r?\n/)) {
+    const m = /^section (\d+): (\S+)/.exec(line);
+    if (m) verdicts.set(m[1]!, m[2]!);
+  }
+  return required.flatMap((section) => {
+    const verdict = verdicts.get(section);
+    return verdict === undefined ? [`section ${section}: absent`] : verdict === 'SKIP' ? [`section ${section}: SKIP`] : [];
+  });
+}
+/** The gate.required-sections verdict and its words, for tools/gate.ts and this runner alike. */
+export function requiredSectionsVerdict(logText: string, required: string[]): { status: 'pass' | 'fail'; detail: string } {
+  const problems = requiredSectionProblems(logText, required);
+  return { status: problems.length ? 'fail' : 'pass',
+    detail: problems.length ? `a section this gate was told to require did not pass: ${problems.join('; ')}` : `sections ${required.join(', ')} each ran with a verdict other than SKIP` };
+}
+/**
+ * A REQUIRED SECTION THAT CANNOT PASS HERE IS REFUSED BEFORE ANYTHING RUNS (kickoffs/s153 row 5): s152's first push tier
+ * ran 19m 43s and then failed only gate.required-sections, for seven sections it skips by declaration on Windows. A
+ * section opened as `if (selected(N) && prerequisite(N, () => <condition>, '<reason>'))` skips whole when <condition> is
+ * false, and the terms of <condition> a runner can judge without running the section are judged here: the platform,
+ * the kernel under test (LIBRARY_SELFTEST_KERNEL), and that the suite is the TypeScript source. One term known false
+ * makes the skip known. A term it cannot judge (a file on disk, a probe), and a prerequisite inside a section's body,
+ * leave the section to the end-of-run verdict, as before.
+ */
+export interface DeclaredSkip { section: number; reason: string }
+export interface SkipContext { platform: NodeJS.Platform; kernel: string[] }
+export function runnerSkipContext(): SkipContext {
+  return { platform: process.platform, kernel: (process.env['LIBRARY_SELFTEST_KERNEL'] ?? '').split(/\s+/).filter((part) => part.length > 0) };
+}
+/** The text of one call's arguments from just after its `(`, split at top-level commas; quotes and brackets respected. */
+function callArguments(text: string, from: number): string[] | null {
+  const args: string[] = [];
+  let depth = 0, quote = '', start = from;
+  for (let i = from; i < text.length; i += 1) {
+    const c = text[i]!;
+    if (quote) { if (c === '\\') i += 1; else if (c === quote) quote = ''; continue; }
+    if (c === "'" || c === '"' || c === '`') quote = c;
+    else if ('([{'.includes(c)) depth += 1;
+    else if (')]}'.includes(c)) {
+      if (depth === 0) { args.push(text.slice(start, i).trim()); return args; }
+      depth -= 1;
+    } else if (c === ',' && depth === 0) { args.push(text.slice(start, i).trim()); start = i + 1; }
+  }
+  return null;
+}
+/** `a && b && c` at the top level, as its terms. */
+function conjuncts(condition: string): string[] {
+  const terms: string[] = [];
+  let depth = 0, quote = '', start = 0;
+  for (let i = 0; i < condition.length; i += 1) {
+    const c = condition[i]!;
+    if (quote) { if (c === '\\') i += 1; else if (c === quote) quote = ''; continue; }
+    if (c === "'" || c === '"' || c === '`') quote = c;
+    else if ('([{'.includes(c)) depth += 1;
+    else if (')]}'.includes(c)) depth -= 1;
+    else if (depth === 0 && condition.startsWith('&&', i)) { terms.push(condition.slice(start, i).trim()); start = i + 2; i += 1; }
+  }
+  terms.push(condition.slice(start).trim());
+  return terms;
+}
+/** One term's value in this context, or null when only the section could say. */
+function knownTerm(term: string, context: SkipContext): boolean | null {
+  const t = term.replace(/\s+/g, ' ');
+  const exe = context.kernel.length === 1 && /\.exe$/i.test(context.kernel[0]!);
+  switch (t) {
+    case "process.platform === 'win32'": return context.platform === 'win32';
+    case "process.platform !== 'win32'": return context.platform !== 'win32';
+    case "process.platform === 'linux'": return context.platform === 'linux';
+    case "process.platform !== 'linux'": return context.platform !== 'linux';
+    case '!isCompiled()': return true; // a runner runs the TypeScript suite; a compiled kernel is LIBRARY_SELFTEST_KERNEL
+    case 'KERNEL_COMMAND.length === 0': return context.kernel.length === 0;
+    case 'KERNEL_COMMAND.length === 1': return context.kernel.length === 1;
+    case '/\\.exe$/i.test(KERNEL_COMMAND[0]!)': return exe;
+    case 'releaseTreeUnderTest() !== null': return context.platform === 'win32' && exe ? null : false;
+    default: return null;
+  }
+}
+/** This platform's skips by `kernel/test/linux-skip.json` (kickoffs/s153 row 6): the list on Linux, nothing elsewhere,
+ * and nothing in a tree without the file. */
+export function readPlatformSkips(platform: string = process.platform): Map<number, string> {
+  const file = path.join(HERE, path.basename(LINUX_SKIP_PATH));
+  return fs.existsSync(file) ? platformSkips(platform, parseLinuxSkip(fs.readFileSync(file, 'utf8'))) : new Map();
+}
+/** THE SKIP LIST A RUN APPLIES (kickoffs/s157 row 3): `linux-skip.json` names the real suite's sections, so it applies to
+ * the real `selftest.ts` beside this runner only. Any other suite gets the list its caller hands it with `--skip-list
+ * <file>`, or none: a fixture's section 4 is not the real section 4. */
+export function suiteSkips(options: Pick<Options, 'suite' | 'skipList'>, platform: string = process.platform): Map<number, string> {
+  if (options.skipList !== null) return platformSkips(platform, parseLinuxSkip(fs.readFileSync(options.skipList, 'utf8')));
+  return path.resolve(options.suite) === path.join(HERE, 'selftest.ts') ? readPlatformSkips(platform) : new Map();
+}
+/** Every refusal of a required list before a run: the platform's skips, then the suite's known declared ones. */
+export function requiredListRefusals(required: readonly string[], suiteText: string, skips: Map<number, string> = readPlatformSkips()): string[] {
+  return [...platformRefusals(required, skips), ...requiredRefusals(required, knownDeclaredSkips(suiteText))];
+}
+/** Read a literal without evaluating source. Dynamic templates remain an explicit preflight refusal. */
+function prerequisiteReason(source: string): string | undefined {
+  const quote = source[0];
+  if (!quote || !['\'', '"', '`'].includes(quote) || source.at(-1) !== quote) return undefined;
+  const body = source.slice(1, -1);
+  if (quote === '`' && body.includes('${')) return undefined;
+  let result = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i]!;
+    if (c === quote || (quote !== '`' && /[\r\n]/.test(c))) return undefined;
+    if (c !== '\\') { result += c; continue; }
+    const escape = body[++i];
+    if (escape === undefined || /[1-9]/.test(escape) || (escape === '0' && /[0-9]/.test(body[i + 1] ?? ''))) return undefined;
+    if (escape === '\n') continue;
+    if (escape === '\r') { if (body[i + 1] === '\n') i += 1; continue; }
+    if (escape === 'x' || escape === 'u') {
+      const rest = body.slice(i + 1);
+      const hex = (escape === 'x' ? /^[0-9a-f]{2}/i : /^(?:[0-9a-f]{4}|\{[0-9a-f]{1,6}\})/i).exec(rest)?.[0];
+      if (!hex) return undefined;
+      const value = Number.parseInt(hex.replace(/[{}]/g, ''), 16);
+      if (value > 0x10ffff) return undefined;
+      result += String.fromCodePoint(value); i += hex.length;
+    } else result += ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', '0': '\0' } as Record<string, string>)[escape] ?? escape;
+  }
+  return result;
+}
+export function knownDeclaredSkips(suiteText: string, context: SkipContext = runnerSkipContext()): DeclaredSkip[] {
+  const skips: DeclaredSkip[] = [];
+  for (const open of suiteText.matchAll(/^if \(selected\((\d+)\) && prerequisite\((\d+), \(\) => /gm)) {
+    if (open[1] !== open[2]) continue;
+    const args = callArguments(suiteText, open.index! + open[0].length);
+    if (args === null || args.length !== 2) continue;
+    const reason = prerequisiteReason(args[1]!);
+    if (reason === undefined) { skips.push({ section: Number(open[1]), reason: `section ${open[1]}'s prerequisite reason could not be read` }); continue; }
+    if (conjuncts(args[0]!).some((term) => knownTerm(term, context) === false)) skips.push({ section: Number(open[1]), reason });
+  }
+  return skips;
+}
+/** Each required section known to skip here, in its words: `section 21 cannot be required here: requires POSIX`. */
+export function requiredRefusals(required: readonly string[], skips: readonly DeclaredSkip[]): string[] {
+  return required.flatMap((section) => {
+    const skip = skips.find((candidate) => String(candidate.section) === section);
+    return skip ? [`section ${section} cannot be required here: ${skip.reason}`] : [];
+  });
+}
+export interface Options { suite: string; workers: number; splitSerial: boolean; sectionTimeout: number; wholeTimeout: number; keepLogs: boolean; noWait: boolean; snapshotFailure: boolean; requireSections: string[]; skipList: string | null }
 export function parseOptions(argv: string[]): Options {
-  const options: Options = { suite: path.join(HERE, 'selftest.ts'), workers: Number(process.env['DESKPOST_GATE_WORKERS'] ?? 8), splitSerial: false, sectionTimeout: 600_000, wholeTimeout: 2_700_000, keepLogs: false, noWait: false, snapshotFailure: false };
+  const options: Options = { suite: path.join(HERE, 'selftest.ts'), workers: Number(process.env['DESKPOST_GATE_WORKERS'] ?? 8), splitSerial: false, sectionTimeout: 600_000, wholeTimeout: 2_700_000, keepLogs: false, noWait: false, snapshotFailure: false, requireSections: [], skipList: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--split-serial') options.splitSerial = true;
+    else if (arg === '--require-sections' && argv[i + 1]) {
+      const value = argv[++i]!;
+      if (!/^\d+(,\d+)*$/.test(value)) throw new Error(`--require-sections takes section numbers separated by commas, such as 147,148; got '${value}'`);
+      options.requireSections = value.split(',');
+    }
     else if (arg === '--keep-logs') options.keepLogs = true;
     else if (arg === '--no-wait') options.noWait = true;
     else if (arg === '--test-snapshot-failure') options.snapshotFailure = true;
     else if (arg === '--suite' && argv[i + 1]) options.suite = path.resolve(argv[++i]!);
+    else if (arg === '--skip-list' && argv[i + 1]) options.skipList = path.resolve(argv[++i]!);
     else if (['--workers', '--section-timeout', '--whole-timeout'].includes(arg) && argv[i + 1]) {
       const value = Number(argv[++i]);
       if (!Number.isInteger(value) || value < 1) throw new Error(`${arg} must be a positive integer (timeouts in milliseconds)`);
@@ -134,6 +315,9 @@ export function parseOptions(argv: string[]): Options {
   }
   if (!Number.isInteger(options.workers) || options.workers < 1) throw new Error('DESKPOST_GATE_WORKERS must be a positive integer');
   if (options.splitSerial) options.workers = 1;
+  // A whole run (a compiled kernel, or --workers 1) writes one 'section whole' line, so it cannot show which sections ran.
+  if (options.requireSections.length && (process.env['LIBRARY_SELFTEST_KERNEL'] || options.workers === 1 && !options.splitSerial))
+    throw new Error('--require-sections needs a run by section; a compiled kernel or --workers 1 runs the suite whole');
   if (options.snapshotFailure && options.suite === path.join(HERE, 'selftest.ts')) throw new Error('--test-snapshot-failure requires a fixture --suite');
   return options;
 }
@@ -168,6 +352,7 @@ export function sectionEnvironment(section: number | 'whole', folder: string): N
       const value = path.join(folder, key.toLowerCase()); fs.mkdirSync(value); env[key] = value;
     }
     env['LIBRARY_SELFTEST_SECTIONS'] = String(section);
+    env[SECTION_MARKER] = folder;
     const cacheFolder = path.join(folder, 'psmodule'); fs.mkdirSync(cacheFolder);
     env['PSModuleAnalysisCachePath'] = path.join(cacheFolder, 'ModuleAnalysisCache');
   }
@@ -187,10 +372,10 @@ export async function runSection(options: Options, section: number | 'whole', ru
   const snapshot = async () => {
     if (options.snapshotFailure) throw new Error('planted snapshot failure (fixture suite only)');
     const rows = await processTable(true);
-    owned = descendants(rows, child.pid!, started);
+    owned = descendants(rows, child.pid!, started, folder);
     const root = owned.find((row) => row.pid === child.pid);
     const expected = await identity;
-    if (root && (!expected || root.start !== expected || root.parentPid !== process.pid)) {
+    if (root && (!expected || (process.platform === 'linux' ? await startIdentity(root.pid) : root.start) !== expected || root.parentPid !== process.pid)) {
       owned = [];
       if (!expected) problem += '; root identity unavailable; cleanup cannot be verified';
     }
@@ -216,7 +401,7 @@ export async function runSection(options: Options, section: number | 'whole', ru
     try { await snapshot(); } catch (error) {
       fs.writeFileSync(path.join(folder, 'snapshot-error.txt'), String(error));
       // Diagnostics can fail independently. Obtain a minimal ownership table for cleanup regardless.
-      try { owned = descendants(await processTable(), child.pid!, started); } catch (again) { problem += `; ownership scan failed: ${again}`; }
+      try { owned = descendants(await processTable(), child.pid!, started, folder); } catch (again) { problem += `; ownership scan failed: ${again}`; }
     } finally {
       try {
         // Revalidate the root against the identity observed just after spawn, even in the fallback path.
@@ -227,7 +412,7 @@ export async function runSection(options: Options, section: number | 'whole', ru
           if (await startIdentity(child.pid!) === expected) owned.unshift({ pid: child.pid!, parentPid: process.pid, start: expected, command: options.suite });
         }
         const root = owned.find((row) => row.pid === child.pid);
-        if (root && (expected === null || root.start !== expected || root.parentPid !== process.pid)) {
+        if (root && (expected === null || (process.platform === 'linux' ? await startIdentity(root.pid) : root.start) !== expected || root.parentPid !== process.pid)) {
           owned = [];
           if (!expected) problem += '; root identity unavailable; cleanup cannot be verified';
         }
@@ -313,7 +498,9 @@ export function rosterProblems(pool: readonly string[], reported: readonly strin
   return problems;
 }
 export async function run(options: Options, wait: GateWait | null = null): Promise<number> {
-  const sections = sectionNumbers(fs.readFileSync(options.suite, 'utf8'));
+  const policy = applyPlatformSkips(sectionNumbers(fs.readFileSync(options.suite, 'utf8')), suiteSkips(options));
+  if (policy.line) process.stdout.write(policy.line + '\n');
+  const sections = policy.sections;
   if (!sections.length) throw new Error('suite has no sections');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-gate-'));
   process.stdout.write(`runner log: ${folder}\n`);
@@ -345,17 +532,26 @@ export async function run(options: Options, wait: GateWait | null = null): Promi
   fs.writeFileSync(path.join(folder, 'sections.log'), lines.join('\n') + '\n');
   fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify({ seconds: (Date.now() - started) / 1000, total, cancelled: controller.signal.aborted, results: results.map(({ output: _output, ...r }) => r) }, null, 2));
   for (const line of lines) process.stdout.write(line + '\n');
+  // Checked before any section folder is removed, so a required section that SKIPs keeps its evidence.
+  const required = options.requireSections.length ? requiredSectionsVerdict(lines.join('\n'), options.requireSections) : null;
+  if (required) process.stdout.write(`${required.status.toUpperCase()} gate.required-sections: ${required.detail}\n`);
   const bad = failed.length || controller.signal.aborted;
   // Keep compact per-section evidence on success too; bulky child output is needed only on failure or request.
-  if (!bad && !options.keepLogs) for (const result of results) fs.rmSync(path.join(folder, String(result.section)), { recursive: true, force: true });
+  if (!bad && required?.status !== 'fail' && !options.keepLogs) for (const result of results) fs.rmSync(path.join(folder, String(result.section)), { recursive: true, force: true });
   if (bad) process.stderr.write(`kernel self-test FAILED (${failed.length || 1} of ${total}): ${failed.map((r) => `section ${r.section}: ${flatten(r.detail)}`).join('; ') || 'cancelled'}; evidence: ${folder}\n`);
   else process.stdout.write(`kernel self-test passed (${total} checks)${wait ? ` after waiting ${wait.seconds.toFixed(1)}s for ${wait.seat}'s ${wait.tier} gate` : ''}.\n`);
-  return bad ? 1 : 0;
+  return bad || required?.status === 'fail' ? 1 : 0;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   (async () => {
     const options = parseOptions(process.argv.slice(2));
     const say = (line: string) => process.stdout.write(line + '\n');
+    // Before the lock and before any section: a required section that cannot pass here ends the run (kickoffs/s153 row 5).
+    const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(options.suite, 'utf8'), suiteSkips(options));
+    if (refusals.length) {
+      for (const line of refusals) process.stderr.write(`runner: ${line}\n`);
+      return 2;
+    }
     const lock = options.workers > 1 ? await acquireGateLock('parallel self-test', options.noWait, say) : null;
     const notice = lock && gateLockOffNotice(lock);
     if (notice) say(notice);

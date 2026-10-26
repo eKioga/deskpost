@@ -47,6 +47,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
+import { listenFetchable } from './fetchable-port.ts';
 
 const [folder, portFile, ...rest] = process.argv.slice(2);
 const option = (name: string, fallback: string): string => {
@@ -367,7 +368,4 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.listen(0, '127.0.0.1', () => {
-  const address = server.address();
-  fs.writeFileSync(portFile!, String(typeof address === 'object' && address !== null ? address.port : 0));
-});
+fs.writeFileSync(portFile!, String(await listenFetchable(server)));

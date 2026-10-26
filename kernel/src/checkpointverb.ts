@@ -1,4 +1,5 @@
 /** Seat/conversation front door. No harness registration or UI lives here. */
+import { needsYouOn, refreshNeedsYou } from './needsyou.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -30,6 +31,7 @@ export function validateCheckpoint(value: unknown, seatId: string, conversation:
   for (const key of ['seen','gaps','waits','saveGaps','saveWaits']) if (!strings(value[key])) return fail();
   for (const key of ['savedWrites','turnsSince']) if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return fail();
   if (value.savedAt !== null && (typeof value.savedAt !== 'number' || !Number.isFinite(value.savedAt))) return fail();
+  if (value.closedOutAt !== undefined && value.closedOutAt !== null && (typeof value.closedOutAt !== 'number' || !Number.isFinite(value.closedOutAt))) return fail();
   if (!choice(value.saveState,['none','asked','saved','gaps','waits']) || !choice(value.closeout,['none','asked','done','gaps','waits','stale'])) return fail();
   if (!Array.isArray(value.writes) || !value.writes.every(w => own(w) && choice(w.kind,['hub','book','report']) && typeof w.name === 'string' && typeof w.page === 'string' && typeof w.at === 'number' && Number.isFinite(w.at) && (w.where === undefined || choice(w.where,['shelf','collection','shared'])))) return fail();
   if (Number(value.savedWrites) > value.writes.length) return fail();
@@ -140,8 +142,15 @@ export function runCheckpointHook(argv: string[], input: string): string {
     const workspace = requireWorkspace({...(parsed.options.has('workspace')?{explicit:parsed.options.get('workspace')!}:{}), ...(typeof event.cwd==='string'?{startDirectory:event.cwd}:{})});
     const args = ['--conversation', event.session_id, '--workspace', workspace, ...(parsed.options.has('seat')?['--seat',parsed.options.get('seat')!]:[])];
     const invoke = (action: string[], text?: string, unavailable = false) => runCheckpointVerb([...action,...args], text, unavailable).value as unknown as CheckpointState;
+    // THE "NEEDS YOU" PAGE, REFRESHED ONLY WHEN A SAVE OR CLOSE-OUT STATE CHANGED (kickoffs/s161 row 6); with no vault
+    // connection nothing more is read. A failed refresh is one line on standard error, never this hook's answer.
+    const watching = needsYouOn(workspace);
+    const refreshIfChanged = (before: CheckpointState | null, after: CheckpointState) => {
+      const view = (s: CheckpointState | null) => JSON.stringify(s && [s.saveState, s.closeout, s.saveWaits, s.waits]);
+      if (watching && view(before) !== view(after)) refreshNeedsYou(workspace);
+    };
     const name = event.hook_event_name;
-    if (name === 'PostToolUse') { invoke(['observe'], JSON.stringify(event)); return ''; }
+    if (name === 'PostToolUse') { const before = watching ? invoke(['status']) : null; refreshIfChanged(before, invoke(['observe'], JSON.stringify(event))); return ''; }
     if (!['UserPromptSubmit','Stop','Interrupt'].includes(String(name))) return '';
     const state = invoke(['status']);
     if (name === 'UserPromptSubmit') {
@@ -150,9 +159,10 @@ export function runCheckpointHook(argv: string[], input: string): string {
       return JSON.stringify({hookSpecificOutput:{hookEventName:name,additionalContext:context}});
     }
     if (!state.request) return '';
-    if (name === 'Interrupt') { invoke(['cancel']); return ''; }
+    if (name === 'Interrupt') { refreshIfChanged(state, invoke(['cancel'])); return ''; }
     const answer = typeof event.last_assistant_message==='string' ? event.last_assistant_message : '';
     const next = invoke(['check',state.request.kind,'--request-id',state.request.id,...(typeof event.turn_id==='string'?['--turn',event.turn_id]:[])],answer,typeof event.last_assistant_message!=='string');
+    refreshIfChanged(state, next);
     const gaps = state.request.kind==='save'?next.saveGaps:next.gaps;
     const waits = state.request.kind==='save'?next.saveWaits:next.waits;
     return JSON.stringify({systemMessage:`${state.request.kind}: ${state.request.kind==='save'?next.saveState:next.closeout}. Safe to stop: ${gaps.length||waits.length?'no':'yes'}.` + [...gaps,...waits].map(x=>' '+x).join('')});

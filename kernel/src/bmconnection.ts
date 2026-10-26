@@ -25,7 +25,7 @@ import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
-import { markerPath, readMarker } from './workspace.ts';
+import { markerPath, readMarker, withMarkerLock } from './workspace.ts';
 import { isLocalBackend, markerConnection, McpSession, mcpTimeoutMs, type BasicMemoryConnection } from './basicmemory.ts';
 import { isSharedCollectionRoot } from './ownership.ts';
 
@@ -79,20 +79,27 @@ export async function openServer(url: string): Promise<McpSession> {
   return session;
 }
 
-/** The marker rewritten whole with every field it had, `connections` replaced by `connections` as given. */
-function writeMarkerConnections(workspace: string, connection: BasicMemoryConnection | null): void {
-  const marker = readMarker(workspace);
-  if (marker === null) refuse(`${workspace} has no workspace marker. Run library init first.`);
-  const next: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(marker)) if (key !== 'connections') next[key] = value;
-  const others: Record<string, unknown> = {};
-  const existing = marker['connections'];
-  if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
-    for (const [key, value] of Object.entries(existing as Record<string, unknown>)) if (key !== 'basic_memory') others[key] = value;
-  }
-  if (connection !== null) others['basic_memory'] = { ...connection };
-  if (Object.keys(others).length) next['connections'] = others;
-  writeAtomicText(markerPath(workspace), psConvertToJson(next as PsJsonValue) + '\n');
+/**
+ * The marker rewritten whole with every field it had, `connections` replaced by `connections` as given. Inside the
+ * marker lock (kickoffs/s161 row 1), and refused when the connection this command started from has changed since.
+ */
+function writeMarkerConnections(workspace: string, connection: BasicMemoryConnection | null, startedFrom: BasicMemoryConnection | null): void {
+  withMarkerLock(workspace, (marker) => {
+    if (marker === null) refuse(`${workspace} has no workspace marker. Run library init first.`);
+    if (JSON.stringify(markerConnection(workspace)) !== JSON.stringify(startedFrom)) {
+      refuse('The Basic Memory connection in .library/workspace.json changed while this command ran, so nothing was saved. Run it again.');
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(marker)) if (key !== 'connections') next[key] = value;
+    const others: Record<string, unknown> = {};
+    const existing = marker['connections'];
+    if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
+      for (const [key, value] of Object.entries(existing as Record<string, unknown>)) if (key !== 'basic_memory') others[key] = value;
+    }
+    if (connection !== null) others['basic_memory'] = { ...connection };
+    if (Object.keys(others).length) next['connections'] = others;
+    writeAtomicText(markerPath(workspace), psConvertToJson(next as PsJsonValue) + '\n');
+  });
 }
 
 function assertLocalLibrary(workspace: string, verb: string): void {
@@ -172,7 +179,7 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
       'remove them. An earlier `library init --mcp-url` may have left them.';
   }
   if (parsed.flags.has('preflight')) return { ...result, saved: false };
-  writeMarkerConnections(workspace, connection);
+  writeMarkerConnections(workspace, connection, current);
   // READ BACK: the marker now carries exactly this connection, and the Library is still local.
   const back = markerConnection(workspace);
   if (back === null || back.url !== url || back.collection_id !== chosen.id || !isLocalBackend(workspace)) {
@@ -187,11 +194,23 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
 // --- disconnect ----------------------------------------------------------------------------------------------
 
 function disconnect(argv: string[], workspace: string): Record<string, PsJsonValue> {
-  parseArguments(argv, argumentTable('basic-memory', 'disconnect'));
+  const parsed = parseArguments(argv, argumentTable('basic-memory', 'disconnect'));
   assertLocalLibrary(workspace, 'disconnect');
   const current = markerConnection(workspace);
   if (current === null) return { schema: 1, operation: 'Disconnect Basic Memory', workspace, disconnected: false, note: 'This Library has no Basic Memory connection.', shared_library_write: false };
-  writeMarkerConnections(workspace, null);
+  // A PREVIEW, AS setup HAS (kickoffs/s146 row 7): what would be removed, and nothing written.
+  if (parsed.flags.has('preflight')) {
+    return {
+      schema: 1,
+      operation: 'Disconnect Basic Memory',
+      workspace,
+      disconnected: false,
+      would_remove: { ...current },
+      note: "Would remove only the marker's record of this connection; neither collection would be touched. Run it again without --preflight to disconnect.",
+      shared_library_write: false,
+    };
+  }
+  writeMarkerConnections(workspace, null, current);
   if (markerConnection(workspace) !== null) refuse('The connection was removed from the marker and still reads back. Check .library/workspace.json.');
   return {
     schema: 1,

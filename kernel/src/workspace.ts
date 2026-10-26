@@ -22,6 +22,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { programRoot } from './programroot.ts';
+import { writeAtomicText } from './fsx.ts';
+import { COMMAND_NAME } from './machine.ts';
+import { psConvertToJson, type PsJsonValue } from './psjson.ts';
+import { sha256OfText } from './sha.ts';
 
 export interface RegistryEntry {
   id: string;
@@ -35,8 +39,6 @@ export interface ResolvedWorkspace {
   reason: string | null;
   cwd: string | null;
 }
-
-export const MARKER_RELATIVE = path.join('.library', 'workspace.json');
 
 /** Which rules a path is judged by: Windows' drive-rooted form, or the POSIX absolute one (S42). */
 export type PathFlavor = 'win32' | 'posix';
@@ -133,6 +135,81 @@ export function readMarker(workspace: string): Record<string, unknown> | null {
     throw new Error(
       `the workspace marker at ${file} is not readable JSON, so this workspace's identity cannot be established`,
     );
+  }
+}
+
+/**
+ * ONE WRITER OF THE MARKER AT A TIME (kickoffs/s161 row 1). Every whole-marker read, change and replace runs inside
+ * this lock, so two writers can no longer each read the marker, set their own field and replace it, dropping the
+ * other's. `body` gets the marker as read INSIDE the lock (null when there is none), and a writer whose plan was
+ * derived from an earlier read compares that snapshot with it before replacing anything. The lock is a file created
+ * exclusively beside the marker; a holder whose process is gone, or a lock older than two minutes, is broken.
+ * Re-entrant within one process.
+ *
+ * DESKPOST_TEST_MARKER_PAUSE IS A FIXTURE SWITCH, for kernel self-test section 474 and nothing else: the holder writes
+ * `<value>.held` after its read and waits (at most 30 s) for the file `<value>` before its body runs, so a second
+ * writer can be started while the first holds a read it has not yet replaced.
+ */
+const markerLocksHeld = new Map<string, number>();
+export function withMarkerLock<T>(workspace: string, body: (marker: Record<string, unknown> | null) => T, timeoutMs = 20000): T {
+  const file = markerPath(workspace) + '.lock';
+  const key = path.resolve(file).toLowerCase();
+  const nested = (markerLocksHeld.get(key) ?? 0) > 0;
+  if (!nested) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const handle = fs.openSync(file, 'wx');
+        try { fs.writeSync(handle, `pid=${process.pid}\nacquired=${new Date().toISOString()}\n`); } finally { fs.closeSync(handle); }
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      if (markerLockAbandoned(file)) {
+        try { fs.unlinkSync(file); } catch { /* another waiter broke it first */ }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Another ${COMMAND_NAME} command is changing ${markerPath(workspace)} (its lock ${file} is held), so nothing was written. Run this again once it has finished.`);
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+  markerLocksHeld.set(key, (markerLocksHeld.get(key) ?? 0) + 1);
+  try {
+    const marker = readMarker(workspace);
+    const pause = process.env['DESKPOST_TEST_MARKER_PAUSE'];
+    if (pause && !nested) {
+      fs.writeFileSync(pause + '.held', String(process.pid));
+      const until = Date.now() + 30000;
+      while (!fs.existsSync(pause) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    return body(marker);
+  } finally {
+    const left = (markerLocksHeld.get(key) ?? 1) - 1;
+    if (left > 0) markerLocksHeld.set(key, left);
+    else {
+      markerLocksHeld.delete(key);
+      try { fs.unlinkSync(file); } catch { /* already gone */ }
+    }
+  }
+}
+
+/** A marker lock nobody holds: its recorded process is gone, or it is older than two minutes. */
+function markerLockAbandoned(file: string): boolean {
+  try {
+    if (Date.now() - fs.statSync(file).mtimeMs > 120000) return true;
+    const pid = Number(/pid=(\d+)/.exec(fs.readFileSync(file, 'utf8'))?.[1] ?? NaN);
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+  } catch {
+    return false;
   }
 }
 
@@ -405,4 +482,86 @@ export function requireWorkspace(options: {
   if (resolved.kind === 'conflict') throw new Error(resolved.reason ?? 'the workspace selection is contradictory');
   if (resolved.kind === 'none') throw new Error(NO_WORKSPACE_REFUSAL);
   return resolved.workspace!;
+}
+
+/**
+ * `deskpost library forget <folder-or-id>` (kickoffs/s146 row 1): one registry row removed, on its plan id's yes. It
+ * never touches the folder: a Library that was moved or deleted leaves a row behind, and this is how that row goes.
+ * Forgetting the default leaves no default, and says so with the command that names a new one.
+ */
+export function forgetLibrary(options: {
+  target: string | undefined;
+  registryRoot?: string | undefined;
+  preflight: boolean;
+  confirmed: boolean;
+  planId: string | undefined;
+}): { refusal: string | null; value: PsJsonValue | null; humanText?: string } {
+  const target = (options.target ?? '').trim();
+  if (!target) return { refusal: `${COMMAND_NAME} library forget needs a registered Library's folder or id: ${COMMAND_NAME} library forget <folder-or-id> --preflight.`, value: null };
+  const file = registryPath(options.registryRoot);
+  let document: Record<string, unknown>;
+  try {
+    const text = fs.existsSync(file) ? readTextFile(file).trim() : '';
+    document = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    return { refusal: `The registry at ${file} is not readable JSON, so no row can be forgotten. Nothing was changed.`, value: null };
+  }
+  const rows = Array.isArray(document['workspaces']) ? (document['workspaces'] as unknown[]) : [];
+  const wanted = toWorkspaceRoot(target);
+  const matches = rows.filter((row): row is Record<string, unknown> => {
+    if (!row || typeof row !== 'object') return false;
+    const record = row as Record<string, unknown>;
+    const root = toWorkspaceRoot(String(record['path'] ?? ''));
+    const sameRoot = wanted !== null && root !== null && root.toLowerCase() === wanted.toLowerCase();
+    return sameRoot || String(record['id'] ?? '').toLowerCase() === target.toLowerCase();
+  });
+  if (matches.length !== 1) {
+    return {
+      refusal: matches.length
+        ? `'${target}' names ${matches.length} registered Libraries, so none was forgotten. Name the one by its folder. Nothing was changed.`
+        : `'${target}' is not a registered Library's folder or id, so there is nothing to forget. ${COMMAND_NAME} library list shows them. Nothing was changed.`,
+      value: null,
+    };
+  }
+  const row = matches[0]!;
+  const root = toWorkspaceRoot(String(row['path'] ?? '')) ?? String(row['path'] ?? '');
+  const id = String(row['id'] ?? '');
+  const wasDefault = row['default'] === true;
+  const planId = 'library-forget-' + sha256OfText(`${file}|${JSON.stringify(rows)}|${root}|${id}`);
+  const plan: Record<string, PsJsonValue> = {
+    schema: 1,
+    operation: 'Forget a registered Library',
+    registry: file,
+    workspace: root,
+    id,
+    default: wasDefault,
+    folder_touched: false,
+    plan_id: planId,
+    confirmation_required: true,
+  };
+  const afterwards = wasDefault
+    ? ` It is the default Library, so afterwards there is none: name one with ${COMMAND_NAME} library default <folder>.`
+    : '';
+  if (options.preflight) {
+    return {
+      refusal: null,
+      value: { ...plan, written: false } as PsJsonValue,
+      humanText: `Would remove ${root} (id ${id}) from the registry; the folder itself is not touched.${afterwards} Apply with --user-confirmed --plan-id ${planId}.`,
+    };
+  }
+  if (!options.confirmed || (options.planId ?? '').trim() !== planId) {
+    return {
+      refusal: `${COMMAND_NAME} library forget needs --preflight first, then --user-confirmed --plan-id <its plan_id>. A different plan_id means the registry changed since the preview. Nothing was changed.`,
+      value: null,
+    };
+  }
+  writeAtomicText(file, psConvertToJson({ ...document, workspaces: rows.filter((candidate) => candidate !== row) } as PsJsonValue) + '\n');
+  if (readRegistry(options.registryRoot).some((entry) => entry.root.toLowerCase() === root.toLowerCase() && entry.id === id)) {
+    return { refusal: `${root} was removed from ${file} and still reads back. Check the registry.`, value: null };
+  }
+  return {
+    refusal: null,
+    value: { ...plan, written: true, no_default_now: wasDefault } as PsJsonValue,
+    humanText: `Forgot ${root}: it is no longer registered, and its folder was not touched.${wasDefault ? ` There is no default Library now: name one with ${COMMAND_NAME} library default <folder>.` : ''}`,
+  };
 }

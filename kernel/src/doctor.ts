@@ -22,6 +22,7 @@
 
 import { postboxCache } from './postbox.ts';
 import { codexHookHash } from './codexhooktrust.ts';
+import { spawnSync } from 'node:child_process'; import { CODEX_HOOK_HASH_CHECKED, parseCodexVersion, compareVersions, codexSandboxSettings } from './codexversion.ts';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -33,9 +34,12 @@ import { SKILL_LOCATIONS, skillInstallationStatus } from './skillcopy.ts';
 import { argumentTable } from './verbs.ts';
 import { fileDoctorFindings } from './doctorreport.ts';
 import { releaseTuple } from './programroot.ts';
-import { homeDirectory, resolveWorkspace } from './workspace.ts';
+import { homeDirectory, readMarker, resolveWorkspace } from './workspace.ts';
+import { readVaultConnection, type VaultConnection } from './vault.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
+import { listOutstanding } from './intent.ts';
+import { readSeatIdentityView } from './seatincarnation.ts';
 import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
 import { readSeatHistory, seatHistoryState } from './seathistory.ts';
 import { identityView, incarnationOf } from './seatincarnation.ts';
@@ -43,6 +47,7 @@ import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { deadNotebookLinks, NOTEBOOK_LINK_REPAIR } from './notebooklinks.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
 import { shelfCatalogEntryInventory, shelfCatalogText } from './shelfcatalog.ts';
+import { getStoredBookManifest } from './manifeststore.ts';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, getShelfBook, parseGrowingAt, readUtf8, shelfCatalogPath, shelfCatalogSections, STANDARD_SHELF_BOOK_SLUGS } from './shelfbook.ts';
 import { growingState, isThisLibrary, noteFrontmatter, shelfNotes } from './shelfnote.ts';
 import {
@@ -66,6 +71,7 @@ import { COMMAND_NAME, findAssistant, installRootOf, installShim, ownedRegistrat
 
 import { readSeatLaunch } from './seatlaunch.ts';
 import { readRegistryRows, registryFilePath } from './seatregistry.ts';
+import { clearLeftUndoMarkers, incompleteUndos } from './undo.ts';
 
 const WORKSPACE_ABSENT_REASON =
   'no reader workspace is attached, so nothing was read from a Shelf, a Notebook or ' +
@@ -168,9 +174,10 @@ function registrationFaults(trees: { tree: unknown; judgeProgram: boolean }[], p
           const owned = ownedRegistration(entry, own);
           if (owned === null) continue;
           // A REGISTRATION THIS MACHINE CANNOT START IS NO GUARD (S42). Measured in a clean Linux distro: every hook
-          // `library init` wrote there was `powershell.exe`, which does not exist. POSIX only, where it was measured.
+          // `library init` wrote there was `powershell.exe`, which does not exist. POSIX only, where it was measured. It covers
+          // every registration another program starts: a script, or a source checkout's `cli.ts` (kickoffs/s157 row 6).
           const starter = owned.invocation.program;
-          if (process.platform !== 'win32' && owned.kind === 'script' && !starter.includes('${') && !canStart(starter)) {
+          if (process.platform !== 'win32' && owned.file !== starter && !starter.includes('${') && !canStart(starter)) {
             faults.unstartable.push(`${eventName} -> ${starter}`);
             continue;
           }
@@ -1145,6 +1152,47 @@ function assistantPresent(): string {
   return [claude !== null ? `Claude Code at ${claude}` : null, codex !== null ? `Codex at ${codex}` : null].filter((part) => part !== null).join('; ');
 }
 
+/** Codex's version and configured sandbox, read only; an uncertain assessment is always a warning. */
+function codexVersion(): string {
+  try {
+    const found = findAssistant('codex');
+    if (found === null) return 'SKIP: no Codex on this machine';
+    const warnings: string[] = [];
+    const batch = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(found);
+    const command = batch ? path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'cmd.exe') : found;
+    const args = batch ? ['/d', '/s', '/c', `""${found}" --version"`] : ['--version'];
+    const ran = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 10000, ...(batch ? { windowsVerbatimArguments: true } : {}) });
+    const printed = `${ran.stdout ?? ''}${ran.stderr ?? ''}`.slice(0, 200).replace(/\s+/g, ' ').trim();
+    const version = parseCodexVersion(ran.stdout ?? '');
+    if (ran.error) {
+      const error = ran.error as NodeJS.ErrnoException;
+      warnings.push(`--version ${error.code === 'ETIMEDOUT' ? 'timed out after 10000ms' : `could not run (${error.code ?? error.message})`}: ${printed}`);
+    } else if (ran.status !== 0) {
+      warnings.push(`--version exited ${ran.status ?? `on signal ${ran.signal}`}: ${printed}`);
+    } else if (version === null) {
+      warnings.push(`--version printed no version: ${printed}`);
+    }
+    if (version !== null && compareVersions(version, CODEX_HOOK_HASH_CHECKED) > 0) {
+      warnings.push(`newer than ${CODEX_HOOK_HASH_CHECKED}, the version doctor's hook review check was checked against, so its stale-hook verdicts may be wrong until Deskpost is updated`);
+    }
+    const home = codexHomeDirectory(), config = path.join(home, 'config.toml');
+    let settings = codexSandboxSettings(''), configDetail = `from ${config}`, configPresent = false;
+    try {
+      const stat = fs.statSync(config);
+      configPresent = true;
+      if (!stat.isFile()) throw new Error('not a readable file');
+      settings = codexSandboxSettings(fs.readFileSync(config, 'utf8'));
+    } catch (error) {
+      if (!configPresent && (error as NodeJS.ErrnoException).code === 'ENOENT') configDetail = `no config.toml in ${home}`;
+      else warnings.push(`config exists but cannot be read at ${config} (${(error as NodeJS.ErrnoException).code ?? 'not a readable file'})`);
+    }
+    const detail = `${version === null ? 'Codex' : `codex-cli ${version}`} at ${found}; sandbox: ${settings.sandbox_mode ?? 'sandbox_mode not set'}, Windows ${settings.windows_sandbox ?? 'not set'} (${configDetail})`;
+    return `${warnings.length ? 'WARN: ' : ''}${detail}${warnings.length ? `; ${warnings.join('; ')}` : ''}`;
+  } catch (error) {
+    return `WARN: could not assess Codex version and sandbox (${(error as NodeJS.ErrnoException).code ?? 'read or process error'})`;
+  }
+}
+
 /**
  * WHERE A SEAT'S FOLDERS COME FROM, AND WHETHER THEY ARE STILL THERE (1.2.5, ADR-0061). Two things WARN, never FAIL:
  * a folder a seat's record names that is gone, which `seat start` skips; and an `additionalDirectories` entry in the
@@ -1567,6 +1615,36 @@ function standardBooksPresent(workspace: string): string {
 }
 
 /**
+ * EVERY SHELF BOOK HAS A DISCOVERY MANIFEST (kickoffs/s149 row 3): a Book whose stored manifest is missing (it never had
+ * one written) or dirty (a write did not finish) is named unread by Discovery, and nothing said so. A WARN, never a
+ * FAIL: a Library made before s149 meets it after an upgrade, and `shelf rebuild` is the repair.
+ */
+function booksHaveManifests(workspace: string): string {
+  if (!fs.existsSync(shelfCatalogPath(workspace))) return 'SKIP: this Library has no Shelf catalog, so no Book to check';
+  const slugs = shelfCatalogEntryInventory(workspace).entries.map((entry) => entry.slug);
+  const unread = slugs
+    .map((slug) => ({ slug, stored: getStoredBookManifest(workspace, slug) }))
+    .filter((book) => book.stored.status === 'missing' || book.stored.status === 'dirty');
+  if (unread.length) {
+    return (
+      `WARN: ${unread.map((book) => `'${book.slug}' (${book.stored.status})`).join(', ')} ${unread.length === 1 ? 'has' : 'have'} no Discovery manifest, ` +
+      `so Discovery names ${unread.length === 1 ? 'it' : 'them'} unread; run ${unread.map((book) => `deskpost shelf rebuild ${book.slug}`).join(', ')}`
+    );
+  }
+  return `all ${slugs.length} Shelf Book${slugs.length === 1 ? ' has' : 's have'} a Discovery manifest`;
+}
+
+function undoIncompleteCheck(workspace: string): string {
+  const incomplete = incompleteUndos(workspace);
+  return incomplete.length ? `WARN: undo incomplete: ${incomplete.join('; ')}` : 'no undo or redo stopped part-way';
+}
+
+function undoMarkerLeftCheck(workspace: string): string {
+  const cleared = clearLeftUndoMarkers(workspace);
+  return cleared.length ? `WARN: marker left: ${cleared.join('; ')}` : 'no finished undo or redo left its dirty marker down';
+}
+
+/**
  * A LASTING RECORD NEVER LINKS INTO THE NOTEBOOK (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook
  * path that no longer exists, as a reset that came before the refusal would have left it. A WARN, with the repair.
  */
@@ -1628,6 +1706,46 @@ function postboxReachable(workspace: string): string {
   return last ? `the Postbox answered at its last check, ${last}` : 'the Postbox has not been checked since setup';
 }
 
+/** Report warnings are local facts; doctor never contacts the Postbox server. */
+function postboxReports(workspace:string):string {
+  const {state}=postboxCache(workspace);
+  if(state===null) return 'SKIP: this Library has no Postbox';
+  const warnings:string[]=[];
+  const conflict=state['reports_triager_conflict'] as {claimants?:{library_id:string;library_card:string;seat:string}[]} | null;
+  if(conflict) warnings.push(`Reports triager conflict: ${(conflict.claimants ?? []).map(c=>`${c.library_card} (${c.library_id}), ${c.seat}`).join('; ')}; reports triager --follow <library> --preflight chooses one`);
+  const pin=state['reports_triager'] as {library_id:string;seat:string;seat_id:string} | null;
+  if(pin && pin.library_id===state['library_id'] && !readSeatIdentityView(path.join(workspace,'.claude')).live.some(row=>row.identity==='valid' && row.seat===pin.seat && row.seatId===pin.seat_id)) warnings.push(`The triaging seat ${pin.seat} is no longer a live seat; reports triager <seat> --preflight names another`);
+  for(const entry of Array.isArray(state['controls_deferred'])?state['controls_deferred']:[]){
+    if(!entry||typeof entry!=='object'||Array.isArray(entry))continue;
+    const row=entry as Record<string,unknown>;const age=Date.now()-Date.parse(String(row['first_deferred_utc']??''));
+    if(age>86400000)warnings.push('Control '+String(row['delivery_id'])+', parent '+String(row['parent'])+', deferred '+Math.floor(age/3600000)+' hours'+(typeof row['blocked_by']==='string'?', blocked by refused control '+row['blocked_by']:''));
+  }
+  for(const entry of Array.isArray(state['controls_refused'])?state['controls_refused']:[]){
+    if(!entry||typeof entry!=='object'||Array.isArray(entry))continue;
+    const row=entry as Record<string,unknown>;const age=Date.now()-Date.parse(String(row['first_refused_utc']??''));
+    warnings.push('Control '+String(row['delivery_id'])+', parent '+String(row['parent']??'(unknown)')+', refused '+(Number.isFinite(age)?Math.max(0,Math.floor(age/3600000)):'unknown')+' hours: '+String(row['why']??'control refused'));
+  }
+  let inboxReadLimit='';
+  try {
+    for(const note of shelfNotes(getShelfBook(workspace,'reports'))) {
+      const fields=noteFrontmatter(readUtf8(note.fullPath));
+      const age=Date.now()-Date.parse(note.captured);
+      const foreign=!!note.fromLibraryId && note.fromLibraryId!==note.localLibraryId;
+      if(note.review==='pending' && fields.has('delivery_id') && fields.has('for_library_id') && !foreign && age>7*86400000) warnings.push(`Report ${fields.get('delivery_id')} pending ${Math.floor(age/86400000)} days at triaging Library ${fields.get('for_library_id')}`);
+    }
+  } catch(error) { inboxReadLimit=`Report Inbox not checked: ${(error as Error).message.substring(0,200)}`; }
+  return warnings.length ? `WARN: ${warnings.join('; ')}${inboxReadLimit ? '; '+inboxReadLimit : ''}` : inboxReadLimit ? `SKIP: ${inboxReadLimit}` : 'No Report triager conflict, stale sent copy or missing triaging seat';
+}
+function postboxRecords(workspace:string):string {
+  if(postboxCache(workspace).state===null) return 'SKIP: this Library has no Postbox';
+  const pending=listOutstanding(workspace).filter(record=>record.payload['control_move_pending']);
+  const old=listOutstanding(workspace).filter(record=>!record.payload['control_move_pending']&&Date.now()-Date.parse(record.created_utc)>3600000);
+  const lines=pending.map(record=>`${record.delivery_id}, pending ${Math.max(0,Math.floor((Date.now()-Date.parse(record.created_utc))/3600000))} hours: ${record.payload['control_move_unverified']?'its server copy cannot be verified':String(record.payload['control_move_pending'])}`);
+  for(const record of listOutstanding(workspace).filter(r=>r.payload['control_set_aside']))lines.push(`${record.delivery_id}, pending ${Math.max(0,Math.floor((Date.now()-Date.parse((record.payload['control_set_aside'] as {first_set_aside_utc:string}).first_set_aside_utc))/3600000))} hours: its Report changed while its control waited`);
+  if(old.length)lines.push(`incomplete intent records older than an hour: ${old.map(record=>`${record.delivery_id}, pending ${record.stages.filter(s=>s.state==='pending').map(s=>s.name).join(', ')}`).join('; ')}`);
+  return lines.length?'WARN: '+lines.join('; '):'No incomplete intent record older than an hour';
+}
+
 // --- The runner -----------------------------------------------------------------------------------
 
 export interface DoctorResult {
@@ -1652,6 +1770,10 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
   const libraryChecks = workspace ? own.filter((row) => !PROGRAM_WIDE_CHECKS.has(row.check)) : [];
 
   const count = (status: string): number => results.filter((row) => row.status === status).length;
+  const tallyRows = (rows: { status: string }[]) => {
+    const of = (status: string) => rows.filter((row) => row.status === status).length;
+    return { total: rows.length, passed: of('pass'), warned: of('warn'), failed: of('fail'), skipped: of('skipped') };
+  };
   const failed = count('fail');
   const programFailed = [...programChecks, ...libraryChecks].filter((row) => row.status === 'fail').length;
   return {
@@ -1668,6 +1790,12 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
       checks: results as unknown as PsJsonValue,
       program_checks: programChecks as unknown as PsJsonValue,
       library_checks: libraryChecks as unknown as PsJsonValue,
+      // THE COUNTS THE TEXT SAYS (kickoffs/s141 row 5): `Program:` over program_checks and `Library:` over checks and
+      // library_checks, as doctorText tallies them; the counts above stay the `checks` list's, which the matrix compares.
+      totals: {
+        program: tallyRows(programChecks),
+        library: tallyRows(workspace ? [...results, ...libraryChecks] : []),
+      },
       shared_library_write: false,
       // D6: each FAIL (and WARN with --warnings) filed once into the Report Inbox; never a change to the exit code.
       ...(parsed.flags.has('report')
@@ -1679,7 +1807,7 @@ export function runDoctor(argv: string[], program: string): DoctorResult {
 }
 
 /** The checks that need no Library: the program's own, run once whatever the Libraries are. */
-export const PROGRAM_WIDE_CHECKS = new Set(['program.command-resolves', 'program.assistant-present', 'settings.user-inbound', 'program.refresh-finished']);
+export const PROGRAM_WIDE_CHECKS = new Set(['program.command-resolves', 'program.assistant-present', 'program.codex-version', 'settings.user-inbound', 'program.refresh-finished']);
 
 /**
  * `doctor --served-by <root>` (D8, PLAN-one-upgrade.md r6 amendment 10): every Library the install at <root> serves,
@@ -1752,6 +1880,7 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
       : { check: `workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, status: 'skipped', detail: 'no Library here, so no workspace skills to check' }),
     runCheck('program.command-resolves', () => commandResolves(program)),
     runCheck('program.assistant-present', assistantPresent),
+    runCheck('program.codex-version', codexVersion),
     // KEPT IN THIS LIST, NOT `checks` (1.2.5): the PowerShell runner has no added folders to check, and `checks` is
     // compared with it row for row. Skipped with no Library, as a workspace check is.
     workspace ? runCheck('seats.added-folders', () => seatAddedFolders(workspace)) : { check: 'seats.added-folders', status: 'skipped', detail: 'no Library here, so no seats whose folders to check' },
@@ -1761,6 +1890,8 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('shelf.capture-books-growing', () => captureBooksGrowing(workspace)) : { check: 'shelf.capture-books-growing', status: 'skipped', detail: 'no Library here, so no capture Books to check' },
     // AND THIS ONE (S77 row 3): the PowerShell runner has no standard-Book check.
     workspace ? runCheck('shelf.standard-books-present', () => standardBooksPresent(workspace)) : { check: 'shelf.standard-books-present', status: 'skipped', detail: 'no Library here, so no standard Books to check' },
+    // AND THIS ONE (kickoffs/s149 row 3): the PowerShell runner has no manifest check. A WARN, never a FAIL.
+    workspace ? runCheck('shelf.books-have-manifests', () => booksHaveManifests(workspace)) : { check: 'shelf.books-have-manifests', status: 'skipped', detail: 'no Library here, so no Shelf Books to check' },
     // AND THESE TWO (S79 row 3): the PowerShell runner has no inbound policy. WARNs, never FAILs.
     workspace ? runCheck('seats.inbound-policy', () => seatInboundFiles(workspace)) : { check: 'seats.inbound-policy', status: 'skipped', detail: 'no Library here, so no seats whose inbound files to check' },
     runCheck('settings.user-inbound', userInboundSetting),
@@ -1773,18 +1904,50 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     workspace ? runCheck('seats.identity', () => seatsIdentity(workspace)) : { check: 'seats.identity', status: 'skipped', detail: 'no Library here, so no seats whose identity to check' },
     // AND THIS ONE (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook path that is gone. A WARN.
     workspace ? runCheck('notebook.links-resolve', () => notebookLinksResolve(workspace)) : { check: 'notebook.links-resolve', status: 'skipped', detail: 'no Library here, so no Hub or Shelf Book links to check' },
+    // AND THESE TWO (kickoffs/s165 row 5): an undo or redo that stopped part-way, and a finished one's own dirty marker
+    // still down, which is cleared here. A marker another operation owns, or an unfinished one's, is never touched.
+    workspace ? runCheck('undo.incomplete', () => undoIncompleteCheck(workspace)) : { check: 'undo.incomplete', status: 'skipped', detail: 'no Library here, so no undo records to check' },
+    workspace ? runCheck('undo.marker-left', () => undoMarkerLeftCheck(workspace)) : { check: 'undo.marker-left', status: 'skipped', detail: 'no Library here, so no undo records to check' },
     // AND THESE TWO (kickoffs/s123 row 4): the Postbox's outbox and whether it answered, from its cache. Skipped with none.
     workspace ? runCheck('postbox.outbox', () => postboxOutbox(workspace)) : { check: 'postbox.outbox', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.reachable', () => postboxReachable(workspace)) : { check: 'postbox.reachable', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
+    workspace ? runCheck('postbox.reports',()=>postboxReports(workspace)) : {check:'postbox.reports',status:'skipped',detail:'no Library here'},
+    workspace ? runCheck('postbox.records',()=>postboxRecords(workspace)) : {check:'postbox.records',status:'skipped',detail:'no Library here'},
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.
     runCheck('settings.inbound-overview', () => inboundOverview(workspace)),
     ...(workspace ? (() => { try { return readRegistryRows(registryFilePath(path.join(workspace, '.claude'))).flatMap(row => {
       const seat = String(row['seat']), read = readSeatLaunch(path.join(workspace, '.claude'), seat, String(row['seat_id'] ?? ''));
       return read.state === 'invalid' || read.state === 'unreadable' ? [{ check: 'seats.launch-record.' + seat, status: 'warn', detail: read.reason + '; reset with deskpost seat settings ' + seat + ' --reset-launch --preflight, then its --plan-id' }] : [];
     }); } catch { return []; /* The existing registry checks name a malformed registry. */ } })() : []),
+    // AND THIS ONE (kickoffs/s161 row 2): the vault connection, named; no row with none.
+    ...vaultConnectionCheck(workspace),
     ...refreshUnfinished(program),
   ];
   return { results, programChecks };
+}
+
+/**
+ * THE VAULT CONNECTION, NAMED (kickoffs/s161 row 2; plan acceptance criterion 1): with `connections.vault` in the marker,
+ * one row naming the vault's folder, whether it and its Librarian folder exist, and the features on. A missing folder is
+ * a WARN, never a FAIL. With no connection there is no row, so a Library without a vault reports exactly what it did.
+ */
+function vaultConnectionCheck(workspace: string): CheckResult[] {
+  if (!workspace) return [];
+  let connection: VaultConnection | null;
+  try {
+    connection = readVaultConnection(readMarker(workspace));
+  } catch {
+    return [];
+  }
+  if (connection === null) return [];
+  const vault = connection;
+  return [runCheck('vault.connection', () => {
+    const features = vault.features.length ? vault.features.join(', ') : 'none';
+    const librarian = path.join(vault.path, vault.librarian_folder);
+    if (!fs.existsSync(vault.path)) return `WARN: the vault folder ${vault.path} is gone; Deskpost writes nothing there until it is back, or until deskpost vault disconnect (features on: ${features})`;
+    if (!fs.existsSync(librarian)) return `WARN: the vault at ${vault.path} has no ${vault.librarian_folder}/ folder, so Deskpost writes nothing there; the vault's own scaffold makes it (features on: ${features})`;
+    return `connected to the vault at ${vault.path}; its ${vault.librarian_folder}/ folder exists; features on: ${features}`;
+  })];
 }
 
 /**

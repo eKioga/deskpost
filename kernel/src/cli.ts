@@ -20,13 +20,15 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hubHistory } from './hubhistory.ts';
 import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
 import { runCheckpointVerb } from './checkpointverb.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
-import { captureVerb, lettersCloseVerb, lettersListVerb, reportsVerb, runBookVerb } from './capture.ts';
-import { runPostboxVerb } from './postbox.ts';
+import { captureVerb, lettersCloseVerb, lettersListVerb, reportsListVerb, reportsVerb, runBookVerb } from './capture.ts';
+import { kickoffReceive, kickoffSend } from './kickoff.ts';
+import { reportsTriagerVerb, runPostboxVerb } from './postbox.ts';
 import { auditVerb } from './audit.ts';
 import { runRawSearch } from './rawsearch.ts';
 import { runRawOwners } from './rawowners.ts';
@@ -45,7 +47,7 @@ import { collectionReplacePage } from './collectionreplace.ts';
 import { runMcpVerb } from './reader.ts';
 import { runHookVerb } from './guards.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
-import { NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
+import { forgetLibrary, NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
 import { checkArguments, parseArguments, quoteWarnings } from './argv.ts';
 import { takeContentPathNote } from './contentpath.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
@@ -61,6 +63,9 @@ import { runFinishUninstall } from './finisher.ts';
 import { installVerb } from './install.ts';
 import { upgradeVerb } from './upgrade.ts';
 import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
+import { dashboardText, watchDashboard } from './dashboard.ts';
+import { vaultVerb } from './vault.ts';
+import { needsYouText, readNeedsYou, refreshAfterCommand, writeNeedsYou } from './needsyou.ts';
 
 
 function writeStdout(text: string): void {
@@ -104,6 +109,12 @@ function refuse(message: string): never {
 }
 
 async function main(argv: string[]): Promise<number> {
+  // The global workspace may precede the verb, as the top-level usage promises.
+  if (argv[0] === '--workspace') {
+    const workspace = argv[1];
+    if (!workspace || workspace.startsWith('-')) refuse('--workspace requires a path.');
+    argv = [...argv.slice(2), '--workspace', workspace];
+  }
   // BARE `deskpost` IS THE MAIN MENU (ADR-0059), where a person can answer; anywhere else it prints usage, as before,
   // so a caller that cannot be prompted never waits.
   if (argv.length === 0 && menuIsInteractive()) {
@@ -135,8 +146,8 @@ async function main(argv: string[]): Promise<number> {
     // NAMES WHAT EXISTS. A bare "unknown command" leaves the reader guessing at a list this file is
     // holding in its hand.
     refuse(
-      `library has no command '${verb}'. It has: ${Object.keys(VERBS).sort().join(', ')}. ` +
-        'Run `library help` for what each one does.',
+      `deskpost has no command '${verb}'. It has: ${Object.keys(VERBS).sort().join(', ')}. ` +
+        'Run `deskpost help` for what each one does.',
     );
   }
 
@@ -157,6 +168,23 @@ async function main(argv: string[]): Promise<number> {
   // have has no table, and the verb refuses it in its own words; so does an unported verb and a retired action.
   // THE TABLE EVERY BRANCH BELOW PARSES WITH: the action's own, or the global flags alone for an action the verb lacks.
   const table = ownTable ? argumentTable(verb, action) : globalTable(verb);
+  // AN UNKNOWN ACTION NAMES THE ACTIONS (kickoffs/s149 row 1): a verb with actions whose bare form takes no words read
+  // `library nosuch` as one word too many ("takes no words"), so the reader never learned the verb has actions at all.
+  const declared = VERBS[verb]!;
+  if (declared.ported && declared.actions.length && action === '' && ownTable && ownTable.positionals === 0 && !ownTable.ownRefusals && !ownTable.ownWords) {
+    const wantsValue = new Set([...(table.valued ?? []), ...(table.repeatable ?? [])]);
+    let word: string | undefined;
+    for (let index = 0; index < tail.length; index += 1) {
+      const item = tail[index]!;
+      if (item.startsWith('-')) {
+        if (item.startsWith('--') && wantsValue.has(item.substring(2))) index += 1;
+        continue;
+      }
+      word = item;
+      break;
+    }
+    if (word !== undefined) refuse(`deskpost ${verb} has no action '${word}'. It has: ${declared.actions.join(', ')}. Nothing was run.`);
+  }
   if (VERBS[verb]!.ported && ownTable) {
     const command = `deskpost ${verb}${action ? ` ${action}` : ''}`;
     const refusal = checkArguments(command, tail, table);
@@ -275,6 +303,37 @@ async function main(argv: string[]): Promise<number> {
       }
     }
 
+    case 'dashboard': {
+      const parsed = parseArguments(rest, table);
+      try {
+        const watch = parsed.flags.has('watch');
+        const seat = parsed.options.get('seat');
+        if (watch && !seat?.trim()) refuse('deskpost dashboard --watch needs --seat <name>: the pane never chooses a seat.');
+        if (watch && parsed.flags.has('json')) refuse('deskpost dashboard --json is a one-shot read; use --watch without --json.');
+        const interval = parsed.options.get('interval-seconds') ?? '5';
+        if (!/^\d+$/.test(interval) || Number(interval) < 2 || Number(interval) > 60) refuse('deskpost dashboard --interval-seconds must be a whole number from 2 to 60.');
+        const iterations = parsed.options.get('iterations');
+        if (iterations !== undefined && (!/^\d+$/.test(iterations) || !Number.isSafeInteger(Number(iterations)) || Number(iterations) < 1)) refuse('deskpost dashboard --iterations needs a positive whole number.');
+        if (!watch && (parsed.options.has('interval-seconds') || iterations !== undefined)) refuse('deskpost dashboard --interval-seconds and --iterations need --watch.');
+        const width = parsed.options.get('width');
+        if (width !== undefined && (!/^\d+$/.test(width) || !Number.isSafeInteger(Number(width)))) refuse('deskpost dashboard --width needs a whole number.');
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        if (watch) {
+          await watchDashboard({ workspace, seat: seat!, width: width === undefined ? undefined : Number(width), intervalSeconds: Number(interval), iterations: iterations === undefined ? undefined : Number(iterations) });
+          return 0;
+        }
+        const overview = deskOverview({ workspace, seat });
+        const { dashboardColor, dashboardWidth, readDashboardCheckpoint } = await import('./dashboard.ts');
+        const now = Date.now();
+        const checkpoint = readDashboardCheckpoint(workspace, overview, now);
+        const color = dashboardColor(process.stdout.isTTY === true, process.env);
+        emit({ ...overview, ...checkpoint } as PsJsonValue, parsed.flags.has('json'), dashboardText(overview, { width: dashboardWidth(width === undefined ? undefined : Number(width), process.stdout.columns), rows: process.stdout.rows, now, color, checkpoint: checkpoint.checkpoint }));
+        return 0;
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+    }
+
     case 'shelf': {
       // The one Shelf verb that waits on a network answer (S41), so it is dispatched before the others.
       if (rest[0] === 'duplicates') {
@@ -370,6 +429,13 @@ async function main(argv: string[]): Promise<number> {
       } catch (error) {
         refuse(`library ${verb} : ${(error as Error).message}`);
       }
+      if (verb === 'hub' && action === 'history') {
+        try {
+          const history = await hubHistory(tail, workspace);
+          emit(history.value, parsed.flags.has('json'), history.text);
+          return 0;
+        } catch (error) { refuse((error as Error).message); }
+      }
       const result =
         verb === 'hub' ? await runHubVerb(rest, workspace) : verb === 'shared' ? await runSharedVerb(rest, workspace) : await runPublishVerb(rest, workspace);
       if (result.refusal !== null) refuse(result.refusal);
@@ -417,6 +483,27 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    // A KICKOFF BETWEEN OFFICES (kickoffs/s159 rows 2 and 3): `send` and `receive`, read from the words after it.
+    case 'kickoff': {
+      if (action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: receive, send.`);
+      const parsed = parseArguments(tail, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library kickoff : ${(error as Error).message}`);
+      }
+      try {
+        const result = action === 'send'
+          ? kickoffSend({ page: parsed.positional[0] ?? '', library: parsed.options.get('library') ?? '', forSeat: parsed.options.get('for') ?? '' }, workspace)
+          : await kickoffReceive({ letter: parsed.positional[0] ?? '' }, workspace);
+        emit(result, true);
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return 0;
+    }
+
     // A SEAT'S OWN MAIL (kickoffs/s108 ruling 2; kickoffs/s120 row 3): `list` and `close`, read from the words after it.
     case 'letters': {
       if (action !== 'close' && action !== 'list') refuse(`library letters has no action '${rest[0] ?? ''}'. It has: list, close.`);
@@ -441,7 +528,7 @@ async function main(argv: string[]): Promise<number> {
 
     // A SEAT'S OWN REPORT (kickoffs/s130 row 2; ADR-0083): `amend` and `withdraw`, read from the words after it.
     case 'reports': {
-      if (action !== 'amend' && action !== 'withdraw') refuse(`library reports has no action '${rest[0] ?? ''}'. It has: amend, withdraw.`);
+      if (action !== 'amend' && action !== 'list' && action !== 'send-pending' && action !== 'withdraw' && action !== 'triager') refuse(`library reports has no action '${rest[0] ?? ''}'. It has: ${VERBS['reports']!.actions.join(', ')}.`);
       const parsed = parseArguments(tail, table);
       let workspace: string;
       try {
@@ -449,7 +536,18 @@ async function main(argv: string[]): Promise<number> {
       } catch (error) {
         refuse(`library reports : ${(error as Error).message}`);
       }
-      const result = reportsVerb(action, tail, workspace);
+      if (action === 'list') {
+        const listed = reportsListVerb(tail, workspace);
+        if (listed.refusal !== null) refuse(listed.refusal);
+        emit(listed.value!, parsed.flags.has('json'), listed.text);
+        return 0;
+      }
+      const result = action === 'send-pending' ? (await import('./capture.ts')).reportsSendPendingVerb(tail, workspace) : action === 'triager' ? await reportsTriagerVerb(tail, workspace) : reportsVerb(action, tail, workspace);
+      // Let the asynchronous transport drain before exiting on a triager refusal (Windows/libuv).
+      if (action === 'triager' && result.refusal !== null) {
+        process.stderr.write(hostRemedies(result.refusal) + '\n');
+        return 1;
+      }
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
       return 0;
@@ -472,6 +570,55 @@ async function main(argv: string[]): Promise<number> {
             : { refusal: `library raw has no action '${action}'. It has: owners, search.`, value: null };
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
+      return 0;
+    }
+
+    // WHAT WAITS ON ERIC (kickoffs/s161 row 4): the five sections, read from the Library's files.
+    case 'needs-you': {
+      const parsed = parseArguments(rest, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library needs-you : ${(error as Error).message}`);
+      }
+      try {
+        const needs = readNeedsYou(workspace);
+        if (parsed.flags.has('write')) {
+          const done = writeNeedsYou(workspace, needs);
+          if (done.status === 'refused') refuse(`The page ${done.path} was not written: ${done.reason}. Nothing was written.`);
+          emit({ schema: 1, operation: 'Write the needs-you page', workspace, status: done.status, path: done.path } as PsJsonValue, parsed.flags.has('json'),
+            done.status === 'written' ? `Wrote ${done.path}.` : `${done.path} already says this; nothing was written.`);
+          return 0;
+        }
+        emit({ schema: 1, operation: 'Needs you', workspace, sections: needs.sections, problems: needs.problems } as unknown as PsJsonValue, parsed.flags.has('json'), needsYouText(needs));
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return 0;
+    }
+
+    // THE VAULT CONNECTION (kickoffs/s161 row 1): `connect`, `disconnect` and `status`, read from the words after it.
+    case 'vault': {
+      if (action !== 'connect' && action !== 'disconnect' && action !== 'status') refuse(`library vault has no action '${rest[0] ?? ''}'. It has: connect, disconnect, status.`);
+      const parsed = parseArguments(tail, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library vault : ${(error as Error).message}`);
+      }
+      try {
+        const result = vaultVerb(action, workspace, {
+          folder: parsed.positional[0],
+          preflight: parsed.flags.has('preflight'),
+          userConfirmed: parsed.flags.has('user-confirmed'),
+          planId: parsed.options.get('plan-id'),
+        });
+        emit(result.value, parsed.flags.has('json') || action !== 'status', result.text);
+      } catch (error) {
+        refuse((error as Error).message);
+      }
       return 0;
     }
 
@@ -530,6 +677,20 @@ async function main(argv: string[]): Promise<number> {
 
     // WHICH LIBRARY BARE `deskpost` OPENS (step 5a): the list, and `default <folder>`.
     case 'library': {
+      // FORGET (kickoffs/s146 row 1) is the registry's own writer, so it lives beside the registry, not the menu.
+      if (rest[0] === 'forget') {
+        const parsed = parseArguments(rest, table);
+        const forgot = forgetLibrary({
+          target: parsed.positional[1],
+          registryRoot: parsed.options.get('registry-root'),
+          preflight: parsed.flags.has('preflight'),
+          confirmed: parsed.flags.has('user-confirmed'),
+          planId: parsed.options.get('plan-id'),
+        });
+        if (forgot.refusal !== null) refuse(forgot.refusal);
+        emit(forgot.value!, rest.includes('--json'), forgot.humanText);
+        return 0;
+      }
       const result = runLibraryVerb(rest);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, rest.includes('--json'), result.humanText);
@@ -691,6 +852,9 @@ if (invokedDirectly) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;
+      // THE "NEEDS YOU" PAGE KEPT CURRENT (kickoffs/s161 row 6): after a verb that exited 0 and can change it; a failure is
+      // one line on standard error and never this exit code.
+      if (code === 0) refreshAfterCommand(process.argv.slice(2));
     })
     .catch((error: unknown) => {
       process.stderr.write(((error as Error).message ?? String(error)) + '\n');

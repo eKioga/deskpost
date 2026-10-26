@@ -65,7 +65,8 @@ export const CODEX_REQUIRED_HOOKS: { file: string; event: string; matcher: RegEx
 
 /**
  * THE BINARY'S SPELLING OF A HOOK (S42, the reader's ruling). On macOS and Linux there is no PowerShell, so
- * `library init` registers each ported hook as `"<program>/bin/library" hook <verb>`, and a registration is
+ * `library init` registers each ported hook as `"<program>/bin/library" hook <verb>` (from a source checkout, which has
+ * no binary, `"<node>" "<program>/kernel/src/cli.ts" hook <verb>`: kickoffs/s153 row 3), and a registration is
  * recognised by its verb as well as by its script -- on every platform, as the oracle's
  * `Test-HookEntryNamesHook` since S42, because the Claude Code plugin spells its hooks this way on Windows
  * too. The hooks with no kernel port have no verb, are optional, and a POSIX workspace goes without them.

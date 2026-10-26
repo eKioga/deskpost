@@ -113,6 +113,7 @@ export function fileDoctorFindings(workspace: string, findings: DoctorFinding[],
     }
     const title = `doctor: ${row.check} ${row.status === 'fail' ? 'failed' : 'warned'}`;
     const result = captureVerb([REPORT_INBOX, '--title', title, '--body', reportBody(row, version, workspace)], workspace, {
+      mode: 'generated',
       extraFrontmatter: [
         ['doctor_check', row.check],
         ['doctor_digest', digest],

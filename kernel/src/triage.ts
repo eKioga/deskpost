@@ -34,6 +34,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { tableFor } from './verbs.ts';
 import { sha256OfText } from './sha.ts';
+import { strayControlRefusal } from './controlchars.ts';
 import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, HELD_RECORD_SHAPE, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
 import { seatIncarnation } from './seatincarnation.ts';
@@ -105,7 +106,7 @@ function refuse(message: string): never {
  */
 export const TRIAGE_ACTION_FIELDS = [
   'collection', 'include_pages', 'kind', 'next_actions', 'other_seat', 'page_path', 'purpose', 'record', 'reopen',
-  'replace_existing', 'slug', 'source', 'source_match', 'source_page', 'source_path', 'source_slug', 'summary', 'title', 'topic', 'why',
+  'replace_existing', 'slug', 'source', 'source_match', 'source_page', 'source_path', 'source_slug', 'summary', 'title', 'topic', 'why', 'outcome', 'outcome_note',
 ] as const;
 type TriageActionField = (typeof TRIAGE_ACTION_FIELDS)[number];
 
@@ -477,6 +478,31 @@ export function convertToTriageAction(
   let touchSet: string[] = [];
   let deleteSet: string[] = [];
   const metadata = new Map<string, unknown>();
+  // A received Report has one closing route; closed copies may subsequently be filed (c49 row 1).
+  const receivedReport = source.bookSlug === 'reports' && !!source.note?.fromLibraryId && source.note.fromLibraryId !== source.note.localLibraryId;
+  const hasOutcome = 'outcome' in action || 'outcome_note' in action;
+  if (receivedReport && source.note!.review !== 'done' && !['review', 'hold'].includes(kind)) {
+    refuse('close it with review and an outcome first; a closed note can then be filed');
+  }
+  if (hasOutcome && (!receivedReport || kind !== 'review' || triageTruthy(triageValue(action, 'reopen')))) {
+    refuse('outcome and outcome_note are fields only a review close of a received Report takes.');
+  }
+  if (receivedReport && kind === 'review' && !triageTruthy(triageValue(action, 'reopen'))) {
+    const letters = getShelfBook(workspace, 'letters');
+    if (!letters.isCapture || !letters.takesLetters) refuse('An outcome close needs a letters capture Book that accepts letters.');
+    const outcome = triageValue(action, 'outcome');
+    const note = triageValue(action, 'outcome_note');
+    if (typeof outcome !== 'string' || !['confirmed', 'confirmed-by-design', 'not-reproduced', 'already-fixed', 'declined'].includes(outcome)) {
+      refuse('A received Report review close requires outcome: confirmed, confirmed-by-design, not-reproduced, already-fixed or declined.');
+    }
+    if (typeof note !== 'string' || !note.trim() || Buffer.byteLength(note, 'utf8') > 2048) {
+      refuse('A received Report review close requires outcome_note: text, at most 2 KB.');
+    }
+    const stray = strayControlRefusal(note, 'outcome_note');
+    if (stray !== null) refuse(stray);
+    metadata.set('outcome', outcome);
+    metadata.set('outcome_note', note);
+  }
   const requiredDesk: string[] = [];
   // THE GATE RULE: any action reading a named note out of a capture Book needs that Book open;
   // writing INTO one needs nothing. Applied here once, for every holding-sourced kind.
@@ -916,7 +942,19 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
           // A migrating Notebook reads as the whole tree, as before; the reset and the migration name the state.
         }
       }
-      const inventory = triageInventory(workspace, relative, { pendingOnly: parsed.flags.has('pending') });
+      // ONE SEAT'S LETTERS (kickoffs/s141 row 6): `--for-seat` narrows the pending list to the notes addressed to a seat
+      // of this Library, by the Desk's own test, so the Desk's route lists what its count counts.
+      let forSeat: ReturnType<typeof seatIncarnation> | null = null;
+      if (parsed.options.has('for-seat') || parsed.flags.has('for-seat')) {
+        const name = (parsed.options.get('for-seat') ?? '').trim();
+        if (!parsed.flags.has('pending')) return { refusal: '--for-seat narrows the pending list, so it needs --pending: library triage inventory --pending --for-seat <seat>. Nothing was listed.', value: null };
+        const candidate = name ? seatIncarnation(path.join(workspace, '.claude'), name) : null;
+        if (!candidate?.view?.live.some((row) => row.seat === name)) {
+          return { refusal: `--for-seat names no seat of this Library${name ? ` ('${name}')` : ''}: give one from deskpost seat list. Nothing was listed.`, value: null };
+        }
+        forSeat = candidate;
+      }
+      const inventory = triageInventory(workspace, relative, { pendingOnly: parsed.flags.has('pending'), forSeat });
       if (scopedSeat !== null) inventory['notebook_scope'] = `seat ${scopedSeat}: ${relative}/ only; another seat's Notebook is its own`;
       return { refusal: null, value: inventory as PsJsonValue };
     }

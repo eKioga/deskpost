@@ -79,7 +79,7 @@ export const LAUNCH_FLAG_TABLE = {
     values: ['--model', '--permission-mode', '--effort', '--agent', '--output-format', '--input-format', '--max-budget-usd', '--fallback-model', '--system-prompt', '--append-system-prompt', '--plugin-dir', '--plugin-url', '-m'],
   },
   codex: {
-    forbidden: ['--last', '--name', '-n', '--add-dir', '-i', '--image', '-C', '--cd', '--worktree', '--remote', '--remote-auth-token-env', '--no-daemon', 'daemon_auto_start'],
+    forbidden: ['--last', '--name', '-n', '--add-dir', '-i', '--image', '-C', '--cd', '--worktree', '--remote', '--remote-auth-token-env', '--no-daemon', 'daemon_auto_start', '--dangerously-bypass-hook-trust', '--approve-for-me'],
     values: ['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-p', '--profile', '-c', '--config', '--enable', '--disable', '--color'],
   },
 } as const;

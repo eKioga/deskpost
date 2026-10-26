@@ -28,6 +28,10 @@ import { createHash } from 'node:crypto';
 import { psConvertToJson, psJsonString, type PsJsonValue } from './psjson.ts';
 import { ensureDirectory, readTextIfPresent, writeAtomicText } from './fsx.ts';
 import { createShelfBook } from './shelf.ts';
+import { getShelfBook } from './shelfbook.ts';
+import { enterBookLock, exitBookLock, isBookLockHeld, type BookLock } from './locks.ts';
+import { completeBookMutation, enterBookMutation } from './mutation.ts';
+import { getStoredBookManifest } from './manifeststore.ts';
 import { ENTRY_NAME as SHELF_ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogText } from './shelfcatalog.ts';
 import { emptyMasterIndexText } from './notebook.ts';
 import {
@@ -40,6 +44,7 @@ import {
   registryPath,
   rootFormName,
   toWorkspaceRoot,
+  withMarkerLock,
 } from './workspace.ts';
 import { HOOK_VERB_FOR_SCRIPT } from './hookregistry.ts';
 import { COMMAND_NAME, entryInvocation } from './machine.ts';
@@ -432,8 +437,33 @@ function kernelRegistersHooks(programRoot: string): boolean {
   return POSIX_BINDINGS || fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
 }
 
+/**
+ * THE KERNEL AS A POSIX HOOK RUNS IT (kickoffs/s153 row 3): `"<program>/bin/library"` from a release, and from a source
+ * checkout, which has no `bin/library`, the Node that runs this init and the kernel's front door, as the Codex checkpoint
+ * hook already is. Until s153 a source init on Linux registered a binary that was not there, so every hook failed open
+ * and doctor's guards-registered named each one. Windows never reaches this: a source init there keeps the scripts.
+ * The validated reader is started by the same rule (kickoffs/s154 row 1), as the program and the arguments before
+ * `mcp serve`: until s154 a source init on Linux registered the reader as the missing `bin/library`.
+ */
+function posixKernelInvocation(programRoot: string): { command: string; args: string[] } {
+  const binary = kernelBinary(programRoot);
+  const source = path.join(programRoot, 'kernel', 'src', 'cli.ts');
+  if (fs.existsSync(binary) || !fs.existsSync(source)) return { command: binary, args: [] };
+  return { command: process.execPath.replace(/\\/g, '/'), args: [source.replace(/\\/g, '/')] };
+}
+
+function posixKernelCommand(programRoot: string): string {
+  const { command, args } = posixKernelInvocation(programRoot);
+  return [command, ...args].map((part) => `"${part}"`).join(' ');
+}
+
+/** The reader's program and leading arguments: the POSIX rule above, and on Windows the binary, as before s154. */
+function kernelReaderInvocation(programRoot: string): { command: string; args: string[] } {
+  return POSIX_BINDINGS ? posixKernelInvocation(programRoot) : { command: kernelBinary(programRoot), args: [] };
+}
+
 function binaryHookCommand(programRoot: string, verb: string, readerToolPrefix: string): string {
-  const command = `"${kernelBinary(programRoot)}" hook ${verb}`;
+  const command = `${POSIX_BINDINGS ? posixKernelCommand(programRoot) : `"${kernelBinary(programRoot)}"`} hook ${verb}`;
   return readerToolPrefix ? `${command} --reader-tool-prefix ${readerToolPrefix}` : command;
 }
 
@@ -491,7 +521,8 @@ function desiredMcpServers(adapterPath: string, stateDirectory?: string, program
   if (kernelReader && programRoot) {
     const serve = ['mcp', 'serve'];
     if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory);
-    return { mcpServers: { 'validated-book-reader': { command: kernelBinary(programRoot), args: serve } } };
+    const reader = kernelReaderInvocation(programRoot);
+    return { mcpServers: { 'validated-book-reader': { command: reader.command, args: [...reader.args, ...serve] } } };
   }
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', adapterPath];
   if (stateDirectory && stateDirectory.trim()) args.push('-StateDirectory', stateDirectory);
@@ -713,7 +744,11 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
   const compiled = kernelRegistersHooks(resources ?? checkpointRoot);
   const source = path.join(checkpointRoot, 'kernel', 'src', 'cli.ts').replace(/\\/g, '/');
   const shellLiteral = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-  const checkpointPosix = compiled ? `${shellLiteral(kernelBinary(checkpointRoot))} hook checkpoint`
+  // A POSIX host always "registers hooks", so a source checkout there, which has no binary, runs the Node that ran
+  // this init (kickoffs/s153 row 3); Windows and a release keep the lines below as they were.
+  const posixSource = POSIX_BINDINGS && !fs.existsSync(kernelBinary(checkpointRoot)) && fs.existsSync(source);
+  const checkpointPosix = posixSource ? `${shellLiteral(process.execPath)} ${shellLiteral(source)} hook checkpoint`
+    : compiled ? `${shellLiteral(kernelBinary(checkpointRoot))} hook checkpoint`
     : `node ${shellLiteral(source)} hook checkpoint`;
   const checkpointWindows = compiled ? `& ${powerShellLiteral(kernelBinary(checkpointRoot))} hook checkpoint`
     : `& 'node' ${powerShellLiteral(source)} hook checkpoint`;
@@ -798,9 +833,10 @@ export function newCodexWorkspaceConfigDocument(
   if (kernelReader && programRoot) {
     const serve = ['mcp', 'serve'];
     if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory.replace(/\\/g, '/'));
+    const reader = kernelReaderInvocation(programRoot);
     let posix = fs.readFileSync(templatePath, 'utf8').replace(/^﻿/, '');
-    posix = expandCodexToken(posix, 'command = "powershell.exe"', 'command = ' + codexTomlString(kernelBinary(programRoot)), 1);
-    posix = expandCodexToken(posix, '"__VALIDATED_READER_ARGS__"', codexTomlArray(serve), 1);
+    posix = expandCodexToken(posix, 'command = "powershell.exe"', 'command = ' + codexTomlString(reader.command), 1);
+    posix = expandCodexToken(posix, '"__VALIDATED_READER_ARGS__"', codexTomlArray([...reader.args, ...serve]), 1);
     if (/__[A-Z0-9_]+__/.test(posix)) throw new Error('The rendered Codex config still contains a template token.');
     return guarded(CODEX_MANAGED_MARKER + '\n' + posix);
   }
@@ -1219,6 +1255,9 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
 
   const programRoot = options.programRoot;
   const render = options.registerAs && options.registerAs.trim() ? path.resolve(options.registerAs) : programRoot;
+  // THE MARKER'S HASH AS READ (kickoffs/s161 row 1): the planned replacement is derived from this read, so a marker
+  // another writer changes before the plan is made refuses the plan instead of dropping that writer's field.
+  const markerShaAtRead = currentSha(markerPath(workspace));
   const existingMarker = readMarker(workspace);
   const alreadyInitialised = existingMarker !== null;
 
@@ -1538,6 +1577,9 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
   // --- FROM HERE ON NOTHING IS WRITTEN: every write init would make is planned (PLAN-install-onboarding.md step 4) ---
   const marker = markerPath(workspace);
   const writes: PlannedWrite[] = [plannedWrite(workspace, marker, psConvertToJson(markerContent) + '\n')];
+  if (writes[0]!.old_sha256 !== markerShaAtRead) {
+    throw new Error(`library init refused and wrote nothing: ${marker} changed while init was planning. Run it again to plan from what is there now.`);
+  }
   const directories: string[] = [];
   const files: { file: string; action: string }[] = [];
   for (const plan of plans) {
@@ -1764,28 +1806,64 @@ export function libraryPlanConflicts(plan: LibraryInitPlan): string[] {
   return conflicts;
 }
 
+/**
+ * THE BOOKS INIT MAKES HAVE A DISCOVERY MANIFEST (kickoffs/s150 row 1). The plan makes them in a scratch copy, whose
+ * `internal/` is not planned, so the manifest `createShelfBook` commits there never reaches the Library. Once the plan's
+ * writes are in, each standard Book with no stored manifest gets its first generation here, in the Library itself,
+ * through the mutation window `shelf rebuild` uses. Every standard Book is looked at, not only those this plan created,
+ * so an init cut short after its writes is finished by the next one. A failure leaves the Book standing and never fails
+ * init: doctor's `shelf.books-have-manifests` then names the rebuild that repairs it. A dirty manifest is a writer's.
+ */
+function commitStandardBookManifests(plan: LibraryInitPlan): void {
+  const files = (plan.result['files'] ?? []) as unknown as { file: string; action: string }[];
+  for (const { file } of files) {
+    const slug = /^shelf\/([a-z0-9][a-z0-9-]*)$/.exec(file)?.[1];
+    if (slug === undefined || isBookLockHeld(plan.workspace, `shelf/${slug}`)) continue;
+    if (getStoredBookManifest(plan.workspace, slug).status !== 'missing') continue;
+    let lock: BookLock | null = null;
+    try {
+      const book = getShelfBook(plan.workspace, slug);
+      lock = enterBookLock(plan.workspace, book.bookRoot);
+      completeBookMutation(enterBookMutation({ workspace: plan.workspace, slug, bookRoot: book.bookRoot, reason: 'library init', lock }));
+    } catch {
+      // The Book stands; doctor names `shelf rebuild <slug>`.
+    } finally {
+      exitBookLock(lock);
+    }
+  }
+}
+
 /** Write exactly what a plan lists, under the three-state rule, then register the Library. Re-running it finishes it. */
 export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?: boolean } = {}): Record<string, unknown> {
-  const conflicts = libraryPlanConflicts(plan);
-  if (conflicts.length) {
-    throw new Error(
-      `the Library at ${plan.workspace} changed after it was planned, so nothing was written: ${conflicts.join('; ')}. ` +
-        'Plan it again to see what would change now.',
-    );
-  }
-  ensureDirectory(plan.workspace);
-  for (const directory of plan.directories) ensureDirectory(directory);
-  // A FIXTURE SWITCH, for kernel self-test section 107 and nothing else, as LIBRARY_IMPORT_FAULT_AFTER is for section 43:
-  // the apply stops before its (n+1)th write, as a crash would, so every write boundary can be proved finishable.
+  // THE CONFLICT CHECK AND THE WRITES ARE ONE STEP UNDER THE MARKER LOCK (kickoffs/s161 row 1), so no other marker writer
+  // can land between the check that the marker is as planned and its replacement.
+  const written = withMarkerLock(plan.workspace, () => {
+    const conflicts = libraryPlanConflicts(plan);
+    if (conflicts.length) {
+      throw new Error(
+        `the Library at ${plan.workspace} changed after it was planned, so nothing was written: ${conflicts.join('; ')}. ` +
+          'Plan it again to see what would change now.',
+      );
+    }
+    ensureDirectory(plan.workspace);
+    for (const directory of plan.directories) ensureDirectory(directory);
+    // A FIXTURE SWITCH, for kernel self-test section 107 and nothing else, as LIBRARY_IMPORT_FAULT_AFTER is for section 43:
+    // the apply stops before its (n+1)th write, as a crash would, so every write boundary can be proved finishable.
+    const fault = Number((process.env['LIBRARY_INIT_FAULT_AFTER'] ?? '').trim() || NaN);
+    let count = 0;
+    for (const write of plan.writes) {
+      if (currentSha(write.path) === write.new_sha256) continue;
+      if (count === fault) throw new Error(`FAULT INJECTED after ${count} write(s) (a real run never reaches this).`);
+      ensureDirectory(path.dirname(write.path));
+      writeAtomicText(write.path, write.content);
+      count += 1;
+    }
+    return count;
+  });
   const fault = Number((process.env['LIBRARY_INIT_FAULT_AFTER'] ?? '').trim() || NaN);
-  let written = 0;
-  for (const write of plan.writes) {
-    if (currentSha(write.path) === write.new_sha256) continue;
-    if (written === fault) throw new Error(`FAULT INJECTED after ${written} write(s) (a real run never reaches this).`);
-    ensureDirectory(path.dirname(write.path));
-    writeAtomicText(write.path, write.content);
-    written += 1;
-  }
+  // The same switch at its last boundary: every write made, no manifest committed (section 360).
+  if (written === fault) throw new Error(`FAULT INJECTED after ${written} write(s), before the Books' manifests (a real run never reaches this).`);
+  commitStandardBookManifests(plan);
   // THE REGISTRY IS MERGED WHEN THE PLAN IS APPLIED, NOT FROZEN WITH IT: another Library registered meanwhile is not a
   // conflict, and registering is the same answer however often it runs.
   const registration = registerWorkspace(plan.workspace, plan.id, plan.registry_root ?? undefined, options.makeDefault === true);
@@ -1818,21 +1896,25 @@ export function runLibraryInit(options: InitOptions): { result: Record<string, u
   const plan = planLibraryInit(options);
   // THE FIRST LIBRARY IS THE DEFAULT, however it was made (post-build inspection #6): `setup` marked one and `init` did
   // not, so a Library made with `init` was never the one bare `deskpost` opened from anywhere. Never replaces a default.
-  const result = applyLibraryInit(plan, { makeDefault: !hasLiveDefaultLibrary(plan.registry_root ?? undefined) });
+  // A KEPT DEFAULT IS SAID (kickoffs/s146 row 1): `default_kept` names the other Library that stays the default.
+  const live = liveDefaultLibrary(plan.registry_root ?? undefined);
+  const result = applyLibraryInit(plan, { makeDefault: !live.live });
+  if (live.live && live.root !== null && live.root.toLowerCase() !== plan.workspace.toLowerCase()) result['default_kept'] = live.root;
   return { result, written: plan.writes.map((write) => write.relative) };
 }
 
-/** Whether the registry already marks a default Library that is still there. */
-function hasLiveDefaultLibrary(root?: string): boolean {
+/** Whether the registry already marks a default Library that is still there, and its folder (null when unreadable). */
+function liveDefaultLibrary(root?: string): { live: boolean; root: string | null } {
   try {
     const document = JSON.parse(readTextIfPresent(registryPath(root))?.trim() || '{}') as { workspaces?: unknown };
-    return (Array.isArray(document.workspaces) ? document.workspaces : []).some((row) => {
-      if (!isPlainObject(row) || row['default'] !== true) return false;
-      const root = toWorkspaceRoot(String(row['path'] ?? ''));
-      return root !== null && fs.existsSync(path.join(root, '.library', 'workspace.json'));
-    });
+    for (const row of Array.isArray(document.workspaces) ? document.workspaces : []) {
+      if (!isPlainObject(row) || row['default'] !== true) continue;
+      const folder = toWorkspaceRoot(String(row['path'] ?? ''));
+      if (folder !== null && fs.existsSync(path.join(folder, '.library', 'workspace.json'))) return { live: true, root: folder };
+    }
+    return { live: false, root: null };
   } catch {
-    return true;
+    return { live: true, root: null };
   }
 }
 

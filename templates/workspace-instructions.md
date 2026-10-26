@@ -20,6 +20,8 @@ journals, plans, or test evidence in `output/`.
 - **"What's on my desk?"** → `library desk` first; name only what it returns.
 - **A Desk belongs to a seat, and there is no default seat.** A seatless session reads this
   workspace's own files and nothing else; pass its refusal on rather than working around it.
+  A session asked only to read or review proceeds without a seat and does not ask for one; it still
+  writes nothing that needs a seat.
 - **Read** an open Book or Project *only* through `read_open_book_page` or
   `read_open_project_page`, never a direct Basic Memory reader or search.
 - **A closed Book is unavailable**, on the Shelf as on the network. Say so and offer to open it.

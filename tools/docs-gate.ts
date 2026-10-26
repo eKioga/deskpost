@@ -182,17 +182,26 @@ function plansDeclareTheirOwner(index: Index): Outcome {
   index.load(plans);
   const unqualified = ['PLAN.md', 'PLAN-REVIEW-LOG.md'];
   const owners = new Map<string, string>();
+  // EVERY FAILING PLAN IN ONE DETAIL (kickoffs/s146 row 2): stopping at the first made a fix-and-commit loop per plan.
+  const problems: string[] = [];
   for (const plan of plans) {
-    const match = /^>\s+\*\*Owner:\*\*\s+([a-z0-9][a-z0-9-]*)\s*\r?$/m.exec(index.text(plan) ?? '');
+    const text = index.text(plan) ?? '';
+    const match = /^>\s+\*\*Owner:\*\*\s+([a-z0-9][a-z0-9-]*)\s*\r?$/m.exec(text);
     if (!match) {
-      return { check, status: 'fail', detail: `${plan} declares no owner. Add a '> **Owner:** <project-hub-slug>' line under its heading, so a plan for another project cannot silently occupy a name this repository cites.` };
+      // AN OWNER LINE THAT IS THERE BUT DOES NOT MATCH is told what the line takes, and shown what was found.
+      const found = /^>\s*\*\*Owner:\*\*.*$/m.exec(text)?.[0].replace(/\r$/, '').trim();
+      problems.push(found
+        ? `${plan}: the Owner line takes the project slug alone: \`> **Owner:** <slug>\`; found \`${found}\``
+        : `${plan} declares no owner. Add a '> **Owner:** <project-hub-slug>' line under its heading, so a plan for another project cannot silently occupy a name this repository cites.`);
+      continue;
     }
     const slug = match[1]!;
     owners.set(plan, slug);
     if (unqualified.includes(plan) && slug !== 'library-dev') {
-      return { check, status: 'fail', detail: `${plan} is owned by '${slug}', but the unqualified plan names belong to this workspace. A plan whose subject is anything other than the Library must be namespaced -- PLAN-${slug}.md -- because ${plan} is what docs/ and tools/ cite by item number.` };
+      problems.push(`${plan} is owned by '${slug}', but the unqualified plan names belong to this workspace. A plan whose subject is anything other than the Library must be namespaced -- PLAN-${slug}.md -- because ${plan} is what docs/ and tools/ cite by item number.`);
     }
   }
+  if (problems.length) return { check, status: 'fail', detail: problems.join(' | ') };
   const foreign = [...owners.keys()].filter((plan) => owners.get(plan) !== 'library-dev');
   let detail = `${owners.size} root plan file(s) declare an owner`;
   if (foreign.length) detail += `; ${foreign.length} belong to another project and are namespaced: ${foreign.join(', ')}`;

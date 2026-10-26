@@ -32,14 +32,15 @@ ordinary seat you can come back to. Once seats exist, find it under **Help and m
 **Make your first seat** asks for three things: a name such as `home-lab`, an installed assistant
 (Claude Code or Codex), and how much access it should have. The access choices use plain names,
 with their exact settings shown underneath. Codex's usual choice is **Work in its own folders**;
-Claude Code's is **Ask me first**. Full access requires typing `full` to confirm.
+Claude Code's is **Auto mode**. Full access requires typing `full` to confirm.
 
 The ready screen lets you make and start the seat, make it for later, or choose **More choices**
-for a department and template. It makes:
+for a department, template and card. It makes:
 
 - a **Project Hub**, `home-lab`: the durable record of one piece of work, what it is for, what is
   open, what was decided. An existing Hub of that name is reused.
-- a **seat** of the same name, bound to that Project, with the Hub open on its Desk.
+- a **seat** of the same name, bound to that Project, with the Hub open on its Desk, and its
+  `letters` Book too when the Shelf has one.
 
 Your assistant and access are saved before the seat starts. Every Codex launch gets `--no-daemon`
 automatically.
@@ -130,6 +131,44 @@ because it is the one people worry about, and it is gentler than the word sugges
 - it **leaves your Desk open** unless you ask for it to be cleared.
 
 "What survived the reset?" lists the quarantines, and "put that back" restores one.
+
+## An optional vault connection and what needs you
+
+If you use Obsidian, you can connect an existing vault so the Library can put its own pages there.
+Ask the Librarian to connect it. The Library must be local, and the vault must already contain
+`.obsidian/` and `Librarian/`. The preview checks the folders and names anything that needs fixing:
+
+```text
+deskpost vault connect <folder> --preflight
+deskpost vault connect <folder> --user-confirmed --plan-id <id>
+deskpost vault status [--json]
+```
+
+Approve the preview before the second command, using the id it returns. Connecting writes no vault
+file. Deskpost writes only inside `Librarian/`; the vault's own files outside it stay yours.
+
+Ask "what needs me?" for the work waiting across the seats: ready Kickoffs, letters, Hub items
+addressed to you, stopped saves and Reports to triage. `deskpost needs-you [--json]` reads local
+records and changes nothing. With the connection's `needs-you` feature on, `deskpost needs-you
+--write` puts that view in `Librarian/needs-you.md`, leaving an unchanged page alone.
+
+To remove the connection, preview `deskpost vault disconnect --preflight`, then approve it with
+`deskpost vault disconnect --user-confirmed --plan-id <id>`. This removes the connection record
+only; it touches no vault file. The connection and its page are optional.
+
+## An optional Desk dashboard
+
+For a compact view beside your conversation, ask for the Desk dashboard. It shows the seat's open
+Books and Hubs and how long inbox items have waited. It only reads; it opens and changes nothing.
+
+```text
+deskpost dashboard [--seat <name>] [--width <n>] [--json]
+deskpost dashboard --watch --seat <name> [--interval-seconds <n>] [--width <n>]
+```
+
+The first command shows one view. The second keeps a terminal pane up to date for the named seat;
+stop watching when you are done. The dashboard is optional: you can still ask "what's on my desk?"
+in the conversation.
 
 ## When something refuses you
 

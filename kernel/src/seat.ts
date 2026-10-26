@@ -93,6 +93,7 @@ import { seatCardsResult, seatCardsText } from './seatcards.ts';
 import { assertNoSeatRename, seatRenameJournals } from './seatpaths.ts';
 import { seatRenameResult } from './seatrename.ts';
 import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, readInboundSettings, seatInboundPolicy, seatSettingsResult, type InboundRead } from './seatinbound.ts';
+import { readPaneSetting, writePaneSetting, paneDecision } from './seatpane.ts';
 
 import { classifyCommand, emptyLaunchRecord, escapedArgv, planSeatLaunch, readSeatLaunch, seatLaunchPath, writeSeatLaunch } from './seatlaunch.ts';
 
@@ -1150,26 +1151,6 @@ export function commandAssistant(command: string, explicit?: string): Assistant 
 }
 
 /**
- * THE ARGUMENTS PER ASSISTANT, AND ALL THE "FRAMEWORK" THERE IS (confirmation round, #1). Claude Code resumes with
- * `--resume <id>` and starts a conversation under a minted id with `--session-id <id>` (`claude --help`, 2.1.267).
- * Codex resumes with `codex resume <id>` and takes no id at launch (`codex resume --help`, 0.153.4), so a new Codex
- * conversation's id is recorded when its session reports it, never minted here. An id is never handed to the other one.
- */
-export function assistantArguments(assistant: Assistant, conversation: { resume?: string; sessionId?: string }): string[] {
-  if (conversation.resume) return assistant === 'codex' ? ['resume', conversation.resume] : ['--resume', conversation.resume];
-  if (conversation.sessionId) {
-    if (assistant === 'codex') refuse('Codex takes no conversation id at launch, so --session-id is for Claude Code; a new Codex conversation is recorded when it starts.');
-    return ['--session-id', conversation.sessionId];
-  }
-  return [];
-}
-
-/** Whether the reader's own agent arguments already choose a conversation, so the launcher must not mint one. */
-function choosesConversation(args: string[]): boolean {
-  return args.some((arg) => ['--resume', '-r', '--session-id', '--continue', '-c', 'resume'].includes(arg) || arg.startsWith('--resume=') || arg.startsWith('--session-id='));
-}
-
-/**
  * THE AGENT, STARTED AS ITS INSTALLER LEFT IT. Node cannot start a `.cmd` or `.bat` file directly on Windows (EINVAL,
  * probed S55 against npm's `codex.cmd`), and npm installs Codex exactly that way. Such a file runs through `cmd.exe /c`
  * with every argument quoted; an argument cmd would still reinterpret inside quotes (`"` or `%`) is refused, naming it,
@@ -1760,6 +1741,33 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       process.stdout.write(`Starting ${assistant ? ASSISTANT_LABEL[assistant] : command} at seat '${seat}' (Project ${bound}), ${what}.\n`);
     } else process.stdout.write(psConvertToJson(result) + '\n');
     renameTab(tabHandle, seat, workspace);
+    // Cosmetic and bounded: an error is one line and the agent still starts.
+    try {
+      const setting = readPaneSetting(path.join(workspace, '.claude'), seat);
+      const orca = resolveOnPath('orca');
+      const call = (args: string[]) => {
+        const launch = agentSpawn(orca!, args);
+        const ran = spawnSync(launch.file, launch.args, { cwd: workspace, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: launch.verbatim, timeout: 10000 });
+        if (ran.status !== 0) throw Error(`${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.trim() || `orca exited ${String(ran.status)}`);
+        const answer = JSON.parse(ran.stdout) as { ok?: boolean; result?: { terminals?: unknown; terminal?: { handle?: unknown } } };
+        if (answer.ok === false) throw Error(`orca refused terminal ${args[1]}`);
+        return answer;
+      };
+      let action = paneDecision(assistant, setting, tabHandle, orca !== null, undefined, seat);
+      if (action === 'list') action = paneDecision(assistant, setting, tabHandle, true, call(['terminal', 'list', '--json']).result?.terminals ?? null, seat);
+      if (action === 'manual') process.stdout.write(`Desk pane: run deskpost dashboard --watch --seat ${seat} --workspace ${process.platform === 'win32' ? "'" + workspace.replace(/'/g, "''") + "'" : escapedArgv([workspace])} in a second terminal.\n`);
+      if (action === 'split') {
+        const quote = (text: string) => process.platform === 'win32' ? "'" + text.replace(/'/g, "''") + "'" : escapedArgv([text]);
+        const executable = isCompiled() ? [process.execPath] : [process.execPath, path.join(programRoot(), 'kernel', 'src', 'cli.ts')];
+        const command = (process.platform === 'win32' ? '& ' : '') + executable.map(quote).join(' ') + ` dashboard --watch --seat ${seat} --workspace ` + quote(workspace);
+        const opened = call(['terminal', 'split', '--terminal', tabHandle, '--direction', 'horizontal', '--command', command, '--json']);
+        const handle = opened.result?.terminal?.handle;
+        if (typeof handle !== 'string' || !handle.trim()) throw Error('orca split returned no terminal handle');
+        call(['terminal', 'rename', '--terminal', handle, '--title', `Desk: ${seat}`, '--json']);
+      }
+    } catch (error) {
+      process.stderr.write('Desk pane was not opened: ' + String((error as Error).message).replace(/[\x00-\x1f\x7f-\x9f]+|\s+/g, ' ') + '\n');
+    }
     // THE AGENT, IN THE WORKSPACE, ON THIS TERMINAL -- and this process waits for it, because the claim is
     // this process's handle and must outlive nothing and be outlived by nothing.
     const executable = agentExecutable(command, environment[pathVariable] ?? '');
@@ -2277,10 +2285,16 @@ export async function runSeatVerb(
         return 0;
       }
       case 'settings': {
-        // GATED (kickoffs/s79 row 3): it changes what reaches a seat, so a change previews and takes the plan id.
+        // Pane visibility is instant; inbound and flag modes retain their existing gates.
         const split = rest.indexOf('--');
         const parsed = parseArguments(split < 0 ? rest : rest.slice(0, split), argumentTable('seat', 'settings'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        if (parsed.options.has('pane')) {
+          if (['inbound', 'assistant', 'flags', 'clear-flags', 'plan-id'].some(key => parsed.options.has(key)) || parsed.flags.has('preflight') || parsed.flags.has('reset-launch') || split >= 0)
+            refuse('--pane is an instant setting; use it alone, without another settings mode, preflight or plan id. Nothing was changed.');
+          emitResult(writePaneSetting(workspace, parsed.positional[0] ?? '', parsed.options.get('pane')!));
+          return 0;
+        }
         emitResult(
           seatSettingsResult({
             workspace,
@@ -2327,6 +2341,7 @@ export async function runSeatVerb(
         if (described['operation'] === 'Describe a Library seat') {
           const entry = readSeatRegistry(path.join(workspace, '.claude')).find(row => row.seat === described['seat']);
           described['project'] = entry?.project ?? null;
+          described['pane'] = readPaneSetting(path.join(workspace, '.claude'), String(described['seat'])) ?? 'default (on for Codex, off for Claude)';
         }
         emitResult(described);
         return 0;

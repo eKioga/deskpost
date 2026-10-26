@@ -78,11 +78,48 @@ export function testSeatClaim(stateDirectory: string, seat: string): boolean {
   // On POSIX the claim is the lock file's flock, and an open says nothing (S42; see openShareNothing).
   const posix = posixLockHeld(seatClaimLockPath(stateDirectory, seat));
   if (posix !== null) return posix;
+  // No flock (a source run under Node): an open says nothing here either, so the holder's own record decides.
+  if (process.platform !== 'win32') return seatClaimHolderAlive(stateDirectory, seat);
   const claimPath = seatClaimPath(stateDirectory, seat);
   if (fs.existsSync(claimPath) && !opens(claimPath, 'r+')) return true;
   const lockPath = seatClaimLockPath(stateDirectory, seat);
   if (fs.existsSync(lockPath) && !opens(lockPath, 'r')) return true;
   return false;
+}
+
+/**
+ * THE CLAIM HOLDER'S PROCESS ID, from the `pid=` line the kernel holder writes into `.claim`, or null when the file is
+ * missing, unreadable or has no well-formed `pid=` line (kickoffs/s142 row 4). An ordinary read open, which both kinds
+ * of holder share, so it neither blocks nor releases one: never `r+`, never share-nothing.
+ */
+export function readSeatClaimHolderPid(stateDirectory: string, seat: string): number | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(seatClaimPath(stateDirectory, seat), 'utf8');
+  } catch {
+    return null;
+  }
+  const pid = Number(/^pid=(\d{1,10})[ \t]*\r?$/m.exec(text)?.[1] ?? NaN);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * THE CLAIM PROBE ON POSIX WITHOUT flock (kickoffs/s151 row 2): held while `.claim` names a holder process that is
+ * still alive. On Linux every section that entered a seat from a source checkout timed out waiting for a holder it
+ * could not see, because the opens above always succeed there. A holder writes its `pid=` line as it takes the claim
+ * and `exitSeatClaim` removes the file, so a released claim reads free; a killed one leaves its file naming a dead
+ * process, which reads free too. `EPERM` is a live process this user may not signal. A pid reused since the holder
+ * died reads held, the price of having no lock to ask.
+ */
+function seatClaimHolderAlive(stateDirectory: string, seat: string): boolean {
+  const pid = readSeatClaimHolderPid(stateDirectory, seat);
+  if (pid === null) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function opens(file: string, flags: string | number): boolean {
@@ -176,8 +213,9 @@ function openShareNothingUnderBun(file: string): ExclusiveHandle {
  * could take a held seat. There the claim is `flock(2)`, exclusive and non-blocking, on the same
  * `.claim.lock`: held exactly while the holder's descriptor is open, released when it closes or the process
  * dies, which is the property the Windows handle has. Through `bun:ffi`, which a compiled kernel carries,
- * as `CreateFileW` is above. CONCEDED: a kernel run from source under Node on POSIX has no FFI, so there
- * its claim does not exclude; no release runs that way. And musl's libc is not `libc.so.6`.
+ * as `CreateFileW` is above. CONCEDED: a kernel run from source under Node on POSIX has no FFI, so there two
+ * holders still do not exclude each other; no release runs that way. Its probe sees a live holder all the same,
+ * from the holder's recorded process (`seatClaimHolderAlive`, s151). And musl's libc is not `libc.so.6`.
  */
 type Libc = { symbols: { flock(fd: number, operation: number): number } };
 let libc: Libc | null = null;
@@ -274,6 +312,13 @@ export function enterSeatClaim(stateDirectory: string, seat: string, attemptId =
     }
   }
   if (lockHandle === null) throw refused();
+  // NO flock (a source run under Node on POSIX): the open above excluded nothing, and the `.claim` below would be
+  // truncated under a live holder, so a second session took a held seat (kickoffs/s153 row 4, section 24). The holder's
+  // own record decides here as it does in `testSeatClaim`.
+  if (process.platform !== 'win32' && posixFlock() === null && seatClaimHolderAlive(stateDirectory, seat)) {
+    lockHandle.close();
+    throw refused();
+  }
 
   let claimHandle: number;
   try {
@@ -292,14 +337,20 @@ export function enterSeatClaim(stateDirectory: string, seat: string, attemptId =
   return { path: claimPath, lockPath, claimHandle, lockHandle, seat, token, attemptId };
 }
 
-/** Release a claim. NEVER THROWS: almost every call site is a finally. */
+/**
+ * Release a claim. NEVER THROWS: almost every call site is a finally.
+ *
+ * ON POSIX THE LOCK FILE STAYS (kickoffs/s155 row 4): the claim is its flock, and removing the file after the close let
+ * a claimer waiting on the old file lock it while another created and locked a new one at the same path, two holders of
+ * one seat (section 400). Every claim opens it with O_CREAT, so keeping it is safe. Windows removes it as before.
+ */
 export function exitSeatClaim(claim: HeldClaim | null): void {
   if (!claim) return;
   for (const release of [
     () => fs.closeSync(claim.claimHandle),
     () => fs.unlinkSync(claim.path),
     () => claim.lockHandle.close(),
-    () => fs.unlinkSync(claim.lockPath),
+    () => process.platform === 'win32' && fs.unlinkSync(claim.lockPath),
   ]) {
     try {
       release();

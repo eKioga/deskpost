@@ -21,8 +21,8 @@
  *            .ToUniversalTime().ToString('o')`, kept as the fallback because Node has no FFI.
  *            Measured 191-209 ms per read, which is why a gone pid is answered by
  *            `process.kill(pid, 0)` first and costs no spawn at all.
- *   Linux    `/proc/<pid>/stat` field 22 (clock ticks since boot) plus `btime` from `/proc/stat`.
- *            A file read; 10 ms precision at the usual 100 Hz.
+ *   Linux    `/proc/<pid>/stat` field 22 (clock ticks since boot), spelled from 1970-01-01 rather than from
+ *            `btime`, which moves with the wall clock (kickoffs/s152). A file read; 10 ms precision at 100 Hz.
  *   macOS    `/bin/ps -o lstart=`, one second of precision. There is no PowerShell writer on a Mac
  *            to disagree with, so the only binding it is ever compared with is one it wrote itself.
  *
@@ -120,7 +120,6 @@ function readWindowsIdentity(pid: number): string | null {
 }
 
 let linuxClockTicks: number | null = null;
-let linuxBootSeconds: number | null = null;
 
 /** The state letter of /proc/<pid>/stat (the field after the parenthesised name). */
 function linuxProcessState(pid: number): string {
@@ -141,13 +140,12 @@ function readLinuxStart(pid: number): string {
       linuxClockTicks = 100;
     }
   }
-  if (linuxBootSeconds === null) {
-    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n').find((row) => row.startsWith('btime '));
-    if (!line) throw new Error('/proc/stat carries no btime');
-    linuxBootSeconds = Number(line.split(/\s+/)[1]);
-  }
-  const hundredNanoseconds = BigInt(linuxBootSeconds) * 10_000_000n + (startTicks * 10_000_000n) / BigInt(linuxClockTicks);
-  return roundTripFromHundredNanoseconds(hundredNanoseconds);
+  // COUNTED FROM BOOT, NOT FROM /proc/stat's btime (kickoffs/s152 row 1). btime is the wall clock less the time since
+  // boot, so it moves whenever the wall clock is stepped: under WSL2 it stepped 2 s every 20-30 s, and after a sleep it
+  // steps by the hours slept. Each process read it once, so a binding written before a step no longer matched its own
+  // live agent, and that agent's writes were refused as another session's. Ticks since boot never move; the instant
+  // is spelled from 1970-01-01, so it is unique per process within a boot and orders as the walk's parent rule needs.
+  return roundTripFromHundredNanoseconds((startTicks * 10_000_000n) / BigInt(linuxClockTicks));
 }
 
 function readDarwinStart(pid: number): string {
@@ -253,9 +251,8 @@ function readPosixRecord(pid: number): AncestryRecord | null {
   if (!processExists(pid)) return null;
   if (process.platform === 'linux') {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const name = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return { pid, parentPid: Number(fields[1]), name, createdUtc: readLinuxStart(pid) };
+    return { pid, parentPid: Number(fields[1]), name: linuxProcessName(pid, stat), createdUtc: readLinuxStart(pid) };
   }
   const text = execFileSync('/bin/ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8' }).trim();
   const match = /^(\d+)\s+(.*)$/.exec(text);
@@ -263,6 +260,32 @@ function readPosixRecord(pid: number): AncestryRecord | null {
   const command = match[2]!;
   return { pid, parentPid: Number(match[1]), name: command.slice(command.lastIndexOf('/') + 1), createdUtc: readDarwinStart(pid) };
 }
+
+/**
+ * A Linux process's name for the walk (kickoffs/s152 row 3). /proc's `comm` is the main thread's name, which a program
+ * may change: Node 24 names its main thread `MainThread`, so a node-based agent named `claude` read as `MainThread` and
+ * the walk met no agent. `comm` stays when it names an agent client; otherwise the file name of the program the process
+ * runs, from /proc/<pid>/exe, when that names one, as Windows names a process by its image. A SHELL SCRIPT NAMED LIKE
+ * AN AGENT IS ITS WRAPPER: /proc names a script's process by the script's file, where Windows names a `.cmd` by
+ * cmd.exe, so it reads as its shell and the agent it starts stays the launcher's direct agent rather than a nested one.
+ * A link that cannot be read (another user's process) keeps `comm`.
+ */
+function linuxProcessName(pid: number, stat: string): string {
+  const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+  let image: string | null = null;
+  try {
+    const target = fs.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '');
+    image = target.slice(target.lastIndexOf('/') + 1);
+  } catch {
+    image = null;
+  }
+  if (image !== null && isAgentClientProcessName(image)) return image;
+  if (image !== null && isAgentClientProcessName(comm) && LINUX_SCRIPT_SHELLS.includes(image)) return image;
+  return comm;
+}
+
+/** The shells a script named like an agent runs under, read by their own name (`linuxProcessName`). */
+const LINUX_SCRIPT_SHELLS = ['sh', 'bash', 'dash', 'zsh', 'ksh', 'mksh', 'busybox'];
 
 export interface AgentClientAnswer {
   agentPid: number;
@@ -355,6 +378,18 @@ export function launcherChildAgent(launcherPid: number): { pid: number } | null 
         .map((line) => /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line))
         .filter((match): match is RegExpExecArray => match !== null)
         .map((match) => ({ pid: Number(match[1]), parentPid: Number(match[2]), name: match[3]!.split('/').pop()! }));
+      // ON LINUX `ps`'s comm IS THE MAIN THREAD'S NAME (kickoffs/s153 row 2): Node 24 renames it `MainThread`, so a
+      // node-based agent the launcher started was never found. The launcher's children are named as the walk names them.
+      if (process.platform === 'linux') {
+        rows = rows.map((row) => {
+          if (row.parentPid !== launcherPid) return row;
+          try {
+            return { ...row, name: linuxProcessName(row.pid, fs.readFileSync(`/proc/${row.pid}/stat`, 'utf8')) };
+          } catch {
+            return row;
+          }
+        });
+      }
     }
     const child = rows.find((row) => row.parentPid === launcherPid && row.pid !== launcherPid && isAgentClientProcessName(row.name));
     return child ? { pid: child.pid } : null;

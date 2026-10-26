@@ -5,7 +5,7 @@ The planner copies the block below into a file, fills every `<...>`, and runs
 Kickoff that lacks a section, points to another Kickoff instead of carrying its text ("as kickoffs/sNN's"), has a
 row with no `Done when:` line, or whose CLOSE does not end with **Stop.** The rules and standing answers below are
 written out in every Kickoff, word for word, so a builder needs only the page it said yes to
-(`docs/dev-session-loop.md`, "The Kickoff").
+(`docs/dev-loop-planner.md`, "The Kickoff").
 
 A section that does not apply still appears, with `none` and the reason. Sections stay in this order. A Kickoff may
 add a `REVIEW OF <unit>:` section after the header (the planner's review of the handback it follows) and further
@@ -39,6 +39,8 @@ SIZE: about <hours> from the yes: <minutes per row and per cut, gate time includ
 behind each unit Beside names>. **Stop rule:** at <time> from the yes, or <usage boundary>, with no green proof,
 hand back what is done, unpushed (STANDING ANSWER 5).
 
+NET LINES (the 2026-10-21 rule): about <+N or -N> in `kernel/src` (<per row>); new sections beside, not counted.
+
 OWNS: <the branch>, and in it: <each file the rows may change, with the part where shared>; new self-test sections
 <numbers>; <ADR numbers>; <each existing section, fixture or generated file that pins what the rows change, named
 with its pins>. (`none other open` when no other builder's Kickoff is open.)
@@ -48,16 +50,25 @@ STAY OUT OF: <other seats' worktrees and branches, B's worktree and `desk/*`, st
 this unit must not touch>
 
 WHERE THINGS STAND (<date and time by `date`>; checked read-only by the planner):
+OFFICE: <receiving office and builder seat>
+EXPORT: <share folder>; private base <full SHA>; export root <full SHA>
+HANDBACK FOLDER: <immutable-generation folder>
+These three fields appear only in a Kickoff that crosses offices.
 - `origin/master` = `<SHA>`; <the builder's checkout and branch state>
 - <the facts the rows depend on, each with `file:line` at the pinned base>
 
 MERGE: <for an integrator: each branch with base=<SHA>, tip=<SHA> and its gate digest, in merge order; else `none`>
 
-ROWS (in order; one commit per cut, each through its own hook, unless a row says otherwise):
-1. **<what the row makes work, for a reader>**: <what to change, where, and how>.
+ROWS (in order; one commit per cut, each through its own hook, unless a row says otherwise; each row says why it must exist, what already does it, and its smallest form, by the 2026-10-21 rule):
+1. **<what the row makes work, for a reader>** (<the Report, ruling, plan step or audit finding>). Why: <what goes
+   wrong without it>. What already does it: <`file:line`, or "nothing, searched: <command>">. Smallest form: <a
+   deletion, a fixture change or a reuse before anything new; what to change, where, and how>.
    Done when: <the check that proves it, with its expected result>.
 2. **<the next row>**: <...>.
    Done when: <...>.
+
+NOT BUILDING: <what was asked or tempting and is left out, and why; confirmed audit findings not in this unit name
+the unit that takes them>
 
 COMMANDS: <every command family the rows run, so the reader can widen the allowlist beforehand; Deskpost verbs as the
 installed release has them, and a verb that is only in source marked `(source run only)`>
@@ -88,11 +99,16 @@ RULES:
    the handback letter) is tried once more the plain way, the text written with the file editor and then the same
    Deskpost command run alone; if that is refused too, end the reply with the full Handback text so the reader can
    save it.
-5. **One gate per cut.** Stage exactly the cut, set everything else aside (a named stash or a `<branch>-wip` commit,
-   recorded on the attempt page), check the working tree equals the index, then commit; the hook's line is the cut's
-   pass mark. Before the commit, run only the self-test sections the rows touch, plus section 155 (the type check,
-   about 15 s) when the cut changes TypeScript. Heavy gates take the machine-wide
-   gate lock; a wait on another seat's gate is a stall to record, never a reason to stop that seat.
+5. **One gate per cut, and none left behind.** Stage exactly the cut, set everything else aside (the changed files
+   copied whole to the evidence folder with a SHA-256 list, recorded on the attempt page; never a `-wip` commit, whose
+   hook refuses unfinished work), check the working tree equals the index, then commit; the
+   hook's line is the cut's pass mark. Before the commit, run only the self-test sections the rows touch, plus section
+   155 (the type check, about 15 s) when the cut changes TypeScript. Heavy gates take the machine-wide gate lock,
+   switched on for this session with `DESKPOST_GATE_SERIAL=1`; a wait on another seat's gate is a stall to record,
+   never a reason to stop that seat. Before each heavy job and at CLOSE, list every process your session started that
+   is still running or waiting (background shells, waiters, watchers) by its command line, and every other seat's
+   gate, self-test, build or matrix process, read only; stop each of your own you no longer need, by its own process
+   ID. "Stopped" on the attempt page means a process list taken after the stop shows it gone.
 6. **The push gate** is `node tools/gate.ts --tier push`: zero FAILs; WARN and SKIP are fine; exit 2 (the gate itself
    failed) parks the push like a FAIL. `gate.required-sections` prints only with `--require-sections <n,...>`, so a
    row that asks for it names the flag and its section numbers in its command.
@@ -129,7 +145,7 @@ STANDING ANSWERS (decide and record; each one applied goes under `## Standing an
 
 OPEN (before any work):
 0. **A fresh session.** If this session has already run a Kickoff, stop and ask the reader to `/clear` first.
-   **Required reads**, at the pinned base: `AGENTS.md`; `docs/dev-session-loop.md` (<the sections this unit needs>);
+   **Required reads**, at the pinned base: `AGENTS.md`; `docs/dev-session-loop.md` (<the sections this unit needs>) and, when it needs one, `docs/dev-loop-planner.md` (<its sections>);
    <the plan sections>; for a Codex build seat also `~/.codex/AGENTS.md` (the loop doc's Codex rules-file row).
    Read your Hub's `## Next` pointer and the `## Now` resume item by `section`, never the whole `_project`.
 1. Exactly one unticked `Run <p><NN>` pointer in your Hub's `## Next`, naming this page.

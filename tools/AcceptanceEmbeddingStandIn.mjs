@@ -17,6 +17,7 @@
 //   node tools/AcceptanceEmbeddingStandIn.mjs <api-key>
 
 import http from 'node:http';
+import { listenFetchable } from '../kernel/test/fetchable-port.ts';
 
 const DIMENSIONS = 16;
 const key = process.argv[2] ?? '';
@@ -60,9 +61,7 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.listen(0, '127.0.0.1', () => {
-  process.stdout.write(`listening http://127.0.0.1:${server.address().port}/v1/embeddings\n`);
-});
+process.stdout.write(`listening http://127.0.0.1:${await listenFetchable(server)}/v1/embeddings\n`);
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('close', () => process.exit(0));
 process.stdin.resume();

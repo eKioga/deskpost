@@ -22,7 +22,10 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { ensureDirectory } from './fsx.ts';
+import { agentProcessIdentity, testSeatAgentAlive, UNREADABLE_IDENTITY } from './procstart.ts';
+import { nativeProcessCalls } from './win32proc.ts';
 
 /** Matches `$script:StaleLockMinutes`. A lock older than this was left by a crashed process. */
 const STALE_LOCK_MINUTES = 30;
@@ -34,6 +37,8 @@ export interface BookLock {
   bookRoot: string;
   lockName: string;
   ledgerKey: string;
+  /** The text this holder wrote; release removes the file only while it still holds exactly this (kickoffs/s164 row 4). */
+  record?: string;
 }
 
 /** The locks this process holds right now, keyed the way the lock file is named. */
@@ -127,21 +132,14 @@ export function enterBookLock(workspace: string, bookRoot: string, timeoutSecond
   const lockPath = path.join(bookLockDirectory(workspace), `${lockName}.lock`);
   const deadline = Date.now() + timeoutSeconds * 1000;
 
+  const judgedAlive = new Map<string, number>();
   while (true) {
     let handle: number;
     try {
       handle = fs.openSync(lockPath, 'wx');
     } catch {
-      // Someone holds it, or a crashed process left it behind. Only the latter may be stolen.
-      try {
-        const age = (Date.now() - fs.statSync(lockPath).mtimeMs) / 60000;
-        if (age > STALE_LOCK_MINUTES) {
-          fs.unlinkSync(lockPath);
-          continue;
-        }
-      } catch {
-        /* the lock went away between the failed open and the stat; try again */
-      }
+      // Someone holds it, or a crashed process left it behind. Only the latter may be taken.
+      if (takeStaleLock(lockPath, judgedAlive)) continue;
       if (Date.now() >= deadline) {
         throw new Error(
           `Another operation holds the lock for ${bookRoot}. Wait for it to finish, or investigate ${lockPath}.`,
@@ -150,19 +148,99 @@ export function enterBookLock(workspace: string, bookRoot: string, timeoutSecond
       spin(250);
       continue;
     }
+    const start = cheapOwnStart();
+    const record = `pid=${process.pid}\n${start ? `start=${start}\n` : ''}acquired=${new Date().toISOString()}\nbook=${bookRoot}\n`;
     try {
-      fs.writeSync(
-        handle,
-        `pid=${process.pid}\nacquired=${new Date().toISOString()}\nbook=${bookRoot}\n`,
-      );
+      fs.writeSync(handle, record);
     } finally {
       fs.closeSync(handle);
     }
     // Recorded AFTER the file exists, so a failed acquisition never reads as held.
     const ledgerKey = lockPath.toLowerCase();
     heldLocks.set(ledgerKey, (heldLocks.get(ledgerKey) ?? 0) + 1);
-    return { path: lockPath, bookRoot, lockName, ledgerKey };
+    return { path: lockPath, bookRoot, lockName, ledgerKey, record };
   }
+}
+
+/**
+ * THIS PROCESS'S START TIME, ONLY WHERE IT IS CHEAP (kickoffs/s164 row 4): the compiled kernel reads it natively, Linux
+ * from /proc, macOS from one `ps`. Under Node on Windows it costs a PowerShell start (measured about a second on a busy
+ * machine), so a source run there records none and its lock is judged by age, as before.
+ */
+function cheapOwnStart(): string | null {
+  if (process.platform === 'win32' && nativeProcessCalls() === null) return null;
+  const identity = agentProcessIdentity(process.pid);
+  return identity && identity !== UNREADABLE_IDENTITY ? identity : null;
+}
+
+function recordField(text: string, name: string): string {
+  return new RegExp(`^${name}=(.*)$`, 'm').exec(text)?.[1]?.trim() ?? '';
+}
+
+/** A test seam: called after a lock is judged stale and before it is taken (section 492 pauses two recoverers here). */
+let afterJudgedStale: ((lockPath: string) => void) | undefined;
+export function setAfterJudgedStale(hook: ((lockPath: string) => void) | undefined): void {
+  afterJudgedStale = hook;
+}
+
+/**
+ * A LOCK IS STALE ONLY WHEN ITS OWNER IS DEAD (backlog "Code audit 2", finding 1). A file naming its owner's pid and
+ * start time is stale when that process is gone; a file with no readable owner (a PowerShell writer's, an older
+ * kernel's, one caught between its create and its write) is stale by age, as before. A live owner's lock is never
+ * taken, however old.
+ *
+ * TAKEN BY A STEP THAT CANNOT REMOVE A FRESH FILE. The stale file is renamed to a name only this taker uses, read again,
+ * and deleted only when it is still the one judged (the same text and time); a fresh file moved by mistake goes back
+ * where it was. Two recoverers that both judged one stale file never both delete: the second moves nothing it judged.
+ * Answers true when a stale lock was removed, so the caller tries the create again.
+ */
+function takeStaleLock(lockPath: string, judgedAlive: Map<string, number>): boolean {
+  let text: string;
+  let mtimeMs: number;
+  try {
+    text = fs.readFileSync(lockPath, 'utf8');
+    mtimeMs = fs.statSync(lockPath).mtimeMs;
+  } catch {
+    return false; // gone between the failed create and the read: the next create decides
+  }
+  const pid = Number(recordField(text, 'pid'));
+  const start = recordField(text, 'start');
+  if (Number.isInteger(pid) && pid > 0 && start) {
+    // A live owner is asked again at most once a second while this caller waits.
+    const asked = judgedAlive.get(text);
+    if (asked !== undefined && Date.now() - asked < 1000) return false;
+    if (testSeatAgentAlive(pid, start, { fresh: true })) {
+      judgedAlive.set(text, Date.now());
+      return false;
+    }
+  } else if ((Date.now() - mtimeMs) / 60000 <= STALE_LOCK_MINUTES) {
+    return false;
+  }
+  afterJudgedStale?.(lockPath);
+  const moved = `${lockPath}.taken-${process.pid}-${randomBytes(6).toString('hex')}`;
+  try {
+    fs.renameSync(lockPath, moved);
+  } catch {
+    return false; // another recoverer moved it first
+  }
+  let same = false;
+  try {
+    same = fs.readFileSync(moved, 'utf8') === text && fs.statSync(moved).mtimeMs === mtimeMs;
+  } catch {
+    /* unreadable after the move: treated as not the one judged */
+  }
+  if (same) {
+    try { fs.unlinkSync(moved); } catch { /* a leftover under a taken- name holds nothing */ }
+    return true;
+  }
+  // A fresh lock was moved: put it back without overwriting one made meanwhile.
+  try {
+    fs.linkSync(moved, lockPath);
+  } catch {
+    /* a newer lock now stands at the path; the moved one's holder still releases by its own record */
+  }
+  try { fs.unlinkSync(moved); } catch { /* best effort */ }
+  return false;
 }
 
 /**
@@ -177,6 +255,14 @@ export function exitBookLock(lock: BookLock | null): void {
   const remaining = (heldLocks.get(lock.ledgerKey) ?? 0) - 1;
   if (remaining > 0) heldLocks.set(lock.ledgerKey, remaining);
   else heldLocks.delete(lock.ledgerKey);
+  // ONLY ITS OWN FILE (kickoffs/s164 row 4): a successor's lock at the same path is left where it is.
+  if (lock.record !== undefined) {
+    try {
+      if (fs.readFileSync(lock.path, 'utf8') !== lock.record) return;
+    } catch {
+      return;
+    }
+  }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       fs.unlinkSync(lock.path);

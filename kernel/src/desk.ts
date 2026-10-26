@@ -25,6 +25,7 @@ import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
 import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
 import { growingState, isAddressedTo, isStartedBy, isStuckLetter, noteFrontmatter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
 import { postboxCache } from './postbox.ts';
+import { listOutstanding } from './intent.ts';
 import { incarnationOf, readSeatIdentityView, seatIncarnation, seatNameHistory, type SeatNameSpan } from './seatincarnation.ts';
 import {
   deskFileEntries,
@@ -72,6 +73,32 @@ export class DeskRefusal extends Error {}
 
 function refuse(message: string): never {
   throw new DeskRefusal(message);
+}
+
+/** Local metadata only: an active Desk pointer whose Book has since moved to the archive. */
+export function archivedSinceOpened(workspace: string, root: string, localBackend: boolean): boolean {
+  if (!workspace || !localBackend) return false;
+  const parts = splitBookRoot(root);
+  return parts.form === 'books' && parts.shelf === 'active' &&
+    !fs.existsSync(path.join(workspace, 'collection', 'books', parts.slug, 'wiki', '_book.md')) &&
+    fs.existsSync(path.join(workspace, 'collection', 'archive', parts.slug, 'wiki', '_book.md'));
+}
+
+/**
+ * Local metadata only: an active open collection Book whose pages directory is gone and which is not in the archive
+ * either (kickoffs/s160 row 2). Its reads all fail, so the Desk names it rather than listing it as readable.
+ */
+export function missingSinceOpened(workspace: string, root: string, localBackend: boolean): boolean {
+  if (!workspace || !localBackend) return false;
+  const parts = splitBookRoot(root);
+  return parts.form === 'books' && parts.shelf === 'active' &&
+    !fs.existsSync(path.join(workspace, 'collection', 'books', parts.slug, 'wiki')) &&
+    !fs.existsSync(path.join(workspace, 'collection', 'archive', parts.slug, 'wiki', '_book.md'));
+}
+
+/** What to do about a missing open Book, in the full-text search's words (`fulltext.ts`). */
+export function missingBookRepair(slug: string): string {
+  return `restore the Book directory, or close it with deskpost desk close book ${slug}`;
 }
 
 /**
@@ -155,7 +182,11 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const overviewLocal = overviewMarker !== null && String(overviewMarker['backend'] ?? '') === 'local';
   const openBooks = openBookRoots.map((root) => {
     const parts = splitBookRoot(root);
-    return { slug: parts.slug, location: placeOfRoot(parts, overviewLocal), shelf: parts.shelf, root: parts.root };
+    return {
+      slug: parts.slug, location: placeOfRoot(parts, overviewLocal), shelf: parts.shelf, root: parts.root,
+      ...(archivedSinceOpened(workspace, root, overviewLocal) ? { archived_since_opened: true } : {}),
+      ...(missingSinceOpened(workspace, root, overviewLocal) ? { state: 'missing', repair: missingBookRepair(parts.slug) } : {}),
+    };
   });
   const openProjects = readStateLines(
     deskFilePath(stateDirectory, seat, 'projects'),
@@ -381,7 +412,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const pendingNotes = pendingCaptureNotes(workspace);
   const lettersForThisSeat: PsJsonValue | null = ((): PsJsonValue | null => {
     if (thisClaim.state !== 'held') return null;
-    const mine = pendingNotes.filter(({ note }) => isAddressedTo(note, self));
+    const mine = pendingNotes.filter(({ book, note }) => book.takesLetters === true && isAddressedTo(note, self));
     const tally = letterTally(mine);
     // FROM OTHER LIBRARIES (kickoffs/s123 row 4; plan item 6): those of them filed from the Postbox, in the same count,
     // with each sending Library named by its card (its id where it gave none). After every older key, only when any.
@@ -391,8 +422,8 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           count: tally.count,
           by_book: tally.byBook,
           oldest_pending: tally.oldest,
-          // Inventory locates the seat's pending letters; each letter is read through the validated reader.
-          route: 'library triage inventory --pending',
+          // THE ONE-LINE LIST MADE FOR IT (kickoffs/s159 row 4): this seat's open letters, each read through the validated reader.
+          route: 'deskpost letters list',
           // STUCK (kickoffs/s99 row 4, ruling 2), the last key: its department letters older than their own Book's age.
           stuck: mine.filter(({ book, note }) => isStuckLetter(note, book)).length,
           ...(foreign.length
@@ -406,7 +437,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // to this seat is counted above only, so `letters_for_this_seat.count` keeps meaning the letters this seat may close.
   const lettersFromThisSeat: PsJsonValue | null = ((): PsJsonValue | null => {
     if (thisClaim.state !== 'held') return null;
-    const tally = letterTally(pendingNotes.filter(({ note }) => note.forSeat !== null && isStartedBy(note, self) && !isAddressedTo(note, self)));
+    const tally = letterTally(pendingNotes.filter(({ book, note }) => book.takesLetters === true && note.forSeat !== null && isStartedBy(note, self) && !isAddressedTo(note, self)));
     return tally.count ? { count: tally.count, by_book: tally.byBook, oldest_pending: tally.oldest } : { count: 0 };
   })();
   // THE POSTBOX, FROM ITS CACHE AND THE LETTERS HERE ALONE (kickoffs/s123 row 4; plan item 6): no server is called, so the
@@ -415,9 +446,20 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     try {
       const { state, outbox } = postboxCache(workspace);
       if (state === null) return null;
+      const reports = pendingNotes.filter(({book}) => book.slug === 'reports').map(({note}) => ({note,fields:noteFrontmatter(readUtf8(note.fullPath))}));
       const received = pendingNotes.filter(({ book, note }) => book.takesLetters === true && isFromAnotherLibrary(note));
       const marked = (key: string) => received.filter(({ note }) => noteFrontmatter(readUtf8(note.fullPath)).get(key) === 'true').length;
       return {
+        reports_unsent:outbox.filter(e=>e.book==='reports' && e.state==='unsent').length,
+        reports_held:outbox.filter(e=>e.book==='reports' && e.state==='unsent' && !!e.held).length,
+        reports_awaiting_sender:reports.filter(r=>r.fields.get('awaiting_sender')==='true').length,
+        reports_awaiting_outcome:reports.filter(r=>r.fields.has('delivery_id') && !isFromAnotherLibrary(r.note)).length,
+        unexpected_reports:reports.filter(r=>r.fields.get('unexpected_report')==='true').length,
+        controls_deferred:Array.isArray(state['controls_deferred'])?state['controls_deferred'].length:0,
+        controls_refused:Array.isArray(state['controls_refused'])?state['controls_refused'].length:0,
+        records_incomplete:listOutstanding(workspace).length,
+        outcomes_received:pendingNotes.filter(({book,note})=>book.slug==='letters' && isFromAnotherLibrary(note) && isAddressedTo(note,self) && noteFrontmatter(readUtf8(note.fullPath)).has('closes_delivery_id')).length,
+        ...((state['reports_triager'] as {library_id?:string}|null)?.library_id && (state['reports_triager'] as {library_id:string}).library_id !== state['library_id'] && reports.some(r=>!r.fields.has('delivery_id') && (!r.note.fromLibraryId || r.note.fromLibraryId === r.note.localLibraryId)) ? {send_pending_route:'deskpost reports send-pending --preflight'} : {}),
         last_check: (state['last_check'] as PsJsonValue | undefined) ?? null,
         unreachable_since: (state['unreachable_since'] as PsJsonValue | undefined) ?? null,
         waiting_to_send: outbox.filter((entry) => entry.state === 'unsent').length,
@@ -520,7 +562,13 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     this_seat: thisSeat,
     ...(lettersForThisSeat !== null ? { letters_for_this_seat: lettersForThisSeat } : {}),
     ...(lettersFromThisSeat !== null ? { letters_from_this_seat: lettersFromThisSeat } : {}),
-    ...(postbox !== null ? { postbox } : {}),
+    ...(postbox !== null ? { postbox, this_library: (() => {
+      const state=postboxCache(workspace).state!;
+      const pin=state['reports_triager'] as Record<string,PsJsonValue> | null;
+      const conflict=state['reports_triager_conflict'] as {claimants?:PsJsonValue[]} | null;
+      const triager:PsJsonValue=conflict ? {conflict:conflict.claimants ?? []} : pin?.['library_id']===state['library_id'] ? 'self' : pin ? {library_id:pin['library_id'] ?? null,library_card:(state['entries_seen'] as {library_id:string;library_card:string}[] | undefined)?.find(e=>e.library_id===pin['library_id'])?.library_card ?? null,seat:pin['seat'] ?? null,source:pin['source'] ?? null} : null;
+      return {...libraryOfMarker(readMarker(workspace)),reports_triager:triager};
+    })() } : {}),
     other_seats: otherSeats,
     directory,
     ...(auditFacts !== null && auditFacts.auditsDue !== null ? { audits_due: auditFacts.auditsDue } : {}),
@@ -741,6 +789,7 @@ export function pendingLetterCounts(workspace: string): Map<string, number> {
   const view = readSeatIdentityView(path.join(workspace, '.claude'));
   const byKey = new Map<string, number>();
   for (const book of captureBookRows(workspace)) {
+    if (book.takesLetters !== true) continue;
     for (const note of shelfNotes(book)) {
       if (note.review === 'done' || !note.forSeat) continue;
       if (note.malformed.includes('for_seat') || note.malformed.includes('for_seat_id')) continue;

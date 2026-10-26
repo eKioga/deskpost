@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { listFilesRecursive } from './shelfbook.ts';
 import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
@@ -114,16 +115,6 @@ export function pageBody(content: string): string {
   return normalized.substring(closing + 5).replace(/^[\r\n]+|[\r\n]+$/g, '');
 }
 
-function filesBelow(directory: string): string[] {
-  const found: string[] = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...filesBelow(full));
-    else if (entry.isFile()) found.push(full);
-  }
-  return found;
-}
-
 /**
  * A collection Book's page manifest, FROM DISK: the recall's own function, and the one the drift check and the
  * refreshed record use, so the three can never disagree about which pages a Book has. `_book.md` and `_index.md` at
@@ -134,7 +125,7 @@ export function collectionPageManifest(wiki: string): CollectionManifest {
     const file = path.join(wiki, name);
     return fs.existsSync(file) && fs.statSync(file).isFile() ? sha256OfBytes(fs.readFileSync(file)) : '';
   };
-  const pages = filesBelow(wiki)
+  const pages = listFilesRecursive(wiki, { required: true, sorted: false })
     .filter((file) => path.extname(file).toLowerCase() === '.md')
     .map((file) => ({ file, relative: file.substring(wiki.length).replace(/^[\\/]+/, '').replace(/\\/g, '/') }))
     .filter((item) => !['_book.md', '_index.md'].includes(item.relative.toLowerCase()))

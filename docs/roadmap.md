@@ -25,10 +25,7 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **s135** (in progress): 1.5.0.
-- **c36** (on deskpost-codex-dev): five small fixes for after 1.5.0, beside s135.
-- **The gate lock**: c30's experiment says two seats' gates can run at once (its word: drop), so one heavy check
-  at a time is to become something a seat asks for rather than the rule.
+- **c62** (in progress): 1.5.1.
 
 ## Next
 
@@ -90,6 +87,12 @@ Throughout: anything that arrives from another Library says where it came from, 
 never instructions, and a letter is never an approval. Deskpost connects to whatever server you
 configure and makes no judgement about how it is secured. Not planned: starting a seat on another
 computer, Project Hubs in Basic Memory, and merging two edits of one page.
+
+### A vault for the Library's own pages (Obsidian as a backend)
+
+- **1.5.1 starts the connection:** a Library writes its own pages into a vault folder you connect, only under `Librarian/`.
+- **Next:** a daily log of what the seats did, then a guard that keeps the seats' own outputs in `Librarian/Outputs/`.
+- **The vault stays optional.** Nothing outside `Librarian/` is Deskpost's to write.
 
 ## Exploring
 
@@ -401,7 +404,38 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.5.1: Reports across Libraries, and what needs you (released 2026-10-25)
+
+- Reports across Libraries: one Library triages Reports for others. Outcomes come back as letters; amendments and withdrawals travel too, with unfinished deliveries kept for recovery.
+- deskpost reports list shows this seat's pending Reports. Reports record the program version when known, and the inventory names the Library that sent them.
+- An optional Obsidian vault connection lets a local Library write its own pages under Librarian/. Connecting writes no vault file; nothing outside Librarian/ is Deskpost's to write.
+- deskpost needs-you gathers ready Kickoffs, waiting letters, Hub items for the reader, stopped saves and Reports to triage. Its optional vault page stays current as the Library changes.
+- The read-only Desk dashboard shows open Books and Hubs, inbox ages, and save and closeout state. Its watch pane refreshes in place, names damaged checkpoint records, and fits a compact Codex strip.
+- A seat can save its automatic Desk pane preference; a supported Orca launch opens one beside the conversation.
+- kickoff send and kickoff receive carry a development Kickoff between Libraries and put its exact text on the receiving seat's Hub once, with one Run pointer.
+- doctor names the vault connection, the Codex version and sandbox, and every Book's Discovery manifest. Its JSON includes the counts its text shows.
+- library forget removes one Library registry entry without touching its folder; init says which default Library it kept.
+- book replace-page keeps a page's front matter, accepts --as-given, and prints an exact command to restore the earlier page.
+- hub edit preserves list markers, selects checkbox items by their own text, reports the stored page's hashes, and names the preview id it checked when filling the write time. Page writers refuse unfilled time placeholders.
+- hub history shows a page's recorded writes and keeps their order even when the clock moves backwards.
+- Auto mode is the usual Claude Code access choice. Codex's hook-trust flags cannot be saved as seat launch flags.
+- A new seat takes its card in the menu and starts with its letters Book open. The Desk sends a seat with waiting letters to its own letters list; Reports stay out of letter counts. The full seat-card list omits an empty No department group.
+- The Desk names a Book archived since it was opened, and names a missing collection Book with repair advice instead of calling it readable.
+- An unknown flag is quoted as received, and an unknown action lists the verb's available actions. --workspace also works before the command.
+- A Postbox send that reached the server says so; Basic Memory network failures name their cause. basic-memory disconnect --preflight shows the connection it would remove without changing it.
+- Routed letters keep the original's literal text. Incoming answers must name the asking seat's id before closing its current question.
+- Closed-Book guards recognize sentence punctuation and Windows paths ending in a dot, and their search remedy explains how to put a literal pattern in a file. Seatless read-only reviews of the Library's own files can proceed.
+- On Linux, the launcher recognizes assistants running under Node and distinguishes their shell wrappers from the assistants themselves.
+- The upgrade's dry run counts sessions correctly. An interrupted install, upgrade or uninstall no longer leaves its lock held forever; a stale lock is taken only from a dead owner and released only by its holder.
+- A redirect from a Basic Memory or embedding server is refused and named. Plain HTTP is allowed only inside the home network or over Tailscale; a public address is refused with a request to use HTTPS.
+- shelf duplicates compares only the Shelf Books open on the running seat and names the Books left out.
+- Local Hub replacements and tidies, collection page replacements, and note triage keep more complete write history. doctor also checks for interrupted recovery records and clears a finished recovery's own leftover marker.
+
+Tried between two Libraries in tests; a live trial between two computers is the release's own last check.
+
 ### 1.5.0: Libraries that write to each other (released 2026-10-18)
+
+Shipped as public commit 9454ec0b0c638783fe86454281e645a7672d4fa0, from a4649fe.
 
 - **A Library card**: a display name for a Library, with no account and no server behind it. The
   card is a label, not a credential and not an address. The Desk and `collection owner --status` name

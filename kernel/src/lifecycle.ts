@@ -24,10 +24,10 @@ import type { PsJsonValue } from './psjson.ts';
 import { writeAtomicText } from './fsx.ts';
 import { readRegistry } from './workspace.ts';
 import { readSeatRegistry } from './desk.ts';
-import { getSeatClaimState, openShareNothing, type ExclusiveHandle } from './seatclaim.ts';
+import { getSeatClaimState, openShareNothing, readSeatClaimHolderPid, type ExclusiveHandle } from './seatclaim.ts';
 import { agentProcessIdentity, UNREADABLE_IDENTITY } from './procstart.ts';
 import { nativeProcessCalls, nativeProcessImagePath, nativeProcessTable, nativeStartDetached } from './win32proc.ts';
-import { COMMAND_NAME, entryInvocation, installRootOf, isKernelBinary, powerShellScript } from './machine.ts';
+import { COMMAND_NAME, entryInvocation, installRootOf, isKernelBinary, powerShellScript, sourceKernelScript } from './machine.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
 import { basicMemoryRollbackCheck } from './bmopen.ts';
@@ -69,11 +69,19 @@ function sleep(ms: number): void {
 export function withLifecycleLock<T>(root: string, body: () => T): T {
   fs.mkdirSync(root, { recursive: true });
   const lockPath = path.join(root, '.lifecycle.lock');
+  const ownerPath = `${lockPath}.owner`;
+  // c64 saw only 13 looks: avoid an unused Windows PowerShell identity lookup (kickoffs/c66 row 2).
+  const record = NO_FLOCK ? JSON.stringify({ ...selfOwner(), token: randomUUID() }) : '';
   const deadline = Date.now() + 15000;
   let handle: ExclusiveHandle | null = null;
   while (handle === null) {
     try {
       handle = openShareNothing(lockPath);
+      if (NO_FLOCK && !takeOwnerFile(ownerPath, record)) {
+        handle.close();
+        handle = null;
+        throw new Error('held');
+      }
     } catch {
       if (Date.now() > deadline) throw new Error(`another Deskpost install, upgrade or uninstall is changing ${root} right now (it holds ${lockPath}). Let it finish, then run this again.`);
       sleep(200);
@@ -82,8 +90,78 @@ export function withLifecycleLock<T>(root: string, body: () => T): T {
   try {
     return body();
   } finally {
+    if (NO_FLOCK) fs.rmSync(ownerPath, { force: true });
     handle.close();
   }
+}
+
+/**
+ * A SOURCE RUN UNDER NODE ON POSIX HAS NO LOCK TO OPEN (kickoffs/s156 row 1; s155's probe: a second `openShareNothing`
+ * of a held `.lifecycle.lock` opened). There the lock is `.lifecycle.lock.owner`, made only by linking a written file to
+ * it, so it never exists half-written and only one taker's link succeeds. A live owner (`ownerAlive`) holds it; a dead
+ * one is removed by the one taker that creates `.owner.break-<its token>`, after reading that the file is still the dead
+ * owner's, and the takers then race on the link again: two takers cannot both win, because each holds by a link that
+ * fails on an existing file, and only the dead owner's file is ever removed by anyone but its owner.
+ */
+const NO_FLOCK = process.platform !== 'win32' && typeof (globalThis as { Bun?: unknown }).Bun !== 'object';
+
+function linkNew(file: string, text: string): boolean {
+  const written = `${file}.${randomUUID()}`;
+  fs.writeFileSync(written, text);
+  try {
+    fs.linkSync(written, file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    fs.rmSync(written, { force: true });
+  }
+}
+
+/** The owner record; null when the file is gone; when it is there and names no token, `{ unreadable }`, what was read of
+ * it (inode, size and modification time): linkNew does not flush, so a power cut can leave an owner file empty. */
+function readOwner(file: string): Record<string, unknown> | null {
+  try {
+    const owner = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> | null;
+    if (typeof owner?.['token'] === 'string') return owner;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+  }
+  try {
+    const seen = fs.statSync(file, { bigint: true });
+    return { unreadable: `${seen.ino}-${seen.size}-${seen.mtimeNs}` };
+  } catch {
+    return null;
+  }
+}
+
+function removeDeadOwner(file: string, dead: Record<string, unknown>): void {
+  // A dead owner is broken by its token, an unreadable file by what was read of it (kickoffs/s158 row 2), and either is
+  // removed only if the file still reads the same.
+  const seen = (owner: Record<string, unknown>) => owner['token'] ?? `unreadable-${String(owner['unreadable'])}`;
+  const guard = `${file}.break-${String(seen(dead))}`;
+  if (!linkNew(guard, JSON.stringify({ ...selfOwner(), token: randomUUID() }))) {
+    const breaker = readOwner(guard);
+    if (breaker !== null && !ownerAlive(breaker)) removeDeadOwner(guard, breaker);
+    return;
+  }
+  try {
+    const now = readOwner(file);
+    if (now !== null && seen(now) === seen(dead)) fs.rmSync(file, { force: true });
+  } finally {
+    fs.rmSync(guard, { force: true });
+  }
+}
+
+function takeOwnerFile(file: string, record: string): boolean {
+  if (linkNew(file, record)) return true;
+  const owner = readOwner(file);
+  // Gone between the failed link and the read (kickoffs/s157 row 1): link again, never break.
+  if (owner === null) return linkNew(file, record);
+  if (ownerAlive(owner)) return false; // An unreadable file names no live owner.
+  removeDeadOwner(file, owner);
+  return linkNew(file, record);
 }
 
 /** This process's owner record: its pid and start time, spelled as install.ps1 spells one (round 5, #2). */
@@ -147,9 +225,10 @@ function clearPending(root: string, id: string): void {
 export interface LiveSessions {
   /**
    * HELD OR ORPHANED, LABELLED (PLAN-one-step-upgrade.md D3): both are a running session and both block; the label says
-   * what to close.
+   * what to close. `holder_pid` is the claim holder's process id from its `.claim` (kickoffs/s142 row 4): null for an
+   * orphaned seat or a claim with no readable `pid=`. `liveSessions` always sets it; a fixture may leave it out.
    */
-  seats: { library: string; seat: string; agent_pid: number | null; state: 'held' | 'orphaned'; label: string }[];
+  seats: { library: string; seat: string; agent_pid: number | null; holder_pid?: number | null; state: 'held' | 'orphaned'; label: string }[];
   processes: { pid: number; path: string }[];
   unreadable: string[];
 }
@@ -205,7 +284,8 @@ export function liveSessions(root: string, options: { excludePids?: number[]; li
       for (const row of readSeatRegistry(state)) {
         const claim = getSeatClaimState(state, row.seat);
         if (claim.state === 'free') continue;
-        found.seats.push({ library, seat: row.seat, agent_pid: claim.agentPid || null, state: claim.state, label: seatSessionLabel(claim) });
+        const holderPid = claim.state === 'held' ? readSeatClaimHolderPid(state, row.seat) : null;
+        found.seats.push({ library, seat: row.seat, agent_pid: claim.agentPid || null, holder_pid: holderPid, state: claim.state, label: seatSessionLabel(claim) });
       }
     } catch (error) {
       found.unreadable.push(`${library}: ${(error as Error).message}`);
@@ -236,7 +316,7 @@ export function seatSessionLabel(claim: { state: string; bindingState: string; b
   if (claim.state === 'orphaned') return `orphaned: its launcher is gone but its Claude Code or Codex session is still running (process ${claim.agentPid}); end that session`;
   return claim.bindingState === 'committed' && !claim.bindingStale && claim.agentPid > 0
     ? `held: its session is open (agent process ${claim.agentPid})`
-    : 'held: its launcher holds it, no session bound yet';
+    : 'held by its launcher (a session is open)';
 }
 
 /** Whether any of a Library's registration files names a path under `root`, in either slash style. */
@@ -256,6 +336,49 @@ export function sessionsText(found: LiveSessions): string {
   for (const seat of found.seats) lines.push(`  seat '${seat.seat}' in ${seat.library}: ${seat.label}`);
   for (const process of found.processes) lines.push(`  process ${process.pid}: ${process.path} (a hook or mcp serve of an open session)`);
   return lines.join('\n');
+}
+
+/**
+ * HOW MANY SESSIONS ARE OPEN, NOT HOW MANY LINES (kickoffs/s141 row 4). Each held or orphaned seat is one. The other
+ * `library.exe` processes are grouped by the session they serve, the nearest ancestor that is not itself a
+ * `library.exe`, and a session started by a `library.exe` (the `deskpost` launcher) is grouped with its launcher. A
+ * process under a seat's agent, or a launcher whose child is that agent, counts under the seat. A launched session that
+ * no agent claims is the session of a seat its launcher holds with no session bound, one for each such seat; only the
+ * launched sessions beyond those count again. Pure: the process rows are given, so a fixture decides them.
+ *
+ * THE HOLDER IS KNOWN, NOT GUESSED (kickoffs/s142 row 4): a seat whose `holder_pid` is in the rows owns that process
+ * and every `library.exe` below it, counted once as the seat. The launched-session rule above is only for held seats
+ * whose holder is null or not in the rows.
+ */
+export function openSessionCount(found: LiveSessions, rows: ProcessRow[]): number {
+  const byPid = new Map(rows.map((row) => [row.ProcessId, row]));
+  const parentOf = (pid: number) => byPid.get(pid)?.ParentProcessId ?? 0;
+  const isLibrary = (pid: number) => /[\\/]library\.exe$/i.test(byPid.get(pid)?.ExecutablePath ?? '');
+  const ancestors = (pid: number): number[] => {
+    const seen: number[] = [];
+    for (let at = parentOf(pid); at > 0 && at !== pid && !seen.includes(at); at = parentOf(at)) seen.push(at);
+    return seen;
+  };
+  const sessionOf = (pid: number): number => ancestors(pid).find((at) => !isLibrary(at)) ?? parentOf(pid);
+  const agents = new Set(found.seats.map((seat) => seat.agent_pid ?? 0).filter((pid) => pid > 0));
+  const holders = new Set(found.seats.map((seat) => seat.holder_pid ?? 0).filter((pid) => pid > 0 && byPid.has(pid)));
+  const unbound = found.seats.filter((seat) => !(seat.agent_pid ?? 0) && !holders.has(seat.holder_pid ?? 0)).length;
+  const unheld = found.processes.filter(({ pid }) => !holders.has(pid) && !ancestors(pid).some((at) => holders.has(at)));
+  const launchers = new Set(unheld.map((row) => parentOf(sessionOf(row.pid))).filter((pid) => pid > 0 && isLibrary(pid)));
+  const groups = new Set<number>();
+  const launched = new Set<number>();
+  for (const { pid } of unheld) {
+    if (ancestors(pid).some((at) => agents.has(at))) continue;
+    if (rows.some((child) => child.ParentProcessId === pid && agents.has(child.ProcessId))) continue;
+    if (launchers.has(pid)) {
+      launched.add(pid);
+      continue;
+    }
+    const session = sessionOf(pid);
+    if (launchers.has(parentOf(session))) launched.add(parentOf(session));
+    else groups.add(session);
+  }
+  return found.seats.length + groups.size + Math.max(0, launched.size - unbound);
 }
 
 /** Whether a wait meets anything open. */
@@ -626,8 +749,9 @@ export function programRemoval(root: string): RemovalList {
 // --- the Libraries' registrations (step 8's table) ---------------------------------------------------------------------
 
 function underRoot(file: string, root: string): boolean {
-  const full = path.resolve(file.replace(/\//g, path.sep)).toLowerCase();
-  return full.startsWith(path.resolve(root).toLowerCase() + path.sep);
+  const full = path.resolve(file.replace(/\//g, path.sep));
+  const base = path.resolve(root) + path.sep;
+  return process.platform === 'win32' ? full.toLowerCase().startsWith(base.toLowerCase()) : full.startsWith(base);
 }
 
 /** Whether a hook or server entry is one this install wrote: a Deskpost form whose binary or -File script is under root. */
@@ -635,6 +759,8 @@ export function isThisInstallsEntry(entry: unknown, root: string): boolean {
   const invocation = entryInvocation(entry);
   if (invocation === null) return false;
   if (isKernelBinary(invocation.program)) return underRoot(invocation.program, root);
+  const source = sourceKernelScript(invocation);
+  if (source !== null) return underRoot(source, root);
   const script = powerShellScript(invocation);
   return script !== null && underRoot(script, root);
 }

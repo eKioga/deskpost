@@ -27,6 +27,7 @@
  */
 
 import * as fs from 'node:fs';
+import { assertShelfBookOpen } from './triage.ts';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
@@ -1422,7 +1423,7 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
     );
   }
   if (!fs.existsSync(book.wikiPath)) refuse(`Shelf Book '${bookSlug}' has no pages directory at shelf/${bookSlug}/wiki.`);
-  assertShelfBookOpen(workspace, bookSlug, 'replacing one of its pages with a stub');
+  assertShelfBookOpen(workspace, bookSlug, 'replacing one of its pages with a stub', requireSeat({ stateDirectory: stateDirectory(workspace) }));
 
   const page = convertToBookPagePath(pagePath);
   const canonicalPageClean = convertToBookPagePath(canonicalPage);
@@ -1606,30 +1607,4 @@ function newStubBody(options: {
     `> breaks. See [Duplicate Topic Resolution](${docsLink}).`,
     '',
   ].join('\n');
-}
-
-/**
- * The Desk gate. Everything that names or curates an individual page requires the reader to have
- * OPENED the Book.
- *
- * AN ARCHIVED SHELF BOOK IS READ-ONLY, said here rather than left to be inferred. The refusal held
- * by accident of string comparison -- `shelf/_archive/<slug>` never equals `shelf/<slug>` -- but it
- * told a reader the Book was "closed" when it was open and merely retired, sending them to re-open
- * something already open.
- */
-function assertShelfBookOpen(workspace: string, slug: string, action: string): void {
-  const desks = stateDirectory(workspace);
-  const seat = requireSeat({ stateDirectory: desks });
-  const openBooksPath = deskFilePath(desks, seat, 'books');
-  if (!fs.existsSync(openBooksPath)) refuse('Virtual Desk configuration is missing .open-books.');
-  const openBooks = deskEntriesForSeat(desks, seat, 'books');
-  if (openBooks.includes(`shelf/${slug}`)) return;
-  if (openBooks.includes(`shelf/${ARCHIVE_FOLDER}/${slug}`)) {
-    refuse(
-      `Shelf Book '${slug}' is archived and read-only. Restore it with deskpost shelf restore ${slug} before ${action}.`,
-    );
-  }
-  refuse(
-    `Shelf Book '${slug}' is closed. Open it with deskpost desk open book ${slug} --location shelf before ${action}.`,
-  );
 }

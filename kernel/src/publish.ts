@@ -48,7 +48,7 @@ import { psConvertToJson } from './psjson.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { psSortCompare } from './pssort.ts';
 import { readStrictUtf8 } from './notebook.ts';
-import { getShelfBook } from './shelfbook.ts';
+import { getShelfBook, listFilesRecursive } from './shelfbook.ts';
 import { ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogEntryPath, singleTrailingNewline, testShelfCatalogEntryText } from './shelfcatalog.ts';
 import { assertShelfBookOpen } from './triage.ts';
 import { removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
@@ -102,17 +102,6 @@ function isBlank(value: string | undefined | null): boolean {
 function isWithin(child: string, parent: string): boolean {
   const parentPath = parent.replace(/[\\/]+$/, '') + path.sep;
   return child.toLowerCase().startsWith(parentPath.toLowerCase());
-}
-
-/** `Get-ChildItem -File -Recurse`, every file below `directory`. */
-function filesBelow(directory: string): string[] {
-  const found: string[] = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...filesBelow(full));
-    else if (entry.isFile()) found.push(full);
-  }
-  return found;
 }
 
 /** The candidate's `Split-Frontmatter`: a body with CRLF kept when there is no frontmatter block. */
@@ -248,7 +237,7 @@ function localPagesLeftBehind(workspace: string, bookSlug: string, records: Cand
   // CASE FOLDED ONLY WHERE THE FILE SYSTEM FOLDS IT (inspection): on a case-sensitive one `Guide.md` is its own page.
   const fold = (value: string) => (process.platform === 'win32' || process.platform === 'darwin' ? value.toLowerCase() : value);
   const planned = new Set(records.map((record) => fold(record.path)));
-  const pages = filesBelow(wiki)
+  const pages = listFilesRecursive(wiki, { required: true, sorted: false })
     .filter((file) => path.extname(file).toLowerCase() === '.md')
     .map((file) => ({ file, relative: `books/${bookSlug}/wiki/${file.substring(wiki.length).replace(/^[\\/]+/, '').replace(/\\/g, '/')}` }))
     .filter((item) => !planned.has(fold(item.relative)))
@@ -297,7 +286,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
   assertShelfBookOpen(workspace, shelfSlug, 'publishing it to the shared collection');
   sourceFull = shelfWikiRoot;
   const sourceBoundary = `shelf/${shelfSlug}/wiki`;
-  const files = filesBelow(sourceFull)
+  const files = listFilesRecursive(sourceFull, { required: true, sorted: false })
     .filter((file) => path.extname(file).toLowerCase() === '.md')
     .filter((file) => {
       const relative = file.substring(sourceFull.length).replace(/^[\\/]+/, '').replace(/\\/g, '/').toLowerCase();

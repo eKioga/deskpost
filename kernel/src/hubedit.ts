@@ -27,7 +27,7 @@ import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
-import { sha256OfBytes, sha256OfText } from './sha.ts';
+import { pageComparisonSha256, sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
@@ -37,6 +37,7 @@ import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { localDate } from './localdate.ts';
+import { capturePriorBytes, undoBlock, type UndoPathBefore } from './journal.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -283,9 +284,14 @@ function within(inner: Block, outer: Block): boolean {
   return inner.start >= outer.start && inner.end <= outer.end;
 }
 
-function findUniqueBlock(lines: string[], start: number, end: number, matchText: string): Block {
+function findUniqueBlock(lines: string[], start: number, end: number, matchText: string, checkboxOnly = false): Block {
   if (isBlank(matchText)) refuse('MatchText is required: give text that appears in exactly one item or line.');
   let matched = itemBlocks(lines, start, end).filter((block) => lines.slice(block.start, block.end + 1).join(' ').includes(matchText));
+  if (checkboxOnly) {
+    matched = matched.filter(block => /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+\[[ xX]\]/.test(lines[block.start]!));
+    const ownLine = matched.filter(block => lines[block.start]!.includes(matchText));
+    if (ownLine.length) matched = ownLine;
+  }
   if (matched.length === 0) refuse(`No item or line contains '${matchText}'.`);
   // TEXT IN A NESTED ITEM MATCHES ITS PARENTS TOO (S87): when the matches nest, one inside the next, the innermost is
   // the item meant, as it was before a block carried its sub-list. Siblings still refuse.
@@ -305,6 +311,13 @@ function setCheckboxState(line: string, checked: boolean): string {
   const match = /^([ \t]*(?:[-*+]|[0-9]+\.)[ \t]+)\[([ xX])\](.*)$/.exec(line);
   if (!match) refuse(`That item is not a checkbox: ${line.trim()}`);
   return `${match[1]}[${checked ? 'x' : ' '}]${match[3]}`;
+}
+
+/** Keep the matched item's prefix unless the replacement supplies its own list marker. */
+function replacementItemLines(line: string, addition: string[]): string[] {
+  if (!addition.length || isListLine(addition[0]!)) return addition;
+  const prefix = /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+(?:\[[ xX]\][ \t]*)?/.exec(line)?.[0];
+  return prefix === undefined ? addition : [prefix + addition[0]!, ...addition.slice(1)];
 }
 
 /** `New-ProjectBodyRaw`. */
@@ -346,13 +359,13 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
       start = itemSpan.start + 1;
       end = itemSpan.end;
     }
-    const block = findUniqueBlock(lines, start, end, matchText);
+    const block = findUniqueBlock(lines, start, end, matchText, mode === 'CheckItem');
     const result = lines.slice(0, block.start);
     if (mode === 'CheckItem') {
       result.push(setCheckboxState(lines[block.start]!, !uncheck));
       result.push(...lines.slice(block.start + 1, block.end + 1));
     } else {
-      result.push(...addition);
+      result.push(...replacementItemLines(lines[block.start]!, addition));
     }
     result.push(...lines.slice(block.end + 1));
     return joinLines(result);
@@ -784,7 +797,8 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       if (planned['plan_id'] !== newPage.planId) return hubNewPage(newPage, workspace);
     }
     const written = await hubNewPage({ ...newPage, content: fillTimePlaceholders(given), contentPath: '', planId: '' }, workspace);
-    return { ...(written as Record<string, PsJsonValue>), time_placeholders_filled: true };
+    // THE PLAN ID IT CHECKED (kickoffs/s159 row 5), as the edit modes name `approved_sha256`: `plan_id` is the filled text's.
+    return { ...(written as Record<string, PsJsonValue>), ...(newPage.planId ? { approved_plan_id: newPage.planId } : {}), time_placeholders_filled: true };
   }
   const mode = MODE_WORDS[modeWord] ?? EDIT_MODES.find((name) => name.toLowerCase() === modeWord.toLowerCase());
   if (mode === undefined) {
@@ -910,8 +924,10 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     refuse(`${cliMode} would not preserve the existing page text; the edit stopped without writing.`);
   }
 
-  const currentHash = sha256OfText(currentBody);
-  const proposedHash = sha256OfText(proposedBody);
+  // Hash the page the reader sees, including the front matter the store preserves.
+  const front = /^---\r?\n[\s\S]*?\r?\n---\r?\n(?:\r?\n)*/.exec(existing)?.[0] ?? '';
+  const currentHash = pageComparisonSha256(existing);
+  const proposedHash = pageComparisonSha256(front + proposedBody);
   const counts = changeCounts(currentBody, proposedBody);
   const planId = 'project-edit-' + sha256OfText(`${pagePath}|${mode}|${section}|${matchText}|${currentHash}|${proposedHash}`);
   let sectionBefore: PsJsonValue = null;
@@ -936,9 +952,9 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       scopeStart = itemSpan.start + 1;
       scopeEnd = itemSpan.end;
     }
-    const block = findUniqueBlock(currentLines, scopeStart, scopeEnd, matchText);
+    const block = findUniqueBlock(currentLines, scopeStart, scopeEnd, matchText, mode === 'CheckItem');
     itemBefore = currentLines.slice(block.start, block.end + 1).join('\n');
-    itemAfter = mode === 'CheckItem' ? proposedLines.slice(block.start, block.end + 1).join('\n') : removeTrailingBlank(toLines(content)).join('\n');
+    itemAfter = mode === 'CheckItem' ? proposedLines.slice(block.start, block.end + 1).join('\n') : replacementItemLines(currentLines[block.start]!, removeTrailingBlank(toLines(content))).join('\n');
   }
 
   const plan: Record<string, PsJsonValue> = {
@@ -1012,17 +1028,34 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   // never the page's existing lines, and the readback judges what was written.
   const filling = hasTimePlaceholders(content);
   const writtenBody = filling ? newProjectBody(currentBody, mode, section, fillTimePlaceholders(content, now), matchText, parsed.flags.has('uncheck')) : proposedBody;
-  const writtenHash = sha256OfText(writtenBody);
+  let writtenHash = pageComparisonSha256(front + writtenBody);
   const pad = (value: number): string => String(value).padStart(2, '0');
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   // `Join-Path $workspace "internal/publication-journals/..."`, which normalises every separator:
   // measured against the NAS in S34, the oracle's result reports backslashes throughout.
   const journalPath = path.join(workspace, 'internal', 'publication-journals', `project-edit-${slug}-${pageLabel}-${stamp}-${planId.substring(planId.length - 8)}.json`);
+  // THE HUB'S WRITE ORDER (kickoffs/s160 row 6): a number per Hub, taken at the first save, which is always under the Hub
+  // lock, so `hub history` orders by it where a clock step back (WSL2's) would reorder the times.
+  let sequence: number | null = null;
+  const nextSequence = (): number => {
+    const counter = path.join(workspace, 'internal', 'hub-sequences', `${slug}.txt`);
+    const last = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8').trim()) : 0;
+    const next = (Number.isSafeInteger(last) && last > 0 ? last : 0) + 1;
+    fs.mkdirSync(path.dirname(counter), { recursive: true });
+    fs.writeFileSync(counter, `${next}\n`, 'utf8');
+    return next;
+  };
+  // WHAT `deskpost undo` NEEDS (kickoffs/s165 row 1), for the gated modes on a local Hub: the page's prior bytes, read
+  // under the lock, and in the complete journal its after hash. A Hub edit from a Notebook page is its own evidence.
+  const undoable = !shared && isReplacing;
+  let prior: UndoPathBefore[] = [];
   const saveJournal = (state: string, errorText: string): void => {
+    sequence ??= nextSequence();
     const journal: Record<string, PsJsonValue> = {
       state,
       operation: 'project-edit',
       timestamp_utc: now.toISOString(),
+      sequence,
       project_id: store.projectId,
       project_slug: slug,
       page_path: pagePath,
@@ -1036,6 +1069,16 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       planned_records: notebookSource === null ? [] : [{ path: pagePath, source: notebookSource, sha256: notebookSourceHash }],
       previous_body: currentBody,
       error: errorText,
+      ...(state === 'complete' && undoable
+        ? {
+            undo: undoBlock(workspace, {
+              kind: 'hub-edit',
+              locks: [`projects/${slug}`],
+              before: prior,
+              evidence: notebookSource === null ? [] : [{ path: path.relative(workspace, journalPath).replace(/\\/g, '/'), kind: 'publication-evidence' }],
+            }),
+          }
+        : {}),
     };
     const file = path.resolve(journalPath);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1054,6 +1097,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
         `Page '${pagePath}' changed after this edit was planned, so nothing was written. Re-read the page and plan the edit again; the text you were editing is no longer what is there.`,
       );
     }
+    if (undoable) prior = capturePriorBytes(workspace, [path.join(workspace, 'collection', ...pagePath.split('/'))]);
     saveJournal('pending', '');
     await store.write(pagePath, writtenBody);
     const readback = await store.read(pagePath);
@@ -1061,6 +1105,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(writtenBody.replace(/\r\n/g, '\n'))) {
       refuse(`Readback of '${pagePath}' did not match the approved text; the previous text is in ${journalPath}.`);
     }
+    writtenHash = pageComparisonSha256(readback);
     warn(true);
     verified = true;
     saveJournal('complete', '');

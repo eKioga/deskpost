@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.0/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/seats.md).
 
 ## Books
 
@@ -69,6 +69,8 @@ library shelf rebuild [<slug>]                                         # Discove
 
 A page corrected in place on the Shelf leaves its Discovery manifest behind. Discovery then lists the Book in
 `books_stale` and still searches it; `library shelf rebuild <slug>` brings the manifest up to date.
+`library doctor`'s `shelf.books-have-manifests` warns for a Shelf Book with no Discovery manifest, which Discovery
+names unread, and names `library shelf rebuild <slug>` to write one.
 
 **Making a Book Shelf-only:** `shelf recall <slug>`, then `shared archive <slug> --kind book`. The recall copies the
 collection Book to the Shelf; the archive then retires the collection copy. The archive previews first, and applies
@@ -127,7 +129,11 @@ recorded Books and tools but never opens them automatically.
 library hub new <slug> --title "<t>" [--purpose "<p>"] [--next-action "<a>"] [--dev] [--preflight]
 library desk open project <slug>
 library hub edit <slug> --mode <mode> ...
+library hub history <slug> <page> [--json]
 ```
+
+`hub history` lists one page's publication journals, oldest first (time, operation, mode, state and written hash);
+it is read-only, and the Hub must be open on this seat's Desk.
 
 `hub new` needs no seat, and a seat can only be created for a Hub that exists and is active.
 
@@ -163,7 +169,8 @@ writes the Kickoffs. The build seat shows the Kickoff's title, revision, content
 and takes one yes; that yes is the reader's explicit request for the commits and the private push
 the CHARTER names, for that page at that hash only. It never covers a public push, a tag, a release
 or anything destructive, and each previewed action still takes its own approval. The loop is
-`docs/dev-session-loop.md` in the program repository.
+`docs/dev-session-loop.md` (the build seat's steps), `docs/dev-loop-planner.md` (the support
+seat's) and `docs/dev-loop-history.md` (what it has not proved, and its limits) in the program repository.
 
 **Where a decision itself is written** follows its subject. If the subject has a repository you
 control, the decision goes in *that repository's* `docs/adr/`. Otherwise it goes on the Hub. Either

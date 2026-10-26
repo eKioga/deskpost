@@ -32,6 +32,7 @@ function kernelFlags(text: string): string {
 const CHECK_LABELS: Record<string, string> = {
   'program.command-resolves': 'The deskpost command',
   'program.assistant-present': 'Assistant',
+  'program.codex-version': 'Codex version',
   'workspace.guards-registered': 'Claude Code guards',
   'workspace.codex-guards-registered': 'Codex guards',
   'shelf.overlap-records': 'Overlap records',
@@ -156,6 +157,9 @@ export function initText(result: Record<string, unknown>, written: readonly stri
   ];
   if (changed.length) lines.push(`  Written: ${changed.map((file) => `${file.file} (${file.action})`).join(', ')}`);
   lines.push(`  Registered in ${String(result['registry'] ?? '')} (${String(result['registration'] ?? '')})`);
+  // A KEPT DEFAULT IS SAID TO A PERSON TOO (kickoffs/s147 row 2): `default_kept` names the Library that stays the default.
+  const kept = result['default_kept'];
+  if (typeof kept === 'string' && kept) lines.push(`  The default Library stays ${kept}; make this one the default with: ${COMMAND_NAME} library default ${workspace}`);
   // THE ONE COMMAND TO COME BACK TO IS THE PRODUCT'S NAME (ADR-0059): inside a Library, `deskpost` opens its menu.
   lines.push(`Next: ${COMMAND_NAME}, from inside the Library, opens its main menu.`);
   return lines.join('\n');

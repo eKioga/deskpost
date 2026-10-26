@@ -38,7 +38,8 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { writeAtomicText } from './fsx.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
-import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation } from './seatpaths.ts';
+import { beginSeatMutation, enterSeatNotebookLock, recheckSeatMutation, seatNotebookLockRoot } from './seatpaths.ts';
+import { capturePriorBytes, undoBlock, type UndoPathBefore, type UndoRegenerate } from './journal.ts';
 import { completeBookMutation, enterBookMutation, type BookMutation } from './mutation.ts';
 import { captureVerb, runBookVerb, updateShelfNoteIndex } from './capture.ts';
 import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
@@ -49,6 +50,8 @@ import { assertSeatClaimHeld } from './seatclaim.ts';
 import { notebookScope, prepareNotebookScopeForWrite } from './notebooklayout.ts';
 import { invokeNotebookRender, notebookTopicLockRoot, scopeIndexDrift } from './notebook.ts';
 import { localDate } from './localdate.ts';
+import { recover } from './intent.ts';
+import { closeReportOutcome, reportStageRunner } from './reportsend.ts';
 import { setNoteField, shelfNotes } from './shelfnote.ts';
 import {
   assertShelfBookOpen,
@@ -130,6 +133,12 @@ export function triageBatch(argv: string[], workspace: string): { refusal: strin
   }
 }
 
+/** The undo that reversed a record (kickoffs/s165 row 4), or null while it is current. */
+function undoneBy(record: Record<string, unknown>): string | null {
+  const value = record['undone_by'];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 /** A value as canonical JSON, every object's keys in order, so two requests compare by content and not key order. */
 function canonicalJson(value: unknown): string {
   const sorted = (item: unknown): unknown =>
@@ -149,7 +158,7 @@ function canonicalJson(value: unknown): string {
  * `already_complete: true` last. Anything else, an unreadable record included, is null and today's refusal stands. An
  * interrupted batch is not this: it is `incomplete`, and resuming one that skips what succeeded needs its own design.
  */
-function finishedBatchResult(workspace: string, planId: string, requested: Record<string, unknown>[]): PsJsonValue | null {
+function finishedBatchResult(workspace: string, planId: string, requested: Record<string, unknown>[], recovery: ReturnType<typeof recover> | null): PsJsonValue | null {
   if (!/^triage-[0-9a-f]{64}$/.test(planId)) return null;
   const journalPath = path.join(workspace, 'internal', 'triage-journals', `${planId}.json`);
   const planPath = path.join(workspace, 'internal', 'triage-plans', `${planId}.json`);
@@ -163,6 +172,9 @@ function finishedBatchResult(workspace: string, planId: string, requested: Recor
   }
   if (journal === null || plan === null || typeof journal !== 'object' || typeof plan !== 'object') return null;
   if (Number(journal['schema']) !== 1 || journal['batch_id'] !== planId || journal['state'] !== 'complete' || plan['batch_id'] !== planId) return null;
+  // AN UNDONE BATCH IS NOT FINISHED (kickoffs/s165 row 4): `deskpost undo` put a note it changed back, so its record
+  // counts as absent here, and is kept for audit.
+  if (undoneBy(journal) !== null) return null;
   const planned = (Array.isArray(plan['actions']) ? plan['actions'] : []) as Record<string, unknown>[];
   const records = new Map(((Array.isArray(journal['actions']) ? journal['actions'] : []) as Record<string, unknown>[]).map((record) => [String(record?.['action_id'] ?? ''), record]));
   const wanted = requested.map(canonicalJson).sort();
@@ -205,6 +217,8 @@ function finishedBatchResult(workspace: string, planId: string, requested: Recor
     shared_library_write: false,
     next: 'This batch was already complete: its journal records every action as succeeded, so this run wrote nothing.',
     already_complete: true,
+    ...(recovery?.controls_set_aside ? {controls_set_aside: recovery.controls_set_aside} : {}),
+    ...(recovery?.controls_move_pending ? {controls_move_pending: recovery.controls_move_pending} : {}),
   };
 }
 
@@ -251,10 +265,11 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   const lockTimeout = Number(parsed.options.get('lock-timeout') ?? '20');
   const stateDirectory = path.join(workspace, '.claude');
   const preflight = parsed.flags.has('preflight');
+  const recovery=!preflight && parsed.flags.has('user-confirmed') && requested.some(a => a['kind'] === 'review' && a['outcome'] !== undefined)?recover(workspace, 'triage batch close', reportStageRunner(workspace)):null;
 
   // A FINISHED BATCH SAYS SO (kickoffs/s99 row K3, ruling 8), before anything is resolved: see `finishedBatchResult`.
   if (!preflight && parsed.flags.has('user-confirmed')) {
-    const finished = finishedBatchResult(workspace, parsed.options.get('plan-id') ?? '', requested);
+    const finished = finishedBatchResult(workspace, parsed.options.get('plan-id') ?? '', requested, recovery);
     if (finished !== null) return finished;
   }
 
@@ -288,6 +303,11 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   const journalState = new Map<string, Record<string, unknown>>();
   if (fs.existsSync(journalPath)) {
     existingJournal = JSON.parse(fs.readFileSync(journalPath, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+  }
+  // AN UNDONE BATCH RUNS AGAIN (kickoffs/s165 row 4): its record is evidence of notes `deskpost undo` put back, so it
+  // counts as absent and this run writes a new one in its place.
+  if (existingJournal !== null && undoneBy(existingJournal) !== null) existingJournal = null;
+  if (existingJournal !== null) {
     if (Number(existingJournal['schema']) !== 1) refuse(`The batch journal at ${journalPath} has an unsupported schema; move it aside and rerun the preflight.`);
     if (String(existingJournal['batch_id'] ?? '') !== batchId) {
       refuse(`The batch journal at ${journalPath} belongs to batch '${String(existingJournal['batch_id'] ?? '')}', not '${batchId}'. Give this run its own journal or rebuild the plan.`);
@@ -494,6 +514,15 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         note_page: action.source_note,
         current_review: String(action.metadata['current_review'] ?? ''),
         new_review: String(action.metadata['new_review'] ?? ''),
+        ...(action.metadata['outcome'] ? {
+          outcome: String(action.metadata['outcome']), outcome_note: String(action.metadata['outcome_note']), sends_outcome: true,
+          return_address: {
+            library_id: sourceNoteOf(action).note?.fromLibraryId ?? null,
+            seat: sourceNoteOf(action).note?.originSeat ?? null,
+            seat_id: sourceNoteOf(action).note?.originSeatId ?? null,
+          },
+          creates: ['outbox entry', 'letters note'],
+        } : {}),
         ...(action.kind === 'hold' ? { held_record: String(action.metadata['held_record'] ?? '') } : {}),
         write_set: action.write_set,
         delete_set: action.delete_set,
@@ -859,9 +888,37 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
 
   // review, notebook and discard, performed here -- there is no child helper for a note's own state. Each
   // rewrites the Book's reader map, so each holds the Book's lock, and the mutation window opens at the first
-  // write to the Book. There is no undo path: this journals nothing per note, so a failure inside the window
-  // leaves the Book dirty, which is then the truthful answer.
+  // write to the Book. A failure inside the window leaves the Book dirty, which is then the truthful answer.
+  // REVIEW, HOLD AND NOTEBOOK EACH KEEP A PER-NOTE JOURNAL (kickoffs/s165 row 1), so `deskpost undo` can put them back:
+  // the prior bytes of every file the action touches, the source note included, written before the first write, and
+  // the after hashes once it is done. Discard journals nothing new and stays `recoverable: false`.
+  function noteJournal(action: TriageAction) {
+    const now = new Date();
+    const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, '').replace('T', '-');
+    const file = path.join(workspace, 'internal', 'triage-journals', `note-${stamp}-${action.action_id.replace(/[^A-Za-z0-9-]/g, '-')}-${randomUUID().substring(0, 8)}.json`);
+    let prior: UndoPathBefore[] = [];
+    const record = (state: string, undo: PsJsonValue | null) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      writeAtomicText(file, psConvertToJson({ schema: 1, operation: 'triage-note', kind: action.kind, batch_id: batchId, action_id: action.action_id, note_page: action.source_note, state, recorded_utc: utcSeconds(), ...(undo === null ? { prior } : { undo }) } as unknown as PsJsonValue));
+    };
+    return {
+      relative: path.relative(workspace, file).replace(/\\/g, '/'),
+      before(files: string[]): void {
+        prior = capturePriorBytes(workspace, files);
+        record('pending', null);
+      },
+      complete(locks: string[], slug: string, extra: UndoRegenerate[] = []): void {
+        const regenerates: UndoRegenerate[] = [...extra, { kind: 'shelf-note-index', slug }, { kind: 'manifest', collection: 'shelf', slug }];
+        record('complete', undoBlock(workspace, { kind: `triage-${action.kind}`, locks, before: prior, evidence: [{ path: path.relative(workspace, journalPath).replace(/\\/g, '/'), kind: 'triage-batch-journal' }], regenerates, marker: { collection: 'shelf', slug } }));
+      },
+    };
+  }
+
   function invokeNoteAction(action: TriageAction): PsJsonValue {
+    if (action.kind === 'review' && action.metadata['outcome']) {
+      const manifest = action.source_manifest[0]!;
+      return {...closeReportOutcome(workspace, action.source_note, String(action.metadata['outcome']), String(action.metadata['outcome_note']), manifest.slice(manifest.lastIndexOf('|') + 1)),...(recovery?.controls_move_pending?{controls_move_pending:recovery.controls_move_pending}:{})};
+    }
     const book = getCaptureBook(workspace, action.source_slug);
     const note = shelfNotes(book).find((row) => action.source_note === `${book.bookRoot}/wiki/${row.page}.md`);
     if (!note) refuse(`The approved source '${action.source_note}' is gone. Nothing was written for this action.`);
@@ -882,6 +939,10 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     const closeState = (content: string, state: string) => setNoteField(setReview(content, state), 'reviewed', state === 'done' ? utcSeconds() : null);
     const lock: BookLock = enterBookLock(workspace, book.bookRoot, lockTimeout);
     let mutation: BookMutation | null = null;
+    const journal = noteJournal(action);
+    let journaled = false;
+    let journalLocks = [`triage/${batchId}`, book.bookRoot];
+    let notebookRegenerate: UndoRegenerate[] = [];
     try {
       if (action.kind === 'review') {
         const newState = String(action.metadata['new_review'] ?? '');
@@ -899,6 +960,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         if (!/^review:/m.test(content)) refuse(`This note has no review field to update: ${note.page}`);
         const updated = closeState(content, newState);
         if (updated === content) refuse(`This note has no frontmatter to update: ${note.page}`);
+        journal.before([note.fullPath]);
+        journaled = true;
         mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Review ${note.page} as ${newState}`, lock });
         writeAtomicText(note.fullPath, updated);
         result['status'] = note.review === newState && newState === 'done' ? 'stamped' : 'updated';
@@ -919,6 +982,8 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         const content = fs.readFileSync(note.fullPath, 'utf8');
         const updated = setNoteField(setNoteField(content, 'held', held), 'held_record', record);
         if (updated === content) refuse(`This note has no frontmatter to update: ${note.page}`);
+        journal.before([note.fullPath]);
+        journaled = true;
         mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Hold ${note.page} for ${record}`, lock });
         writeAtomicText(note.fullPath, updated);
         result['status'] = 'updated';
@@ -952,6 +1017,10 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         }
         try {
           const original = fs.readFileSync(note.fullPath, 'utf8');
+          journal.before([destination, ...(topicExists ? [] : [path.join(topicDirectory, '_index.md')]), note.fullPath]);
+          journaled = true;
+          journalLocks = [...journalLocks, seatNotebookLockRoot(scope.seat), notebookTopicLockRoot(topic, scope.relative)];
+          notebookRegenerate = [{ kind: 'notebook-index', seat: scope.seat! }];
           if (topicExists) {
             fs.copyFileSync(note.fullPath, destination, fs.constants.COPYFILE_EXCL);
             if (fs.readFileSync(destination, 'utf8') !== original) refuse(`The note was copied but did not read back identically: ${String(result['destination'])}`);
@@ -1001,6 +1070,10 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         result['pending_count'] = updateShelfNoteIndex(book).pendingCount;
       }
       if (mutation !== null) result['manifest'] = completeBookMutation(mutation).summary;
+      if (journaled) {
+        journal.complete(journalLocks, book.slug, notebookRegenerate);
+        result['journal'] = journal.relative;
+      }
     } finally {
       exitBookLock(lock);
     }

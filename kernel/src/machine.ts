@@ -209,19 +209,34 @@ export interface OwnedRegistration {
  * with `-File`, named in `ownScripts`. Anything else -- a reader's own hook, another MCP server -- is not Deskpost's,
  * and doctor never judges it.
  */
+/**
+ * THE KERNEL AS A SOURCE CHECKOUT RUNS IT (kickoffs/s155 row 1): `<any program> <program>/kernel/src/cli.ts hook|mcp …`,
+ * the form a POSIX source init writes (init.ts `posixKernelInvocation`). The `cli.ts` it runs, or null.
+ */
+export function sourceKernelScript(invocation: Invocation): string | null {
+  const script = invocation.args[0];
+  if (script === undefined || !['hook', 'mcp'].includes((invocation.args[1] ?? '').toLowerCase())) return null;
+  return /(^|[\\/])kernel[\\/]src[\\/]cli\.ts$/i.test(script) ? script : null;
+}
+
 export function ownedRegistration(entry: unknown, ownScripts: ReadonlySet<string>): OwnedRegistration | null {
   const invocation = entryInvocation(entry);
   if (invocation === null) return null;
   if (isKernelBinary(invocation.program) && ['hook', 'mcp'].includes((invocation.args[0] ?? '').toLowerCase())) {
     return { kind: 'kernel', invocation, file: invocation.program };
   }
+  const source = sourceKernelScript(invocation);
+  // A kernel too, judged by its program (kickoffs/s157 row 6): `programOfBinary` knows `kernel/src/cli.ts`.
+  if (source !== null) return { kind: 'kernel', invocation, file: source };
   const script = powerShellScript(invocation);
   if (script !== null && ownScripts.has(path.basename(script.replace(/\\/g, '/')).toLowerCase())) return { kind: 'script', invocation, file: script };
   return null;
 }
 
-/** The program root a kernel binary belongs to: two folders above `bin/library[.exe]`. */
+/** The program root a kernel binary belongs to: two folders above `bin/library[.exe]`, three above a source checkout's
+ * `kernel/src/cli.ts`. */
 export function programOfBinary(binary: string): string {
+  if (/(^|[\\/])kernel[\\/]src[\\/]cli\.ts$/i.test(binary)) return path.dirname(path.dirname(path.dirname(binary)));
   return path.dirname(path.dirname(binary));
 }
 

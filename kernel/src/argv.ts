@@ -127,7 +127,14 @@ export function checkArguments(command: string, argv: string[], table: ArgumentT
         if (wantsValue.has(name)) index += 1;
         continue;
       }
-      if (!known.has(name)) return `${command} has no --${name}. It takes: ${takenFlags(table) || 'no flags'}. Nothing was run.`;
+      if (!known.has(name)) {
+        // THE TOKEN AS RECEIVED (kickoffs/s160 row 4): a PowerShell 5.1 split sent `--plan-id` with a backtick and a full
+        // stop attached, and "has no --plan-id`." read as a flag the verb lists. A plain name is the token already.
+        const plain = /^[A-Za-z0-9-]+$/.test(name);
+        const split = [...known].some((flag) => name.length > flag.length && name.startsWith(flag) && !/[A-Za-z0-9-]/.test(name[flag.length]!));
+        const hint = split ? ' A value may have split here; on Windows PowerShell 5.1 pass text with quotes in it through --content-path.' : '';
+        return `${command} has no ${plain ? item : JSON.stringify(item)}.${hint} It takes: ${takenFlags(table) || 'no flags'}. Nothing was run.`;
+      }
       if (wantsValue.has(name)) index += 1;
       continue;
     }

@@ -25,9 +25,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
-import { argumentTable, verbTable } from './verbs.ts';
+import { argumentTable, verbTable, VERBS } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { findWorkspaceByMarker, markerField, markerPath, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot } from './workspace.ts';
+import { findWorkspaceByMarker, markerField, markerPath, readMarker, readTextFile, registryPath, requireWorkspace, toWorkspaceRoot, withMarkerLock } from './workspace.ts';
 import { writeAtomicText } from './fsx.ts';
 import { sha256OfText } from './sha.ts';
 import { psConvertToJson } from './psjson.ts';
@@ -43,7 +43,7 @@ import { departmentOrchestrator, registryDepartments } from './seatstartplan.ts'
 import { shelfCatalogEntryInventory } from './shelfcatalog.ts';
 import { enterSeatRegistryLock, exitBookLock } from './locks.ts';
 import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatregistry.ts';
-import { ASSISTANT_LABEL, conversationCell, newConversationId, seatConversationView, type Assistant, type ConversationView } from './conversation.ts';
+import { ASSISTANT_LABEL, newConversationId, seatConversationView, type Assistant, type ConversationView } from './conversation.ts';
 import { runHubVerb } from './collection.ts';
 import { markerConnection } from './basicmemory.ts';
 import { psSortCompare } from './notebook.ts';
@@ -234,17 +234,6 @@ export function formerlyMark(row: MenuRow): string {
   return row.formerly ? ` (formerly ${row.formerly})` : '';
 }
 
-/** The short "+N folders" mark a seat with added folders carries on its row; nothing when it has none. */
-export function foldersMark(row: MenuRow): string {
-  return row.folders > 0 ? ` +${row.folders} folder${row.folders === 1 ? '' : 's'}` : '';
-}
-
-/** The "(2 letters)" mark a seat with letters waiting carries on its row; nothing for none (kickoffs/s109 ruling 5). */
-export function lettersMark(row: MenuRow): string {
-  const count = row.letters ?? 0;
-  return count > 0 ? ` (${count} letter${count === 1 ? '' : 's'})` : '';
-}
-
 /** One row per registered seat, sorted by name, numbered from 1. One unreadable seat does not take the roster down. */
 export function menuRows(workspace: string, options: { transcriptRoot?: string; skipTitles?: boolean; now?: Date; fallbackAssistant?: Assistant } = {}): MenuRow[] {
   const now = options.now ?? new Date();
@@ -310,58 +299,13 @@ export function menuRows(workspace: string, options: { transcriptRoot?: string; 
   });
 }
 
-// --- the shape of one render: width, alphabet, colour ---------------------------------------------------------------
-
-export const CARD_BREAKPOINT = 120;
-
 interface Glyphs {
   ascii: boolean;
   tl: string; tr: string; bl: string; br: string; h: string; v: string; sep: string;
   held: string; free: string; other: string; ellipsis: string; dot: string;
 }
 
-const ASCII_GLYPHS: Glyphs = { ascii: true, tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|', sep: '-', held: '*', free: 'o', other: '!', ellipsis: '...', dot: '-' };
-const UNICODE_GLYPHS: Glyphs = {
-  ascii: false, tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│', sep: '─',
-  held: '●', free: '○', other: '▲', ellipsis: '…', dot: '·',
-};
-
 interface Palette { reset: string; dim: string; bold: string; held: string; free: string; other: string; frame: string; accent: string }
-
-const NO_COLOUR: Palette = { reset: '', dim: '', bold: '', held: '', free: '', other: '', frame: '', accent: '' };
-const E = '\x1b[';
-const COLOUR: Palette = {
-  reset: `${E}0m`, dim: `${E}2m`, bold: `${E}1m`, held: `${E}38;5;179m`, free: `${E}38;5;108m`, other: `${E}38;5;131m`, frame: `${E}38;5;66m`, accent: `${E}38;5;180m`,
-};
-
-export interface RenderPlan {
-  width: number;
-  plain: boolean;
-  glyphs: Glyphs;
-  palette: Palette;
-  mode: 'table' | 'cards';
-}
-
-/**
- * Width, alphabet, colour and layout for one render. A REDIRECTED RUN IS A CAPTURED RUN: plain ASCII and no colour, so a
- * suite, a pipe and a transcript read the same bytes on any machine. Box drawing and the state marks are drawn where
- * the terminal renders them (step 0, measurement 4): off Windows, inside Windows Terminal, or in Orca's terminal.
- * NO_COLOR is honoured on its presence. The table is abandoned for cards below 120 columns, and wherever it would not
- * fit, because cutting its last column deletes the title the reader is choosing between (SeatPicker.ps1, 2026-09-11).
- */
-export function renderPlan(options: { width?: number; plain?: boolean }, tableWidth = 0): RenderPlan {
-  const plain = options.plain === true || process.stdout.isTTY !== true;
-  const capable = process.platform !== 'win32' || Boolean(process.env['WT_SESSION'] || process.env['ORCA_TERMINAL_HANDLE'] || process.env['TERM_PROGRAM']);
-  const width = options.width && options.width > 0 ? options.width : process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 120;
-  const mode = width < CARD_BREAKPOINT || (tableWidth > 0 && tableWidth > width) ? 'cards' : 'table';
-  return {
-    width,
-    plain,
-    glyphs: plain || !capable || process.env['DESKPOST_ASCII'] ? ASCII_GLYPHS : UNICODE_GLYPHS,
-    palette: plain || process.env['NO_COLOR'] !== undefined ? NO_COLOUR : COLOUR,
-    mode,
-  };
-}
 
 /** Text an ASCII console can print: known punctuation transliterates, anything else is '?'. A title is not ours. */
 export function plainText(text: string): string {
@@ -375,78 +319,6 @@ export function plainText(text: string): string {
     else out += '?';
   }
   return out;
-}
-
-function fit(text: string, width: number, glyphs: Glyphs): string {
-  if (width <= 0) return '';
-  if (text.length <= width) return text;
-  if (width <= glyphs.ellipsis.length) return text.substring(0, width);
-  return text.substring(0, width - glyphs.ellipsis.length).trimEnd() + glyphs.ellipsis;
-}
-
-function lastActive(row: MenuRow): string {
-  if (!row.last_active_utc.trim()) return 'never active';
-  const at = new Date(row.last_active_utc);
-  if (Number.isNaN(at.getTime())) return row.last_active_utc;
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
-}
-
-function stateCell(row: MenuRow): string {
-  return row.state_note.trim() ? `${row.state} (${row.state_note})` : row.state;
-}
-
-function stateMark(state: string, glyphs: Glyphs, palette: Palette): { mark: string; color: string } {
-  if (state === 'held') return { mark: glyphs.held, color: palette.held };
-  if (state === 'free') return { mark: glyphs.free, color: palette.free };
-  return { mark: glyphs.other, color: palette.other };
-}
-
-/** A Codex conversation says so on its row; a Claude Code one is the unmarked case, as every pre-1.1 one is. */
-function conversationText(row: MenuRow, glyphs: Glyphs): string {
-  const cell = conversationCell(row.view, glyphs.ellipsis);
-  const mismatch = row.launchAssistant && row.view.session_id && row.launchAssistant !== row.view.assistant
-    ? " (" + ASSISTANT_LABEL[row.view.assistant] + "'s; " + row.index + ' starts ' + ASSISTANT_LABEL[row.launchAssistant] + ')' : '';
-  const mark = row.launchAssistant === 'codex' || (!row.launchAssistant && row.view.assistant === 'codex' && row.view.session_id) ? ' [Codex]' : '';
-  return row.launchAssistant ? (mark.trim() + mismatch + ' ' + cell).trim() : cell + mark;
-}
-
-/** The numbered table lines. THE CELLS ARE BUILT BEFORE THE WIDTHS ARE MEASURED, so a state note cannot misalign them. */
-export function tableLines(rows: MenuRow[], glyphs: Glyphs): string[] {
-  const cells = rows.map((row) => ({ index: row.index, seat: seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + (row.launchFlags ? ' flags' : '') + lettersMark(row), project: row.project, state: stateCell(row), last: lastActive(row), says: conversationText(row, glyphs) }));
-  const width = (key: 'seat' | 'project' | 'state' | 'last') => Math.max(0, ...cells.map((cell) => cell[key].length));
-  const widths = { seat: width('seat'), project: width('project'), state: width('state'), last: width('last') };
-  return cells.map(
-    (cell) =>
-      `  ${String(cell.index).padStart(2)}  ${cell.seat.padEnd(widths.seat)}  ${cell.project.padEnd(widths.project)}  ${cell.state.padEnd(widths.state)}  ${cell.last.padEnd(widths.last)}  ${cell.says}`,
-  );
-}
-
-/** One card per seat. NO LINE IS SIZED FROM ANOTHER ROW, and the number sits at a fixed column on every card. */
-export function cardLines(rows: MenuRow[], width: number, glyphs: Glyphs, palette: Palette): string[] {
-  const lines: string[] = [];
-  const labelWidth = 9;
-  const indent = 8;
-  const room = Math.max(12, width - indent - labelWidth - 1);
-  for (const row of rows) {
-    const marker = stateMark(row.state, glyphs, palette);
-    // THE PLAIN HEAD IS MEASURED, NOT THE COLOURED ONE: an escape has no visible width.
-    const prefix = `  ${String(row.index).padStart(2)} ${marker.mark} `;
-    const seat = fit(seatLabel(row.seat, row.nickname) + formerlyMark(row) + foldersMark(row) + (row.launchFlags ? ' flags' : '') + lettersMark(row), width - prefix.length - row.state.length - 2, glyphs);
-    const gap = Math.max(1, width - prefix.length - seat.length - row.state.length - 1);
-    lines.push(`  ${String(row.index).padStart(2)} ${marker.color}${marker.mark}${palette.reset} ${palette.bold}${seat}${palette.reset}${' '.repeat(gap)}${marker.color}${row.state}${palette.reset}`);
-    const fields: [string, string][] = [];
-    if (row.state_note.trim()) fields.push(['Note', row.state_note]);
-    fields.push(['Project', row.project]);
-    // ITS ROLE AND CARD WHERE THE CARD LAYOUT HAS ROOM (1.3.8, kickoffs/s96 row 1), and nothing for a seat without them,
-    // so a roster with none renders as before. The table has no room for either; `seat status` carries both.
-    if (row.role) fields.push(['Role', row.role]);
-    if (row.card) fields.push(['Card', row.card]);
-    fields.push(['Last', lastActive(row)], ['Says', conversationText(row, glyphs)]);
-    for (const [label, value] of fields) lines.push(`${' '.repeat(indent)}${palette.dim}${label.padEnd(labelWidth)}${palette.reset}${fit(value, room, glyphs)}`);
-    lines.push('');
-  }
-  return lines;
 }
 
 // THE WORDMARK IS PURE ASCII IN BOTH ALPHABETS, so it needs no fallback of its own; only the frame changes.
@@ -474,20 +346,6 @@ export function bannerLines(width: number, glyphs: Glyphs, palette: Palette, sea
   lines.push(bar(glyphs.bl, glyphs.br));
   return lines;
 }
-
-/** The tools under the list, worded once. `b` is a reserved slot (step 5a). */
-export function footerLines(both: boolean, assistant: Assistant | null): string[] {
-  // `h` IS PERMANENT (PLAN-assistant-onboarding.md step 5; Codex #13): no state decides whether it is offered, so an
-  // aborted first start -- trust refused, a launch that failed, an empty conversation -- never loses it.
-  // `l` BROWSES THE LIBRARY (PLAN-correct-and-find.md D5), within 80 columns with the four keys beside it.
-  const lines = ['  +  new seat    h  Show me around    l  browse    b  Basic Memory    q  quit'];
-  const second = ['  n<number>  new conversation', '   r<number>  retire', '   f<number>  folders', '   s<number>  settings'];
-  if (both && assistant) second.push(`   a  new conversations use ${ASSISTANT_LABEL[assistant]}; a switches to ${ASSISTANT_LABEL[assistant === 'claude' ? 'codex' : 'claude']}`);
-  lines.push(second.join(''));
-  return lines;
-}
-
-export const FIRST_HINT = 'Pick a seat to continue its last session, or n<number> for a new one.';
 
 // --- the choice grammar ---------------------------------------------------------------------------------------------
 
@@ -562,10 +420,6 @@ interface MenuState {
   updateShown: boolean;
 }
 
-function write(state: { talk: Talk }, plan: RenderPlan, line: string): void {
-  state.talk.say(plan.plain ? plainText(line) : line);
-}
-
 /** The assistants on this machine, found as `seat start` finds them (PATH, then ~/.local/bin), and the one to use. */
 function assistants(preferred?: Assistant): { claude: boolean; codex: boolean; assistant: Assistant | null } {
   const claude = findAssistant('claude') !== null;
@@ -619,7 +473,7 @@ export async function runMenu(options: MenuOptions, talk: Talk): Promise<number>
   }
   try {
     state.options.plain = options.plain || !interactive() || plainRequired(options.width ?? process.stdout.columns ?? 60, process.stdout.rows ?? 30);
-    return talk.scripted ? await menuLoop(state) : await screenMenuLoop(state);
+    return await screenMenuLoop(state);
   } catch (error) {
     if (error instanceof MenuQuit) {
       talk.say(error.message);
@@ -678,108 +532,6 @@ function updateLineDue(state: MenuState): string | null {
   if (latest === null) return null;
   state.updateShown = true;
   return updateLineText(latest, state.running);
-}
-
-async function menuLoop(state: MenuState): Promise<number> {
-  const { talk, workspace } = state;
-  for (;;) {
-    const rows = menuRows(workspace, { transcriptRoot: state.options.transcriptRoot, fallbackAssistant: state.assistant ?? undefined });
-    // FIRST TIME, WITH NO SEATS: THE FORK, whatever route made the Library (PLAN-assistant-onboarding.md step 5, amending
-    // ADR-0059's "only the wizard"): an assistant's install reaches the same Show me around a terminal install offers.
-    if (!rows.length) {
-      talk.say(`\n  Library  ${workspace}`);
-      talk.say('\nThis Library has no seats yet. A seat is a place to work, with its own Desk and one Project.');
-      // `h` IS SHOWN AS WELL AS ENTER (S58 #6): the closing words say "`h`, or Enter", and `h` is the key every later menu
-      // offers Show me around on, so the first screen teaches the key that keeps working.
-      talk.say(`  [h, Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
-      talk.say('  [+]        Your first seat  name a project, and start working in it');
-      talk.say('  [l]        Browse           what the Library holds, without a seat');
-      const ready = readyVersion(state.installRoot, state.running);
-      if (ready !== null) talk.say(`  [u]        Upgrade          Deskpost ${ready} is ready (you have ${state.running})`);
-      talk.say('  [q]        Later');
-      for (;;) {
-        const key = (await talk.ask('› ')).toLowerCase();
-        if (key === 'u' && ready !== null) {
-          const upgraded = await upgradeFromMenu(state);
-          if (upgraded !== null) return upgraded;
-          continue;
-        }
-        if (key === 'q') {
-          talk.say(`Nothing was created. Type \`${COMMAND_NAME}\` whenever you are ready.`);
-          return 0;
-        }
-        if (key === '' || key === 'h') {
-          const shown = await showMeAround(state);
-          if (shown !== null) return shown;
-          return 0;
-        }
-        if (key === 'l') {
-          await browse(state);
-          continue;
-        }
-        if (key === '+') {
-          const started = await wizard(state, true);
-          return started ?? 0;
-        }
-        talk.say(`'${key}' is not one of the keys above.`);
-      }
-    }
-    talk.say('Library  ' + workspace);
-    for (const line of plainSeatLines(rows, new Date(), state.assistant ?? 'claude')) talk.say(plainText(line));
-    const update = updateLineDue(state);
-    if (update !== null) talk.say(update);
-    const choice = resolveChoice(await talk.ask('Seat › '), rows.length, readyVersion(state.installRoot, state.running) !== null);
-    const target = choice.index > 0 ? rows[choice.index - 1]! : null;
-    switch (choice.action) {
-      case 'quit':
-        talk.say('No seat was chosen.');
-        return 0;
-      case 'create': {
-        const started = await wizard(state, false);
-        if (started !== null) return started;
-        break;
-      }
-      case 'retire':
-        await retire(state, target!);
-        break;
-      case 'settings':
-        await launchSettingsScreen(state, target!);
-        break;
-      case 'folders':
-        await folders(state, target!);
-        break;
-      case 'basic-memory':
-        await basicMemory(state);
-        break;
-      case 'browse':
-        await browse(state);
-        break;
-      case 'help': {
-        const shown = await showMeAround(state);
-        if (shown !== null) return shown;
-        break;
-      }
-      case 'upgrade': {
-        const upgraded = await upgradeFromMenu(state);
-        if (upgraded !== null) return upgraded;
-        break;
-      }
-      case 'switch':
-        if (state.claude && state.codex) {
-          state.assistant = state.assistant === 'claude' ? 'codex' : 'claude';
-          talk.say(`New conversations now use ${ASSISTANT_LABEL[state.assistant]}. This default applies only to seats with no recorded assistant.`);
-        } else talk.say(state.assistant ? `Only ${ASSISTANT_LABEL[state.assistant]} is found here, so there is nothing to switch to.` : NO_ASSISTANT);
-        break;
-      case 'resume':
-      case 'new': {
-        const started = await sitDown(state, target!, choice.action);
-        if (started !== null) return started;
-        break;
-      }
-      default:
-        talk.say(choice.reason);
-    }
-  }
 }
 
 /** Whether a seat can be sat at now. An OCCUPIED seat says who holds it and offers another, never a second session. */
@@ -949,10 +701,15 @@ function destinationWords(destination: DepartmentDestination): string {
  * second [Enter] there drops the template. The card is one line; the Books are numbered from the Shelf catalog. Every
  * value is checked here as `seat start` checks it, and the preview runs the one planner again over all of them.
  */
+/** A NEW SEAT STARTS WITH ITS LETTERS OPEN (kickoffs/s146 row 5) when this Library has a `letters` Book on its Shelf. */
+function newSeatBooks(workspace: string): string[] {
+  return fs.existsSync(path.join(workspace, 'shelf', 'letters', 'wiki')) ? ['letters'] : [];
+}
+
 async function seatChoices(state: MenuState, projectSeat: string, slug: string, withHub: string[]): Promise<{ choices: SeatStartChoices; seat: string }> {
   const { talk, workspace } = state;
   const rows = seatRegistryRows(workspace);
-  const choices: SeatStartChoices = { openBooks: [] };
+  const choices: SeatStartChoices = { openBooks: newSeatBooks(workspace) };
   let seat = projectSeat;
 
   // DEPARTMENT FIRST (kickoffs/s110 ruling 10), each existing one with where its letters go (ADR-0073).
@@ -1057,7 +814,7 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
     talk.say('  Shelf Books:');
     books.forEach((slug, index) => talk.say(`  ${String(index + 1).padStart(3)}  ${slug}`));
     for (;;) {
-      const typed = await talk.ask('Books to open at the first launch, by number (such as 1 3)   [Enter] none › ');
+      const typed = await talk.ask(`Books to open at the first launch, by number (such as 1 3)   [Enter] ${choices.openBooks.length ? choices.openBooks.join(' ') : 'none'} › `);
       if (!typed) break;
       const numbers = typed.split(/[\s,]+/).filter((part) => part.length > 0);
       const bad = numbers.filter((part) => !/^\d+$/.test(part) || Number(part) < 1 || Number(part) > books.length);
@@ -1682,14 +1439,60 @@ async function seatActionMenu(state: MenuState, original: MenuRow): Promise<numb
     await screenNotice(state, row.seat, messages.length ? messages.flatMap(message => menuMessageLines(message, state.options.width)) : ['   The seat could not start. Choose Settings', '   to check its assistant, or try again.']);
   }
 }
+/** Preserve the script grammar and view while sharing the screen menu's controller. */
+async function scriptedScreenChoice(state: MenuState, rows: MenuRow[], empty: {shown:boolean;upgrade:boolean}): Promise<{id:string;text:string}> {
+  const { talk, workspace } = state;
+  if (!rows.length) {
+    if (!empty.shown) {
+      talk.say(`\n  Library  ${workspace}`);
+      talk.say('\nThis Library has no seats yet. A seat is a place to work, with its own Desk and one Project.');
+      // `h` IS SHOWN AS WELL AS ENTER (S58 #6): the closing words say "`h`, or Enter", and `h` is the key every later menu
+      // offers Show me around on, so the first screen teaches the key that keeps working.
+      talk.say(`  [h, Enter] Show me around   a ${HELP_SEAT} seat with the Librarian as your guide`);
+      talk.say('  [+]        Your first seat  name a project, and start working in it');
+      talk.say('  [l]        Browse           what the Library holds, without a seat');
+      const ready = readyVersion(state.installRoot, state.running);
+      if (ready !== null) talk.say(`  [u]        Upgrade          Deskpost ${ready} is ready (you have ${state.running})`);
+      talk.say('  [q]        Later');
+      empty.upgrade = ready !== null; empty.shown = true;
+    }
+    const key = (await talk.ask('› ')).toLowerCase();
+    const action = key === 'q' ? 'quit' : key === '' || key === 'h' ? 'tour' : key === '+' ? 'create' : key === 'l' ? 'legacy-browse' : key === 'u' && empty.upgrade ? 'upgrade' : null;
+    return action ? {id:action,text:''} : {id:'legacy-again',text:`'${key}' is not one of the keys above.`};
+  }
+  talk.say('Library  ' + workspace);
+    for (const line of plainSeatLines(rows, new Date(), state.assistant ?? 'claude')) talk.say(plainText(line));
+    const update = updateLineDue(state);
+    if (update !== null) talk.say(update);
+  const choice = resolveChoice(await talk.ask('Seat › '), rows.length, readyVersion(state.installRoot, state.running) !== null);
+  const target = choice.index > 0 ? rows[choice.index - 1]! : null;
+  const direct: Partial<Record<Choice['action'],string>> = {quit:'quit',create:'create',help:'tour',upgrade:'upgrade',browse:'legacy-browse','basic-memory':'legacy-basic-memory',switch:'legacy-switch'};
+  const action = direct[choice.action]; if (action) return {id:action,text:''};
+  const selections: Partial<Record<Choice['action'],string>> = {resume:'continue',new:'new',retire:'legacy-retire',folders:'legacy-folders',settings:'legacy-settings'};
+  const prefix = selections[choice.action];
+  return prefix && target ? {id:prefix+':'+target.seat,text:''} : {id:'legacy-again',text:choice.reason};
+}
+
 async function screenMenuLoop(state: MenuState): Promise<number> {
-  const update = updateLineDue(state);
+  const { talk } = state;
+  const empty = {shown:false,upgrade:false};
+  const update = talk.scripted ? null : updateLineDue(state);
   for (;;) {
-    const rows = menuRows(state.workspace, { fallbackAssistant: state.assistant ?? undefined, transcriptRoot: state.options.transcriptRoot });
-    const answer = state.options.plain ? await plainMainChoice(state, rows, update) : await chooseScreen(state, text => firstMenuScreen(rows, text, new Date(), state.assistant ?? 'claude', update));
-    if (answer.id === 'quit' || answer.id === 'back') return 0;
+    const rows = talk.scripted && empty.shown ? [] : menuRows(state.workspace, { fallbackAssistant: state.assistant ?? undefined, transcriptRoot: state.options.transcriptRoot });
+    const answer = talk.scripted ? await scriptedScreenChoice(state, rows, empty) : state.options.plain ? await plainMainChoice(state, rows, update) : await chooseScreen(state, text => firstMenuScreen(rows, text, new Date(), state.assistant ?? 'claude', update));
+    if (answer.id === 'quit' || answer.id === 'back') {
+      if (talk.scripted) { if (!rows.length) { talk.say(`Nothing was created. Type \`${COMMAND_NAME}\` whenever you are ready.`); } else { talk.say('No seat was chosen.'); } }
+      return 0;
+    }
+    if (talk.scripted && answer.id === 'legacy-again') { talk.say(answer.text); continue; }
+    if (talk.scripted && answer.id === 'legacy-switch') { if (state.claude && state.codex) {
+          state.assistant = state.assistant === 'claude' ? 'codex' : 'claude';
+          talk.say(`New conversations now use ${ASSISTANT_LABEL[state.assistant]}. This default applies only to seats with no recorded assistant.`);
+        } else talk.say(state.assistant ? `Only ${ASSISTANT_LABEL[state.assistant]} is found here, so there is nothing to switch to.` : NO_ASSISTANT); continue; }
+    if (talk.scripted && answer.id === 'legacy-browse') { await browse(state); continue; }
+    if (talk.scripted && answer.id === 'legacy-basic-memory') { await basicMemory(state); continue; }
     if (answer.id === 'upgrade') { const result = await upgradeFromMenu(state); if (result !== null) return result; continue; }
-    if (answer.id === 'tour') { const result = await showMeAround(state); if (result !== null) return result; continue; }
+    if (answer.id === 'tour') { const result = await showMeAround(state); if (talk.scripted && !rows.length) return result ?? 0; if (result !== null) return result; continue; }
     if (answer.id === 'help') {
       const help = await chooseScreen(state, helpMenuScreen());
       if (help.id === 'tour') { const result = await showMeAround(state); if (result !== null) return result; }
@@ -1698,9 +1501,12 @@ async function screenMenuLoop(state: MenuState): Promise<number> {
       else if (help.id === 'plain') state.options.plain = true;
       continue;
     }
-    if (answer.id === 'create' || answer.id.startsWith('create:')) { const result = await screenWizard(state, answer.id.startsWith('create:') ? answer.id.slice(7) : ''); if (result !== null) return result; continue; }
+    if (answer.id === 'create' || answer.id.startsWith('create:')) { const result = talk.scripted ? await wizard(state, !rows.length) : await screenWizard(state, answer.id.startsWith('create:') ? answer.id.slice(7) : ''); if (talk.scripted && !rows.length) return result ?? 0; if (result !== null) return result; continue; }
     const name = answer.id.slice(answer.id.indexOf(':') + 1), row = rows.find(r => r.seat === name);
     if (!row) continue;
+    if (talk.scripted && answer.id.startsWith('legacy-retire:')) { await retire(state, row); continue; }
+    if (talk.scripted && answer.id.startsWith('legacy-folders:')) { await folders(state, row); continue; }
+    if (talk.scripted && answer.id.startsWith('legacy-settings:')) { await launchSettingsScreen(state, row); continue; }
     const result = answer.id.startsWith('continue:') ? await sitDown(state, row, 'resume') : answer.id.startsWith('new:') ? await sitDown(state, row, 'new') : await seatActionMenu(state, row);
     if (result !== null) return result;
   }
@@ -1730,7 +1536,7 @@ export function newSeatReadyScreen(name: string, assistant: Assistant, args: str
   return { title: 'New seat  ready', before: ['   Name       ' + name, '   Assistant  ' + ASSISTANT_LABEL[assistant],
     '   Access     ' + access, ...(warning ? ['', '   ' + warning] : []), ''],
     items: [{ id: 'start', text: 'Make it and start ' + ASSISTANT_LABEL[assistant] }, { id: 'make', text: 'Make it, but do not start it yet' },
-      { id: 'more', text: 'More choices (department, template)' }, { id: 'back', text: 'Back' }] };
+      { id: 'more', text: 'More choices (department, template, card)' }, { id: 'back', text: 'Back' }] };
 }
 export function menuNameSuggestion(typed: string): string { return slugFrom(typed.replace(/\.+$/, '')); }
 function menuMessageLines(text: string, width = 60): string[] {
@@ -1746,7 +1552,7 @@ function menuMessageLines(text: string, width = 60): string[] {
   return lines;
 }
 async function inputScreen(state: MenuState, title: string, label: string, text = '', hint = '', error = '', errorColour = true): Promise<{ id: string; text: string }> {
-  return chooseScreen(state, { title, field: { label, hint, enter: label === 'Folder' ? 'add' : 'next', allowEmpty: label === 'Department' || label.endsWith(' settings') }, items: [], after: error ? menuMessageLines(error, state.options.width) : label === 'Name' ? ['         Lowercase letters, numbers and dashes.'] : [], afterKind: error && errorColour ? 'error' : 'detail', esc: 'cancel' }, text);
+  return chooseScreen(state, { title, field: { label, hint, enter: label === 'Folder' ? 'add' : 'next', allowEmpty: label === 'Department' || label === 'Card' || label.endsWith(' settings') }, items: [], after: error ? menuMessageLines(error, state.options.width) : label === 'Name' ? ['         Lowercase letters, numbers and dashes.'] : [], afterKind: error && errorColour ? 'error' : 'detail', esc: 'cancel' }, text);
 }
 async function confirmFullAccess(state: MenuState, assistant: Assistant, custom = false): Promise<boolean> {
   let text = '', error = '';
@@ -1790,7 +1596,7 @@ async function pickAccess(state: MenuState, name: string, assistant: Assistant, 
 export async function screenWizard(state: MenuState, initialName = ''): Promise<number | null> {
   let name = initialName, projectName = initialName, assistant: Assistant | null = null, args: string[] | null = null;
   let step = initialName ? 2 : 1, error = '', suggestion = '';
-  let choices: SeatStartChoices = { openBooks: [] };
+  let choices: SeatStartChoices = { openBooks: newSeatBooks(state.workspace) };
   for (;;) {
     if (step === 1) {
       const answer = await inputScreen(state, 'New seat  step 1 of 3', 'Name', name, '_ type a name', error);
@@ -1825,7 +1631,7 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
       if (department.id === 'back') continue;
       const problem = department.text ? departmentProblem(department.text) : null;
       if (problem) { error = problem; continue; }
-      choices = { openBooks: [], ...(department.text ? { department: department.text } : {}) };
+      choices = { openBooks: newSeatBooks(state.workspace), ...(choices.card !== undefined ? { card: choices.card } : {}), ...(department.text ? { department: department.text } : {}) };
       if (department.text) {
         const template = await chooseScreen(state, { title: 'Template', items: [
           { id: 'none', text: 'No template' }, ...WIZARD_TEMPLATE_KEYS.map(([, template]) => ({ id: template, text: template.charAt(0).toUpperCase() + template.slice(1) })),
@@ -1840,6 +1646,15 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
           const changed = await inputScreen(state, 'Seat name', 'Name', proposed, '', 'Project stays ' + projectName + '.', false);
           if (changed.id !== 'back') name = changed.text;
         }
+      }
+      // THE CARD (kickoffs/s146 row 5): one line, checked as `seat describe --card` checks it; empty leaves none.
+      for (let problem = ''; ;) {
+        const card = await inputScreen(state, 'More choices', 'Card', choices.card ?? '', '_ one line on what this seat handles; leave empty for none', problem);
+        if (card.id === 'back') break;
+        problem = card.text ? (cardProblem(card.text) ?? '') : '';
+        if (problem) { problem = 'That card is refused: ' + problem + '.'; continue; }
+        if (card.text) choices.card = card.text; else delete choices.card;
+        break;
       }
       error = ''; continue;
     }
@@ -2062,7 +1877,8 @@ export function runLibraryVerb(argv: string[]): { refusal: string | null; value:
     };
   }
   if (action === 'card') return libraryCardAction(parsed);
-  return { refusal: `${COMMAND_NAME} library has no action '${action}'. It has: card, default, list.`, value: null };
+  // THE REFUSAL NAMES EVERY ACTION THE VERB TABLE DECLARES (kickoffs/s147 row 1): `forget` is routed by cli.ts before this.
+  return { refusal: `${COMMAND_NAME} library has no action '${action}'. It has: ${(VERBS['library']?.actions ?? []).join(', ')}.`, value: null };
 }
 
 /**
@@ -2127,7 +1943,16 @@ function libraryCardAction(parsed: ReturnType<typeof parseArguments>): { refusal
     };
   }
   if (current !== proposed) {
-    writeAtomicText(markerPath(root), psConvertToJson({ ...marker, card: proposed } as PsJsonValue) + '\n');
+    // INSIDE THE MARKER LOCK, from the marker as read there (kickoffs/s161 row 1): a card or id changed since the preview
+    // is refused as the plan_id would be, and a field another writer added meanwhile is kept.
+    const changed = withMarkerLock(root, (fresh) => {
+      if (fresh === null || markerField(fresh, 'id') !== id || markerField(fresh, 'card').trim() !== current) {
+        return `${markerPath(root)} changed since the preview, so the card was not written. Preview it again with --preflight.`;
+      }
+      writeAtomicText(markerPath(root), psConvertToJson({ ...fresh, card: proposed } as PsJsonValue) + '\n');
+      return null;
+    });
+    if (changed !== null) return { refusal: changed, value: null };
     if (markerField(readMarker(root), 'card') !== proposed || markerField(readMarker(root), 'id') !== id) {
       return { refusal: `The card was written to ${markerPath(root)} and did not read back as written. Check the marker.`, value: null };
     }

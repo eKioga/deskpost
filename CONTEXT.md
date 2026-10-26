@@ -133,6 +133,31 @@ Postbox entry under `postbox/libraries/`, and (1.5.0's second session) one inbox
 its registration: that word belongs to Binding.
 _Avoid_: mailbox, mail server, queue, registration
 
+**Triaging seat**:
+The seat a Library names to verify Report claims arriving through its Postbox. It records the verdict;
+receiving a claim never makes it a task (`kernel/src/postbox.ts`, `triage.ts`, `reportsend.ts`).
+_Avoid_: sorter
+
+**Triaging Library**:
+The Library whose Postbox entry names that triaging seat. A filing Library pins its identity, so a
+different claim cannot silently choose where its Reports go (`kernel/src/postbox.ts`).
+_Avoid_: triage server
+
+**Outcome**:
+A Report verdict returned to its filer as a letter, whose effect can close the sent copy. Distinct from
+the note's binary `review: pending|done` (`kernel/src/triage.ts`, `triagebatch.ts`, `capture.ts`).
+_Avoid_: review state
+
+**Control delivery**:
+A numbered amendment or withdrawal for one previously sent Report. It is applied to its parent, rather
+than filed as a control note (`kernel/src/reportsend.ts`, `postbox.ts`).
+_Avoid_: letter
+
+**Intent record**:
+A durable record of an operation's fixed identities, payload and stage proofs. Unfinished work resumes
+from it with the same identities (`kernel/src/intent.ts`).
+_Avoid_: transaction
+
 **Library card**:
 A Library's display name, set with `library card --set` and kept in its marker beside its `id`. A label,
 never a credential and never an address on its own: an address is the id, or a card that matches
@@ -194,6 +219,14 @@ page's path and content hash, makes it the reader's explicit request for them. A
 section of a Kickoff, not a kind of Approval: every previewed action still takes its own. A revision
 is a new page, never an edit. Every Kickoff starts from `docs/kickoff-template.md`.
 _Avoid_: ticket, brief, task list, standing approval
+
+**Cross-office unit**:
+A Kickoff built in one Library office and integrated in another. A letter carries the Kickoff and
+its envelope hash to the builder; a scanned export supplies its source base. Immutable patch
+generations cross on the exchange share, checked against the manifest in the returning Handback
+letter. The integrator applies them at the private base and runs the Windows push tier before its
+chartered push. Each office keeps its own Hub and Desk.
+_Avoid_: remote Hub, shared checkout
 
 **Handback**:
 The `## Handback` section a build session adds to its attempt page at close: what shipped, what

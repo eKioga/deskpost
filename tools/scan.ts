@@ -80,6 +80,27 @@ export function gitleaks(root: string): { ran: boolean; clean: boolean; detail: 
   if (ran.status === 0) return { ran: true, clean: true, detail: 'gitleaks found nothing in the staged blobs' };
   return { ran: true, clean: false, detail: `gitleaks reported a finding: ${(ran.stdout + ran.stderr).trim().split(/\r?\n/).slice(-6).join(' | ')}` };
 }
+/** gitleaks on its own, never a fallback (kickoffs/s158 row 6; PLAN-cross-office-build-loop.md step 2.3): over a folder's
+ * files and over its staged index, refusing when gitleaks is not installed. A finding is named by its file, line and
+ * gitleaks rule from gitleaks' own redacted JSON report, never by the secret. */
+export function secretsScan(root: string): Scan {
+  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-secrets-'));
+  try {
+    const hits: Hit[] = [];
+    for (const [where, args] of [['files', ['detect', '--no-git', '--source', root]], ['staged blobs', ['protect', '--staged']]] as const) {
+      const report = path.join(reports, `${where.replace(' ', '-')}.json`);
+      const ran = spawnSync('gitleaks', [...args, '--no-banner', '--redact', '--report-format', 'json', '--report-path', report], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 24 });
+      if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { status: 'fail', hits: [], detail: `gitleaks is not installed, so nothing scanned ${root} for secrets. Install it; this scan never falls back to another.` };
+      if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
+      const found = (fs.existsSync(report) ? JSON.parse(fs.readFileSync(report, 'utf8') || '[]') : []) as { File: string; StartLine: number; RuleID: string }[];
+      if (ran.status !== 0 && !found.length) throw Error(`gitleaks over the ${where} exited ${ran.status} with no report: ${(ran.stdout + ran.stderr).trim().split(/\r?\n/).slice(-3).join(' | ')}`);
+      for (const leak of found) hits.push({ file: (path.isAbsolute(leak.File) ? path.relative(root, leak.File) : leak.File).replaceAll('\\', '/'), line: leak.StartLine, kind: `secret (${where})`, match: leak.RuleID });
+    }
+    return { status: hits.length ? 'fail' : 'pass', hits, detail: hits.length ? `gitleaks reported ${hits.length} finding(s): ${sorted(hits.map((hit) => `${hit.file}:${hit.line} [${hit.match}] in the ${hit.kind.slice(8, -1)}`)).join('; ')}` : `gitleaks found nothing in ${root}'s files or its staged blobs` };
+  } finally {
+    fs.rmSync(reports, { recursive: true, force: true });
+  }
+}
 export function identityScan(root: string, messageFile = '', termRoot = path.join(process.env['USERPROFILE'] || os.homedir(), '.library')): Scan {
   const denyPath = path.join(termRoot, 'identity-denylist.txt'), allowPath = path.join(termRoot, 'identity-allowlist.txt');
   const deny = terms(denyPath), allow = terms(allowPath) ?? [];
@@ -158,11 +179,12 @@ export function deploymentScan(root: string, requested?: string[]): Scan {
   return { status: hits.length ? 'fail' : 'pass', hits, detail: hits.length ? `${hits.length} deployment default(s) in product files: ${sorted(hits.map(hit => `${hit.file}:${hit.line} [${hit.kind}] ${hit.match}`)).join('; ')}. These ship. Move the value into generated state and resolve it through tools/LibraryDeployment.ps1.` : `${files.length} staged product document(s) clean against ${deny.length} configured value(s) from ${denyRoot} and the structural detectors` };
 }
 function main(args: string[]): number {
-  let identity = false, deployment = false, json = false, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), message = '', termRoot: string | undefined, files: string[] | undefined;
+  let identity = false, deployment = false, secrets = false, json = false, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), message = '', termRoot: string | undefined, files: string[] | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--identity') identity = true;
     else if (arg === '--deployment') deployment = true;
+    else if (arg === '--secrets') secrets = true;
     else if (arg === '--json') json = true;
     else if (['--root', '--commit-message-file', '--term-root', '--files'].includes(arg!) && i + 1 < args.length) {
       const value = args[++i]!;
@@ -172,10 +194,11 @@ function main(args: string[]): number {
       else files = value.split(/\r?\n/).filter(Boolean);
     } else throw Error(`Unknown or incomplete argument ${arg}`);
   }
-  if (!identity && !deployment) throw Error('Usage: node tools/scan.ts --identity [--commit-message-file <file>] | --deployment [--files <newline-separated paths>] [--json]');
-  const result: { identity?: Scan; deployment?: Scan } = {};
+  if (!identity && !deployment && !secrets) throw Error('Usage: node tools/scan.ts --identity [--commit-message-file <file>] | --deployment [--files <newline-separated paths>] | --secrets [--root <dir>] [--json]');
+  const result: { identity?: Scan; deployment?: Scan; secrets?: Scan } = {};
   if (identity) result.identity = identityScan(root, message, termRoot);
   if (deployment) result.deployment = deploymentScan(root, files);
+  if (secrets) result.secrets = secretsScan(root);
   if (json) process.stdout.write(JSON.stringify(result) + '\n');
   else for (const [name, scan] of Object.entries(result)) {
     process.stdout.write(`${name} scan${scan.status === 'fail' ? ' FAILED' : scan.status === 'warn' ? ' WARNING' : ''}: ${scan.detail}\n`);

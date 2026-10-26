@@ -35,7 +35,7 @@ import { repositoryNeutralEnv } from './gitenv.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
 import { listFilesRecursive, readUtf8, shelfCatalogSections, type ShelfBook } from './shelfbook.ts';
-import { letterStatus, shelfNotes } from './shelfnote.ts';
+import { isAddressedTo, letterStatus, shelfNotes, type SeatIncarnation } from './shelfnote.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -117,7 +117,7 @@ interface CoverageEntry {
   destinationType: 'book' | 'project';
   destinationSlug: string;
   journal: string;
-  quality: 'complete' | 'legacy-complete';
+  quality: 'complete' | 'legacy-complete' | 'undone';
 }
 
 /** A journal source naming a capture-Book note falls through unchanged; the rule is anchored at `wiki/`. */
@@ -144,6 +144,9 @@ function journalEntries(journalPath: string): CoverageEntry[] {
         ? 'legacy-complete'
         : 'incomplete';
   if (quality === 'incomplete') return [];
+  // AN UNDONE COPY IS NO COPY (kickoffs/s165 row 4): `deskpost undo` put the destination back, so the record is kept for
+  // audit and says `undone`, never `known-current-copy`.
+  const undone = typeof journal['undone_by'] === 'string' && String(journal['undone_by']).trim() !== '';
 
   const entries: CoverageEntry[] = [];
   const planned = ((journal['planned_records'] as Record<string, unknown>[] | null) ?? []).filter((item) => item !== null);
@@ -157,7 +160,7 @@ function journalEntries(journalPath: string): CoverageEntry[] {
         destinationType,
         destinationSlug,
         journal: journalPath,
-        quality,
+        quality: undone ? 'undone' : quality,
       });
     }
     return entries;
@@ -174,7 +177,7 @@ function journalEntries(journalPath: string): CoverageEntry[] {
         destinationType,
         destinationSlug,
         journal: journalPath,
-        quality,
+        quality: undone ? 'undone' : quality,
       });
     }
   }
@@ -221,8 +224,16 @@ function sortedUnique(values: string[]): string[] {
  * `pendingOnly` (`--pending`, kickoffs/s94 row 4) lists only the capture notes still waiting (review not done) in
  * `holding_notes`, and says so in `holding_notes_listed`; every count stays the whole inventory's, so a filtered list is
  * never read as the whole.
+ *
+ * `forSeat` (`--for-seat`, kickoffs/s141 row 6), with `pendingOnly` only, narrows that list to the notes addressed to
+ * one seat by the Desk's own recipient test, so the Desk's letters route lists what its count counts; the counts stay
+ * whole here too.
  */
-export function triageInventory(workspace: string, notebookRelative = 'notebook', options: { pendingOnly?: boolean } = {}): Record<string, PsJsonValue> {
+export function triageInventory(
+  workspace: string,
+  notebookRelative = 'notebook',
+  options: { pendingOnly?: boolean; forSeat?: SeatIncarnation | null } = {},
+): Record<string, PsJsonValue> {
   const root = path.resolve(workspace);
   const notebookRoot = path.join(root, ...notebookRelative.split('/'));
   const journalRoot = path.join(root, 'internal', 'publication-journals');
@@ -259,6 +270,7 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
       (entry) => entry.quality === 'complete' && entry.sourceSha256 && entry.sourceSha256 !== sha256,
     );
     const legacy = matched.filter((entry) => entry.quality === 'legacy-complete');
+    const undone = matched.filter((entry) => entry.quality === 'undone');
     return {
       copyStatus: current.length
         ? 'known-current-copy'
@@ -266,7 +278,9 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
           ? 'known-copy-drifted'
           : legacy.length
             ? 'legacy-copy-record'
-            : 'no-known-copy-record',
+            : undone.length
+              ? 'undone'
+              : 'no-known-copy-record',
       knownBooks: sortedUnique(matched.filter((entry) => entry.destinationType === 'book').map((entry) => entry.destinationSlug)),
       knownProjects: sortedUnique(
         matched.filter((entry) => entry.destinationType === 'project').map((entry) => entry.destinationSlug),
@@ -333,9 +347,11 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
 
   // --- Source two: the capture Books, which a Reset does NOT touch -------------------------------
   const books = captureBooks(root);
+  const addressed = new Set<string>();
   const holdingNotes = books.flatMap((book) =>
     shelfNotes(book).map((note) => {
       const relative = `${book.bookRoot}/wiki/${note.page}.md`;
+      if (options.forSeat && isAddressedTo(note, options.forSeat)) addressed.add(relative);
       const hash = utf8Hash(note.fullPath);
       const records = resolveCopyRecords(relative, hash);
       return {
@@ -348,6 +364,7 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
         // WHO WROTE IT AND WHOM IT IS FOR (kickoffs/s94 row 4): a letter's two seats, null when the note names none.
         from_seat: note.fromSeat,
         for_seat: note.forSeat,
+        ...(note.fromLibraryId ? { from_library_id: note.fromLibraryId, from_library_card: note.fromLibraryCard } : {}),
         sha256: hash,
         copy_status: records.copyStatus,
         known_books: records.knownBooks,
@@ -402,8 +419,8 @@ export function triageInventory(workspace: string, notebookRelative = 'notebook'
     // triage, and a large Notebook buried the letters under its pages. Every count above stays whole, and
     // `pages_listed`, the last key, says which list this is, as `holding_notes_listed` does.
     pages: (options.pendingOnly ? [] : pages) as unknown as PsJsonValue,
-    holding_notes: (options.pendingOnly ? holdingPending : holdingNotes) as unknown as PsJsonValue,
-    holding_notes_listed: options.pendingOnly ? 'pending' : 'all',
+    holding_notes: (options.pendingOnly ? (options.forSeat ? holdingPending.filter((note) => addressed.has(note.path)) : holdingPending) : holdingNotes) as unknown as PsJsonValue,
+    holding_notes_listed: options.pendingOnly ? (options.forSeat ? `pending for seat ${options.forSeat.seat}` : 'pending') : 'all',
     shared_library_write: false,
     pages_listed: options.pendingOnly ? 'none' : 'all',
   };

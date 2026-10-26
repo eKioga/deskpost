@@ -71,3 +71,7 @@ codex-verdict.txt
 # the same two paths so an export cannot carry them either.
 kernel/node_modules/
 kernel/dist/
+
+# Gate run records: evidence of how long each check took; machine-local, never tracked.
+# tools/gate.ts writes one .gate/runs/<UTC stamp>-<tier>.json per run (kickoffs/s136 row 2).
+.gate/

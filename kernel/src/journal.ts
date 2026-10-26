@@ -119,6 +119,88 @@ export function writeBookJournal(options: {
   return { journalPath, entryCount: entries.length };
 }
 
+// --- what undo needs (kickoffs/s165 row 1; PLAN-fewer-yeses.md Approach 2) ---------------------------------------
+
+/**
+ * ONE SHAPE FOR EVERY WRITE `deskpost undo` CAN REVERSE, kept in the writer's own journal under `undo`. Each path is
+ * workspace-relative with forward slashes, and carries whether it existed and its prior bytes, as the Book journal
+ * above keeps them, and `after_sha256`, the hash of what the write left there (null when it left nothing). The after
+ * hash is what lets an undo tell a page that is still the writer's from one someone changed since. `evidence` names
+ * every record the write produced that another verb reads as a fact (a publication-evidence file, a triage batch
+ * journal), which an undo marks `undone_by`; `regenerates` names what the writer re-derived (a Discovery manifest, a
+ * reader map, the Notebook index), which an undo re-derives in turn; `locks` are the lock roots the write held, in its
+ * order; `marker` is the Book whose dirty marker the write's window set, or null.
+ */
+export interface UndoPathBefore {
+  path: string;
+  existed: boolean;
+  content_base64: string | null;
+}
+
+export type UndoRegenerate = { kind: 'manifest'; collection: 'shelf' | 'collection'; slug: string } | { kind: 'shelf-note-index'; slug: string } | { kind: 'notebook-index'; seat: string };
+
+export interface UndoBlockOptions {
+  operationId?: string;
+  kind: string;
+  locks: string[];
+  before: UndoPathBefore[];
+  evidence?: { path: string; kind: string }[];
+  regenerates?: UndoRegenerate[];
+  marker?: { collection: 'shelf' | 'collection'; slug: string } | null;
+}
+
+/** An operation's id: `op-` and 16 hex characters, random, so two writes in one second never share one. */
+export function newOperationId(): string {
+  return `op-${randomSuffix()}${randomSuffix()}`;
+}
+
+/** Workspace-relative, forward slashes; refused when the file is not inside the workspace. */
+export function workspaceRelativePath(workspace: string, file: string): string {
+  const relative = path.relative(path.resolve(workspace), path.resolve(file));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`${file} is not inside the Library at ${workspace}.`);
+  return relative.replace(/\\/g, '/');
+}
+
+/** Each file's prior state, read before the write: its bytes, or its absence. */
+export function capturePriorBytes(workspace: string, files: string[]): UndoPathBefore[] {
+  return [...new Set(files)].map((file) => {
+    const existed = fs.existsSync(file) && fs.statSync(file).isFile();
+    return { path: workspaceRelativePath(workspace, file), existed, content_base64: existed ? fs.readFileSync(file).toString('base64') : null };
+  });
+}
+
+/** The prior states a Book journal above already holds, so a Book writer reads nothing twice. */
+export function priorBytesFromBookJournal(workspace: string, journalPath: string): UndoPathBefore[] {
+  const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8').replace(/^﻿/, '')) as { entries?: { path: string; existed: boolean; content_base64: string | null }[] };
+  return (journal.entries ?? []).map((entry) => ({ path: workspaceRelativePath(workspace, entry.path), existed: entry.existed, content_base64: entry.existed ? entry.content_base64 : null }));
+}
+
+/** The `undo` block, its after hashes read from disk now: called once the write is verified. */
+export function undoBlock(workspace: string, options: UndoBlockOptions): PsJsonValue {
+  const paths = options.before.map((entry) => {
+    const full = path.join(workspace, ...entry.path.split('/'));
+    const after = fs.existsSync(full) && fs.statSync(full).isFile() ? sha256OfBytes(fs.readFileSync(full)) : null;
+    return { path: entry.path, existed: entry.existed, content_base64: entry.content_base64, after_sha256: after };
+  });
+  return {
+    schema: 1,
+    operation_id: options.operationId ?? newOperationId(),
+    kind: options.kind,
+    locks: options.locks,
+    paths,
+    evidence: (options.evidence ?? []) as PsJsonValue,
+    regenerates: (options.regenerates ?? []) as PsJsonValue,
+    marker: (options.marker ?? null) as PsJsonValue,
+  };
+}
+
+/** Add the block to a journal already on disk, rewriting it whole and atomically. */
+export function addUndoBlock(journalPath: string, block: PsJsonValue): void {
+  const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8').replace(/^﻿/, '')) as Record<string, PsJsonValue>;
+  journal['undo'] = block;
+  writeAtomicBytes(journalPath, Buffer.from(psConvertToJson(journal), 'utf8'));
+}
+
 /** The eight hex characters `[guid]::NewGuid().ToString('N').Substring(0, 8)` produces. */
 function randomSuffix(): string {
   let out = '';

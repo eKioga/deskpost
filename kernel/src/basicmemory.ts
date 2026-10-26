@@ -21,6 +21,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readMarker } from './workspace.ts';
+import { assertNotRedirected, assertPlainHttpAllowed } from './netpolicy.ts';
 
 const PIN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -222,14 +223,23 @@ export class McpSession {
     const headers: Record<string, string> = {
       Accept: 'application/json, text/event-stream',
       'MCP-Protocol-Version': '2025-03-26',
+      // NO SOCKET OUTLIVES ITS REQUEST (kickoffs/s149 row 3b): a pooled keep-alive socket that sat through a frozen event
+      // loop longer than the server's idle timeout carried the next request to a closed socket (section 324's
+      // ECONNRESET). The session travels in Mcp-Session-Id, never in the socket.
+      Connection: 'close',
       'Content-Type': 'application/json; charset=utf-8',
     };
     if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
     let response: Response;
     let body: string;
     const timeout = mcpTimeoutMs();
+    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2), judged before every request, not when the URL was saved.
+    try { await assertPlainHttpAllowed(this.url, 'The Basic Memory endpoint'); }
+    catch (error) { refuse((error as Error).message); }
     try {
-      response = await fetch(this.url, { method: 'POST', headers, body: asciiJson(payload), signal: AbortSignal.timeout(timeout) });
+      // NO REDIRECT IS FOLLOWED (kickoffs/s164 row 1): a 307 or 308 would carry this body and the session elsewhere.
+      response = await fetch(this.url, { method: 'POST', headers, body: asciiJson(payload), signal: AbortSignal.timeout(timeout), redirect: 'manual' });
+      assertNotRedirected(response, this.url, 'The Basic Memory endpoint');
       body = await response.text();
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.substring(0, 4096)}`);
     } catch (error) {
@@ -237,7 +247,9 @@ export class McpSession {
       if (name === 'TimeoutError' || name === 'AbortError') {
         refuse(`MCP ${method} failed: ${this.url} did not answer within ${Math.round(timeout / 100) / 10} s, so nothing was read from it.`);
       }
-      refuse(`MCP ${method} failed: ${(error as Error).message}`);
+      const cause = (error as Error & { cause?: { code?: unknown; message?: unknown } }).cause;
+      const detail = cause?.code ?? cause?.message;
+      refuse(`MCP ${method} failed: ${(error as Error).message}${detail ? ` (${String(detail)})` : ''}`);
     }
     if (method === 'initialize') {
       const session = response.headers.get('Mcp-Session-Id');

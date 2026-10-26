@@ -26,7 +26,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PsJsonValue } from './psjson.ts';
-import { psConvertToJson } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { requireWorkspace } from './workspace.ts';
@@ -688,9 +687,4 @@ export function seatRenameResult(argv: string[]): Record<string, PsJsonValue> {
     refuse('The seat, its registry row, its claim or a file under its folder or its Notebook root changed since the preflight. Rerun --preflight and pass its exact plan_id. Nothing was renamed.');
   }
   return applyRename(plan, approved);
-}
-
-/** For `psConvertToJson` callers that print a rename's result as PowerShell would. */
-export function seatRenameJson(value: Record<string, PsJsonValue>): string {
-  return psConvertToJson(value);
 }

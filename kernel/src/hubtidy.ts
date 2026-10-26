@@ -34,6 +34,7 @@ import { strayControlRefusal } from './controlchars.ts';
 import { localDate } from './localdate.ts';
 import { entryLabel, fencedLineMask, headings, joinLines, pageSizeRemedy, pageSizeStatus, removeFrontmatter, sectionSpan, toLines, topLevelEntries } from './hubedit.ts';
 import { tickedEntries } from './hubpages.ts';
+import { capturePriorBytes, undoBlock, type UndoPathBefore } from './journal.ts';
 
 class HubTidyRefusal extends Error {}
 
@@ -498,6 +499,9 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
   );
   const relativeJournal = path.relative(workspace, journalPath).replace(/\\/g, '/');
   let journalCreated = false;
+  // WHAT `deskpost undo` NEEDS (kickoffs/s165 row 1): the page's and the history page's prior state, read under the
+  // lock, and in the complete journal their after hashes.
+  let prior: UndoPathBefore[] = [];
   const saveJournal = (state: string, errorText: string, surviving: string[] = []): void => {
     const journal: Record<string, PsJsonValue> = {
       state,
@@ -515,6 +519,7 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
       previous_raw: plan.raw,
       surviving_paths: surviving,
       error: errorText,
+      ...(state === 'complete' ? { undo: undoBlock(workspace, { kind: 'hub-tidy', locks: [`projects/${plan.slug}`], before: prior }) } : {}),
     };
     fs.mkdirSync(path.dirname(journalPath), { recursive: true });
     fs.writeFileSync(journalPath, psConvertToJson(journal), { encoding: 'utf8', flag: journalCreated ? 'w' : 'wx' });
@@ -545,6 +550,7 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
       );
     }
     if (lexists(plan.notesFull)) refuse(`'${plan.notesPath}' appeared after this tidy was planned. Nothing was written.`);
+    prior = capturePriorBytes(workspace, [plan.pageFull, plan.notesFull]);
     saveJournal('pending', '');
 
     let parent = path.dirname(plan.notesFull);

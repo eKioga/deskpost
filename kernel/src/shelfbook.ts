@@ -239,8 +239,8 @@ export function getArchivedShelfBook(workspace: string, slug: string): ShelfBook
   return { ...book, archivedOn: 'archived_on' in record ? String(record['archived_on']) : '' };
 }
 
-/** Every file under a directory, sorted by full path, which is what a byte-identity proof compares. */
-export function listFilesRecursive(root: string): string[] {
+/** Every file under a directory; full-path sorting is the default for byte-identity proofs. */
+export function listFilesRecursive(root: string, options: { required?: boolean; sorted?: boolean } = {}): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
     for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -249,22 +249,11 @@ export function listFilesRecursive(root: string): string[] {
       else if (item.isFile()) found.push(full);
     }
   };
-  if (fs.existsSync(root)) walk(root);
-  return found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  if (options.required || fs.existsSync(root)) walk(root);
+  return options.sorted === false ? found : found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 
 export interface PageHash {
   relative: string;
   sha256: string;
-}
-
-/**
- * Every page under a wiki root, with its hash. This is what proves the reader's material crossed a
- * move unaltered: the title pages may be rewritten on purpose, everything else must be identical.
- */
-export function bookPageManifest(wikiPath: string, hashFile: (file: string) => string): PageHash[] {
-  return listFilesRecursive(wikiPath).map((file) => ({
-    relative: file.substring(wikiPath.length).replace(/^[\\/]+/, '').replace(/\\/g, '/'),
-    sha256: hashFile(file),
-  }));
 }

@@ -20,7 +20,7 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { isLocalBackend } from './basicmemory.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
-import { restoreBookJournal, writeBookJournal } from './journal.ts';
+import { addUndoBlock, priorBytesFromBookJournal, restoreBookJournal, undoBlock, writeBookJournal } from './journal.ts';
 import { completeBookMutation, enterBookMutation, type BookMutation } from './mutation.ts';
 import { getStoredBookManifest } from './manifeststore.ts';
 import { collectionBookSlugs, collectionBookWiki, newBookManifestForCollectionBook, rebuildCollectionManifestHeld } from './collectionbooks.ts';
@@ -33,7 +33,7 @@ import { strayControlRefusal } from './controlchars.ts';
 import { changeCounts } from './hubedit.ts';
 import { linkLabel, readMap } from './maplines.ts';
 import { sourceShelfSlug } from './shelfrecall.ts';
-import { writePublicationEvidence } from './collectionpage.ts';
+import { unfilledPlaceholderRefusal, writePublicationEvidence } from './collectionpage.ts';
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const USAGE = 'library collection replace-page <slug> <page> --content-path <file> (--preflight | --user-confirmed --plan-id <id>)';
@@ -204,6 +204,8 @@ function planReplace(argv: string[], workspace: string): ReplacePlan {
 export function collectionReplacePage(argv: string[], workspace: string): Record<string, PsJsonValue> {
   const parsed = parseArguments(argv, argumentTable('collection', 'replace-page'));
   const plan = planReplace(argv, workspace);
+  const placeholder = unfilledPlaceholderRefusal(plan.body, 'collection replace-page');
+  if (placeholder !== null) refuse(placeholder);
   if (plan.value['status'] === 'unchanged') return plan.value;
   if (parsed.flags.has('preflight')) return plan.value;
   if (!parsed.flags.has('user-confirmed')) {
@@ -264,6 +266,18 @@ export function collectionReplacePage(argv: string[], workspace: string): Record
       workspace,
       { slug: plan.slug, page: plan.page, planId: plan.planId, sourceFile: plan.sourceFile, sourceBytes: plan.sourceBytes, operation: 'collection-replace-page' },
       (relative) => (evidenceFile = relative),
+    );
+    // WHAT `deskpost undo` NEEDS (kickoffs/s165 row 1): the after hashes, the evidence record, the manifest to re-derive.
+    addUndoBlock(
+      journalPath,
+      undoBlock(workspace, {
+        kind: 'collection-replace-page',
+        locks: [bookRoot],
+        before: priorBytesFromBookJournal(workspace, journalPath),
+        evidence: evidenceFile !== null ? [{ path: evidenceFile, kind: 'publication-evidence' }] : [],
+        regenerates: [{ kind: 'manifest', collection: 'collection', slug: plan.slug }],
+        marker: { collection: 'collection', slug: plan.slug },
+      }),
     );
     mutation = null;
     const journal = path.relative(workspace, journalPath).replace(/\\/g, '/');

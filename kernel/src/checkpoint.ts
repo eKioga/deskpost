@@ -11,7 +11,7 @@ export type CheckpointRequest = {
 export type CheckpointState = {
   schema: 1; seatId: string; conversation: string; tracking: boolean;
   writes: CheckpointWrite[]; seen: string[]; trouble: CheckpointTrouble[];
-  request: CheckpointRequest | null; savedAt: number | null; savedWrites: number;
+  request: CheckpointRequest | null; savedAt: number | null; savedWrites: number; closedOutAt?: number | null;
   saveState: 'none' | 'asked' | 'saved' | 'gaps' | 'waits';
   closeout: 'none' | 'asked' | 'done' | 'gaps' | 'waits' | 'stale';
   gaps: string[]; waits: string[]; saveGaps: string[]; saveWaits: string[]; turnsSince: number;
@@ -19,7 +19,7 @@ export type CheckpointState = {
 
 export function emptyCheckpoint(conversation: string, seatId = ''): CheckpointState {
   return { schema: 1, seatId, conversation, tracking: false, writes: [], seen: [], trouble: [],
-    request: null, savedAt: null, savedWrites: 0, saveState: 'none', closeout: 'none',
+    request: null, savedAt: null, savedWrites: 0, closedOutAt: null, saveState: 'none', closeout: 'none',
     gaps: [], waits: [], saveGaps: [], saveWaits: [], turnsSince: 0 };
 }
 
@@ -39,7 +39,7 @@ export function cancelCheckpoint(state: CheckpointState): CheckpointState {
   if (!state.request) return state;
   return { ...state, request: null, ...(state.request.kind === 'save'
     ? { saveState: state.savedAt === null ? 'none' as const : 'saved' as const }
-    : { closeout: 'none' as const }) };
+    : { closeout: 'none' as const, closedOutAt: null }) };
 }
 export function observeCheckpoint(state: CheckpointState, writes: CheckpointWrite[], eventId?: string): CheckpointState {
   if (eventId && state.seen.includes(eventId)) return state;
@@ -126,8 +126,23 @@ export function checkCheckpoint(state: CheckpointState, id: string, answer: stri
   return { ...state, request: null,
     ...(r.kind === 'save' ? { saveState: gaps.length ? 'gaps' as const : waits.length ? 'waits' as const : 'saved' as const, saveGaps: gaps, saveWaits: waits }
       : { closeout: gaps.length ? 'gaps' as const : waits.length ? 'waits' as const : 'done' as const, gaps, waits }),
+    ...(clean && r.kind === 'closeout' ? { closedOutAt: at } : {}),
     ...(clean ? { savedAt: at, savedWrites: state.writes.length, saveState: 'saved' as const, saveGaps: [], saveWaits: [], turnsSince: 0,
       trouble: state.trouble.filter(t => !(r.troubleIds ?? []).includes(t.id)) } : {}) };
+}
+
+/** Read-only display words; an older record never acquires a guessed closeout age. */
+export function checkpointView(state: CheckpointState, now: number): { save: string; closeout: string } {
+  const age = (at: number): string => {
+    if (!Number.isFinite(at) || at > now) return 'unknown';
+    const minutes = Math.floor((now - at) / 60000);
+    return minutes >= 1440 ? `${Math.floor(minutes / 1440)} d` : minutes >= 60 ? `${Math.floor(minutes / 60)} h` : minutes >= 1 ? `${minutes} min` : '<1 min';
+  };
+  return {
+    save: ['asked', 'gaps', 'waits'].includes(state.saveState) ? state.saveState : state.savedAt === null ? 'unsaved' : `saved ${age(state.savedAt)}`,
+    closeout: state.closeout === 'done' && typeof state.closedOutAt === 'number' && Number.isFinite(state.closedOutAt)
+      ? `done ${age(state.closedOutAt)}` : state.closeout,
+  };
 }
 
 /** R9: last-save information is built from observed writes, never the assistant's claims. */
@@ -308,12 +323,17 @@ function literal(value: string | undefined): string | undefined { return value &
 function shellStatements(command: string): string[][] {
   const lines = command.split('\n'), safe: string[] = [];
   for (let i=0; i<lines.length; i++) {
-    const line = lines[i]!; safe.push(line);
+    const line = lines[i]!;
+    const hereString = /@["']\s*\r?$/.test(line);
+    safe.push(hereString ? line.replace(/@["']\s*\r?$/, '') : line);
     const delimiters = [...line.matchAll(/(?<!<)<<(?!<)(-?)\s*(["']?)([A-Za-z_]\w*)\2/g)];
     for (const d of delimiters) while (++i < lines.length) {
       const body = lines[i]!.replace(/\r$/, ''); if ((d[1] ? body.replace(/^\t+/, '') : body) === d[3]) break;
     }
-    if (/@["']\s*\r?$/.test(line)) while (++i < lines.length && !/^["']@/.test(lines[i]!)) { /* PowerShell here-string */ }
+    if (hereString) {
+      while (++i < lines.length && !/^["']@/.test(lines[i]!)) { /* PowerShell here-string */ }
+      if (i < lines.length) safe.push(lines[i]!.slice(2));
+    }
   }
   const text = safe.join('\n'), statements: string[][] = []; let tokens: string[] = [], token='', quote='', escaped=false;
   const word = () => { if (token) { tokens.push(token); token=''; } };

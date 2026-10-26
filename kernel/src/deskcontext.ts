@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
+import { archivedSinceOpened, missingBookRepair, missingSinceOpened, pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
@@ -202,12 +202,13 @@ export function ledgerClearReaches(workspace: string, stateDirectory: string): b
  * A Book as the prompt names it. ITS PLACE, NOT ITS PREFIX (PLAN-basic-memory.md step 1): a local Library's own
  * `books/` Book is `(collection)`, where until 1.1 it read `(shared)`; a `shared/` connection Book is `(shared)`.
  */
-export function bookRootLabel(entry: string, localBackend = false): string {
+export function bookRootLabel(entry: string, localBackend = false, workspace = ''): string {
   const parts = splitBookRoot(convertToBookRoot(entry));
   const place = placeOfRoot(parts, localBackend);
   if (parts.shelf === 'archive') {
     return place === 'shelf' ? `${parts.slug} (shelf, archived)` : place === 'collection' ? `${parts.slug} (collection, archived)` : `${parts.slug} (archived)`;
   }
+  if (archivedSinceOpened(workspace, parts.root, localBackend)) return `${parts.slug} (collection, archived since opened)`;
   return `${parts.slug} (${place})`;
 }
 
@@ -323,11 +324,15 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     }
 
     const localBackend = isLocalBackend(workspace);
-    const openBooks = readStateLines(path.join(deskDirectory!, deskFileName('books')), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', false).map((entry) =>
-      bookRootLabel(entry, localBackend),
-    );
+    // A MISSING BOOK IS NAMED, NOT LISTED AS READABLE (kickoffs/s160 row 2): every read of it would fail mid-task.
+    const bookEntries = readStateLines(path.join(deskDirectory!, deskFileName('books')), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', false);
+    const missingEntries = bookEntries.filter((entry) => missingSinceOpened(workspace, convertToBookRoot(entry), localBackend));
+    const openBooks = bookEntries.filter((entry) => !missingEntries.includes(entry)).map((entry) => bookRootLabel(entry, localBackend, workspace));
     const openProjects = readStateLines(path.join(deskDirectory!, deskFileName('projects')), PROJECT_PATTERN, 'open-project', true);
     const books = openBooks.length ? openBooks.join(', ') : '(none)';
+    const missingBooks = missingEntries.length
+      ? ` Missing: ${missingEntries.map((entry) => `${bookRootLabel(entry, localBackend, workspace)}: ${missingBookRepair(splitBookRoot(convertToBookRoot(entry)).slug)}`).join('; ')}.`
+      : '';
     const projects = openProjects.length ? openProjects.join(', ') : '(none)';
     // NAMING THE CALLABLE TOOL, for the kind of material actually open.
     const readerCalls: string[] = [];
@@ -371,7 +376,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
       letterLine = '';
       newestPending = '';
     }
-    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}. Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${seatWarning}${notebookWarning}`;
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}.${missingBooks} Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${seatWarning}${notebookWarning}`;
     // ONCE PER SESSION, KEYED ON THE TEXT ITSELF (kickoffs/s77 row 0, the desk-context Report): an identical block
     // already served into this conversation is still in it, so it is not sent again. A changed Desk, seat or warning
     // is a different text and is sent. Only where the ledger clear is proven to reach this ledger (above), only for
