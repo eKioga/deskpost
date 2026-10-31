@@ -197,7 +197,11 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
   ];
   const books = list(overview['open_books']).map(object).sort((a, b) => Number(b['audit_due'] === true) - Number(a['audit_due'] === true));
   const bookNames = books.filter(book => label(book['slug'])).map(book => run(`${label(book['slug'])}${book['audit_due'] === true ? ' (audit due)' : ''}`, book['audit_due'] === true ? 'attention' : 'name'));
-  const hubs = list(overview['open_projects']).map(label).filter(Boolean).map(name => run(name.replace(/^projects\//, '')));
+  // A HUB WHOSE EVERY-SESSION PAGE IS OVER ITS LIMIT IS NAMED FIRST, AS AN AUDIT IS (kickoffs/s170-r2 row 3).
+  const tidyDue = new Set(list(overview['hub_pages']).map(object).filter(row => row['kind'] === 'every-session' && row['over'] === true).map(row => label(row['hub'])));
+  const hubs = list(overview['open_projects']).map(label).filter(Boolean).map(name => name.replace(/^projects\//, ''))
+    .sort((a, b) => Number(tidyDue.has(b)) - Number(tidyDue.has(a)))
+    .map(name => tidyDue.has(name) ? run(`${name} (tidy due)`, 'attention') : run(name));
   const field = clockField(now);
   let clock: Frame['clock'];
   let first: Line | undefined;
@@ -240,6 +244,20 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
     checkpointLines ??= [[run('Save: ', 'label'), save], [run('Closeout: ', 'label'), closeout]].flatMap(line => wrap(line, width));
     lines.splice(clock && clock.row > 1 ? clock.row - 1 : lines.length, 0, ...checkpointLines);
     if (clock && clock.row > 1) clock.row += checkpointLines.length;
+  }
+  const train = object(overview['train']);
+  for (const guard of list(overview['stale_recovery_guards'])) {
+    for (const line of String(object(guard)['message'] ?? '').split('\n')) lines.push(...wrap([run(label(line), 'attention')], width));
+  }
+  if (typeof overview['recovery_guards_unreadable'] === 'string') {
+    lines.push(...wrap([run(label(String(overview['recovery_guards_unreadable'])), 'attention')], width));
+  }
+  if (typeof train['unreadable'] === 'string') {
+    lines.push(...wrap([run(`Train  unreadable (${label(train['unreadable'])}); repair internal/train/register.json`, 'attention')], width));
+  } else if (typeof train['changed_at'] === 'string') {
+    const changed = label(train['changed_at']), handbacks = Number(train['handbacks_since']);
+    const attention = handbacks > 0 || now - Date.parse(changed) > 7 * 86400000;
+    lines.push(...wrap([run(`Train  changed ${changed}, ${handbacks} handbacks since`, attention ? 'attention' : 'name')], width));
   }
   if (!first && Number.isInteger(options.rows) && options.rows! > 0) lines = lines.slice(0, options.rows);
   if (clock && clock.row > lines.length) clock = undefined;

@@ -12,13 +12,18 @@
  *   (e) every `ADR-NNNN` it names has a file `docs/adr/NNNN-*.md` (kickoffs/s127 row 2: s125's named one that did not);
  *   (f) a line that runs the acceptance matrix (`Invoke-AcceptanceMatrix`) gives `-Row` one row, never a comma list
  *       (kickoffs/s147 row 6: s138's `-Row a,b` passed; through `powershell.exe -File` it arrives as one row name).
- * And one warning, which does not refuse: a row whose text names a `tools/*.ps1` helper (other than the matrix harness)
+ *   (g) a release TRAIN id requires WHY NOW's Audit line naming library-auditor and its answering letter
+ *       (Decision 2026-10-27: library-auditor audits every release).
+ *   (h) sensitive paths in OWNS require WHY NOW's Second read line naming library-auditor (the same Decision).
+ * Two warnings, which do not refuse: a row whose text names a `tools/*.ps1` helper (other than the matrix harness)
  * and whose `Done when:` asks for green from the source kernel, which judges a helper-sentence row as a mismatch by design.
+ * Also a WSL row reading origin/master: the clone reads the shared repository's local master, not its pushed tip (c71).
  * It reads text only; it never writes.
  */
 
 /** The sections every Kickoff carries, in order. */
 export const REQUIRED_SECTIONS: readonly string[] = [
+  'TRAIN',
   'WHY NOW',
   'SIZE',
   'OWNS',
@@ -200,7 +205,56 @@ export function templateBlock(templateDoc: string): string {
   return m ? m[1]! : '';
 }
 
-const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires';
+/** Posted Kickoffs escape write-time placeholders so the writer preserves their literal spelling. */
+export function placeholderProblems(text: string): string[] {
+  return text.split(/\r?\n/).flatMap((line, index) => [...line.matchAll(/(?<!\{)\{(now|today|session)\}(?!\})/g)]
+    .map(match => `line ${index + 1}: ${match[0]} needs doubled braces; a posted Kickoff keeps the placeholder only when the file doubles its braces`));
+}
+
+/** Membership uses the first word on TRAIN, never a title or a closed item's id. */
+export function trainProblems(text: string, record: unknown): string[] {
+  const r = record as { schema?: unknown; items?: { id?: unknown; status?: unknown }[] } | null;
+  if (!r || r.schema !== 1 || !Array.isArray(r.items) || r.items.some(i => !i || typeof i.id !== 'string' || !['open', 'done', 'dropped'].includes(String(i.status))) || new Set(r.items.map(i => i.id)).size !== r.items.length) return ['train register is not a valid schema-1 record'];
+  const id = /^TRAIN:[ \t]*(\S+)/m.exec(text)?.[1];
+  const item = r.items.find(i => i.id === id);
+  return item?.status === 'open' ? [] : [`TRAIN id '${id ?? ''}' is not an open item in the train register`];
+}
+
+/** Decision 2026-10-27: every release names the auditor's answering letter; text only, not a letter lookup. */
+export function auditProblems(text: string): string[] {
+  if (!/^TRAIN:[ \t]*release-\S*/m.test(text)) return [];
+  const audit = sectionText(text, 'WHY NOW').split(/\r?\n/).find(line => line.startsWith('- **Audit:**')) ?? '';
+  return /\blibrary-auditor\b/.test(audit) && /\[\[letters\/notes\/[^\]\s]+\]\]/.test(audit) ? []
+    : ['release Kickoff needs a WHY NOW - **Audit:** line naming library-auditor and its answering [[letters/notes/<page>]] (Decision 2026-10-27)'];
+}
+
+/** Decision 2026-10-27's sensitive files, including a kernel file written by basename alone. */
+export const SENSITIVE_PATHS: readonly RegExp[] = [
+  /(?<![\w./-])(?:kernel\/src\/)?guards\.ts\b/g, // guards
+  /(?<![\w./-])(?:kernel\/src\/)?(?:hook[\w-]*|codexhooktrust)\.ts\b|\.githooks\/[^\s`'",;)]*/g, // hooks
+  /[\w./-]*(?:settings|secret|credential)[\w./-]*[./][\w./-]*|[\w./-]*[./][\w./-]*(?:settings|secret|credential)[\w./-]*/g, // settings and credentials
+  /(?<![\w./-])(?:kernel\/src\/)?locks\.ts\b/g, // locks
+  /(?<![\w./-])(?:kernel\/src\/)?(?:undo|journal)\.ts\b/g, // undo and journals
+  /(?<![\w./-])(?:kernel\/src\/)?(?:netpolicy|postbox|basicmemory|bm[\w-]*|updatecheck|reportsend|install|upgrade)\.ts\b/g, // network
+];
+
+export function secondReadProblems(text: string): string[] {
+  const owns = sectionText(text, 'OWNS').replace(/\\/g, '/');
+  const first = SENSITIVE_PATHS.flatMap(pattern => [...owns.matchAll(pattern)]).sort((a, b) => a.index! - b.index!)[0]?.[0];
+  if (!first) return [];
+  const second = sectionText(text, 'WHY NOW').split(/\r?\n/).some(line => line.startsWith('- **Second read:**') && /\blibrary-auditor\b/.test(line));
+  const file = first.includes('/') || !first.endsWith('.ts') ? first : `kernel/src/${first}`;
+  return second ? [] : [`OWNS names sensitive path ${file}: needs a WHY NOW - **Second read:** line naming library-auditor (Decision 2026-10-27)`];
+}
+
+/** c71 parked on the clone's stale master; a prohibition without a git command must not warn. */
+export function wslMasterRows(text: string): number[] {
+  return sectionText(text, 'ROWS').split(/(?=^\d+\. )/m)
+    .filter(row => /^\d+\. /.test(row) && row.includes('wsl-run.mts') && /\bgit[ \t]+(?:rev-parse|checkout|merge|log|diff|reset)\b[^\r\n]*\borigin\/master(?![\w/.-])/.test(row))
+    .map(row => Number(/^(\d+)\./.exec(row)![1]));
+}
+
+const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires; --train <register file> also checks its TRAIN id';
 
 async function main(argv: string[]): Promise<number> {
   const fs = await import('node:fs');
@@ -211,7 +265,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${USAGE}\n`);
     return 2;
   }
-  if (!file || argv.length !== 1) {
+  if (!file || !(argv.length === 1 || (argv.length === 3 && argv[1] === '--train' && argv[2]))) {
     process.stderr.write(`usage: ${USAGE}\n`);
     return 2;
   }
@@ -221,9 +275,17 @@ async function main(argv: string[]): Promise<number> {
   }
   const text = fs.readFileSync(file, 'utf8');
   const adrFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'adr');
+  if (!fs.existsSync(adrFolder)) {
+    process.stderr.write(`kickoff-check: no docs/adr beside this copy of the tool (${adrFolder}): run it from inside a checkout\n`);
+    return 2;
+  }
   const adrFiles = fs.readdirSync(adrFolder);
-  const problems = [...describeProblems(checkKickoff(text)), ...describeMissingAdrs(missingAdrs(text, adrFiles), adrFiles), ...describeMissingRequiredSections(missingRequiredSections(text)), ...describeCommaRows(commaRowLines(text))];
-  const warnings = describeSourceGreenHelperRows(sourceGreenHelperRows(text));
+  const problems = [...describeProblems(checkKickoff(text)), ...describeMissingAdrs(missingAdrs(text, adrFiles), adrFiles), ...describeMissingRequiredSections(missingRequiredSections(text)), ...describeCommaRows(commaRowLines(text)), ...placeholderProblems(text), ...auditProblems(text), ...secondReadProblems(text)];
+  if (argv[2]) {
+    try { problems.push(...trainProblems(text, JSON.parse(fs.readFileSync(argv[2], 'utf8')))); }
+    catch (error) { problems.push(`cannot read train register '${argv[2]}': ${(error as Error).message}`); }
+  }
+  const warnings = [...describeSourceGreenHelperRows(sourceGreenHelperRows(text)), ...wslMasterRows(text).map(row => `row ${row} runs a WSL step that reads origin/master: in the WSL clone that is the shared repository's local master, which pushes never move; read origin/<the unit's branch>`)];
   if (warnings.length) process.stdout.write(`${warnings.map((line) => `kickoff-check: warning: ${line}`).join('\n')}\n`);
   if (problems.length === 0) {
     process.stdout.write(`kickoff-check: ${file} is complete (${REQUIRED_SECTIONS.length} sections, every row has "Done when:").\n`);

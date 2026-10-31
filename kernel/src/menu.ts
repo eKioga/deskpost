@@ -678,14 +678,38 @@ async function wizard(state: MenuState, first: boolean): Promise<number | null> 
 export const WIZARD_TEMPLATE_KEYS: readonly (readonly [string, string])[] = [
   ['p', 'performer'],
   ['o', 'orchestrator'],
-  ['a', 'auditor'],
-  ['i', 'ideas'],
-  ['d', 'developer'],
   ['l', 'planner'],
+  ['b', 'builder'],
+  ['a', 'auditor'],
 ];
 
-/** The job a template gives the proposed seat name; performer and developer both propose `<department>-dev`. */
-const WIZARD_JOBS: Record<string, string> = { performer: 'dev', orchestrator: 'lead', auditor: 'audit', ideas: 'ideas', developer: 'dev', planner: 'plan' };
+/** What each template is for, one line each on the full-screen wizard's Template screen (kickoffs/s166 row 4). */
+const WIZARD_TEMPLATE_WORDS: Record<string, string> = {
+  performer: 'works its own lane in the department',
+  orchestrator: 'orders the work and writes Kickoffs',
+  planner: 'answers design questions for the reader',
+  builder: 'builds one approved Kickoff at a time',
+  auditor: 'audits read only; findings by letter',
+};
+
+/**
+ * THE DEPARTMENT IS CHOSEN FROM A LIST (kickoffs/s166 row 4, Eric's option A): each department the registry knows, with
+ * where its letters go, then "New department" and "No department". Typing narrows the list by its start and offers to
+ * make a department of what was typed; the name is still checked by `departmentProblem` before it is used.
+ */
+export function departmentScreen(departments: readonly { name: string; destination: DepartmentDestination }[], text = ''): ScreenModel {
+  const typed = text.trim();
+  const shown = departments.filter((department) => department.name.startsWith(typed.toLowerCase()));
+  const width = Math.max(0, ...shown.map((department) => department.name.length));
+  const items = shown.map((department) => ({ id: 'department:' + department.name, text: department.name.padEnd(width) + '   ' +
+    (department.destination.kind === 'none' ? 'no orchestrator yet' : 'letters go to ' + department.destination.seat) }));
+  if (typed && !departments.some((department) => department.name === typed)) items.push({ id: 'create:' + typed, text: 'Make a new department called ' + typed });
+  if (!typed) items.push({ id: 'new', text: 'New department' }, { id: 'none', text: 'No department' });
+  return { title: 'Department', search: true, items };
+}
+
+/** The job a template gives the proposed seat name; performer and builder both propose `<department>-dev`. */
+const WIZARD_JOBS: Record<string, string> = { performer: 'dev', orchestrator: 'lead', planner: 'plan', builder: 'dev', auditor: 'audit' };
 
 /** Where a department's letters go, in the wizard's words. */
 function destinationWords(destination: DepartmentDestination): string {
@@ -1529,12 +1553,15 @@ export function accessMenuScreen(name: string, assistant: Assistant, settings = 
       { id: 'custom', text: 'Type my own settings', detail: ['   Type command settings; each value is checked.'] }, { id: 'back', text: 'Back' }],
     initial: MENU_ACCESS[assistant].find(access => access.usual)?.id };
 }
-export function newSeatReadyScreen(name: string, assistant: Assistant, args: string[], warning = ''): ScreenModel {
+export function newSeatReadyScreen(name: string, assistant: Assistant, args: string[], warning = '', rings?: boolean): ScreenModel {
   // TYPED SETTINGS ARE SHOWN AS TYPED, AND FULL ACCESS IS MARKED AS THE ACCESS LIST MARKS IT (kickoffs/s120 row 4).
   const listed = MENU_ACCESS[assistant].find(access => access.args.length === args.length && access.args.every((arg, index) => arg === args[index]));
   const access = (listed || !args.length ? accessName(assistant, args) : 'My own settings: ' + escapedArgv(args)) + (fullAccessSettings(assistant, args) ? ' (!)' : '');
   return { title: 'New seat  ready', before: ['   Name       ' + name, '   Assistant  ' + ASSISTANT_LABEL[assistant],
-    '   Access     ' + access, ...(warning ? ['', '   ' + warning] : []), ''],
+    '   Access     ' + access,
+    // A CLAUDE CODE SEAT'S MESSAGES, in the line wizard's words (kickoffs/s166 row 4), when the wizard says which.
+    ...(rings === undefined ? [] : ['   Messages   ' + (rings ? 'rings reach it at once (inbound accept)' : 'Claude Code decides (inbound unset)')]),
+    ...(warning ? ['', '   ' + warning] : []), ''],
     items: [{ id: 'start', text: 'Make it and start ' + ASSISTANT_LABEL[assistant] }, { id: 'make', text: 'Make it, but do not start it yet' },
       { id: 'more', text: 'More choices (department, template, card)' }, { id: 'back', text: 'Back' }] };
 }
@@ -1597,6 +1624,9 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
   let name = initialName, projectName = initialName, assistant: Assistant | null = null, args: string[] | null = null;
   let step = initialName ? 2 : 1, error = '', suggestion = '';
   let choices: SeatStartChoices = { openBooks: newSeatBooks(state.workspace) };
+  // RINGS REACH A NEW CLAUDE CODE SEAT AT ONCE, as in the line wizard (kickoffs/s108 ruling 6; s166 row 4); More choices
+  // turns it off. Never for Codex, which has no inbox.
+  let acceptRings = true;
   for (;;) {
     if (step === 1) {
       const answer = await inputScreen(state, 'New seat  step 1 of 3', 'Name', name, '_ type a name', error);
@@ -1624,25 +1654,37 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
       if (args === null) { step = 2; continue; }
       step = 4;
     }
-    const answer = await chooseScreen(state, newSeatReadyScreen(name, assistant!, args!, error));
+    const answer = await chooseScreen(state, newSeatReadyScreen(name, assistant!, args!, error, assistant === 'claude' ? acceptRings : undefined));
     if (answer.id === 'back') { step = 3; error = ''; continue; }
     if (answer.id === 'more') {
-      const department = await inputScreen(state, 'More choices', 'Department', choices.department ?? '', '_ leave empty for none');
-      if (department.id === 'back') continue;
-      const problem = department.text ? departmentProblem(department.text) : null;
+      const rows = seatRegistryRows(state.workspace), projection = seatMetadata(rows);
+      const known = registryDepartments(rows).map((department) => ({ name: department, destination: destinationOf(projection, department) }));
+      const picked = await chooseScreen(state, (text: string) => departmentScreen(known, text));
+      if (picked.id === 'back') continue;
+      // A typed name submitted as text (a script's answer) is taken as typed, as the list's own items are.
+      let typed = picked.id.startsWith('department:') ? picked.id.slice('department:'.length) : picked.id.startsWith('create:') ? picked.id.slice('create:'.length) : picked.id === 'submit' ? picked.text.trim() : '';
+      if (picked.id === 'new') {
+        const named = await inputScreen(state, 'More choices', 'Department', '', '_ a new department name');
+        if (named.id === 'back') continue;
+        typed = named.text.trim();
+      }
+      const problem = typed ? departmentProblem(typed) : null;
       if (problem) { error = problem; continue; }
-      choices = { openBooks: newSeatBooks(state.workspace), ...(choices.card !== undefined ? { card: choices.card } : {}), ...(department.text ? { department: department.text } : {}) };
-      if (department.text) {
+      choices = { openBooks: newSeatBooks(state.workspace), ...(choices.card !== undefined ? { card: choices.card } : {}), ...(typed ? { department: typed } : {}) };
+      if (typed) {
         const template = await chooseScreen(state, { title: 'Template', items: [
-          { id: 'none', text: 'No template' }, ...WIZARD_TEMPLATE_KEYS.map(([, template]) => ({ id: template, text: template.charAt(0).toUpperCase() + template.slice(1) })),
+          { id: 'none', text: 'No template' }, ...WIZARD_TEMPLATE_KEYS.map(([, template]) => ({ id: template, text: (template.charAt(0).toUpperCase() + template.slice(1)).padEnd(15) + WIZARD_TEMPLATE_WORDS[template] })),
           { id: 'back', text: 'Back' }] });
         if (template.id !== 'none' && template.id !== 'back') {
           choices.template = template.id;
-          // Existing K2 jobs propose the department's name, and the existing planner checks every choice.
-          const base = choices.department + '-' + WIZARD_JOBS[template.id];
-          let proposed = base, suffix = 2;
+          // THE NAME TYPED AT STEP 1 IS KEPT while it is free (kickoffs/s166 row 4); only a taken one gives way to the
+          // template's `<department>-<job>`, and the existing planner checks every choice.
           const projects = activeProjects(state.workspace);
-          while (!newSeatVerdict(state.workspace, proposed, projectName, [...projects, projectName], true, choices).creatable && suffix < 20) proposed = base + '-' + suffix++;
+          const free = (seat: string) => newSeatVerdict(state.workspace, seat, projectName, [...projects, projectName], true, choices).creatable;
+          const base = choices.department + '-' + WIZARD_JOBS[template.id];
+          const kept = !!name && free(name);
+          let proposed = kept ? name : base, suffix = 2;
+          while (!kept && !free(proposed) && suffix < 20) proposed = base + '-' + suffix++;
           const changed = await inputScreen(state, 'Seat name', 'Name', proposed, '', 'Project stays ' + projectName + '.', false);
           if (changed.id !== 'back') name = changed.text;
         }
@@ -1656,11 +1698,16 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
         if (card.text) choices.card = card.text; else delete choices.card;
         break;
       }
+      if (assistant === 'claude') {
+        const messages = await chooseScreen(state, { title: 'Messages', before: ["   How other seats' rings reach this seat.", ''], initial: acceptRings ? 'accept' : 'decides', items: [
+          { id: 'accept', text: 'Messages: rings reach it at once' }, { id: 'decides', text: 'Messages: Claude Code decides' }, { id: 'back', text: 'Back' }] });
+        if (messages.id !== 'back') acceptRings = messages.id === 'accept';
+      }
       error = ''; continue;
     }
     try {
       const projects = activeProjects(state.workspace), hubExists = projects.includes(projectName);
-      const approvedChoices = { ...choices, recordAssistant: assistant! };
+      const approvedChoices = { ...choices, recordAssistant: assistant!, ...(assistant === 'claude' && acceptRings ? { inbound: 'accept' } : {}) };
       const planned = newSeatVerdict(state.workspace, name, projectName, hubExists ? projects : [...projects, projectName], false, approvedChoices);
       if (!planned.creatable) { error = planned.reason; continue; }
       if (!hubExists) {

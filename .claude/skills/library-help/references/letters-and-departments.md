@@ -127,15 +127,16 @@ moment as the retire can still land, and doctor then names it (below).
 A new seat may start from a template, which gives it a role and its Hub's Purpose. The main menu's `+` asks for
 the department first, then the template, then the seat's name, then its card and Books:
 
-- `[p] performer`: works its own lane in the department.
-- `[o] orchestrator`: answers or routes the department's letters and keeps its plan; one per department.
-- `[a] auditor`: audits a Book, a Hub or a repo on request, read-only, and sends findings by letter. It takes
+- `[p] performer`: keeps the one job its card names and records its work.
+- `[o] orchestrator`: orders the work and writes Kickoffs; one per department.
+- `[l] planner`: answers design questions for the reader, always saying it is standing in.
+- `[b] builder`: builds one approved Kickoff at a time and hands back tested commits.
+- `[a] auditor`: audits read only and sends checkable findings by letter. It takes
   the revision first (`deskpost audit revision <target>`), records the audit after
   (`deskpost audit record <target> --revision <r> --findings <n> --report <page>`), and `deskpost audit due`
   lists what is due again; its Desk counts them while it is department `audit`'s destination.
-- `[i] ideas`: catches each idea as a page on its Hub and hands it off by letter when asked.
 
-The name is proposed as `<department>-<job>` (`qa-dev`, `qa-lead`, `qa-audit`, `qa-ideas`) and can be changed.
+The name is proposed as `<department>-<job>` (`qa-dev`, `qa-lead`, `qa-plan`, `qa-audit`) and can be changed.
 A seat with no department gets no template. A template seeds a seat once; a later version does not change it.
 
 ## Renaming a seat

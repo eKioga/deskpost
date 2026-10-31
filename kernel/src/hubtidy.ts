@@ -519,7 +519,7 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
       previous_raw: plan.raw,
       surviving_paths: surviving,
       error: errorText,
-      ...(state === 'complete' ? { undo: undoBlock(workspace, { kind: 'hub-tidy', locks: [`projects/${plan.slug}`], before: prior }) } : {}),
+      ...(state === 'complete' ? { undo: undoBlock(workspace, { kind: 'hub-tidy', seat: requireSeat({ seat: options.seat, stateDirectory: path.join(workspace, '.claude') }), locks: [`projects/${plan.slug}`], before: prior }) } : {}),
     };
     fs.mkdirSync(path.dirname(journalPath), { recursive: true });
     fs.writeFileSync(journalPath, psConvertToJson(journal), { encoding: 'utf8', flag: journalCreated ? 'w' : 'wx' });

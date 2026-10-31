@@ -272,6 +272,7 @@ export function collectionReplacePage(argv: string[], workspace: string): Record
       journalPath,
       undoBlock(workspace, {
         kind: 'collection-replace-page',
+        seat: requireSeat({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') }),
         locks: [bookRoot],
         before: priorBytesFromBookJournal(workspace, journalPath),
         evidence: evidenceFile !== null ? [{ path: evidenceFile, kind: 'publication-evidence' }] : [],

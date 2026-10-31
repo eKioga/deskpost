@@ -21,7 +21,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readMarker } from './workspace.ts';
-import { assertNotRedirected, assertPlainHttpAllowed } from './netpolicy.ts';
+import { assertNotRedirected, plainHttpRequestUrl } from './netpolicy.ts';
 
 const PIN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -233,12 +233,14 @@ export class McpSession {
     let response: Response;
     let body: string;
     const timeout = mcpTimeoutMs();
-    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2), judged before every request, not when the URL was saved.
-    try { await assertPlainHttpAllowed(this.url, 'The Basic Memory endpoint'); }
+    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2), judged before every request, not when the URL was saved,
+    // and sent to the address judged (kickoffs/s167 row 5), so a second lookup cannot answer differently.
+    let target = this.url;
+    try { target = await plainHttpRequestUrl(this.url, 'The Basic Memory endpoint'); }
     catch (error) { refuse((error as Error).message); }
     try {
       // NO REDIRECT IS FOLLOWED (kickoffs/s164 row 1): a 307 or 308 would carry this body and the session elsewhere.
-      response = await fetch(this.url, { method: 'POST', headers, body: asciiJson(payload), signal: AbortSignal.timeout(timeout), redirect: 'manual' });
+      response = await fetch(target, { method: 'POST', headers, body: asciiJson(payload), signal: AbortSignal.timeout(timeout), redirect: 'manual' });
       assertNotRedirected(response, this.url, 'The Basic Memory endpoint');
       body = await response.text();
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.substring(0, 4096)}`);

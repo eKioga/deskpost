@@ -2,7 +2,7 @@
 
 You can use seats to develop a project with one assistant or several. Keep its source in a
 working tree outside the Library. Its Project Hub holds the current state and links to the
-work you approved. The `developer` and `planner` templates give new seats a starting purpose;
+work you approved. The `builder` and `orchestrator` templates give new seats a starting purpose;
 they do not grant Git or release authority.
 
 ## Four rules to start with
@@ -21,7 +21,7 @@ roles at different times.
 **Decide within the approval and record the choice.** An open question inside the CHARTER is
 for the builder to decide and explain in its handback. Anything outside it parks with a
 reason. The builder neither waits for routine choices nor widens the work. Deskpost's
-[Decide and record](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md#work)
+[Decide and record](https://github.com/eKioga/deskpost/blob/v1.5.2/docs/dev-session-loop.md#work)
 is a worked example.
 
 **Have a second reader inspect sensitive changes.** Before a release or any credential step,
@@ -53,7 +53,7 @@ Usage is advice about where to put work. If you have Orca, its `orca account lis
 reports weekly use, reset times and update times; check that its account matches the seat.
 An old, missing, refused or expired reading is unknown. Without Orca, say unknown; a Codex
 session log can fill only Codex's reading. Deskpost's
-[usage rule](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md#assigning-work-by-usage)
+[usage rule](https://github.com/eKioga/deskpost/blob/v1.5.2/docs/dev-loop-orchestrator.md#assigning-work-by-usage)
 keeps its thresholds in one place. You can override the planner's advice.
 
 ## When you use fixtures
@@ -88,9 +88,11 @@ upgrade rehearsal as the fallback; a source-fixture observation does not certify
 
 ## When you use an assistant as the second reader
 
-Deskpost's two-harness setup requires the other harness to read sensitive work. Currently
-only the Claude Code reviewer profile passed: a fresh Claude session can read Codex-authored
-work from a staging folder containing clean review files. As planner, write
+Every sensitive second read goes to library-auditor by letter, whichever harness wrote the
+change. Library-auditor audits every commit before a release (Decision, 2026-10-27). See the
+[second-reader rule](https://github.com/eKioga/deskpost/blob/v1.5.2/docs/dev-loop-orchestrator.md#the-second-reader).
+The following Claude Code reviewer profile is an optional proven profile: a fresh Claude
+session can read Codex-authored work from a staging folder containing clean review files. As planner, write
 `claude-settings.json` with `{"permissions":{"allow":["Read","Grep","Glob"]}}` and
 `empty-mcp.json` with `{"mcpServers":{}}` in your fixture folder. Run this profile in the
 staging directory through subprocess argv, keeping the empty setting-source argument:
@@ -104,10 +106,8 @@ were Read, Grep and Glob; no user skills, plugins, hooks or MCP servers loaded. 
 Grep/Glob outside the folder, links and aliases untested; the child inherits its environment,
 but no tool can read it; built-in telemetry on. Stage no secrets.
 
-A Codex reviewer profile is not yet proven. In Deskpost, the planner steers sensitive work
-to Codex when possible. A release carrying Claude-authored sensitive commits records the
-reader's written acceptance of the gap before any credential step. This one-way rule ends
-only after a chartered Codex profile passes all five k1e-r2 criteria. Review covers the whole
+Codex failed k1e-r2 (Eric, 2026-10-12), so this profile is proven for a Claude reader only.
+Sensitive second reads use the auditor rule above. Review covers the whole
 candidate's sensitive diff, how its commits combine, and finding dispositions. It does not
 gate a private source push.
 
@@ -120,7 +120,7 @@ stopped a step, whether it came from the product or the harness, and what remain
 Choose gates that catch the unit's defects. Deskpost uses targeted test sections while
 working, the pre-commit hook on each clean staged cut, and a full gate before a chartered
 private push. Record each commit and its hook result together. Its
-[development loop](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/dev-session-loop.md)
+[development loop](https://github.com/eKioga/deskpost/blob/v1.5.2/docs/dev-session-loop.md)
 shows the full procedure; you need only the extras your project uses, but an adopted extra
 brings its safeguards with it.
 

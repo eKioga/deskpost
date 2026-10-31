@@ -80,6 +80,19 @@ clear yes. Your yes covers that one previewed action and nothing else.
 Nothing here will destroy your work by accident. A reset **sets material aside** rather than
 deleting it, and asking **"what survived the reset?"** works even in a session with no seat at all.
 
+## Fewer yeses, and a way back
+
+If a Library change needs putting back, ask the Librarian to show the available undo records.
+The list says which writes can be restored. Undo refuses to overwrite a file that has changed
+since; an older record without the evidence it needs is refused too. It reverses only the
+supported recorded writes, rather than promising to undo every action.
+
+For software projects, ask how to build with seats: five department templates give each seat a
+starting role, and the orchestrator keeps Kickoffs on one ordered train. The Desk warns when that
+train is stale or cannot be read. `deskpost asks` counts asks for a yes from Claude Code transcripts
+by Kickoff; it does not read Codex transcripts. The [development loop](../dev-session-loop.md)
+records the full workflow.
+
 ## Upgrading
 
 From 1.3.6, `deskpost upgrade` upgrades Deskpost from a terminal; the main menu also offers **Upgrade to <version>** when a newer release is ready.

@@ -55,7 +55,7 @@ import {
 } from './mutation.ts';
 import { pageComparisonSha256, sha256OfText } from './sha.ts';
 import { writeAtomicText } from './fsx.ts';
-import { changeCounts, fillTimePlaceholders, hasTimePlaceholders, TIME_PLACEHOLDER_NOTE } from './hubedit.ts';
+import { changeCounts, fillTimePlaceholders, hasTimePlaceholders, TIME_PLACEHOLDER_NOTE, writeTimeWarning } from './hubedit.ts';
 import { unfilledPlaceholderRefusal } from './collectionpage.ts';
 import { foldedMapLines, linkLabel, planTopicIndexLine, readMap, topicIndexPage, type MapPage, type TopicIndexPlan } from './maplines.ts';
 import {
@@ -115,7 +115,7 @@ function workspaceRelative(workspace: string, file: string): string {
 }
 
 function writeUtf8(file: string, text: string): void {
-  fs.writeFileSync(file, text, { encoding: 'utf8' });
+  writeAtomicText(file, text);
 }
 
 /** `yyyy-MM-ddTHH:mm:ssZ`, which is what `[DateTimeOffset]::UtcNow.ToString(...)` writes. */
@@ -909,6 +909,7 @@ export function captureVerb(
       ...(awaitingSender ? {awaiting_sender:true} : {}),
       // THE TIME OF THE WRITE (kickoffs/s121 row 6): said here, filled only when the note is written.
       ...(hasTimePlaceholders(body) ? { time_placeholders: TIME_PLACEHOLDER_NOTE } : {}),
+      time_warning: writeTimeWarning(body, new Date(capturedAt)),
       source,
       from_seat: fromSeat,
       ...(fromSeatSource ? { from_seat_source: fromSeatSource } : {}),
@@ -944,6 +945,7 @@ export function captureVerb(
       Object.assign(plan,{for_library_id:reportPin.library_id,for_seat:reportPin.seat,for_seat_id:reportPin.seat_id});
       plan['scope'] = String(plan['scope'] ?? '') + ` A sent copy stays here, and the Report is queued for ${reportPin.library_id}, seat ${reportPin.seat}; sending starts after the write.`;
     }
+    if (plan['time_warning'] && !parsed.flags.has('json')) process.stderr.write(`WARN: ${plan['time_warning']}\n`);
     if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
     const frontmatter = ['---', `captured: ${capturedAt}`, 'review: pending'];

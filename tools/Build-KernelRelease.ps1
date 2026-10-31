@@ -151,6 +151,13 @@ if (-not $Bun) {
     $Bun = $found.Source
 }
 if (-not (Test-Path -LiteralPath $Bun -PathType Leaf)) { throw "-Bun names $Bun, which does not exist." }
+$minimumBunVersion = [version]'1.4.4'
+$bunVersionText = (& $Bun --version | Out-String).Trim()
+$bunVersion = $null
+if (-not [version]::TryParse($bunVersionText, [ref]$bunVersion) -or $bunVersion -lt $minimumBunVersion) {
+    $foundVersion = if ($bunVersion) { $bunVersionText } else { "unreadable '$bunVersionText'" }
+    throw "Bun $Bun has version $foundVersion; a release requires Bun $minimumBunVersion or later: its certificate list trusts roots that were compromised in 2026-10."
+}
 
 $targets = if ($Target -contains 'all') { @($script:Platforms.Keys) } else { @($Target) }
 foreach ($name in $targets) {

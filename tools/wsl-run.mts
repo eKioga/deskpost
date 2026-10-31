@@ -24,7 +24,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node tools/wsl-run.mts [--tier <name>] [--distro <name>] [--log <file>] <script file> [args...]';
+export const USAGE =
+  'usage: node tools/wsl-run.mts [--tier <name>] [--distro <name>] [--log <file>] <script file> [args...]; the script runs in ~/dev/deskpost-linux-gates/app ($DESKPOST_LINUX_CLONE)';
 /** Under $HOME in the distro: the clone, its Node, and where scripts are copied. */
 export const CLONE = 'dev/deskpost-linux-gates';
 /** Windows' command line is 32,767 characters; the script travels base64 inside it. */
@@ -50,6 +51,7 @@ export const PREAMBLE = [
   'printf %s "$1" | base64 -d > "$d/$0" || exit 125',
   'shift',
   `export PATH="$HOME/${CLONE}/node/bin:${LINUX_PATH}"`,
+  `export DESKPOST_LINUX_CLONE="$HOME/${CLONE}/app"`,
   `cd "$HOME/${CLONE}/app" || exit 125`,
   'exec bash "$d/$0" "$@"',
 ].join('\n');

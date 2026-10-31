@@ -17,6 +17,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { linkedComponent } from './vault.ts';
 
 export function ensureDirectory(directory: string): void {
   fs.mkdirSync(directory, { recursive: true });
@@ -108,12 +109,28 @@ function removeDebris(staging: string): void {
 /** Stage `write` in the Library's staging folder, or beside the file; publish it by rename, EXDEV re-staged beside. */
 function writeStaged(file: string, write: (staging: string) => void, beforeRename: () => void = () => {}): void {
   const directory = path.dirname(file);
-  ensureDirectory(directory);
   const library = libraryRootOf(directory);
+  let ancestor = directory;
+  while (!fs.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) throw new Error(`The filesystem root '${ancestor}' is unavailable. Nothing was written.`);
+    ancestor = parent;
+  }
+  const boundary = library ?? ancestor;
+  const checked = path.join(fs.realpathSync(path.dirname(boundary)), path.basename(boundary), path.relative(boundary, directory));
+  const linked = linkedComponent(checked);
+  if (linked !== null) throw new Error(`The staging folder '${directory}' is reached through symbolic link or junction '${linked}'. Nothing was written.`);
+  ensureDirectory(directory);
   const besideOnly = library === null || path.resolve(directory).toLowerCase().startsWith(path.join(library, STAGING_FOLDER).toLowerCase());
   const attempts = besideOnly ? [directory] : [path.join(library!, STAGING_FOLDER), directory];
   for (let index = 0; index < attempts.length; index += 1) {
     const stagingDirectory = attempts[index]!;
+    // Check from the Library root down; a junction above it is supported. Outside a Library, check the beside folder.
+    // Best effort against pre-existing links, including EXDEV's fallback; a same-user path swap can race it.
+    const boundary = library ?? stagingDirectory;
+    const checked = path.join(fs.realpathSync(path.dirname(boundary)), path.basename(boundary), path.relative(boundary, stagingDirectory));
+    const linked = linkedComponent(checked);
+    if (linked !== null) throw new Error(`The staging folder '${stagingDirectory}' is reached through symbolic link or junction '${linked}'. Nothing was written.`);
     ensureDirectory(stagingDirectory);
     const staging = path.join(stagingDirectory, stagingName(file));
     try {

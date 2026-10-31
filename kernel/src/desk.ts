@@ -21,7 +21,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
-import { exitBookLock, enterSeatRegistryLock, type BookLock } from './locks.ts';
+import { exitBookLock, enterSeatRegistryLock, listStaleRecoveryGuards, type BookLock } from './locks.ts';
 import { convertFromShelfCatalogEntry, getShelfBook, readUtf8, shelfCatalogPath, shelfCatalogSections, SLUG_PATTERN, type ShelfBook } from './shelfbook.ts';
 import { growingState, isAddressedTo, isStartedBy, isStuckLetter, noteFrontmatter, shelfNotes, WHY_CATEGORIES, type ShelfNoteRow } from './shelfnote.ts';
 import { postboxCache } from './postbox.ts';
@@ -58,6 +58,8 @@ import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 import { deskAuditFacts } from './audit.ts';
 import { hubPages } from './hubpages.ts';
+import { asksDeskLine } from './asks.ts';
+import { readTrain } from './train.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -551,6 +553,24 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // EACH OPEN HUB'S PAGES, MEASURED (kickoffs/s125 row 2; ADR-0082): sizes, kinds, limits and `_project`'s ticked Now and
   // Next counts, read from a local collection's files on this call; null on a shared backend. Names and numbers only.
   const hubPageRows = hubPages(workspace, openProjects.map(String));
+  // THE WEEK'S ASKS (kickoffs/s166 row 3): the newest `deskpost asks --write` count as one line, absent with none. The
+  // Desk reads it and never runs the count.
+  const asksThisWeek = asksDeskLine(workspace);
+  const { guards: staleRecoveryGuards, unreadable: recoveryGuardsUnreadable } = listStaleRecoveryGuards(workspace);
+  let trainRead: ReturnType<typeof readTrain> = null, trainError: string | null = null;
+  try { trainRead = readTrain(workspace); }
+  catch (error) { trainError = error instanceof Error ? error.message : String(error); }
+  const trainRecord = trainRead;
+  const train: Record<string, PsJsonValue> | null = trainError !== null ? { unreadable: trainError } : trainRecord === null ? null : {
+    changed_at: trainRecord.changed_at,
+    open_items: trainRecord.items.filter(item => item.status === 'open').length,
+    handbacks_since: captureBookRows(workspace).filter(book => book.slug === 'letters').flatMap(book => {
+      const reviewed = path.join(path.dirname(book.notesPath), 'reviewed');
+      const folders = fs.existsSync(reviewed) ? [reviewed, ...fs.readdirSync(reviewed, { recursive: true, encoding: 'utf8' })
+        .map(name => path.join(reviewed, name)).filter(folder => fs.statSync(folder).isDirectory())] : [];
+      return [book.notesPath, ...folders].flatMap(notesPath => shelfNotes({ ...book, notesPath }));
+    }).filter(note => isAddressedTo(note, self) && note.title.includes(' handback: ') && Date.parse(note.captured) > Date.parse(trainRecord.changed_at)).length,
+  };
 
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
@@ -562,6 +582,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     this_seat: thisSeat,
     ...(lettersForThisSeat !== null ? { letters_for_this_seat: lettersForThisSeat } : {}),
     ...(lettersFromThisSeat !== null ? { letters_from_this_seat: lettersFromThisSeat } : {}),
+    ...(asksThisWeek !== null ? { asks_this_week: asksThisWeek } : {}),
+    ...(train !== null ? { train } : {}),
+    ...(staleRecoveryGuards.length ? { stale_recovery_guards: staleRecoveryGuards } : {}),
+    ...(recoveryGuardsUnreadable !== null ? { recovery_guards_unreadable: recoveryGuardsUnreadable } : {}),
     ...(postbox !== null ? { postbox, this_library: (() => {
       const state=postboxCache(workspace).state!;
       const pin=state['reports_triager'] as Record<string,PsJsonValue> | null;

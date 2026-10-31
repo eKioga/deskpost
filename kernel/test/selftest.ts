@@ -587,6 +587,11 @@ if (selected(8)) {
       vault: ['vault', 'no-such-action'],
       // s161. With no workspace it refuses in the resolver's words, in its own branch.
       'needs-you': ['needs-you', 'no-such-word'],
+      // s166. undo and redo with no id refuse in their own words; asks with no workspace in the resolver's, in its branch.
+      undo: ['undo'],
+      redo: ['redo'],
+      asks: ['asks'],
+      train: ['train'],
     };
     for (const [verb, declaration] of Object.entries(VERBS)) {
       if (!declaration.ported) continue;
@@ -867,7 +872,11 @@ if (selected(11)) {
     const workspace = path.join(root, name);
     fs.mkdirSync(path.join(workspace, 'notebook'), { recursive: true });
     fs.mkdirSync(path.join(workspace, 'internal'), { recursive: true });
-    if (layout === 'seat-owned') fs.writeFileSync(path.join(workspace, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+    if (layout === 'seat-owned') {
+      fs.writeFileSync(path.join(workspace, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+      fs.mkdirSync(path.join(workspace, '.claude', 'seats'), { recursive: true });
+      fs.writeFileSync(path.join(workspace, '.claude', 'seats', '_registry.json'), JSON.stringify({ seats: [{ seat: 'alpha', project: 'alpha' }, { seat: 'beta', project: 'beta' }] }));
+    }
     if (layout === 'legacy') fs.mkdirSync(path.join(workspace, 'notebook', 'old-topic'));
     if (layout === 'migrating') {
       fs.mkdirSync(path.join(workspace, 'internal', 'notebook-migration'), { recursive: true });
@@ -7593,8 +7602,8 @@ if (selected(82)) {
 // --- 83. EVERY CLOSE LEAVES A `reviewed:` STAMP (S73 row 1, PLAN-holding-discipline.md) ---------------------------
 // `review` and `notebook` close a note, and each now writes `reviewed: <utc>` beside `review: done`. The runner
 // writes it at execution, so it is in no action's metadata and the plan id a preflight gives is the one the run
-// accepts. A `done` note closed before the stamp existed is stamped by a `review` of it, which reports
-// `stamped`, and until then its row reads `reviewed: null`, so nothing can age it. `--reopen` clears the stamp.
+// accepts. A `done` note closed before the stamp existed stays unstamped on a no-op review (c77 row 2,
+// standing answers 2 and 6); its date remains unknown, so nothing can age it. `--reopen` clears the stamp.
 if (selected(83)) {
   const w = await seatClaimWorkspace('reviewed');
   try {
@@ -7628,10 +7637,11 @@ if (selected(83)) {
       const planId = String(parsed(preflight)['plan_id'] ?? '');
       const again = String(parsed(cli(['triage', 'batch', '--actions', JSON.stringify(actions), '--preflight', '--json']))['plan_id'] ?? '');
       check(planId !== '' && planId === again, `two preflights of one batch gave two plan ids: ${planId} ${again} ${preflight.stderr.trim()}`);
-      check(!/"reviewed"|reviewed: \d/.test(preflight.stdout), `the preflight carries a reviewed stamp: ${preflight.stdout.slice(0, 300)}`);
+      check(parsed(preflight)['confirmation_required'] === false || !/"reviewed"|reviewed: \d/.test(preflight.stdout), `an actionable preflight carries a reviewed stamp: ${preflight.stdout.slice(0, 300)}`);
       const ran = cli(['triage', 'batch', '--actions', JSON.stringify(actions), '--user-confirmed', '--plan-id', planId, '--json']);
       const report = parsed(ran);
-      check(ran.exit === 0 && report['status'] === 'complete', `the preflight's plan id was not the one the run accepted: ${ran.stdout.slice(0, 400)} ${ran.stderr.trim()}`);
+      check(ran.exit === 0 && ['complete', 'already_done'].includes(String(report['status'])), `the preflight's plan id was not the one the run accepted: ${ran.stdout.slice(0, 400)} ${ran.stderr.trim()}`);
+      if (report['status'] === 'already_done') return report['actions'] as Record<string, unknown>[];
       return ((report['outcomes'] as { result: Record<string, unknown> | null }[] | undefined) ?? []).map((row) => row.result ?? {});
     };
 
@@ -7649,16 +7659,19 @@ if (selected(83)) {
     const copiedText = noteText('copy-me');
     check(/^review: done$/m.test(copiedText) && stampOf(copiedText) !== null, `the note copied to the Notebook has no reviewed stamp: ${copiedText}`);
 
-    // 3. A stampless `done` note reads unstamped, then a review stamps it, then a second review changes nothing.
+    // 3. A stampless done note stays unknown; a stamped note reports its existing date without writing.
     const book = getShelfBook(w.workspace, 'holding');
     equal(shelfNotes(book).find((row) => row.page === 'notes/2026-09-01-closed-long-ago')?.reviewed, null, 'a stampless done note did not read as unstamped');
     const [stamped] = batch([{ kind: 'review', source: 'holding', source_match: 'Closed long ago' }]);
-    equal(stamped?.['status'], 'stamped', 'a review of a stampless done note did not report stamped');
+    equal(stamped?.['status'], 'already_done', 'a review of a stampless done note did not report already done');
+    equal(stamped?.['reviewed'], 'unknown', 'a stampless done note invented its reviewed date');
     const stampedText = fs.readFileSync(oldDone, 'utf8');
     equal(stampedText.replace(/^reviewed: .*\n/m, ''), '---\ncaptured: 2026-09-01T10:00:00Z\nreview: done\n---\n\n# Closed long ago\n\nBody.\n', 'stamping changed more than the one line');
-    check(stampOf(stampedText) !== null, 'the stamp was not written');
-    const [unchanged] = batch([{ kind: 'review', source: 'holding', source_match: 'Closed long ago' }]);
-    equal(unchanged?.['status'], 'unchanged', 'a stamped done note was written again');
+    check(stampOf(stampedText) === null, 'a no-op review invented a stamp');
+    const [unchanged] = batch([{ kind: 'review', source: 'holding', source_match: 'Close me' }]);
+    equal(unchanged?.['status'], 'already_done', 'a stamped done note did not report already done');
+    equal(unchanged?.['reviewed'], stampOf(closedText), 'a done note did not report its existing stamp');
+    equal(noteText('close-me'), closedText, 'a stamped no-op review rewrote the note');
     equal(fs.readFileSync(oldDone, 'utf8'), stampedText, 'an unchanged review rewrote the note');
 
     // 4. `--reopen` clears the stamp.
@@ -14569,19 +14582,17 @@ if (selected(162)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-seat-templates-')));
   try {
     const checkout = path.resolve(HERE, '..', '..');
-    const performerText =
-      'This seat is a performer, working on {project}. It works its own lane and records its work on this Hub. A question with no clear destination goes to its department\'s orchestrator, which `deskpost seat cards` names. Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk. A Library defect goes to the Report Inbox. Read and close your letters before other work. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: performer v2.';
-    // SINCE S110 (ruling 9) the orchestrator is version 3, keeping ADR-0071's sentence from version 2.
-    const orchestratorText =
-      "This seat is the orchestrator of its department, working on {project}. It answers or routes every letter addressed to the department, and keeps the product's plan and a record of its progress on this Hub. It passes upward, with evidence, what keeps failing or needs the reader's decision. It does not do the department's main build work while a performer exists for it, and it answers short messages between tasks. Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk. When no seat card fits a question, it says so and asks the reader rather than guess. Read and close your letters before other work. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: orchestrator v3.";
+    const performerText = "This seat is a performer, working on {project}. It keeps true the one job its card names, and records its work on this Hub. A question with no clear destination goes to its department's orchestrator, which `deskpost seat cards` names. Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk. A Library defect goes to the Report Inbox. Read and close your letters before other work. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: performer v3.";
+    // C75: the orchestrator is version 4; both purposes are pinned word for word.
+    const orchestratorText = "This seat is the orchestrator of its department, working on {project}. It keeps true that the department builds the right next thing, one approved unit at a time. It keeps the order of work on this Hub, writes one bounded Kickoff per unit, reviews each handback before the next unit, and tidies its builders' Hubs. It answers or routes every letter addressed to the department, and passes to the reader, with evidence, what keeps failing or is the reader's to decide. It does not build a Kickoff's rows while a builder exists for them. Read library-help's Building software with seats guide. Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk. A Library defect goes to the Report Inbox. Read and close your letters before other work. Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. Seat template: orchestrator v4.";
 
     // BOTH LOAD, AND FILL.
-    equal(seatTemplateNames(checkout).join(','), 'auditor,developer,ideas,orchestrator,performer,planner', 'the program tree does not carry exactly the six built-in templates');
+    equal(seatTemplateNames(checkout).join(','), 'auditor,builder,orchestrator,performer,planner', 'the program tree does not carry exactly the five built-in templates');
     for (const [name, expected] of [['performer', performerText], ['orchestrator', orchestratorText]] as const) {
       const template = loadSeatTemplate(checkout, name);
       equal(JSON.stringify(Object.keys(JSON.parse(fs.readFileSync(path.join(checkout, 'templates', 'seats', `${name}.json`), 'utf8')) as object)), '["schema","name","version","role","purpose"]', `${name}.json carries other keys or another order`);
       equal(template.role, name, `${name}.json's role is not ${name}`);
-      const version = name === 'orchestrator' ? 3 : 2;
+      const version = name === 'orchestrator' ? 4 : 3;
       equal(template.version, version, `${name}.json is not version ${version}`);
       equal(seatTemplateId(template), `${name}@${version}`, `${name}'s registry id is not ${name}@${version}`);
       equal(template.purpose, expected, `${name}.json's purpose is not appendix B's text word for word`);
@@ -14733,7 +14744,7 @@ if (selected(163)) {
       const ran = cli(['seat', 'start', 'gamma', '--project', 'gamma', ...args, '--preflight']);
       check(ran.exit !== 0 && ran.stderr.includes(words) && ran.stderr.includes('Nothing was created.'), `${label} was not refused: ${ran.stderr.trim()}`);
     };
-    refused(['--template', 'builder', '--department', 'eng'], "Unknown seat template 'builder'.", 'an unknown template');
+    refused(['--template', 'developer', '--department', 'eng'], "Unknown seat template 'developer'.", 'an unknown template');
     refused(['--template', 'performer', '--role', 'orchestrator', '--department', 'eng'], 'disagrees with template', 'a role disagreeing with the template');
     refused(['--role', 'performer'], 'A role requires a department', 'a role with no department');
     refused(['--template', 'performer'], "Template 'performer' gives this seat the role performer", 'a template with no department');
@@ -14744,13 +14755,13 @@ if (selected(163)) {
     const planArgs = ['--department', 'eng', '--template', 'orchestrator', '--card', 'Routes the engineering letters.', '--open-book', 'codex', '--open-book', 'atlas'];
     const preview = json(cli(['seat', 'start', 'beta', '--project', 'beta', ...planArgs, '--preflight']), 'a preflight with every option');
     equal(preview['role'], 'orchestrator', "the template's role was not the default");
-    equal(preview['template'], 'orchestrator@3', 'the preflight did not name the template');
+    equal(preview['template'], 'orchestrator@4', 'the preflight did not name the template');
     equal(JSON.stringify(preview['open_books']), '["atlas","codex"]', 'the repeated --open-book did not keep both Books, sorted');
     const applied = cli(['seat', 'start', 'beta', '--project', 'beta', ...planArgs, '--plan-id', String(preview['plan_id']), '--no-launch']);
     equal(applied.exit, 0, `the wrapped id did not apply: ${applied.stderr.trim()}`);
     const betaRow = registry().find((row) => row['seat'] === 'beta') ?? {};
     equal(Object.keys(betaRow).join(','), 'seat,project,created_utc,seat_id,department,role,card,template', "the created row's fields are missing or out of order");
-    equal(`${String(betaRow['department'])}|${String(betaRow['role'])}|${String(betaRow['card'])}|${String(betaRow['template'])}`, 'eng|orchestrator|Routes the engineering letters.|orchestrator@3', "the created row's fields are wrong");
+    equal(`${String(betaRow['department'])}|${String(betaRow['role'])}|${String(betaRow['card'])}|${String(betaRow['template'])}`, 'eng|orchestrator|Routes the engineering letters.|orchestrator@4', "the created row's fields are wrong");
     const books = fs.readFileSync(path.join(seatFolder('beta'), '.open-books'), 'utf8');
     check(books.includes('shelf/atlas') && books.includes('shelf/codex'), `the chosen Books were not opened: ${books}`);
     const history = fs.readFileSync(historyFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -14847,11 +14858,11 @@ if (selected(164)) {
     check(/^\s+1\s+aardvark$/m.test(out), `the Shelf Books were not numbered from the catalog: ${out.slice(0, 1200)}`);
     check(out.includes("'eng' is a new department.") && out.includes("Department 'eng' has no orchestrator yet."), `the department step did not flag a new department or name its orchestrator: ${out.slice(0, 1500)}`);
     for (const line of [
-      '  Purpose    This seat is a performer, working on atlas-work. It works its own lane',
+      '  Purpose    This seat is a performer, working on atlas-work. It keeps true the one job its card names,',
       '  Department eng (new)',
       '  Role       performer',
       '  Card       Builds the atlas pages.',
-      '  Template   performer@2',
+      '  Template   performer@3',
       '  Books      shelf/aardvark',
     ]) {
       check(out.includes(line), `the preview lacks '${line.trim()}': ${out.slice(-2000)}`);
@@ -14859,9 +14870,9 @@ if (selected(164)) {
     const previewId = /plan_id\s+(seat-start-[0-9a-f]{64})/.exec(out)?.[1] ?? '';
     check(previewId !== '', `the preview did not show the wrapped plan_id: ${out.slice(-1500)}`);
     check(out.includes(`eng-dev --project atlas-work`) && out.includes(`--plan-id ${previewId} --template performer --department eng --card "Builds the atlas pages." --open-book aardvark`), `the wizard did not run seat start with its choices: ${out.slice(-1500)}`);
-    check(hub('atlas-work').includes('This seat is a performer, working on atlas-work.') && hub('atlas-work').includes('Seat template: performer v2.'), `the new Hub does not carry the filled Purpose: ${hub('atlas-work').slice(0, 800)}`);
+    check(hub('atlas-work').includes('This seat is a performer, working on atlas-work.') && hub('atlas-work').includes('Seat template: performer v3.'), `the new Hub does not carry the filled Purpose: ${hub('atlas-work').slice(0, 800)}`);
     const atlas = rowOf('eng-dev');
-    equal(`${String(atlas['department'])}|${String(atlas['role'])}|${String(atlas['card'])}|${String(atlas['template'])}`, 'eng|performer|Builds the atlas pages.|performer@2', "the wizard's registry row lacks its fields");
+    equal(`${String(atlas['department'])}|${String(atlas['role'])}|${String(atlas['card'])}|${String(atlas['template'])}`, 'eng|performer|Builds the atlas pages.|performer@3', "the wizard's registry row lacks its fields");
     const history = fs.readFileSync(path.join(lib, 'internal', 'seat-registry-history.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     const started = history.find((line) => line['verb'] === 'start' && line['seat'] === 'eng-dev');
     check(started !== undefined && started['plan_id'] === previewId && history.some((line) => line['attempt'] === started['attempt'] && line['committed'] === true), `the wizard's start has no history record with its commit line: ${JSON.stringify(history)}`);
@@ -19613,15 +19624,13 @@ if (selected(211)) {
   try {
     const checkout = path.resolve(HERE, '..', '..');
     const rule = 'Every request and every answer to another seat is a letter; when that seat is open, ring it once with a message naming the letter. A Codex seat has no inbox, so its letters wait for its Desk.';
-    // (a)
-    for (const name of ['auditor', 'ideas']) {
+    // (a) All five purposes, roles and provenance agree with the approved template contract.
+    for (const [name, version, role] of [['orchestrator',4,'orchestrator'],['planner',2,'performer'],['builder',1,'performer'],['auditor',2,'performer'],['performer',3,'performer']] as const) {
       const template = loadSeatTemplate(checkout, name);
-      check(template.role === 'performer' && template.version === 1 && seatTemplateId(template) === `${name}@1`, `${name}.json is not a version 1 performer template: ${JSON.stringify({ role: template.role, version: template.version })}`);
-      check(template.purpose.includes(rule) && template.purpose.endsWith(`Seat template: ${name} v1.`) && template.purpose.includes('{project}'), `${name}.json's purpose lacks ADR-0071's sentence or its provenance`);
+      equal(template.version, version, name + ' version'); equal(template.role, role, name + ' role');
+      equal(seatTemplateId(template), name + '@' + version, name + ' registry id');
+      check(template.purpose.includes(rule) && template.purpose.endsWith('Seat template: ' + name + ' v' + version + '.') && template.purpose.includes('{project}'), name + ' lacks shared rules or provenance');
     }
-    const orchestrator = loadSeatTemplate(checkout, 'orchestrator');
-    check(orchestrator.version === 3 && orchestrator.purpose.includes(rule) && orchestrator.purpose.endsWith('Seat template: orchestrator v3.'), 'orchestrator.json is not version 3 with ADR-0071\'s sentence');
-    equal(loadSeatTemplate(checkout, 'performer').version, 2, 'performer.json is no longer version 2');
 
     // (b) and (c), through the front door with scripted answers and a fake Claude Code.
     const windows = process.platform === 'win32';
@@ -19648,26 +19657,31 @@ if (selected(211)) {
       fs.writeFileSync(script, answers.join('\n') + '\n');
       return runCli(['menu', '--workspace', lib, '--script', script, '--width', '200'], { cwd: root, env });
     };
-    const keys = 'Template   [p] performer  [o] orchestrator  [a] auditor  [i] ideas  [d] developer  [l] planner  [Enter] none › ';
-    for (const [project, key, name, seat] of [['Audit Work', 'a', 'auditor', 'qa-audit'], ['Idea Work', 'i', 'ideas', 'qa-ideas']] as const) {
-      const ran = menu(['+', project, 'qa', key, '', '', '', '']);
+    const keys = 'Template   [p] performer  [o] orchestrator  [l] planner  [b] builder  [a] auditor  [Enter] none › ';
+    for (const [project, key, name, seat] of [['Audit Work', 'a', 'auditor', 'qa-audit'], ['Plan Work', 'l', 'planner', 'qa-plan'], ['Build Work', 'b', 'builder', 'qa-dev'], ['Perform Work', 'p', 'performer', 'other-dev']] as const) {
+      const ran = menu(['+', project, name === 'performer' ? 'other' : 'qa', key, '', '', '', '']);
       const out = ran.stdout;
       const order = ['Department, a slug', keys, `Seat name   [Enter] ${seat} › `, 'Card, one line'].map((prompt) => out.indexOf(prompt));
       check(ran.exit === 0 && order.every((at, index) => at >= 0 && (index === 0 || at > order[index - 1]!)), `the wizard did not ask department, template, name, card in that order for ${name}: ${order.join(',')} ${out.slice(0, 1500)} ${ran.stderr.trim()}`);
       const row = rows().find((candidate) => candidate['seat'] === seat) ?? {};
-      equal(`${String(row['template'])}|${String(row['role'])}|${String(row['department'])}`, `${name}@1|performer|qa`, `the ${name} seat's row does not take its role from the template`);
+      equal(`${String(row['template'])}|${String(row['role'])}|${String(row['department'])}`, `${name}@${name === 'auditor' || name === 'planner' ? 2 : name === 'performer' ? 3 : 1}|performer|${name === 'performer' ? 'other' : 'qa'}`, `the ${name} seat's row does not take its role from the template`);
     }
     // THE ROLE IS THE TEMPLATE'S: an orchestrator template makes an orchestrator, named <department>-lead.
     equal(menu(['+', 'Lead Work', 'qa', 'o', '', '', '', '']).exit, 0, 'the orchestrator seat was not made through the wizard');
-    equal(`${String(rows().find((row) => row['seat'] === 'qa-lead')?.['role'])}|${String(rows().find((row) => row['seat'] === 'qa-lead')?.['template'])}`, 'orchestrator|orchestrator@3', 'the orchestrator seat does not carry the role and version its template gives');
+    equal(`${String(rows().find((row) => row['seat'] === 'qa-lead')?.['role'])}|${String(rows().find((row) => row['seat'] === 'qa-lead')?.['template'])}`, 'orchestrator|orchestrator@4', 'the orchestrator seat does not carry the role and version its template gives');
 
-    // (b) orchestrator@1 and @2 in a row stay valid as provenance: doctor's registry-fields check passes.
-    const document = JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^﻿/, '')) as { seats: Record<string, unknown>[] };
-    document.seats = document.seats.map((row) => (row['seat'] === 'qa-audit' ? { ...row, template: 'orchestrator@1', role: 'performer' } : row['seat'] === 'qa-ideas' ? { ...row, template: 'orchestrator@2' } : row));
-    fs.writeFileSync(registryFile, JSON.stringify(document, null, 4) + '\n');
-    const doctor = JSON.parse(runCli(['doctor', '--json', '--workspace', lib], { cwd: root, env }).stdout || '{}') as Record<string, unknown>;
-    const fields = ((doctor['library_checks'] ?? []) as { check: string; status: string; detail: string }[]).find((row) => row.check === 'seats.registry-fields');
-    check(fields?.status === 'pass', `orchestrator@1 or @2 in a row is not valid provenance: ${JSON.stringify(fields)}`);
+    // (b) Current and retired template IDs remain creation provenance, never a migration.
+    const document = JSON.parse(fs.readFileSync(registryFile, 'utf8').replace(/^\uFEFF/, '')) as { seats: Record<string, unknown>[] };
+    const retired = ['orchestrator@1', 'orchestrator@2', 'developer@1', 'ideas@1', 'planner@1'];
+    for (const template of retired) {
+      document.seats = document.seats.map(row => row['seat'] === 'qa-audit' ? { ...row, template } : row);
+      fs.writeFileSync(registryFile, JSON.stringify(document, null, 4) + '\n');
+      const doctor = JSON.parse(runCli(['doctor', '--json', '--workspace', lib], { cwd: root, env }).stdout || '{}') as Record<string, unknown>;
+      const fields = ((doctor['library_checks'] ?? []) as { check: string; status: string; detail: string }[]).find(row => row.check === 'seats.registry-fields');
+      check(fields?.status === 'pass', template + ' is not valid provenance: ' + JSON.stringify(fields));
+      const status = runCli(['seat', 'status', '--seat', 'qa-audit', '--workspace', lib], { cwd: root, env });
+      check(status.exit === 0 && status.stdout.includes(template), template + ' not tolerated by seat status: ' + status.stderr);
+    }
   } catch (error) {
     failures.push(`section 211 stopped early: ${(error as Error).message}`);
   } finally {
@@ -19715,6 +19729,7 @@ if (selected(212)) {
       hubNotes: 'collection/projects/alpha/notes/2026-10-10-history.md',
       collectionArchive: 'collection/archive/old/wiki/linked.md',
       shelfArchive: 'shelf/_archive/older/wiki/linked.md',
+      reviewed: 'shelf/holding/wiki/reviewed/2026-10/closed.md',
     };
     for (const page of Object.values(pages)) {
       const full = path.join(ws, ...page.split('/'));
@@ -19724,7 +19739,7 @@ if (selected(212)) {
     const deadDetail = () => ((json(w.as(process.pid, ['doctor', '--workspace', ws, '--json']))['library_checks'] ?? []) as { check: string; detail: string }[]).find((row) => row.check === 'notebook.links-resolve')?.detail ?? '';
     const inbound = () => ((json(w.as(agent, ['reset', '--seat', 'first', '--workspace', ws, '--json', '--preflight']))['inbound_links'] ?? []) as { page: string }[]).map((row) => row.page);
     const counted = [pages.liveHub!, pages.curated!, notePage];
-    const skipped = [pages.hubNotes!, pages.collectionArchive!, pages.shelfArchive!];
+    const skipped = [pages.hubNotes!, pages.collectionArchive!, pages.shelfArchive!, pages.reviewed!];
     // A PENDING capture note is a live record: counted with the live Hub page and the curated Book page.
     let detail = deadDetail();
     let rows = inbound();
@@ -19736,6 +19751,20 @@ if (selected(212)) {
       check(!detail.includes(page), `doctor counted a dead link in history, ${page}: ${detail.slice(0, 600)}`);
       check(!rows.includes(page), `the reset listed a link from history, ${page}: ${rows.join(', ')}`);
     }
+    // Publication frontmatter is provenance; an identical path in the body is a link.
+    const frontmatterPage = 'shelf/demo/wiki/_book.md';
+    const frontmatterFile = path.join(ws, ...frontmatterPage.split('/'));
+    const provenance = '---\nsource_boundary: notebook/first/gone/page\n---\n# Demo\n';
+    fs.writeFileSync(frontmatterFile, provenance);
+    check(!deadDetail().includes(frontmatterPage), '212: doctor counted publication frontmatter');
+    const { notebookLinks } = await import('../src/notebooklinks.ts');
+    check(!notebookLinks(ws).some((link) => link.page === frontmatterPage), '212: frontmatter entered the shared scan');
+    fs.writeFileSync(frontmatterFile, provenance + '\nSee notebook/first/gone/page and notebook/first/findings/page.\n');
+    const bodyLinks = notebookLinks(ws).filter((link) => link.page === frontmatterPage);
+    check(bodyLinks.length === 2 && bodyLinks.every((link) => link.line === 6), '212: body links or their original line numbers were lost');
+    check(deadDetail().includes(frontmatterPage) && inbound().includes(frontmatterPage), '212: body links did not reach doctor and reset');
+    fs.writeFileSync(frontmatterFile, provenance);
+    check(!inbound().includes(frontmatterPage), '212: publication frontmatter blocked reset');
     // CLOSED, the same note is history: neither counts it.
     const noteFile = path.join(notesDir, noteName!);
     fs.writeFileSync(noteFile, fs.readFileSync(noteFile, 'utf8').replace(/^review: pending$/m, 'review: done'));
@@ -21483,7 +21512,7 @@ if (selected(228)) {
       'A Codex seat has no inbox, so its letters wait for its Desk.',
       'Read and close your letters before other work.',
       'Reports, letters and Hubs never carry a secret: name the 1Password item, never its value.',
-      'Building software with seats', 'The menu suggests a usual permission level; nothing is chosen without the reader.',
+      'A Library defect goes to the Report Inbox.',
     ];
     const lib = path.join(root, 'lib'), bin = path.join(root, 'bin'), home = path.join(root, 'home');
     fs.mkdirSync(bin); fs.mkdirSync(home);
@@ -21508,25 +21537,29 @@ if (selected(228)) {
       return input;
     };
     for (const [name, role, project, slug, seat] of [
-      ['developer', 'performer', 'Build Work', 'build-work', 'engineering-dev'],
-      ['planner', 'orchestrator', 'Plan Work', 'plan-work', 'engineering-plan'],
+      ['builder', 'performer', 'Build Work', 'build-work', 'engineering-dev'],
+      ['planner', 'performer', 'Plan Work', 'plan-work', 'engineering-plan'],
+      ['orchestrator', 'orchestrator', 'Lead Work', 'lead-work', 'engineering-lead'],
+      ['auditor', 'performer', 'Audit Work', 'audit-work', 'engineering-audit'],
+      ['performer', 'performer', 'Other Work', 'other-work', 'other-dev'],
     ] as const) {
       const template = loadSeatTemplate(checkout, name);
-      equal(template.version, 1, `${name} version`); equal(template.role, role, `${name} role`);
-      check(common.every(rule => template.purpose.includes(rule)) && template.purpose.endsWith(`Seat template: ${name} v1.`), `${name} omitted shared rules or provenance`);
-      const ran = menu(['+', project, 'engineering', inputFor(name), '', '', '', '']);
+      const version = name === 'orchestrator' ? 4 : name === 'performer' ? 3 : name === 'builder' ? 1 : 2;
+      equal(template.version, version, `${name} version`); equal(template.role, role, `${name} role`);
+      check(common.every(rule => template.purpose.includes(rule)) && template.purpose.endsWith(`Seat template: ${name} v${version}.`), `${name} omitted shared rules or provenance`);
+      const ran = menu(['+', project, name === 'performer' ? 'other' : 'engineering', inputFor(name), '', '', '', '']);
       check(ran.exit === 0 && ran.stdout.includes(`Seat name   [Enter] ${seat}`), `${name} proposed name/creation failed: ${ran.stderr} ${ran.stdout.slice(-1800)}`);
       const row = rows().find(row => row['seat'] === seat) ?? {};
-      equal(`${row['department']}|${row['role']}|${row['template']}|${row['project']}`, `engineering|${role}|${name}@1|${slug}`, `${name} registry effect`);
+      equal(`${row['department']}|${row['role']}|${row['template']}|${row['project']}`, `${name === 'performer' ? 'other' : 'engineering'}|${role}|${name}@${version}|${slug}`, `${name} registry effect`);
       const hub = fs.readFileSync(path.join(lib, 'collection', 'projects', slug, '_project.md'), 'utf8');
       check(hub.includes(fillSeatTemplate(template, slug)) && !hub.includes('{project}'), `${name} did not write the filled purpose`);
     }
-    // A planner in this department is refused by the same rule as any other orchestrator template.
-    const refused = menu(['+', 'Plan Two', 'engineering', inputFor('planner'), inputFor('developer'), '', '', '', '']);
-    check(refused.exit === 0 && refused.stdout.includes("Department 'engineering' already has an orchestrator, 'engineering-plan'"), 'second planner was not refused');
+    // A second orchestrator in this department is refused by the same rule as any other orchestrator template.
+    const refused = menu(['+', 'Plan Two', 'engineering', inputFor('orchestrator'), inputFor('planner'), '', '', '', '']);
+    check(refused.exit === 0 && refused.stdout.includes("Department 'engineering' already has an orchestrator, 'engineering-lead'"), 'second orchestrator was not refused');
     const second = rows().find(row => row['project'] === 'plan-two') ?? {};
-    equal(`${second['role']}|${second['template']}`, 'performer|developer@1', 'refused planner still made an orchestrator');
-    equal(rows().filter(row => row['department'] === 'engineering' && row['role'] === 'orchestrator').length, 1, 'planner refusal changed department uniqueness');
+    equal(`${second['role']}|${second['template']}`, 'performer|planner@2', 'refused orchestrator still made an orchestrator');
+    equal(rows().filter(row => row['department'] === 'engineering' && row['role'] === 'orchestrator').length, 1, 'orchestrator refusal changed department uniqueness');
   } catch (error) { failures.push('section 228 stopped early: ' + (error as Error).message); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -21972,10 +22005,10 @@ if (selected(237)) {
       {id:'submit',text:'--sandbox danger-full-access.'}, {id:'submit',text:'full'}, {id:'make'}]);
     check(custom.screens.some(s => s.title === 'These settings give full access.'), 'typed full settings bypass confirmation');
     check(custom.screens.some(s => (s.after ?? []).some((line: string) => line.includes('or keep typing'))), 'near-missed value has no in-place fix');
-    const advanced = await run('model-project', [{id:'codex'}, {id:'work'}, {id:'more'}, {id:'submit',text:'engineering'}, {id:'developer'}, {id:'submit',text:'engineering-dev'}, {id:'submit',text:''}, {id:'make'}]);
+    const advanced = await run('model-project', [{id:'codex'}, {id:'work'}, {id:'more'}, {id:'submit',text:'engineering'}, {id:'builder'}, {id:'submit',text:'engineering-dev'}, {id:'submit',text:''}, {id:'make'}]);
     const advancedRows = JSON.parse(fs.readFileSync(path.join(w.workspace,'.claude','seats','_registry.json'),'utf8')).seats;
     const advancedRow = advancedRows.find((r:any)=>r.seat==='engineering-dev');
-    check(advancedRow?.project==='model-project' && advancedRow?.template==='developer@1' && advancedRow?.role==='performer', 'More choices changed the Project or lost the K2 template');
+    check(advancedRow?.project==='model-project' && advancedRow?.template==='builder@1' && advancedRow?.role==='performer', 'More choices changed the Project or lost the K2 template');
     check(advanced.receipts.includes('Made engineering-dev. Ready for later.'), 'advanced receipt names the Project rather than the seat');
     const cancelled = await run('cancelled-seat', [{id:'codex'}, {id:'work'}, {id:'back'}, {id:'back'}, {id:'back'}, {id:'back'}]);
     check(!menuRows(w.workspace).some(r => r.seat === 'cancelled-seat'), 'cancel wrote a seat');
@@ -22114,7 +22147,7 @@ if (selected(240)) {
 
     // (f) Two sections swapped.
     const swapped: Record<string, string> = {};
-    for (const name of ['SIZE', 'WHY NOW', ...kc.REQUIRED_SECTIONS.slice(2)]) swapped[name] = good[name]!;
+    for (const name of [kc.REQUIRED_SECTIONS[1]!, kc.REQUIRED_SECTIONS[0]!, ...kc.REQUIRED_SECTIONS.slice(2)]) swapped[name] = good[name]!;
     const order = kc.checkKickoff(body(swapped));
     check(order.missing.length === 0 && order.outOfOrder.length > 0, `swapped sections were not named out of order: ${JSON.stringify(order)}`);
 
@@ -22501,6 +22534,10 @@ if (selected(246)) {
 // --- 247. CHECKPOINT CLI: SEAT/CONVERSATION RECORDS, OBSERVE/CHECK/CANCEL AND DESK CHANGES ----------------
 if (selected(247)) {
   const w = await seatClaimWorkspace('c21-checkpoint', {pin:false});
+  const checkpointJson = (result: {exit:number;stdout:string;stderr:string}, command: string): any => {
+    if (!result.stdout.trim()) throw new Error(`247: checkpoint ${command}: empty stdout; exit ${result.exit}; stderr ${JSON.stringify(result.stderr)}`);
+    return JSON.parse(result.stdout);
+  };
   try {
     const agent = w.startAgent();
     w.seatMade('first','alpha',agent,'Checkpoint CLI fixture');
@@ -22520,14 +22557,14 @@ if (selected(247)) {
     }
     const pristine=cli(['status']);
     equal(pristine.exit,0,'fresh status failed: '+pristine.stderr);
-    equal(JSON.parse(pristine.stdout).savedAt,null,'new conversation inherited save');
+    equal(checkpointJson(pristine, 'status').savedAt,null,'new conversation inherited save');
     check(!fs.existsSync(path.join(w.workspace,'internal','checkpoints')),'status wrote checkpoint files');
     const intruder=cli(['request','save'],undefined,{LIBRARY_SEAT_CLAIM:'wrong-claim',CLAUDE_PID:String(process.pid)});
     check(intruder.exit!==0 && intruder.stderr.includes('does not hold seat'),'foreign claimant changed checkpoint state');
     check(!fs.existsSync(path.join(w.workspace,'internal','checkpoints')),'refused claimant created checkpoint files');
     const requested=cli(['request','closeout']);
     equal(requested.exit,0,'closeout request failed: '+requested.stderr);
-    const req=JSON.parse(requested.stdout);
+    const req=checkpointJson(requested, 'request closeout');
     check(req.prompt.includes('1. **Reports first**') && req.prompt.includes('hub alpha:'),'request omitted request text/items');
     const quiet='```closeout\nreports: none: fixture only\nhub alpha: nothing new: no fixture work\n```';
     check(cli(['request','save']).exit!==0,'save replaced pending closeout');
@@ -22535,7 +22572,7 @@ if (selected(247)) {
     check(wrong.exit!==0,'wrong request id accepted');
     const noTracking=cli(['check','closeout'],quiet);
     equal(noTracking.exit,0,'gap check did not return JSON');
-    check(JSON.parse(noTracking.stdout).gaps.some((g:string)=>g.includes('tracking')),'untracked state passed');
+    check(checkpointJson(noTracking, 'check closeout').gaps.some((g:string)=>g.includes('tracking')),'untracked state passed');
     check(cli(['check','closeout'],quiet).exit!==0,'consumed request replayed');
     const content=path.join(w.root,'page.md');
     fs.writeFileSync(content,'# Fixture checkpoint\n\nSaved in a real fixture writer.\n');
@@ -22545,27 +22582,27 @@ if (selected(247)) {
     equal(cli(['observe'],JSON.stringify(observed)).exit,0,'observe actual writer failed');
     const next=cli(['request','closeout']);equal(next.exit,0,'second request failed');
     const updated=quiet.replace('nothing new: no fixture work','updated notes/checkpoint');
-    const clean=cli(['check','closeout','--request-id',JSON.parse(next.stdout).request_id],updated);
+    const clean=cli(['check','closeout','--request-id',checkpointJson(next, 'request closeout').request_id],updated);
     equal(clean.exit,0,'clean check failed: '+clean.stderr);
-    const checked=JSON.parse(clean.stdout);
+    const checked=checkpointJson(clean, 'check closeout');
     equal(checked.closeout,'done','actual observed writer did not pass');
     check(checked.savedAt!==null,'clean closeout not also save');
     const replay=cli(['observe'],JSON.stringify(observed));
-    equal(JSON.parse(replay.stdout).writes.length,1,'observer replay duplicated write');
-    equal(JSON.parse(replay.stdout).closeout,'done','observer replay staled done');
+    equal(checkpointJson(replay, 'observe').writes.length,1,'observer replay duplicated write');
+    equal(checkpointJson(replay, 'observe').closeout,'done','observer replay staled done');
     const other=runCli(['checkpoint','status','--conversation','conversation-two','--workspace',w.workspace],{cwd:w.root,env});
-    equal(JSON.parse(other.stdout).savedAt,null,'conversations share state');
+    equal(checkpointJson(other, 'status --conversation conversation-two').savedAt,null,'conversations share state');
     equal(cli(['observe'],JSON.stringify({...observed,call_id:'actual-two'})).exit,0,'later write failed');
-    equal(JSON.parse(cli(['status']).stdout).closeout,'stale','later write not stale');
+    equal(checkpointJson(cli(['status']), 'status').closeout,'stale','later write not stale');
     equal(cli(['request','save','--turn','turn-a']).exit,0,'save request failed');
     const saveAnswer='```save\nhub alpha: nothing new: fixture saved\n```';
     check(cli(['check','save','--turn','turn-b'],saveAnswer).exit!==0,'foreign turn checked save');
     equal(cli(['cancel']).exit,0,'cancel failed');
-    equal(JSON.parse(cli(['status']).stdout).request,null,'cancel did not clear pending request');
+    equal(checkpointJson(cli(['status']), 'status').request,null,'cancel did not clear pending request');
     equal(cli(['request','save']).exit,0,'save after cancel failed');
     const saved=cli(['check','save'],saveAnswer);
-    equal(saved.exit,0,'save check failed');equal(JSON.parse(saved.stdout).saveState,'saved','quiet save not saved');
-    equal(JSON.parse(saved.stdout).closeout,'stale','save marked closeout complete');
+    equal(saved.exit,0,'save check failed');equal(checkpointJson(saved, 'check save').saveState,'saved','quiet save not saved');
+    equal(checkpointJson(saved, 'check save').closeout,'stale','save marked closeout complete');
     equal(cli(['request','closeout']).exit,0,'changed-Desk request failed');
     const opened=runCli(['desk','open','project','beta','--workspace',w.workspace],{cwd:w.root,env});
     // Existing fixtures require a real Project Hub before it can be opened.
@@ -22574,7 +22611,7 @@ if (selected(247)) {
       fs.mkdirSync(projectRoot,{recursive:true}); fs.writeFileSync(path.join(projectRoot,'_project.md'),'# Beta\n\n## Purpose\n\nFixture.\n\n## Now\n\n## Next\n');
       equal(runCli(['desk','open','project','beta','--workspace',w.workspace],{cwd:w.root,env}).exit,0,'could not change fixture Desk');
     }
-    const changed=JSON.parse(cli(['check','closeout'],quiet).stdout);
+    const changed=checkpointJson(cli(['check','closeout'],quiet), 'check closeout');
     check(changed.gaps.some((g:string)=>g.includes('changed')),'changed-Desk gap absent');
     const registry=JSON.parse(fs.readFileSync(path.join(w.workspace,'.claude','seats','_registry.json'),'utf8'));
     const seatId=registry.seats.find((row:{seat:string})=>row.seat==='first').seat_id;
@@ -22603,7 +22640,7 @@ if (selected(247)) {
     });
     const raced=await Promise.all([concurrent('race-one'),concurrent('race-two')]);
     for(const ran of raced) equal(ran.code,0,'concurrent observation failed: '+ran.output);
-    equal(JSON.parse(cli(['status']).stdout).writes.length,JSON.parse(original).writes.length+2,'concurrent observation lost a successful write');
+    equal(checkpointJson(cli(['status']), 'status').writes.length,JSON.parse(original).writes.length+2,'concurrent observation lost a successful write');
   } finally {w.dispose();}
 }
 
@@ -24983,6 +25020,8 @@ if (selected(278)) {
     const lib = path.join(root, 'ws');
     const env = { USERPROFILE: path.join(root, 'home'), HOME: path.join(root, 'home'), LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
     equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'the doctor fixture did not initialise');
+    fs.mkdirSync(path.join(lib, '.claude', 'seats'), { recursive: true });
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', '_registry.json'), JSON.stringify({ seats: [{ seat: 'fixture-seat', project: 'fixture-seat' }] }));
     fs.mkdirSync(path.join(lib, 'internal'), { recursive: true });
     fs.writeFileSync(path.join(lib, 'internal', 'notebook-layout.json'), JSON.stringify({ schema: 1, layout: 'seat-owned' }));
     const notebook = path.join(lib, 'notebook', 'fixture-seat');
@@ -33635,7 +33674,8 @@ async function section490(): Promise<void> {
     policy.setAddressResolver(async (host) => (host === 'mixed.example' ? ['10.20.30.40', '203.0.113.7'] : host === 'home.example' ? ['10.20.30.40', 'fd00::7'] : []));
     const mixed = await judged('http://mixed.example:1/');
     check(mixed.includes('plain HTTP to 203.0.113.7'), `490: a name resolving to a public and a private address was not refused naming the public one: ${mixed}`);
-    equal(await judged('http://home.example:1/'), '', '490: a name resolving only inside the home network was refused');
+    // kickoffs/s168 row 6: such a name now refuses as a name, since the pinned request cannot keep it as its Host.
+    check((await judged('http://home.example:1/')).includes("plain HTTP to the host name 'home.example'"), '490: a name resolving only inside the home network was not refused as a host name');
     check((await judged('http://empty.example:1/')).includes("plain HTTP to 'empty.example'"), '490: a name with no address was not refused');
     // Both routes use it. The MCP route: refused before any request, then a real loopback call still works.
     const { McpSession } = await import('../src/basicmemory.ts');
@@ -34153,7 +34193,7 @@ async function section495(): Promise<void> {
     while (!fs.existsSync(`${pause}.held`) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     check(fs.existsSync(`${pause}.held`), '495: the first undo never took its locks');
     const refused = f.undo('undo', f.idOf(held['journal']), {}, '1');
-    check(refused.exit !== 0 && refused.stderr.includes('holds the lock for projects/alpha') && refused.stderr.includes('Nothing was changed'), `495: the second process was not refused while the first held the lock: ${f.said(refused)}`);
+    check(refused.exit !== 0 && refused.stderr.includes('holds the lock for registry/desk') && refused.stderr.includes('Nothing was changed'), `495: the second process was not refused while the first held the lock: ${f.said(refused)}`);
     const waiter = f.undoAsync('undo', f.idOf(held['journal']));
     fs.rmSync(pause, { force: true });
     const [one, two] = await Promise.all([holder, waiter]);
@@ -34288,8 +34328,7 @@ if (selected(497)) await section497();
 
 // A finished undo; then another writer's failed mutation leaves the collection Book dirty with that writer's id; doctor
 // leaves it, an undo run again reports it and leaves it, and a redo refuses rather than hide it. Once it is rebuilt, the
-// redo runs. A finished record whose own marker is still down (the store's own clear failed) is cleared by doctor once,
-// and reported; the next doctor passes.
+// redo runs. Doctor reports a finished record whose own marker is still down; the validated retry clears it.
 async function section498(): Promise<void> {
   const f = await undoFixture('undo-markers');
   try {
@@ -34318,10 +34357,11 @@ async function section498(): Promise<void> {
     equal(redone['status'], 'redone', '498: the redo did not run once the Book was rebuilt');
 
     const record = f.journal(String(redone['record']));
-    setBookManifestDirty({ workspace: f.lib, slug: 'demo', collection: 'collection', reason: 'left by a store whose clear failed', operationId: String(record['operation_id']) });
+    setBookManifestDirty({ workspace: f.lib, slug: 'demo', collection: 'collection', reason: 'left by a store whose clear failed', operationId: String(record['marker_operation_id']) });
     const left = doctor()('undo.marker-left');
     check(left?.status === 'warn' && left.detail.startsWith('marker left: ') && left.detail.includes(String(redone['id'])), `498: doctor did not report the finished redo's own marker: ${JSON.stringify(left)}`);
-    equal(readBookManifestDirty(f.lib, 'demo', 'collection'), null, "498: doctor did not clear the finished redo's own marker");
+    check(readBookManifestDirty(f.lib, 'demo', 'collection') !== null, "498: doctor cleared the finished redo's marker");
+    equal(f.undo('redo', String(undone['id'])).exit, 0, '498: validated retry did not clear marker');
     equal(doctor()('undo.marker-left')?.status, 'pass', '498: doctor reported the cleared marker again');
     equal(doctor()('undo.incomplete')?.status, 'pass', '498: doctor reported an unfinished undo where there is none');
   } catch (error) {
@@ -34388,6 +34428,3061 @@ async function section499(): Promise<void> {
 }
 if (selected(499)) await section499();
 
+
+// --- 500. ORPHAN NOTEBOOK ROOTS WARN AND KEEP CROSS-SEAT WRITES DENIED (kickoffs/c67 row 8) ---
+async function section500(): Promise<void> {
+  const w = await seatClaimWorkspace('orphan-notebooks');
+  try {
+    const ws = w.workspace;
+    const first = w.startAgent();
+    const second = w.startAgent();
+    w.seatMade('first', 'alpha', first, '500: first seat was not made');
+    w.seatMade('second', 'beta', second, '500: second seat was not made');
+    const registry = path.join(ws, '.claude', 'seats', '_registry.json');
+    const record = JSON.parse(fs.readFileSync(registry, 'utf8'));
+    record.seats.find((row: { seat: string }) => row.seat === 'first').names = [
+      { name: 'old', from_utc: '2026-01-01T00:00:00Z', to_utc: '2026-10-19T06:23:13Z' },
+      { name: 'first', from_utc: '2026-10-19T06:23:13Z', to_utc: null },
+    ];
+    fs.writeFileSync(registry, JSON.stringify(record));
+    fs.writeFileSync(path.join(ws, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+    fs.rmSync(path.join(ws, 'notebook'), { recursive: true, force: true });
+    for (const owner of ['old', 'nobody']) {
+      fs.mkdirSync(path.join(ws, 'notebook', owner, 't'), { recursive: true });
+      fs.writeFileSync(path.join(ws, 'notebook', owner, 't', owner === 'old' ? 'x.md' : 'y.md'), '# Kept material\n');
+    }
+    const indexCheck = () => {
+      const result = w.as(process.pid, ['doctor', '--workspace', ws, '--json']);
+      return (JSON.parse(result.stdout).checks as { check: string; status: string; detail: string }[]).find((row) => row.check === 'notebook.master-index-renders')!;
+    };
+    const orphan = indexCheck();
+    equal(orphan.status, 'warn', '500: orphan roots were not a WARN');
+    for (const text of ["notebook/old/ is no current seat's Notebook", "it was seat 'first''s name until 2026-10-19T06:23:13Z", 'notebook/first/', "notebook/nobody/ is no current seat's Notebook", 'no seat in this Library has had that name']) {
+      check(orphan.detail.includes(text), '500: orphan diagnosis lost ' + text + ': ' + orphan.detail);
+    }
+    fs.mkdirSync(path.join(ws, 'notebook', 'first'));
+    const current = indexCheck();
+    equal(current.status, 'fail', '500: current seat missing its index did not FAIL');
+    check(current.detail.includes('notebook/first/_master-index.md is missing') && !current.detail.includes('notebook/old/') && !current.detail.includes('notebook/nobody/'), '500: FAIL did not name only the current seat: ' + current.detail);
+    const shell = (owner: string) => runCli(['hook', 'shell-shelf-read', '--workspace', ws, '--seat', 'second'], {
+      cwd: ws, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(second) },
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `echo x > notebook/${owner}/t/x.md` } }),
+    }).stdout;
+    for (const [owner, clause] of [['old', "it was seat 'first''s name until 2026-10-19T06:23:13Z"], ['nobody', 'no seat in this Library has had that name']]) {
+      const denied = shell(owner!);
+      check(denied.includes('"permissionDecision":"deny"') && denied.includes("no current seat's Notebook") && denied.includes(clause!), '500: orphan write was not denied accurately: ' + denied);
+    }
+    const denied = shell('first');
+    check(denied.includes('"permissionDecision":"deny"') && denied.includes("which is seat 'first''s Notebook"), '500: current-seat denial changed: ' + denied);
+  } catch (error) {
+    failures.push('section 500 stopped early: ' + (error as Error).message);
+  } finally {
+    w.dispose();
+  }
+}
+if (selected(500)) await section500();
+
+
+// --- 501. A refused required list prints the list that would pass (kickoffs/s166 row 1).
+async function section501(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-required-runnable-')));
+  try {
+    const env = { ...repositoryNeutralEnv(), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry'), USERPROFILE: root, HOME: root };
+    // The push tier reads the checkout's root with git before it refuses, so PATH keeps git (section 453's tiers do not).
+    const nodeEnv = repositoryNeutralEnv(env);
+    const run = (args: string[]) => spawnSync(process.execPath, args, { cwd: root, env: nodeEnv, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 1 << 22 });
+    const init = spawnSync('git', ['init', '-q'], { cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true });
+    equal(init.status, 0, '501: fixture git init');
+    for (const name of ['tools', 'kernel']) fs.symlinkSync(path.join(PROGRAM_ROOT, name), path.join(root, name), process.platform === 'win32' ? 'junction' : 'dir');
+    const preload = path.join(root, 'linux.mjs');
+    fs.writeFileSync(preload, "Object.defineProperty(process, 'platform', {value: 'linux'});\n");
+    const linux = JSON.parse(fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel/test/linux-skip.json'), 'utf8')) as Record<string, string>;
+    // 4 is Linux-skipped by the list; 454 declares itself Windows-only; 8 and 155 run on Linux.
+    const required = '4,8,454,155';
+    const routes: [string, string[]][] = [
+      ['gate', [path.join(PROGRAM_ROOT, 'tools/gate.ts'), '--tier', 'push', '--require-sections', required]],
+      ['runner', [path.join(PROGRAM_ROOT, 'kernel/test/run-parallel.ts'), '--require-sections', required]],
+    ];
+    for (const [label, args] of routes) {
+      const refused = run(['--import', pathToFileURL(preload).href, ...args]);
+      const said = `${refused.stdout}${refused.stderr}`;
+      equal(refused.status, 2, `501: ${label} exit: ${said}`);
+      check(refused.stderr.includes(`section 4 is Linux-skipped: ${linux['4']}; it cannot be required here`), `501: ${label} lost the Linux-skipped refusal: ${said}`);
+      check(refused.stderr.includes('section 454 cannot be required here: requires the Windows WSL runner'), `501: ${label} lost the declared refusal: ${said}`);
+      check(/required sections this platform runs: 8,155\r?\n/.test(refused.stderr), `501: ${label} did not print the runnable list 8,155: ${said}`);
+      check(!said.includes('gate lock') && !said.includes('kernel.typecheck') && !said.includes('kernel self-test passed'), `501: ${label} ran something before refusing: ${said}`);
+    }
+  } catch (error) { failures.push('section 501 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(501) && prerequisite(501, () => !isCompiled(), 'requires source gate tools')) await section501();
+
+
+// --- 502. `deskpost undo` AND `deskpost redo` ANSWER ON THE COMMAND LINE (kickoffs/s166 row 2) -----------------------
+// In s165's undo fixture, through cli.ts: a hub edit replace-section, then `undo --list` names it restorable, `undo <id>`
+// puts the page back byte for byte, `redo <undo-id>` puts the write back byte for byte, and both print their usage.
+async function section502(): Promise<void> {
+  const f = await undoFixture('undo-cli');
+  try {
+    equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('scratch.md', '- [ ] first item\n'), '--json']).exit, 0, '502: the section was not added');
+    const prior = f.bytes(f.hubPage)!;
+    const replaced = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s2.md', '- [ ] second item\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const id = f.idOf(replaced['journal']);
+    const listed = f.cli(['undo', '--list', '--json']);
+    const entry = ((f.json(listed)['entries'] as Record<string, unknown>[] | undefined) ?? []).find((row) => row['id'] === id);
+    check(listed.exit === 0 && entry?.['state'] === 'restorable', `502: undo --list does not name the write restorable: ${f.said(listed)}`);
+    const undone = f.cli(['undo', id, '--json']);
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone', `502: undo <journal-id> did not undo: ${f.said(undone)}`);
+    check(f.bytes(f.hubPage)!.equals(prior), '502: the undo did not put the page back byte for byte');
+    const redone = f.cli(['redo', String(f.json(undone)['id'] ?? ''), '--json']);
+    check(redone.exit === 0 && f.json(redone)['status'] === 'redone', `502: redo <undo-id> did not redo: ${f.said(redone)}`);
+    check(f.bytes(f.hubPage)!.equals(written), '502: the redo did not put the write back byte for byte');
+    const neither = f.cli(['undo']);
+    check(neither.exit !== 0 && neither.stderr.includes('takes one journal id, or --list'), `502: undo with no id did not refuse in its own words: ${f.said(neither)}`);
+    for (const [verb, usage] of [['undo', 'deskpost undo <journal-id> [--json]'], ['redo', 'deskpost redo <undo-id> [--json]']]) {
+      const help = runCli([verb!, '--help']);
+      check(help.exit === 0 && help.stdout.includes(usage!), `502: ${verb} --help did not print its usage: ${help.stdout.slice(0, 300)}`);
+    }
+  } catch (error) {
+    failures.push(`section 502 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(502)) await section502();
+
+
+// --- 503. `deskpost asks` COUNTS THE ASKS, AND THE DESK SHOWS THE WEEK'S LINE (kickoffs/s166 row 3) -------------------
+// Over the hand-written fixture transcript (kernel/test/fixtures/asks/, no real transcript text) in a copy that
+// CLAUDE_CONFIG_DIR points at: exact counts by kind, refusals and prompts; the subagent file, a sidechain, a meta record,
+// a harness tag and a line outside the window are not counted. A line of an unknown shape refuses, naming its file and
+// line. `--write` then `desk` shows the line; with no stored count the Desk shows none.
+async function section503(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-asks-')));
+  try {
+    const { projectFolderName } = await import('../src/asks.ts');
+    const lib = path.join(root, 'lib');
+    const config = path.join(root, 'claude');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', CLAUDE_CONFIG_DIR: config };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '503: the fixture Library did not initialise');
+    equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--workspace', lib], { cwd: root, env }).exit, 0, '503: the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'first', '--project', 'work', '--no-launch', '--workspace', lib], { cwd: root, env }).exit, 0, '503: the fixture seat was not made');
+    const folder = path.join(config, 'projects', projectFolderName(lib));
+    fs.cpSync(path.join(PROGRAM_ROOT, 'kernel', 'test', 'fixtures', 'asks'), folder, { recursive: true });
+    check(fs.readFileSync(path.join(folder, 'session-one.jsonl'), 'utf8').includes('"type":"tools-used"'), '503: the current-layout fixture must include tools-used metadata');
+    const window = ['--since', '2026-01-14', '--until', '2026-01-16'];
+    const deskLine = () => {
+      try {
+        return (JSON.parse(runCli(['desk', '--seat', 'first', '--workspace', lib, '--json'], { cwd: lib, env }).stdout) as Record<string, any>)['asks_this_week'];
+      } catch {
+        return 'unreadable';
+      }
+    };
+    equal(deskLine(), undefined, '503: the Desk shows an asks line with no stored count');
+
+    const ran = runCli(['asks', ...window, '--json', '--workspace', lib], { cwd: root, env });
+    const count = (() => { try { return JSON.parse(ran.stdout) as Record<string, any>; } catch { return {} as Record<string, any>; } })();
+    equal(ran.exit, 0, `503: asks exit: ${ran.stdout.slice(0, 300)} ${ran.stderr.slice(0, 300)}`);
+    equal(JSON.stringify([count['files_read'], count['sessions'], count['messages'], count['approvals']]), JSON.stringify([1, 1, 10, 8]), `503: files, sessions, messages and approvals: ${ran.stdout.slice(0, 600)}`);
+    equal(JSON.stringify(count['approvals_by_kind']), JSON.stringify({ fingerprint: 2, relay: 1, design: 1, next: 1, record: 1, outside: 1, other: 1 }), '503: approvals by kind');
+    equal(count['auto_mode_refusals'], 1, '503: auto-mode refusals');
+    equal(JSON.stringify(count['deskpost_refusals_by_sentence']), JSON.stringify({ 'Book read rejected': 1, 'Project read rejected': 0, 'guard hook': 1 }), '503: Deskpost refusals by sentence');
+    equal(JSON.stringify(count['permission_prompts']), JSON.stringify({ accepted: 1, rejected: 1 }), '503: permission prompts answered');
+    const text = runCli(['asks', ...window, '--workspace', lib], { cwd: root, env });
+    check(text.exit === 0 && text.stdout.includes('Typed yeses: 8') && text.stdout.includes('  fingerprint gates: 2'), `503: the text form: ${text.stdout.slice(0, 400)}`);
+
+    const written = runCli(['asks', ...window, '--write', '--json', '--workspace', lib], { cwd: root, env });
+    check(written.exit === 0 && fs.existsSync(path.join(lib, 'internal', 'asks', 'measure-2026-W03.json')), `503: --write did not keep the week's count: ${written.stdout.slice(0, 300)} ${written.stderr.slice(0, 300)}`);
+    equal(deskLine()?.['line'], 'Asks this week: 8 typed yeses (fingerprint gates 2), 3 refusals', '503: the Desk line from the stored count');
+
+    // THE DRIFT RULE: one line of a shape the count does not know refuses it, naming the file and the line.
+    const drifted = path.join(folder, 'session-one.jsonl');
+    fs.appendFileSync(drifted, '{"type":"brand-new-record","sessionId":"00000000-0000-4000-8000-000000000001"}\n');
+    const lineNumber = fs.readFileSync(drifted, 'utf8').trimEnd().split('\n').length;
+    const refused = runCli(['asks', ...window, '--json', '--workspace', lib], { cwd: root, env });
+    check(refused.exit !== 0 && refused.stderr.includes(`${drifted}, line ${lineNumber}`) && refused.stderr.includes('"brand-new-record"'), `503: an unknown shape did not refuse naming its file and line: ${refused.exit} ${refused.stderr.slice(0, 400)}`);
+    equal(refused.stdout.trim(), '', '503: a refused count printed a count');
+
+    // Kickoff tags persist across typed messages, but only main-thread assistant names can change them.
+    // This separate fixture leaves the original count and Desk-line pins above unchanged.
+    const { countAsks, asksText } = await import('../src/asks.ts');
+    const tagConfig = path.join(root, 'tags');
+    const tagFolder = path.join(tagConfig, 'projects', projectFolderName(lib));
+    fs.mkdirSync(tagFolder, { recursive: true });
+    const tagRecord = (type: string, content: unknown, extra = {}) => ({
+      type, message: { content }, timestamp: '2026-01-15T10:00:00.000Z', sessionId: 'fixture-tags', ...extra,
+    });
+    const taggedLines = [
+      tagRecord('user', 'yes'),
+      tagRecord('assistant', [{ type: 'text', text: 'kickoffs/c98 then kickoffs/c99 ' + 'x'.repeat(650) }]),
+      tagRecord('user', 'yes'),
+      tagRecord('assistant', [{ type: 'text', text: 'kickoffs/c88' }], { isSidechain: true }),
+      tagRecord('user', 'kickoffs/c77'),
+      tagRecord('user', [{ type: 'tool_result', tool_use_id: 'fixture', content: 'kickoffs/c66' }]),
+      tagRecord('user', 'yes'),
+      tagRecord('assistant', [{ type: 'tool_use', id: 'fixture', name: 'fixture', input: { nested: { page: 'kickoffs/c87 then kickoffs/s98-r2' } } }]),
+      tagRecord('user', 'yes'),
+      tagRecord('assistant', [{ type: 'text', text: 'kickoffs/c55' }], { isSidechain: true }),
+      tagRecord('user', 'continue with this work'),
+    ];
+    fs.writeFileSync(path.join(tagFolder, 'one.jsonl'), taggedLines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    fs.writeFileSync(path.join(tagFolder, 'two.jsonl'), JSON.stringify(tagRecord('user', 'yes')) + '\n');
+    const tagged = countAsks(lib, { since: '2026-01-14', until: '2026-01-16', configDirectory: tagConfig });
+    equal(JSON.stringify(tagged['by_kickoff']), JSON.stringify({ c99: { messages: 3, approvals: 2 }, none: { messages: 2, approvals: 2 }, 's98-r2': { messages: 2, approvals: 1 } }), '503: last assistant text/tool input Kickoff, excluding user/sidechain names and resetting per file');
+    equal(JSON.stringify([tagged['messages'], tagged['approvals']]), '[7,5]', '503: tagging preserves total messages and yeses');
+    const tagText = asksText(tagged);
+    check(tagText.includes('By Kickoff:\n  c99: 3 messages, 2 yeses\n  s98-r2: 2 messages, 1 yeses\n  none: 2 messages, 2 yeses'), '503: text Kickoff block is sorted with none last');
+  } catch (error) {
+    failures.push(`section 503 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(503)) await section503();
+
+
+// --- 504. THE FULL-SCREEN WIZARD PICKS THE DEPARTMENT FROM A LIST (kickoffs/s166 row 4, Eric's option A) ---------------
+// Driven as sections 237 and 336 drive screenWizard, over a registry with three departments (alpha with an orchestrator,
+// beta with one seat, gamma with two and no orchestrator): the department screen lists all three with where their
+// letters go, then New department and No department; choosing one sets it with no typing; typing narrows the list and
+// offers to make a new one, which departmentProblem still checks; a name typed at step 1 survives a template; a Claude
+// Code seat is made with inbound accept and a Codex seat with none; every department and template line fits 60 columns.
+async function section504(): Promise<void> {
+  const w = await seatClaimWorkspace('s166-menu-department', { pin: false });
+  const saved = { ...process.env };
+  try {
+    const { screenWizard, departmentScreen } = await import('../src/menu.ts');
+    const { drawScreen, screenState } = await import('../src/menuscreen.ts');
+    const { seatInboundPolicy } = await import('../src/seatinbound.ts');
+    const home = path.join(w.root, 'home'), bin = path.join(w.root, 'bin');
+    fs.mkdirSync(home); fs.mkdirSync(bin);
+    fakeAssistant(bin, 'codex', path.join(w.root, 'agents.log')); fakeAssistant(bin, 'claude', path.join(w.root, 'agents.log'));
+    for (const [key, value] of Object.entries({ HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'roaming'), LOCALAPPDATA: path.join(home, 'local'),
+      LIBRARY_WORKSPACES: path.join(w.root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', ORCA_TERMINAL_HANDLE: '',
+      PATH: bin + path.delimiter + (saved['PATH'] ?? saved['Path'] ?? '') })) process.env[key] = value;
+    const run = async (name: string, replies: { id: string; text?: string }[]) => {
+      const screens: any[] = [], receipts: string[] = [];
+      const state: any = { workspace: w.workspace, options: { cwd: w.workspace }, claude: true, codex: true, assistant: 'claude',
+        talk: { scripted: false, say: (line = '') => receipts.push(line), ask: async () => { throw Error('unexpected old prompt'); },
+          screen: async (model: any, text = '') => {
+            const page = typeof model === 'function' ? model(text) : model; screens.push(page);
+            const next = replies.shift(); if (!next) throw Error('screen replies ran out: ' + page.title);
+            return { id: next.id, text: next.text ?? text };
+          } } };
+      const result = await screenWizard(state, name);
+      equal(replies.length, 0, `504: ${name}: unused flow answers`);
+      return { result, screens, receipts };
+    };
+    const registryRow = (seat: string) => (JSON.parse(fs.readFileSync(path.join(w.workspace, '.claude', 'seats', '_registry.json'), 'utf8')).seats as Record<string, unknown>[]).find((row) => row['seat'] === seat);
+    const fits = (page: any, label: string) => {
+      const lines = drawScreen(screenState(page, 60, 30)).lines;
+      check(lines.every((line: string) => line.length <= 60), `504: ${label} passes 60 columns: ${lines.join(' / ')}`);
+    };
+
+    // The registry's three departments, each made through the wizard's typed path (a script's submitted text).
+    const make = async (seat: string, department: string, template: string, proposed: string) =>
+      run(seat, [{ id: 'codex' }, { id: 'work' }, { id: 'more' }, { id: 'submit', text: department }, { id: template }, ...(template === 'none' ? [] : [{ id: 'submit', text: proposed }]), { id: 'submit', text: '' }, { id: 'make' }]);
+    await make('alpha-lead', 'alpha', 'orchestrator', 'alpha-lead');
+    await make('beta-one', 'beta', 'none', '');
+    await make('gamma-one', 'gamma', 'none', '');
+    await make('gamma-two', 'gamma', 'none', '');
+    equal(JSON.stringify(['alpha-lead', 'beta-one', 'gamma-one', 'gamma-two'].map((seat) => registryRow(seat)?.['department'])), JSON.stringify(['alpha', 'beta', 'gamma', 'gamma']), '504: the fixture departments');
+
+    // A Claude Code seat: the list, a department chosen with no typing, the step-1 name kept through a template, rings on.
+    const picked = await run('picked-seat', [{ id: 'claude' }, { id: 'auto' }, { id: 'more' }, { id: 'department:alpha' }, { id: 'performer' },
+      { id: 'submit' }, { id: 'submit', text: '' }, { id: 'accept' }, { id: 'make' }]);
+    const list = picked.screens.find((page) => page.title === 'Department');
+    equal(list?.items.map((item: any) => item.text).join('|'), 'alpha   letters go to alpha-lead|beta    letters go to beta-one|gamma   no orchestrator yet|New department|No department', '504: the department screen');
+    fits(list, 'the department screen');
+    check(picked.screens.some((page) => page.title === 'Seat name'), '504: a template asked for no seat name');
+    const template = picked.screens.find((page) => page.title === 'Template');
+    equal(template?.items.map((item: any) => item.text).join('\n'), [
+      'No template',
+      'Performer      works its own lane in the department',
+      'Orchestrator   orders the work and writes Kickoffs',
+      'Planner        answers design questions for the reader',
+      'Builder        builds one approved Kickoff at a time',
+      'Auditor        audits read only; findings by letter',
+      'Back',
+    ].join('\n'), '504: the template screen');
+    fits(template, 'the template screen');
+    const kept = registryRow('picked-seat');
+    check(kept?.['department'] === 'alpha' && String(kept?.['template'] ?? '').startsWith('performer@'),`504: the step-1 name did not survive the template, or the department was lost: ${JSON.stringify(kept)}`);
+    equal(seatInboundPolicy(path.join(w.workspace, '.claude'), 'picked-seat'), 'seat file: accept', '504: a Claude Code seat made here does not take rings');
+    const ready = picked.screens.find((page) => page.title === 'New seat  ready');
+    check((ready?.before ?? []).includes('   Messages   rings reach it at once (inbound accept)'), `504: the ready screen does not say rings reach it: ${(ready?.before ?? []).join(' / ')}`);
+    fits(ready, 'the Claude Code ready screen');
+
+    // Typing narrows the list and offers a new department, which departmentProblem still checks.
+    const known = [{ name: 'alpha', destination: { kind: 'orchestrator', seat: 'alpha-lead', seats: [] } }, { name: 'gamma', destination: { kind: 'none', seat: null, seats: [] } }] as any;
+    equal(departmentScreen(known, 'ga').items.map((item: any) => item.text).join('|'), 'gamma   no orchestrator yet|Make a new department called ga', '504: typing narrows the list');
+    equal(departmentScreen(known, 'gamma').items.map((item: any) => item.id).join('|'), 'department:gamma', '504: an exact name offers no new department');
+    const bad = await run('bad-department', [{ id: 'codex' }, { id: 'work' }, { id: 'more' }, { id: 'create:Bad_Name' }, { id: 'back' }, { id: 'back' }, { id: 'back' }, { id: 'back' }]);
+    check(bad.screens.some((page) => page.title === 'New seat  ready' && (page.before ?? []).some((line: string) => line.includes('Bad_Name') || /lowercase|letters|slug/i.test(line))), '504: a refused new department was not said on the ready screen');
+    check(registryRow('bad-department') === undefined, '504: a refused department made a seat');
+
+    // A new department named by its typed text, and a Codex seat with no inbound policy.
+    await run('delta-seat', [{ id: 'codex' }, { id: 'work' }, { id: 'more' }, { id: 'create:delta' }, { id: 'none' }, { id: 'submit', text: '' }, { id: 'make' }]);
+    equal(registryRow('delta-seat')?.['department'], 'delta', '504: Make a new department did not set it');
+    equal(seatInboundPolicy(path.join(w.workspace, '.claude'), 'delta-seat'), 'unset', '504: a Codex seat was given an inbound policy');
+  } catch (error) { failures.push('section 504 stopped early: ' + (error as Error).message); }
+  finally { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); w.dispose(); }
+}
+if (selected(504)) await section504();
+
+
+// --- 505. `deskpost undo` RESTORES ONLY WHAT ITS CALLER MAY WRITE (kickoffs/s167 row 1; the audit's B4) -------------
+// In the undo fixture: a write by seat 'first' undone by a session at seat 'second' refuses naming both; a block with
+// a key no writer writes, a wrong type, or no written_by_seat (written before the field) refuses; a Book journal that
+// names no locks still takes the Book's lock (seen in internal/book-locks while the pause seam holds it); a Hub reached
+// through a directory link (a junction on Windows, a symlink on Linux) to a folder outside the Library refuses naming
+// the link, the outside file unchanged; and the ordinary undo and redo still put the bytes back.
+async function section505(): Promise<void> {
+  const f = await undoFixture('undo-bound');
+  try {
+    const rewrite = (relative: string, change: (block: Record<string, any>) => void): Buffer => {
+      const original = fs.readFileSync(f.at(relative));
+      const journal = JSON.parse(withoutBom(original.toString('utf8'))) as Record<string, any>;
+      change(journal['undo'] as Record<string, any>);
+      fs.writeFileSync(f.at(relative), JSON.stringify(journal));
+      return original;
+    };
+    equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('scratch.md', '- [ ] first item\n'), '--json']).exit, 0, '505: the section was not added');
+    const prior = f.bytes(f.hubPage)!;
+    const replaced = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s2.md', '- [ ] second item\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const journal = String(replaced['journal']);
+    const id = f.idOf(journal);
+    equal(f.journal(journal)['undo']?.['written_by_seat'], 'first', '505: the hub edit did not record its writing seat');
+
+    // (i) ANOTHER SEAT'S UNDO REFUSES, NAMING BOTH.
+    const other = f.undo('undo', id, { CLAUDE_PID: '', LIBRARY_SEAT: 'second' });
+    check(other.exit !== 0 && other.stderr.includes("written by seat 'first'") && other.stderr.includes("seat 'second'"), `505 (i): an undo by another seat did not refuse naming both: ${f.said(other)}`);
+    check(f.bytes(f.hubPage)!.equals(written), '505 (i): the refused undo changed the page');
+
+    // (iv) A BLOCK OF ANY OTHER SHAPE REFUSES, AND SO DOES ONE FROM BEFORE THE FIELD.
+    const shapes: [string, (block: Record<string, any>) => void, string][] = [
+      ['an extra key', (block) => (block['extra'] = 1), 'malformed'],
+      ['a wrong type', (block) => (block['paths'][0]['existed'] = 'yes'), 'malformed'],
+      ['an unknown kind', (block) => (block['kind'] = 'anything'), 'malformed'],
+      ['evidence outside the journal folders', (block) => (block['evidence'] = [{ path: 'collection/projects/alpha/_project.md', kind: 'publication-evidence' }]), 'malformed'],
+      ['no written_by_seat', (block) => delete block['written_by_seat'], 'predates the seat check'],
+    ];
+    for (const [label, change, words] of shapes) {
+      const original = rewrite(journal, change);
+      const ran = f.undo('undo', id);
+      check(ran.exit !== 0 && ran.stderr.includes(words), `505 (iv): a block with ${label} did not refuse with '${words}': ${f.said(ran)}`);
+      check(f.bytes(f.hubPage)!.equals(written), `505 (iv): the block with ${label} changed the page`);
+      fs.writeFileSync(f.at(journal), original);
+    }
+
+    // (v) THE ORDINARY UNDO AND REDO, AS 502 RUNS THEM.
+    const undone = f.undo('undo', id);
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone' && f.bytes(f.hubPage)!.equals(prior), `505 (v): the undo did not put the page back: ${f.said(undone)}`);
+    const redone = f.undo('redo', String(f.json(undone)['id'] ?? ''));
+    check(redone.exit === 0 && f.json(redone)['status'] === 'redone' && f.bytes(f.hubPage)!.equals(written), `505 (v): the redo did not put the write back: ${f.said(redone)}`);
+
+    // (iii) A BOOK JOURNAL NAMING NO LOCKS: THE UNDO TAKES THE BOOK'S LOCK ANYWAY.
+    const book = f.applied(['collection', 'replace-page', 'demo', 'guide/start', '--content-path', f.at('notebook/first/sources/corrected.md')]);
+    rewrite(String(book['journal']), (block) => (block['locks'] = []));
+    const pause = path.join(f.w.root, 'pause-505');
+    fs.writeFileSync(pause, 'hold');
+    const holder = f.undoAsync('undo', f.idOf(book['journal']), { LIBRARY_UNDO_PAUSE_FILE: pause });
+    const deadline = Date.now() + 60_000;
+    while (!fs.existsSync(`${pause}.held`) && Date.now() < deadline) await sleep(50);
+    check(fs.existsSync(`${pause}.held`), '505 (iii): the undo never reached its pause');
+    check(fs.existsSync(f.at('internal/book-locks/books-demo.lock')), `505 (iii): the undo of a journal naming no locks did not hold the Book's lock: ${fs.existsSync(f.at('internal/book-locks')) ? fs.readdirSync(f.at('internal/book-locks')).join(', ') : 'no lock folder'}`);
+    fs.rmSync(pause, { force: true });
+    const finished = await holder;
+    check(finished.exit === 0 && f.json(finished)['status'] === 'undone', `505 (iii): the paused undo did not finish: ${f.said(finished)}`);
+
+    // (ii) A HUB REACHED THROUGH A DIRECTORY LINK TO A FOLDER OUTSIDE THE LIBRARY REFUSES, NAMING THE LINK.
+    const third = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s3.md', '- [ ] third item\n')]);
+    const hub = f.at('collection/projects/alpha');
+    const moved = f.at('collection/projects/alpha-moved');
+    const outside = path.join(f.w.root, 'outside-505');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.copyFileSync(path.join(hub, '_project.md'), path.join(outside, '_project.md'));
+    const outsideBefore = fs.readFileSync(path.join(outside, '_project.md'));
+    fs.renameSync(hub, moved);
+    let linked = false;
+    try {
+      fs.symlinkSync(outside, hub, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+      const through = f.undo('undo', f.idOf(third['journal']));
+      check(through.exit !== 0 && through.stderr.includes('is a symbolic link or junction') && through.stderr.includes('alpha'), `505 (ii): an undo through a linked Hub folder did not refuse naming the link: ${f.said(through)}`);
+      check(fs.readFileSync(path.join(outside, '_project.md')).equals(outsideBefore), '505 (ii): the file outside the Library was changed through the link');
+    } finally {
+      // THE LINK ITSELF GOES, never what it points at: a junction is removed as a folder, a symlink as a file.
+      if (linked) {
+        if (process.platform === 'win32') fs.rmdirSync(hub);
+        else fs.unlinkSync(hub);
+      }
+      fs.renameSync(moved, hub);
+    }
+    check(linked, '505 (ii): the directory link could not be made in the fixture');
+  } catch (error) {
+    failures.push(`section 505 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(505)) await section505();
+
+// --- 506. `kickoff receive` REFUSES A DELIVERY THE POSTBOX FLAGGED (kickoffs/s167 row 2; the audit's B1) -------------
+// Between two fixture Libraries, as 448 sends them: a self-consistent Kickoff in a letter filed `postbox_damaged: true`,
+// one filed `stale_delivery: true`, and one whose `for_seat_id` is an earlier seat's, each refused with nothing written
+// (no record, no page, no pointer, the letter still pending); a clean letter is received as before, its record and
+// answer carrying the sending Library's id beside its card.
+async function section506(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-flagged-')));
+  const storage = path.join(root, 'server'); fs.mkdirSync(storage, { recursive: true });
+  const server = await startFakeBasicMemory(storage);
+  try {
+    const t = await twoPostboxLibraries(root, server.url);
+    const hubFile = path.join(t.far.lib, 'collection', 'projects', 'work-clerk', '_project.md');
+    const pageFile = (id: string) => path.join(t.far.lib, 'collection', 'projects', 'work-clerk', 'kickoffs', `${id}.md`);
+    const recordFile = (id: string) => path.join(t.far.lib, 'internal', 'kickoffs', `${id}.json`);
+    const pointers = (id: string) => fs.readFileSync(hubFile, 'utf8').split('\n').filter((line) => line.includes(`[[projects/work-clerk/kickoffs/${id}]]`));
+    const review = (letter: string) => /^review: (\S+)/m.exec(fs.readFileSync(t.letterFile(t.far.lib, letter), 'utf8'))?.[1];
+    const deliver = (id: string): string => {
+      const file = path.join(t.home.lib, 'collection', 'projects', 'work-asker', 'kickoffs', `${id}.md`);
+      fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `# ${id} kickoff\n\nRow 1.\n`);
+      const sent = t.json(t.cli(t.home.lib, ['kickoff', 'send', `kickoffs/${id}`, '--library', 'Far Office', '--for', 'clerk', '--json'], 'asker'));
+      equal(t.cli(t.far.lib, ['postbox', 'check']).exit, 0, `506: ${id} was not filed`);
+      const name = t.withDelivery(t.far.lib, String(sent['delivery_id']))[0] ?? '';
+      check(name !== '', `506: no filed letter for ${id}: ${JSON.stringify(sent).slice(0, 300)}`);
+      return `notes/${name.replace(/\.md$/, '')}`;
+    };
+    const receive = (letter: string) => t.cli(t.far.lib, ['kickoff', 'receive', letter, '--json'], 'clerk');
+    // THE FLAG AS THE POSTBOX FILES IT: one more frontmatter line, the envelope inside left whole and self-consistent.
+    const flag = (letter: string, change: (text: string) => string) => {
+      const file = t.letterFile(t.far.lib, letter);
+      const before = fs.readFileSync(file, 'utf8');
+      const after = change(before);
+      check(after !== before, `506: the fixture letter ${letter} was not changed`);
+      fs.writeFileSync(file, after);
+    };
+    const cases: [string, string, (text: string) => string, string][] = [
+      ['k1', 'postbox_damaged: true', (text) => text.replace(/^review: pending$/m, 'review: pending\npostbox_damaged: true'), 'postbox_damaged'],
+      ['k2', 'stale_delivery: true', (text) => text.replace(/^review: pending$/m, 'review: pending\nstale_delivery: true'), 'stale_delivery'],
+      ['k3', "an earlier seat's for_seat_id", (text) => text.replace(/^for_seat_id: [0-9a-f]{32}$/m, `for_seat_id: ${'0'.repeat(31)}1`), 'an earlier seat'],
+    ];
+    for (const [id, label, change, words] of cases) {
+      const letter = deliver(id);
+      flag(letter, change);
+      const ran = receive(letter);
+      check(ran.exit !== 0 && ran.stderr.includes(words) && ran.stderr.includes('send the Kickoff again'), `506: a letter with ${label} was not refused naming it: ${ran.exit} ${ran.stderr.slice(0, 400)} ${ran.stdout.slice(0, 200)}`);
+      check(!fs.existsSync(pageFile(id)) && !fs.existsSync(recordFile(id)) && pointers(id).length === 0 && review(letter) === 'pending', `506: a letter with ${label} wrote something`);
+    }
+
+    // A clean letter is received as before, and names the Library that sent it.
+    const clean = deliver('k4');
+    const ran = receive(clean);
+    const answer = t.json(ran);
+    check(ran.exit === 0 && answer['status'] === 'received', `506: the clean letter was not received: ${ran.stderr.slice(0, 400)}`);
+    check(fs.existsSync(pageFile('k4')) && pointers('k4').length === 1 && review(clean) === 'done', '506: the clean receive did not write its page and pointer, or close its letter');
+    const record = fs.existsSync(recordFile('k4')) ? (JSON.parse(fs.readFileSync(recordFile('k4'), 'utf8')) as Record<string, unknown>) : {};
+    equal(record['from_library_id'], t.home.id, '506: the receive record does not carry the sending Library id');
+    equal(answer['from_library_id'], t.home.id, '506: the receive answer does not carry the sending Library id');
+  } catch (error) {
+    failures.push(`section 506 stopped early: ${(error as Error).message}`);
+  } finally {
+    server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(506)) await section506();
+
+// --- 507. STALE-LOCK RECOVERY KEEPS EXCLUSION ACROSS THREE PROCESSES (kickoffs/s167 row 3; the audit's B2) ----------
+// The audit's interleaving, in three processes: B judges a dead owner's lock stale and pauses (the afterJudgedStale
+// seam); A recovers it and takes the lock; C starts waiting; B resumes. Each holder writes `enter` and `exit` to one
+// shared log, and the log never shows two inside. B's fs.renameSync is wrapped (syncBuiltinESMExports) to pause on any
+// rename of the lock until C has tried, so a recovery that moves a fresh lock away lets C in, deterministically. Then a
+// crashed recoverer's guard (`<lock>.recover`, no live owner, older than its stale age) is itself recovered, and a
+// fresh guard is honoured: the stale lock behind it is not taken while it stands.
+async function section507(): Promise<void> {
+  const locks = await import('../src/locks.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s167-locks-'));
+  try {
+    const workspace = path.join(root, 'ws');
+    const lockDir = path.join(workspace, 'internal', 'book-locks');
+    fs.mkdirSync(lockDir, { recursive: true });
+    const lockFile = path.join(lockDir, 'books-demo.lock');
+    const gone = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid!;
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const deadRecord = `pid=${gone}\nstart=1970-01-01T00:00:00.0000000Z\nacquired=${old.toISOString()}\nbook=books/demo\n`;
+    fs.writeFileSync(lockFile, deadRecord);
+    fs.utimesSync(lockFile, old, old);
+
+    const signals = path.join(root, 'signals');
+    fs.mkdirSync(signals);
+    const log = path.join(root, 'holders.log');
+    const script = path.join(root, 'holder.mjs');
+    fs.writeFileSync(script, [
+      `import * as fs from 'node:fs';`,
+      `import { createRequire, syncBuiltinESMExports } from 'node:module';`,
+      `import { enterBookLock, exitBookLock, setAfterJudgedStale } from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/locks.ts')).href)};`,
+      `const [role, workspace, signals, log] = process.argv.slice(2);`,
+      `const at = (name) => signals + '/' + name;`,
+      `const wait = (name, ms) => { const end = Date.now() + ms; while (!fs.existsSync(at(name)) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); };`,
+      `if (role === 'B') {`,
+      `  setAfterJudgedStale(() => { setAfterJudgedStale(undefined); fs.writeFileSync(at('B.judged'), ''); wait('B.go', 60000); });`,
+      `  const cjs = createRequire(import.meta.url)('node:fs');`,
+      `  const rename = cjs.renameSync;`,
+      `  cjs.renameSync = (from, to) => { rename(from, to); if (String(from).endsWith('.lock')) { fs.writeFileSync(at('B.renamed'), ''); wait('C.entered', 5000); } };`,
+      `  syncBuiltinESMExports();`,
+      `}`,
+      `const lock = enterBookLock(workspace, 'books/demo', 60);`,
+      `fs.appendFileSync(log, role + ' enter\\n');`,
+      `fs.writeFileSync(at(role + '.entered'), '');`,
+      `if (role === 'A') wait('A.release', 60000); else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);`,
+      `fs.appendFileSync(log, role + ' exit\\n');`,
+      `exitBookLock(lock);`,
+      '',
+    ].join('\n'));
+    const start = (role: string) =>
+      new Promise<{ role: string; exit: number; stderr: string }>((resolve) => {
+        const child = spawn(process.execPath, [script, role, workspace, signals, log], { cwd: root, windowsHide: true });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => (stderr += String(chunk)));
+        child.on('close', (code) => resolve({ role, exit: code ?? 1, stderr }));
+      });
+    const until = async (name: string, ms = 30_000) => {
+      const end = Date.now() + ms;
+      while (!fs.existsSync(path.join(signals, name)) && Date.now() < end) await sleep(20);
+      return fs.existsSync(path.join(signals, name));
+    };
+
+    const b = start('B');
+    check(await until('B.judged'), '507: B never judged the dead owner\'s lock stale');
+    const a = start('A');
+    check(await until('A.entered'), '507: A did not recover the lock while B was paused');
+    const c = start('C');
+    await sleep(600);
+    fs.writeFileSync(path.join(signals, 'B.go'), '');
+    await sleep(2500);
+    fs.writeFileSync(path.join(signals, 'A.release'), '');
+    const ran = await Promise.all([a, b, c]);
+    for (const one of ran) equal(one.exit, 0, `507: holder ${one.role} failed: ${one.stderr.slice(0, 300)}`);
+
+    let inside = 0;
+    let most = 0;
+    const lines = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+    for (const line of lines) {
+      inside += line.endsWith(' enter') ? 1 : -1;
+      most = Math.max(most, inside);
+    }
+    equal(most, 1, `507: two processes held the lock at once: ${lines.join(' | ')}`);
+    equal(lines.filter((line) => line.endsWith(' enter')).length, 3, `507: not every holder took the lock in turn: ${lines.join(' | ')}`);
+    check(!fs.existsSync(path.join(signals, 'B.renamed')), '507: B moved a lock it had not judged');
+    check(!fs.existsSync(lockFile) && !fs.existsSync(`${lockFile}.recover`), `507: a lock or guard was left: ${fs.readdirSync(lockDir).join(', ')}`);
+
+    // Both crashed and fresh recovery guards are honoured; neither can safely be stolen.
+    const enter = (book: string, seconds: number): { lock?: import('../src/locks.ts').BookLock; error: string } => {
+      try { return { lock: locks.enterBookLock(workspace, `books/${book}`, seconds), error: '' }; } catch (error) { return { error: (error as Error).message }; }
+    };
+    for (const [book, guardAge] of [['crashed', 60_000], ['guarded', 0]] as const) {
+      const file = path.join(lockDir, `books-${book}.lock`);
+      fs.writeFileSync(file, deadRecord.replace('books/demo', `books/${book}`));
+      fs.utimesSync(file, old, old);
+      fs.writeFileSync(`${file}.recover`, 'not a record\n');
+      const when = new Date(Date.now() - guardAge);
+      fs.utimesSync(`${file}.recover`, when, when);
+      const tried = enter(book, 2);
+      check(tried.lock === undefined && fs.readFileSync(file, 'utf8').includes(`books/${book}`), `507: a stale lock behind a recovery guard was taken: ${tried.error}`);
+      check(fs.existsSync(`${file}.recover`), '507: a recovery guard was removed');
+      if (tried.lock) locks.exitBookLock(tried.lock);
+    }
+  } catch (error) {
+    failures.push(`section 507 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(507)) await section507();
+
+// --- 508. THE NEEDS-YOU PAGE NEVER CLAIMS "NOTHING" FROM A FAILED READ (kickoffs/s167 row 4; the audit's B5) --------
+// In 478's fixture, connected to a fixture vault: the page is written once; then the Active Project Catalog cannot be
+// read (a folder where its file is), and `needs-you --write` refuses naming it, the refresh prints its one line, and the
+// page keeps its bytes; the same for one active Hub's `_project.md`; with everything readable again it writes as before.
+async function section508(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-needs-you-unread-')));
+  try {
+    const f = await needsYouFixture(root);
+    const vault = path.join(root, 'vault');
+    for (const folder of ['.obsidian', 'Librarian']) fs.mkdirSync(path.join(vault, folder), { recursive: true });
+    const preview = f.json(runCli(['vault', 'connect', vault, '--preflight', '--json', '--workspace', f.lib], { cwd: root, env: f.env }));
+    equal(runCli(['vault', 'connect', vault, '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? ''), '--workspace', f.lib], { cwd: root, env: f.env }).exit, 0, '508: the vault did not connect');
+    const page = path.join(vault, 'Librarian', 'needs-you.md');
+    equal(f.json(f.cli(['needs-you', '--write', '--json']))['status'], 'written', '508: the first write did not answer written');
+    const bytes = fs.readFileSync(page);
+
+    // A FILE THAT CANNOT BE READ: a folder stands where it was, which every platform refuses to read as a file.
+    const unreadable = (file: string, label: string, named: string) => {
+      const kept = fs.readFileSync(file);
+      fs.rmSync(file);
+      fs.mkdirSync(file);
+      try {
+        const ran = f.cli(['needs-you', '--write']);
+        check(ran.exit !== 0 && ran.stderr.includes('could not read') && ran.stderr.includes(named), `508: ${label}: --write did not refuse naming it: ${ran.exit} ${ran.stderr.trim().slice(0, 400)}`);
+        check(fs.readFileSync(page).equals(bytes), `508: ${label}: the page was rewritten from an incomplete reading`);
+        const said: string[] = [];
+        const write = process.stderr.write.bind(process.stderr);
+        (process.stderr as { write: unknown }).write = (chunk: unknown) => { said.push(String(chunk)); return true; };
+        try { refreshNeedsYou(f.lib); } finally { (process.stderr as { write: unknown }).write = write; }
+        check(said.length === 1 && said[0]!.startsWith('Deskpost did not refresh the page') && said[0]!.includes(named), `508: ${label}: the refresh did not print its one line naming it: ${JSON.stringify(said)}`);
+        check(fs.readFileSync(page).equals(bytes), `508: ${label}: the refresh rewrote the page`);
+      } finally {
+        fs.rmdirSync(file);
+        fs.writeFileSync(file, kept);
+      }
+    };
+    unreadable(path.join(f.lib, 'collection', 'projects', 'README.md'), 'the catalog unreadable', 'Active Project Catalog');
+    unreadable(f.hubFile('beta'), "one Hub's _project.md unreadable", 'projects/work-beta/_project');
+
+    // Everything readable again: written as before.
+    f.addToSection('beta', 'Next', ['- [ ] Run c5: [[projects/work-beta/kickoffs/c5]] (a new unit)']);
+    equal(f.json(f.cli(['needs-you', '--write', '--json']))['status'], 'written', '508: a readable Library did not write the page');
+    check(fs.readFileSync(page, 'utf8').includes('- beta: c5, waiting for you to start the seat and say yes.'), '508: the page written after the failures lacks the new pointer');
+  } catch (error) {
+    failures.push(`section 508 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(508)) await section508();
+
+// --- 509. PLAIN HTTP GOES ONLY TO AN ADDRESS THAT WAS CHECKED (kickoffs/s167 row 5; the audit's B3) -----------------
+// A literal loopback address passes unchanged; a host name the resolver seam answers with a loopback address comes back
+// pinned to that address; one answered with a public address refuses with the sentence; https is not the policy's.
+// Through the Basic Memory client, a request to `http://pinned.localhost:<port>` (the seam answers 127.0.0.1; since
+// kickoffs/s168 row 6 only a localhost name is pinned) reaches a stub on 127.0.0.1, as only a request sent there can.
+async function section509(): Promise<void> {
+  const policy = await import('../src/netpolicy.ts');
+  const { McpSession } = await import('../src/basicmemory.ts');
+  const http = await import('node:http');
+  const arrived: string[] = [];
+  const server = http.createServer((request, response) => {
+    arrived.push(`${request.method} ${request.headers.host} ${request.url}`);
+    response.writeHead(500);
+    response.end('a stub that answers nothing');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    // THE CLIENT FIRST: what the request does, judged by where it arrives, whatever the policy module exports.
+    // kickoffs/s168 row 6: a host name other than localhost now refuses, so the pinned name is a .localhost one.
+    policy.setAddressResolver(async (host) => (host === 'pinned.invalid' || host === 'pinned.localhost' ? ['127.0.0.1'] : host === 'public.invalid' ? ['203.0.113.9'] : []));
+    const session = new McpSession(`http://pinned.localhost:${port}/mcp`, 'selftest-509');
+    let said = '';
+    try { await session.initialize(); } catch (error) { said = (error as Error).message; }
+    check(arrived.some((line) => line.startsWith(`POST 127.0.0.1:${port} /mcp`)), `509: the Basic Memory request did not reach the address checked: ${JSON.stringify(arrived)} ${said.slice(0, 300)}`);
+
+    const target = (url: string) => (policy as Record<string, any>)['plainHttpRequestUrl'](url, 'The test endpoint').then((value: string) => value, (error: Error) => `refused: ${error.message}`) as Promise<string>;
+    equal(await target(`http://127.0.0.1:${port}/mcp`), `http://127.0.0.1:${port}/mcp`, '509: a literal loopback address did not pass unchanged');
+    equal(await target(`http://pinned.localhost:${port}/mcp`), `http://127.0.0.1:${port}/mcp`, '509: a localhost name was not pinned to the address checked');
+    const outside = await target(`http://public.invalid:${port}/mcp`);
+    check(outside.includes('plain HTTP to 203.0.113.9, which is outside the home network') && outside.includes('use an https:// URL'), `509: a public answer was not refused with the sentence: ${outside}`);
+    equal(await target('https://example.invalid/mcp'), 'https://example.invalid/mcp', '509: https was refused or changed by the policy');
+  } catch (error) {
+    failures.push(`section 509 stopped early: ${(error as Error).message}`);
+  } finally {
+    policy.setAddressResolver(null);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+if (selected(509)) await section509();
+
+// --- 510. AN UNDO RECORD IS DATA, AND A JOURNAL PATH HAS ONE SPELLING (kickoffs/s168 row 1; second reader 1 and 6) ---
+// In the undo fixture, after a hub edit: (i) a planted record for its journal whose id is `../../../outside-510` refuses
+// naming the record, and nothing is written outside the Library; (ii) a planted unfinished record of the right shape
+// whose path is `.claude/x-510` refuses naming it, `.claude/x-510` unchanged; (iii) the journal's path spelled through
+// the 8.3 short name of `collection` (Windows, where the fixture's disk makes one) or in another case (elsewhere)
+// refuses at the active-Desk check, the page unchanged; (iv) the ordinary undo and redo still put the bytes back.
+async function section510(): Promise<void> {
+  const f = await undoFixture('undo-records');
+  try {
+    equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('scratch.md', '- [ ] first item\n'), '--json']).exit, 0, '510: the section was not added');
+    const prior = f.bytes(f.hubPage)!;
+    const replaced = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s2.md', '- [ ] second item\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const journal = String(replaced['journal']);
+    const id = f.idOf(journal);
+    fs.mkdirSync(f.at('internal/undo'), { recursive: true });
+    const plant = (name: string, recordId: string, paths: Record<string, unknown>[]) => {
+      const now = new Date(Date.now() + 60_000).toISOString();
+      fs.writeFileSync(f.at(`internal/undo/${name}.json`), JSON.stringify({ schema: 2, marker_operation_id: 'op-0123456789abcdee', id: recordId, action: 'undo', journal_id: id, journal, operation_id: 'op-0123456789abcdef', kind: 'hub-edit', created_utc: now, updated_utc: now, state: 'started', locks: ['projects/alpha'], marker: null, regenerates: [], evidence: [], paths, undo: null }));
+      return f.at(`internal/undo/${name}.json`);
+    };
+
+    // (i) AN ID THAT CLIMBS OUT.
+    const outside = path.resolve(f.at('internal/undo'), '..', '..', '..', 'outside-510.json');
+    const climbing = plant('planted-510', '../../../outside-510', [{ path: f.hubPage, preimage_base64: written.toString('base64'), target_base64: prior.toString('base64'), status: 'pending' }]);
+    const first = f.undo('undo', id);
+    check(first.exit !== 0 && first.stderr.includes('planted-510.json') && first.stderr.includes('not a record deskpost writes'), `510 (i): a planted record with a climbing id did not refuse naming it: ${f.said(first)}`);
+    check(!fs.existsSync(outside), `510 (i): a file was written outside the Library at ${outside}`);
+    check(f.bytes(f.hubPage)!.equals(written), '510 (i): the refused undo changed the page');
+    fs.rmSync(climbing, { force: true });
+    fs.rmSync(outside, { force: true });
+
+    // (ii) A RECORD OF THE RIGHT SHAPE THAT NAMES ANOTHER PATH.
+    fs.writeFileSync(f.at('.claude/x-510'), 'before\n');
+    const otherId = 'undo-20991231-000000-0000beef';
+    const steering = plant(otherId, otherId, [{ path: '.claude/x-510', preimage_base64: Buffer.from('before\n').toString('base64'), target_base64: Buffer.from('planted\n').toString('base64'), status: 'pending' }]);
+    const second = f.undo('undo', id);
+    check(second.exit !== 0 && second.stderr.includes(`${otherId}.json does not match`), `510 (ii): a planted record naming .claude/x-510 did not refuse naming it: ${f.said(second)}`);
+    equal(fs.readFileSync(f.at('.claude/x-510'), 'utf8'), 'before\n', '510 (ii): the planted record wrote .claude/x-510');
+    check(f.bytes(f.hubPage)!.equals(written), '510 (ii): the refused undo changed the page');
+    fs.rmSync(steering, { force: true });
+
+    // (iii) ANOTHER SPELLING OF THE SAME FILE, in the Hub's own folder name, which names the lock.
+    const slug = 'longhubname-510';
+    equal(f.cli(['hub', 'new', slug, '--title', 'Long Hub', '--json']).exit, 0, '510 (iii): the long-named Hub was not made');
+    equal(f.cli(['desk', 'open', 'project', slug, '--json']).exit, 0, '510 (iii): the long-named Hub could not be opened');
+    const longPage = `collection/projects/${slug}/_project.md`;
+    equal(f.cli(['hub', 'edit', slug, '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('l1.md', '- [ ] first item\n'), '--json']).exit, 0, '510 (iii): the section was not added');
+    const longWritten = f.applied(['hub', 'edit', slug, '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('l2.md', '- [ ] second item\n')]);
+    const longBytes = f.bytes(longPage)!;
+    let alias = '';
+    if (process.platform === 'win32') {
+      const long = f.at(`collection/projects/${slug}`);
+      const short = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`], { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true }).stdout.trim();
+      if (short && path.basename(short).toLowerCase() !== slug) alias = longPage.replace(`/${slug}/`, `/${path.basename(short)}/`);
+    } else alias = longPage.replace(`/${slug}/`, `/${slug.toUpperCase()}/`);
+    check(alias !== '', `510 (iii): the fixture disk made no 8.3 short name for ${slug} (STANDING ANSWER 10)`);
+    if (alias) {
+      const longJournal = String(longWritten['journal']);
+      const rewritten = f.journal(longJournal);
+      rewritten['undo']['paths'][0]['path'] = alias;
+      fs.writeFileSync(f.at(longJournal), JSON.stringify(rewritten));
+      const third = f.undo('undo', f.idOf(longJournal));
+      const words = 'not open on seat';
+      check(third.exit !== 0 && third.stderr.includes(words), `510 (iii): the journal path ${alias} did not refuse with '${words}': ${f.said(third)}`);
+      check(f.bytes(longPage)!.equals(longBytes), '510 (iii): the refused undo changed the page');
+    }
+
+    // (iv) THE ORDINARY UNDO AND REDO.
+    const undone = f.undo('undo', id);
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone' && f.bytes(f.hubPage)!.equals(prior), `510 (iv): the undo did not put the page back: ${f.said(undone)}`);
+    const redone = f.undo('redo', String(f.json(undone)['id'] ?? ''));
+    check(redone.exit === 0 && f.json(redone)['status'] === 'redone' && f.bytes(f.hubPage)!.equals(written), `510 (iv): the redo did not put the write back: ${f.said(redone)}`);
+  } catch (error) {
+    failures.push(`section 510 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(510)) await section510();
+
+// --- 511. NO SEAT'S FILE TOOLS WRITE internal/ (kickoffs/s168 row 2; the s167 second reader's finding 2) ------------
+// Through `hook shelf-read` and `hook shell-shelf-read` in the undo fixture: a Write to internal/publication-journals,
+// an Edit of internal/undo and an apply_patch adding internal/z.json are denied with the sentence, at seat 'first' and
+// with no seat; a Write to the seat's open Hub page is still allowed; a shell `echo > internal/a.json` is denied, and
+// a shell read of internal/ is not.
+async function section511(): Promise<void> {
+  const f = await undoFixture('internal-fence');
+  try {
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '' };
+    const hook = (verb: string, call: Record<string, unknown>, seat: string[] = ['--seat', 'first']) =>
+      runCli(['hook', verb, '--workspace', f.lib, ...seat], { cwd: f.lib, env, input: JSON.stringify(call) }).stdout;
+    const why = "written only by Deskpost's commands";
+    const denied = (answer: string, label: string) => check(answer.includes('"permissionDecision":"deny"') && answer.includes(why), `511: ${label} was not denied with the sentence: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => check(!answer.includes('"permissionDecision":"deny"'), `511: ${label} was denied: ${answer}`);
+    for (const seat of [['--seat', 'first'], []]) {
+      const who = seat.length ? 'at seat first' : 'with no seat';
+      denied(hook('shelf-read', { tool_name: 'Write', tool_input: { file_path: f.at('internal/publication-journals/x.json'), content: '{}' } }, seat), `a Write to internal/publication-journals ${who}`);
+      denied(hook('shelf-read', { tool_name: 'Edit', tool_input: { file_path: f.at('internal/undo/y.json'), old_string: 'a', new_string: 'b' } }, seat), `an Edit of internal/undo ${who}`);
+      denied(hook('shelf-read', { tool_name: 'apply_patch', cwd: f.lib, tool_input: { command: '*** Begin Patch\n*** Add File: internal/z.json\n+{}\n*** End Patch\n' } }, seat), `an apply_patch adding internal/z.json ${who}`);
+    }
+    allowed(hook('shelf-read', { tool_name: 'Write', tool_input: { file_path: f.at(f.hubPage), content: '# Alpha\n' } }), 'a Write to the open Hub page');
+    allowed(hook('shelf-read', { tool_name: 'Read', tool_input: { file_path: f.at('internal/undo/y.json') } }), 'a Read of internal/undo');
+    denied(hook('shell-shelf-read', { tool_name: 'Bash', tool_input: { command: 'echo {} > internal/a.json' } }), 'a shell write to internal/a.json');
+    allowed(hook('shell-shelf-read', { tool_name: 'Bash', tool_input: { command: 'cat internal/undo/y.json' } }), 'a shell read of internal/undo');
+  } catch (error) {
+    failures.push(`section 511 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(511)) await section511();
+
+// --- 512. AN UNDO'S DERIVED WRITES DO NOT GO THROUGH A LINK (kickoffs/s168 row 3; the s167 second reader's finding 3) --
+// In the undo fixture, after a collection replace-page of demo: the Book's manifest store
+// internal/book-manifests/collection/demo is moved outside the Library and a junction (Windows) or symlink (Linux) put
+// in its place; the undo refuses naming the link, the page keeps the write, and the outside folder's file list and
+// hashes are unchanged. With the store back, the undo runs.
+async function section512(): Promise<void> {
+  const f = await undoFixture('undo-derived');
+  try {
+    const replaced = f.applied(['collection', 'replace-page', 'demo', 'guide/start', '--content-path', f.at('notebook/first/sources/corrected.md')]);
+    const written = f.bytes(f.guide)!;
+    const store = f.at('internal/book-manifests/collection/demo');
+    check(fs.existsSync(store), '512: the fixture Book has no manifest store');
+    const outside = path.join(f.w.root, 'outside-512');
+    fs.renameSync(store, outside);
+    const listing = () => {
+      const found: string[] = [];
+      const walk = (folder: string) => {
+        for (const item of fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+          const full = path.join(folder, item.name);
+          if (item.isDirectory()) walk(full);
+          else found.push(`${path.relative(outside, full)} ${sha256Hex(fs.readFileSync(full))}`);
+        }
+      };
+      walk(outside);
+      return found.join('\n');
+    };
+    const before = listing();
+    let linked = false;
+    try {
+      fs.symlinkSync(outside, store, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+      const through = f.undo('undo', f.idOf(replaced['journal']));
+      check(through.exit !== 0 && through.stderr.includes('is a symbolic link or junction') && through.stderr.includes('manifest store of collection/books/demo'), `512: an undo through a linked manifest store did not refuse naming the link: ${f.said(through)}`);
+      check(f.bytes(f.guide)!.equals(written), '512: the refused undo changed the page');
+      equal(listing(), before, '512: the folder outside the Library was changed through the link');
+    } finally {
+      // THE LINK ITSELF GOES, never what it points at: a junction is removed as a folder, a symlink as a file.
+      if (linked) {
+        if (process.platform === 'win32') fs.rmdirSync(store);
+        else fs.unlinkSync(store);
+      }
+      fs.renameSync(outside, store);
+    }
+    check(linked, '512: the directory link could not be made in the fixture');
+    const undone = f.undo('undo', f.idOf(replaced['journal']));
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone', `512: with the store back the undo did not run: ${f.said(undone)}`);
+  } catch (error) {
+    failures.push(`section 512 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(512)) await section512();
+
+// --- 513. A JOURNAL NAMES ITS WRITER BY SEAT ID (kickoffs/s168 row 4; the s167 second reader's findings 4 and 5) -----
+// In the undo fixture, with seats made by `seat start --no-launch`, each on its own Hub, and no seat in the environment:
+// (iii) `hub edit --seat beta` records beta's name and registry seat_id, and beta's undo runs; (i) gamma writes, gamma
+// is retired and a new seat takes the name, and its undo refuses naming the old writer as no seat now; (ii) delta
+// writes, delta is renamed epsilon, and epsilon's undo runs.
+async function section513(): Promise<void> {
+  const f = await undoFixture('undo-seat-id');
+  try {
+    const none = { CLAUDE_PID: '', LIBRARY_SEAT: '' };
+    const as = (seat: string) => ({ CLAUDE_PID: '', LIBRARY_SEAT: seat });
+    const page = (hub: string) => `collection/projects/w-${hub}/_project.md`;
+    const make = (seat: string, fresh = true) => {
+      if (fresh) equal(f.cli(['hub', 'new', `w-${seat}`, '--title', `W ${seat}`], none).exit, 0, `513: the Hub for ${seat} was not made`);
+      const made = f.cli(['seat', 'start', seat, '--project', `w-${seat}`, '--no-launch'], none);
+      equal(made.exit, 0, `513: the seat ${seat} was not made: ${f.said(made)}`);
+      f.cli(['desk', 'open', 'project', `w-${seat}`, '--seat', seat], none);
+      if (fresh) equal(f.cli(['hub', 'edit', `w-${seat}`, '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file(`s-${seat}.md`, '- [ ] first item\n'), '--seat', seat], none).exit, 0, `513: the section on ${seat}'s Hub was not added`);
+    };
+    const seatId = (seat: string) =>
+      String((JSON.parse(withoutBom(fs.readFileSync(f.at('.claude/seats/_registry.json'), 'utf8'))).seats as Record<string, unknown>[]).find((row) => row['seat'] === seat)?.['seat_id'] ?? '');
+    const gated = (args: string[], label: string) => {
+      const preview = f.json(f.cli([...args, '--preflight', '--json'], none));
+      const ran = f.cli([...args, '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? ''), '--json'], none);
+      equal(ran.exit, 0, `513: ${label}: ${f.said(ran)}`);
+      return f.json(ran);
+    };
+    const write = (seat: string) => gated(['hub', 'edit', `w-${seat}`, '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file(`w-${seat}.md`, `- [ ] written by ${seat}\n`), '--seat', seat], `${seat}'s hub edit did not apply`);
+
+    // (iii) --seat IS RECORDED, BY NAME AND ID.
+    make('beta');
+    const prior = f.bytes(page('beta'))!;
+    const byBeta = write('beta');
+    const block = f.journal(String(byBeta['journal']))['undo'] as Record<string, any> | undefined;
+    check(block?.['written_by_seat'] === 'beta' && block?.['written_by_seat_id'] === seatId('beta') && seatId('beta') !== '', `513 (iii): hub edit --seat beta did not record beta's name and id: ${JSON.stringify({ seat: block?.['written_by_seat'], id: block?.['written_by_seat_id'], registry: seatId('beta') })}`);
+    const betaUndo = f.undo('undo', f.idOf(byBeta['journal']), as('beta'));
+    check(betaUndo.exit === 0 && f.bytes(page('beta'))!.equals(prior), `513 (iii): beta's undo did not run: ${f.said(betaUndo)}`);
+
+    // (i) A NEW SEAT UNDER A RETIRED NAME GETS NONE OF THE OLD ONE'S WRITES.
+    make('gamma');
+    const byGamma = write('gamma');
+    const afterGamma = f.bytes(page('gamma'))!;
+    const retirePlan = String(f.json(f.cli(['seat', 'retire', 'gamma', '--preflight', '--json'], none))['plan_id'] ?? '');
+    const retired = f.cli(['seat', 'retire', 'gamma', '--plan-id', retirePlan, '--json'], none);
+    equal(retired.exit, 0, `513 (i): gamma was not retired: ${f.said(retired)}`);
+    make('gamma', false);
+    check(seatId('gamma') !== '' && seatId('gamma') !== String(f.journal(String(byGamma['journal']))['undo']?.['written_by_seat_id'] ?? ''), "513 (i): the new gamma has the old one's seat id");
+    const reborn = f.undo('undo', f.idOf(byGamma['journal']), as('gamma'));
+    check(reborn.exit !== 0 && reborn.stderr.includes("seat 'gamma', which is no seat in the registry now") && reborn.stderr.includes('recorded seat id'), `513 (i): a new seat under a retired name was not refused: ${f.said(reborn)}`);
+    check(f.bytes(page('gamma'))!.equals(afterGamma), '513 (i): the refused undo changed the page');
+
+    // (ii) A RENAMED SEAT KEEPS ITS WRITES.
+    make('delta');
+    const beforeDelta = f.bytes(page('delta'))!;
+    const byDelta = write('delta');
+    gated(['seat', 'rename', 'delta', 'epsilon'], 'delta was not renamed epsilon');
+    const renamed = f.undo('undo', f.idOf(byDelta['journal']), as('epsilon'));
+    check(renamed.exit === 0 && f.json(renamed)['status'] === 'undone' && f.bytes(page('delta'))!.equals(beforeDelta), `513 (ii): the renamed seat's undo did not run: ${f.said(renamed)}`);
+  } catch (error) {
+    failures.push(`section 513 stopped early: ${(error as Error).message}`);
+  } finally {
+    f.w.dispose();
+  }
+}
+if (selected(513)) await section513();
+
+// --- 514. NO "NOTHING NEEDS YOU" FROM AN UNREADABLE CAPTURE BOOK (kickoffs/s168 row 5; the s167 second reader's 8) ----
+// In 508's fixture, connected to a fixture vault: the page is written once; then the letters Book's notes/ is a file,
+// and `needs-you --write` refuses naming it with the page's bytes unchanged; then a catalogued capture Book's folder is
+// gone (reports, moved aside), the same; with everything readable again it writes as before.
+async function section514(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-needs-you-capture-')));
+  try {
+    const f = await needsYouFixture(root);
+    const vault = path.join(root, 'vault');
+    for (const folder of ['.obsidian', 'Librarian']) fs.mkdirSync(path.join(vault, folder), { recursive: true });
+    const preview = f.json(runCli(['vault', 'connect', vault, '--preflight', '--json', '--workspace', f.lib], { cwd: root, env: f.env }));
+    equal(runCli(['vault', 'connect', vault, '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? ''), '--workspace', f.lib], { cwd: root, env: f.env }).exit, 0, '514: the vault did not connect');
+    const page = path.join(vault, 'Librarian', 'needs-you.md');
+    equal(f.json(f.cli(['needs-you', '--write', '--json']))['status'], 'written', '514: the first write did not answer written');
+    const bytes = fs.readFileSync(page);
+    const refused = (label: string, named: string) => {
+      const ran = f.cli(['needs-you', '--write']);
+      check(ran.exit !== 0 && ran.stderr.includes('could not read') && ran.stderr.includes(named), `514: ${label}: --write did not refuse naming ${named}: ${ran.exit} ${ran.stderr.trim().slice(0, 400)}`);
+      check(fs.readFileSync(page).equals(bytes), `514: ${label}: the page was rewritten from an incomplete reading`);
+    };
+
+    // (i) THE LETTERS BOOK'S notes/ IS A FILE.
+    const notes = path.join(f.lib, 'shelf', 'letters', 'wiki', 'notes');
+    const kept = path.join(root, 'letters-notes-kept');
+    fs.renameSync(notes, kept);
+    fs.writeFileSync(notes, 'not a folder\n');
+    try {
+      refused('the letters notes path is a file', 'shelf/letters/wiki/notes');
+    } finally {
+      fs.rmSync(notes, { force: true });
+      fs.renameSync(kept, notes);
+    }
+
+    // (ii) A CATALOGUED CAPTURE BOOK'S FOLDER IS GONE.
+    const reports = path.join(f.lib, 'shelf', 'reports');
+    const aside = path.join(root, 'reports-aside');
+    fs.renameSync(reports, aside);
+    try {
+      refused('the reports Book folder is missing', 'shelf/reports');
+    } finally {
+      fs.renameSync(aside, reports);
+    }
+
+    // (iii) EVERYTHING READABLE: WRITTEN AS BEFORE.
+    f.addToSection('beta', 'Next', ['- [ ] Run c6: [[projects/work-beta/kickoffs/c6]] (a new unit)']);
+    equal(f.json(f.cli(['needs-you', '--write', '--json']))['status'], 'written', '514: a readable Library did not write the page');
+    check(fs.readFileSync(page, 'utf8').includes('- beta: c6, waiting for you to start the seat and say yes.'), '514: the page written after the failures lacks the new pointer');
+  } catch (error) {
+    failures.push(`section 514 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(514)) await section514();
+
+// --- 515. PLAIN HTTP TO A HOST NAME IS REFUSED, SINCE ITS Host CANNOT BE KEPT (kickoffs/s168 row 6; second reader 9) ---
+// A fixture server records the Host of each request it receives. First, the probe the row asks for: a fetch to the
+// server's address carrying `Host: <name>` arrives with the address as its Host, so a pinned request cannot keep the
+// name. Then through the Basic Memory client: `http://named.invalid:<port>` (the resolver seam answers 127.0.0.1)
+// refuses with the sentence and the server receives nothing; `http://127.0.0.1:<port>` arrives with that Host unchanged.
+async function section515(): Promise<void> {
+  const policy = await import('../src/netpolicy.ts');
+  const { McpSession } = await import('../src/basicmemory.ts');
+  const http = await import('node:http');
+  const hosts: string[] = [];
+  const server = http.createServer((request, response) => {
+    hosts.push(String(request.headers.host));
+    response.writeHead(500);
+    response.end('a stub that answers nothing');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await (await fetch(`http://127.0.0.1:${port}/probe`, { headers: { Host: `named.invalid:${port}` } })).text();
+    equal(hosts.shift(), `127.0.0.1:${port}`, "515: Node's fetch sent the caller's Host header, so row 6 could keep the name instead");
+
+    policy.setAddressResolver(async (host) => (host === 'named.invalid' ? ['127.0.0.1'] : []));
+    let said = '';
+    try { await new McpSession(`http://named.invalid:${port}/mcp`, 'selftest-515').initialize(); } catch (error) { said = (error as Error).message; }
+    check(said.includes("plain HTTP to the host name 'named.invalid', which Deskpost does not send") && said.includes('Use the address itself in the URL, or an https:// URL. Nothing was sent.'), `515: a host name was not refused with the sentence: ${said.slice(0, 400)}`);
+    equal(hosts.length, 0, `515: the server received a request for a refused host name: ${JSON.stringify(hosts)}`);
+    try { await new McpSession(`http://127.0.0.1:${port}/mcp`, 'selftest-515').initialize(); } catch { /* the stub answers 500 */ }
+    check(hosts.length > 0 && hosts.every((host) => host === `127.0.0.1:${port}`), `515: a request to the address did not arrive with that Host: ${JSON.stringify(hosts)}`);
+  } catch (error) {
+    failures.push(`section 515 stopped early: ${(error as Error).message}`);
+  } finally {
+    policy.setAddressResolver(null);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+if (selected(515)) await section515();
+
+// --- 516. REDO RECORDS MATCH THEIR JOURNAL AND ITS REVERSAL (c68 row 1) --------------------------------
+async function section516(): Promise<void> {
+  const f = await undoFixture('redo-journal');
+  try {
+    equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('s1.md', 'first\n')]).exit, 0, '516: setup');
+    const prior = f.bytes(f.hubPage)!;
+    const replaced = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s2.md', 'second\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const undone = f.undo('undo', f.idOf(replaced['journal']));
+    check(undone.exit === 0 && f.bytes(f.hubPage)!.equals(prior), `516: genuine undo: ${f.said(undone)}`);
+    const id = String(f.json(undone)['id']);
+    const recordFile = f.at(`internal/undo/${id}.json`);
+    const original = fs.readFileSync(recordFile, 'utf8');
+    const snapshot = (): string => {
+      const files: [string, string][] = [];
+      const visit = (dir: string) => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) visit(full);
+        else if (entry.isFile() && !entry.name.endsWith('.lock')) files.push([path.relative(f.lib, full), sha256Hex(fs.readFileSync(full))]);
+      } };
+      visit(f.lib);
+      return JSON.stringify(files.sort());
+    };
+    const changes: [string, (r: Record<string, any>) => void][] = [
+      ['other page', r => { r['undo']['paths'][0]['path'] = f.guide; }],
+      ['other seat id', r => { r['undo']['written_by_seat_id'] = 'f'.repeat(32); }],
+      ['other prior bytes', r => { r['undo']['paths'][0]['content_base64'] = Buffer.from('forged').toString('base64'); }],
+      ['other hash', r => { r['undo']['paths'][0]['after_sha256'] = '0'.repeat(64); }],
+      ['record path differs', r => { r['paths'][0]['path'] = f.guide; r['undo']['paths'][0]['path'] = f.guide; }],
+      ['missing journal', r => { r['journal_id'] = 'missing-516'; }],
+      ['record instead of journal', r => { r['journal_id'] = id; r['journal'] = `internal/undo/${id}.json`; }],
+      ['different journal filename', r => { r['journal'] = 'internal/publication-journals/other.json'; }],
+    ];
+    for (const [label, mutate] of changes) {
+      const record = JSON.parse(original);
+      mutate(record);
+      fs.writeFileSync(recordFile, JSON.stringify(record));
+      const before = snapshot();
+      const ran = f.undo('redo', id);
+      check(ran.exit !== 0 && ran.stderr.includes('is not the recorded reversal of its journal. Nothing was changed.'), `516: ${label}: ${f.said(ran)}`);
+      check(snapshot() === before, `516: ${label} changed files`);
+    }
+    fs.writeFileSync(recordFile, original);
+    const redone = f.undo('redo', id);
+    check(redone.exit === 0 && f.bytes(f.hubPage)!.equals(written), `516: genuine redo: ${f.said(redone)}`);
+  } catch (error) { failures.push(`section 516 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(516)) await section516();
+
+// --- 517. NUMBERED REDIRECTS AND CMD COPY VERBS USE THE WRITE FENCE (c68 row 2) ------------------------
+async function section517(): Promise<void> {
+  const f = await undoFixture('numbered-shell-fence');
+  try {
+    const hook = (command: string) => runCli(['hook', 'shell-shelf-read', '--workspace', f.lib, '--seat', 'first'], {
+      cwd: f.lib, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '' },
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+    }).stdout;
+    for (const command of ['echo x 1>internal/undo/x.json', 'echo x 2>>internal/a.json', 'cmd /c copy p.json internal\\undo\\x.json', 'cmd /c move p.json notebook\\other\\t\\x.md', 'cmd /c xcopy p.json internal\\a.json', 'cmd /c robocopy p internal\\undo', 'cmd /c ren internal\\a.json b.json']) {
+      check(hook(command).includes('"permissionDecision":"deny"'), `517: allowed ${command}`);
+    }
+    for (const command of ['cat internal/undo/y.json', 'type internal\\undo\\y.json', 'type notebook\\other\\t\\x.md', 'node x.js 2>&1', 'echo x 2>nul']) {
+      check(!hook(command).includes('"permissionDecision":"deny"'), `517: denied ${command}`);
+    }
+  } catch (error) { failures.push(`section 517 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(517)) await section517();
+
+// --- 518. CAPTURE MAP AND FIXED MANIFEST TEMP LINKS DO NOT RECEIVE WRITES (c68 row 3) -------------------
+async function section518(): Promise<void> {
+  const f = await undoFixture('derived-file-links');
+  try {
+    const map = f.at('shelf/holding/wiki/_index.md');
+    const kept = fs.readFileSync(map);
+    const outside = f.file('outside-map-518.md', '# Outside\n');
+    fs.unlinkSync(map);
+    // File symlinks need a Windows privilege; a hard link also exposes a write-through of this exact file.
+    try { fs.symlinkSync(outside, map, 'file'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error; fs.linkSync(outside, map); }
+    try {
+      const captured = f.cli(['capture', 'holding', '--title', 'Link test', '--body', 'Inside only.', '--json']);
+      equal(captured.exit, 0, `518: capture: ${f.said(captured)}`);
+      equal(fs.readFileSync(outside, 'utf8'), '# Outside\n', '518: capture wrote through the map link');
+    } finally { fs.unlinkSync(map); fs.writeFileSync(map, kept); }
+    const replaced = f.applied(['collection', 'replace-page', 'demo', 'guide/start', '--content-path', f.at('notebook/first/sources/corrected.md')]);
+    const temp = f.at('internal/book-manifests/collection/demo/dirty.json.tmp');
+    const target = f.file('outside-temp-518.txt', 'outside temp\n');
+    try { fs.symlinkSync(target, temp, 'file'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error; fs.linkSync(target, temp); }
+    try {
+      const undone = f.undo('undo', f.idOf(replaced['journal']));
+      equal(undone.exit, 0, `518: undo: ${f.said(undone)}`);
+      equal(fs.readFileSync(target, 'utf8'), 'outside temp\n', '518: undo wrote through dirty.json.tmp');
+    } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+    // SA10's folder-link fallback is checked separately; it tests the existing ancestor refusal.
+    const store = f.at('internal/book-manifests/collection/demo');
+    const outsideStore = path.join(f.w.root, 'outside-store-518');
+    fs.renameSync(store, outsideStore);
+    let linked = false;
+    try {
+      fs.symlinkSync(outsideStore, store, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+      const before = hashTree(outsideStore);
+      const refused = f.undo('undo', f.idOf(replaced['journal']));
+      check(refused.exit !== 0 && refused.stderr.includes('is a symbolic link or junction'), `518: folder fallback: ${f.said(refused)}`);
+      equal(hashTree(outsideStore), before, '518: folder fallback wrote outside the Library');
+    } finally {
+      if (linked) { if (process.platform === 'win32') fs.rmdirSync(store); else fs.unlinkSync(store); }
+      fs.renameSync(outsideStore, store);
+    }
+  } catch (error) { failures.push(`section 518 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(518)) await section518();
+
+// --- 519. THE MANIFEST STORE IS RECHECKED AFTER THE UNDO TAKES ITS LOCK (c68 row 4) ---------------------
+async function section519(): Promise<void> {
+  const f = await undoFixture('derived-lock-race');
+  let pending: Promise<{exit:number;stdout:string;stderr:string}> | undefined;
+  const pause = path.join(f.w.root, 'pause-519');
+  const generations = f.at('internal/book-manifests/collection/demo/generations');
+  const kept = path.join(f.w.root, 'generations-519');
+  const store = f.at('internal/book-manifests/collection/demo');
+  let linked = false;
+  try {
+    const replaced = f.applied(['collection', 'replace-page', 'demo', 'guide/start', '--content-path', f.at('notebook/first/sources/corrected.md')]);
+    const written = f.bytes(f.guide)!;
+    fs.writeFileSync(pause, '');
+    pending = f.undoAsync('undo', f.idOf(replaced['journal']), { LIBRARY_UNDO_PAUSE_FILE: pause });
+    const deadline = Date.now() + 60_000;
+    while (!fs.existsSync(`${pause}.held`) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    check(fs.existsSync(`${pause}.held`), '519: undo never paused holding its locks');
+    fs.renameSync(generations, kept);
+    fs.symlinkSync(kept, generations, process.platform === 'win32' ? 'junction' : 'dir');
+    linked = true;
+    const outside = hashTree(kept);
+    const beforeStore = fs.readdirSync(store).sort().join(',');
+    fs.unlinkSync(pause);
+    const ran = await pending;
+    check(ran.exit !== 0 && ran.stderr.includes('is a symbolic link or junction') && ran.stderr.includes('Nothing was changed.'), `519: no pre-write link refusal: ${f.said(ran)}`);
+    check(f.bytes(f.guide)!.equals(written), '519: page changed before link refusal');
+    equal(hashTree(kept), outside, '519: undo wrote through the junction');
+    equal(fs.readdirSync(store).sort().join(','), beforeStore, '519: undo wrote a dirty marker before its link check');
+    check(!fs.existsSync(f.at('internal/undo')) || fs.readdirSync(f.at('internal/undo')).length === 0, '519: undo saved a record before its link check');
+  } catch (error) { failures.push(`section 519 stopped early: ${(error as Error).message}`); }
+  finally {
+    if (fs.existsSync(pause)) fs.unlinkSync(pause);
+    if (pending) await pending;
+    if (linked) { if (process.platform === 'win32') fs.rmdirSync(generations); else fs.unlinkSync(generations); }
+    if (fs.existsSync(kept)) fs.renameSync(kept, generations);
+    f.w.dispose();
+  }
+}
+if (selected(519)) await section519();
+
+
+// --- 520. NEEDS-YOU REFUSES A WIKI FILE OR A MISSING SHELF CATALOG (c68 row 5) -------------------------
+async function section520(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-needs-you-shape-')));
+  try {
+    const f = await needsYouFixture(root);
+    const vault = path.join(root, 'vault');
+    for (const folder of ['.obsidian', 'Librarian']) fs.mkdirSync(path.join(vault, folder), { recursive: true });
+    const preview = f.json(runCli(['vault', 'connect', vault, '--preflight', '--json', '--workspace', f.lib], {cwd:root, env:f.env}));
+    equal(runCli(['vault', 'connect', vault, '--user-confirmed', '--plan-id', String(preview['plan_id']), '--workspace', f.lib], {cwd:root,env:f.env}).exit, 0, '520: connect');
+    equal(f.cli(['needs-you', '--write']).exit, 0, '520: initial write');
+    const page = path.join(vault, 'Librarian', 'needs-you.md');
+    const before = fs.readFileSync(page);
+    for (const relative of ['shelf/letters/wiki', 'shelf/_catalog.md']) {
+      const target = path.join(f.lib, ...relative.split('/'));
+      const kept = path.join(root, relative.includes('wiki') ? 'wiki-kept' : 'catalog-kept');
+      fs.renameSync(target, kept);
+      if (relative.includes('wiki')) fs.writeFileSync(target, 'not a folder\n');
+      try {
+        const ran = f.cli(['needs-you', '--write']);
+        check(ran.exit !== 0 && ran.stderr.includes(relative) && ran.stderr.includes(relative.includes('wiki') ? 'not a folder' : 'missing'), `520: ${relative}: ${ran.exit} ${ran.stderr}`);
+        check(fs.readFileSync(page).equals(before), `520: ${relative} rewrote the page`);
+      } finally { if (fs.existsSync(target)) fs.unlinkSync(target); fs.renameSync(kept, target); }
+    }
+    f.addToSection('beta', 'Next', ['- [ ] Run c7: [[projects/work-beta/kickoffs/c7]]']);
+    equal(f.json(f.cli(['needs-you', '--write', '--json']))['status'], 'written', '520: restored Library writes');
+  } catch(error) { failures.push(`section 520 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, {recursive:true,force:true}); }
+}
+if (selected(520)) await section520();
+
+// --- 521. A RENAMED SEAT UNDOES AND REDOES ITS OWN NOTEBOOK WRITE (c68 row 6) --------------------------
+async function section521(): Promise<void> {
+  const f = await undoFixture('renamed-notebook');
+  const none = { CLAUDE_PID:'', LIBRARY_SEAT:'' };
+  try {
+    const agent = f.w.startAgent();
+    f.w.seatMade('delta', 'beta', agent, '521: delta creation');
+    const asDelta = { CLAUDE_PID: String(agent), LIBRARY_SEAT: '' };
+    const opened = f.cli(['desk', 'open', 'book', 'holding', '--location', 'shelf', '--seat', 'delta'], asDelta);
+    equal(opened.exit, 0, `521: delta holding open: ${f.said(opened)}`);
+    const captured = f.cli(['capture', 'holding', '--title', 'Rename me', '--body', 'A note owned by delta.'], asDelta);
+    equal(captured.exit, 0, `521: delta capture: ${f.said(captured)}`);
+    const action = [{kind:'notebook', source:'holding', source_match:'Rename me', topic:'renamed'}];
+    const batch = f.gated(['triage', 'batch', '--actions', JSON.stringify(action), '--seat', 'delta'], asDelta);
+    equal(batch.ran.exit, 0, `521: notebook write: ${f.said(batch.ran)}`);
+    const journal = String(batch.result['outcomes']?.[0]?.['result']?.['journal']);
+    const original = f.journal(journal);
+    const notebook = (original['undo']['paths'] as {path:string}[]).filter(p => p.path.startsWith('notebook/delta/'));
+    check(notebook.length > 0, '521: writer journal has no Notebook page');
+    const bytes = notebook.map(p => f.bytes(p.path)!);
+    process.kill(agent);
+    check(f.w.untilFree('delta'), '521: the fixture agent did not release delta');
+    const renamed = f.gated(['seat', 'rename', 'delta', 'epsilon'], none);
+    equal(renamed.ran.exit, 0, `521: rename: ${f.said(renamed.ran)}`);
+    const other = f.undo('undo', f.idOf(journal), {CLAUDE_PID:'', LIBRARY_SEAT:'first'});
+    check(other.exit !== 0 && other.stderr.includes('only its own writes'), `521: another seat undo: ${f.said(other)}`);
+    const undone = f.undo('undo', f.idOf(journal), {CLAUDE_PID:'', LIBRARY_SEAT:'epsilon'});
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone', `521: renamed undo: ${f.said(undone)}`);
+    check(notebook.every(p => f.bytes(p.path.replace('notebook/delta/', 'notebook/epsilon/')) === null), '521: Notebook copies remain after undo');
+    const redone = f.undo('redo', String(f.json(undone)['id']), {CLAUDE_PID:'', LIBRARY_SEAT:'epsilon'});
+    check(redone.exit === 0 && f.json(redone)['status'] === 'redone', `521: renamed redo: ${f.said(redone)}`);
+    check(notebook.every((p,i) => f.bytes(p.path.replace('notebook/delta/', 'notebook/epsilon/'))?.equals(bytes[i]!) === true), '521: redo did not restore the renamed copies');
+    check(!fs.existsSync(f.at('notebook/delta')), '521: old Notebook was recreated');
+  } catch(error) { failures.push(`section 521 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(521)) await section521();
+
+
+// --- 522. COLLECTION REPLACE-PAGE RECORDS ITS EXPLICIT SEAT (c68 row 7) -------------------------------
+async function explicitWriterSeat(section: number, kind: 'collection' | 'tidy' | 'triage'): Promise<void> {
+  const f = await undoFixture(`explicit-seat-${section}`);
+  const none = { CLAUDE_PID: '', LIBRARY_SEAT: '' };
+  try {
+    let args: string[];
+    let target: string;
+    if (kind === 'collection') {
+      target = f.guide;
+      args = ['collection', 'replace-page', 'demo', 'guide/start', '--content-path', f.file('replace.md', '# Replacement\n\nExplicit seat.\n')];
+    } else if (kind === 'tidy') {
+      equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'append-section', '--section', 'Next', '--content-path', f.file('done.md', '- [x] Finished\n')]).exit, 0, `${section}: tidy setup`);
+      target = f.hubPage;
+      args = ['hub', 'tidy', 'alpha'];
+    } else {
+      target = f.noteOf('review-me');
+      args = ['triage', 'batch', '--actions', JSON.stringify([{kind:'review',source:'holding',source_match:'Review me'}])];
+    }
+    const before = f.bytes(target)!;
+    const ran = f.gated([...args, '--seat', 'first'], none);
+    equal(ran.ran.exit, 0, `${section}: explicit-seat writer: ${f.said(ran.ran)}`);
+    const journal = String(kind === 'triage' ? ran.result['outcomes']?.[0]?.['result']?.['journal'] : ran.result['journal']);
+    const block = f.journal(journal)['undo'];
+    const registry = JSON.parse(fs.readFileSync(f.at('.claude/seats/_registry.json'), 'utf8'));
+    const id = registry.seats.find((row: {seat:string}) => row.seat === 'first')?.seat_id;
+    check(block?.['written_by_seat'] === 'first' && block?.['written_by_seat_id'] === id && Boolean(id), `${section}: --seat first was not recorded by name and id`);
+    const undone = f.undo('undo', f.idOf(journal), {...none, LIBRARY_SEAT:'first'});
+    check(undone.exit === 0 && f.bytes(target)!.equals(before), `${section}: undo: ${f.said(undone)}`);
+  } catch(error) { failures.push(`section ${section} stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(522)) await explicitWriterSeat(522, 'collection');
+
+// --- 523. HUB TIDY RECORDS ITS EXPLICIT SEAT (c68 row 7) ----------------------------------------------
+if (selected(523)) await explicitWriterSeat(523, 'tidy');
+
+// --- 524. TRIAGE BATCH RECORDS ITS EXPLICIT SEAT (c68 row 7) ------------------------------------------
+if (selected(524)) await explicitWriterSeat(524, 'triage');
+
+
+
+// --- 526. SEAT ENTER NAMES THE PROCESS THAT HOLDS THE SEAT, NEVER "AGENT PROCESS 0" (kickoffs/s169 row 1) ----------
+async function section526(): Promise<void> {
+  const { agentProcessIdentity, enterSeatClaim, exitSeatClaim, seatBindingPath } = await import('../src/seatclaim.ts');
+  const { seatHolderAttemptPath } = await import('../src/seat.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-enter-names-holder-')));
+  const sleepers: ReturnType<typeof spawn>[] = [];
+  let release = () => {};
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(cli(['init', lib]).exit, 0, '526: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '526: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '526: the fixture seat was not made');
+    const state = path.join(lib, '.claude');
+    // Two live stand-in agents: one asks to enter, one is bound in (ii).
+    const sleeper = async () => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
+      sleepers.push(child);
+      for (let tries = 0; tries < 50 && agentProcessIdentity(child.pid!) === null; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+      return child.pid!;
+    };
+    const asker = await sleeper();
+    const bound = await sleeper();
+    fs.rmSync(seatBindingPath(state, 'first'), { force: true });
+    const held = enterSeatClaim(state, 'first');
+    release = () => exitSeatClaim(held);
+    const now = Date.now();
+    fs.writeFileSync(seatHolderAttemptPath(state, 'first'), JSON.stringify({
+      seat: 'first', attempt_id: '0123456789abcdef0123456789abcdef', holder_pid: process.pid,
+      started_utc: new Date(now).toISOString(), deadline_utc: new Date(now + 60000).toISOString(), state: 'committed',
+    }));
+    const enter = () => { const run = cli(['seat', 'enter', 'first', '--agent-pid', String(asker)]); return { exit: run.exit, said: run.stdout + run.stderr }; };
+
+    // (i) Held by a claim holder with no committed binding: the holder's process, never "agent process 0".
+    const unbound = enter();
+    check(unbound.exit !== 0, `526: seat enter took a held seat: ${unbound.said.slice(0, 400)}`);
+    check(!unbound.said.includes('agent process 0'), `526: the refusal still names agent process 0: ${unbound.said.slice(0, 400)}`);
+    check(unbound.said.includes(`process ${process.pid}`), `526: the refusal does not name the claim holder's process ${process.pid}: ${unbound.said.slice(0, 400)}`);
+
+    // (ii) Held with a committed binding: the binding's agent, as before.
+    fs.writeFileSync(seatBindingPath(state, 'first'), JSON.stringify({
+      state: 'committed', agent_pid: bound, agent_start_utc: agentProcessIdentity(bound), bound_utc: new Date().toISOString(),
+    }));
+    const committed = enter();
+    check(committed.exit !== 0, `526: seat enter took a seat with a committed binding: ${committed.said.slice(0, 400)}`);
+    check(committed.said.includes(`has a live session at agent process ${bound}`), `526: the refusal does not name the bound agent ${bound}: ${committed.said.slice(0, 400)}`);
+  } catch (error) {
+    failures.push(`section 526 stopped early: ${(error as Error).message}`);
+  } finally {
+    release();
+    for (const child of sleepers) child.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(526)) await section526();
+
+// --- 527. HUB EDIT FILLS {session} WITH THIS SEAT'S SESSION ID (kickoffs/s169 row 2) --------------------------------
+// At the same moment as `{now}`, from the seat's recorded conversation, `unrecorded` when none is; `{{session}}` writes
+// `{session}`; a preflight's plan id binds the unfilled text; `capture` writes `{session}` as given.
+async function section527(): Promise<void> {
+  const { writeSeatActivity } = await import('../src/seatclaim.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-session-placeholder-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '527: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '527: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '527: the fixture seat was not made');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const file = (name: string, text: string) => {
+      const at = path.join(root, `${name}.md`);
+      fs.writeFileSync(at, text);
+      return at;
+    };
+    const json = (args: string[]): Record<string, unknown> => {
+      const ran = cli([...args, '--json']);
+      try { return JSON.parse(ran.stdout) as Record<string, unknown>; } catch { return { unparsed: `${ran.exit} ${ran.stdout} ${ran.stderr}` }; }
+    };
+    const hub = () => fs.readFileSync(path.join(lib, 'collection', 'projects', 'work', '_project.md'), 'utf8');
+
+    // 1. No conversation recorded: `unrecorded`, and the write goes through.
+    const bare = json(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--content-path', file('bare', '- [ ] Before any record: {session}.')]);
+    check(bare['status'] === 'written' && hub().includes('- [ ] Before any record: unrecorded.'), `527: no record did not write unrecorded: ${JSON.stringify(bare).slice(0, 400)}`);
+
+    // 2. A recorded conversation; an append previewed, then applied with its plan id.
+    const id = '0f1e2d3c-4b5a-4968-8776-655443322110';
+    check(writeSeatActivity({ stateDirectory: path.join(lib, '.claude'), seat: 'first', note: 'selftest 527', conversation: id }) !== null, '527: the conversation was not recorded');
+    const text = file('append', '- [ ] Session {session}; the word {{session}} stays.');
+    const pre = json(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--content-path', text, '--preflight']);
+    check(String(pre['section_after'] ?? '').includes('Session {session}') && String(pre['time_placeholders'] ?? '').includes('{session}'), `527: the preflight did not show {session} unfilled and say so: ${JSON.stringify(pre).slice(0, 500)}`);
+    const applied = json(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--content-path', text, '--plan-id', String(pre['plan_id'])]);
+    check(applied['status'] === 'written' && applied['approved_sha256'] === pre['proposed_sha256'], `527: the apply did not take the preflight's plan id: ${JSON.stringify(applied).slice(0, 500)}`);
+    check(hub().includes(`- [ ] Session ${id}; the word {session} stays.`), `527: {session} was not filled, or {{session}} not kept: ${hub().split('\n').find((row) => row.includes('Session ')) ?? ''}`);
+
+    // 3. A new page: its plan id covers the unfilled text, and the page is written filled.
+    const page = file('page', '# Sessions\n\nOpened in {session} at {now}.\n');
+    const newPre = json(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/sessions', '--content-path', page, '--preflight']);
+    check(typeof newPre['plan_id'] === 'string' && String(newPre['time_placeholders'] ?? '').includes('{session}'), `527: the new page's preflight did not say it will fill {session}: ${JSON.stringify(newPre).slice(0, 400)}`);
+    const made = json(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/sessions', '--content-path', page, '--plan-id', String(newPre['plan_id'])]);
+    const madePath = path.join(lib, 'collection', 'projects', 'work', 'notes', 'sessions.md');
+    const madeText = fs.existsSync(madePath) ? fs.readFileSync(madePath, 'utf8') : '';
+    check(made['written'] === true && madeText.includes(`Opened in ${id} at `) && !madeText.includes('{now}'), `527: the new page was not written filled: ${madeText || JSON.stringify(made).slice(0, 400)}`);
+
+    // 4. capture is not hub edit: its body keeps {session} as given.
+    const captured = json(['capture', 'holding', '--title', 'Session as given', '--body', 'Kept {session} as given.']);
+    const notePath = path.join(lib, 'shelf', String(captured['note_page'] ?? '').replace(/^shelf\//, '') + '.md');
+    const noteText = fs.existsSync(notePath) ? fs.readFileSync(notePath, 'utf8') : '';
+    check(noteText.includes('Kept {session} as given.'), `527: capture changed {session}: ${noteText || JSON.stringify(captured).slice(0, 400)}`);
+  } catch (error) {
+    failures.push(`section 527 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(527)) await section527();
+
+// --- 528. TWO HELP TEXTS SAY WHAT THEY WERE MISSING (kickoffs/s169 row 3) -------------------------------------------
+// `hub edit --help` says the section modes act on --page; `needs-you --help` prints its own lines, which were keyed ''
+// and never shown; and every verb's details are keyed '*' or one of its actions, so the next '' fails here.
+async function section528(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-help-texts-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    const help = (args: string[]) => runCli(args, { cwd: root, env });
+    const edit = help(['hub', 'edit', '--help']);
+    check(edit.exit === 0 && edit.stdout.includes('Every mode but new-page acts on --page <p> when given (a notes/ page included), _project otherwise.'), `528: hub edit --help does not say the modes take --page: ${edit.exit} ${edit.stdout.slice(-600)}`);
+    const needs = help(['needs-you', '--help']);
+    check(needs.exit === 0 && needs.stdout.includes("Lists, from this Library's own files, the contract's five sections") && needs.stdout.includes("vault connection has the 'needs-you' feature on"), `528: needs-you --help does not print its own lines: ${needs.exit} ${needs.stdout.slice(0, 600)}`);
+    const { VERBS } = await import('../src/verbs.ts');
+    const strays = Object.entries(VERBS).flatMap(([verb, declaration]) => Object.keys(declaration.details ?? {}).filter((key) => key !== '*' && !declaration.actions.includes(key)).map((key) => `${verb}:'${key}'`));
+    equal(strays.join(', '), '', "528: a verb's details are keyed neither '*' nor one of its actions, so --help never prints them");
+  } catch (error) {
+    failures.push(`section 528 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(528)) await section528();
+
+// --- 529. THE WSL RUNNER NAMES ITS CLONE (kickoffs/s169 row 4) ------------------------------------------------------
+// Kickoffs spelled the runner's folder as the repository. The preamble exports DESKPOST_LINUX_CLONE once, before its
+// `cd`, to the folder the `cd` names, and the usage says where a script runs. Judged on the text, on any platform.
+async function section529(): Promise<void> {
+  try {
+    const tool = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools', 'wsl-run.mts')).href) as { PREAMBLE: string; CLONE: string; USAGE: string };
+    const lines = tool.PREAMBLE.split('\n');
+    const exported = lines.flatMap((line, at) => (/DESKPOST_LINUX_CLONE=/.test(line) ? [at] : []));
+    equal(exported.length, 1, `529: the preamble does not export DESKPOST_LINUX_CLONE exactly once: ${tool.PREAMBLE}`);
+    const value = /^export DESKPOST_LINUX_CLONE="(.*)"$/.exec(lines[exported[0] ?? -1] ?? '')?.[1] ?? '';
+    const cd = lines.findIndex((line) => line.startsWith('cd ') && line.includes('/app'));
+    const folder = /^cd "(.*)" \|\| exit 125$/.exec(lines[cd] ?? '')?.[1] ?? '';
+    check(cd > (exported[0] ?? Infinity), `529: DESKPOST_LINUX_CLONE is not exported before the cd into the clone: ${tool.PREAMBLE}`);
+    check(value === `$HOME/${tool.CLONE}/app` && (folder === value || folder === '$DESKPOST_LINUX_CLONE'), `529: DESKPOST_LINUX_CLONE '${value}' is not the folder the cd names '${folder}'`);
+    check(tool.USAGE.includes('the script runs in ~/dev/deskpost-linux-gates/app ($DESKPOST_LINUX_CLONE)'), `529: the usage does not say where the script runs: ${tool.USAGE}`);
+  } catch (error) {
+    failures.push(`section 529 stopped early: ${(error as Error).message}`);
+  }
+}
+if (selected(529)) await section529();
+
+// --- 530. A GATE-LOCK WAIT NAMES EVERY HOLDER IT WAITED ON (kickoffs/s169 row 5) ------------------------------------
+// One process holds a fixture lock as seatA/tierX for about 2 s, releases and at once takes it as seatB/tierY for about
+// 1 s; a waiter started during the first hold prints one record whose `holders` name both, in order, their seconds
+// summing to the wait's. `seat` and `tier` stay the last holder's, as section 270 reads them.
+async function section530(): Promise<void> {
+  const url = JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'gate-lock.ts')).href);
+  const env = { ...process.env, DESKPOST_GATE_LOCK: '', DESKPOST_GATE_SERIAL: '', DESKPOST_GATE_LOCK_NAME: `selftest-530-${process.pid}-${Date.now()}` };
+  const holderCode = `import { acquireGateLock } from ${url}; const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+process.env.LIBRARY_SEAT = 'seatA'; const a = await acquireGateLock('tierX', true, () => {}); process.stdout.write('held\\n'); await pause(2000); await a.release();
+process.env.LIBRARY_SEAT = 'seatB'; const b = await acquireGateLock('tierY', true, () => {}); await pause(1000); await b.release();`;
+  const waiterCode = `import { acquireGateLock } from ${url}; process.env.LIBRARY_SEAT = 'waiter';
+const lock = await acquireGateLock('tierW', false, (line) => process.stdout.write(line + '\\n')); await lock.release();`;
+  const start = (code: string) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => (out += chunk));
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (out += chunk));
+    const closed = new Promise<number>((resolve) => child.on('close', (exit) => resolve(exit ?? -1)));
+    return { child, said: () => out, closed };
+  };
+  const holder = start(holderCode);
+  try {
+    for (let tries = 0; tries < 100 && !holder.said().includes('held'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    check(holder.said().includes('held'), `530: the fixture holder did not take the lock: ${holder.said()}`);
+    const waiter = start(waiterCode);
+    const [held, waited] = await Promise.all([holder.closed, waiter.closed]);
+    equal(held, 0, `530: the fixture holder did not finish both holds: ${holder.said()}`);
+    equal(waited, 0, `530: the waiter did not take the lock: ${waiter.said()}`);
+    const records = waiter.said().split(/\r?\n/).filter((line) => line.startsWith('gate lock wait: '));
+    equal(records.length, 1, `530: the waiter did not print one wait record: ${waiter.said()}`);
+    const wait = JSON.parse((records[0] ?? 'gate lock wait: {}').slice('gate lock wait: '.length)) as { seconds?: number; seat?: string; tier?: string; holders?: { seat: string; tier: string; seconds: number }[] };
+    const holders = wait.holders ?? [];
+    equal(holders.map((entry) => `${entry.seat}/${entry.tier}`).join(','), 'seatA/tierX,seatB/tierY', `530: the record does not name both holders in order: ${records[0]}`);
+    check(holders.length === 2 && holders.every((entry) => entry.seconds > 0), `530: a holder's seconds are not above 0: ${records[0]}`);
+    const sum = holders.reduce((total, entry) => total + entry.seconds, 0);
+    check(Math.abs(sum - Number(wait.seconds)) <= 1, `530: the holders' seconds (${sum}) are not within 1 s of the wait's (${wait.seconds}): ${records[0]}`);
+    check(wait.seat === 'seatB' && wait.tier === 'tierY', `530: the record's seat and tier are no longer the last holder's: ${records[0]}`);
+  } catch (error) {
+    failures.push(`section 530 stopped early: ${(error as Error).message}`);
+  } finally {
+    holder.child.kill();
+  }
+}
+if (selected(530)) await section530();
+
+// --- 531. EVERY --require-sections RUN PRINTS ITS RUNNABLE LIST BEFORE THE LOCK (kickoffs/s169 row 6) ---------------
+// The line printed only on a refusal, so a list that all runs started the whole tier with nothing shown. With a fixture
+// lock held and --no-wait, the push tier and the runner each print `required sections this platform runs: 8,155`
+// before their lock refusal. Section 501 keeps the refusal's own line.
+async function section531(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-runnable-always-')));
+  const url = JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'gate-lock.ts')).href);
+  const lockName = `selftest-531-${process.pid}-${Date.now()}`;
+  const lockEnv = { DESKPOST_GATE_LOCK: '', DESKPOST_GATE_SERIAL: '', DESKPOST_GATE_LOCK_NAME: lockName };
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', `import { acquireGateLock } from ${url}; process.env.LIBRARY_SEAT = 'fixture'; await acquireGateLock('fixture', true, () => {}); process.stdout.write('held\\n'); setTimeout(() => {}, 120000);`], { env: { ...process.env, ...lockEnv }, stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    let heard = '';
+    holder.stdout!.setEncoding('utf8').on('data', (chunk: string) => (heard += chunk));
+    for (let tries = 0; tries < 100 && !heard.includes('held'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    check(heard.includes('held'), '531: the fixture holder did not take the lock');
+    const env = { ...repositoryNeutralEnv(), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry'), USERPROFILE: root, HOME: root, ...lockEnv };
+    const nodeEnv = repositoryNeutralEnv(env);
+    equal(spawnSync('git', ['init', '-q'], { cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true }).status, 0, '531: fixture git init');
+    for (const name of ['tools', 'kernel']) fs.symlinkSync(path.join(PROGRAM_ROOT, name), path.join(root, name), process.platform === 'win32' ? 'junction' : 'dir');
+    const routes: [string, string[]][] = [
+      ['gate', [path.join(PROGRAM_ROOT, 'tools/gate.ts'), '--tier', 'push', '--require-sections', '8,155', '--no-wait']],
+      ['runner', [path.join(PROGRAM_ROOT, 'kernel/test/run-parallel.ts'), '--require-sections', '8,155', '--no-wait']],
+    ];
+    for (const [label, args] of routes) {
+      const ran = spawnSync(process.execPath, args, { cwd: root, env: nodeEnv, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 1 << 22 });
+      const said = `${ran.stdout}${ran.stderr}`;
+      const line = ran.stderr.search(/required sections this platform runs: 8,155\r?\n/);
+      const refusal = ran.stderr.indexOf('--no-wait refuses to wait');
+      check(line >= 0, `531: ${label} did not print the runnable list 8,155: ${said.slice(0, 800)}`);
+      // The push tier needs PowerShell; where it has none it refuses its route after the line, before the lock.
+      if (label === 'runner' || process.platform === 'win32') {
+        equal(ran.status, 3, `531: ${label} did not refuse the held lock: ${said.slice(0, 800)}`);
+        check(line >= 0 && refusal > line, `531: ${label} printed the runnable list after its lock refusal: ${said.slice(0, 800)}`);
+      }
+      check(!said.includes('kernel self-test passed') && !said.includes('kernel.typecheck'), `531: ${label} ran something with the lock held: ${said.slice(0, 800)}`);
+    }
+  } catch (error) {
+    failures.push(`section 531 stopped early: ${(error as Error).message}`);
+  } finally {
+    holder.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(531) && prerequisite(531, () => !isCompiled(), 'requires source gate tools')) await section531();
+
+// --- 532. ASKS SORTS DESIGN AND RECORD-OR-TIDY ASKS BEFORE OUTSIDE-WORLD WORDS (kickoffs/s170-r2 row 1) ---------------
+// A recommendation that ends "shall I push it?" is a design ask, and a tidy that deletes an old note is a record ask;
+// only an ask with nothing but an outside-world word is counted outside. One fixture transcript, three typed yeses.
+async function section532(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-asks-order-')));
+  try {
+    const { countAsks, projectFolderName } = await import('../src/asks.ts');
+    const lib = path.join(root, 'lib');
+    const config = path.join(root, 'claude');
+    const folder = path.join(config, 'projects', projectFolderName(lib));
+    fs.mkdirSync(folder, { recursive: true });
+    const session = '00000000-0000-4000-8000-000000000532';
+    const asks = ['I recommend B; shall I push it?', 'Shall I tidy the Hub and delete the old note?', 'Shall I push to origin?'];
+    const lines = asks.flatMap((ask, n) => [
+      { type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text: ask }] }, timestamp: `2026-01-15T10:0${2 * n}:00.000Z`, sessionId: session, uuid: `a${n}` },
+      { type: 'user', isSidechain: false, origin: { kind: 'human' }, promptSource: 'typed', message: { role: 'user', content: 'yes' }, timestamp: `2026-01-15T10:0${2 * n + 1}:00.000Z`, sessionId: session, uuid: `u${n}` },
+    ]);
+    fs.writeFileSync(path.join(folder, 'session.jsonl'), lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const count = countAsks(lib, { since: '2026-01-14', until: '2026-01-16', configDirectory: config });
+    equal(count['approvals'], 3, '532: typed yeses');
+    const kinds = count['approvals_by_kind'] as Record<string, number>;
+    equal(JSON.stringify([kinds['design'], kinds['record'], kinds['outside']]), JSON.stringify([1, 1, 1]), `532: design, record and outside: ${JSON.stringify(kinds)}`);
+  } catch (error) {
+    failures.push(`section 532 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(532)) await section532();
+
+// --- 533. THE DASHBOARD MARKS A HUB WHOSE EVERY-SESSION PAGE IS OVER ITS LIMIT (kickoffs/s170-r2 row 3) ------------
+// As a Book with an audit due: `<hub> (tidy due)`, first and in the attention style. An over-limit on-demand page and a
+// shared collection's `hub_pages: null` mark nothing.
+async function section533(): Promise<void> {
+  try {
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const now = Date.now();
+    const page = (hub: string, name: string, kind: string, over: boolean) => ({ hub, page: name, kind, size_bytes: over ? 50000 : 100, limit_bytes: 40000, over });
+    const overview = {
+      seat: 'first', this_seat: { claim_state: 'held' }, open_books: [], open_projects: ['projects/alpha', 'projects/beta', 'projects/gamma'],
+      hub_pages: [page('alpha', '_project', 'every-session', false), page('beta', '_project', 'every-session', true), page('gamma', 'notes/long', 'on-demand', true)],
+    };
+    const hubsLine = (text: string) => text.split('\n').find((line) => line.startsWith('Hubs ')) ?? '';
+    equal(hubsLine(dashboardText(overview, { width: 80, now })), 'Hubs   beta (tidy due)  alpha  gamma', '533: the over-limit Hub is not marked and first');
+    check(/\x1b\[1;[^m]*mbeta \(tidy due\)/.test(dashboardText(overview, { width: 80, now, color: '256' })), '533: the tidy-due mark is not in the attention style');
+    equal(hubsLine(dashboardText({ ...overview, hub_pages: null }, { width: 80, now })), 'Hubs   alpha  beta  gamma', '533: hub_pages null marked a Hub');
+  } catch (error) {
+    failures.push(`section 533 stopped early: ${(error as Error).message}`);
+  }
+}
+if (selected(533)) await section533();
+
+// --- 534. NEW-PAGE WITH BOTH SOURCES IS REFUSED BEFORE ANY PLACEHOLDER IS FILLED (kickoffs/s170-r2 row 4) ------------
+// s169's second read: with `{now}` in the text, `--content` and `--content-path` together wrote the inline text.
+async function section534(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-new-page-two-sources-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '534: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '534: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '534: the fixture seat was not made');
+    const file = path.join(root, 'page.md');
+    fs.writeFileSync(file, '# From the file\n\nWritten at {now}.\n');
+    const made = (name: string) => path.join(lib, 'collection', 'projects', 'work', 'notes', `${name}.md`);
+
+    const both = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/both', '--content', '# Inline\n\nAt {now}.', '--content-path', file]);
+    check(both.exit !== 0 && both.stderr.includes('Supply exactly one of --content or --content-path.'), `534: both sources were not refused: ${both.exit} ${both.stdout.slice(0, 300)} ${both.stderr.slice(0, 300)}`);
+    check(!fs.existsSync(made('both')), '534: a refused new-page wrote its page');
+
+    const one = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'notes/one', '--content-path', file]);
+    const text = fs.existsSync(made('one')) ? fs.readFileSync(made('one'), 'utf8') : '';
+    check(one.exit === 0 && text.includes('Written at ') && !text.includes('{now}'), `534: one source did not write as before: ${one.exit} ${text || one.stderr.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 534 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(534)) await section534();
+
+// --- 535. SEAT ENTER NAMES ONLY A LIVE HOLDER (kickoffs/s170-r2 row 5) ------------------------------------------------
+// s169's second read: a pending binding's agent was named while it had exited, and so was a holder attempt's process.
+// Both now give the "could not be named" sentence; a live holder attempt (this process) is still named.
+async function section535(): Promise<void> {
+  const { agentProcessIdentity, enterSeatClaim, exitSeatClaim, seatBindingPath } = await import('../src/seatclaim.ts');
+  const { seatHolderAttemptPath } = await import('../src/seat.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-enter-live-holder-')));
+  const sleepers: ReturnType<typeof spawn>[] = [];
+  let release = () => {};
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(cli(['init', lib]).exit, 0, '535: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '535: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '535: the fixture seat was not made');
+    const state = path.join(lib, '.claude');
+    const asker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
+    sleepers.push(asker);
+    for (let tries = 0; tries < 50 && agentProcessIdentity(asker.pid!) === null; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    // An exited process: started, read, then gone.
+    const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
+    const dead = Number(gone.stdout);
+    check(dead > 0 && agentProcessIdentity(dead, { fresh: true }) === null, `535: the exited stand-in ${dead} is still running`);
+    fs.rmSync(seatBindingPath(state, 'first'), { force: true });
+    const held = enterSeatClaim(state, 'first');
+    release = () => exitSeatClaim(held);
+    const now = Date.now();
+    const attempt = (pid: number) => fs.writeFileSync(seatHolderAttemptPath(state, 'first'), JSON.stringify({
+      seat: 'first', attempt_id: '0123456789abcdef0123456789abcdef', holder_pid: pid,
+      started_utc: new Date(now).toISOString(), deadline_utc: new Date(now + 60000).toISOString(), state: 'committed',
+    }));
+    const enter = () => { const run = cli(['seat', 'enter', 'first', '--agent-pid', String(asker.pid)]); return { exit: run.exit, said: run.stdout + run.stderr }; };
+    const unnamed = 'whose holder could not be named';
+
+    // (i) A pending binding whose agent has exited, and no holder attempt: not named.
+    fs.writeFileSync(seatBindingPath(state, 'first'), JSON.stringify({ state: 'pending', agent_pid: dead, agent_start_utc: new Date(now - 60000).toISOString(), bound_utc: new Date().toISOString() }));
+    const pending = enter();
+    check(pending.exit !== 0 && pending.said.includes(unnamed) && !pending.said.includes(`process ${dead}`), `535: a pending binding's exited agent was named: ${pending.said.slice(0, 400)}`);
+    fs.rmSync(seatBindingPath(state, 'first'), { force: true });
+
+    // (ii) A holder attempt whose process has exited: not named.
+    attempt(dead);
+    const leftover = enter();
+    check(leftover.exit !== 0 && leftover.said.includes(unnamed) && !leftover.said.includes(`process ${dead}`), `535: an exited holder attempt's process was named: ${leftover.said.slice(0, 400)}`);
+
+    // (iii) A live holder attempt, this process: still named.
+    attempt(process.pid);
+    const live = enter();
+    check(live.exit !== 0 && live.said.includes(`held by the seat's claim holder (process ${process.pid})`), `535: a live holder attempt was not named: ${live.said.slice(0, 400)}`);
+  } catch (error) {
+    failures.push(`section 535 stopped early: ${(error as Error).message}`);
+  } finally {
+    release();
+    for (const child of sleepers) child.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(535)) await section535();
+
+// --- 538. EVERY RECORD CHAIN REACHES A JOURNAL BEFORE EITHER ACTION WRITES (c68-r3 row 2) -------------
+async function section538(): Promise<void> {
+  const f = await undoFixture('record-chain-538');
+  try {
+    const material = (): string => {
+      const entries: [string,string][] = [];
+      const visit = (dir: string) => { for (const item of fs.readdirSync(dir, {withFileTypes:true})) {
+        const full = path.join(dir,item.name);
+        if(item.isDirectory()) visit(full);
+        else if(item.isFile() && !item.name.endsWith('.lock')) entries.push([path.relative(f.lib,full),sha256Hex(fs.readFileSync(full))]);
+      } };
+      visit(f.lib); return JSON.stringify(entries.sort());
+    };
+    const replaced = f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now538.md','- [ ] Chain proof\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const j = f.idOf(replaced['journal']);
+    const prior = Buffer.from(f.journal(replaced['journal'])['undo']['paths'][0]['content_base64'],'base64');
+    const u1 = f.undo('undo',j);
+    check(u1.exit === 0 && f.bytes(f.hubPage)!.equals(prior),`538: undo J: ${f.said(u1)}`);
+    const r1 = f.undo('redo',String(f.json(u1)['id']));
+    check(r1.exit === 0 && f.bytes(f.hubPage)!.equals(written),`538: redo U1: ${f.said(r1)}`);
+    const r1id = String(f.json(r1)['id']);
+    const u2 = f.undo('undo',r1id);
+    check(u2.exit === 0 && f.bytes(f.hubPage)!.equals(prior),`538: undo R1: ${f.said(u2)}`);
+    const r2 = f.undo('redo',String(f.json(u2)['id']));
+    check(r2.exit === 0 && f.bytes(f.hubPage)!.equals(written),`538: redo U2: ${f.said(r2)}`);
+    // A copy of a genuine redo record with a chosen, currently applicable block.
+    const planted = f.journal(`internal/undo/${r1id}.json`);
+    planted['id']='forged-redo-538';
+    planted['undo']['paths'][0]['content_base64']=Buffer.from('chosen bytes\n').toString('base64');
+    planted['undo']['paths'][0]['after_sha256']=f.hash(f.hubPage);
+    fs.writeFileSync(f.at('internal/undo/forged-redo-538.json'),JSON.stringify(planted));
+    let before = material();
+    const denied = f.undo('undo','forged-redo-538');
+    check(denied.exit !== 0 && denied.stderr.includes('is not the recorded reversal of its journal. Nothing was changed.'),`538: planted redo accepted: ${f.said(denied)}`);
+    equal(material(),before,'538: forged redo changed material bytes');
+    fs.unlinkSync(f.at('internal/undo/forged-redo-538.json'));
+    const a = f.journal(`internal/undo/${r1id}.json`);
+    const b = f.journal(`internal/undo/${String(f.json(u1)['id'])}.json`);
+    a['id']='loop-a-538'; a['journal_id']='loop-b-538'; a['journal']='internal/undo/loop-b-538.json';
+    b['id']='loop-b-538'; b['journal_id']='loop-a-538'; b['journal']='internal/undo/loop-a-538.json';
+    for(const record of [a,b]) fs.writeFileSync(f.at(`internal/undo/${record['id']}.json`),JSON.stringify(record));
+    before=material();
+    const loop=f.undo('undo','loop-a-538');
+    check(loop.exit!==0 && loop.stderr.includes('is not the recorded reversal of its journal. Nothing was changed.'),`538: loop accepted: ${f.said(loop)}`);
+    equal(material(),before,'538: loop changed material bytes');
+  } catch(error) { failures.push(`section 538 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(538)) await section538();
+
+
+// --- 539. A REVERSAL CANNOT CLAIM ANOTHER OPERATION'S DIRTY MARKER (c68-r3 row 3) ----------------------
+async function section539(): Promise<void> {
+  const f = await undoFixture('record-operation-539');
+  try {
+    const { setBookManifestDirty, readBookManifestDirty } = await import('../src/manifeststore.ts');
+    const replaced = f.applied(['collection','replace-page','demo','guide/start','--content-path',f.at('notebook/first/sources/corrected.md')]);
+    const journal = f.idOf(replaced['journal']);
+    const undone = f.undo('undo',journal);
+    equal(undone.exit,0,`539: genuine undo: ${f.said(undone)}`);
+    const recordFile = f.at(String(f.json(undone)['record']));
+    const original = fs.readFileSync(recordFile,'utf8');
+    const other = 'op-fedcba9876543210';
+    setBookManifestDirty({workspace:f.lib,slug:'demo',collection:'collection',reason:'another operation',operationId:other});
+    const marker = readBookManifestDirty(f.lib,'demo','collection')!;
+    const markerBytes = fs.readFileSync(marker.file);
+    const pageBytes = f.bytes(f.guide)!;
+    const forged = JSON.parse(original);
+    forged['operation_id']=other;
+    fs.writeFileSync(recordFile,JSON.stringify(forged));
+    const beforeRecord=fs.readFileSync(recordFile);
+    const refused=f.undo('undo',journal);
+    check(refused.exit!==0 && refused.stderr.includes('does not match') && refused.stderr.includes('operation_id'),`539: another operation accepted: ${f.said(refused)}`);
+    check(fs.existsSync(marker.file) && fs.readFileSync(marker.file).equals(markerBytes),'539: another operation dirty marker was cleared or changed');
+    check(f.bytes(f.guide)!.equals(pageBytes) && fs.readFileSync(recordFile).equals(beforeRecord),'539: refusal changed the page or record');
+    forged['state']='finished';
+    fs.writeFileSync(recordFile,JSON.stringify(forged));
+    const badState=f.undo('undo',journal);
+    check(badState.exit!==0 && badState.stderr.includes('state is not started or done'),`539: an unwritten state accepted: ${f.said(badState)}`);
+    check(fs.existsSync(marker.file) && fs.readFileSync(marker.file).equals(markerBytes),'539: bad state changed another operation marker');
+  } catch(error) { failures.push(`section 539 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(539)) await section539();
+
+
+// --- 540. THE SHELL FENCE DENIES THE REVIEW'S QUOTED AND REDIRECT FORMS (c68-r3 row 4) ----------------
+async function section540(): Promise<void> {
+  const f = await undoFixture('shell-near-variants-540');
+  try {
+    const hook = (command: string) => runCli(['hook','shell-shelf-read','--workspace',f.lib,'--seat','first'],{
+      cwd:f.lib,env:{LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:''},
+      input:JSON.stringify({tool_name:'Bash',tool_input:{command}}),
+    }).stdout;
+    const denied = [
+      'cmd /c "copy p.json internal\\undo\\x.json"',
+      'powershell -c "Set-Content internal/undo/x.json $x"',
+      'echo x &>internal/undo/x.json', 'echo x &>>internal/undo/x.json',
+      'echo x >|internal/undo/x.json', 'echo x >&internal/undo/x.json',
+      'copy p.json internal.\\undo\\x.json', 'copy p.json internal\\.\\undo\\x.json',
+      'copy p.json "internal"/undo/x.json', "copy p.json inter''nal/undo/x.json",
+    ];
+    for(const command of denied) check(hook(command).includes('"permissionDecision":"deny"'),`540: allowed ${command}`);
+    for(const command of ['type internal\\undo\\x.json','type x','node x.js 2>&1','echo x 2>nul','node x.js >&2']) {
+      check(!hook(command).includes('"permissionDecision":"deny"'),`540: denied ${command}`);
+    }
+  } catch(error) { failures.push(`section 540 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(540)) await section540();
+
+
+// --- 541. THE TRAIN RECORD, MUTATIONS AND GENERATED PAGE (c69-r3 row 1) --------------------------------------
+async function section541(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-train-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'planner', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '541: init');
+    const train = (args: string[]) => runCli(['train', ...args, '--workspace', lib], { cwd: root, env });
+    const file = path.join(lib, 'internal', 'train', 'register.json');
+    const history = path.join(lib, 'internal', 'train', 'history.jsonl');
+    const none = train([]);
+    check(none.exit === 0 && /no train/i.test(none.stdout), `541: missing record: ${none.stderr}`);
+    const first = train(['add', 'first', '--title', 'Train first', '--place', 'foundation', '--first-asked', '2026-10-25', '--source', 'projects/work/_project']);
+    equal(first.exit, 0, `541: add: ${first.stderr}`);
+    if (!fs.existsSync(file)) return;
+    equal(train(['add', 'second', '--title', 'Next', '--place', 'car:1.5.2']).exit, 0, '541: second add');
+    equal(train(['move', 'second', '--place', 'foundation', '--after', 'first']).exit, 0, '541: move');
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    equal(record.schema, 1, '541: schema');
+    equal(record.changed_by, 'planner', '541: writer');
+    check(Number.isFinite(Date.parse(record.changed_at)), '541: UTC clock');
+    equal(record.items.map((i: any) => i.id).join(','), 'first,second', '541: order');
+    equal(record.items[0].first_asked, '2026-10-25', '541: first asked');
+    equal(record.items[0].source, 'projects/work/_project', '541: source');
+    check(train([]).stdout.includes('first: Train first (2026-10-25)'), '541: text lists id/title/date');
+    const page = train(['page']);
+    check(page.exit === 0 && page.stdout.includes('## foundation') && page.stdout.includes('first: Train first'), '541: generated page');
+    equal(JSON.parse(train(['--json']).stdout).items.length, 2, '541: JSON record');
+    const bad: string[][] = [
+      ['add', 'first', '--title', 'Duplicate', '--place', 'foundation'],
+      ['add', '../bad', '--title', 'Bad', '--place', 'foundation'],
+      ['add', 'third', '--title', 'Bad', '--place', 'unknown'],
+      ['add', 'third', '--title', 'Bad', '--place', 'foundation', '--after', 'missing'],
+      ['move', 'missing', '--place', 'foundation'], ['move', 'first', '--place', 'unknown'],
+      ['move', 'first', '--place', 'foundation', '--after', 'missing'],
+      ['close', 'missing', '--done', '--note', 'Done'], ['close', 'first', '--done'],
+      ['close', 'first', '--done', '--dropped', '--note', 'Ambiguous'],
+      ['close', 'first', '--done', '--note', 'two\nlines'],
+    ];
+    for (const args of bad) {
+      const before = fs.readFileSync(file), log = fs.readFileSync(history);
+      check(train(args).exit !== 0, `541: refused ${args.join(' ')}`);
+      check(before.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), '541: refusal wrote nothing');
+    }
+    equal(train(['close', 'first', '--done', '--note', 'Built']).exit, 0, '541: close done');
+    equal(train(['close', 'second', '--dropped', '--note', 'Replaced']).exit, 0, '541: close dropped');
+    const closed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    equal(closed.items[0].status, 'done', '541: done status');
+    equal(closed.items[1].status, 'dropped', '541: dropped status');
+    equal(closed.items[0].note, 'Built', '541: close note');
+    check(!train(['page']).stdout.includes('Train first'), '541: page excludes closed');
+    const rows = fs.readFileSync(history, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    equal(rows.map(r => r.action).join(','), 'add,add,move,close,close', '541: history actions');
+    equal(rows[2].from, 'car:1.5.2', '541: history from');
+    equal(rows[2].to, 'foundation', '541: history to');
+    check(rows.every(r => r.by === 'planner' && Number.isFinite(Date.parse(r.at))), '541: history provenance');
+    fs.writeFileSync(file, '{broken');
+    check(train(['add', 'third', '--title', 'Bad', '--place', 'foundation']).exit !== 0, '541: corrupt record refused');
+    equal(fs.readFileSync(file, 'utf8'), '{broken', '541: corrupt record preserved');
+  } catch (error) {
+    failures.push(`section 541 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(541)) await section541();
+
+// --- 542. THE DESK COUNTS HANDBACKS SINCE THE TRAIN CHANGED (c69-r3 row 2) -------------------------------------
+async function section542(): Promise<void> {
+  const w = await seatClaimWorkspace('train-desk', { pin: false });
+  try {
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, 'train fixture seat');
+    const overview = () => deskOverview({ workspace: w.workspace, seat: 'first' });
+    const now = Date.parse('2026-10-27T20:00:00Z');
+    equal(overview()['train'], undefined, '542: missing register has no field');
+    check(!dashboardText(overview(), { width: 120, now }).includes('Train '), '542: missing register has no line');
+    const dir = path.join(w.workspace, 'internal', 'train');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'register.json');
+    const record = { schema: 1, changed_at: '2026-10-26T12:00:00Z', changed_by: 'first', items: [
+      { id: 'train', title: 'Train', place: 'foundation', first_asked: '2026-10-25', source: '', status: 'open', note: '' },
+      { id: 'old', title: 'Done', place: 'foundation', first_asked: '2026-10-25', source: '', status: 'done', note: 'Built' },
+    ] };
+    const letters = path.join(w.workspace, 'shelf', 'letters', 'wiki');
+    const note = (folder: string, name: string, captured: string, review: string, recipient = 'first', title = `${name} handback: pushed`) => {
+      fs.mkdirSync(path.join(letters, folder), { recursive: true });
+      fs.writeFileSync(path.join(letters, folder, `${name}.md`), `---\ntitle: ${title}\ncaptured: ${captured}\nreview: ${review}\nfor_seat: ${recipient}\n---\n# ${title}\n`);
+    };
+    note('notes', 'before', '2026-10-25T12:00:00Z', 'pending');
+    note('notes', 'after-open', '2026-10-27T12:00:00Z', 'pending');
+    note('reviewed/2026-10', 'after-closed', '2026-10-27T13:00:00Z', 'done');
+    note('notes', 'other-seat', '2026-10-27T13:00:00Z', 'pending', 'second');
+    note('notes', 'other-title', '2026-10-27T13:00:00Z', 'pending', 'first', 'A question');
+    fs.writeFileSync(file, JSON.stringify(record));
+    const view = overview(), train = view['train'] as Record<string, PsJsonValue> | undefined;
+    equal(train?.['handbacks_since'], 2, '542: open and reviewed handbacks');
+    equal(train?.['open_items'], 1, '542: open item count');
+    equal(train?.['changed_at'], record.changed_at, '542: changed clock');
+    const line = (v: Record<string, PsJsonValue>, color: 'none' | '256' = 'none') => dashboardText(v, { width: 120, now, color }).split('\n').find(l => l.replace(/\x1b\[[0-9;]*m/g, '').includes('Train ')) ?? '';
+    check(line(view).includes('Train  changed 2026-10-26T12:00:00Z, 2 handbacks since'), '542: dashboard text');
+    check(/\x1b\[1;/.test(line(view, '256')), '542: handbacks need attention');
+    record.changed_at = '2026-10-27T14:00:00Z';
+    fs.writeFileSync(file, JSON.stringify(record));
+    const current = overview();
+    equal((current['train'] as Record<string, PsJsonValue> | undefined)?.['handbacks_since'], 0, '542: fresh train has zero handbacks');
+    check(line(current).includes('0 handbacks since') && !/\x1b\[1;/.test(line(current, '256')), '542: current train plain');
+    check(/\x1b\[1;/.test(line({ ...current, train: { changed_at: '2026-10-01T00:00:00Z', open_items: 1, handbacks_since: 0 } }, '256')), '542: old train needs attention without handbacks');
+    fs.rmSync(file);
+    equal(overview()['train'], undefined, '542: removed register drops field');
+  } catch (error) {
+    failures.push(`section 542 stopped early: ${(error as Error).message}`);
+  } finally { w.dispose(); }
+}
+if (selected(542)) await section542();
+
+
+// --- 543. KICKOFF TRAIN MEMBERSHIP AND LITERAL WRITE PLACEHOLDERS (c69-r3 row 3) -------------------------------
+async function section543(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-train-'));
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    const tool = path.join(PROGRAM_ROOT, 'tools', 'kickoff-check.mts');
+    const file = path.join(root, 'kickoff.md'), register = path.join(root, 'register.json');
+    const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'kickoff-template.md'), 'utf8'));
+    const complete = block.replace(/^TRAIN:.*\r?\n/m, '').replace('WHY NOW:', 'TRAIN: train-first (foundation)\n\nWHY NOW:');
+    fs.writeFileSync(register, JSON.stringify({ schema: 1, changed_at: '2026-10-27T00:00:00Z', changed_by: 'planner', items: [
+      { id: 'train-first', status: 'open' }, { id: 'done-item', status: 'done' },
+    ] }));
+    const run = (text: string, withTrain = true) => {
+      fs.writeFileSync(file, text);
+      const r = spawnSync(process.execPath, [tool, file, ...(withTrain ? ['--train', register] : [])], { encoding: 'utf8', cwd: root });
+      return { code: r.status, text: `${r.stdout}${r.stderr}` };
+    };
+    const missing = run(complete.replace(/^TRAIN:.*\n/m, ''), false);
+    check(missing.code === 1 && missing.text.includes('TRAIN'), '543: missing TRAIN refused by name');
+    equal(run(complete).code, 0, '543: open id passes with register');
+    equal(run(complete, false).code, 0, '543: text alone passes');
+    for (const id of ['unknown', 'done-item']) {
+      const r = run(complete.replace('TRAIN: train-first', `TRAIN: ${id}`));
+      check(r.code === 1 && r.text.includes(id), `543: ${id} refused by name`);
+    }
+    for (const name of ['now', 'today', 'session']) {
+      const text = complete.replace('WHY NOW:', `WHY NOW:\nLiteral {${name}}`);
+      const lineNumber = text.split('\n').findIndex(line => line.startsWith('Literal ')) + 1;
+      const bad = run(text, false);
+      check(bad.code === 1 && bad.text.includes(`line ${lineNumber}`) && bad.text.includes('double'), `543: one-pair ${name} diagnostic: ${bad.text}`);
+      equal(run(complete.replace('WHY NOW:', `WHY NOW:\nLiteral {{${name}}}`), false).code, 0, `543: doubled ${name} passes`);
+    }
+    fs.writeFileSync(register, '{broken');
+    const corrupt = run(complete);
+    check(corrupt.code !== 0 && corrupt.text.includes('register'), '543: malformed register refused');
+    equal(fs.readFileSync(register, 'utf8'), '{broken', '543: check writes nothing');
+  } catch (error) {
+    failures.push(`section 543 stopped early: ${(error as Error).message}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(543)) await section543();
+
+
+// --- 544. EACH REVERSAL OWNS ITS MARKER; DOCTOR ONLY REPORTS (c68-r4 row 2) ---------------------
+async function section544(): Promise<void> {
+  const f = await undoFixture('marker-owner-544');
+  try {
+    const {readBookManifestDirty,setBookManifestDirty} = await import('../src/manifeststore.ts');
+    const doctor = () => f.json(f.cli(['doctor','--json']))['library_checks'] as {check:string;status:string;detail:string}[];
+    const edit=f.applied(['collection','replace-page','demo','guide/start','--content-path',f.at('notebook/first/sources/corrected.md')]);
+    const id=f.idOf(edit['journal']);
+    const u=f.json(f.undo('undo',id));
+    equal(u['status'],'undone','544: initial undo');
+    const stopped=f.undo('redo',String(u['id']),{LIBRARY_UNDO_FAULT:'after-replace'});
+    check(stopped.exit!==0 && stopped.stderr.includes('FAULT INJECTED'),'544: redo did not stop');
+    const active=readBookManifestDirty(f.lib,'demo','collection')!;
+    const before=fs.readFileSync(active.file);
+    const rows=doctor();
+    check(fs.existsSync(active.file) && before.equals(fs.readFileSync(active.file)),"544: doctor cleared active redo's marker");
+    check(rows.some(r=>r.check==='undo.marker-left' && r.status==='warn' && r.detail.includes('left in place')),'544: doctor did not say marker left in place');
+    const r=f.json(f.undo('redo',String(u['id'])));
+    equal(r['status'],'redone','544: redo resume');
+    equal(readBookManifestDirty(f.lib,'demo','collection'),null,'544: redo left its marker');
+    const u2=f.json(f.undo('undo',String(r['id'])));
+    equal(u2['status'],'undone','544: undo again');
+    const records=[u,r,u2].map(x=>f.journal(String(x['record'])));
+    equal(new Set(records.map(x=>x['marker_operation_id'])).size,3,'544: reversals shared marker owner');
+    check(records.every(x=>x['schema']===2 && /^op-[0-9a-f]{16}$/.test(String(x['marker_operation_id']))),'544: schema2 marker owners');
+    equal(readBookManifestDirty(f.lib,'demo','collection'),null,'544: undo again left marker');
+    const planted:Record<string,any>={...records[0],id:'planted-marker-544',marker:{collection:'shelf',slug:'holding'}};
+    fs.writeFileSync(f.at('internal/undo/planted-marker-544.json'),JSON.stringify(planted));
+    setBookManifestDirty({workspace:f.lib,slug:'holding',collection:'shelf',reason:'another Book',operationId:String(planted['marker_operation_id']??planted['operation_id'])});
+    const other=readBookManifestDirty(f.lib,'holding','shelf')!;
+    const otherBytes=fs.readFileSync(other.file);
+    doctor();
+    check(fs.existsSync(other.file)&&otherBytes.equals(fs.readFileSync(other.file)),'544: planted done record cleared another Book marker');
+    fs.unlinkSync(f.at('internal/undo/planted-marker-544.json'));
+    fs.rmSync(other.file,{force:true});
+    const legacy:Record<string,any>={...records[2],schema:1};
+    delete legacy['marker_operation_id'];
+    const legacyFile=f.at(String(u2['record']));
+    fs.writeFileSync(legacyFile,JSON.stringify(legacy));
+    const legacyBytes=fs.readFileSync(legacyFile),page=f.bytes(f.guide)!;
+    const old=f.undo('redo',String(u2['id']));
+    check(old.exit!==0 && old.stderr.includes('before reversals owned their markers') && old.stderr.includes(f.guide),'544: schema1 redo refusal does not explain old record and paths');
+    const list=f.undo('list');
+    check(list.exit===0 && list.stdout.includes('before reversals owned their markers'),'544: --list advertises schema1 as runnable');
+    legacy['state']='started';fs.writeFileSync(legacyFile,JSON.stringify(legacy));
+    const started=fs.readFileSync(legacyFile);
+    const incomplete=doctor().find(x=>x.check==='undo.incomplete');
+    check(!!incomplete?.detail.includes('before reversals owned their markers') && !incomplete!.detail.includes('resume it with:'),'544: doctor advertises schema1 resume');
+    check(started.equals(fs.readFileSync(legacyFile))&&page.equals(f.bytes(f.guide)!),'544: legacy reads changed bytes');
+    fs.writeFileSync(legacyFile,legacyBytes);
+  } catch(error) {failures.push(`section 544 stopped early: ${(error as Error).message}`);}
+  finally {f.w.dispose();}
+}
+if (selected(544)) await section544();
+
+
+// --- 545. REVERSALS REQUIRE THIS SEAT'S ACTIVE DESK (c68-r4 row 3) ------------------------------
+async function section545(): Promise<void> {
+  const f=await undoFixture('undo-desk-545');
+  try {
+    const cases:[string,string[],string[],()=>Record<string,any>,string][]=[
+      ['Hub',['desk','close','project','alpha'],['desk','open','project','alpha'],()=>f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now545.md','- [ ] Proof\n')]),f.hubPage],
+      ['collection Book',['desk','close','book','demo','--location','collection'],['desk','open','book','demo','--location','collection'],()=>f.applied(['collection','replace-page','demo','guide/start','--content-path',f.at('notebook/first/sources/corrected.md')]),f.guide],
+      ['Shelf Book',['desk','close','book','holding','--location','shelf'],['desk','open','book','holding','--location','shelf'],()=>f.triage([{kind:'review',source:'holding',source_match:'Review me'}]).results[0]!,f.noteOf('review-me')],
+    ];
+    for(const [label,close,open,write,target] of cases){
+      const journal=f.idOf(write()['journal']);const written=f.bytes(target)!;
+      equal(f.cli(close).exit,0,`545: close ${label}`);
+      const denied=f.undo('undo',journal);
+      check(denied.exit!==0&&denied.stderr.includes('not open on seat')&&written.equals(f.bytes(target)!),`545: closed ${label} undo: ${f.said(denied)}`);
+      equal(f.cli(open).exit,0,`545: reopen ${label}`);
+      const undone=f.undo('undo',journal);
+      equal(undone.exit,0,`545: reopened ${label}: ${f.said(undone)}`);
+      const prior=f.bytes(target)!;
+      equal(f.cli(close).exit,0,`545: close ${label} before redo`);
+      const redo=f.undo('redo',String(f.json(undone)['id']));
+      check(redo.exit!==0&&redo.stderr.includes('not open on seat')&&prior.equals(f.bytes(target)!),`545: closed ${label} redo: ${f.said(redo)}`);
+      equal(f.cli(open).exit,0,`545: reopen ${label} before redo`);
+      equal(f.undo('redo',String(f.json(undone)['id'])).exit,0,`545: reopened ${label} redo`);
+    }
+    const j=f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('archive545.md','- [ ] Archive proof\n')]);
+    const {deskFilePath}=await import('../src/seatdesk.ts');
+    const desk=deskFilePath(f.at('.claude'),'first','projects');const old=fs.readFileSync(desk);
+    fs.writeFileSync(desk,'archive/projects/alpha\n');
+    const page=f.bytes(f.hubPage)!;
+    const denied=f.undo('undo',f.idOf(j['journal']));
+    check(denied.exit!==0&&denied.stderr.includes('Archived Project Hubs are read-only')&&page.equals(f.bytes(f.hubPage)!),'545: archived Hub accepted');
+    fs.writeFileSync(desk,old);
+    // Close after the pre-lock check while the reversal holds the lock: the second check must refuse too.
+    const pause=f.file('pause545','wait');
+    const pending=f.undoAsync('undo',f.idOf(j['journal']),{LIBRARY_UNDO_PAUSE_FILE:pause});
+    const deadline=Date.now()+20000;while(!fs.existsSync(pause+'.held')&&Date.now()<deadline)await sleep(50);
+    check(fs.existsSync(pause+'.held'),'545: under-lock seam never reached');
+    fs.writeFileSync(desk,'');fs.unlinkSync(pause);
+    const locked=await pending;
+    check(locked.exit!==0&&locked.stderr.includes('not open on seat')&&page.equals(f.bytes(f.hubPage)!),'545: closure under lock accepted');
+    fs.writeFileSync(desk,old);
+  }catch(error){failures.push(`section 545 stopped early: ${(error as Error).message}`);}
+  finally{f.w.dispose();}
+}
+if (selected(545)) await section545();
+
+
+// --- 546. ATOMIC WRITES REFUSE A LINKED STAGING FOLDER (c68-r4 row 4) ---------------------------
+async function section546(): Promise<void> {
+  const f=await undoFixture('staging-link-546');
+  try{
+    const {setBookManifestDirty,readBookManifestDirty}=await import('../src/manifeststore.ts');
+    const edit=f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now546.md','- [ ] Stage proof\n')]);
+    const staging=f.at('.deskpost-staging'),outside=path.join(f.w.root,'outside');
+    fs.mkdirSync(outside);if(fs.existsSync(staging))fs.rmdirSync(staging);
+    fs.symlinkSync(outside,staging,process.platform==='win32'?'junction':'dir');
+    const denied=f.undo('undo',f.idOf(edit['journal']));
+    check(denied.exit!==0&&denied.stderr.includes('staging')&&denied.stderr.includes('Nothing was written'),'546: undo followed staging link');
+    const capture=f.cli(['capture','holding','--title','Staging refused','--body','Fixture']);
+    check(capture.exit!==0&&capture.stderr.includes('Nothing was written'),'546: capture followed staging link');
+    let reason='';try{setBookManifestDirty({workspace:f.lib,slug:'demo',collection:'collection',reason:'fixture'});}catch(error){reason=(error as Error).message;}
+    check(reason.includes('Nothing was written'),'546: manifest followed staging link');
+    equal(fs.readdirSync(outside).length,0,'546: outside staging folder gained bytes');
+    fs.unlinkSync(staging);
+    equal(f.undo('undo',f.idOf(edit['journal'])).exit,0,'546: normal undo');
+    equal(f.cli(['capture','holding','--title','Staging normal','--body','Fixture']).exit,0,'546: normal capture');
+    setBookManifestDirty({workspace:f.lib,slug:'demo',collection:'collection',reason:'normal fixture'});
+    check(readBookManifestDirty(f.lib,'demo','collection')!==null,'546: normal manifest');
+  }catch(error){failures.push(`section 546 stopped early: ${(error as Error).message}`);}
+  finally{f.w.dispose();}
+}
+if (selected(546)) await section546();
+
+
+// --- 547. LITERAL SHELL QUOTE PIECES ARE JOINED BEFORE BOTH SCANS (c68-r4 row 5) ---------------
+async function section547(): Promise<void> {
+  const f=await undoFixture('shell-quotes-547');
+  try{
+    const hook=(command:string)=>runCli(['hook','shell-shelf-read','--workspace',f.lib,'--seat','first'],{cwd:f.lib,env:{LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:''},input:JSON.stringify({tool_name:'Bash',tool_input:{command}})}).stdout;
+    for(const command of ['"cp" p.json internal/undo/x.json',"echo x > inter''nal/undo/x.json","'mv' a internal/x",'echo x >"inter"nal/undo/x.json']){
+      check(hook(command).includes('"permissionDecision":"deny"'),`547: allowed ${command}`);
+    }
+    for(const command of ['cat internal/undo/x.json','echo x > ordinary/file','node x.js 2>&1'])check(!hook(command).includes('"permissionDecision":"deny"'),`547: denied ${command}`);
+  }catch(error){failures.push(`section 547 stopped early: ${(error as Error).message}`);}
+  finally{f.w.dispose();}
+}
+if (selected(547)) await section547();
+
+
+// --- 548. UNDO AND REDO KEEP NEEDS-YOU CURRENT; LIST WRITES NOTHING (c68-r4 row 6) ---------------
+async function section548(): Promise<void> {
+  const f=await undoFixture('undo-refresh-548');
+  try{
+    const vault=path.join(f.w.root,'vault');for(const part of ['.obsidian','Librarian'])fs.mkdirSync(path.join(vault,part),{recursive:true});
+    const preview=f.json(f.cli(['vault','connect',vault,'--preflight','--json']));
+    equal(f.cli(['vault','connect',vault,'--user-confirmed','--plan-id',String(preview['plan_id'])]).exit,0,'548: connect');
+    const edit=f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now548.md','- [ ] Eric: choose the regression proof\n')]);
+    const page=path.join(vault,'Librarian','needs-you.md');
+    check(fs.readFileSync(page,'utf8').includes('choose the regression proof'),'548: initial Hub refresh');
+    const undone=f.cli(['undo',f.idOf(edit['journal']),'--json']);
+    equal(undone.exit,0,`548: undo ${f.said(undone)}`);
+    check(!fs.readFileSync(page,'utf8').includes('choose the regression proof'),'548: undo left Eric item');
+    const redone=f.cli(['redo',String(f.json(undone)['id']),'--json']);
+    equal(redone.exit,0,`548: redo ${f.said(redone)}`);
+    check(fs.readFileSync(page,'utf8').includes('choose the regression proof'),'548: redo omitted Eric item');
+    fs.writeFileSync(page,'sentinel: list must leave these exact bytes\n');const bytes=fs.readFileSync(page),stamp=fs.statSync(page).mtimeMs;
+    equal(f.cli(['undo','--list','--json']).exit,0,'548: list');
+    check(bytes.equals(fs.readFileSync(page))&&fs.statSync(page).mtimeMs===stamp,'548: --list refreshed page');
+  }catch(error){failures.push(`section 548 stopped early: ${(error as Error).message}`);}
+  finally{f.w.dispose();}
+}
+if (selected(548)) await section548();
+
+// --- 549. A REAL DESK CLOSE WAITS THROUGH UNDO RESTORATION (c72-r2 row 1) -----------------
+async function section549(): Promise<void> {
+  const f = await undoFixture('undo-desk-lock-549');
+  const {enterSeatRegistryLock, exitBookLock} = await import('../src/locks.ts');
+  const {deskFilePath} = await import('../src/seatdesk.ts');
+  let pause = '';
+  let pending: ReturnType<typeof f.undoAsync> | undefined;
+  let closing: ReturnType<typeof f.w.asAsync> | undefined;
+  try {
+    const prior = f.bytes(f.hubPage)!;
+    const edit = f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now549.md','- [ ] Undo while closing\n')]);
+    const id = f.idOf(edit['journal']);
+    const desk = deskFilePath(f.at('.claude'),'first','projects');
+    pause = f.file('pause549','wait');
+    pending = f.undoAsync('undo',id,{LIBRARY_UNDO_PAUSE_FILE:pause});
+    const deadline = Date.now()+20000;
+    while(!fs.existsSync(pause+'.held') && Date.now()<deadline) await sleep(50);
+    check(fs.existsSync(pause+'.held'),'549: undo never took its locks');
+    const started = Date.now();
+    let closedAt: number | null = null;
+    closing = f.w.asAsync(f.w.agents[0]!.pid,['desk','close','project','alpha','--workspace',f.lib]).then(result => {closedAt=Date.now(); return result;});
+    await sleep(2000);
+    check(closedAt===null,`549: real close exited during pause after ${closedAt===null?'pending':closedAt-started}ms`);
+    check(fs.readFileSync(desk,'utf8').includes('projects/alpha'),'549: real close removed the Hub during pause');
+    fs.rmSync(pause,{force:true});
+    const [undone,closed] = await Promise.all([pending,closing]);
+    process.stdout.write(`549 close timing: ${closedAt!-started}ms from start; pause released after 2000ms observation\n`);
+    check(undone.exit===0 && f.json(undone)['status']==='undone',`549: undo did not restore: ${f.said(undone)}`);
+    check(prior.equals(f.bytes(f.hubPage)!),'549: prior page bytes were not restored');
+    equal(closed.exit,0,`549: waiting close failed: ${f.said(closed)}`);
+    check(!fs.readFileSync(desk,'utf8').includes('projects/alpha'),'549: close did not finish after undo');
+    equal(f.cli(['desk','open','project','alpha']).exit,0,'549: reopen before refusal control');
+    const control = f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('control549.md','- [ ] Timeout control\n')]);
+    const written = f.bytes(f.hubPage)!;
+    const holder = enterSeatRegistryLock(f.lib);
+    try {
+      const denied = f.undo('undo',f.idOf(control['journal']),{},'1');
+      check(denied.exit!==0 && denied.stderr.includes('holds the lock for registry/desk') && denied.stderr.includes('Nothing was changed.'),`549: registry timeout missing: ${f.said(denied)}`);
+      check(written.equals(f.bytes(f.hubPage)!),'549: timeout changed page bytes');
+    } finally { exitBookLock(holder); }
+    const retry = f.undo('undo',f.idOf(control['journal']),{},'1');
+    check(retry.exit===0 && f.json(retry)['status']==='undone',`549: refusal left a lock: ${f.said(retry)}`);
+  } catch(error) { failures.push(`section 549 stopped early: ${(error as Error).message}`); }
+  finally {
+    if(pause) fs.rmSync(pause,{force:true});
+    await Promise.all([pending,closing]);
+    f.w.dispose();
+  }
+}
+if (selected(549)) await section549();
+
+
+// --- 550. AN OPEN ARCHIVE DOES NOT REVOKE THE ACTIVE ROOT'S AUTHORIZATION (c71-r2 row 2) -----
+async function section550(): Promise<void> {
+  for (const project of [false, true]) {
+    const f = await undoFixture(`dual-open-550-${project}`);
+    try {
+      const slug = project ? 'alpha' : 'demo';
+      const target = project ? f.hubPage : f.guide;
+      const prior = f.bytes(target)!;
+      const edit = project
+        ? f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('now550.md','- [ ] Dual-open proof\n')])
+        : f.applied(['collection','replace-page','demo','guide/start','--content-path',f.at('notebook/first/sources/corrected.md')]);
+      const archive = f.at(project ? 'collection/archive/projects/alpha' : 'collection/archive/demo');
+      fs.cpSync(f.at(project ? 'collection/projects/alpha' : 'collection/books/demo'), archive, {recursive:true});
+      const archivedPage = path.join(archive, project ? '_project.md' : 'wiki/guide/start.md');
+      const archivedBytes = fs.readFileSync(archivedPage);
+      const args = project ? ['project',slug] : ['book',slug,'--location','collection'];
+      equal(f.cli(['desk','open',...args,'--shelf','archive']).exit,0,`550: open archived ${slug}`);
+      const journal = f.idOf(edit['journal']);
+      const undone = f.undo('undo',journal);
+      equal(undone.exit,0,`550: active and archived ${slug}: ${f.said(undone)}`);
+      check(prior.equals(f.bytes(target)!),`550: active ${slug} was not restored`);
+      equal(f.cli(['desk','close',...args]).exit,0,`550: close active ${slug}`);
+      const denied = f.undo('undo',journal);
+      const expected = project
+        ? "Project 'alpha' is open from the archive shelf. Archived Project Hubs are read-only. Nothing was changed."
+        : "Book 'demo' is open from the archive shelf, which is read-only. Nothing was changed.";
+      equal(denied.stderr.trim(),expected,`550: archive-only ${slug} refusal`);
+      check(archivedBytes.equals(fs.readFileSync(archivedPage)),`550: archived ${slug} changed`);
+    } catch(error) { failures.push(`section 550 stopped early: ${(error as Error).message}`); }
+    finally { f.w.dispose(); }
+  }
+}
+if (selected(550)) await section550();
+
+// --- 551. LINKED DESTINATION REFUSAL PRECEDES DIRECTORY CREATION (c71-r2 row 3) -------------
+async function section551(): Promise<void> {
+  const f = await undoFixture('mkdir-link-551');
+  try {
+    const {writeAtomicText} = await import('../src/fsx.ts');
+    const outside = path.join(f.w.root,'outside551');
+    fs.mkdirSync(outside);
+    const linked = f.at('linked551');
+    fs.symlinkSync(outside,linked,process.platform==='win32'?'junction':'dir');
+    let reason = '';
+    try { writeAtomicText(path.join(linked,'new-child','file'),'must not escape'); }
+    catch(error) { reason = (error as Error).message; }
+    check(reason.includes('symbolic link or junction') && reason.includes('Nothing was written.'),`551: missing link refusal: ${reason}`);
+    check(!fs.existsSync(path.join(outside,'new-child')),'551: refusal created an outside directory');
+    const plain = f.at('plain551/new-child/file');
+    writeAtomicText(plain,'ordinary missing subtree');
+    equal(fs.readFileSync(plain,'utf8'),'ordinary missing subtree','551: ordinary subtree was not created');
+  } catch(error) { failures.push(`section 551 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(551)) await section551();
+
+
+// --- 552. SHELL LITERAL WORDS ARE DECODED BEFORE THE WRITE FENCE (c71-r2 row 4) -------------
+async function section552(): Promise<void> {
+  const f = await undoFixture('shell-literals-552');
+  try {
+    const hook = (command:string) => runCli(['hook','shell-shelf-read','--workspace',f.lib,'--seat','first'],{
+      cwd:f.lib,env:{LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:''},
+      input:JSON.stringify({tool_name:'Bash',tool_input:{command}}),
+    }).stdout;
+    for(const command of ['c\\p p.json internal/undo/x.json',"$'cp' p.json internal/undo/x.json","echo x > $'internal/undo/x.json'",'c"p" p.json internal/undo/x.json',"$'\\x63p' p.json internal/undo/x.json","echo x > $'internal\\x2fundo/x.json'"]) {
+      check(hook(command).includes('"permissionDecision":"deny"'),`552: allowed ${command}`);
+    }
+    for(const command of ['cp a.txt b.txt','echo D:\\dev\\x\\notebook-like\\y',"cat <<'EOF'\ncp p.json internal/undo/x.json\nEOF",'cat internal/undo/x.json']) {
+      check(!hook(command).includes('"permissionDecision":"deny"'),`552: denied ${command}`);
+    }
+  } catch(error) { failures.push(`section 552 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(552)) await section552();
+
+
+// --- 553. AN UNAVAILABLE FILESYSTEM ROOT REFUSES WITHOUT SPINNING (c72-r2 row 2) ----------
+async function section553(): Promise<void> {
+  const f = await undoFixture('missing-root-553');
+  try {
+    const {writeAtomicText} = await import('../src/fsx.ts');
+    if(process.platform==='win32') {
+      const drive = Array.from({length:22},(_,i)=>`${String.fromCharCode(90-i)}:/`).find(root=>!fs.existsSync(root));
+      const root = drive ?? '//nonexistent-c72/share/';
+      if(!fs.existsSync(root)) {
+        const file = path.join(root,'missing-c72-553','file.txt');
+        const runner = f.file('missing-root553.mjs',[
+          `import {writeAtomicText} from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT,'kernel/src/fsx.ts')).href)};`,
+          "try {writeAtomicText(process.argv[2],'must refuse'); process.exitCode=2;}",
+          "catch(error) {process.stderr.write(error.message); process.exitCode=1;}",
+        ].join('\n'));
+        const started = Date.now();
+        const child = spawnSync(process.execPath,[runner,file],{cwd:f.w.root,encoding:'utf8',timeout:15000,windowsHide:true});
+        process.stdout.write(`553 missing-root child: status=${child.status}, error=${child.error?.message ?? 'none'}, elapsed=${Date.now()-started}ms\n`);
+        check(child.error===undefined && child.status===1 && child.stderr.includes(path.parse(file).root) && child.stderr.trimEnd().endsWith('Nothing was written.'),`553: unavailable root did not promptly refuse: ${child.error?.message ?? child.stderr}`);
+        check(!fs.existsSync(root) && !fs.existsSync(file),'553: unavailable-root refusal created a destination');
+      } else process.stdout.write('553 missing-root case SKIP: no free drive and the fallback UNC root exists\n');
+    } else process.stdout.write('553 missing-drive case SKIP: Linux filesystem root always exists\n');
+    const plain = f.at('plain553/missing/child/file');
+    writeAtomicText(plain,'existing root, missing subtree');
+    equal(fs.readFileSync(plain,'utf8'),'existing root, missing subtree','553: ordinary missing subtree was not written');
+  } catch(error) { failures.push(`section 553 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(553)) await section553();
+
+
+// --- 554. LITERAL SHELL WORDS COMPOSE QUOTED AND ESCAPED PIECES (c72-r2 row 3) ------------
+async function section554(): Promise<void> {
+  const f = await undoFixture('shell-composition-554');
+  try {
+    const hook = (command:string) => runCli(['hook','shell-shelf-read','--workspace',f.lib,'--seat','first'],{
+      cwd:f.lib,env:{LIBRARY_WORKSPACE:'',LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:'',CLAUDE_PID:''},
+      input:JSON.stringify({tool_name:'Bash',tool_input:{command}}),
+    }).stdout;
+    for(const command of ['c\\p"" p.json internal/undo/x.json',"'c'\\p p.json internal/undo/x.json","$'c'\\p p.json internal/undo/x.json","$'\\143p' p.json internal/undo/x.json"]) {
+      check(hook(command).includes('"permissionDecision":"deny"'),`554: allowed ${command}`);
+    }
+    for(const command of ["printf '%s\\n' \"$'cp' p.json internal/undo/x.json\"",'cp a.txt b.txt','echo D:\\dev\\x\\notebook-like\\y']) {
+      check(!hook(command).includes('"permissionDecision":"deny"'),`554: denied ${command}`);
+    }
+  } catch(error) { failures.push(`section 554 stopped early: ${(error as Error).message}`); }
+  finally { f.w.dispose(); }
+}
+if (selected(554)) await section554();
+
+
+// --- 555. RELEASE AUDITS AND SENSITIVE SECOND READS (c73-r2) --------------------------------------------
+async function section555(): Promise<void> {
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    // Dynamic access keeps the missing export at the BASE a behavioural failure, not a type error.
+    const audit = (kc as unknown as {auditProblems: (text: string) => string[]}).auditProblems;
+    check(typeof audit === 'function', '555: auditProblems export is missing');
+    const fixture = (train: string, why: string) => `TRAIN: ${train}\nWHY NOW:\n${why}\nSIZE: small`;
+    const release = (why: string) => fixture('release-1-5-2 (foundation)', why);
+    check(audit(release('')).length === 1, '555: release without Audit passed');
+    equal(JSON.stringify(audit(release('- **Audit:** library-auditor answered [[letters/notes/audit-answer]].'))), '[]', '555: answered release refused');
+    check(audit(release('- **Audit:** library-auditor answered.')).length === 1, '555: release without letter passed');
+    check(audit(release('- **Audit:** someone answered [[letters/notes/audit-answer]].')).length === 1, '555: release without auditor passed');
+    equal(JSON.stringify(audit(fixture('auditor-check', ''))), '[]', '555: non-release needs no audit');
+    // The CLI must collect this rule even without a train register.
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c73-audit-'));
+    try {
+      const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
+      const file = path.join(temp, 'kickoff.md');
+      fs.writeFileSync(file, block.replace(/^TRAIN:.*$/m, 'TRAIN: release-1-5-2').replace(/^- \*\*Audit:\*\*.*\r?\n/m, ''));
+      const child = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts'), file], {encoding:'utf8', windowsHide:true});
+      check(child.status === 1 && child.stdout.includes('Audit'), '555: CLI did not refuse missing release audit');
+    } finally { fs.rmSync(temp, {recursive:true, force:true}); }
+  } catch(error) { failures.push(`section 555 audit stopped early: ${(error as Error).message}`); }
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    const second = (kc as unknown as {secondReadProblems: (text: string) => string[]}).secondReadProblems;
+    check(typeof second === 'function', '555: secondReadProblems export is missing');
+    const fixture = (owns: string, why = '', stay = '') => `TRAIN: auditor-check\nWHY NOW:\n${why}\nSIZE: small\nOWNS: ${owns}\nSTAY OUT OF: ${stay}`;
+    check(second(fixture('kernel/src/locks.ts'))[0]?.includes('kernel/src/locks.ts') === true, '555: missing second read does not name locks.ts');
+    equal(JSON.stringify(second(fixture('kernel/src/locks.ts', '- **Second read:** library-auditor reads base..tip.'))), '[]', '555: sensitive second read refused');
+    check(second(fixture('undo.ts')).length === 1, '555: basename undo.ts passed');
+    equal(JSON.stringify(second(fixture('tools/kickoff-check.mts', '', 'guards.ts'))), '[]', '555: STAY OUT OF triggered sensitivity');
+    check(second(fixture('locks.ts', '- **Second read:** none')).length === 1, '555: none passed for sensitive OWNS');
+    for (const file of ['guards.ts','hookread.ts','codexhooktrust.ts','.githooks/pre-commit','.claude/settings.json','config/secrets.json','credentials.txt','journal.ts','netpolicy.ts','postbox.ts','basicmemory.ts','bmquery.ts','updatecheck.ts','reportsend.ts','install.ts','upgrade.ts']) {
+      check(second(fixture(file)).length === 1, `555: sensitive path ${file} passed`);
+    }
+    equal(JSON.stringify(second(fixture('tools/AcceptanceMatrix.ps1'))), '[]', '555: ordinary helper became sensitive');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c73-second-'));
+    try {
+      const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
+      const file = path.join(temp, 'kickoff.md');
+      fs.writeFileSync(file, block.replace(/^OWNS:.*$/m, 'OWNS: kernel/src/locks.ts').replace(/^- \*\*Second read:\*\*.*\r?\n/m, ''));
+      const child = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts'), file], {encoding:'utf8',windowsHide:true});
+      check(child.status === 1 && child.stdout.includes('Second read'), '555: CLI did not collect sensitive second-read rule');
+    } finally {fs.rmSync(temp,{recursive:true,force:true});}
+  } catch(error) { failures.push(`section 555 second read stopped early: ${(error as Error).message}`); }
+}
+if (selected(555)) await section555();
+
+// --- 556. CHECKOUT REFUSAL AND WSL MASTER WARNINGS (c73-r2) -------------------------------------------
+async function section556(): Promise<void> {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c73-checkout-'));
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    const source = path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts');
+    const copied = path.join(temp, 'tools/kickoff-check.mts');
+    fs.mkdirSync(path.dirname(copied));
+    fs.copyFileSync(source, copied);
+    const file = path.join(temp, 'kickoff.md');
+    fs.writeFileSync(file, kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8')));
+    const child = spawnSync(process.execPath, [copied, file], {encoding:'utf8',windowsHide:true});
+    const lines = child.stderr.trim().split(/\r?\n/);
+    check(child.status === 2 && lines.length === 1 && lines[0]!.includes('no docs/adr beside this copy') && lines[0]!.includes(path.join(temp,'docs','adr')), `556: missing checkout did not refuse plainly: ${child.status} ${child.stderr}`);
+    check(!/ENOENT|\n\s*at /.test(child.stderr), '556: missing checkout printed a stack trace');
+    const control = spawnSync(process.execPath, [source, file], {encoding:'utf8',windowsHide:true});
+    check(control.status === 0, `556: checkout control failed: ${control.stdout}${control.stderr}`);
+  } catch(error) {failures.push(`section 556 checkout stopped early: ${(error as Error).message}`);}
+  finally {fs.rmSync(temp,{recursive:true,force:true});}
+  try {
+    const kc = await import('../../tools/kickoff-check.mts');
+    const wsl = (kc as unknown as {wslMasterRows: (text: string) => number[]}).wslMasterRows;
+    check(typeof wsl === 'function', '556: wslMasterRows export is missing');
+    const row = (text: string) => `ROWS:\n7. ${text}\n   Done when: checked.\nCOMMANDS: none`;
+    for (const verb of ['rev-parse','checkout','merge','log','diff','reset']) {
+      equal(JSON.stringify(wsl(row(`node tools/wsl-run.mts ... git ${verb} origin/master`))), '[7]', `556: WSL git ${verb} master did not warn`);
+    }
+    equal(JSON.stringify(wsl(row('node tools/wsl-run.mts ... git rev-parse origin/codex/c73'))), '[]', '556: branch ref warned');
+    equal(JSON.stringify(wsl(row("node tools/wsl-run.mts: never read the clone's `origin/master`"))), '[]', '556: prohibition-only prose warned');
+    equal(JSON.stringify(wsl(row('git rev-parse origin/master'))), '[]', '556: non-WSL command warned');
+    const fixture = kc.REQUIRED_SECTIONS.map(name => `${name}: ${name === 'ROWS' ? '\n7. node tools/wsl-run.mts ... git rev-parse origin/master\n   Done when: checked.' : name === 'CLOSE' ? '\n**Stop.**' : 'filled'}`).join('\n');
+    const warningTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'c73-warning-'));
+    try {
+      const file = path.join(warningTemp,'kickoff.md');
+      fs.writeFileSync(file, fixture);
+      const child = spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'tools/kickoff-check.mts'),file],{encoding:'utf8',windowsHide:true});
+      check(child.status === 0 && child.stdout.includes('kickoff-check: warning: row 7 runs a WSL step that reads origin/master') && child.stdout.includes('read origin/<the unit\'s branch>'), '556: warning changed the exit code or lacks branch advice');
+    } finally {fs.rmSync(warningTemp,{recursive:true,force:true});}
+  } catch(error) {failures.push(`section 556 WSL stopped early: ${(error as Error).message}`);}
+}
+if (selected(556)) await section556();
+
+// --- 557. A RELEASE HAS AN ANNOTATED SOURCE TAG ON ORIGIN (c74) ------------------------------------------
+async function section557(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-release-tag-')));
+  try {
+    const config = path.join(root, 'gitconfig');
+    fs.writeFileSync(config, '');
+    const env = { ...repositoryNeutralEnv(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config };
+    const work = path.join(root, 'work');
+    const origin = path.join(root, 'origin.git');
+    fs.mkdirSync(work);
+    const git = (cwd: string, ...args: string[]) => {
+      const child = spawnSync('git', ['-c', 'user.name=Release Fixture', '-c', 'user.email=release@example.invalid', ...args], { cwd, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true });
+      if (child.status !== 0) throw new Error(`git ${args.join(' ')}: ${child.stderr || child.error}`);
+      return child.stdout.trim();
+    };
+    git(root, 'init', '--bare', '-q', origin);
+    git(work, 'init', '-q');
+    git(work, 'remote', 'add', 'origin', origin);
+    fs.writeFileSync(path.join(work, 'file'), 'first\n');
+    git(work, 'add', 'file');
+    git(work, 'commit', '-qm', 'first');
+    const first = git(work, 'rev-parse', '--short', 'HEAD');
+    fs.writeFileSync(path.join(work, 'file'), 'second\n');
+    git(work, 'commit', '-qam', 'second');
+    const head = git(work, 'rev-parse', '--short', 'HEAD');
+    const snapshot = () => JSON.stringify([git(work, 'for-each-ref'), git(work, 'status', '--porcelain'), git(fs.existsSync(origin) ? origin : `${origin}.away`, 'for-each-ref')]);
+    const tool = path.join(PROGRAM_ROOT, 'tools/release-tag-check.ts');
+    const run = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) => {
+      const before = snapshot();
+      const child = spawnSync(process.execPath, [tool, ...args], { cwd: root, env: { ...env, ...extraEnv }, encoding: 'utf8', windowsHide: true });
+      equal(snapshot(), before, `557: check wrote refs or status for ${args.join(' ')}`);
+      return { exit: child.status, out: child.stdout.trim(), err: child.stderr.trim() };
+    };
+    const fail = (words: string[]) => {
+      const result = run([work, '1.2.3']);
+      check(result.exit === 1 && result.out.startsWith('FAIL release.source-tag:') && words.every(word => result.out.includes(word)) && !result.err && result.out.split('\n').length === 1, `557: wrong failure: ${JSON.stringify(result)}`);
+    };
+    fail(['v1.2.3']);
+    git(work, 'tag', 'v1.2.3');
+    fail(['lightweight']);
+    git(work, 'tag', '-d', 'v1.2.3');
+    git(work, 'tag', '-a', 'v1.2.3', '-m', 'first tag', first);
+    fail([first, head]);
+    git(work, 'tag', '-d', 'v1.2.3');
+    git(work, 'tag', '-a', 'v1.2.3', '-m', 'head tag');
+    fail(['origin', 'v1.2.3']);
+    git(work, 'push', '-q', 'origin', 'refs/tags/v1.2.3');
+    const pass = run([work, '1.2.3']);
+    equal(pass.exit, 0, `557: pushed tag did not pass: ${pass.err}`);
+    equal(pass.out, `PASS release.source-tag: v1.2.3 is annotated, names HEAD ${head}, and origin holds the same tag`, '557: PASS verdict');
+    equal(run([work, '1.2.3'], { GIT_DIR: origin, GIT_WORK_TREE: root, GIT_INDEX_FILE: path.join(origin, 'index') }).exit, 0, '557: hook variables redirected the tool');
+    const remoteTag = git(work, 'rev-parse', 'refs/tags/v1.2.3');
+    git(work, 'tag', '-d', 'v1.2.3');
+    git(work, 'tag', '-a', 'v1.2.3', '-m', 'different tag');
+    fail(['origin', remoteTag, git(work, 'rev-parse', 'refs/tags/v1.2.3')]);
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+    for (const args of [[work, 'v1.2.3'], [path.join(root, 'missing'), '1.2.3'], [plain, '1.2.3'], [work], [work, '1.2.3', 'extra'], [work, '1.2.3-']]) {
+      const refused = run(args);
+      check(refused.exit === 2 && !refused.out && refused.err.split('\n').length === 1 && !!refused.err, `557: did not refuse plainly: ${JSON.stringify(refused)}`);
+      if (args[1] === 'v1.2.3') check(refused.err.includes('major.minor.patch'), '557: version refusal lacks form');
+    }
+    for (const version of ['1.2.3-rc.1', '1.2.3+build.1', '1.2.3-rc.1+build.1']) {
+      git(work, 'tag', '-a', `v${version}`, '-m', 'suffix tag');
+      git(work, 'push', '-q', 'origin', `refs/tags/v${version}`);
+      equal(run([work, version]).exit, 0, `557: valid suffix refused: ${version}`);
+    }
+    // Make origin unavailable without touching its refs.
+    fs.renameSync(origin, `${origin}.away`);
+    try {
+      const child = run([work, '1.2.3']);
+      check(child.exit === 2 && !child.out && child.err.split('\n').length === 1 && child.err.includes('ls-remote') && child.err.includes('fatal:'), `557: remote error not refused: ${child.err}`);
+    } finally { fs.renameSync(`${origin}.away`, origin); }
+  } catch (error) { failures.push(`section 557 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(557) && prerequisite(557, () => !isCompiled(), 'requires the source tools folder')) await section557();
+
+// --- 558. HAND-TYPED WRITE TIMES WARN WITHOUT CHANGING THE TEXT (c77 row 1) -------------------------------
+async function section558(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-time-warning-')));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const cli = (args: string[], clock = false) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...(clock ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(root, 'clock.mjs')).href}` } : {}) } });
+    fs.writeFileSync(path.join(root, 'clock.mjs'), 'const RealDate = Date; globalThis.Date = class extends RealDate { constructor(...args) { if (args.length) super(...args); else super(2026, 9, 29, 11, 30); } static now() { return new RealDate(2026, 9, 29, 11, 30).getTime(); } };');
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '558: init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '558: hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '558: seat');
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-projects'), 'projects/work\n');
+    const cases: [string, string, boolean][] = [
+      ['late', '# Late\nWritten 2026-10-29 11:18 AM PDT.', true],
+      ['near', '# Near\nWritten 2026-10-29 11:27 AM.', false],
+      ['boundary', '# Boundary\nWritten 2026-10-29 11:25 AM.', false],
+      ['placeholder', '# Placeholder\nWritten {now}.', false],
+      ['seventh', '# Seven\n\nthree\nfour\nfive\nsix\n2026-10-29 11:18 AM', false],
+      ['yesterday', '# Yesterday\n2026-10-28 11:18 AM', false],
+    ];
+    for (const [id, body, warns] of cases) {
+      const file = path.join(root, `${id}.md`); fs.writeFileSync(file, body);
+      for (const preflight of [true, false]) {
+        for (const verb of ['hub', 'capture']) {
+          const args = verb === 'hub' ? ['hub', 'edit', 'work', '--mode', 'new-page', '--page', `notes/${id}`, '--content-path', file] : ['capture', 'holding', '--title', id, '--content-path', file];
+          const ran = cli([...args, ...(preflight ? ['--preflight'] : []), '--json'], true);
+          equal(ran.exit, 0, `558: ${verb} ${id} ${preflight}: ${ran.stderr}`);
+          const value = JSON.parse(ran.stdout) as Record<string, unknown>;
+          check(warns ? typeof value['time_warning'] === 'string' && String(value['time_warning']).includes('11:18 AM') && String(value['time_warning']).includes('11:30 AM') && String(value['time_warning']).includes('use {now}') : value['time_warning'] === null, `558: ${verb} ${id} ${preflight}: ${JSON.stringify(value)}`);
+          if (!preflight && verb === 'hub' && !body.includes('{now}')) equal(fs.readFileSync(path.join(lib, 'collection', 'projects', 'work', 'notes', `${id}.md`), 'utf8').trim(), body, '558: warning changed text');
+        }
+      }
+    }
+    const text = cli(['capture', 'holding', '--title', 'text-warning', '--body', '2026-10-29 11:18 AM'], true);
+    check(text.exit === 0 && (text.stdout + text.stderr).includes('WARN:'), '558: text output lacks WARN line');
+  } catch (error) { failures.push(`section 558 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+if (selected(558)) await section558();
+
+// --- 559. REVIEW CLOSES ALREADY DONE NEED NO APPROVAL OR WRITE (c77 row 2) ---------------------------------
+async function section559(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-triage-noop-')));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib, '--json'], { cwd: root, env });
+    const json = (args: string[]) => {
+      const ran = cli(args); equal(ran.exit, 0, `559: ${args.slice(0, 2).join(' ')}: ${ran.stderr}`);
+      return JSON.parse(ran.stdout) as Record<string, any>;
+    };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '559: init');
+    json(['hub', 'new', 'work', '--title', 'Work']);
+    json(['seat', 'start', 'first', '--project', 'work', '--no-launch']);
+    fs.writeFileSync(path.join(lib, '.claude', 'seats', 'first', '.open-books'), 'shelf/holding\n');
+    const closed = json(['capture', 'holding', '--title', 'Closed', '--body', 'One.']);
+    const pending = json(['capture', 'holding', '--title', 'Pending', '--body', 'Two.']);
+    const action = (page: string) => ({ kind: 'review', source: 'holding', source_slug: 'holding', source_page: page });
+    const batch = (actions: unknown[], extra: string[]) => json(['triage', 'batch', '--actions', JSON.stringify(actions), ...extra]);
+    const actions = [action(closed.page)];
+    const before = batch(actions, ['--preflight']);
+    batch(actions, ['--user-confirmed', '--plan-id', before.plan_id]);
+    const note = path.join(lib, String(closed.note_page) + '.md');
+    const reviewed = /^reviewed: (.+)$/m.exec(fs.readFileSync(note, 'utf8'))?.[1];
+    const pre = batch(actions, ['--preflight']);
+    equal(pre.pending_count, 0, '559: done action counted pending');
+    equal(pre.confirmation_required, false, '559: done action asks approval');
+    check(JSON.stringify(pre.actions).includes('already_done') && JSON.stringify(pre.actions).includes(String(reviewed)), '559: missing already_done and reviewed time');
+    const snapshot = () => {
+      const files: string[] = [];
+      const visit = (dir: string) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) visit(p); else files.push(`${path.relative(lib, p)}:${sha256Hex(fs.readFileSync(p))}`); } };
+      visit(path.join(lib, 'shelf')); visit(path.join(lib, 'internal'));
+      return files.sort().join('\n');
+    };
+    const saved = snapshot();
+    try {
+      const applied = batch(actions, []);
+      check(JSON.stringify(applied).includes('already_done') && applied.pending_count === 0, '559: no-op apply does not say already done');
+      equal(snapshot(), saved, '559: no-op apply wrote files');
+      const withId = batch(actions, ['--plan-id', pre.plan_id]);
+      check(withId.status === 'already_done' && snapshot() === saved, '559: a current no-op plan id asked for confirmation or wrote');
+    } catch (error) { failures.push(`559: no-op apply failed: ${(error as Error).message}`); }
+    const mixed = batch([...actions, action(pending.page)], ['--preflight']);
+    equal(mixed.pending_count, 1, '559: mixed count'); equal(mixed.confirmation_required, true, '559: mixed confirmation');
+    const old = fs.readFileSync(note);
+    const completed = batch([...actions, action(pending.page)], ['--user-confirmed', '--plan-id', mixed.plan_id]);
+    check(completed.all_succeeded === true && old.equals(fs.readFileSync(note)), '559: mixed close changed done note or failed');
+    fs.writeFileSync(note, fs.readFileSync(note, 'utf8').replace(/^reviewed:.*\n/m, ''));
+    const unknown = batch(actions, ['--preflight']);
+    check(JSON.stringify(unknown.actions).includes('unknown'), '559: missing reviewed stamp needs unknown');
+  } catch (error) { failures.push(`section 559 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(559)) await section559();
+
+
+// --- 560. TRAIN PLACEMENT STAYS WITHIN THE DESTINATION PLACE (c77-r2 row 2) -----------------------------------
+async function section560(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-train-order-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'planner', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '560: init');
+    const train = (args: string[]) => runCli(['train', ...args, '--workspace', lib], { cwd: root, env });
+    const file = path.join(lib, 'internal', 'train', 'register.json');
+    const history = path.join(lib, 'internal', 'train', 'history.jsonl');
+    for (const [id, place] of [['y', 'lane:fixes'], ['z', 'foundation'], ['x', 'foundation'], ['w', 'lane:fixes']]) equal(train(['add', id!, '--title', id!, '--place', place!]).exit, 0, `560: add ${id}`);
+    const order = () => JSON.parse(fs.readFileSync(file, 'utf8')).items.filter((i: {place:string}) => i.place === 'lane:fixes').map((i: {id:string}) => i.id).join(',');
+    const first = train(['move', 'x', '--place', 'lane:fixes', '--first']);
+    equal(first.exit, 0, `560: first: ${first.stderr}`);
+    equal(order(), 'x,y,w', '560: first order');
+    check(/## lane:fixes\r?\n- x:/.test(train(['page']).stdout), '560: page first');
+    equal(train(['move', 'x', '--place', 'lane:fixes', '--before', 'w']).exit, 0, '560: before');
+    equal(order(), 'y,x,w', '560: before order');
+    equal(train(['move', 'x', '--place', 'lane:fixes', '--after', 'w']).exit, 0, '560: after');
+    equal(order(), 'y,w,x', '560: after order');
+    for (const flags of [['--after', 'z'], ['--before', 'z'], ['--first', '--before', 'y'], ['--first', '--after', 'y'], ['--before', 'y', '--after', 'w'], ['--before', 'x'], ['--after', 'x'], ['--before', 'missing'], ['--after', 'missing']]) {
+      const prior = fs.readFileSync(file), log = fs.readFileSync(history);
+      const result = train(['move', 'x', '--place', 'lane:fixes', ...flags]);
+      check(result.exit !== 0, `560: accepted ${flags.join(' ')}`);
+      if (flags[1] === 'z') check(result.stderr.includes('z is in foundation, not lane:fixes'), `560: wrong place refusal ${result.stderr}`);
+      check(prior.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), '560: refusal changed files');
+    }
+    const lines = () => fs.readFileSync(history, 'utf8').trim().split('\n').length;
+    const count = lines();
+    equal(train(['add', 'a', '--title', 'A', '--place', 'lane:fixes', '--first']).exit, 0, '560: add first');
+    equal(order(), 'a,y,w,x', '560: add first order');
+    equal(lines(), count + 1, '560: add first has one history line');
+    equal(train(['add', 'b', '--title', 'B', '--place', 'lane:fixes', '--before', 'w']).exit, 0, '560: add before');
+    equal(order(), 'a,y,b,w,x', '560: add before order');
+    for (const flags of [['--before', 'z'], ['--after', 'z'], ['--first', '--after', 'w'], ['--after', 'missing'], ['--before', 'c']]) {
+      const prior = fs.readFileSync(file), log = fs.readFileSync(history);
+      check(train(['add', 'c', '--title', 'C', '--place', 'lane:fixes', ...flags]).exit !== 0, '560: invalid add refused');
+      check(prior.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), '560: invalid add changed files');
+    }
+    equal(train(['move', 'x', '--place', 'lane:empty', '--first']).exit, 0, '560: first into empty place');
+    equal(JSON.parse(fs.readFileSync(file, 'utf8')).items.at(-1).id, 'x', '560: empty place appends');
+    equal(train(['move', 'x', '--place', 'lane:empty', '--first']).exit, 0, '560: first alone');
+  } catch (error) { failures.push(`section 560 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(560)) await section560();
+
+
+// --- 561. A CRASHED RECOVERY GUARD IS NEVER STOLEN (c78 row 1) ---------------------------------------------
+async function section561(): Promise<void> {
+  const w = await seatClaimWorkspace('c78-guard', { pin: false });
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const { enterBookLock, exitBookLock } = await import('../src/locks.ts');
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, '561: fixture seat');
+    const dir = path.join(w.workspace, 'internal/book-locks');
+    fs.mkdirSync(dir, { recursive: true });
+    const lock = path.join(dir, 'shelf-demo.lock'), guard = `${lock}.recover`;
+    const gone = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid!;
+    const old = new Date(Date.now() - 120_000);
+    const record = `pid=${gone}\nstart=1970-01-01T00:00:00.0000000Z\n`;
+    fs.writeFileSync(lock, record); fs.writeFileSync(guard, record);
+    const signals = path.join(w.root, 'signals'), log = path.join(w.root, 'holders.log');
+    fs.mkdirSync(signals);
+    const script = path.join(w.root, 'recover.mjs');
+    fs.writeFileSync(script, `import * as fs from 'node:fs';
+      import {enterBookLock,exitBookLock,setAfterJudgedStale} from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/locks.ts')).href)};
+      const [ws,signals,log,role,mode]=process.argv.slice(2);
+      if(mode==='blocked') setAfterJudgedStale(()=>{setAfterJudgedStale(undefined);fs.writeFileSync(signals+'/'+role,'');
+        const end=Date.now()+15000;while(!fs.existsSync(signals+'/go')&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);});
+      try {const l=enterBookLock(ws,'shelf/demo',2);fs.appendFileSync(log,role+' enter\\n');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,100);fs.appendFileSync(log,role+' exit\\n');exitBookLock(l);process.stdout.write('entered');}
+      catch(e){process.stdout.write(e.message);}`);
+    const start = (role: string, mode: string) => new Promise<string>((resolve) => {
+      const child = spawn(process.execPath, [script, w.workspace, signals, log, role, mode], { windowsHide: true });
+      children.push(child); let output = '';
+      child.stdout.on('data', c => output += String(c)); child.stderr.on('data', c => output += String(c));
+      child.on('close', () => resolve(output));
+    });
+    const a = start('A', 'blocked'), b = start('B', 'blocked');
+    const end = Date.now() + 15000;
+    while ((!fs.existsSync(path.join(signals, 'A')) || !fs.existsSync(path.join(signals, 'B'))) && Date.now() < end) await sleep(20);
+    check(fs.existsSync(path.join(signals, 'A')) && fs.existsSync(path.join(signals, 'B')), '561: both recoverers reached the seam');
+    fs.writeFileSync(path.join(signals, 'go'), '');
+    const outputs = await Promise.all([a, b]);
+    check(outputs.every(s => s !== 'entered'), `561: a recoverer stole the guard: ${outputs.join(' | ')}`);
+    check(fs.existsSync(guard) && fs.readFileSync(guard, 'utf8') === record, '561: crashed guard preserved');
+    check(!fs.existsSync(log), '561: no holder entered behind the guard');
+    const forward = guard.replace(/\\/g, '/');
+    // Copyable PowerShell advice is parked: section 120 forbids it and its allowlist is outside c78's OWNS.
+    for (const output of outputs) check(output.includes(forward) && output.includes(String(gone)) && output.includes('safe') && output.includes('again'), `561: confirmed timeout names recovery: ${output}`);
+    const view = deskOverview({ workspace: w.workspace, seat: 'first' });
+    check(String(JSON.stringify(view['stale_recovery_guards'])).includes(forward), '561: Desk names guard');
+    const frame = dashboardText(view, { width: 2000, now: Date.now() });
+    check(frame.includes(forward) && frame.includes(String(gone)) && frame.includes('again'), '561: dashboard names recovery');
+    const doctor = JSON.parse(w.as(agent, ['doctor', '--json', '--workspace', w.workspace]).stdout) as { library_checks: { check: string; status: string; detail: string }[] };
+    const row = doctor.library_checks.find(r => r.check === 'locks.stale-recovery-guard');
+    check(row?.status === 'warn' && row.detail.includes(forward) && row.detail.includes(String(gone)), `561: doctor WARN: ${JSON.stringify(row)}`);
+    // The copyable removal is exercised only in this fixture; no automatic removal is allowed.
+    fs.unlinkSync(guard);
+    const acquired = enterBookLock(w.workspace, 'shelf/demo', 2); exitBookLock(acquired);
+    const holders = await Promise.all([start('A', 'clear'), start('B', 'clear')]);
+    check(holders.every(s => s === 'entered'), '561: both holders can retry after manual removal');
+    let inside = 0, most = 0;
+    for (const line of fs.readFileSync(log, 'utf8').trim().split('\n')) { inside += line.endsWith(' enter') ? 1 : -1; most = Math.max(most, inside); }
+    equal(most, 1, '561: holders never overlap'); equal(inside, 0, '561: holders leave');
+    equal(deskOverview({ workspace: w.workspace, seat: 'first' })['stale_recovery_guards'], undefined, '561: no field after clearing');
+    // No start time can prove no owner death, even with a pid that is in fact gone.
+    fs.writeFileSync(lock, record); fs.writeFileSync(guard, `pid=${gone}\n`); fs.utimesSync(guard, old, old);
+    let message = '';
+    try { exitBookLock(enterBookLock(w.workspace, 'shelf/demo', 0)); } catch (e) { message = (e as Error).message; }
+    check(message.includes('could not confirm the owner is gone') && message.includes(String(gone)) && message.includes('old') && !message.includes('safe'), `561: unconfirmed timeout: ${message}`);
+    const unknown = dashboardText(deskOverview({ workspace: w.workspace, seat: 'first' }), { width: 2000, now: Date.now() });
+    check(unknown.includes('could not confirm the owner is gone') && !unknown.includes('safe'), '561: unconfirmed Desk line');
+    console.log(`561 confirmed timeout: ${outputs[0]}\n561 dashboard: ${frame}\n561 doctor: ${JSON.stringify(row)}\n561 unconfirmed: ${message}`);
+  } catch (error) { failures.push(`section 561 stopped early: ${(error as Error).message}`); }
+  finally { for (const child of children) if (child.exitCode === null) child.kill(); w.dispose(); }
+}
+if (selected(561)) await section561();
+
+// --- 562. RENAME AND UNDO TAKE THE REGISTRY FIRST (c78 row 2) ---------------------------------------------
+async function section562(): Promise<void> {
+  const f = await undoFixture('c78-lock-order');
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const { withBookLocks, SEAT_REGISTRY_LOCK_ROOT } = await import('../src/locks.ts');
+    const held = withBookLocks(f.lib, ['projects/z', SEAT_REGISTRY_LOCK_ROOT, 'collection/a', 'projects/z'], 2, locks => locks.map(l => l.bookRoot));
+    equal(held.join(','), 'registry/desk,collection/a,projects/z', '562: registry first, sorted remainder, unique roots');
+    const edit = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Now', '--content-path', f.file('now562.md', '- [ ] Undo beside rename\n')]);
+    const id = f.idOf(edit['journal']);
+    const signals = path.join(f.w.root, 'signals562'); fs.mkdirSync(signals);
+    const script = f.file('order562.mjs', `import * as fs from 'node:fs';
+      import {createRequire,syncBuiltinESMExports} from 'node:module';
+      import {hubRename} from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/hubrename.ts')).href)};
+      import {undoJournal} from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/undo.ts')).href)};
+      const [ws,signals,role,id]=process.argv.slice(2), at=n=>signals+'/'+n;
+      const wait=n=>{const end=Date.now()+10000;while(!fs.existsSync(at(n))&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);};
+      const cjs=createRequire(import.meta.url)('node:fs'),open=cjs.openSync;let first=true;
+      cjs.openSync=(p,...args)=>{
+        const name=String(p).replaceAll('\\\\','/');
+        if(role==='undo'&&args[0]==='wx'&&name.endsWith('/registry-desk.lock'))fs.writeFileSync(at('undo-attempt'),'');
+        const fd=open(p,...args);
+        if(args[0]==='wx'&&name.endsWith('.lock')){
+          if(role==='rename'&&first){first=false;fs.writeFileSync(at('rename-first'),'');wait('undo-attempt');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,200);}
+          if(role==='rename'&&name.endsWith('/projects-alpha.lock'))fs.writeFileSync(at('rename-project'),'');
+          if(role==='undo'&&name.endsWith('/registry-desk.lock'))wait('rename-project');
+        }return fd;};syncBuiltinESMExports();
+      try {const r=role==='rename'?hubRename(['alpha','alpha-new','--title','Alpha new','--user-confirmed','--plan-id','fixture','--lock-timeout','3'],ws):undoJournal(ws,id,{lockTimeout:3});process.stdout.write(JSON.stringify(r));}
+      catch(e){process.stderr.write(e.message);process.exitCode=1;}`);
+    const start = (role: string) => new Promise<{exit:number;stdout:string;stderr:string}>((resolve) => {
+      const child = spawn(process.execPath, [script, f.lib, signals, role, id], { cwd: f.w.root, windowsHide: true,
+        env: { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(f.w.agents[0]!.pid) } });
+      children.push(child); let stdout = '', stderr = '';
+      child.stdout.on('data', c => stdout += String(c)); child.stderr.on('data', c => stderr += String(c));
+      child.on('close', code => resolve({exit:code ?? 1,stdout,stderr}));
+    });
+    const rename = start('rename');
+    const end = Date.now() + 15000;
+    while (!fs.existsSync(path.join(signals, 'rename-first')) && Date.now() < end) await sleep(20);
+    check(fs.existsSync(path.join(signals, 'rename-first')), '562: real rename acquired its first lock');
+    const undo = start('undo');
+    const [r, u] = await Promise.all([rename, undo]);
+    // A bound Hub cannot be renamed. Reaching that safety refusal promptly proves acquisition completed.
+    check(r.stderr.includes("is bound to Project 'alpha'") && !r.stderr.includes('holds the lock'), `562: rename finishes at its ordinary safety guard: ${r.stderr}`);
+    check(u.exit === 0 && u.stdout.includes('undone'), `562: undo finishes without a lock timeout: ${u.stderr} ${u.stdout}`);
+    const left = fs.readdirSync(path.join(f.lib, 'internal/book-locks')).filter(n => n.endsWith('.lock'));
+    equal(left.length, 0, '562: both operations release every lock');
+  } catch (error) { failures.push(`section 562 stopped early: ${(error as Error).message}`); }
+  finally { for (const child of children) if (child.exitCode === null) child.kill(); f.w.dispose(); }
+}
+if (selected(562)) await section562();
+
+
+// --- 563. TRAIN MUTATIONS AND ROLLBACK ARE SERIAL (c78 row 3) ---------------------------------------------
+async function section563(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c78-train-'));
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const script = path.join(root, 'mutate.mjs');
+    fs.writeFileSync(script, `import fs from 'node:fs';
+      import {changeTrain} from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/train.ts')).href)};
+      const [ws,signals,role,mode]=process.argv.slice(2),at=n=>signals+'/'+n;
+      const wait=n=>{const end=Date.now()+15000;while(!fs.existsSync(at(n))&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);};
+      const read=fs.readFileSync,append=fs.appendFileSync;let paused=false;
+      fs.readFileSync=(p,...args)=>{const value=read(p,...args);
+        if(role==='a'&&mode==='success'&&!paused&&String(p).endsWith('register.json')){paused=true;fs.writeFileSync(at('a-paused'),'');wait('release');}return value;};
+      fs.appendFileSync=(p,...args)=>{if(role==='a'&&mode==='failure'&&String(p).endsWith('history.jsonl')){fs.writeFileSync(at('a-paused'),'');wait('release');throw new Error('fixture history append failure');}return append(p,...args);};
+      fs.writeFileSync(at(role+'-ready'),'');
+      try {changeTrain(ws,'add',role,new Map([['title',role],['place','foundation']]),new Set());fs.writeFileSync(at(role+'-done'),'');}
+      catch(e){process.stderr.write(e.message);process.exitCode=1;}`);
+    const until = async (file: string, ms = 15000) => {
+      const end = Date.now() + ms; while (!fs.existsSync(file) && Date.now() < end) await sleep(20);
+      return fs.existsSync(file);
+    };
+    for (const mode of ['success', 'failure']) {
+      const workspace = path.join(root, mode), dir = path.join(workspace, 'internal/train'), signals = path.join(root, `${mode}-signals`);
+      fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(signals);
+      const file = path.join(dir, 'register.json'), history = path.join(dir, 'history.jsonl');
+      fs.writeFileSync(file, JSON.stringify({ schema: 1, changed_at: '2026-10-29T00:00:00Z', changed_by: 'planner', items: [] }));
+      const start = (role: string) => new Promise<{exit:number;stderr:string}>((resolve) => {
+        const child = spawn(process.execPath, [script, workspace, signals, role, mode], { windowsHide: true, env: { ...process.env, LIBRARY_SEAT: 'planner' } });
+        children.push(child); let stderr = '';
+        child.stderr.on('data', c => stderr += String(c));
+        child.on('close', code => resolve({exit:code ?? 1,stderr}));
+      });
+      const a = start('a');
+      check(await until(path.join(signals, 'a-paused')), `563: ${mode}: A reached the controlled pause`);
+      const b = start('b');
+      check(await until(path.join(signals, 'b-ready')), `563: ${mode}: B started the competing mutation`);
+      // On the old implementation B completes while A owns an unlocked prior snapshot.
+      // With the train lock B waits, so bound the observation, release A, then require both exits.
+      await until(path.join(signals, 'b-done'), 2000);
+      fs.writeFileSync(path.join(signals, 'release'), '');
+      const [ar, br] = await Promise.all([a, b]);
+      equal(ar.exit, mode === 'success' ? 0 : 1, `563: ${mode}: A exit ${ar.stderr}`);
+      equal(br.exit, 0, `563: ${mode}: B exit ${br.stderr}`);
+      if (mode === 'failure') check(ar.stderr.includes('fixture history append failure'), '563: forced history failure reached');
+      const ids = JSON.parse(fs.readFileSync(file, 'utf8')).items.map((i: {id:string}) => i.id).sort().join(',');
+      equal(ids, mode === 'success' ? 'a,b' : 'b', `563: ${mode}: register preserves successful mutations`);
+      const logged = fs.existsSync(history) ? fs.readFileSync(history, 'utf8').trim().split('\n').map(l => JSON.parse(l).id).sort().join(',') : '';
+      equal(logged, mode === 'success' ? 'a,b' : 'b', `563: ${mode}: history preserves successful mutations`);
+      const locks = path.join(workspace, 'internal/book-locks');
+      check(!fs.existsSync(locks) || !fs.readdirSync(locks).some(n => n.endsWith('.lock')), `563: ${mode}: lock released`);
+    }
+  } catch (error) { failures.push(`section 563 stopped early: ${(error as Error).message}`); }
+  finally { for (const child of children) if (child.exitCode === null) child.kill(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(563)) await section563();
+
+
+// --- 564. A DAMAGED TRAIN DOES NOT DISABLE THE DESK (c78 row 4) --------------------------------------------
+async function section564(): Promise<void> {
+  const w = await seatClaimWorkspace('c78-damaged-train', { pin: false });
+  try {
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const agent = w.startAgent(); w.seatMade('first', 'alpha', agent, '564: fixture seat');
+    const overview = () => deskOverview({ workspace: w.workspace, seat: 'first' });
+    const before = overview(), dir = path.join(w.workspace, 'internal/train'), file = path.join(dir, 'register.json');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const contents of ['{broken', JSON.stringify({ schema: 1, items: [] })]) {
+      fs.writeFileSync(file, contents);
+      let view: ReturnType<typeof overview> | undefined;
+      try { view = overview(); } catch (error) { failures.push(`564: damaged register stopped the Desk: ${(error as Error).message}`); }
+      if (!view) continue;
+      const train = view['train'] as Record<string, PsJsonValue>;
+      check(typeof train['unreadable'] === 'string' && train['unreadable'].length > 0 && train['changed_at'] === undefined, '564: explicit unreadable reason, no empty train');
+      for (const key of ['seat', 'open_books', 'open_projects', 'notebook', 'letters_for_this_seat']) equal(JSON.stringify(view[key]), JSON.stringify(before[key]), `564: ${key} survives`);
+      equal((view['this_seat'] as Record<string, PsJsonValue>)?.['seat_id'], (before['this_seat'] as Record<string, PsJsonValue>)?.['seat_id'], '564: seat identity survives');
+      const frame = dashboardText(view, { width: 2000, now: Date.now() });
+      check(frame.includes('Train  unreadable (') && frame.includes('); repair internal/train/register.json'), `564: repair line: ${frame}`);
+      const mutation = w.as(agent, ['train', 'add', 'should-not-write', '--title', 'Refused', '--place', 'foundation', '--workspace', w.workspace], { LIBRARY_SEAT: 'first' });
+      check(mutation.exit !== 0 && mutation.stderr.includes(String(train['unreadable'])) && fs.readFileSync(file, 'utf8') === contents, '564: named-seat train write refuses the damaged record');
+      console.log(`564: ${frame.split('\n').find(l => l.startsWith('Train '))}`);
+    }
+    fs.rmSync(file); fs.mkdirSync(file);
+    try {
+      const train = overview()['train'] as Record<string, PsJsonValue>;
+      check(typeof train['unreadable'] === 'string', '564: read failure has a reason');
+    } catch (error) { failures.push(`564: read failure stopped the Desk: ${(error as Error).message}`); }
+  } catch (error) { failures.push(`section 564 stopped early: ${(error as Error).message}`); }
+  finally { w.dispose(); }
+}
+if (selected(564)) await section564();
+
+
+// --- 565. MIXED REVIEW NO-OPS RECHECK THEIR SOURCE (c79 row 1) -------------------------------------------
+async function section565(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-review-recheck-')));
+  const fsDefault = (await import('node:fs')).default;
+  const realRename = fsDefault.renameSync;
+  const { syncBuiltinESMExports } = await import('node:module');
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib, '--json'], { cwd: root, env });
+    const json = (args: string[]) => { const r = cli(args); equal(r.exit, 0, `565: fixture: ${r.stderr}`); return JSON.parse(r.stdout); };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '565: init');
+    json(['hub', 'new', 'work', '--title', 'Work']); json(['seat', 'start', 'first', '--project', 'work', '--no-launch']);
+    fs.writeFileSync(path.join(lib, '.claude/seats/first/.open-books'), 'shelf/holding\n');
+    const { triageBatch } = await import('../src/triagebatch.ts');
+    const review = (page: string, reopen = false) => ({ kind: 'review', source: 'holding', source_slug: 'holding', source_page: page, ...(reopen ? { reopen: true } : {}) });
+    const batch = (actions: unknown[], tail: string[]) => {
+      const r = triageBatch(['--seat', 'first', '--actions', JSON.stringify(actions), ...tail], lib);
+      equal(r.refusal, null, `565: batch: ${r.refusal}`); return r.value as Record<string, any>;
+    };
+    const same = json(['capture', 'holding', '--title', 'Same', '--body', 'Pending.']);
+    const actions = [review(same.page), review(same.page, true)];
+    const pre = batch(actions, ['--preflight']);
+    const result = batch(actions, ['--user-confirmed', '--plan-id', pre.plan_id]);
+    check(result.all_succeeded === false && result.outcomes[0].state === 'succeeded' && result.outcomes[1].state === 'failed' && result.outcomes[1].error.includes('changed after the approval'), `565: close then reopen: ${JSON.stringify(result)}`);
+    console.log(`565 close then reopen: ${JSON.stringify(result.outcomes)}`);
+    const first = json(['capture', 'holding', '--title', 'First', '--body', 'Pending.']);
+    const second = json(['capture', 'holding', '--title', 'Second', '--body', 'Already closed.']);
+    const done = batch([review(second.page)], ['--preflight']);
+    batch([review(second.page)], ['--user-confirmed', '--plan-id', done.plan_id]);
+    const mixed = [review(first.page), review(second.page)];
+    const mixedPre = batch(mixed, ['--preflight']);
+    const firstFile = path.resolve(lib, first.note_page + '.md'), secondFile = path.resolve(lib, second.note_page + '.md');
+    let injected = false;
+    fsDefault.renameSync = ((from, to) => {
+      realRename(from, to);
+      if (!injected && path.resolve(String(to)) === firstFile) { injected = true; fs.appendFileSync(secondFile, '\nAnother writer changed this source.\n'); }
+    }) as typeof fsDefault.renameSync;
+    syncBuiltinESMExports();
+    const changed = batch(mixed, ['--user-confirmed', '--plan-id', mixedPre.plan_id]);
+    check(injected && changed.outcomes[1].state === 'failed' && changed.outcomes[1].error.includes('changed after the approval'), `565: changed no-op: ${JSON.stringify(changed)}`);
+    check(fs.readFileSync(secondFile, 'utf8').includes('Another writer changed this source.'), '565: changed source preserved');
+    console.log(`565 changed no-op: ${JSON.stringify(changed.outcomes)}`);
+  } catch (error) { failures.push(`section 565 stopped early: ${(error as Error).message}`); }
+  finally { fsDefault.renameSync = realRename; syncBuiltinESMExports(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(565)) await section565();
+
+// --- 566. A REPLAY PREVIEW MATCHES APPLY'S CONFIRMATION (c79 row 2) ---------------------------------------
+async function section566(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-batch-confirm-')));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib, '--json'], { cwd: root, env });
+    const json = (args: string[]) => { const r = cli(args); equal(r.exit, 0, `566: fixture: ${r.stderr}`); return JSON.parse(r.stdout); };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '566: init');
+    json(['hub', 'new', 'work', '--title', 'Work']); json(['seat', 'start', 'first', '--project', 'work', '--no-launch']);
+    json(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.']);
+    fs.writeFileSync(path.join(lib, '.claude/seats/first/.open-books'), 'shelf/demo\n');
+    const source = path.join(lib, 'notebook/first/findings/page.md'); fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, '# Finding\n\nUnchanged Notebook source.\n'); const bytes = fs.readFileSync(source);
+    const actions = JSON.stringify([{ kind: 'shelf-book', source: 'notebook', source_path: 'notebook/first/findings/page.md', slug: 'demo', page_path: 'filed', title: 'Filed' }]);
+    const args = ['triage', 'batch', '--actions', actions];
+    const pre = json([...args, '--preflight']);
+    const applied = json([...args, '--user-confirmed', '--plan-id', pre.plan_id]);
+    check(applied.all_succeeded === true && bytes.equals(fs.readFileSync(source)), '566: filing succeeds without changing source');
+    const replay = json([...args, '--preflight']);
+    equal(replay.plan_id, pre.plan_id, '566: unchanged source has the same batch');
+    equal(replay.pending_count, 0, '566: no pending filing');
+    const refused = cli(args);
+    check(refused.exit !== 0 && refused.stderr.includes('--user-confirmed'), '566: unconfirmed replay refuses');
+    equal(replay.confirmation_required, refused.exit !== 0, '566: preview confirmation matches apply');
+    check(json([...args, '--user-confirmed', '--plan-id', replay.plan_id]).already_complete === true, '566: confirmed finished-batch replay preserved');
+    console.log(`566: confirmation_required=${replay.confirmation_required}; apply: ${refused.stderr.trim()}`);
+  } catch (error) { failures.push(`section 566 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(566)) await section566();
+
+
+// --- 567. THE TIME WARNING REUSES VALIDATED EDIT CONTENT (c79 row 3) -------------------------------------
+async function section567(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-warning-read-')));
+  const fsDefault = (await import('node:fs')).default, realRead = fsDefault.readFileSync;
+  const { syncBuiltinESMExports } = await import('node:module');
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '' };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib, '--json'], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '567: init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '567: hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '567: seat');
+    fs.writeFileSync(path.join(lib, '.claude/seats/first/.open-projects'), 'projects/work\n');
+    const { hubEdit } = await import('../src/hubedit.ts');
+    const directory = path.join(root, 'directory'), file = path.join(root, 'content.md'); fs.mkdirSync(directory);
+    const now = new Date(), hour = (now.getHours() + 1) % 24;
+    const body = `Written ${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${hour % 12 || 12}:${String(now.getMinutes()).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}.`;
+    fs.writeFileSync(file, body);
+    let directoryReads = 0, contentReads = 0;
+    fsDefault.readFileSync = ((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (String(p) === directory) directoryReads++;
+      if (String(p) === file) contentReads++;
+      return Reflect.apply(realRead, fsDefault, [p, ...rest]);
+    }) as typeof fsDefault.readFileSync;
+    syncBuiltinESMExports();
+    const args = ['work', '--seat', 'first', '--mode', 'append-section', '--section', 'Now', '--preflight', '--json'];
+    let refusal = '';
+    try { await hubEdit([...args, '--content-path', directory], lib); } catch (e) { refusal = (e as Error).message; }
+    check(refusal.includes('is not a file'), `567: writer refusal: ${refusal}`);
+    equal(directoryReads, 0, '567: advisory must not read a directory before validation');
+    const result = await hubEdit([...args, '--content-path', file], lib);
+    equal(contentReads, 1, '567: edit content read once');
+    check(typeof result['time_warning'] === 'string', '567: validated content still warns');
+    const inline = await hubEdit([...args, '--content', body], lib);
+    check(typeof inline['time_warning'] === 'string', '567: inline content still warns');
+    console.log(`567 directory: ${refusal}; reads=${directoryReads}; regular file reads=${contentReads}`);
+  } catch (error) { failures.push(`section 567 stopped early: ${(error as Error).message}`); }
+  finally { fsDefault.readFileSync = realRead; syncBuiltinESMExports(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(567)) await section567();
+
+
+// --- 568. AN UNREADABLE RECOVERY GUARD IS STILL NAMED (c79 row 5) -----------------------------------------
+async function section568(): Promise<void> {
+  const w = await seatClaimWorkspace('c79-unreadable-guard', { pin: false });
+  const fsDefault = (await import('node:fs')).default;
+  const realRead = fsDefault.readFileSync, realStat = fsDefault.statSync;
+  const { syncBuiltinESMExports } = await import('node:module');
+  try {
+    const { enterBookLock, exitBookLock } = await import('../src/locks.ts');
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const { runDoctor } = await import('../src/doctor.ts');
+    const agent = w.startAgent(); w.seatMade('first', 'alpha', agent, '568: fixture seat');
+    const dir = path.join(w.workspace, 'internal/book-locks'); fs.mkdirSync(dir, { recursive: true });
+    const lock = path.join(dir, 'shelf-demo.lock'), guard = `${lock}.recover`, forward = guard.replace(/\\/g, '/');
+    const gone = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid!;
+    const record = `pid=${gone}\nstart=1970-01-01T00:00:00.0000000Z\n`;
+    fs.writeFileSync(lock, record); fs.writeFileSync(guard, record);
+    for (const kind of ['read', 'stat']) {
+      const reason = `injected ${kind} failure for recovery guard`;
+      fsDefault.readFileSync = ((file, ...rest) => {
+        if (kind === 'read' && String(file) === guard) throw Object.assign(new Error(reason), { code: 'EACCES' });
+        return Reflect.apply(realRead, fsDefault, [file, ...rest]);
+      }) as typeof fsDefault.readFileSync;
+      Reflect.set(fsDefault, 'statSync', ((file, ...rest) => {
+        if (kind === 'stat' && String(file) === guard) throw Object.assign(new Error(reason), { code: 'EIO' });
+        return Reflect.apply(realStat, fsDefault, [file, ...rest]);
+      }) as typeof fsDefault.statSync);
+      syncBuiltinESMExports();
+      let message = '';
+      try { exitBookLock(enterBookLock(w.workspace, 'shelf/demo', 0)); } catch (error) { message = (error as Error).message; }
+      check(message.includes(forward) && message.includes(reason) && message.includes('unknown') && !message.includes('safe'), `568: timeout: ${message}`);
+      const view = deskOverview({ workspace: w.workspace, seat: 'first' });
+      const entry = JSON.stringify(view['stale_recovery_guards']);
+      check(String(entry).includes(forward) && String(entry).includes(reason) && !String(entry).includes('safe'), `568: Desk: ${entry}`);
+      const frame = dashboardText(view, { width: 2000, now: Date.now() });
+      check(frame.includes(forward) && frame.includes(reason), `568: dashboard: ${frame}`);
+      const doctor = runDoctor(['--workspace', w.workspace], PROGRAM_ROOT).value as { library_checks: { check: string; status: string; detail: string }[] };
+      const row = doctor.library_checks.find(r => r.check === 'locks.stale-recovery-guard');
+      check(row?.status === 'warn' && row.detail.includes(forward) && row.detail.includes(reason), `568: doctor: ${JSON.stringify(row)}`);
+      console.log(`568 ${kind} timeout: ${message}\n568 Desk: ${entry}\n568 dashboard: ${frame}\n568 doctor: ${JSON.stringify(row)}`);
+      fsDefault.readFileSync = realRead; Reflect.set(fsDefault, 'statSync', realStat); syncBuiltinESMExports();
+      equal(fs.readFileSync(guard, 'utf8'), record, '568: unreadable guard never removed or rewritten');
+    }
+    fs.unlinkSync(guard);
+    const held = enterBookLock(w.workspace, 'shelf/demo', 0); exitBookLock(held);
+    equal(deskOverview({ workspace: w.workspace, seat: 'first' })['stale_recovery_guards'], undefined, '568: missing guard is no diagnostic');
+  } catch (error) { failures.push(`section 568 stopped early: ${(error as Error).message}`); }
+  finally { fsDefault.readFileSync = realRead; Reflect.set(fsDefault, 'statSync', realStat); syncBuiltinESMExports(); w.dispose(); }
+}
+if (selected(568)) await section568();
+
+
+// --- 569. A GUARD SCAN FAILURE LEAVES THE DESK AVAILABLE (c79 row 6) --------------------------------------
+async function section569(): Promise<void> {
+  const w = await seatClaimWorkspace('c79-guard-scan', { pin: false });
+  const fsDefault = (await import('node:fs')).default, realList = fsDefault.readdirSync;
+  const { syncBuiltinESMExports } = await import('node:module');
+  try {
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const { runDoctor } = await import('../src/doctor.ts');
+    const agent = w.startAgent(); w.seatMade('first', 'alpha', agent, '569: fixture seat');
+    const dir = path.join(w.workspace, 'internal/book-locks'); fs.mkdirSync(dir, { recursive: true });
+    const overview = () => deskOverview({ workspace: w.workspace, seat: 'first' });
+    const before = overview(), reason = 'injected recovery-guard folder listing failure';
+    fsDefault.readdirSync = ((file, ...rest) => {
+      if (path.resolve(String(file)) === path.resolve(dir)) throw Object.assign(new Error(reason), { code: 'EACCES' });
+      return Reflect.apply(realList, fsDefault, [file, ...rest]);
+    }) as typeof fsDefault.readdirSync;
+    syncBuiltinESMExports();
+    let view: ReturnType<typeof overview> | undefined;
+    try { view = overview(); } catch (error) { failures.push(`569: listing failure stopped the Desk: ${(error as Error).message}`); }
+    if (view) {
+      for (const key of ['seat', 'open_books', 'open_projects', 'notebook', 'letters_for_this_seat', 'letters_from_this_seat']) equal(JSON.stringify(view[key]), JSON.stringify(before[key]), `569: ${key} survives`);
+      equal((view['this_seat'] as Record<string, PsJsonValue>)?.['seat_id'], (before['this_seat'] as Record<string, PsJsonValue>)?.['seat_id'], '569: seat identity survives');
+      check(String(view['recovery_guards_unreadable']).includes(reason) && String(view['recovery_guards_unreadable']).includes(dir.replace(/\\/g, '/')), `569: explicit scan diagnostic: ${JSON.stringify(view)}`);
+      const frame = dashboardText(view, { width: 2000, now: Date.now() });
+      check(frame.includes(reason), `569: dashboard: ${frame}`);
+      console.log(`569 Desk: ${view['recovery_guards_unreadable']}\n569 dashboard: ${frame}`);
+    }
+    const doctor = runDoctor(['--workspace', w.workspace], PROGRAM_ROOT).value as { library_checks: { check: string; status: string; detail: string }[] };
+    const row = doctor.library_checks.find(r => r.check === 'locks.stale-recovery-guard');
+    check(row?.status === 'warn' && row.detail.includes(reason) && row.detail.includes(dir.replace(/\\/g, '/')), `569: doctor: ${JSON.stringify(row)}`);
+    if (view) equal(row?.detail, view['recovery_guards_unreadable'], '569: doctor uses the same diagnostic');
+    console.log(`569 doctor: ${JSON.stringify(row)}`);
+    fsDefault.readdirSync = realList; syncBuiltinESMExports();
+    equal(overview()['recovery_guards_unreadable'], undefined, '569: no error after listing recovers');
+  } catch (error) { failures.push(`section 569 stopped early: ${(error as Error).message}`); }
+  finally { fsDefault.readdirSync = realList; syncBuiltinESMExports(); w.dispose(); }
+}
+if (selected(569)) await section569();
+
+
+// --- 570. RELEASE BUILDS REFUSE BUN WITH COMPROMISED ROOTS (c80 row 0b) -----------------------------------
+async function section570(): Promise<void> {
+  if (!prerequisite(570, () => process.platform === 'win32', 'Windows PowerShell is required for the release builder')) return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-bun-floor-'));
+  try {
+    const script = path.join(PROGRAM_ROOT, 'tools/Build-KernelRelease.ps1');
+    for (const version of ['1.4.2', '1.4.4', '']) {
+      const label = version || 'empty', bun = path.join(root, `bun-${label}.cmd`);
+      const calls = path.join(root, `calls-${label}.txt`), destination = path.join(root, `release-${label}`);
+      fs.writeFileSync(bun, `@echo off\r\necho %*>>"${calls}"\r\n${version ? `echo ${version}\r\n` : ''}exit /b 0\r\n`);
+      // An unknown target is the documented dry stop: it follows the Bun preconditions and precedes all build work.
+      const ran = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Bun', bun, '-Destination', destination, '-Target', 'fixture-no-build'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+      const output = `${ran.stdout ?? ''}${ran.stderr ?? ''}`.replace(/\s+/g, ' ');
+      check(ran.status !== 0 && !ran.error, `570: ${label} stops before building: ${output}`);
+      if (version === '1.4.4') check(output.includes("unknown target 'fixture-no-build'"), `570: minimum Bun passes its check: ${output}`);
+      else {
+        check(!output.includes('unknown target'), `570: ${label} refused before target validation: ${output}`);
+        check(output.includes(bun) && output.includes('1.4.4') && (version ? output.includes(version) : /unreadable/i.test(output)) && output.includes('its certificate list trusts roots that were compromised in 2026-10'), `570: ${label} refusal names executable, version, minimum and reason: ${output}`);
+      }
+      equal(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim() : '', '--version', `570: ${label} reads Bun version exactly once`);
+      check(!fs.existsSync(destination), `570: ${label} creates no build output`);
+      console.log(`570 Bun ${label}: ${output}`);
+    }
+  } catch (error) { failures.push(`section 570 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(570)) await section570();
 
 // --- the verdict ----------------------------------------------------------------------------------------
 

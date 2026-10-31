@@ -20,6 +20,7 @@ import { shelfNotes } from './shelfnote.ts';
 import { readVaultConnection } from './vault.ts';
 import { writeVaultPage, type VaultWrite } from './vaultwrite.ts';
 import { readMarker, requireWorkspace } from './workspace.ts';
+import { readUtf8, shelfCatalogPath, shelfCatalogSections } from './shelfbook.ts';
 
 export interface NeedsYouSection { key: string; heading: string; items: { seat: string | null; text: string }[] }
 export interface NeedsYou { sections: NeedsYouSection[]; problems: string[] }
@@ -101,7 +102,8 @@ export function readNeedsYou(workspace: string): NeedsYou {
     let text: string;
     try {
       text = fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8');
-    } catch {
+    } catch (error) {
+      problems.push(`projects/${hub}/_project: ${(error as Error).message}`);
       continue;
     }
     const next = items(sectionLines(text, 'Next'));
@@ -124,7 +126,31 @@ export function readNeedsYou(workspace: string): NeedsYou {
   let reports = { count: 0, oldest: '' };
   try {
     const view = readSeatIdentityView(stateDirectory);
-    for (const book of captureBookRows(workspace)) {
+    // AN UNREADABLE CAPTURE BOOK IS A PROBLEM, NEVER "NO NOTES" (kickoffs/s168 row 5; the s167 second reader's finding 8):
+    // `captureBookRows` leaves out a catalogued Book with no folder, and `shelfNotes` answers [] for a `notes` path that
+    // is not a folder.
+    const books = captureBookRows(workspace);
+    const catalogFile = shelfCatalogPath(workspace);
+    if (!fs.existsSync(catalogFile)) problems.push('shelf/_catalog.md: missing, so the capture Books cannot be listed');
+    for (const section of fs.existsSync(catalogFile) ? shelfCatalogSections(readUtf8(catalogFile)) : []) {
+      if (!/^[ \t]*-[ \t]+\*\*Kind:\*\*[ \t]+capture[ \t]*$/m.test(section.body)) continue;
+      const slug = /^[ \t]*-[ \t]+\*\*Path:\*\*[ \t]+shelf\/([a-z0-9][a-z0-9-]*)[ \t]*$/m.exec(section.body)?.[1];
+      if (slug !== undefined && !books.some((book) => book.slug === slug)) problems.push(`shelf/${slug}: the Shelf catalog lists it as a capture Book, and its folder is missing`);
+    }
+    for (const book of books) {
+      const notFolder = [path.dirname(book.notesPath), book.notesPath].find(file => fs.existsSync(file) && !fs.statSync(file).isDirectory());
+      if (notFolder !== undefined) {
+        problems.push(`${path.relative(workspace, notFolder).replace(/\\/g, '/')}: not a folder`);
+        continue;
+      }
+      if (fs.existsSync(book.notesPath)) {
+        try {
+          fs.readdirSync(book.notesPath);
+        } catch (error) {
+          problems.push(`${path.relative(workspace, book.notesPath).replace(/\\/g, '/')}: ${(error as Error).message}`);
+          continue;
+        }
+      }
       for (const note of shelfNotes(book)) {
         if (note.review === 'done') continue;
         const captured = note.captured === 'unknown' ? '' : note.captured;
@@ -158,7 +184,9 @@ export function readNeedsYou(workspace: string): NeedsYou {
         const stat = fs.lstatSync(path.join(folder, name));
         if (stat.isFile() && (newest === null || stat.mtimeMs > newest.at)) newest = { file: name, at: stat.mtimeMs };
       }
-    } catch {
+    } catch (error) {
+      // A seat with no checkpoint folder has saved nothing yet; any other failure is a read that did not happen.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') problems.push(`${seat}'s checkpoint folder internal/checkpoints/${seatId}: ${(error as Error).message}`);
       continue;
     }
     if (newest === null) continue;
@@ -229,10 +257,18 @@ function notWritable(workspace: string): string | null {
   return null;
 }
 
-/** `deskpost needs-you --write`: the page through the kernel writer, or unchanged. A refusal throws. */
+/**
+ * `deskpost needs-you --write`: the page through the kernel writer, or unchanged. A refusal throws.
+ *
+ * AN INCOMPLETE READING WRITES NOTHING (kickoffs/s167 row 4; the audit's B5): a page made from it could say "Nothing needs
+ * you right now" when Deskpost could not look. The previous page stays, and the refusal names what was not read.
+ */
 export function writeNeedsYou(workspace: string, needs = readNeedsYou(workspace)): VaultWrite {
   const why = notWritable(workspace);
   if (why !== null) throw new Error(`The page was not written: ${why}. Nothing was written.`);
+  if (needs.problems.length) {
+    throw new Error(`The page was not written: Deskpost could not read ${needs.problems.map((problem) => problem.replace(/\s+/g, ' ')).join('; ')}. The previous page was left as it was.`);
+  }
   const page = renderNeedsYouPage(workspace, needs);
   return writeVaultPage(workspace, NEEDS_YOU_PAGE, page, (current) => comparable(current) === comparable(page));
 }
@@ -267,7 +303,7 @@ export function refreshNeedsYou(workspace: string): void {
  * name, nickname or Hub (`seat`). Never `hook` (the checkpoint hook refreshes on its own state change), `mcp`, `menu`,
  * `dashboard`, `vault` (connecting writes nothing in the vault) or a read.
  */
-const REFRESH_VERBS = new Set(['hub', 'letters', 'capture', 'reports', 'triage', 'kickoff', 'checkpoint', 'seat', 'postbox']);
+const REFRESH_VERBS = new Set(['hub', 'letters', 'capture', 'reports', 'triage', 'kickoff', 'checkpoint', 'seat', 'postbox', 'undo', 'redo']);
 const READ_ACTIONS = new Set(['list', 'status', 'resolve', 'show']);
 
 /** After a `deskpost` command that exited 0: refresh the page when the command can have changed it. */
@@ -275,7 +311,7 @@ export function refreshAfterCommand(argv: string[]): void {
   let args = argv;
   if (args[0] === '--workspace') args = [...args.slice(2), '--workspace', args[1] ?? ''];
   const [verb, action] = args;
-  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '')) return;
+  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list'))) return;
   if (args.some((item) => ['--preflight', '--help', '-h', '--dry-run'].includes(item))) return;
   let workspace: string;
   try {

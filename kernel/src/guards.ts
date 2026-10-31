@@ -56,6 +56,8 @@ import { runCompactClearVerb } from './hookclear.ts';
 import { runSearchHitVerb } from './hooksearchhit.ts';
 import { runSeatStartVerb } from './hookseatstart.ts';
 import { DEFAULT_READER_PREFIX, isReaderPrefix, readerPrefixFault } from './readerprefix.ts';
+import { identityRowsOfRegistry } from './seatincarnation.ts';
+import { readRegistryRows, registryFilePath } from './seatregistry.ts';
 import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, BOOK_SLUG_PATTERN } from './places.ts';
 
 const EVENT = 'PreToolUse';
@@ -482,6 +484,25 @@ const NOTEBOOK_WRITE_OPERATION = 'Writing into notebook/';
  *                Notebook write activates it; `library notebook render` is the one that writes nothing
  *                else.
  */
+/**
+ * `internal/` IS DESKPOST'S OWN (kickoffs/s168 row 2; the s167 second reader's finding 2). Journals, undo records,
+ * locks and manifests are written by Deskpost's commands with Node, never through a tool, and undo trusts what a
+ * journal says about its writer only because no seat's file tools can change it. So a `Write`, `Edit` or `apply_patch`
+ * under the workspace's `internal/` is denied for every seat, seated or not.
+ */
+export function internalWriteDenial(options: { target: string; workspace: string; toolName: string }): string | null {
+  if (!['Write', 'Edit', 'apply_patch'].includes(options.toolName)) return null;
+  const placed = workspaceRelative(options.target, options.workspace);
+  if (placed.kind !== 'inside') return null;
+  const relative = (placed.relative ?? '').replace(/\\/g, '/');
+  if (!/^internal(?:\/|$)/i.test(relative)) return null;
+  return (
+    `'${relative}' is under internal/, where Deskpost keeps its own records (journals, undo records, locks, manifests), ` +
+    "written only by Deskpost's commands: a change made with a file tool could name another writer or steer an undo. " +
+    'Run the deskpost command that writes this record instead.'
+  );
+}
+
 export function notebookWriteDenial(options: {
   target: string;
   workspace: string;
@@ -522,8 +543,17 @@ export function notebookWriteDenial(options: {
     );
   }
   if (owner.toLowerCase() !== seat) {
+    const identities = identityRowsOfRegistry(readRegistryRows(registryFilePath(options.stateDirectory)));
+    let ownership = `seat '${owner}''s Notebook`;
+    if (!identities.some((row) => row.seat === owner)) {
+      const former = identities.flatMap((row) => row.names.filter((span) => span.name === owner && span.to_utc !== null).map((span) => ({ seat: row.seat, until: span.to_utc })))[0];
+      ownership = "no current seat's Notebook (" + (former
+        ? `it was seat '${former.seat}''s name until ${former.until}: move what you keep into notebook/${former.seat}/ from that seat, then remove the folder`
+        : 'no seat in this Library has had that name: move what you keep to its seat or to a Hub page, then remove the folder') + ')';
+    }
+
     return (
-      `${NOTEBOOK_WRITE_OPERATION} refused: '${relative}' is under notebook/${owner}/, which is seat '${owner}''s Notebook, ` +
+      `${NOTEBOOK_WRITE_OPERATION} refused: '${relative}' is under notebook/${owner}/, which is ${ownership}, ` +
       `and this session is at seat '${seat}'. A topic belongs to the seat whose Notebook holds it (ADR-0029); write under ` +
       `notebook/${seat}/ instead.`
     );
@@ -642,6 +672,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
           denial = judged.denial;
           if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
           if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, named, collectionRoots, context);
+          if (!denial) denial = internalWriteDenial({ target: reading, workspace, toolName });
           if (!denial) denial = notebookWriteDenial({ target: reading, workspace, toolName, seat, stateDirectory });
         }
         if (denial) deny(`This patch writes '${named}'. ${denial}`);
@@ -663,6 +694,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
   let denial = judged.denial;
   if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
   if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, target, collectionRoots, context);
+  if (!denial) denial = internalWriteDenial({ target, workspace, toolName });
   if (!denial) denial = notebookWriteDenial({ target, workspace, toolName, seat, stateDirectory });
   if (denial) deny(denial);
 }
@@ -763,36 +795,62 @@ function formatMatchedText(text: string): string {
  * deskpost-prompts-dev's "Correction" Report). A Bash heredoc and `cp` into `notebook/<topic>/` went round the Write
  * guard and turned a fresh Library legacy, so every seat's Notebook refused. Each path under `notebook/` that the
  * command writes -- a redirection's target, or any Notebook path in a command that runs a writing verb -- goes
- * through `notebookWriteDenial` as a `Write`, so the shell and the Write tool can never disagree.
+ * through `notebookWriteDenial` as a `Write`, so the shell and the Write tool can never disagree. A path under
+ * `internal/` goes through `internalWriteDenial` the same way (kickoffs/s168 row 2).
  *
  * BEST-EFFORT, AND SAID SO: this reads command TEXT, so a write it cannot parse passes, and a copy FROM another seat's
- * Notebook in a writing command is refused with it. The kernel's own writers and the layout check are the fence.
+ * Notebook, or from `internal/`, in a writing command is refused with it. The kernel's own writers and the layout check
+ * are the fence.
  */
-const SHELL_WRITE_VERB = /(?:^|[\s;&|(`])(?:tee|cp|mv|mkdir|touch|rsync|install|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item)(?=[\s;&|)]|$)/i;
+const SHELL_WRITE_VERB = /(?:^|[\s;&|(`"'])(?:tee|cp|mv|mkdir|touch|rsync|install|copy|xcopy|robocopy|move|ren|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item)(?=[\s;&|)]|$)/i;
 
 function shellNotebookWriteDenial(command: string, workspace: string, seat: string | undefined, stateDirectory: string): string | null {
-  const text = convertToPathSeparators(removeHeredocBodies(command).replace(/<<heredoc-body-elided/g, ' ')).text;
+  // Compose literal words in shell quote state; computed commands remain outside this best-effort fence.
+  const literals = removeHeredocBodies(command).replace(/<<heredoc-body-elided/g, ' ').replace(
+    /(?:\$'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|'[^']*'|\\[\s\S]|[^\s\\"';&|<>])+/g,
+    raw => {
+      let preserved = '', unquotedEscape = false;
+      const word = raw.replace(/\$'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|'([^']*)'|\\([\s\S])|[^\\"'$]+|\$/g,
+        (piece, ansi: string | undefined, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
+          const decoded = ansi !== undefined ? ansi.replace(
+            /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{4})|([0-7]{1,3})|([\\'"abefnrtv]))/g,
+            (_escape, hex: string, unicode: string, octal: string, simple: string) => {
+              if (hex || unicode || octal) return String.fromCharCode(parseInt(hex || unicode || octal, octal ? 8 : 16));
+              return ({a:'\x07',b:'\b',e:'\x1b',f:'\f',n:'\n',r:'\r',t:'\t',v:'\v'} as Record<string,string>)[simple] ?? simple;
+            },
+          ) : double !== undefined ? double.replace(/\\([$`"\\])/g, '$1') : single ?? escaped ?? piece;
+          unquotedEscape ||= escaped !== undefined;
+          preserved += escaped === undefined ? decoded : '\\' + escaped;
+          return decoded;
+        },
+      );
+      // Keep original unquoted backslashes for paths: any colon/slash, or a non-verb with unquoted escapes.
+      return /[:/]/.test(raw) || (unquotedEscape && !SHELL_WRITE_VERB.test(word)) ? preserved : word;
+    },
+  );
+  const text = convertToPathSeparators(literals.replace(/\\\.(?=[\\/])/g, '')).text.replace(/\/\.(?=\/)/g, '').replace(/([^/\s.])\.+(?=\/)/g, '$1');
   const token = /^["']?(.*?)["']?$/;
   const notebookRelative = (raw: string): string | null => {
     const bare = token.exec(raw)![1]!.replace(/^\.\//, '');
     const placed = workspaceRelative(dotnetIsPathRooted(bare) ? bare : joinPath(workspace, bare), workspace);
     if (placed.kind !== 'inside') return null;
     const relative = (placed.relative ?? '').replace(/\\/g, '/');
-    return /^notebook\//i.test(relative) ? relative : null;
+    return /^(?:notebook|internal)\//i.test(relative) ? relative : null;
   };
   const targets = new Set<string>();
-  for (const match of text.matchAll(/(?:^|[^0-9&>])>{1,2}\s*([^\s|;&<>]+)/g)) {
+  for (const match of text.matchAll(/(?:^|[^0-9&>])(?:[0-9]?&?>{1,2}\|?|[0-9]?>&)\s*([^\s|;&<>]+)/g)) {
     const relative = notebookRelative(match[1]!);
     if (relative) targets.add(relative);
   }
   if (SHELL_WRITE_VERB.test(text)) {
-    for (const match of text.matchAll(/(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[^\s"'|;&<>]*notebook\/[^\s"'|;&<>]*/gi)) {
+    for (const match of text.matchAll(/(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[^\s"'|;&<>]*(?:notebook|internal)\/[^\s"'|;&<>]*/gi)) {
       const relative = notebookRelative(match[0]);
       if (relative) targets.add(relative);
     }
   }
   for (const relative of [...targets].sort()) {
-    const denial = notebookWriteDenial({ target: joinPath(workspace, relative), workspace, toolName: 'Write', seat, stateDirectory });
+    const target = joinPath(workspace, relative);
+    const denial = internalWriteDenial({ target, workspace, toolName: 'Write' }) ?? notebookWriteDenial({ target, workspace, toolName: 'Write', seat, stateDirectory });
     if (denial) return `This shell command writes '${relative}'. ${denial}`;
   }
   return null;

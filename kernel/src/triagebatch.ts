@@ -514,6 +514,10 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         note_page: action.source_note,
         current_review: String(action.metadata['current_review'] ?? ''),
         new_review: String(action.metadata['new_review'] ?? ''),
+        ...(action.kind === 'review' && !action.metadata['outcome'] && action.metadata['current_review'] === action.metadata['new_review'] ? {
+          status: 'already_done', reviewed: sourceNoteOf(action).note?.reviewed ?? 'unknown',
+          note: `Already done (reviewed: ${sourceNoteOf(action).note?.reviewed ?? 'unknown'}); nothing to write.`,
+        } : {}),
         ...(action.metadata['outcome'] ? {
           outcome: String(action.metadata['outcome']), outcome_note: String(action.metadata['outcome_note']), sends_outcome: true,
           return_address: {
@@ -584,9 +588,9 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       }
     }
     const childPlanId = pair.action.kind === 'collection-book' && childPlan !== null ? String((childPlan as Record<string, PsJsonValue>)['plan_id'] ?? '') || null : null;
-    entries.push({ resolved: pair, recordedState: recorded, gateError, childPlan, alreadyFiled, childPlanId });
+    entries.push({ resolved: pair, recordedState: (childPlan as Record<string, PsJsonValue> | null)?.['status'] === 'already_done' ? 'already_done' : recorded, gateError, childPlan, alreadyFiled, childPlanId });
   }
-  const pending = entries.filter((entry) => entry.recordedState !== 'succeeded');
+  const pending = entries.filter((entry) => !['succeeded', 'already_done'].includes(entry.recordedState));
   const done = entries.filter((entry) => entry.recordedState === 'succeeded');
 
   if (preflight) {
@@ -638,9 +642,21 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       resume: existingJournal !== null,
       pending_count: pending.length,
       already_succeeded: done.length,
-      confirmation_required: true,
+      confirmation_required: !entries.every(entry => entry.recordedState === 'already_done'),
       recoverable: entries.every((entry) => entry.resolved.action.delete_set.length === 0),
       shared_library_write: false,
+    };
+  }
+
+  if (entries.every(entry => entry.recordedState === 'already_done')) {
+    if (parsed.options.has('plan-id') && parsed.options.get('plan-id') !== batchId) {
+      if (!parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
+      refuse('Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the material changed since you approved it.');
+    }
+    return {
+      schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Library Triage', mode: 'batch', status: 'already_done',
+      plan_id: batchId, pending_count: 0, confirmation_required: false, all_succeeded: true,
+      actions: entries.map(entry => entry.childPlan), note: 'Every review action is already done; nothing was written.',
     };
   }
 
@@ -784,14 +800,15 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         let result: PsJsonValue;
         try {
           assertSourceUnchanged(action);
-          result = invokeChildAction(entry.resolved, entry.childPlanId);
+          result = entry.recordedState === 'already_done' ? entry.childPlan : invokeChildAction(entry.resolved, entry.childPlanId);
         } finally {
           exitBookLock(notebookRead);
         }
         record.state = 'succeeded';
         record.completed_utc = utcSeconds();
         record.error = '';
-        outcomes.push(outcome(action, 'succeeded', false, result, '', ''));
+        outcomes.push(outcome(action, 'succeeded', entry.recordedState === 'already_done', result, '',
+          entry.recordedState === 'already_done' ? String((entry.childPlan as Record<string, PsJsonValue>)['note']) : ''));
       } catch (error) {
         record.state = 'failed';
         record.error = (error as Error).message;
@@ -909,7 +926,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       },
       complete(locks: string[], slug: string, extra: UndoRegenerate[] = []): void {
         const regenerates: UndoRegenerate[] = [...extra, { kind: 'shelf-note-index', slug }, { kind: 'manifest', collection: 'shelf', slug }];
-        record('complete', undoBlock(workspace, { kind: `triage-${action.kind}`, locks, before: prior, evidence: [{ path: path.relative(workspace, journalPath).replace(/\\/g, '/'), kind: 'triage-batch-journal' }], regenerates, marker: { collection: 'shelf', slug } }));
+        record('complete', undoBlock(workspace, { kind: `triage-${action.kind}`, seat, locks, before: prior, evidence: [{ path: path.relative(workspace, journalPath).replace(/\\/g, '/'), kind: 'triage-batch-journal' }], regenerates, marker: { collection: 'shelf', slug } }));
       },
     };
   }

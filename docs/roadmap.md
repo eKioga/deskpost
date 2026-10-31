@@ -25,13 +25,13 @@ it becomes an item, so everything under **Now** and **Next** is a confirmed gap.
 
 ## Now
 
-- **c62** (in progress): 1.5.1.
+The next milestones are listed below.
 
 ## Next
 
-In order: the rest of **Development without PowerShell** (its first session's first half shipped in
-S113, before 1.5.0), then **1.6.0**
-(Eric, 2026-10-10).
+In order: first the foundation: two builders that work side by side without waiting on each other, a
+builder that works from Webtop, and **1.6.0**, so that builder reads and writes current shared Books;
+then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -404,7 +404,20 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.5.2: Fewer yeses (released 2026-10-30)
+
+- Kickoffs follow one ordered train, and the Desk shows when it is stale.
+- Undo is safe: it refuses rather than overwrite what changed since, and it was read twice by an independent auditor.
+- Seats come from five department templates, and every standing rule says where it came from.
+- `deskpost asks` counts the week's asks for a yes, by Kickoff.
+- Each release tags its source commit, and the publish refuses without the tag.
+- Locks and triage: a recovery guard is never stolen and is named even when it cannot be read; a damaged train or lock folder no longer stops the Desk; a triage batch rechecks each skipped review, and its preview says truly whether it needs a yes.
+- `hub edit` warns when a typed time is off the clock, and `train move` can put an item first.
+- A release is built only with Bun 1.4.4 or later, whose certificate list drops the compromised roots.
+
 ### 1.5.1: Reports across Libraries, and what needs you (released 2026-10-25)
+
+Shipped as public commit 16135474a78c22f37ee6af4eedbba5cb6e6f15d0, from 15ab3d8.
 
 - Reports across Libraries: one Library triages Reports for others. Outcomes come back as letters; amendments and withdrawals travel too, with unfinished deliveries kept for recovery.
 - deskpost reports list shows this seat's pending Reports. Reports record the program version when known, and the inventory names the Library that sent them.

@@ -13,7 +13,8 @@
  * WHAT IS SCANNED: the records still being written (kickoffs/s112 ruling 1; Eric, 2026-10-09: "yes, go with A"). Every
  * `*.md` under the local collection's Project Hubs and Books (`collection/`) and under the Shelf (`shelf/`), EXCEPT
  * the local collection's `archive/` tree, the Shelf's `_archive/`, every Hub's `notes/` pages, and a capture Book's
- * note whose `review` is `done` (a closed letter, Report or Holding note). History is never rewritten, so a link
+ * note whose `review` is `done` (a closed letter, Report or Holding note), and each capture Book's `wiki/reviewed/`.
+ * Leading page frontmatter records provenance and is not scanned. History is never rewritten, so a link
  * there is a dated record, not a defect: counting it made doctor's WARN permanent and let a closed Report block a
  * live topic's reset. Doctor's WARN and the reset's `inbound_links` read this one scan, so they cannot disagree.
  * The shared collection is not on this disk.
@@ -58,7 +59,7 @@ function markdownFiles(root: string, skip: (directory: string) => boolean = () =
   return found.sort();
 }
 
-/** The full paths of every capture Book's closed notes (`review: done`): dated records, never rescanned. */
+/** Closed capture notes and reviewed directories: dated records, never rescanned. */
 function closedCaptureNotes(workspace: string): Set<string> {
   const closed = new Set<string>();
   const catalogFile = shelfCatalogPath(workspace);
@@ -75,6 +76,7 @@ function closedCaptureNotes(workspace: string): Set<string> {
     if (!pathMatch) continue;
     const slug = pathMatch[1]!;
     const book = convertFromShelfCatalogEntry({ workspace, slug, title: section.title, body: section.body, bookRoot: `shelf/${slug}` });
+    closed.add(path.resolve(book.wikiPath, 'reviewed').toLowerCase());
     try {
       for (const note of shelfNotes(book)) if (note.review === 'done') closed.add(path.resolve(note.fullPath).toLowerCase());
     } catch {
@@ -97,7 +99,7 @@ export function notebookLinks(workspace: string): NotebookLink[] {
   const projects = path.resolve(collection, 'projects').toLowerCase();
   const history = (directory: string): boolean => {
     const full = path.resolve(directory).toLowerCase();
-    if (full === collectionArchive || full === shelfArchive) return true;
+    if (full === collectionArchive || full === shelfArchive || closed.has(full)) return true;
     // A Hub's own `notes/`: `<collection>/projects/<slug>/notes`, and everything under it.
     return path.dirname(path.dirname(full)) === projects && path.basename(full) === 'notes';
   };
@@ -113,7 +115,10 @@ export function notebookLinks(workspace: string): NotebookLink[] {
       }
       if (!/notebook[/\\]/.test(text)) continue;
       const page = path.relative(workspace, file).split(path.sep).join('/');
-      text.split(/\r?\n/).forEach((line, index) => {
+      const lines = text.split(/\r?\n/);
+      const frontmatterEnd = lines[0]?.replace(/^\uFEFF/, '').trim() === '---' ? lines.findIndex((line, index) => index > 0 && line.trim() === '---') : -1;
+      lines.forEach((line, index) => {
+        if (index <= frontmatterEnd) return;
         for (const match of line.matchAll(LINK_PATTERN)) {
           // A trailing full stop ends a sentence, not a name.
           const named = `notebook${match[1]!.replace(/\\/g, '/')}`.replace(/\.+$/, '');

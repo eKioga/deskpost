@@ -94,23 +94,54 @@ export function isHomeNetworkAddress(address: string): boolean {
  * `what` names the endpoint in the sentence ("The Basic Memory endpoint"). Nothing is sent before it returns.
  */
 export async function assertPlainHttpAllowed(url: string, what: string): Promise<void> {
+  await plainHttpRequestUrl(url, what);
+}
+
+/**
+ * THE URL A REQUEST IS SENT TO, PINNED TO WHAT WAS CHECKED (kickoffs/s167 row 5; the audit's B3). `fetch` given a host
+ * name resolves it again, and that second answer was never checked, so a name that answered a private address to the
+ * check could answer a public one to the connection. For plain HTTP to `localhost` this returns the same URL with the
+ * host replaced by the first address the check judged, so the connection goes to that address and no second lookup is
+ * made; any other host name refuses (kickoffs/s168 row 6, below). HTTPS and a literal address come back unchanged.
+ * Refuses (throws) as `assertPlainHttpAllowed` does.
+ */
+export async function plainHttpRequestUrl(url: string, what: string): Promise<string> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     throw new Error(`${what} ${url} is not a URL, so nothing was sent.`);
   }
-  if (parsed.protocol !== 'http:') return;
+  if (parsed.protocol !== 'http:') return url;
   const host = parsed.hostname.replace(/^\[|\]$/g, '');
   let addresses: string[];
-  if (isIP(host)) addresses = [host];
-  else {
-    try {
-      addresses = await resolver(host);
-    } catch (error) {
-      throw new Error(`${what} ${url} is plain HTTP and its host name '${host}' could not be resolved (${(error as Error).message}), so nothing was sent.`);
-    }
+  if (isIP(host)) {
+    checkedAddress(url, what, host, [host]);
+    return url;
   }
+  try {
+    addresses = await resolver(host);
+  } catch (error) {
+    throw new Error(`${what} ${url} is plain HTTP and its host name '${host}' could not be resolved (${(error as Error).message}), so nothing was sent.`);
+  }
+  const address = checkedAddress(url, what, host, addresses);
+  // A HOST NAME IS REFUSED, NOT PINNED (kickoffs/s168 row 6; the s167 second reader's finding 9): the request would go to
+  // the checked address, and Node's fetch sends no caller's Host header (probed on Node 24), so the server would see the
+  // address as its host, and one keeping several sites by name could answer, with this request's key, from another.
+  // `localhost` alone is pinned as before: its names are loopback by definition (RFC 6761), and so is the server.
+  if (host !== 'localhost' && !host.endsWith('.localhost')) {
+    throw new Error(
+      `${what} ${url} is plain HTTP to the host name '${host}', which Deskpost does not send: the request would go to ${address} ` +
+        `with that address as its Host, and a server keeping several sites by name could answer from another. ` +
+        `Use the address itself in the URL, or an https:// URL. Nothing was sent.`,
+    );
+  }
+  parsed.hostname = isIP(address) === 6 ? `[${address}]` : address;
+  return parsed.href;
+}
+
+/** The first of `addresses` when every one is inside the home network; a refusal otherwise. */
+function checkedAddress(url: string, what: string, host: string, addresses: string[]): string {
   const outside = addresses.find((address) => !isHomeNetworkAddress(address));
   if (addresses.length === 0 || outside !== undefined) {
     throw new Error(
@@ -118,6 +149,7 @@ export async function assertPlainHttpAllowed(url: string, what: string): Promise
         'Plain HTTP is used only for loopback, private and Tailscale addresses; use an https:// URL for this server.',
     );
   }
+  return addresses[0]!;
 }
 
 /** A 3xx answer to a request made with `redirect: 'manual'` is refused here, naming where it pointed. */

@@ -22,7 +22,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { ensureDirectory } from './fsx.ts';
+import { ensureDirectory, writeAtomicText } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
 import { utcRoundTrip } from './journal.ts';
@@ -63,11 +63,9 @@ function storeSha256(file: string): string {
  */
 function saveStoreFile(file: string, content: string): void {
   ensureDirectory(path.dirname(file));
-  const temp = `${file}.tmp`;
-  fs.writeFileSync(temp, content, { encoding: 'utf8' });
   for (let attempt = 1; ; attempt += 1) {
     try {
-      fs.renameSync(temp, file);
+      writeAtomicText(file, content);
       return;
     } catch (error) {
       // Bounded on purpose: a destination held open indefinitely is a state we do not understand,

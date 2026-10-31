@@ -36,13 +36,13 @@ import { fileDoctorFindings } from './doctorreport.ts';
 import { releaseTuple } from './programroot.ts';
 import { homeDirectory, readMarker, resolveWorkspace } from './workspace.ts';
 import { readVaultConnection, type VaultConnection } from './vault.ts';
-import { enterBookLock, enterSeatRegistryLock, exitBookLock } from './locks.ts';
+import { enterBookLock, enterSeatRegistryLock, exitBookLock, listStaleRecoveryGuards } from './locks.ts';
 import { captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
 import { listOutstanding } from './intent.ts';
 import { readSeatIdentityView } from './seatincarnation.ts';
 import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
 import { readSeatHistory, seatHistoryState } from './seathistory.ts';
-import { identityView, incarnationOf } from './seatincarnation.ts';
+import { identityView, incarnationOf, identityRowsOfRegistry } from './seatincarnation.ts';
 import { addedDirsStatus, isAtOrInside } from './seatdirs.ts';
 import { deadNotebookLinks, NOTEBOOK_LINK_REPAIR } from './notebooklinks.ts';
 import { INBOUND_KEY, readInboundSettings, userSettingsPath } from './seatinbound.ts';
@@ -1043,7 +1043,17 @@ function masterIndexRenders(workspace: string): string {
     const problems: string[] = [];
     let topics = 0;
     const seats = seatNotebookRoots(workspace);
+    const identities = identityRowsOfRegistry(readRegistryRows(registryFilePath(path.join(workspace, '.claude'))));
+    const orphans: string[] = [];
     for (const seat of seats) {
+      if (!identities.some((row) => row.seat === seat)) {
+        const former = identities.flatMap((row) => row.names.filter((span) => span.name === seat && span.to_utc !== null).map((span) => ({ seat: row.seat, until: span.to_utc })))[0];
+        orphans.push(`notebook/${seat}/ is no current seat's Notebook: ` + (former
+          ? `it was seat '${former.seat}''s name until ${former.until}: move what you keep into notebook/${former.seat}/ from that seat, then remove the folder`
+          : 'no seat in this Library has had that name: move what you keep to its seat or to a Hub page, then remove the folder'));
+        continue;
+      }
+
       const relative = `notebook/${seat}`;
       const root = path.join(workspace, 'notebook', seat);
       const scope = { workspace, layout: 'seat-owned' as const, activates: false, seat, root, relative };
@@ -1055,6 +1065,7 @@ function masterIndexRenders(workspace: string): string {
       }
     }
     if (problems.length) throw new Error(problems.join('; '));
+    if (orphans.length) return `WARN: ${orphans.join('; ')}`;
     return `each of ${seats.length} seat Notebook index(es) matches its ${topics} topic(s) on disk and their headings`;
   }
   const problems = masterIndexDrift(workspace);
@@ -1640,8 +1651,8 @@ function undoIncompleteCheck(workspace: string): string {
 }
 
 function undoMarkerLeftCheck(workspace: string): string {
-  const cleared = clearLeftUndoMarkers(workspace);
-  return cleared.length ? `WARN: marker left: ${cleared.join('; ')}` : 'no finished undo or redo left its dirty marker down';
+  const left = clearLeftUndoMarkers(workspace);
+  return left.length ? `WARN: marker left: ${left.join('; ')}` : 'no undo or redo record names a leftover dirty marker';
 }
 
 /**
@@ -1875,6 +1886,10 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
   // THE PROGRAM'S OWN CHECKS RUN WITH OR WITHOUT A LIBRARY (F4), in their own list: `checks` stays the workspace checks
   // the PowerShell runner's -WorkspaceOnly reports, which the acceptance matrix compares row for row.
   const programChecks: CheckResult[] = [
+    workspace ? runCheck('locks.stale-recovery-guard', () => {
+      const { guards, unreadable } = listStaleRecoveryGuards(workspace);
+      return unreadable !== null ? `WARN: ${unreadable}` : guards.length ? `WARN: ${guards.map(guard => guard.message).join('\n')}` : 'no stale recovery guards';
+    }) : { check: 'locks.stale-recovery-guard', status: 'skipped', detail: 'no Library here, so no recovery guards to check' },
     ...SKILL_LOCATIONS.map((location) => workspace
       ? runCheck(`workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, () => skillInstallationStatus(workspace, program, location))
       : { check: `workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, status: 'skipped', detail: 'no Library here, so no workspace skills to check' }),
@@ -1905,7 +1920,7 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     // AND THIS ONE (kickoffs/s109 ruling 1): a Hub or Shelf Book line naming a Notebook path that is gone. A WARN.
     workspace ? runCheck('notebook.links-resolve', () => notebookLinksResolve(workspace)) : { check: 'notebook.links-resolve', status: 'skipped', detail: 'no Library here, so no Hub or Shelf Book links to check' },
     // AND THESE TWO (kickoffs/s165 row 5): an undo or redo that stopped part-way, and a finished one's own dirty marker
-    // still down, which is cleared here. A marker another operation owns, or an unfinished one's, is never touched.
+    // still down. Both checks only report; a validated reversal under its locks is the only marker cleanup.
     workspace ? runCheck('undo.incomplete', () => undoIncompleteCheck(workspace)) : { check: 'undo.incomplete', status: 'skipped', detail: 'no Library here, so no undo records to check' },
     workspace ? runCheck('undo.marker-left', () => undoMarkerLeftCheck(workspace)) : { check: 'undo.marker-left', status: 'skipped', detail: 'no Library here, so no undo records to check' },
     // AND THESE TWO (kickoffs/s123 row 4): the Postbox's outbox and whether it answered, from its cache. Skipped with none.

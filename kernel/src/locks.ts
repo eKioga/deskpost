@@ -141,8 +141,10 @@ export function enterBookLock(workspace: string, bookRoot: string, timeoutSecond
       // Someone holds it, or a crashed process left it behind. Only the latter may be taken.
       if (takeStaleLock(lockPath, judgedAlive)) continue;
       if (Date.now() >= deadline) {
+        const guard = recoveryGuard(`${lockPath}.recover`);
         throw new Error(
-          `Another operation holds the lock for ${bookRoot}. Wait for it to finish, or investigate ${lockPath}.`,
+          `Another operation holds the lock for ${bookRoot}. Wait for it to finish, or investigate ${lockPath}.` +
+            (guard ? `\n${guard.message}` : ''),
         );
       }
       spin(250);
@@ -189,10 +191,15 @@ export function setAfterJudgedStale(hook: ((lockPath: string) => void) | undefin
  * kernel's, one caught between its create and its write) is stale by age, as before. A live owner's lock is never
  * taken, however old.
  *
- * TAKEN BY A STEP THAT CANNOT REMOVE A FRESH FILE. The stale file is renamed to a name only this taker uses, read again,
- * and deleted only when it is still the one judged (the same text and time); a fresh file moved by mistake goes back
- * where it was. Two recoverers that both judged one stale file never both delete: the second moves nothing it judged.
- * Answers true when a stale lock was removed, so the caller tries the create again.
+ * TAKEN UNDER A GUARD, AND A FRESH LOCK IS NEVER MOVED (kickoffs/s167 row 3; the audit's B2). s164 renamed the judged
+ * file away and linked it back on a mismatch, and while it was away a third process could create the lock: two holders.
+ * Now recovery takes a short guard, `<lock>.recover`, created exclusively with its own owner record; under the guard it
+ * reads the lock again and deletes it only when it is still the record judged (the same text and time). A recoverer
+ * that judged a file another has since replaced finds a different record and leaves it. Only recoverers delete a lock
+ * whose owner is not its own, and each does it under the guard, so a lock held by a live process's record is not
+ * deleted by a recoverer that judged a dead one. The limit that remains is the one before: a lock with no readable
+ * owner (a PowerShell writer's, a Windows source run's) is judged by age, so a live holder older than the stale age can
+ * still be judged dead. Answers true when a stale lock was removed, so the caller tries the create again.
  */
 function takeStaleLock(lockPath: string, judgedAlive: Map<string, number>): boolean {
   let text: string;
@@ -217,30 +224,94 @@ function takeStaleLock(lockPath: string, judgedAlive: Map<string, number>): bool
     return false;
   }
   afterJudgedStale?.(lockPath);
-  const moved = `${lockPath}.taken-${process.pid}-${randomBytes(6).toString('hex')}`;
+  const guard = enterRecoverGuard(lockPath);
+  if (guard === null) return false; // another recoverer is at it: the next create decides
   try {
-    fs.renameSync(lockPath, moved);
-  } catch {
-    return false; // another recoverer moved it first
-  }
-  let same = false;
-  try {
-    same = fs.readFileSync(moved, 'utf8') === text && fs.statSync(moved).mtimeMs === mtimeMs;
-  } catch {
-    /* unreadable after the move: treated as not the one judged */
-  }
-  if (same) {
-    try { fs.unlinkSync(moved); } catch { /* a leftover under a taken- name holds nothing */ }
+    if (!stillJudged(lockPath, text, mtimeMs)) return false;
+    fs.unlinkSync(lockPath);
     return true;
-  }
-  // A fresh lock was moved: put it back without overwriting one made meanwhile.
-  try {
-    fs.linkSync(moved, lockPath);
   } catch {
-    /* a newer lock now stands at the path; the moved one's holder still releases by its own record */
+    return false;
+  } finally {
+    exitRecoverGuard(guard);
   }
-  try { fs.unlinkSync(moved); } catch { /* best effort */ }
-  return false;
+}
+
+/** Whether the file at `file` is still the one read: the same text and the same time. */
+function stillJudged(file: string, text: string, mtimeMs: number): boolean {
+  try {
+    return fs.readFileSync(file, 'utf8') === text && fs.statSync(file).mtimeMs === mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/** A guard whose owner names no start time is stale after this long; recovery holds one for a read and a delete. */
+const RECOVER_GUARD_STALE_MS = 10_000;
+
+/** Read only: a guard's owner is confirmed gone only from both pid and start; age alone never proves death. */
+function recoveryGuard(file: string) {
+  const guardPath = path.resolve(file).replace(/\\/g, '/');
+  try {
+    const text = fs.readFileSync(file, 'utf8'), age_ms = Math.max(0, Date.now() - fs.statSync(file).mtimeMs);
+    const recordedPid = Number(recordField(text, 'pid')), start = recordField(text, 'start');
+    const pid = Number.isInteger(recordedPid) && recordedPid > 0 ? recordedPid : null;
+    const owner_gone = pid !== null && !!start && !testSeatAgentAlive(pid, start, { fresh: true });
+    const stale = owner_gone || (!start && age_ms > RECOVER_GUARD_STALE_MS);
+    return recoveryGuardDiagnostic(guardPath, pid, owner_gone, age_ms, stale, null);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    return recoveryGuardDiagnostic(guardPath, null, false, null, false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function recoveryGuardDiagnostic(guardPath: string, pid: number | null, owner_gone: boolean, age_ms: number | null, stale: boolean, unreadable: string | null) {
+  const detail = owner_gone ? 'owner is gone; deleting it is safe' : `could not confirm the owner is gone; ${Math.floor((age_ms ?? 0) / 1000)} seconds old; check that pid is gone first`;
+  return { path: guardPath, pid, owner_gone, age_ms, stale, unreadable,
+    message: unreadable === null
+      ? `${owner_gone ? 'A crashed recovery left one file' : 'A recovery guard remains'}: ${guardPath} (pid ${pid ?? 'unknown'}; ${detail}).\nRun the same command again to retry after removing this file.`
+      : `A recovery guard is unreadable: ${guardPath} (pid unknown; ${unreadable}).` };
+}
+
+/** List stale guards without creating a directory, deleting a file, or taking a lock. */
+export function listStaleRecoveryGuards(workspace: string) {
+  const directory = path.join(workspace, 'internal', 'book-locks');
+  try {
+    const guards = !fs.existsSync(directory) ? [] : fs.readdirSync(directory).filter(name => name.endsWith('.lock.recover')).sort()
+      .map(name => recoveryGuard(path.join(directory, name))).filter(guard => guard !== null).filter(guard => guard.stale || guard.unreadable !== null);
+    return { guards, unreadable: null };
+  } catch (error) {
+    return { guards: [], unreadable: recoveryGuardDiagnostic(path.resolve(directory).replace(/\\/g, '/'), null, false, null, false,
+      error instanceof Error ? error.message : String(error)).message };
+  }
+}
+
+/** The recovery guard is never stolen: an existing file requires an explicit manual recovery. */
+function enterRecoverGuard(lockPath: string): { path: string; record: string } | null {
+  const guardPath = `${lockPath}.recover`;
+  const start = cheapOwnStart();
+  const record = `pid=${process.pid}\n${start ? `start=${start}\n` : ''}acquired=${new Date().toISOString()}\nguard=${randomBytes(6).toString('hex')}\n`;
+  let handle: number;
+  try {
+    handle = fs.openSync(guardPath, 'wx');
+  } catch {
+    return null;
+  }
+  try {
+    fs.writeSync(handle, record);
+  } finally {
+    fs.closeSync(handle);
+  }
+  return { path: guardPath, record };
+}
+
+/** The guard removed only while it is still this recoverer's record. Never throws. */
+function exitRecoverGuard(guard: { path: string; record: string }): void {
+  try {
+    if (fs.readFileSync(guard.path, 'utf8') === guard.record) fs.unlinkSync(guard.path);
+  } catch {
+    /* gone or replaced: a successor's guard is left where it is */
+  }
 }
 
 /**
@@ -285,6 +356,8 @@ export function withBookLocks<T>(
   body: (locks: BookLock[]) => T,
 ): T {
   const ordered = [...new Set(bookRoots)].sort();
+  const registry = ordered.indexOf(SEAT_REGISTRY_LOCK_ROOT);
+  if (registry >= 0) ordered.unshift(...ordered.splice(registry, 1));
   const locks: BookLock[] = [];
   try {
     for (const root of ordered) locks.push(enterBookLock(workspace, root, timeoutSeconds));

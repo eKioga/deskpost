@@ -17,6 +17,10 @@
  *            the stage is done only after a fresh read sees exactly one pointer;
  *   close    the letter closed, last, after the page and the pointer are both verified on disk.
  *
+ * Before any of them, a letter the Postbox filed `postbox_damaged` or `stale_delivery`, or whose `for_seat_id` is not
+ * this seat's current id, is refused (kickoffs/s167 row 2). The envelope's hash is the hash the letter carries: it shows
+ * the payload is the one the envelope describes, never who sent it.
+ *
  * The record is kept apart from `intent.ts`'s folders on purpose: postbox recovery runs every outstanding record there
  * through the Report stage runners, and a receive is no delivery of theirs.
  */
@@ -149,6 +153,8 @@ interface ReceiveRecord {
   sha256: string;
   bytes: number;
   from_library_card: string;
+  /** The sending Library's id as the letter names it (kickoffs/s167 row 2): what the letter says, not a verified sender. */
+  from_library_id?: string;
   identities: { pages: string[]; letter: string };
   stages: { name: StageName; state: 'pending' | 'done'; proof: string | null }[];
   created_utc: string;
@@ -202,10 +208,23 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
   const letterText = fs.readFileSync(letterFile, 'utf8');
   const fields = noteFrontmatter(letterText);
   if (fields.get('for_seat') !== seat) refuse(`${letter} is addressed to ${fields.get('for_seat') || 'no seat'}, not to this seat (${seat}). Nothing was written.`);
+  // WHAT THE POSTBOX FLAGGED IS NEVER A WORK ORDER (kickoffs/s167 row 2; the audit's B1). Its verdicts are read where it
+  // filed them, before any record, page or pointer: a damaged body or a stale address is the sender's to send again.
+  if (fields.get('postbox_damaged') === 'true') {
+    refuse(`${letter} is filed postbox_damaged: the Postbox found its body does not match the digest the delivery carries, so it may have changed on the way. Ask the sender to send the Kickoff again. Nothing was written.`);
+  }
+  if (fields.get('stale_delivery') === 'true') {
+    refuse(`${letter} is filed stale_delivery: it was addressed to an earlier seat named ${seat}, not this one. Ask the sender to send the Kickoff again. Nothing was written.`);
+  }
+  const seatId = readSeatRegistry(path.join(workspace, '.claude')).find((row) => row.seat === seat)?.seatId ?? '';
+  if (!seatId || fields.get('for_seat_id') !== seatId) {
+    refuse(`${letter} is for seat id ${fields.get('for_seat_id') || 'none'}, and this seat (${seat}) is ${seatId || 'not in the seat registry'}: it was addressed to an earlier seat of that name. Ask the sender to send the Kickoff again. Nothing was written.`);
+  }
   // THE HASH FIRST: a payload that is not the one sent is refused before anything is written.
   const envelope = parseEnvelope(keptBody(letterText));
   const id = envelope.id;
   const card = fields.get('from_library_card') ?? '';
+  const libraryId = fields.get('from_library_id') ?? '';
   const link = `[[projects/${hub}/kickoffs/${id}]]`;
   const pointer = `- [ ] Run ${id}: ${link} (from ${card || 'this Library'})`;
   const pagePath = `projects/${hub}/kickoffs/${id}`;
@@ -229,6 +248,7 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
       sha256: envelope.sha256,
       bytes: envelope.bytes,
       from_library_card: card,
+      from_library_id: libraryId,
       identities: { pages: [pagePath], letter },
       stages: [{ name: 'page', state: 'pending', proof: null }, { name: 'pointer', state: 'pending', proof: null }, { name: 'close', state: 'pending', proof: null }],
       created_utc: utcSeconds(),
@@ -302,6 +322,7 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
     pointer,
     letter,
     from_library_card: card || null,
+    from_library_id: libraryId || null,
     record: `internal/kickoffs/${id}.json`,
     stages_run: stagesRun,
     next: `Run the Kickoff from its pointer: its OPEN takes one yes over ${pagePath} at sha256 ${envelope.sha256}.`,

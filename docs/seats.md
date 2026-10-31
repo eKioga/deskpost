@@ -46,36 +46,37 @@ reader and the search helpers resolve the Desk independently.
 
 ## Seat templates
 
-The six shipped templates give a new seat a starting purpose and registry role:
+The five shipped templates give a new seat a starting purpose and registry role:
 
 | Template | Registry role | Purpose |
 | --- | --- | --- |
-| `performer` | performer | Work its lane and record progress. |
-| `orchestrator` | orchestrator | Answer or route its department's letters. |
+| `performer` | performer | Keep the one job its card names and record its work. |
+| `orchestrator` | orchestrator | Order the work, write Kickoffs and review handbacks. |
+| `planner` | performer | Stand in for the reader on design questions, with attribution. |
+| `builder` | performer | Build one approved Kickoff and hand back tested commits. |
 | `auditor` | performer | Read-only audits, findings by letter. |
-| `ideas` | performer | Capture and develop ideas on request; never build. |
-| `developer` | performer | Build one approved software Kickoff and hand back. |
-| `planner` | orchestrator | Plan software units, assign roles and review handbacks. |
 
-Developer and planner purposes point to library-help's
+The orchestrator purpose points to library-help's
 [Building software with seats](../.claude/skills/library-help/references/building-software-with-seats.md).
-The new-seat wizard offers them with a department and proposes `<department>-dev` and
-`<department>-plan`. Templates set purpose and provenance at creation; they grant no integration,
-Git or release authority. The Kickoff assigns development roles separately from registry roles.
+The new-seat wizard offers the five with a department and proposes `<department>-dev`,
+`<department>-lead`, `<department>-plan` or `<department>-audit`. Templates set purpose and provenance
+at creation; they grant no integration, Git or release authority. The Kickoff assigns development roles
+separately from registry roles.
 
 A department has at most one orchestrator. When it already has one, there are two distinct routes:
 
-1. Create a planner with `--template planner --department <separate-department>` through
-   `seat start`'s preview and exact plan id. This records the planner's purpose and `planner@1` provenance.
+1. Create a second Kickoff writer with `--template orchestrator --department <separate-department>` through
+   `seat start`'s preview and exact plan id. The `planner` template now makes a performer (`planner@2`),
+   which stands in for the reader; it does not make a Kickoff writer.
 2. Transfer the orchestrator role to an existing seat with
    `deskpost seat describe <seat> --role orchestrator --from <current-orchestrator> --preflight`,
    then apply that approved preview with its exact `--plan-id`. This changes the role and keeps
-   the seat's own purpose and template provenance; it does not make it a `planner@1` seat.
+   the seat's own purpose and template provenance; it does not make it an `orchestrator@4` seat.
 
 Init preserves a user's own skill folder or edited managed files in either harness; doctor WARNs
 instead of replacing them. If that leaves an older library-help copy, read the canonical guide in
 the installed program tree at `.claude/skills/library-help/references/building-software-with-seats.md`.
-Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.1/.claude/skills/library-help/SKILL.md)
+Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.2/.claude/skills/library-help/SKILL.md)
 is the matching online entry point. Resolve the collision yourself and run `deskpost init` again;
 do not overwrite your copy as a shortcut.
 

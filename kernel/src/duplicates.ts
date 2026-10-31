@@ -30,7 +30,7 @@ import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { requireWorkspace } from './workspace.ts';
 import { readStrictUtf8 } from './notebook.ts';
-import { assertNotRedirected, assertPlainHttpAllowed } from './netpolicy.ts';
+import { assertNotRedirected, plainHttpRequestUrl } from './netpolicy.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { parseBookRoot } from './places.ts';
 import { captureBookRows } from './desk.ts';
@@ -173,12 +173,14 @@ export async function shelfDuplicates(argv: string[]): Promise<Record<string, Ps
   for (let i = 0; i < topics.length; i += batchSize) {
     const batch = topics.slice(i, i + Math.min(batchSize, topics.length - i));
     let response: unknown;
-    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2): the bearer key never crosses it unencrypted.
-    try { await assertPlainHttpAllowed(embeddingUrl, 'The embedding endpoint'); }
+    // PLAIN HTTP STAYS INSIDE THE HOME NETWORK (kickoffs/s164 row 2): the bearer key never crosses it unencrypted. It goes
+    // to the address judged (kickoffs/s167 row 5), so a second lookup cannot answer differently.
+    let target = embeddingUrl;
+    try { target = await plainHttpRequestUrl(embeddingUrl, 'The embedding endpoint'); }
     catch (error) { refuse((error as Error).message); }
     try {
       // NO REDIRECT IS FOLLOWED (kickoffs/s164 row 1): a 307 or 308 would carry the excerpts elsewhere.
-      const answer = await fetch(embeddingUrl, {
+      const answer = await fetch(target, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ input: batch.map((topic) => topic.excerpt), model: embeddingModel }),

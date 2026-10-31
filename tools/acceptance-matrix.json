@@ -40,6 +40,71 @@
     "embedding-service": "An embedding endpoint, which the harness PROVIDES (S41, the reader's ruling): tools/AcceptanceEmbeddingStandIn.mjs, started for the row and shared by both arms, whose vectors are integer word counts so no parser can bend them. Never a reader's own inference server; every row's TEI_* variables are set by the harness. Needs node, and no network."
   },
   "deltas": {
+    "kernel-report-records-1-5-1-version": {
+      "reason": "s136 a7589b78: the Report records its writing program version. Pair only the observed version line, together with the existing seat-source line pairing, then compare every remaining byte.",
+      "approved_by": "kickoffs/c67 row 1; Eric's acceptance of 2026-10-25 for 1.5.1 (projects/deskpost-desk/notes/2026-10-25-1-5-1-compiled-matrix-twelve-accepted)",
+      "approved_on": "2026-10-26",
+      "applies_to": [
+        "capture.a-report-without-a-why-says-nothing-about-it"
+      ],
+      "match": {
+        "field_pattern": "^effect\\.shelf/reports/wiki/notes/[0-9-]+-oracle-report\\.md$",
+        "phrases": [
+          {
+            "kernel": "\nfrom_seat_source: environment",
+            "powershell": ""
+          },
+          {
+            "kernel": "\ndeskpost_version: 1.5.2",
+            "powershell": ""
+          }
+        ]
+      }
+    },
+    "kernel-new-book-commits-discovery-manifest": {
+      "reason": "s149 row 3: a new Book commits the first Discovery manifest. Only the observed oracle/inbox generation-1 files and the manifest result sentence differ; manifest schemas remain checked as in the standard-init delta.",
+      "approved_by": "kickoffs/c67 row 1; Eric's acceptance of 2026-10-25 for 1.5.1 (projects/deskpost-desk/notes/2026-10-25-1-5-1-compiled-matrix-twelve-accepted)",
+      "approved_on": "2026-10-26",
+      "applies_to": [
+        "shelf.new-book-creates-a-book-root",
+        "shelf.new-capture-book-gets-a-capture-reader-map"
+      ],
+      "match": {
+        "field_pattern": "^(effect\\.internal/book-manifests/shelf/(oracle|inbox)/(current\\.json|generations/1\\.json)|result\\.manifest)$",
+        "value_pattern": "(?s)^(<absent>|text:\\{\\s*\"schema\":\\s*[12],.*\\}\\s*|none yet: a new Book has no Discovery manifest until the backfill builds one\\.|generation 1 committed)$"
+      }
+    },
+    "kernel-shell-denial-explains-pattern-files": {
+      "reason": "s146 row 3: pair only the added pattern-file advice on these three shell denials. Every other word of the refusal remains compared.",
+      "approved_by": "kickoffs/c67 row 1; Eric's acceptance of 2026-10-25 for 1.5.1 (projects/deskpost-desk/notes/2026-10-25-1-5-1-compiled-matrix-twelve-accepted)",
+      "approved_on": "2026-10-26",
+      "applies_to": [
+        "guards.shell-read-of-a-closed-book-is-denied",
+        "guards.a-shell-glob-cannot-read-around-the-guard",
+        "guards.a-shell-denial-names-the-reader-codex-offers"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.permissionDecisionReason$",
+        "phrases": [
+          {
+            "kernel": " To search another repository or a commit for such a text, put the pattern in a file and pass it with git grep -f <file> or rg -f <file>.",
+            "powershell": ""
+          }
+        ]
+      }
+    },
+    "kernel-triage-review-keeps-per-note-journal": {
+      "reason": "s165 row 1: this review writes a per-note undo journal and returns its path. Pair only this observed review action journal, with its schema/operation, or its returned path against absence.",
+      "approved_by": "kickoffs/c67 row 1; Eric's acceptance of 2026-10-25 for 1.5.1 (projects/deskpost-desk/notes/2026-10-25-1-5-1-compiled-matrix-twelve-accepted)",
+      "approved_on": "2026-10-26",
+      "applies_to": [
+        "triage.batch-sorts-another-seats-note-at-the-readers-ask"
+      ],
+      "match": {
+        "field_pattern": "^(effect\\.internal/triage-journals/note-<stamp>-action-e7856d39930de5f3-<suffix>\\.json|result\\.outcomes\\[0\\]\\.result\\.journal)$",
+        "value_pattern": "(?s)^(<absent>|internal/triage-journals/note-<stamp>-action-e7856d39930de5f3-<suffix>\\.json|text:\\{\\s*\"schema\":\\s*1,\\s*\"operation\":\\s*\"triage-note\",\\s*\"kind\":\\s*\"review\",.*\\}\\s*)$"
+      }
+    },
     "kernel-desk-context-separates-missing-books": {
       "reason": "s160 row 2, pushed c0a6374; projects/deskpost-dev/notes/2026-10-24-s160-a1 Handback: the start hook names a missing collection Book under Missing instead of the readable Books list. Pair only this fixture's exact Books/Missing segment, including the existing S72 collection/archive label mapping, then compare the whole remaining context verbatim.",
       "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); kickoffs/s160 row 2",
@@ -88,8 +153,8 @@
     },
     "kernel-doctor-carries-summary-counts-2": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5",
-      "approved_on": "2026-10-25",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd)",
+      "approved_on": "2026-10-30",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -99,7 +164,7 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.passed)$",
-        "value_pattern": "^(<absent>|0|18|22)$"
+        "value_pattern": "^(<absent>|0|18|20|22|24|21|25)$"
       }
     },
     "kernel-doctor-carries-summary-counts-3": {
@@ -120,8 +185,8 @@
     },
     "kernel-doctor-carries-summary-counts-4": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5",
-      "approved_on": "2026-10-25",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd)",
+      "approved_on": "2026-10-30",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -131,7 +196,7 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.total)$",
-        "value_pattern": "^(<absent>|0|27)$"
+        "value_pattern": "^(<absent>|0|27|29|30)$"
       }
     },
     "kernel-doctor-carries-summary-counts-5": {
@@ -195,7 +260,7 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.program\\.skipped|result\\.totals\\.program\\.warned)$",
-        "value_pattern": "^(<absent>|1)$"
+        "value_pattern": "^(<absent>|0|1|2)$"
       }
     },
     "kernel-doctor-carries-summary-counts-9": {
@@ -595,6 +660,13 @@
       "approved_on": "2026-10-07",
       "applies_to": ["capture.page-added-to-an-open-curated-book", "triage.batch-preflight-binds-every-action", "triage.batch-confirmed-lands-every-action-and-journals-it", "triage.batch-files-a-holding-note-and-closes-it"],
       "match": { "field_pattern": "^result(\\.actions\\[\\d+\\]\\.plan|\\.outcomes\\[\\d+\\]\\.result)?\\.topic_index$", "value_pattern": "^(<absent>|<null>)$" }
+    },
+    "kernel-capture-and-triage-carry-the-time-warning": {
+      "reason": "1.5.2 (982eb9b, kernel/src/capture.ts): a capture's result, and a triage action's child capture (result.actions[n].plan in a preflight, result.outcomes[n].result in a run), carries time_warning, null when the typed time of the write agrees with the clock; self-test section 558 asserts the null. The PowerShell oracle has no such field. The oracle is not edited. Only that key, and only absent against null, is paired; every other field is compared.",
+      "approved_by": "kickoffs/c80-r5 row 1c; Eric's OPEN yes",
+      "approved_on": "2026-10-30",
+      "applies_to": ["capture.note-lands-in-a-capture-enabled-book", "capture.the-reader-map-keeps-the-tidied-months", "capture.a-report-without-a-why-says-nothing-about-it", "triage.batch-preflight-binds-every-action", "triage.batch-confirmed-lands-every-action-and-journals-it", "triage.batch-holding-action-keeps-its-capture-date"],
+      "match": { "field_pattern": "^result(\\.actions\\[\\d+\\]\\.plan|\\.outcomes\\[\\d+\\]\\.result)?\\.time_warning$", "value_pattern": "^(<absent>|<null>)$" }
     },
     "kernel-desk-omits-why-missing-for-a-book-anyone-closes": {
       "reason": "S85 row 4 (4da9aeb, 1.3.3): the Desk overview omits pending_why_missing for a capture Book whose Closed by: is any, where it misled, while the PowerShell oracle still reports it as 0. The oracle is not edited (ruling 5). Only that key, and only 0 against absent, is paired; every other field of the overview is compared.",

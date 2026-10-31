@@ -22,7 +22,7 @@ How a reviewed release candidate goes to the public download, and the exact comm
    call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
    sentence names a `tools/*.ps1` helper is judged against a build ("The compiled arm"), never from source
    ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Record the second reader's review
-   of that exact candidate SHA by [the loop's rule](dev-loop-planner.md#the-second-reader) before
+   of that exact candidate SHA by [the loop's rule](dev-loop-orchestrator.md#the-second-reader) before
    any credential-bearing step. Then check routes: `git ls-remote` and reading the mirror workflow
    prove connectivity and read access only. Read Forgejo `permissions.push` where available; record
    authorization without a non-mutating source as unverified until publish. Secrets resolve only
@@ -43,8 +43,12 @@ How a reviewed release candidate goes to the public download, and the exact comm
    - audits and scans the extracted archives, and runs `tools/Test-BuiltRelease.ps1` against the previous release;
    - writes `refs/releases/v<version>`, one parentless commit holding exactly the release files;
    - prints `READY: main <sha>, tag v<version>, refs/releases/v<version>; nothing pushed`.
-3. **Publish, on Eric's separate named `publish X`**: one atomic push from the publish clone, bound
-   to the reviewed candidate SHA and the exact READY refs. Refuse if either moved. Nothing else publishes a release.
+3. **Publish, on Eric's separate named `publish X`**: first tag the reviewed candidate in the source checkout
+   (`prepare.ps1`'s `$app`) with `git -C <app> tag -a v<version> -m "Deskpost <version>" <candidate SHA>`, push only
+   that tag to `Kioga/library` with `git -C <app> push origin refs/tags/v<version>`, then run
+   `node tools/release-tag-check.ts <app> <version>`; anything but PASS stops before the public push. Then make
+   one atomic push from the publish clone, bound to the reviewed candidate SHA and the exact READY refs.
+   Refuse if either moved. Nothing else publishes a release.
 4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
    `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
    the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.
@@ -168,6 +172,12 @@ not a blocker; it is a "How to upgrade" line and a morning item.
   `deskpost` link, `~/.local/bin` (or `DESKPOST_BIN_DIR`), must be on PATH first; otherwise it installs fresh at the
   default root.
 
+The registered distribution's disk lives at `D:\dev\data\wsl\deskpost-clean`. To rebuild it, run
+`wsl --install -d Ubuntu-24.04 --name deskpost-clean --location D:\dev\data\wsl\deskpost-clean --web-download --no-launch`,
+create the ordinary default user `reader`, and set `/etc/wsl.conf` to `[automount]` with `enabled=false`
+and `mountFsTab=false`, and `[interop]` with `appendWindowsPath=false`. Never delete a folder that holds
+a registered distribution's disk; `wsl.exe -l -v` lists them.
+
 Both `HOME`s deleted afterwards by the program that made them; the distro stopped again if it was stopped.
 
 **The compiled arm**: `tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel <rel's win-x64 library.exe> -KeepFixtures
@@ -187,9 +197,15 @@ found); the public roadmap has `<new>` under Released.
 
 **The publish question**, asked as its own question once READY prints: first, in its own call,
 `git -C <pf>/v<new>/pub rev-parse main v<new>^{commit} refs/releases/v<new>` and show the three SHAs match READY;
-also verify the source HEAD still equals the reviewed candidate SHA; then
-the one push command ("The push" below). It runs only on a reply that names the action ("publish `<new>`"), never a
-bare "yes". After the push, start the mirror ("Starting the mirror").
+also verify the source HEAD still equals the reviewed candidate SHA. Show these source-tag commands and then
+the one public push command ("The push" below). They run only on a reply that names the action ("publish `<new>`"),
+never a bare "yes". On that reply, run each source-tag command in its own call and show each result:
+
+- `git -C <app> tag -a v<version> -m "Deskpost <version>" <candidate SHA>` (`<app>` is `prepare.ps1`'s `$app`).
+- `git -C <app> push origin refs/tags/v<version>`.
+- `node tools/release-tag-check.ts <app> <version>`; anything but PASS stops before the public push.
+
+Then run the public push and start the mirror ("Starting the mirror").
 
 **Rules for the whole run.** One heavy job at a time: never a build, `Test-BuiltRelease`, `prepare.ps1`, a matrix run,
 a WSL run, a self-test run or a gate beside another. `DESKPOST_UPDATE_CHECK` unset for the compiled sections and every
@@ -218,8 +234,9 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
   `main` and the tag, then makes the GitHub release from `refs/releases/<tag>`. Check both
   `https://github.com/eKioga/deskpost/releases/latest` and the tag's release page before telling anyone to upgrade.
 
-`Kioga/library` (this checkout's `origin`) publishes nothing. A push there is ordinary development
-(`docs/dev-loop-planner.md`, "The mirror source").
+`Kioga/library` (this checkout's `origin`) publishes nothing. The source tag push above is the one release-time
+push there; other pushes are ordinary development (`docs/dev-loop-orchestrator.md`, "The mirror source"). A source
+tag on a commit that was never published is removed only on Eric's yes.
 
 ## Starting the mirror (step 4)
 
@@ -338,7 +355,7 @@ if status == 200:
 ```
 
 **Afterwards.** Record the run id, run number and the one status on the attempt page. Give no upgrade line: the
-planner (deskpost-desk) checks `https://github.com/eKioga/deskpost/releases/latest` and its assets once the run has
+orchestrator (deskpost-lead) checks `https://github.com/eKioga/deskpost/releases/latest` and its assets once the run has
 finished, then gives the reader the upgrade steps, starting with `deskpost upgrade --dry-run`.
 
 ## After the publish
@@ -351,7 +368,7 @@ finished, then gives the reader the upgrade steps, starting with `deskpost upgra
   "Where should your Library live?" prompt.
 - **Every release is installed.** Never suggest skipping a version to test a later route; test a new route on the
   next upgrade instead.
-- **The release notice.** Once `releases/latest` names the new version with its assets, the planner sends one letter
+- **The release notice.** Once `releases/latest` names the new version with its assets, the orchestrator sends one letter
   to each seat (`deskpost capture letters --for <seat>`, one per seat): the version is out, and how to upgrade,
   starting with `deskpost upgrade --dry-run`. It asks nothing, and each seat closes it for itself.
 

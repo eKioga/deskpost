@@ -185,6 +185,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "--answers notes/<page> answers that letter and closes it; --routes notes/<page> hands it on to the seat --for names and closes it. --answers writes to the letter's first asker, so leave out --for and --for-department.",
         "--library <id-or-card> with --for <seat> writes to a seat of another Library, through this Library's Postbox: sent once, right away, or later by deskpost postbox send. The address is resolved from the Postbox when the letter is written, so with no answer from it nothing is captured. An answer to a letter from another Library goes back the same way.",
         CONTENT_PATH_RULE,
+        'A typed time in the first five input lines, dated today and over five minutes off the write clock, produces time_warning; use {now}.',
       ],
     },
     actions: [],
@@ -431,10 +432,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
         '                   Its --preflight issues a plan_id: the apply takes it with --plan-id <id>, or runs without one.',
         '',
+        'Every mode but new-page acts on --page <p> when given (a notes/ page included), _project otherwise.',
         "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line, and use ### for a heading inside it (a '## ' line is refused).",
         'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
         "replace-item keeps the replaced item's own marker (its bullet and any checkbox) when the content starts without one.",
-        "Gated means --preflight first, then --user-confirmed --plan-id <id> with the reader's yes.",
+        "Gated means --preflight first, then --user-confirmed --plan-id <id> after reading the preflight; deskpost undo <journal-id> restores it.",
         'add-section, append-section and check-item given a --plan-id apply only when it is the one their --preflight gives now.',
         CONTENT_PATH_RULE,
       ],
@@ -448,7 +450,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  --note-path <f>  a file whose text goes under '## Still open from them' on the history page.",
         'Each shortened section keeps one pointer paragraph to the newest history page; each history page links the one before.',
         "--preflight shows what moves, the history page, sizes after, lines that still name what moved, and the kernel's",
-        "proof; apply with --user-confirmed --plan-id <id> and the reader's yes. A local Library's collection only.",
+        "proof; apply with --user-confirmed --plan-id <id> after reading the preflight. A local Library's collection only.",
       ],
     },
     positional: false,
@@ -1100,7 +1102,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // kickoffs/s161 row 4 (plan vault-agent-contract acceptance criterion 5; the needs-you page contract).
     usage: 'library needs-you [--write] [--json]',
     details: {
-      '': [
+      '*': [
         "Lists, from this Library's own files, the contract's five sections: Kickoffs ready to start, letters waiting, items on a",
         "Hub starting 'Eric:', saves that stopped on him, and Reports to triage. It opens nothing, holds no seat and writes nothing.",
         '--write puts the same as the page Librarian/needs-you.md in the connected vault, through the kernel writer, when the',
@@ -1136,6 +1138,74 @@ export const VERBS: Record<string, VerbDeclaration> = {
     },
     ported: true,
     row: 'S161',
+  },
+  // kickoffs/s166 row 2: s165's undo module on the command line (PLAN-fewer-yeses.md Approach 2, "the undo contract").
+  undo: {
+    summary: 'Put back a journaled write from the last day, or list the writes that can be put back.',
+    usage: 'library undo <journal-id> [--json]; library undo --list [--json]',
+    details: {
+      '*': [
+        'Restores every file the journal names to its bytes before the write, if each still holds what the write left;',
+        'one changed since refuses, naming the file and the later journal. A stopped undo resumes when run again.',
+        '--list shows the last day of writes that keep an undo block, each restorable, stale, undone or incomplete.',
+        'The undo keeps its own record, internal/undo/<id>.json; deskpost redo <id> puts the write back.',
+      ],
+    },
+    actions: [],
+    positional: false,
+    arguments: { '': { boolean: ['list'], positionals: 1 } },
+    ported: true,
+    row: 's166',
+  },
+  redo: {
+    summary: 'Put back a write that deskpost undo reversed, by the undo record it names.',
+    usage: 'library redo <undo-id> [--json]',
+    details: {
+      '*': [
+        'Rewrites every file the undo restored to its bytes as the write left them, if each still holds what the undo left;',
+        'one changed since refuses, naming the file. A stopped redo resumes when run again; deskpost undo <id> reverses it.',
+      ],
+    },
+    actions: [],
+    positional: false,
+    arguments: { '': { positionals: 1 } },
+    ported: true,
+    row: 's166',
+  },
+  // kickoffs/s166 row 3: the plan's measure (PLAN-fewer-yeses.md Approach 6, Goal criterion 1).
+  train: {
+    summary: "The planner's ordered train: read the register, generate its page, or change an item.",
+    usage: 'deskpost train [--json] | train page | train add <id> --title <t> --place <p> [--first | --before <id> | --after <id>] [--first-asked <date>] [--source <page>] | train move <id> --place <p> [--first | --before <id> | --after <id>] | train close <id> --done|--dropped --note <one line>',
+    actions: ['add', 'move', 'close', 'page'],
+    positional: false,
+    arguments: {
+      '': { positionals: 0 },
+      page: { positionals: 0 },
+      add: { valued: ['title', 'place', 'before', 'after', 'first-asked', 'source'], boolean: ['first'], positionals: 1 },
+      move: { valued: ['place', 'before', 'after'], boolean: ['first'], positionals: 1 },
+      close: { valued: ['note'], boolean: ['done', 'dropped'], positionals: 1 },
+    },
+    ported: true,
+    row: 'c69',
+  },
+  asks: {
+    summary: "How often the reader was asked: typed yeses by kind and refusals, from this Library's Claude Code transcripts.",
+    usage: 'library asks [--since <date>] [--until <date>] [--write] [--json]',
+    details: {
+      '*': [
+        "Reads this Library's own Claude Code transcript folder, main threads only, and counts in the window (local dates,",
+        'YYYY-MM-DD, both whole days; the last 7 days by default): typed messages, typed yeses by kind, auto-mode refusals,',
+        "Deskpost's own refusals and permission prompts answered. A transcript line of a shape it does not know refuses the",
+        'count, naming the file and line. --write keeps it as internal/asks/measure-<week>.json, which the Desk shows as one line.',
+        'Each ask is tagged with the last Kickoff its session named in assistant text or tool input.',
+        'A session that names no Kickoff is counted under none.',
+      ],
+    },
+    actions: [],
+    positional: false,
+    arguments: { '': { valued: ['since', 'until'], boolean: ['write'], positionals: 0 } },
+    ported: true,
+    row: 's166',
   },
   verbs: {
     summary: 'This table, as JSON, for the gate check that resolves a matrix row against it.',

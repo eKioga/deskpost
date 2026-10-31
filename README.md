@@ -204,9 +204,10 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.5.1**, "Reports across Libraries, and what needs you": Reports travel to one triaging Library,
-and an optional vault page and Desk dashboard show what is waiting. Basic Memory and the vault
-stay optional. The full roadmap, with what each milestone carries and how far along it is, is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.5.2**, "Fewer yeses": Kickoffs follow one ordered train, undo refuses to
+overwrite later changes, and five department templates give seats their starting roles. The week's
+asks for a yes are counted by Kickoff, and the release carries its audit fixes. Basic Memory and the
+vault stay optional. The full roadmap, with what each milestone carries and how far along it is, is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: 1.6.0, one collection for the household**, its plan signed off: two Libraries in one

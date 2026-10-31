@@ -512,6 +512,11 @@ function Test-AcceptanceMatrixShape {
     # wrong operation, not because the record is unavoidable. An exemption that exempts nothing is
     # an invitation to add the next finding to it instead of fixing it, so the mechanism came out
     # with the mistaken evidence for it.
+    $coveredDeltas = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($row in $rows) {
+        foreach ($name in @(Get-AcceptanceRowDeltas -Matrix $Matrix -Row $row)) { [void]$coveredDeltas.Add($name) }
+    }
+
     foreach ($name in @(Get-AcceptanceObjectKeys $Matrix.deltas)) {
         $delta = $Matrix.deltas.$name
         foreach ($field in @('reason', 'approved_by', 'approved_on', 'applies_to')) {
@@ -539,8 +544,7 @@ function Test-AcceptanceMatrixShape {
                 }
             }
         }
-        $covers = @(@($rows) | Where-Object { @(Get-AcceptanceRowDeltas -Matrix $Matrix -Row $_) -ccontains $name })
-        if (-not $covers.Count) { [void]$problems.Add("delta '$name' is approved for no row, so it is a stale approval") }
+        if (-not $coveredDeltas.Contains($name)) { [void]$problems.Add("delta '$name' is approved for no row, so it is a stale approval") }
     }
 
     @($problems)

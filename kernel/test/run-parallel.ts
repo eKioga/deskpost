@@ -111,8 +111,8 @@ export async function endOwned(rows: ProcessRow[]): Promise<void> {
   if (process.platform === 'win32') {
     const identities = Buffer.from(JSON.stringify(rows.map(({ pid, start }) => ({ pid, start })))).toString('base64');
     await powershell(`$ErrorActionPreference='Stop'; $owned = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${identities}')) | ConvertFrom-Json;
-      foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){ & taskkill.exe /PID $row.pid /T /F | Out-Null }}
-      $until=[DateTime]::UtcNow.AddSeconds(25); do { $live=@(foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; if($p -and $p.StartTime -and $p.StartTime.ToUniversalTime().ToString('o') -ceq $row.start){$row.pid}}); if(!$live.Count){exit 0}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $until); throw ('owned processes still alive: '+($live -join ','))`, CLEANUP_LIMIT);
+      foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; $s=$null; try { $s=$p.StartTime.ToUniversalTime().ToString('o') } catch { }; if($p -and $s -ceq $row.start){ & taskkill.exe /PID $row.pid /T /F | Out-Null }}
+      $until=[DateTime]::UtcNow.AddSeconds(25); do { $live=@(foreach($row in $owned){$p=Get-Process -Id $row.pid -ErrorAction SilentlyContinue; $s=$null; try { $s=$p.StartTime.ToUniversalTime().ToString('o') } catch { }; if($p -and $s -ceq $row.start){$row.pid}}); if(!$live.Count){exit 0}; Start-Sleep -Milliseconds 100 } while([DateTime]::UtcNow -lt $until); throw ('owned processes still alive: '+($live -join ','))`, CLEANUP_LIMIT);
   } else {
     // On Linux each row's identity is read once, here, just after the table that owned it: its `start` is `ps lstart`.
     const linux = process.platform === 'linux';
@@ -548,10 +548,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     const say = (line: string) => process.stdout.write(line + '\n');
     // Before the lock and before any section: a required section that cannot pass here ends the run (kickoffs/s153 row 5).
     const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(options.suite, 'utf8'), suiteSkips(options));
-    if (refusals.length) {
-      for (const line of refusals) process.stderr.write(`runner: ${line}\n`);
-      return 2;
-    }
+    for (const line of refusals) process.stderr.write(`runner: ${line}\n`);
+    // Printed on every required list, before the lock (kickoffs/s169 row 6): a list that all runs is shown too.
+    if (options.requireSections.length) process.stderr.write(`runner: required sections this platform runs: ${options.requireSections.filter((s) => !refusals.some((r) => r.startsWith(`section ${s} `))).join(',') || 'none'}\n`);
+    if (refusals.length) return 2;
     const lock = options.workers > 1 ? await acquireGateLock('parallel self-test', options.noWait, say) : null;
     const notice = lock && gateLockOffNotice(lock);
     if (notice) say(notice);

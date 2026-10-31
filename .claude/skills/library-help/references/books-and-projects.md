@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.1/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.2/docs/seats.md).
 
 ## Books
 
@@ -169,7 +169,7 @@ writes the Kickoffs. The build seat shows the Kickoff's title, revision, content
 and takes one yes; that yes is the reader's explicit request for the commits and the private push
 the CHARTER names, for that page at that hash only. It never covers a public push, a tag, a release
 or anything destructive, and each previewed action still takes its own approval. The loop is
-`docs/dev-session-loop.md` (the build seat's steps), `docs/dev-loop-planner.md` (the support
+`docs/dev-session-loop.md` (the build seat's steps), `docs/dev-loop-orchestrator.md` (the support
 seat's) and `docs/dev-loop-history.md` (what it has not proved, and its limits) in the program repository.
 
 **Where a decision itself is written** follows its subject. If the subject has a repository you

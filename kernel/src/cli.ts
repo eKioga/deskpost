@@ -48,6 +48,7 @@ import { runMcpVerb } from './reader.ts';
 import { runHookVerb } from './guards.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { forgetLibrary, NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
+import { changeTrain, readTrain, trainText } from './train.ts';
 import { checkArguments, parseArguments, quoteWarnings } from './argv.ts';
 import { takeContentPathNote } from './contentpath.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
@@ -66,6 +67,8 @@ import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from '
 import { dashboardText, watchDashboard } from './dashboard.ts';
 import { vaultVerb } from './vault.ts';
 import { needsYouText, readNeedsYou, refreshAfterCommand, writeNeedsYou } from './needsyou.ts';
+import { redoUndo, undoJournal, undoList } from './undo.ts';
+import { asksText, countAsks, writeAsksMeasure } from './asks.ts';
 
 
 function writeStdout(text: string): void {
@@ -616,6 +619,60 @@ async function main(argv: string[]): Promise<number> {
           planId: parsed.options.get('plan-id'),
         });
         emit(result.value, parsed.flags.has('json') || action !== 'status', result.text);
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return 0;
+    }
+
+    // UNDO AND REDO (kickoffs/s166 row 2): s165's state machine, one journal or undo record per run.
+    case 'undo':
+    case 'redo': {
+      const parsed = parseArguments(rest, table);
+      const id = parsed.positional[0];
+      const listing = verb === 'undo' && parsed.flags.has('list');
+      if (listing === (id !== undefined)) refuse(verb === 'undo' ? 'library undo takes one journal id, or --list. Nothing was run.' : 'library redo takes one undo id. Nothing was run.');
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library ${verb} : ${(error as Error).message}`);
+      }
+      try {
+        const result = listing ? undoList(workspace) : verb === 'undo' ? undoJournal(workspace, id!) : redoUndo(workspace, id!);
+        emit(result as PsJsonValue, true);
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return 0;
+    }
+
+    // THE COUNT OF ASKS (kickoffs/s166 row 3): read only, unless --write keeps it for the Desk.
+    case 'train': {
+      const parsed = parseArguments(tail, table);
+      try {
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        const record = action === '' || action === 'page' ? readTrain(workspace)
+          : changeTrain(workspace, action, parsed.positional[0] ?? '', parsed.options, parsed.flags);
+        emit(record as PsJsonValue, parsed.flags.has('json'), trainText(record, action === 'page'));
+      } catch (error) {
+        refuse((error as Error).message);
+      }
+      return 0;
+    }
+
+    case 'asks': {
+      const parsed = parseArguments(rest, table);
+      let workspace: string;
+      try {
+        workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      } catch (error) {
+        refuse(`library asks : ${(error as Error).message}`);
+      }
+      try {
+        const count = countAsks(workspace, { since: parsed.options.get('since'), until: parsed.options.get('until') });
+        const written = parsed.flags.has('write') ? writeAsksMeasure(workspace, count) : null;
+        emit({ ...count, ...(written !== null ? { written: written } : {}) } as PsJsonValue, parsed.flags.has('json'), asksText(count) + (written !== null ? `\nKept as ${written}.` : ''));
       } catch (error) {
         refuse((error as Error).message);
       }

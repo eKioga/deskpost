@@ -57,6 +57,7 @@ import {
   exitSeatClaim,
   getSeatClaimState,
   getSeatStateDecision,
+  launcherProofDetail,
   readSeatBinding,
   seatBindingForAgent,
   seatBindingPath,
@@ -164,6 +165,22 @@ function readSeatHolderAttempt(stateDirectory: string, seat: string): HolderAtte
     );
   }
   return parsed;
+}
+
+/**
+ * WHO HOLDS A HELD SEAT, NEVER "AGENT PROCESS 0" (kickoffs/s169 row 1): a live committed binding names its agent; a
+ * launcher's claim with none names the launcher's agent, else the holder attempt's process, else says it cannot.
+ */
+function seatHolderPhrase(stateDirectory: string, seat: string, state: { agentPid: number; agentStartUtc: string; bindingState: string; bindingStale: boolean }): string {
+  // ONLY A LIVE HOLDER IS NAMED (kickoffs/s170-r2 row 5): a pending binding is no binding, and a holder attempt's
+  // process is named only while it runs.
+  if (state.agentPid > 0 && state.bindingState === 'committed' && !state.bindingStale) return `at agent process ${state.agentPid}${state.agentStartUtc ? ` (started ${state.agentStartUtc})` : ''}`;
+  const launcher = launcherProofDetail(stateDirectory, seat);
+  if (launcher.outcome === 'other-agent' && launcher.agentPid) return `at the launcher's agent process ${launcher.agentPid}`;
+  let holderPid = 0;
+  try { holderPid = Number(readSeatHolderAttempt(stateDirectory, seat)?.holder_pid ?? 0); } catch { /* unreadable: not named */ }
+  if (holderPid > 0 && agentProcessIdentity(holderPid, { fresh: true }) !== null) return `held by the seat's claim holder (process ${holderPid})`;
+  return `whose holder could not be named (deskpost seat status --seat ${seat} shows it)`;
 }
 
 function writeSeatHolderAttempt(options: {
@@ -955,7 +972,7 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
         );
       }
       refuse(
-        `Seat '${seat}' has a live session at agent process ${state.agentPid}. One live agent per seat: ` +
+        `Seat '${seat}' has a live session ${seatHolderPhrase(stateDirectory, seat, state)}. One live agent per seat: ` +
           'finish or close that one, or work at another seat.',
       );
     }

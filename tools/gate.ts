@@ -584,6 +584,8 @@ async function main(argv: string[]): Promise<number> {
   if (options.requireSections.length) {
     const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
     const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8'));
+    // Printed on every required list, not on a refusal only (kickoffs/s169 row 6): a list that all runs is shown too.
+    process.stderr.write(`required sections this platform runs: ${options.requireSections.filter((s) => !refusals.some((r) => r.startsWith(`section ${s} `))).join(',') || 'none'}\n`);
     if (refusals.length) throw new GateError(refusals.join('; '));
   }
   const route = tierRoute(options.tier, powerShellPresent());

@@ -11,7 +11,8 @@ const NAME = 'deskpost-gate-machine';
 const HANDSHAKE = 5_000;
 export class LockError extends Error { code: number; constructor(message: string, code = 2) { super(message); this.code = code; } }
 interface Holder { seat: string; tier: string; pid: number; start: string; token: string }
-export interface GateWait { seconds: number; seat: string; tier: string; started: string; ended: string }
+/** `seat` and `tier` are the last holder's, as before; `holders` names each one waited on, in order (kickoffs/s169 row 5). */
+export interface GateWait { seconds: number; seat: string; tier: string; started: string; ended: string; holders: { seat: string; tier: string; seconds: number }[] }
 export interface GateLock { inherited: boolean; wait: GateWait | null; release(): Promise<void> }
 /** The caller announces a disabled outer lock once; inherited calls stay quiet. */
 export function gateLockOffNotice(lock: GateLock): string | null {
@@ -121,6 +122,8 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
   let lastNotice = '';
   let waitStarted = 0;
   let waitedFor: Holder | null = null;
+  // Every holder seen, in order, with the time it was first seen: each is charged until the next one, or the lock, came.
+  const seen: { holder: Holder; first: number }[] = [];
   for (;;) {
     const clients = new Set<net.Socket>();
     const server = net.createServer((client) => {
@@ -136,6 +139,7 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
       const wait: GateWait | null = waitedFor ? {
         seconds: (acquired - waitStarted) / 1000, seat: waitedFor.seat, tier: waitedFor.tier,
         started: new Date(waitStarted).toISOString(), ended: new Date(acquired).toISOString(),
+        holders: seen.map((entry, at) => ({ seat: entry.holder.seat, tier: entry.holder.tier, seconds: ((seen[at + 1]?.first ?? acquired) - entry.first) / 1000 })),
       } : null;
       process.env['DESKPOST_GATE_LOCK'] = holder.token;
       // Establish release BEFORE scanning, so any failure also leaves the OS-held pipe cleanly.
@@ -160,6 +164,7 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
     if (previous) {
       if (!waitStarted) waitStarted = Date.now();
       waitedFor = previous;
+      if (seen.at(-1)?.holder.token !== previous.token) seen.push({ holder: previous, first: seen.length ? Date.now() : waitStarted });
       const notice = `waiting: ${previous.seat}'s ${previous.tier} gate, started ${previous.start} (pid ${previous.pid})`;
       if (notice !== lastNotice) { say(notice); lastNotice = notice; }
     }

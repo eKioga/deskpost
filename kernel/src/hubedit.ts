@@ -38,6 +38,7 @@ import { hubSlug } from './hubslug.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { localDate } from './localdate.ts';
 import { capturePriorBytes, undoBlock, type UndoPathBefore } from './journal.ts';
+import { seatConversationRecord } from './desk.ts';
 
 class HubEditRefusal extends Error {}
 
@@ -740,10 +741,14 @@ function nullable(value: string): PsJsonValue {
 
 /** The verb, with the inline-cut warning (S70 row 2) in its result: a `--content` the shim may have cut says so. */
 export async function hubEdit(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
-  return withInlineCutWarning(await hubEditUnwarned(argv, workspace), argv, 'content', 'pass it with --content-path <file>.');
+  const parsed = parseArguments(argv, argumentTable('hub', 'edit'));
+  let warning: string | null = null;
+  const result = withInlineCutWarning(await hubEditUnwarned(argv, workspace, content => { warning = writeTimeWarning(content, new Date()); }), argv, 'content', 'pass it with --content-path <file>.');
+  if (warning && !parsed.flags.has('json')) process.stderr.write(`WARN: ${warning}\n`);
+  return { ...result, time_warning: warning };
 }
 
-async function hubEditUnwarned(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
+async function hubEditUnwarned(argv: string[], workspace: string, loadedContent: (content: string) => void): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, argumentTable('hub', 'edit'));
   // ONE SLUG HELPER FOR EVERY HUB WRITER (PLAN-one-step-upgrade.md small fix 2): `projects/<slug>` is taken, and a
   // refusal names `<slug>`, not the PowerShell parameter. The oracle's order is kept: a blank slug, then the mode.
@@ -788,15 +793,20 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
     };
     // THE TIME OF THE WRITE, FILLED AT APPLY (kickoffs/s121 row 6). The preflight and its plan id cover the text as
     // given, placeholders and all; the apply checks that plan id against the unfilled text, then writes the filled one.
+    // Two sources are refused first, as the edit modes refuse them: the fill below passes on the inline text only.
+    if (!isBlank(newPage.content) && !isBlank(newPage.contentPath)) refuse('Supply exactly one of --content or --content-path.');
     const given = newPageText(newPage.content, newPage.contentPath, workspace);
-    if (given === null || !hasTimePlaceholders(given)) return hubNewPage(newPage, workspace);
-    if (newPage.preflight) return { ...(await hubNewPage(newPage, workspace)), time_placeholders: TIME_PLACEHOLDER_NOTE };
+    if (given !== null) loadedContent(given);
+    if (given === null || !hasWritePlaceholders(given)) return hubNewPage(newPage, workspace);
+    if (newPage.preflight) return { ...(await hubNewPage(newPage, workspace)), time_placeholders: HUB_PLACEHOLDER_NOTE };
     if (newPage.planId) {
       const planned = (await hubNewPage({ ...newPage, preflight: true }, workspace)) as Record<string, PsJsonValue>;
       // A stale plan id is refused by new-page itself, in its own words, with nothing written.
       if (planned['plan_id'] !== newPage.planId) return hubNewPage(newPage, workspace);
     }
-    const written = await hubNewPage({ ...newPage, content: fillTimePlaceholders(given), contentPath: '', planId: '' }, workspace);
+    const states = path.join(workspace, '.claude');
+    const filled = fillWritePlaceholders(given, new Date(), states, () => requireSeat({ seat: newPage.seat, stateDirectory: states }));
+    const written = await hubNewPage({ ...newPage, content: filled, contentPath: '', planId: '' }, workspace);
     // THE PLAN ID IT CHECKED (kickoffs/s159 row 5), as the edit modes name `approved_sha256`: `plan_id` is the filled text's.
     return { ...(written as Record<string, PsJsonValue>), ...(newPage.planId ? { approved_plan_id: newPage.planId } : {}), time_placeholders_filled: true };
   }
@@ -861,6 +871,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
       refuse(`--content-path '${contentPath}' (resolved to ${contentFull}) is not valid UTF-8: ${(error as Error).message}`);
     }
   }
+  loadedContent(content);
   // NO STRAY CONTROL CHARACTER REACHES A PAGE (kickoffs/s94 row 3), from a file or inline, refused before any write.
   if (usedContent || usedContentPath) {
     const stray = strayControlRefusal(content, usedContentPath ? `--content-path '${contentPath}'` : '--content');
@@ -994,7 +1005,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   };
 
   if (parsed.flags.has('preflight')) {
-    if (hasTimePlaceholders(content)) plan['time_placeholders'] = TIME_PLACEHOLDER_NOTE;
+    if (hasWritePlaceholders(content)) plan['time_placeholders'] = HUB_PLACEHOLDER_NOTE;
     plan['page_size_warning'] = sizeWarnings[0]!;
     plan['section_size_warning'] = sizeWarnings[1]!;
     plan['entry_size_warning'] = sizeWarnings[2]!;
@@ -1026,8 +1037,8 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
   const now = new Date();
   // THE TIME OF THE WRITE (kickoffs/s121 row 6): the plan id above bound the text as given; only the new text is filled,
   // never the page's existing lines, and the readback judges what was written.
-  const filling = hasTimePlaceholders(content);
-  const writtenBody = filling ? newProjectBody(currentBody, mode, section, fillTimePlaceholders(content, now), matchText, parsed.flags.has('uncheck')) : proposedBody;
+  const filling = hasWritePlaceholders(content);
+  const writtenBody = filling ? newProjectBody(currentBody, mode, section, fillWritePlaceholders(content, now, stateDirectory, () => seat), matchText, parsed.flags.has('uncheck')) : proposedBody;
   let writtenHash = pageComparisonSha256(front + writtenBody);
   const pad = (value: number): string => String(value).padStart(2, '0');
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
@@ -1076,6 +1087,7 @@ async function hubEditUnwarned(argv: string[], workspace: string): Promise<Recor
               locks: [`projects/${slug}`],
               before: prior,
               evidence: notebookSource === null ? [] : [{ path: path.relative(workspace, journalPath).replace(/\\/g, '/'), kind: 'publication-evidence' }],
+              seat,
             }),
           }
         : {}),
@@ -1176,12 +1188,46 @@ export function fillTimePlaceholders(text: string, now: Date = new Date()): stri
     escaped !== undefined ? `{${escaped}}` : word === 'now' ? time : localDate(now));
 }
 
+/** Advisory only: check the text supplied by the caller before filling its placeholders. */
+export function writeTimeWarning(text: string, now: Date): string | null {
+  const stamps: string[] = [];
+  for (const match of text.split(/\r\n|\n|\r/).slice(0, 5).join('\n').matchAll(/\b(\d{4}-\d{2}-\d{2}) ([1-9]|1[0-2]):([0-5]\d) (AM|PM)(?: [A-Za-z][A-Za-z0-9+:-]*)?\b/g)) {
+    const minute = (Number(match[2]) % 12 + (match[4] === 'PM' ? 12 : 0)) * 60 + Number(match[3]);
+    if (match[1] === localDate(now) && Math.abs(minute - (now.getHours() * 60 + now.getMinutes())) > 5) stamps.push(match[0]);
+  }
+  return stamps.length ? `Typed time ${stamps.join('; ')} differs from the write's time ${fillTimePlaceholders('{now}', now)} by more than 5 minutes; use {now}.` : null;
+}
+
+/**
+ * `{session}`, FILLED BESIDE `{now}` BY `hub edit` ALONE (kickoffs/s169 row 2): a Kickoff's attempt page asks for the session
+ * id, and a seat had no plain way to read it. The seat's recorded conversation, `unrecorded` when none is or it cannot be
+ * read (a failed read never blocks the write, as in `capture`); `{{session}}` writes `{session}`.
+ */
+const SESSION_PLACEHOLDER = /\{\{session\}\}|\{session\}/g;
+
+const HUB_PLACEHOLDER_NOTE =
+  "The text holds {now}, {today} or {session}: they are shown here as written, and filled with the time, the date and this seat's session id (unrecorded when none is recorded) when it is applied ({{now}} writes {now}, {{session}} writes {session}).";
+
+function hasWritePlaceholders(text: string): boolean {
+  return hasTimePlaceholders(text) || new RegExp(SESSION_PLACEHOLDER.source).test(text);
+}
+
+function fillWritePlaceholders(text: string, now: Date, stateDirectory: string, seat: () => string): string {
+  let session = '';
+  if (new RegExp(SESSION_PLACEHOLDER.source).test(text)) {
+    try { session = seatConversationRecord(stateDirectory, seat()).sessionId; } catch { session = ''; }
+  }
+  return fillTimePlaceholders(text.replace(SESSION_PLACEHOLDER, (match) => (match === '{{session}}' ? '{session}' : session || 'unrecorded')), now);
+}
+
 /** new-page's text as given, read the way new-page reads it, or null when it cannot be read (new-page then says why). */
 function newPageText(content: string, contentPath: string, workspace: string): string | null {
   if (content.trim() !== '') return content;
   if (contentPath.trim() === '') return null;
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(resolveContentPath(workspace, contentPath))).replace(/^\uFEFF/, '');
+    const full = resolveContentPath(workspace, contentPath);
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return null;
+    return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(full)).replace(/^\uFEFF/, '');
   } catch {
     return null;
   }

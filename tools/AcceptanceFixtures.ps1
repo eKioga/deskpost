@@ -290,6 +290,19 @@ function New-AcceptanceFixtureFresh {
     if (-not (Test-Path -LiteralPath (Join-Path ([string]$Context.workspace) '.library/workspace.json') -PathType Leaf)) {
         throw "library init reported success for fixture '$($Context.id)' and wrote no marker"
     }
+    # Keep the fixture's kernel hooks at parity with the program under test. PowerShell
+    # oracle hooks still name this checkout, which is the program that ships those scripts.
+    if ([string]$Context.program_root -cne [string]$Context.initialiser_root) {
+        $sourceKernel = ([string]$Context.initialiser_root).Replace('\', '/') + '/kernel/src/cli.ts'
+        $testedKernel = ([string]$Context.program_root).Replace('\', '/') + '/kernel/src/cli.ts'
+        foreach ($relative in @('.claude/settings.local.json', '.codex/hooks.json')) {
+            $hookFile = Join-Path ([string]$Context.workspace) $relative
+            if (Test-Path -LiteralPath $hookFile -PathType Leaf) {
+                $hookText = [IO.File]::ReadAllText($hookFile)
+                [IO.File]::WriteAllText($hookFile, $hookText.Replace($sourceKernel, $testedKernel), [Text.UTF8Encoding]::new($false))
+            }
+        }
+    }
     # A SHARED FIXTURE'S DEPLOYMENT FILES, which `init` reads and never writes. The share root is what
     # the ownership fence reads the disposable project's `.owner/` through.
     if ([string]$Context.mcp_url) {

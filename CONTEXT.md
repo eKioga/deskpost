@@ -235,18 +235,18 @@ is what the support seat writes the next Kickoff from.
 _Avoid_: report, summary, status update
 
 **Planner** (a dev seat's role):
-The seat that writes the Kickoffs, keeps the backlog, triages, designs and makes small fixes on
-`desk/*` branches; it never builds a Kickoff's rows. Deskpost's planner is `deskpost-desk`.
-_Avoid_: orchestrator, lead, B (the letter names a seat, not the role)
+The reader's stand-in seat: designs, drafts plans and answers design questions for Eric with attribution,
+always saying it is standing in. It never charters a Kickoff or builds; Eric's reserved list always goes to Eric.
+_Avoid_: orchestrator, lead, Kickoff writer
 
 **Builder** (a dev seat's role):
 A seat that runs one Kickoff: its gate, its rows as commits on its own unit branch, the Handback,
 then stops. Either harness can build.
-_Avoid_: worker, executor, A or C (letters name seats, not the role)
+_Avoid_: developer, worker, executor, A or C (letters name seats, not the role)
 
 **Integrator** (a dev seat's role):
 The one builder a Kickoff names to merge the named branches, gate the result and push `origin`.
-The planner's Hub records it in one line, `Integrator: <seat>` or `Integrator: none`.
+The orchestrator's Hub records it in one line, `Integrator: <seat>` or `Integrator: none`.
 _Avoid_: merger, release manager (a release takes its own Kickoff)
 
 **Unit**:
@@ -296,7 +296,7 @@ _Avoid_: error log, blocker list
 
 **OWNS**:
 A Kickoff's list of the files, and the new self-test section and ADR numbers, its rows may change.
-Two open Kickoffs never own the same file unless the planner says both may, at separate places.
+Two open Kickoffs never own the same file unless the orchestrator says both may, at separate places.
 _Avoid_: scope, allowlist, CODEOWNERS
 
 **MERGE** (a Kickoff section):
@@ -414,6 +414,7 @@ _Avoid_: team (the whole Library's seats), group, lane (a seat's own work)
 
 **Orchestrator**:
 The one seat of a department that letters to the department reach, and that answers or routes them.
+It charters Kickoffs, reviews handbacks, orders the train and tidies its builders' Hubs; Deskpost's is `deskpost-lead`.
 A role, set under the reader's gate. A department of one seat needs none: its only seat is its
 **destination** (ADR-0073). "Lead" is fine in a seat's name (`deskpost-lead`), never as the role's name.
 _Avoid_: sorter, router, manager

@@ -29,6 +29,8 @@ import * as path from 'node:path';
 import { ensureDirectory, writeAtomicBytes } from './fsx.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { sha256OfBytes } from './sha.ts';
+import { resolveSeatName } from './seatdesk.ts';
+import { seatIncarnation } from './seatincarnation.ts';
 
 const JOURNAL_SCHEMA = 2;
 
@@ -130,6 +132,12 @@ export function writeBookJournal(options: {
  * journal), which an undo marks `undone_by`; `regenerates` names what the writer re-derived (a Discovery manifest, a
  * reader map, the Notebook index), which an undo re-derives in turn; `locks` are the lock roots the write held, in its
  * order; `marker` is the Book whose dirty marker the write's window set, or null.
+ *
+ * `written_by_seat` (kickoffs/s167 row 1) is the seat the writing process resolved, or null when it resolved none: an
+ * undo or redo by another seat refuses, and a block written before the field existed refuses as predating the check.
+ * `written_by_seat_id` (kickoffs/s168 row 4) is that seat's registry `seat_id`, which the undo compares: a block with a
+ * name and no id refuses the same way.
+ * The undo derives its locks from the paths and never takes them from `locks`, which stays as the writer's record.
  */
 export interface UndoPathBefore {
   path: string;
@@ -147,6 +155,8 @@ export interface UndoBlockOptions {
   evidence?: { path: string; kind: string }[];
   regenerates?: UndoRegenerate[];
   marker?: { collection: 'shelf' | 'collection'; slug: string } | null;
+  /** The seat the caller resolved, when it took one from `--seat`; otherwise this process's own is resolved. */
+  seat?: string | null;
 }
 
 /** An operation's id: `op-` and 16 hex characters, random, so two writes in one second never share one. */
@@ -175,8 +185,24 @@ export function priorBytesFromBookJournal(workspace: string, journalPath: string
   return (journal.entries ?? []).map((entry) => ({ path: workspaceRelativePath(workspace, entry.path), existed: entry.existed, content_base64: entry.existed ? entry.content_base64 : null }));
 }
 
+/**
+ * The seat this process writes as: the one its caller resolved (`hub edit --seat`), else `resolveSeatName`'s answer for
+ * the Library's own `.claude`; null when none resolves. With it, the registry's `seat_id` for that seat, or null when the
+ * registry gives none (kickoffs/s168 row 4): a name can pass to another seat, an id cannot.
+ */
+export function writingSeat(workspace: string, seat?: string | null): { name: string; id: string | null } | null {
+  const stateDirectory = path.join(workspace, '.claude');
+  let name = seat ?? null;
+  if (!name) {
+    const resolved = resolveSeatName({ stateDirectory });
+    name = resolved.status === 'named' ? resolved.seat : null;
+  }
+  return name ? { name, id: seatIncarnation(stateDirectory, name).seatId || null } : null;
+}
+
 /** The `undo` block, its after hashes read from disk now: called once the write is verified. */
 export function undoBlock(workspace: string, options: UndoBlockOptions): PsJsonValue {
+  const writer = writingSeat(workspace, options.seat);
   const paths = options.before.map((entry) => {
     const full = path.join(workspace, ...entry.path.split('/'));
     const after = fs.existsSync(full) && fs.statSync(full).isFile() ? sha256OfBytes(fs.readFileSync(full)) : null;
@@ -191,6 +217,8 @@ export function undoBlock(workspace: string, options: UndoBlockOptions): PsJsonV
     evidence: (options.evidence ?? []) as PsJsonValue,
     regenerates: (options.regenerates ?? []) as PsJsonValue,
     marker: (options.marker ?? null) as PsJsonValue,
+    written_by_seat: writer?.name ?? null,
+    written_by_seat_id: writer?.id ?? null,
   };
 }
 

@@ -86,10 +86,10 @@ requires typing `full`.
 
 The ready screen offers **Make it and start**, **Make it, but do not start it yet**, and
 **More choices (department, template, card)**. More choices asks for a department such as `engineering`,
-then offers the six templates: performer, orchestrator, auditor, ideas, developer and planner, then
+then offers the five templates: performer, orchestrator, planner, builder and auditor, then
 asks for a card, one line on what the seat handles (leave it empty for none). A new seat starts with
 its `letters` Book open when the Shelf has one.
-Developer and planner propose a seat name from the department; the Project keeps the name you
+Builder and planner propose a seat name from the department; the Project keeps the name you
 entered first. An existing Hub keeps its Purpose. The menu makes the Hub and seat, saves the
 assistant and access, and starts only after saving succeeds. If it makes the seat but cannot
 finish starting, it directs you to Settings.
