@@ -404,7 +404,18 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.5.3: Basic Memory 1.0 and checked Kickoffs (released 2026-10-31)
+
+- Deskpost speaks Basic Memory 1.0: the Postbox uses its `bm_*` tools, checks at each session that the server offers the five it needs and refuses in one line when it does not, and doctor says what the server offered at its last check.
+- The Postbox moves the very letter it read; a letter it cannot read for certain stays in the inbox.
+- On a Basic Memory 1.0 server, the commands that write to the shared collection refuse and write nothing until a later release ports them.
+- `deskpost kickoff check` judges a Kickoff file, and `hub edit` checks every new Kickoff page as it writes it; a Kickoff page is written once, and a Hub keeps one pending Run pointer.
+- Kickoff page names stay inside the Library, and links to a Book's canonical pages resolve.
+- The Desk's live view keeps its redraws inside the terminal pane, and an upgrade plan says once when each Library is brought up to date.
+
 ### 1.5.2: Fewer yeses (released 2026-10-30)
+
+Shipped as public commit b90f094fe35d80fa7d6db8e7e438ab66d76333d7, from 2be48ff.
 
 - Kickoffs follow one ordered train, and the Desk shows when it is stale.
 - Undo is safe: it refuses rather than overwrite what changed since, and it was read twice by an independent auditor.

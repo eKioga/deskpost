@@ -1717,6 +1717,24 @@ function postboxReachable(workspace: string): string {
   return last ? `the Postbox answered at its last check, ${last}` : 'the Postbox has not been checked since setup';
 }
 
+/**
+ * THE POSTBOX SERVER OFFERED WHAT DESKPOST NEEDS (kickoffs/s175 row 4): from what `postbox check` recorded at connect, never
+ * a server call. The session check runs `postbox check` out of sight, so a refusal at connect (a server change nobody
+ * announced) is said here.
+ */
+function postboxServerTools(workspace: string): string {
+  const { state } = postboxCache(workspace);
+  if (state === null) return 'SKIP: this Library has no Postbox';
+  const when = String(state['server_tools_utc'] ?? '');
+  if (!when) return "SKIP: not yet read: no postbox check has recorded what the Postbox server offers";
+  const names = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+  const missing = names(state['server_tools_missing']);
+  if (!missing.length) return `the Postbox server offered every tool Deskpost needs at its last check, ${when}`;
+  const offered = names(state['server_tools']);
+  return `WARN: at its last check, ${when}, the Postbox server offered ${offered.length ? offered.join(', ') : 'no tool list Deskpost could read'}; ` +
+    `Deskpost needs bm_list, bm_read, bm_write, bm_move and bm_project, and it lacks ${missing.join(', ')}`;
+}
+
 /** Report warnings are local facts; doctor never contacts the Postbox server. */
 function postboxReports(workspace:string):string {
   const {state}=postboxCache(workspace);
@@ -1926,6 +1944,7 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     // AND THESE TWO (kickoffs/s123 row 4): the Postbox's outbox and whether it answered, from its cache. Skipped with none.
     workspace ? runCheck('postbox.outbox', () => postboxOutbox(workspace)) : { check: 'postbox.outbox', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.reachable', () => postboxReachable(workspace)) : { check: 'postbox.reachable', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
+    workspace ? runCheck('postbox.server-tools', () => postboxServerTools(workspace)) : { check: 'postbox.server-tools', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.reports',()=>postboxReports(workspace)) : {check:'postbox.reports',status:'skipped',detail:'no Library here'},
     workspace ? runCheck('postbox.records',()=>postboxRecords(workspace)) : {check:'postbox.records',status:'skipped',detail:'no Library here'},
     // AND THIS ONE (S96 row 5): where crossSessionInbound is set, informational; never a WARN, never a write.

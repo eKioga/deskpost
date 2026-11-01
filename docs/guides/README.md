@@ -93,6 +93,11 @@ train is stale or cannot be read. `deskpost asks` counts asks for a yes from Cla
 by Kickoff; it does not read Codex transcripts. The [development loop](../dev-session-loop.md)
 records the full workflow.
 
+## Basic Memory 1.0 and checked Kickoffs
+
+The Postbox now needs Basic Memory 1.0; see [Basic Memory](basic-memory.md) for the server change.
+For builders, `deskpost kickoff check` checks a Kickoff file, and each new Kickoff page is checked as it is written.
+
 ## Upgrading
 
 From 1.3.6, `deskpost upgrade` upgrades Deskpost from a terminal; the main menu also offers **Upgrade to <version>** when a newer release is ready.

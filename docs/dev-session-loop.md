@@ -100,6 +100,9 @@ way. Since S70 the result carries `inline_warning` when an inline value may have
    the Kickoff names, it stops and says so. **A Kickoff starts in a fresh session:** (Report, 2026-10-13) if this session has already
    run a Kickoff, the builder stops and asks the reader to `/clear` first, so one unit's context is not re-read on
    every call of the next (S118 ran in S117's session, 2026-10-12; Report of 2026-10-13).
+
+   A required read the builder cannot open **before the yes** is asked of the reader in the builder's own session ("page X is missing: continue without it?"), not handed back; **after the yes**, a missing page or reference parks only the step that needs it, and the run continues.
+
 1. **Find exactly one Kickoff.** (Decision, 2026-09-29) The reader either pastes one ("Run kickoffs/s68 on the
    deskpost-dev Hub", or the full text), or says "run the next kickoff", and the builder takes the single
    unticked pointer. Several unticked pointers, a pointer older than the newest revision, or

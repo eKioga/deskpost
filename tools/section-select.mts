@@ -246,3 +246,18 @@ export function platformRefusals(required: readonly string[], skips: ReadonlyMap
     return reason === undefined ? [] : [`section ${section} is Linux-skipped: ${reason}; it cannot be required here`];
   });
 }
+
+/** Windows hook selection over staged Git data; the caller supplies the read-only Git boundary. */
+export function hookSections(git: (args: string[]) => string): Selection {
+  try {
+    const changed = git(['diff', '--name-only', '--no-renames', '--cached', 'HEAD']).split(/\r?\n/).filter(Boolean);
+    const covers = parseCovers(git(['show', `:${COVERS_PATH}`]));
+    const selftestText = git(['show', `:${SELFTEST_PATH}`]);
+    const selftestHunks = changed.includes(SELFTEST_PATH)
+      ? parseHunks(git(['diff', '-U0', '--no-renames', '--cached', 'HEAD', '--', SELFTEST_PATH])) : [];
+    const chosen = selectSections({ changed, covers, selftestText, selftestHunks });
+    return chosen.all ? chosen : { ...chosen, sections: [...new Set([...chosen.sections, 155])].sort((a, b) => a - b) };
+  } catch (error) {
+    return { all: true, sections: [], reasons: [`selection unavailable: ${String(error).replace(/[\r\n]+/g, ' ')}`] };
+  }
+}

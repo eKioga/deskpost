@@ -125,6 +125,8 @@ in the Postbox has it.
 deskpost postbox setup [--url <the server's MCP URL>] [--project <name>]
 ```
 
+From 1.5.3, the Postbox needs a Basic Memory 1.0 server offering `bm_list`, `bm_read`, `bm_write`, `bm_move` and `bm_project`. Each session checks for all five; a server missing one is refused in one line and nothing is written. Doctor's `postbox.server-tools` line says what the server offered at the last `postbox check`. On a 1.0 server, shared-collection writes (`hub new`, `hub copy-pages`, `hub archive`, `shared archive`, `shared list-entry`, `publish`) refuse and write nothing until a later release ports them.
+
 Setup shows its plan first and runs on your yes. It uses the project named `deskpost` unless you name another, and
 creates it only if the plan said so. It needs this Library's `letters` Book. It writes this Library's **Postbox
 entry**: its id, its card, and each seat that can receive letters, so other Libraries can address them. If another

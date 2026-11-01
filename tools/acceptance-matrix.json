@@ -55,7 +55,7 @@
             "powershell": ""
           },
           {
-            "kernel": "\ndeskpost_version: 1.5.2",
+            "kernel": "\ndeskpost_version: 1.5.3",
             "powershell": ""
           }
         ]
@@ -169,8 +169,8 @@
     },
     "kernel-doctor-carries-summary-counts-3": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5",
-      "approved_on": "2026-10-25",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7)",
+      "approved_on": "2026-10-31",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -180,13 +180,13 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.skipped)$",
-        "value_pattern": "^(<absent>|0|4)$"
+        "value_pattern": "^(<absent>|0|4|5)$"
       }
     },
     "kernel-doctor-carries-summary-counts-4": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd)",
-      "approved_on": "2026-10-30",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd); kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7)",
+      "approved_on": "2026-10-31",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -196,7 +196,7 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.total)$",
-        "value_pattern": "^(<absent>|0|27|29|30)$"
+        "value_pattern": "^(<absent>|0|27|29|30|31)$"
       }
     },
     "kernel-doctor-carries-summary-counts-5": {

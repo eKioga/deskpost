@@ -259,7 +259,7 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
     const attention = handbacks > 0 || now - Date.parse(changed) > 7 * 86400000;
     lines.push(...wrap([run(`Train  changed ${changed}, ${handbacks} handbacks since`, attention ? 'attention' : 'name')], width));
   }
-  if (!first && Number.isInteger(options.rows) && options.rows! > 0) lines = lines.slice(0, options.rows);
+  if (Number.isInteger(options.rows) && options.rows! > 0) lines = lines.slice(0, options.rows);
   if (clock && clock.row > lines.length) clock = undefined;
   const keyLines = lines.map(plain);
   if (clock) keyLines[clock.row - 1] = keyLines[clock.row - 1]!.slice(0, -8) + ' '.repeat(8);
@@ -297,21 +297,29 @@ export async function watchDashboard(options: { workspace: string; seat: string;
   const render = (force = false) => {
     const width = dashboardWidth(options.width, process.stdout.columns);
     const frame: Frame = lastOverview ? dashboardFrame(lastOverview, { width, rows: process.stdout.rows, now: lastRead, color, checkpoint: lastCheckpoint }) : { text: '', key: '' };
+    const warnings: string[][] = [];
     for (const text of [
       damagedSince !== undefined ? `checkpoint unknown since ${elapsedAge(observedNow - damagedSince)}: ${damaged}` : '',
       unknownSince !== undefined ? `unknown since ${elapsedAge(observedNow - unknownSince)}: ${refusal}` : '',
     ]) {
-      if (!text) continue;
-      const warning = wrap([run(text, 'attention')], width).map(line => paint(line, color)).join('\n');
-      frame.text += `${frame.text ? '\n' : ''}${warning}`;
-      frame.key += `\n${warning}`;
+      if (text) warnings.push(wrap([run(text, 'attention')], width).map(line => paint(line, color)));
     }
+    const limit = Number.isInteger(process.stdout.rows) && process.stdout.rows > 0 ? process.stdout.rows : Infinity;
+    let room = Math.max(0, limit - (frame.text ? 1 : 0));
+    const shown = warnings.flatMap((lines, index) => {
+      const take = Math.min(lines.length, room > 0 ? Math.max(1, room - warnings.length + index + 1) : 0);
+      room -= take; return lines.slice(0, take);
+    });
+    const kept = Math.max(0, limit - shown.length);
+    frame.text = [...(frame.text ? frame.text.split('\n').slice(0, kept) : []), ...shown].join('\n');
+    frame.key += '\n' + shown.join('\n');
+    if (frame.clock && frame.clock.row > kept) frame.clock = undefined;
     if (force || frame.key !== displayedKey) {
       displayedKey = frame.key;
       displayedClock = frame.clock?.field;
       displayedRows = frame.text.split('\n').length;
       // One write and no final newline: a frame filling the pane must not scroll.
-      process.stdout.write(tty ? `\x1b[?25l\x1b[H\x1b[2J${frame.text}\x1b[1;1H\x1b[?25l` : `---\n${frame.text}\n`);
+      process.stdout.write(tty ? `\x1b[?25l\x1b[H\x1b[2J\x1b[3J${frame.text}\x1b[1;1H\x1b[?25l` : `---\n${frame.text}\n`);
     } else if (tty && unknownSince === undefined && frame.clock && frame.clock.field !== displayedClock) {
       displayedClock = frame.clock.field;
       // The entire eight-cell field clears the previous value, including its padding.

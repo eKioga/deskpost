@@ -10776,70 +10776,29 @@ if (selected(120)) {
     'duplicates.ts': 2,
     'hubcopy.ts': 1,
     'locks.ts': 1,
-    'notebook.ts': 7,
+    'notebook.ts': 8,
     'notebookverb.ts': 1,
     'ownership.ts': 8,
+    'procstart.ts': 2,
     'publish.ts': 2,
     'rawowners.ts': 1,
-    'seat.ts': 4,
-    'seatclaim.ts': 3,
-    'seatdesk.ts': 7,
+    'seat.ts': 5,
+    'seatclaim.ts': 4,
+    'seatdesk.ts': 8,
     'setup.ts': 3,
     'shelfcatalog.ts': 1,
     'triagebatch.ts': 3,
     'workspace.ts': 1,
   };
-  // The literals of one TypeScript file: '...', "..." and `...` (a template's `${...}` kept as text), with line and block
-  // comments and regular-expression literals skipped, so a pattern or a note about history is never read as advice.
-  const literals = (source: string): string[] => {
-    const found: string[] = [];
-    let index = 0;
-    while (index < source.length) {
-      const char = source[index]!;
-      if (source.startsWith('//', index)) {
-        const end = source.indexOf('\n', index);
-        index = end < 0 ? source.length : end;
-        continue;
-      }
-      if (source.startsWith('/*', index)) {
-        const end = source.indexOf('*/', index + 2);
-        index = end < 0 ? source.length : end + 2;
-        continue;
-      }
-      if (char === "'" || char === '"' || char === '`') {
-        let end = index + 1;
-        let text = '';
-        while (end < source.length && source[end] !== char) {
-          if (source[end] === '\\') {
-            text += source.slice(end, end + 2);
-            end += 2;
-            continue;
-          }
-          text += source[end];
-          end += 1;
-        }
-        found.push(text);
-        index = end + 1;
-        continue;
-      }
-      if (char === '/' && !['/', '*'].includes(source[index + 1] ?? '')) {
-        let before = index - 1;
-        while (before >= 0 && (source[before] === ' ' || source[before] === '\t')) before -= 1;
-        if (before >= 0 && '(,=:!&|?;{}['.includes(source[before]!)) {
-          let end = index + 1;
-          while (end < source.length && source[end] !== '/' && source[end] !== '\n') {
-            if (source[end] === '\\') end += 1;
-            else if (source[end] === '[') while (end < source.length && source[end] !== ']') end += 1;
-            end += 1;
-          }
-          index = end + 1;
-          continue;
-        }
-      }
-      index += 1;
-    }
-    return found;
-  };
+  const { stringLiterals: literals } = await import('./stringliterals.ts');
+  // Regular expressions and comments cannot become advice; the real advice string must still be caught.
+  for (const [label, source] of [
+    ['return regex', 'function f() { return /[\'"]/; } // don\'t read comments\nconst s = "real";'],
+    ['line-start regex', '/[\'"]/.test(value); // don\'t read comments\nconst s = "real";'],
+    ['escaped bracket', 'const r = /[\\]/"\']/; // don\'t read comments\nconst s = "real";'],
+  ]) equal(JSON.stringify(literals(source!)), JSON.stringify(['real']), '120: ' + label + ' extracts only real strings');
+  const advice = literals('const s = "-Parameter";');
+  check(advice.length === 1 && ADVICE_PATTERN.test(advice[0]!), '120: real advice still reaches the pattern');
   const source = path.join(PROGRAM_ROOT, 'kernel', 'src');
   const counted: Record<string, number> = {};
   const unexplained: string[] = [];
@@ -13920,8 +13879,11 @@ if (selected(154)) {
     equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
     const body = path.join(root, 'page.md');
     fs.writeFileSync(body, '# A page\n\nText.\n');
+    // A `kickoffs/` page is checked when it is posted (kickoffs/s174 row 2), so its body is a complete fixture Kickoff.
+    const kickoffBody = path.join(root, 'kickoff.md');
+    fs.writeFileSync(kickoffBody, '# A kickoff\n\nTRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n');
     const next = (page: string) => {
-      const ran = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--content-path', body, '--json']);
+      const ran = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--content-path', page.startsWith('kickoffs/') ? kickoffBody : body, '--json']);
       try {
         return String((JSON.parse(ran.stdout) as Record<string, unknown>)['next'] ?? '');
       } catch {
@@ -15642,8 +15604,11 @@ if (selected(172)) {
     equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, 'the fixture seat was not made');
     const body = path.join(root, 'page.md');
     fs.writeFileSync(body, 'A page body.\n');
+    // A `kickoffs/` page is checked when it is posted (kickoffs/s174 row 2), so its body is a complete fixture Kickoff.
+    const kickoffBody = path.join(root, 'kickoff.md');
+    fs.writeFileSync(kickoffBody, 'TRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n');
     const newPage = (page: string, extra: string[]) => {
-      const ran = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--title', 'A page', '--content-path', body, '--seat', 'first', '--json', ...extra]);
+      const ran = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', page, '--title', 'A page', '--content-path', page.startsWith('kickoffs/') ? kickoffBody : body, '--seat', 'first', '--json', ...extra]);
       let json: Record<string, unknown> = {};
       try {
         json = JSON.parse(ran.stdout) as Record<string, unknown>;
@@ -19036,7 +19001,7 @@ if (selected(207)) {
     const { screenRows } = await import('../src/setup.ts');
     const view = { version: '2.0.0', checksumNote: '', installRoot: 'P', installState: 'upgrade' as const, fromVersion: '1.0.0', library: null, state: 'none' as const, repairLibrary: false, assistant: null, both: false, pathChange: false, overlapAccepted: false, refresh: [{ workspace: 'L', writes: 3, refused: null, codex: false }] };
     const libraryRow = (dryRun: boolean) => screenRows({ ...view, dryRun } as never).rows.map((row) => row.join(' | ')).filter((row) => row.includes('brought up to date')).join(' / ');
-    check(libraryRow(true).includes('would be brought up to date in this run') && !/(^|[^e] )brought up to date: 3/.test(libraryRow(true)), `a dry run's Library row does not say what would happen: ${libraryRow(true)}`);
+    check(libraryRow(true).includes('would be brought up to date once the program switches') && !/(^|[^e] )brought up to date: 3/.test(libraryRow(true)), `a dry run's Library row does not say what would happen: ${libraryRow(true)}`);
     check(!libraryRow(false).includes('would be'), `a real run's Library row says would be: ${libraryRow(false)}`);
 
     // (d)
@@ -19050,7 +19015,8 @@ if (selected(207)) {
       fs.mkdirSync(archived, { recursive: true });
       fs.writeFileSync(path.join(archived, '_book.md'), '# Atlas\n');
       fs.writeFileSync(path.join(archived, '_index.md'), '# Atlas\n');
-      server = await startFakeBasicMemory(storage);
+      // `shared archive` is an unported writer, judged on the old tools (kickoffs/s175 STANDING ANSWER 9).
+      server = await startFakeBasicMemory(storage, ['--surface', 'legacy']);
       const shared = path.join(w.root, 'shared-ws');
       const sharedEnv = { LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
       equal(basicMemoryWorkspace(shared, path.join(w.root, 'reg'), server.url, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', { cwd: w.root, env: sharedEnv, sharedRoot: storage }).exit, 0, 'the Basic Memory workspace was not made');
@@ -22114,7 +22080,7 @@ if (selected(239)) {
 // without **Stop.** is named. (f) Two sections swapped are named out of order.
 if (selected(240)) {
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const templateDoc = fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'kickoff-template.md'), 'utf8');
     const block = kc.templateBlock(templateDoc);
     check(block.length > 0, 'docs/kickoff-template.md has no ```markdown block');
@@ -23120,7 +23086,8 @@ if (selected(256)) {
 // drops is re-opened and judged by readback, sent once; `callTool` never resends a write tool.
 if (selected(257)) {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-write-judge-')));
-  const server = await startFakeBasicMemory(folder);
+  // v0.23.2's refusal forms, by the old names (kickoffs/s175 STANDING ANSWER 9).
+  const server = await startFakeBasicMemory(folder, ['--surface', 'legacy']);
   try {
     const bm = await import('../src/basicmemory.ts');
     const pid = 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa';
@@ -23339,8 +23306,8 @@ if (selected(259)) {
     const legacy = 'ffffffff-0000-4fff-8fff-ffffffffffff';
     const session = new bm.McpSession(server.url, 'selftest-259');
     await session.initialize();
-    await bm.sendWrite(session, 'write_note', {
-      project_id: String(first.applied['project_id']), directory: 'postbox/libraries', title: legacy, note_type: 'note', overwrite: false, output_format: 'json',
+    await bm.sendWrite(session, 'bm_write', {
+      project: String(first.applied['project_id']), directory: 'postbox/libraries', title: legacy, note_type: 'note', overwrite: false, output_format: 'json',
       content: `---\nlibrary_id: ${legacy}\nlibrary_card: Legacy\nlast_check: 2026-10-15T21:40:00Z\ntitle: inner\n---\n\n# Legacy\n\n- clerk (seat_id ${'a'.repeat(32)})\n`,
     }, 'the legacy entry');
     const legacyText = fs.readFileSync(path.join(projectDir, 'postbox', 'libraries', `${legacy}.md`), 'utf8');
@@ -23796,7 +23763,8 @@ if (selected(264) && prerequisite(264, () => !isCompiled(), 'requires source sca
 // its `updated_at` and a folder `null` (S3); `overwrite: false` on an existing note is a conflict (S1).
 if (selected(265)) {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-fixture-shape-')));
-  const server = await startFakeBasicMemory(folder);
+  // The probes S5 to S7, made by the old names (kickoffs/s175 STANDING ANSWER 9).
+  const server = await startFakeBasicMemory(folder, ['--surface', 'legacy']);
   try {
     const bm = await import('../src/basicmemory.ts');
     const pid = 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa';
@@ -24334,7 +24302,7 @@ if (selected(270) && prerequisite(270, () => !isCompiled(), 'requires source mac
       const ran = spawnSync('git', args, {cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30_000});
       if (ran.status !== 0) throw Error('fixture git: ' + ran.stdout + ran.stderr); return ran.stdout;
     };
-    git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+    git('init', '-q'); git('switch', '-c', 'fixture'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
     const hooks = path.join(repo, '.git/hooks');
     git('config', 'core.hooksPath', hooks);
     fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755);
@@ -25640,7 +25608,8 @@ if (selected(286)) {
   fs.mkdirSync(folder, { recursive: true });
   const storage = path.join(root, 'server');
   fs.mkdirSync(storage, { recursive: true });
-  const shape = await startFakeBasicMemory(folder);
+  // read_content's findings 2 to 6, by the old names (kickoffs/s175 STANDING ANSWER 9); the Postbox half runs on 1.0.
+  const shape = await startFakeBasicMemory(folder, ['--surface', 'legacy']);
   const server = await startFakeBasicMemory(storage);
   try {
     const bm = await import('../src/basicmemory.ts');
@@ -25765,7 +25734,8 @@ if (selected(287)) {
     fs.rmSync(onServer(inbox(one.id)));
 
     // 3. A re-created copy with the delivered copy's text is left by the listing, and no move is sent for it; a move by
-    // its path, as the check sent it before, answers DESTINATION_SAME_AS_SOURCE and leaves it where it is.
+    // its path, as the check sent it before, is refused as a move to the note's own path (v0.23.2:
+    // DESTINATION_SAME_AS_SOURCE; 1.0: INVALID_ARGUMENTS "The note is already at", kickoffs/s175) and leaves it where it is.
     fs.writeFileSync(onServer(inbox(two.id)), fs.readFileSync(onServer(delivered(two.id)), 'utf8').replace(/^permalink: (.*)$/m, 'permalink: $1-1'));
     const before = moves();
     const leftCheck = check_();
@@ -25775,7 +25745,7 @@ if (selected(287)) {
     await session.initialize();
     const projectId = String((JSON.parse(fs.readFileSync(path.join(t.far.lib, 'internal', 'postbox', 'state.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['project_id']);
     const byPath = await bm.moveNoteTo(session, projectId, inbox(two.id).replace(/\.md$/, ''), `postbox/inbox/${t.far.id}/delivered`);
-    check(!byPath.moved && byPath.detail.includes('DESTINATION_SAME_AS_SOURCE') && fs.existsSync(onServer(inbox(two.id))), `a move by the old path did not answer DESTINATION_SAME_AS_SOURCE and stay unmoved: ${JSON.stringify(byPath)}`);
+    check(!byPath.moved && byPath.detail.includes('INVALID_ARGUMENTS: The note is already at') && fs.existsSync(onServer(inbox(two.id))), `a move by the old path was not refused as a move to its own path and left unmoved: ${JSON.stringify(byPath)}`);
 
     // 4. A file whose permalink: line is not the one listed is refused by name, never trusted: left in the inbox.
     const stray = `${t.home.id}-20261017t000000z-0badf00d`;
@@ -25875,7 +25845,7 @@ if (selected(289)) {
     const refused = check_({ LIBRARY_POSTBOX_FAULT: 'move-in-place' });
     const row = skippedAt(refused, one);
     check((refused['filed'] as unknown[] | undefined)?.length === 1 && refused['moved'] === 0 && String(row?.['why']).includes('not yet moved to delivered/')
-      && String(row?.['move_answer']).includes('DESTINATION_SAME_AS_SOURCE') && String(row?.['move_answer']).length <= 300,
+      && String(row?.['move_answer']).includes('INVALID_ARGUMENTS: The note is already at') && String(row?.['move_answer']).length <= 300,
       `a refused move was not counted not moved with the server's words: ${JSON.stringify(refused).slice(0, 600)}`);
     check(t.withDelivery(t.far.lib, one).length === 1 && fs.existsSync(onServer(inbox(one))) && !fs.existsSync(onServer(delivered(one))), 'a refused move filed the letter twice, or moved it');
 
@@ -28288,6 +28258,7 @@ if (selected(330)) {
     equal(t.cli(t.far.lib,['shelf','tidy','reports','--user-confirmed','--plan-id',String(tidy['plan_id'])],'clerk').exit,0,'330(b): real tidy failed');
     const reviewed=path.join(t.far.lib,'shelf','reports','wiki','reviewed','2026-09');
     check(fs.existsSync(path.join(reviewed,path.basename(file))),'330(b): real tidy did not move the Report');
+    fs.writeFileSync(delivered,fs.readFileSync(delivered,'utf8').replace(/^permalink: .+$/m,`permalink: postbox/inbox/${t.far.id}/delivered/${id}`));
     fs.copyFileSync(delivered,delivery);
     const tidied=t.json(t.cli(t.far.lib,['postbox','check','--json']));
     equal((tidied['filed'] as unknown[]).length,0,'330(b): tidied copy duplicated');
@@ -28751,7 +28722,7 @@ if (selected(341)) {
 if (selected(342)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-check-rows-')));
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const tool = path.join(PROGRAM_ROOT, 'tools', 'kickoff-check.mts');
     const run = (name: string, text: string) => {
       const file = path.join(root, `${name}.md`);
@@ -28769,7 +28740,7 @@ if (selected(342)) {
     const bracket = run('bracket', page('1. **Rows**: `tools/Invoke-AcceptanceMatrix.ps1 -Row <id>[,<id>] -Kernel <k>`.\n   Done when: green.'));
     check(bracket.status === 1 && bracket.out.includes('gives -Row a comma list'), `the -Row <id>[,<id>] form was not refused: ${bracket.status} ${bracket.out}`);
 
-    const single = run('single', page('1. **Rows**: `tools/Invoke-AcceptanceMatrix.ps1 -Row a -Kernel <k>`, then `tools/Invoke-AcceptanceMatrix.ps1 -Row b -Kernel <k>`; one `-Row` per call.\n   A comma list (`-Row a,b`) arrives as one row name.\n   Done when: both rows mismatch.'));
+    const single = run('single', page('1. **Rows**: `tools/Invoke-AcceptanceMatrix.ps1 -Row a -Kernel <k>`, then `tools/Invoke-AcceptanceMatrix.ps1 -Row b -Kernel <k>`; one `-Row` per call.\n   A comma-separated list arrives as one row name.\n   Done when: both rows mismatch.'));
     check(single.status === 0 && !single.out.includes('comma list'), `one -Row per call was refused: ${single.status} ${single.out}`);
 
     const helper = run('helper', page('1. **The seatless refusal**: the matrix row whose oracle sentence names `tools/Get-OpenBook.ps1`.\n   Done when: the row is green against the source kernel (`node kernel/src/cli.ts`).'));
@@ -32213,7 +32184,8 @@ async function section448(): Promise<void> {
     const review = (letter: string) => /^review: (\S+)/m.exec(fs.readFileSync(t.letterFile(t.far.lib, letter), 'utf8'))?.[1];
     // A Kickoff on the sender's Hub, sent, and filed on the far side: the letter page it was filed as.
     const deliver = (id: string): { letter: string; text: string } => {
-      const text = `# ${id} kickoff\n\nWrite {now} on the attempt page.\nRow 1.\n`;
+      // A complete Kickoff (kickoffs/s174 row 2: hub edit checks a kickoffs/ page it writes, a received one included).
+      const text = `# ${id} kickoff\n\nWrite {now} on the attempt page.\nRow 1.\n\nTRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n`;
       const file = path.join(t.home.lib, 'collection', 'projects', 'work-asker', 'kickoffs', `${id}.md`);
       fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text);
       const sent = t.json(t.cli(t.home.lib, ['kickoff', 'send', `kickoffs/${id}`, '--library', 'Far Office', '--for', 'clerk', '--json'], 'asker'));
@@ -32242,6 +32214,9 @@ async function section448(): Promise<void> {
     const hubBefore = fs.readFileSync(hubFile, 'utf8');
     equal(t.json(receive(one.letter))['status'], 'already-received', '448: a retry after success did not answer already-received');
     equal(fs.readFileSync(hubFile, 'utf8'), hubBefore, '448: a retry after success changed the Hub');
+    // ## Next holds one pending Run pointer (kickoffs/s174 row 3): each landed Kickoff's pointer is ticked before the next.
+    const tickRun = (id: string) => equal(t.cli(t.far.lib, ['hub', 'edit', 'work-clerk', '--mode', 'check-item', '--section', 'Next', '--match-text', `Run ${id}:`], 'clerk').exit, 0, `448: the pointer for ${id} was not ticked`);
+    tickRun('k1');
 
     // 2. Interrupted after each stage, and between the Hub write and the pointer stage's record: the retry finishes once.
     for (const [id, point] of [['k2', 'page'], ['k3', 'pointer-write'], ['k4', 'pointer'], ['k5', 'close']] as const) {
@@ -32251,6 +32226,7 @@ async function section448(): Promise<void> {
       const retry = receive(sent.letter);
       check(retry.exit === 0, `448: the retry after ${point} refused: ${retry.stderr.slice(0, 400)}`);
       settled(id, sent.letter, sent.text, `after ${point}`);
+      tickRun(id);
     }
 
     // 3. A retry after the pointer was ticked accepts the ticked pointer.
@@ -32645,7 +32621,7 @@ async function section466(): Promise<void> {
     "  request.on('end', () => {",
     '    let message = {};',
     '    try { message = JSON.parse(body); } catch {}',
-    "    const fault = message.method === 'tools/call' && message.params?.name === 'write_note' ? String(message.params?.arguments?.metadata?.stand_in_fault ?? '') : '';",
+    "    const fault = message.method === 'tools/call' && message.params?.name === 'bm_write' ? String(message.params?.arguments?.metadata?.stand_in_fault ?? '') : '';",
     "    const failed = () => response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: ERROR_TEXT }], isError: true } }));",
     "    if (fault === 'error-unwritten') return failed();",
     "    const forward = http.request(upstream, { method: request.method, headers: { ...request.headers, host: upstream.host } }, (answer) => {",
@@ -32801,7 +32777,7 @@ if (selected(469)) await section469();
 // highest, each named. On a fixture ADR list, then once through the tool against the real docs/adr/.
 async function section470(): Promise<void> {
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const files = ['0001-a.md', '0002-b.md', '0004-d.md', 'README.md'];
     const problems = (text: string) => kc.describeMissingAdrs(kc.missingAdrs(text, files), files);
     equal(JSON.stringify(problems('ROWS: new ADR-0005 records it; ADR-0005 is then cited.')), '[]', '470: a new ADR above the highest was refused');
@@ -34848,7 +34824,8 @@ async function section506(): Promise<void> {
     const review = (letter: string) => /^review: (\S+)/m.exec(fs.readFileSync(t.letterFile(t.far.lib, letter), 'utf8'))?.[1];
     const deliver = (id: string): string => {
       const file = path.join(t.home.lib, 'collection', 'projects', 'work-asker', 'kickoffs', `${id}.md`);
-      fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `# ${id} kickoff\n\nRow 1.\n`);
+      // A complete Kickoff (kickoffs/s174 row 2: hub edit checks a kickoffs/ page it writes, a received one included).
+      fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `# ${id} kickoff\n\nRow 1.\n\nTRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n`);
       const sent = t.json(t.cli(t.home.lib, ['kickoff', 'send', `kickoffs/${id}`, '--library', 'Far Office', '--for', 'clerk', '--json'], 'asker'));
       equal(t.cli(t.far.lib, ['postbox', 'check']).exit, 0, `506: ${id} was not filed`);
       const name = t.withDelivery(t.far.lib, String(sent['delivery_id']))[0] ?? '';
@@ -36316,7 +36293,7 @@ if (selected(542)) await section542();
 async function section543(): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-train-'));
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const tool = path.join(PROGRAM_ROOT, 'tools', 'kickoff-check.mts');
     const file = path.join(root, 'kickoff.md'), register = path.join(root, 'register.json');
     const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'kickoff-template.md'), 'utf8'));
@@ -36707,7 +36684,7 @@ if (selected(554)) await section554();
 // --- 555. RELEASE AUDITS AND SENSITIVE SECOND READS (c73-r2) --------------------------------------------
 async function section555(): Promise<void> {
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     // Dynamic access keeps the missing export at the BASE a behavioural failure, not a type error.
     const audit = (kc as unknown as {auditProblems: (text: string) => string[]}).auditProblems;
     check(typeof audit === 'function', '555: auditProblems export is missing');
@@ -36729,7 +36706,7 @@ async function section555(): Promise<void> {
     } finally { fs.rmSync(temp, {recursive:true, force:true}); }
   } catch(error) { failures.push(`section 555 audit stopped early: ${(error as Error).message}`); }
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const second = (kc as unknown as {secondReadProblems: (text: string) => string[]}).secondReadProblems;
     check(typeof second === 'function', '555: secondReadProblems export is missing');
     const fixture = (owns: string, why = '', stay = '') => `TRAIN: auditor-check\nWHY NOW:\n${why}\nSIZE: small\nOWNS: ${owns}\nSTAY OUT OF: ${stay}`;
@@ -36758,7 +36735,7 @@ if (selected(555)) await section555();
 async function section556(): Promise<void> {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c73-checkout-'));
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const source = path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts');
     const copied = path.join(temp, 'tools/kickoff-check.mts');
     fs.mkdirSync(path.dirname(copied));
@@ -36774,7 +36751,7 @@ async function section556(): Promise<void> {
   } catch(error) {failures.push(`section 556 checkout stopped early: ${(error as Error).message}`);}
   finally {fs.rmSync(temp,{recursive:true,force:true});}
   try {
-    const kc = await import('../../tools/kickoff-check.mts');
+    const kc = await import('../src/kickoffcheck.ts');
     const wsl = (kc as unknown as {wslMasterRows: (text: string) => number[]}).wslMasterRows;
     check(typeof wsl === 'function', '556: wslMasterRows export is missing');
     const row = (text: string) => `ROWS:\n7. ${text}\n   Done when: checked.\nCOMMANDS: none`;
@@ -37483,6 +37460,936 @@ async function section570(): Promise<void> {
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 if (selected(570)) await section570();
+
+// --- 571. A KICKOFF IS CHECKED WHEN IT IS POSTED, AND `deskpost kickoff check` CHECKS A FILE (kickoffs/s174 row 2) ------
+// In a fixture Library: `kickoff check` on a complete fixture exits 0 with the "is complete" line, and on a failing one
+// exits 1 naming each problem; `--json` carries `complete`; `--help` prints the action's usage. `hub edit --mode new-page
+// --page kickoffs/s1` refuses the failing file at --preflight and at apply, naming the problem, with no page and no
+// new-page journal; the complete file with a doubled-brace time word passes both, and the page holds the word in single
+// braces. `kickoff check` is exempt from the "Needs you" refresh by verb and action (it returns before reading the
+// workspace, while `checkpoint check` does not), and `check` is still not a read action of every verb.
+async function section571(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-check-post-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '571: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '571: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '571: the fixture seat was not made');
+    const complete = '# s1 kickoff\n\nWrite {{now}} on the attempt page.\n\nTRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n';
+    const good = path.join(root, 'good.md');
+    fs.writeFileSync(good, complete);
+    const bad = path.join(root, 'bad.md');
+    fs.writeFileSync(bad, complete.replace('   Done when: section 1 passes.\n', '').replace('- **Stop.**\n', '- the Handback.\n'));
+
+    const passed = cli(['kickoff', 'check', good]);
+    check(passed.exit === 0 && passed.stdout.includes(`kickoff-check: ${good} is complete`), `571: a complete Kickoff did not pass: ${passed.exit} ${passed.stdout}${passed.stderr}`);
+    check(passed.stdout.includes('kickoff-check: warning: no train register at internal/train/register.json'), `571: no register did not warn: ${passed.stdout}`);
+    const failed = cli(['kickoff', 'check', bad]);
+    check(failed.exit === 1 && failed.stdout.includes('is not complete') && failed.stdout.includes('rows with no "Done when:" line: 1') && failed.stdout.includes('CLOSE does not end with **Stop.**'), `571: a failing Kickoff was not refused naming each problem: ${failed.exit} ${failed.stdout}${failed.stderr}`);
+    const asJson = (file: string) => {
+      const ran = cli(['kickoff', 'check', file, '--json']);
+      try { return { exit: ran.exit, json: JSON.parse(ran.stdout) as { file: string; complete: boolean; problems: string[]; warnings: string[] } }; } catch { return { exit: ran.exit, json: null }; }
+    };
+    const goodJson = asJson(good), badJson = asJson(bad);
+    check(goodJson.exit === 0 && goodJson.json?.complete === true && goodJson.json.problems.length === 0 && goodJson.json.file === good, `571: --json on a complete Kickoff: ${JSON.stringify(goodJson)}`);
+    check(badJson.exit === 1 && badJson.json?.complete === false && badJson.json.problems.length === 2, `571: --json on a failing Kickoff: ${JSON.stringify(badJson)}`);
+    const help = cli(['kickoff', 'check', '--help']);
+    check(help.exit === 0 && help.stdout.includes('kickoff check <file> [--json]') && help.stdout.includes('it writes nothing'),`571: --help did not print the action's usage: ${help.stdout}`);
+    const absent = cli(['kickoff', 'check', path.join(root, 'no-such.md')]);
+    check(absent.exit === 2 && absent.stderr.includes('no-such.md') && !/\n\s*at /.test(absent.stderr), `571: an unreadable file did not exit 2 in one line: ${absent.exit} ${absent.stderr}`);
+
+    // THE CHECK AT POSTING: refused at --preflight and at apply, nothing written; the complete file passes both.
+    const pageFile = path.join(lib, 'collection', 'projects', 'work', 'kickoffs', 's1.md');
+    const journals = () => { const d = path.join(lib, 'internal', 'publication-journals'); return fs.existsSync(d) ? fs.readdirSync(d).filter((n) => n.startsWith('project-new-page-work-kickoffs-s1')) : []; };
+    const post = (file: string, extra: string[]) => cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'kickoffs/s1', '--content-path', file, '--json', ...extra]);
+    for (const extra of [['--preflight'], []]) {
+      const refused = post(bad, extra);
+      check(refused.exit !== 0 && refused.stderr.includes('is not a complete Kickoff') && refused.stderr.includes('rows with no "Done when:" line: 1') && refused.stderr.includes('Nothing was written.'), `571: a failing Kickoff was not refused at ${extra.join(' ') || 'apply'}: ${refused.exit} ${refused.stderr}`);
+      check(!fs.existsSync(pageFile) && journals().length === 0, `571: a refused Kickoff wrote something at ${extra.join(' ') || 'apply'}`);
+    }
+    const preview = post(good, ['--preflight']);
+    let previewJson: Record<string, unknown> = {};
+    try { previewJson = JSON.parse(preview.stdout) as Record<string, unknown>; } catch { /* named below */ }
+    check(preview.exit === 0 && typeof previewJson['plan_id'] === 'string' && JSON.stringify(previewJson['warnings'] ?? []).includes('no train register'), `571: a complete Kickoff with a doubled-brace time word did not pass the preflight with its warning: ${preview.exit} ${preview.stderr}${preview.stdout.slice(0, 300)}`);
+    const applied = post(good, ['--plan-id', String(previewJson['plan_id'])]);
+    check(applied.exit === 0 && fs.existsSync(pageFile), `571: a complete Kickoff was not written: ${applied.exit} ${applied.stderr}`);
+    check(fs.existsSync(pageFile) && fs.readFileSync(pageFile, 'utf8').includes('Write {now} on the attempt page.'), '571: the written page does not hold the time word in single braces');
+
+    // THE EXEMPTION, asserted directly: `kickoff check` returns before reading its workspace; `checkpoint check` does not.
+    const { refreshAfterCommand } = await import('../src/needsyou.ts');
+    const reads = (argv: string[]): string[] => {
+      const seen: string[] = [];
+      refreshAfterCommand(new Proxy(argv, { get(target, key, receiver) { if (typeof key === 'string') seen.push(key); return Reflect.get(target, key, receiver); } }));
+      return seen;
+    };
+    check(!reads(['kickoff', 'check', good, '--workspace', lib]).includes('indexOf'), '571: kickoff check reached the workspace lookup of the Needs you refresh');
+    check(reads(['checkpoint', 'check', '--workspace', lib]).includes('indexOf'), '571: checkpoint check no longer reaches the Needs you refresh');
+    const needsSource = path.join(PROGRAM_ROOT, 'kernel', 'src', 'needsyou.ts');
+    if (fs.existsSync(needsSource)) {
+      const line = /^const READ_ACTIONS = new Set\(\[([^\]]*)\]\);$/m.exec(fs.readFileSync(needsSource, 'utf8'))?.[1] ?? null;
+      check(line !== null && !line.includes("'check'"), `571: READ_ACTIONS gained check, which checkpoint check and postbox check reach: ${line}`);
+    }
+  } catch (error) {
+    failures.push(`section 571 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(571)) await section571();
+
+// --- 572. KICKOFF PAGES ARE WRITTEN ONCE, AND ## Next HOLDS ONE PENDING Run POINTER (kickoffs/s174 row 3) ---------------
+// In a fixture Library: `replace-item`, `append-section`, `check-item` and `replace-section` on `kickoffs/s1` are each
+// refused at --preflight and at apply, the page's bytes unchanged. On a `## Next` holding pointer A ticked and pointer B
+// unticked, un-ticking A is refused at --preflight and at apply naming both lines, and appending a second unticked pointer
+// is refused; ticking B is allowed; an edit of `## Now` on a page whose `## Next` already holds two unticked pointers is
+// allowed (its `## Next` is unchanged). `new-page --page kickoffs/c3` advises the pointer `- [ ] Run c3: ...`.
+async function section572(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-write-once-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '572: the fixture Library did not initialise');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '572: the fixture Hub was not made');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '572: the fixture seat was not made');
+    const kickoff = (id: string) => `# ${id} kickoff\n\nTRAIN: filled\nWHY NOW: filled\nSIZE: filled\nOWNS: filled\nSTAY OUT OF: filled\nWHERE THINGS STAND: filled\nMERGE: filled\nROWS:\n1. **A row**: change a.\n   Done when: section 1 passes.\nCOMMANDS: filled\nCHARTER: filled\nNOT CHARTERED: filled\nRULES: filled\nSTANDING ANSWERS: filled\nOPEN: filled\nCLOSE:\n- **Stop.**\n`;
+    const file = (name: string, text: string) => { const at = path.join(root, name); fs.writeFileSync(at, text); return at; };
+    const written = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'kickoffs/s1', '--content-path', file('s1.md', kickoff('s1'))]);
+    equal(written.exit, 0, `572: the fixture Kickoff was not written: ${written.stderr}`);
+
+    // WRITTEN ONCE: every edit mode on a kickoffs/ page is refused, at --preflight too, and the bytes stay.
+    const s1 = path.join(lib, 'collection', 'projects', 'work', 'kickoffs', 's1.md');
+    const before = fs.readFileSync(s1, 'utf8');
+    const change = file('change.md', '- changed\n');
+    const modes: [string, string[]][] = [
+      ['replace-item', ['--match-text', 'A row', '--content-path', change]],
+      ['append-section', ['--section', 'Notes', '--content-path', change]],
+      ['check-item', ['--match-text', 'A row']],
+      ['replace-section', ['--section', 'Notes', '--content-path', change]],
+    ];
+    for (const [mode, extra] of modes) {
+      for (const gate of [['--preflight'], []]) {
+        const ran = cli(['hub', 'edit', 'work', '--mode', mode, '--page', 'kickoffs/s1', ...extra, ...gate]);
+        check(ran.exit !== 0 && ran.stderr.includes('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.'), `572: ${mode} ${gate.join(' ') || 'apply'} on a kickoffs/ page was not refused: ${ran.exit} ${ran.stderr}`);
+      }
+    }
+    equal(fs.readFileSync(s1, 'utf8'), before, '572: a refused edit changed the kickoffs/ page');
+
+    // ONE PENDING Run POINTER, judged on the ## Next an edit would write.
+    const hub = path.join(lib, 'collection', 'projects', 'work', '_project.md');
+    const pointers = file('pointers.md', '- [x] Run a: [[projects/work/kickoffs/a]]\n- [ ] Run b: [[projects/work/kickoffs/b]]\n');
+    const added = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', pointers]);
+    equal(added.exit, 0, `572: one pending pointer was refused: ${added.stderr}`);
+    const settled = fs.readFileSync(hub, 'utf8');
+    for (const gate of [['--preflight'], []]) {
+      const revived = cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--uncheck', '--match-text', 'Run a:', ...gate]);
+      check(revived.exit !== 0 && revived.stderr.includes('- [ ] Run a: [[projects/work/kickoffs/a]]') && revived.stderr.includes('- [ ] Run b: [[projects/work/kickoffs/b]]') && revived.stderr.includes('Nothing was written.'), `572: un-ticking an old pointer beside a pending one was not refused naming both at ${gate.join(' ') || 'apply'}: ${revived.exit} ${revived.stderr}`);
+    }
+    const second = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', file('second.md', '- [ ] Run c: [[projects/work/kickoffs/c]]\n')]);
+    check(second.exit !== 0 && second.stderr.includes('Run c:') && second.stderr.includes('Run b:'), `572: a second pending pointer was appended: ${second.exit} ${second.stderr}`);
+    equal(fs.readFileSync(hub, 'utf8'), settled, '572: a refused pointer edit changed the Hub');
+    const tick = cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Run b:']);
+    check(tick.exit === 0 && fs.readFileSync(hub, 'utf8').includes('- [x] Run b:'), `572: ticking the pending pointer was refused: ${tick.stderr}`);
+    // A page that already holds two (written before this rule) is not refused for an edit that leaves ## Next as it is.
+    fs.writeFileSync(hub, fs.readFileSync(hub, 'utf8').replace('- [x] Run b:', '- [ ] Run b:').replace('- [x] Run a:', '- [ ] Run a:'));
+    const now = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--content-path', file('now.md', '- [ ] An orientation line.\n')]);
+    check(now.exit === 0 && fs.readFileSync(hub, 'utf8').includes('An orientation line.'), `572: an edit of ## Now was refused for the pointers in ## Next: ${now.stderr}`);
+    const lower = cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Run a:']);
+    check(lower.exit === 0, `572: ticking one of two pending pointers was refused: ${lower.stderr}`);
+
+    // A Codex Kickoff's pointer is advised as an s Kickoff's is.
+    const c3 = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'kickoffs/c3', '--content-path', file('c3.md', kickoff('c3')), '--json']);
+    let advice = '';
+    try { advice = String((JSON.parse(c3.stdout) as Record<string, unknown>)['next'] ?? ''); } catch { advice = `no JSON: ${c3.stderr}`; }
+    check(c3.exit === 0 && advice.includes('- [ ] Run c3: [[projects/work/kickoffs/c3]]') && advice.includes('--section Next'), `572: a c Kickoff's advice does not name its Run line: ${advice}`);
+  } catch (error) {
+    failures.push(`section 572 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(572)) await section572();
+
+// --- 573. UPGRADE PLANS SAY ONE FUTURE REFRESH TIMING (c82 row 3) ----------------------------------------
+async function section573(): Promise<void> {
+  const { screenRows, planText, refreshServedText } = await import('../src/setup.ts');
+  const view: import('../src/setup.ts').ScreenView = { version: '2.0.0', checksumNote: '', installRoot: 'P', installState: 'upgrade', fromVersion: '1.0.0', library: null, state: 'none', repairLibrary: false, assistant: null, both: false, pathChange: false, overlapAccepted: false };
+  for (const count of [1, 2]) {
+    const refresh = Array.from({ length: count }, (_, index) => ({ workspace: `L${index}`, writes: 3, refused: null, codex: false }));
+    for (const dryRun of [true, false]) {
+      const text = screenRows({ ...view, refresh, dryRun }).rows.map(row => row.join(' | ')).join('\n');
+      const tense = dryRun ? 'would' : 'will';
+      check(!/(?<!would be |will be )brought up to date/.test(text), `573: ${count} Libraries, dryRun ${dryRun}: missing future tense: ${text}`);
+      check(!text.includes('in this run') && !text.includes('after the program switches'), `573: mixed pre-switch timings: ${text}`);
+      equal((text.match(/once the program switches/g) ?? []).length, 1, `573: ${count} Libraries have exactly one screen timing`);
+      check(text.includes(`${tense} be brought up to date`) && !text.includes(`${dryRun ? 'will' : 'would'} be`), `573: screen uses ${tense}: ${text}`);
+    }
+    const plan = { answers: {}, library: null, register: null, refresh: refresh.map(entry => ({ workspace: entry.workspace, decision: 'refresh', plan: { writes: [1, 2, 3] } })) };
+    const text = planText(plan as unknown as import('../src/setup.ts').SetupPlan);
+    equal((text.match(/would be brought up to date once the program switches/g) ?? []).length, count, `573: plan says would be once per Library: ${text}`);
+    check(!/(?<!would be )brought up to date/.test(text), `573: plan has past tense: ${text}`);
+  }
+  const outcome = refreshServedText({ refresh: { libraries: [{ status: 'refreshed', workspace: 'L', detail: '3 files', codex: false }] } });
+  check(outcome.includes('Brought up to date: L (3 files).') && !outcome.includes('would be'), '573: completed refresh retains its past tense');
+}
+if (selected(573)) await section573();
+
+// --- 574. EVERY WATCH FRAME FITS THE PANE, INCLUDING WARNINGS (c82 row 4) --------------------------------
+async function section574(): Promise<void> {
+  const { dashboardText } = await import('../src/dashboard.ts');
+  const now = Date.parse('2026-10-30T12:00:00Z');
+  const overview = { seat: 'first', this_seat: { claim_state: 'held' }, letters_for_this_seat: { count: 0 }, capture_books: [{ slug: 'reports', pending_count: 0 }, { slug: 'holding', pending_count: 0 }], open_books: [], open_projects: [], stale_recovery_guards: [{ message: 'Recovery guard needs attention' }], train: { changed_at: '2026-10-29T12:00:00Z', handbacks_since: 0 } };
+  const options = { width: 120, now, checkpoint: { conversation: 'fixture', record_at: '2026-10-30T12:00:00Z', save: 'unsaved', closeout: 'none' } };
+  const full = dashboardText(overview, options), lines = full.split('\n');
+  check(lines.length >= 6 && lines[0]!.startsWith('● first held'), '574: wide fixture reaches checkpoint, guard and train lines');
+  for (let rows = 1; rows <= lines.length + 1; rows++) {
+    const text = dashboardText(overview, { ...options, rows });
+    check(text.split('\n').length <= rows, `574: wide frame exceeds ${rows} rows: ${text}`);
+    equal(text, lines.slice(0, rows).join('\n'), `574: ${rows} rows preserves the top of the frame`);
+  }
+  for (const rows of [undefined, 0, -1, 1.5, NaN]) equal(dashboardText(overview, { ...options, rows }), full, `574: invalid or absent row bound ${rows} leaves frame unchanged`);
+  if (!prerequisite(574, () => !isCompiled() && KERNEL_COMMAND.length === 0, 'watch requires a source synthetic TTY')) return;
+  const w = await seatClaimWorkspace('c82-watch-height', { pin: false });
+  try {
+    equal(w.as(process.pid, ['seat', 'start', 'first', '--project', 'alpha', '--no-launch', '--workspace', w.workspace]).exit, 0, '574: fixture seat');
+    const script = path.join(w.root, 'height.mjs'), receipt = path.join(w.root, 'writes.json');
+    for (const rows of [1, 3, 6]) {
+      fs.writeFileSync(script, `import fs from 'node:fs';
+        import { watchDashboard } from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/dashboard.ts')).href)};
+        Object.defineProperty(process.stdout, 'isTTY', { value: true });
+        Object.defineProperty(process.stdout, 'columns', { value: 120 });
+        Object.defineProperty(process.stdout, 'rows', { value: ${rows} });
+        const writes = []; process.stdout.write = text => { writes.push(String(text)); return true; };
+        let tick = 0;
+        await watchDashboard({ workspace: ${JSON.stringify(w.workspace)}, seat: 'first', intervalSeconds: 0, iterations: 3, now: () => ${now} + tick++ * 60000 });
+        fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(writes));`);
+      const ran = spawnSync(process.execPath, [script], { cwd: w.root, env: { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACES: path.join(w.root, 'reg') }, encoding: 'utf8', timeout: 15000, windowsHide: true });
+      equal(ran.status, 0, `574: ${rows}-row synthetic TTY: ${ran.stderr}`);
+      const writes = JSON.parse(fs.readFileSync(receipt, 'utf8')) as string[];
+      const redraws = writes.filter(text => text.includes('\x1b[H\x1b[2J'));
+      check(redraws.length > 0 && redraws.every(text => text.includes('\x1b[H\x1b[2J\x1b[3J')), `574: ${rows}-row redraw clears scrollback`);
+      for (const text of redraws) {
+        const frame = text.slice(text.indexOf('\x1b[2J') + 4).replace(/^\x1b\[3J/, '').split('\x1b[1;1H')[0]!;
+        check(frame.split('\n').length <= rows && frame.replace(/\x1b\[[0-9;]*m/g, '').startsWith('● first'), `574: ${rows}-row watch overflows or loses seat: ${JSON.stringify(frame)}`);
+      }
+    }
+    const conversation = '54c00000-0000-4000-8000-000000000574';
+    const agent = w.startAgent(); w.seatMade('warning', 'beta', agent, '574: warning fixture seat');
+    const env = { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'warning', LIBRARY_SEAT_CLAIM: w.claimToken('warning'), CLAUDE_PID: String(agent) };
+    equal(runCli(['hook', 'seat-start', '--workspace', w.workspace, '--agent-pid', String(agent)], { cwd: w.workspace, env, input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: conversation }) }).exit, 0, '574: bind checkpoint identity');
+    const desk = JSON.parse(w.as(agent, ['desk', '--seat', 'warning', '--workspace', w.workspace, '--json']).stdout);
+    const record = path.join(w.workspace, 'internal', 'checkpoints', desk.this_seat.seat_id, conversation + '.json');
+    fs.mkdirSync(path.dirname(record), { recursive: true }); fs.writeFileSync(record, '{');
+    for (const unreachable of [false, true]) for (const width of [50, 120]) for (const rows of [1, 3, 6]) {
+      fs.writeFileSync(script, `import fs from 'node:fs';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { watchDashboard } from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/src/dashboard.ts')).href)};
+        Object.defineProperty(process.stdout, 'isTTY', { value: true });
+        Object.defineProperty(process.stdout, 'columns', { value: ${width} });
+        Object.defineProperty(process.stdout, 'rows', { value: ${rows} });
+        const writes = []; process.stdout.write = text => { writes.push(String(text)); return true; };
+        const seatPath = ${JSON.stringify(path.join(w.workspace, '.claude', 'seats', 'warning'))}, exists = fs.existsSync;
+        let tick = 0;
+        fs.existsSync = file => ${unreachable} && String(file) === seatPath && tick >= 2 ? false : exists(file); syncBuiltinESMExports();
+        try { await watchDashboard({ workspace: ${JSON.stringify(w.workspace)}, seat: 'warning', intervalSeconds: 0, iterations: 3, now: () => ${now} + 30000 + [0, 70000, 100000][tick++] }); }
+        finally { fs.existsSync = exists; syncBuiltinESMExports(); }
+        fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(writes));`);
+      const ran = spawnSync(process.execPath, [script], { cwd: w.root, env, encoding: 'utf8', timeout: 15000, windowsHide: true });
+      equal(ran.status, 0, `574: warnings at ${width}x${rows}: ${ran.stderr}`);
+      const writes = JSON.parse(fs.readFileSync(receipt, 'utf8')) as string[];
+      const frames = writes.filter(text => text.includes('\x1b[2J')).map(text => text.slice(text.indexOf('\x1b[2J') + 4).replace(/^\x1b\[3J/, '').split('\x1b[1;1H')[0]!.replace(/\x1b\[[0-9;]*m/g, ''));
+      check(frames.every(frame => frame.split('\n').length <= rows && frame.includes('warning held')), `574: warning frame exceeds ${rows} or loses seat: ${JSON.stringify(frames)}`);
+      if (rows >= 3) check(frames.at(-1)!.includes('checkpoint unknown since') && (!unreachable || /(?:^|\n)unknown since/.test(frames.at(-1)!)), `574: warning starts survive ${width}x${rows}: ${JSON.stringify(frames)}`);
+      if (width === 50) check(!writes.some(text => /^\x1b\[[2-9][0-9]*;7H/.test(text)), `574: clock-only update overwrote a warning at ${width}x${rows}`);
+    }
+  } catch (error) { failures.push(`section 574 stopped early: ${(error as Error).message}`); }
+  finally { w.dispose(); }
+}
+if (selected(574)) await section574();
+
+// --- 575. KICKOFF REFERENCES, CHAINS, READS, ROW FLAGS AND CARRIED TRAIN IDS (c83 row 2) ---------------------
+async function section575(): Promise<void> {
+  const kc = await import('../src/kickoffcheck.ts');
+  const page = (extra: string, open = 'filled', train = 'first') => kc.REQUIRED_SECTIONS.map(name =>
+    name === 'WHY NOW' ? `WHY NOW:\n${extra}` : name === 'OPEN' ? `OPEN:\n${open}` : name === 'TRAIN' ? `TRAIN: ${train}` :
+    name === 'ROWS' ? 'ROWS:\n1. A change.\n   Done when: proved.' : name === 'CLOSE' ? 'CLOSE:\n- **Stop.**' : `${name}: filled`).join('\n');
+  const verdict = (extra: string, open = 'filled', options: Parameters<typeof kc.kickoffVerdict>[1] = { adrFiles: [] }) => kc.kickoffVerdict(page(extra, open), options);
+  const refused = (extra: string, term: string, open = 'filled') => check(verdict(extra, open).problems.some(p => p.includes(term)), `575: missing ${term} refusal for ${extra || open}`);
+  const passes = (extra: string, open = 'filled') => equal(verdict(extra, open).problems.length, 0, `575: safe text refused: ${extra || open}: ${verdict(extra, open).problems.join('; ')}`);
+  for (const phrase of ['as `kickoffs/c1` row 2 says', 'exactly as kickoffs/c1 rule 3 says', 'as `kickoffs/c1` standing answer 4 says',
+    'as `kickoffs/c1` WHERE THINGS STAND says', 'as kickoffs/c1 COMMANDS', 'apply word for word, read there']) refused(phrase, 'another Kickoff');
+  passes('Copy the summary line word for word.');
+  for (const value of ['a,b', '<the ten rows of (iv) and (v)>', '<id,...>', '<id>[,<id>]', '<2 row ids>']) refused(`Run \`-Row ${value}\`.`, 'one `-Row`');
+  for (const value of ['<id>', "'<one row id>'", '<one row>', '<one row id>']) passes(`Run \`-Row ${value}\`, then prose, with commas, follows.`);
+  passes('Run `-Row a`, then `-Row b`.');
+  refused('', 'required read', '**Required reads**, at `base`: `AGENTS.md`; the c64 r2 Handback.');
+  passes('', '**Required reads**: words around `docs/dev-session-loop.md` whole; `AGENTS.md`.');
+  passes('', '**Required reads**:\n   - in `D:/repo` at `<base>`: `AGENTS.md`; `helper.log`;\n   Nothing else is required.');
+  passes('The evidence folder `<ev>` is `D:/evidence`.', '**Required reads**:\n- in `<ev>`: `run.log`;\nNothing else is required.');
+  refused('', 'required read', '**Required reads**:\n- in `<undefined>`: `run.log`;\nNothing else is required.');
+  passes('', '**Required reads**: <the plan sections>.');
+  equal(kc.kickoffVerdict(page('').replace('1. A change.', '1. A change. **Required reads**: an unnamed Handback.'), { adrFiles: [] }).problems.length, 0, '575: Required reads in ROWS ignored');
+  for (const carried of ['first (foundation; this unit also carries second, open on the train register)', 'first (lane:fixes; this unit also carries second, open on the train register)', 'first (foundation; this unit also carries second and third)']) {
+    const train = { schema: 1, items: [{ id: 'first', status: 'open' }, { id: 'second', status: 'done' }, { id: 'third', status: 'open' }] };
+    const problems = kc.kickoffVerdict(page('', 'filled', carried), { adrFiles: [], train: { record: train } }).problems;
+    check(problems.length === 1 && problems[0]!.includes("'second'"), `575: every carried id checked without register prose becoming ids: ${problems}`);
+  }
+  equal(verdict('').warnings.length, 0, '575: no names means no bare-tool warning');
+  const noLibrary = verdict('[[projects/work/_project]]');
+  equal(noLibrary.warnings.join(), 'names not checked: no Library', '575: bare tool warns once for real names');
+  const placeholders = verdict('[[projects/work/notes/<date>-c1]] and `projects/work` page `notes/<date>-a1`.');
+  equal(placeholders.problems.length + placeholders.warnings.length, 0, '575: placeholder pages skipped entirely');
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-names-')));
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '' };
+    const lib = path.join(root, 'lib');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '575: fixture init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '575: fixture Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '575: fixture seat');
+    // Seed the fixture's closed Desk directly: --no-launch creates no live claim for Desk mutations.
+    const openProjects = path.join(lib, '.claude/seats/first/.open-projects');
+    fs.writeFileSync(openProjects, '');
+    equal(fs.readFileSync(openProjects, 'utf8'), '', '575: fixture Hub closed on the Desk');
+    const { kickoffNameResolver } = await import('../src/kickoffnames.ts');
+    const resolveName = kickoffNameResolver(lib);
+    const options = { adrFiles: [], resolveName };
+    const checkNames = (extra: string, open = 'filled') => kc.kickoffVerdict(page(extra, open), options);
+    equal(checkNames('[[projects/work/_project]]').problems.length, 0, '575: closed Hub exists');
+    const absent = checkNames('[[projects/work/notes/absent]]');
+    check(absent.problems.some(p => p.includes('projects/work/notes/absent') && p.includes('line ')), `575: absent page named with line: ${absent.problems}`);
+    const plural = checkNames('`projects/work` pages `_project`, `notes/absent` and `_project`.');
+    check(plural.problems.length === 1 && plural.problems[0]!.includes('notes/absent'), `575: every plural page checked: ${plural.problems}`);
+    check(checkNames('[[shared/books/book/notes/page]]').problems.some(p => p.includes('shared/')), '575: shared Book fails closed');
+    check(checkNames('', '**Required reads**: `projects/work` page `notes/absent`.').problems.some(p => p.includes('notes/absent')), '575: required page must exist');
+    const write = (relative: string, body: string) => { const file = path.join(lib, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, body); };
+    for (const relative of ['collection/books/only/wiki/notes/page.md', 'shelf/local/wiki/notes/page.md', 'shelf/_archive/old/wiki/notes/page.md', 'collection/archive/gone/wiki/notes/page.md', 'collection/archive/projects/old/notes/page.md']) write(relative, '# Present\n');
+    for (const name of ['only/notes/page', 'local/notes/page', 'old/notes/page', 'gone/notes/page', 'projects/old/notes/page']) equal(checkNames(`[[${name}]]`).problems.length, 0, `575: resolves ${name}`);
+    check(checkNames('[[projects/work/_Project]]').problems.length > 0, '575: case spelling exact');
+    check(checkNames('[[projects/work/../work/_project]]').problems.length > 0, '575: traversal fails closed');
+    equal(checkNames('[[projects/work/notes/<date>]]').problems.length, 0, '575: names resolver skips placeholders');
+    const { judgeKickoff } = await import('../src/hubnewpage.ts');
+    const received = judgeKickoff(page('[[projects/work/absent]]'), lib, { placeholders: false, train: false, names: false });
+    equal(received.problems.length + received.warnings.length, 0, '575: received absent names neither refused nor warned');
+    // The real received path passes names:false to the same judge.
+    const postSource = fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel/src/hubnewpage.ts'), 'utf8');
+    check(/options\.received\s*\?\s*\{[^}]*names:\s*false/.test(postSource), '575: received posting disables names');
+    const file = path.join(root, 'checked.md');
+    fs.writeFileSync(file, page('[[projects/work/absent]]'));
+    const ran = cli(['kickoff', 'check', file, '--json']);
+    check(ran.exit === 1 && ran.stdout.includes('projects/work/absent'), `575: CLI refuses missing page: ${ran.stdout}${ran.stderr}`);
+    // Open the fixture Hub for posting, then refuse both preview and apply before creation.
+    fs.writeFileSync(openProjects, 'projects/work\n');
+    for (const gate of [['--preflight'], []]) {
+      const posted = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'kickoffs/c1', '--content-path', file, ...gate]);
+      check(posted.exit !== 0 && posted.stderr.includes('projects/work/absent'), `575: posting refuses absent name ${gate}: ${posted.stderr}`);
+      check(!fs.existsSync(path.join(lib, 'collection/projects/work/kickoffs/c1.md')), '575: refused posting creates no page');
+    }
+    fs.writeFileSync(file, page('[[projects/work/_project]]'));
+    const good = cli(['kickoff', 'check', file, '--json']);
+    check(good.exit === 0 && JSON.parse(good.stdout).complete === true, `575: CLI accepts existing closed-readable name: ${good.stdout}${good.stderr}`);
+    const tool = path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts');
+    fs.writeFileSync(file, page(''));
+    const bare = spawnSync(process.execPath, [tool, file], { cwd: root, encoding: 'utf8' });
+    check(bare.status === 0 && !bare.stdout.includes('warning'), `575: bare tool without names warns: ${bare.stdout}${bare.stderr}`);
+    const marker = path.join(lib, '.library/workspace.json');
+    const original = fs.readFileSync(marker, 'utf8');
+    fs.writeFileSync(marker, JSON.stringify({ ...JSON.parse(original), backend: 'basic-memory' }));
+    check(checkNames('[[projects/work/_project]]').problems.some(p => /offline|backend|Basic Memory/.test(p)), '575: remote backend fails closed');
+    fs.writeFileSync(marker, original);
+    fs.writeFileSync(marker, '{');
+    check(checkNames('[[projects/work/_project]]').problems.some(p => /unreadable|JSON/.test(p)), '575: corrupt marker named as unreadable');
+  } catch (error) { failures.push(`section 575 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(575)) await section575();
+
+// --- 576. WINDOWS HOOK SELECTION USES THE INDEX AND ALWAYS INCLUDES THE TYPE CHECK (c84 row 1). ---
+async function section576(): Promise<void> {
+  try {
+    const helper = await import('../../tools/section-select.mts') as unknown as { hookSections: (git: (args: string[]) => string) => { all: boolean; sections: number[]; reasons: string[] } };
+    const calls: string[] = [];
+    const map = JSON.stringify({ schema: 1, sections: { '12': ['kernel/src/one.ts'], '88': ['kernel/src/one.ts'] } });
+    const choose = (changed: string[], covers = map, broken = false) => helper.hookSections(args => {
+      const command = args.join(' '); calls.push(command);
+      if (broken) throw Error('fixture git failed');
+      if (command === 'show :kernel/test/section-covers.json') return covers;
+      if (command === 'show :kernel/test/selftest.ts') return 'if (selected(12)) {\n}\n';
+      if (args.includes('--name-only')) return changed.join('\n');
+      if (args.includes('-U0')) return '@@ -1 +1 @@\n';
+      throw Error('unexpected fixture git: ' + command);
+    });
+    equal(choose(['kernel/src/one.ts']).sections.join(','), '12,88,155', '576: claimants plus type check');
+    for (const file of ['tools/only.ts', 'docs/history.md', 'outside.txt']) equal(choose([file]).sections.join(','), '155', '576: non-kernel path still checks types: ' + file);
+    for (const file of ['kernel/src/cli.ts', 'kernel/test/helper.ts']) check(choose([file]).all, '576: shared/helper path selects all: ' + file);
+    const malformed = choose(['kernel/src/one.ts'], '{');
+    check(malformed.all && malformed.reasons.join().length > 0, '576: malformed map falls back with reason');
+    check(choose([], map, true).all, '576: failed git falls back');
+    equal(choose(['kernel/test/selftest.ts']).sections.join(','), '12,155', '576: staged self-test hunks');
+    check(calls.includes('show :kernel/test/section-covers.json') && calls.includes('show :kernel/test/selftest.ts'), '576: both texts read from index');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c84-index-'));
+    try {
+      const env = repositoryNeutralEnv();
+      const git = (args: string[]) => { const ran = spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30000 }); if (ran.status !== 0) throw Error(ran.stderr); return ran.stdout; };
+      git(['init', '-q']);
+      fs.mkdirSync(path.join(root, 'kernel/test'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'kernel/test/section-covers.json'), map);
+      fs.writeFileSync(path.join(root, 'kernel/test/selftest.ts'), 'if (selected(12)) {\n}\n');
+      git(['add', '.']); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=.git/no-hooks', 'commit', '-qm', 'fixture base']);
+      fs.mkdirSync(path.join(root, 'kernel/src')); fs.writeFileSync(path.join(root, 'kernel/src/one.ts'), 'export {};\n'); git(['add', 'kernel/src/one.ts']);
+      fs.writeFileSync(path.join(root, 'kernel/test/section-covers.json'), '{broken unstaged map');
+      equal(helper.hookSections(git).sections.join(','), '12,88,155', '576: staged map wins over malformed working copy');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } catch (error) { failures.push(`section 576 stopped early: ${(error as Error).message}`); }
+}
+if (selected(576)) await section576();
+
+// --- 577. THE WINDOWS HOOK CARRIES A NONEMPTY SELECTION OR FALLS BACK TO EVERY SECTION (c84 row 2). ---
+async function section577(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c84-hook-'));
+  try {
+    const { hookSections } = await import('../../tools/section-select.mts');
+    for (const changed of ['docs/history.md', 'tools/only.ts', 'unclaimed.txt']) {
+      const chosen = hookSections(args => args[0] === 'show' ? (args[1]!.includes('json') ? '{"schema":1,"sections":{}}' : '') : changed);
+      equal(chosen.sections.join(','), '155', '577: never empty for ' + changed);
+    }
+    if (process.platform !== 'win32') { check(true, '577: Windows hook dispatch fixture is Windows-only; pure rule checked'); return; }
+    const repo = path.join(root, 'repo'), receipt = path.join(root, 'receipt.json'); fs.mkdirSync(repo);
+    const { childEnv } = await import('./gate-env.ts');
+    const env = { ...repositoryNeutralEnv(childEnv()), C84_RECEIPT: receipt, LIBRARY_SELFTEST_SECTIONS: '999' };
+    const run = (...args: string[]) => spawnSync('git', args, { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const git = (...args: string[]) => { const r = run(...args); if (r.status !== 0) throw Error(r.stdout + r.stderr); return r.stdout; };
+    const put = (file: string, body: string) => { const p = path.join(repo, file); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
+    git('init', '-q', '-b', 'fixture'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'core.hooksPath', '.git/no-hooks');
+    put('tools/docs-gate.ts', 'process.exit(4);\n');
+    put('tools/section-select.mts', 'export function hookSections(){if(process.env.C84_MODE==="exit"){console.log("12,155");process.exit(1);}if(process.env.C84_MODE==="crash")throw Error("fixture selection crash");return process.env.C84_MODE==="empty"?{all:false,sections:[],reasons:[]}:{all:false,sections:[12,155],reasons:[]};}\n');
+    // The fake PowerShell boundary executes JavaScript at the real -File path; no PowerShell is added.
+    put('tools/Invoke-LibraryChecks.ps1', 'import fs from "node:fs";fs.writeFileSync(process.env.C84_RECEIPT,JSON.stringify({selection:process.env.LIBRARY_SELFTEST_SECTIONS??null}));console.log("fixture Fast runner");\n');
+    put('kernel/test/gate-lock.ts', 'import fs from"node:fs";import{spawnSync}from"node:child_process";const a=process.argv.slice(2),f=a[a.indexOf("-File")+1];if(f!=="tools/Invoke-LibraryChecks.ps1"||!a.includes("-Fast"))throw Error("wrong Fast route");const r=spawnSync(process.execPath,["--input-type=module"],{input:fs.readFileSync(f,"utf8"),stdio:["pipe","inherit","inherit"]});process.exit(r.status??1);\n');
+    put('code.ts', 'baseline\n'); git('add', '.'); git('commit', '-qm', 'fixture baseline');
+    const hooks = path.join(repo, '.git/hooks'); fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755); git('config', 'core.hooksPath', '.git/hooks');
+    for (const mode of ['crash', 'empty', 'narrow', 'exit']) {
+      put('code.ts', mode + '\n'); git('add', 'code.ts');
+      const r = spawnSync('git', ['commit', '-qm', 'fixture ' + mode], { cwd: repo, env: repositoryNeutralEnv({ ...env, C84_MODE: mode }), encoding: 'utf8', windowsHide: true, timeout: 30000 });
+      const output = r.stdout + r.stderr;
+      equal(r.status, 0, '577: fixture hook failed: ' + output);
+      const selected = JSON.parse(fs.readFileSync(receipt, 'utf8')).selection;
+      equal(selected, mode === 'narrow' ? '12,155' : null, '577: runner selection for ' + mode);
+      equal((output.match(/^selected sections[^\r\n]*/gm) ?? []).length, 1, '577: exactly one selection line for ' + mode);
+      check(mode === 'narrow' ? output.includes('selected sections (2): 12,155') : /selected sections: every section \(.+\)/.test(output), '577: selection/fallback line missing for ' + mode + ': ' + output);
+    }
+  } catch (error) { failures.push(`section 577 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(577)) await section577();
+
+// --- 579. THE HOOK REFUSES MASTER AND UNCLEAN CODE COMMITS, KEEPING THE DOCS FAST PATH (c84 row 2b). ---
+async function section579(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c84-honesty-'));
+  try {
+    const { childEnv } = await import('./gate-env.ts');
+    const receipt = path.join(root, 'receipt.json'), env = { ...repositoryNeutralEnv(childEnv()), C84_RECEIPT: receipt };
+    const run = (...args: string[]) => spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const git = (...args: string[]) => { const r = run(...args); if (r.status !== 0) throw Error(r.stdout + r.stderr); return r.stdout; };
+    const put = (file: string, body: string) => { const p = path.join(root, file); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
+    git('init', '-q', '-b', 'master'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'core.hooksPath', '.git/no-hooks');
+    put('tools/docs-gate.ts', 'import{spawnSync}from"node:child_process";const r=spawnSync("git",["diff","--cached","--name-only","HEAD"],{encoding:"utf8"});process.exit(r.status===0&&r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith(".md"))?0:4);\n');
+    put('tools/section-select.mts', 'export function hookSections(){return{all:false,sections:[155],reasons:[]};}\n');
+    put('tools/Invoke-LibraryChecks.ps1', 'import fs from"node:fs";fs.writeFileSync(process.env.C84_RECEIPT,"ran");\n');
+    put('kernel/test/gate-lock.ts', 'import fs from"node:fs";import{spawnSync}from"node:child_process";const a=process.argv.slice(2),f=a[a.indexOf("-File")+1];if(f!=="tools/Invoke-LibraryChecks.ps1"||!a.includes("-Fast"))throw Error("wrong Fast route");process.exit(spawnSync(process.execPath,["--input-type=module"],{input:fs.readFileSync(f,"utf8"),stdio:["pipe","inherit","inherit"]}).status??1);\n');
+    put('tools/gate.ts', 'import fs from"node:fs";fs.writeFileSync(process.env.C84_RECEIPT,"ran");\n');
+    put('code.ts', 'baseline\n'); put('other.ts', 'baseline\n'); put('README.md', '# Fixture\n'); git('add', '.'); git('commit', '-qm', 'fixture baseline');
+    const hooks = path.join(root, '.git/hooks'); fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755); git('config', 'core.hooksPath', '.git/hooks');
+    put('README.md', '# Changed\n'); git('add', 'README.md');
+    const master = run('commit', '-qm', 'must refuse master');
+    check(master.status !== 0 && /master/.test(master.stdout + master.stderr) && (master.stdout + master.stderr).includes('Nothing was committed.'), '579: master commit not refused: ' + master.stdout + master.stderr);
+    git('switch', '-c', 'fixture'); git('commit', '-qm', 'docs on branch');
+    put('code.ts', 'staged\n'); git('add', 'code.ts'); put('other.ts', 'unstaged\n');
+    const dirty = run('commit', '-qm', 'must refuse unstaged');
+    check(dirty.status !== 0 && (dirty.stdout + dirty.stderr).includes('other.ts') && (dirty.stdout + dirty.stderr).includes('Nothing was committed.'), '579: unstaged commit not refused: ' + dirty.stdout + dirty.stderr);
+    put('other.ts', 'baseline\n'); put('loose.txt', 'untracked\n');
+    const loose = run('commit', '-qm', 'must refuse untracked');
+    check(loose.status !== 0 && (loose.stdout + loose.stderr).includes('loose.txt') && (loose.stdout + loose.stderr).includes('Nothing was committed.'), '579: untracked commit not refused: ' + loose.stdout + loose.stderr);
+    fs.unlinkSync(path.join(root, 'loose.txt')); const clean = run('commit', '-qm', 'clean code');
+    equal(clean.status, 0, '579: clean code failed: ' + clean.stdout + clean.stderr);
+    check(fs.existsSync(receipt), '579: clean code never reached runner');
+    if (process.platform === 'win32') check((clean.stdout + clean.stderr).includes('selected sections (1): 155'), '579: clean code never reached selection');
+    put('loose.txt', 'unrelated\n'); put('README.md', '# Docs with unrelated file\n'); git('add', 'README.md');
+    const docs = run('commit', '-qm', 'docs fast path'); equal(docs.status, 0, '579: docs commit with untracked file failed: ' + docs.stdout + docs.stderr);
+    check(!(docs.stdout + docs.stderr).includes('selected sections'), '579: docs commit reached selection');
+  } catch (error) { failures.push(`section 579 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(579)) await section579();
+// --- 580. The client speaks Basic Memory 1.0 and reads what the server offers (kickoffs/s175 row 1). Against the
+// stand-in's 1.0 surface: `tools/list` once per session, every helper by its `bm_*` name with `project` and never
+// `project_id`, the answer taken by its id behind a log frame, the typed refusals onto today's outcomes, a listed note
+// read and moved by its path with the project's NAME; and on an unreadable tool list or the old surface, today's names.
+async function section580(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s175-client-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const { listServerProjects } = await import('../src/bmconnection.ts');
+    const pid = 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa';
+    const name = 'stand-in-collection';
+    const start = async (label: string, extra: string[]) => {
+      const folder = path.join(root, label);
+      fs.mkdirSync(folder, { recursive: true });
+      const server = await startFakeBasicMemory(folder, [...extra, '--call-log']);
+      servers.push(server);
+      return { folder, url: server.url };
+    };
+    type Call = { method: string; tool?: string; args?: string[]; path?: string; project_by?: string };
+    const calls = (folder: string): Call[] => (fs.existsSync(path.join(folder, '.calls.log')) ? fs.readFileSync(path.join(folder, '.calls.log'), 'utf8') : '')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call);
+    const tools = (folder: string) => calls(folder).filter((line) => line.method === 'tools/call');
+    const sends = (folder: string, relative: string) => (fs.existsSync(path.join(folder, '.writes.log')) ? fs.readFileSync(path.join(folder, '.writes.log'), 'utf8') : '')
+      .split('\n').filter((line) => line === `${pid}|${relative}`).length;
+    const refusal = async (run: () => Promise<unknown>): Promise<string> => {
+      try { await run(); return ''; } catch (error) { return (error as Error).message; }
+    };
+
+    // 1. The 1.0 surface: the tool list once per session, then each helper by its bm_* name with `project`.
+    const one = await start('bm', ['--surface', 'bm']);
+    const session = new bm.McpSession(one.url, 'selftest-580');
+    await session.initialize();
+    equal(session.surface, 'bm', '580: a server offering bm_read was not the bm surface');
+    check((session.tools ?? []).length === 12 && (session.tools ?? []).includes('bm_list'), `580: the session did not keep the twelve tools: ${JSON.stringify(session.tools)}`);
+    const written = await bm.writeExact(session, pid, 'notes', 'first', 'First body.', false);
+    equal(written.file_path, 'notes/first.md', '580: writeExact with overwrite false did not write and read back');
+    const rewritten = await bm.writeExact(session, pid, 'notes', 'first', 'Second body.', true);
+    check(bm.noteBody(rewritten).trim() === 'Second body.', `580: writeExact with overwrite true did not replace: ${JSON.stringify(rewritten)}`);
+    const read = await bm.readExactOrNull(session, pid, 'notes/first.md');
+    check(read !== null && read.file_path === 'notes/first.md' && read.content.includes('Second body.'), `580: readExactOrNull did not read the note: ${JSON.stringify(read)}`);
+    equal(await bm.readExactOrNull(session, pid, 'notes/absent.md'), null, '580: NOT_FOUND on a read was not null');
+    equal(await bm.readValidatedRecord(session, pid, 'notes/absent', { rejected: 'r', unreadable: 'u', different: 'd', empty: 'e' }), 'absent', '580: NOT_FOUND was not absent to readValidatedRecord');
+    const moved = await bm.moveNoteTo(session, pid, 'notes/first', 'archive');
+    check(moved.moved && fs.existsSync(path.join(one.folder, 'archive', 'first.md')), `580: moveNoteTo did not move by bm_move: ${JSON.stringify(moved)}`);
+    const projects = await listServerProjects(session);
+    check(projects.some((project) => project.name === name && project.id === pid), `580: the project list by bm_project did not name the project: ${JSON.stringify(projects)}`);
+    const used = tools(one.folder);
+    for (const tool of ['bm_write', 'bm_read', 'bm_move', 'bm_project']) check(used.some((line) => line.tool === tool), `580: no ${tool} call was sent`);
+    check(used.every((line) => (line.tool ?? '').startsWith('bm_')), `580: an old tool name reached the 1.0 server: ${JSON.stringify(used.filter((line) => !(line.tool ?? '').startsWith('bm_')))}`);
+    check(used.every((line) => !(line.args ?? []).includes('project_id')), '580: a call carried project_id');
+    check(used.filter((line) => line.tool !== 'bm_project').every((line) => (line.args ?? []).includes('project')), '580: a project-scoped call left out project');
+    check(used.filter((line) => line.tool === 'bm_write').every((line) => (line.args ?? []).includes('overwrite')), '580: a bm_write left overwrite to the server');
+    equal(calls(one.folder).filter((line) => line.method === 'tools/list').length, 1, '580: tools/list was not read exactly once for one session');
+
+    // 2. The answer by its id, behind the log frame the stream sends first.
+    const raw = await fetch(one.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': 'fake-session' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'bm_list', arguments: { path: 'notes', project: pid } } }) });
+    const frames = (await raw.text()).split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)) as Record<string, unknown>);
+    check(frames.length === 2 && frames[0]!['method'] === 'notifications/message' && frames[1]!['id'] === 77, `580: the stand-in did not send a log frame before the answer: ${JSON.stringify(frames).slice(0, 300)}`);
+    // 3. A call with no project, made here and not through the client, is 1.0's validation error with no typed code.
+    const bare = await fetch(one.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': 'fake-session' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 78, method: 'tools/call', params: { name: 'bm_read', arguments: { identifier: 'notes/x' } } }) });
+    const bareAnswer = (await bare.text()).split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)) as Record<string, unknown>).find((frame) => frame['id'] === 78);
+    check(bareAnswer !== undefined && bm.typedRefusal(bareAnswer) === null && JSON.stringify(bareAnswer).includes('Missing required keyword only argument') && JSON.stringify(bareAnswer).includes('project'),
+      `580: a call with no project was not the validation error: ${JSON.stringify(bareAnswer).slice(0, 300)}`);
+
+    // 4. The typed refusals onto today's outcomes.
+    const write = (title: string, overwrite: boolean) => bm.sendWrite(session, 'bm_write', { directory: 'notes', title, content: 'Body.', note_type: 'note', overwrite, output_format: 'json', project: pid }, `Write 'notes/${title}'`);
+    await write('kept', false);
+    const exists = await refusal(() => write('kept', false));
+    check(exists.includes('(note-already-exists'), `580: ALREADY_EXISTS was not today's note-already-exists: '${exists}'`);
+    const conflict = await refusal(() => write('refuse-revision-conflict-a', true));
+    check(conflict.includes('(conflict') && !fs.existsSync(path.join(one.folder, 'notes', 'refuse-revision-conflict-a.md')), `580: REVISION_CONFLICT was not today's conflict, or it wrote: '${conflict}'`);
+    const unknown = await bm.writeExact(session, pid, 'notes', 'refuse-outcome-unknown-a', 'Maybe landed.', false);
+    check(unknown.file_path === 'notes/refuse-outcome-unknown-a.md', `580: OUTCOME_UNKNOWN was not judged by the readback: ${JSON.stringify(unknown)}`);
+    equal(sends(one.folder, 'notes/refuse-outcome-unknown-a.md'), 1, '580: an OUTCOME_UNKNOWN write was sent again');
+    const other = bm.judgeWriteResult({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"error": "LOCKED", "message": "It is locked."}' }], isError: true } });
+    check(other.form === 'typed-refusal' && other.detail.includes('LOCKED'), `580: another typed code was not refused by name: ${JSON.stringify(other)}`);
+
+    // 5. A listed note, read and moved by its file_path with the project's NAME.
+    fs.mkdirSync(path.join(one.folder, 'box'), { recursive: true });
+    await bm.writeExact(session, pid, 'box', 'letter-a', 'A letter.', false);
+    const before = calls(one.folder).length;
+    const listed = await session.callTool('bm_list', { path: 'box', page_size: 100, output_format: 'json', project: pid }) as { result?: { structuredContent?: { result?: { nodes?: Record<string, unknown>[] } } } };
+    const node = listed.result?.structuredContent?.result?.nodes?.find((item) => item['type'] === 'file');
+    check(node !== undefined && node['file_path'] === 'box/letter-a.md' && node['permalink'] === `${name}/box/letter-a`, `580: the listing's file node is not 1.0's: ${JSON.stringify(node)}`);
+    const text = await bm.readListedContent(session, { id: pid, name }, 'box/letter-a.md', `${name}/box/letter-a`);
+    check(text !== null && text.includes('A letter.'), `580: a listed note was not read by its path: ${String(text).slice(0, 200)}`);
+    const listedMove = await bm.moveNoteTo(session, name, 'box/letter-a.md', 'box/delivered');
+    check(listedMove.moved && fs.existsSync(path.join(one.folder, 'box', 'delivered', 'letter-a.md')), `580: a listed note was not moved by its path: ${JSON.stringify(listedMove)}`);
+    const byName = calls(one.folder).slice(before).filter((line) => line.tool === 'bm_read' || line.tool === 'bm_move');
+    check(byName.length === 2 && byName.every((line) => line.project_by === 'name'), `580: a listed note was not read and moved with the project's name: ${JSON.stringify(byName)}`);
+    const trap = await refusal(() => bm.readListedContent(session, { id: pid, name }, 'box/delivered/letter-a.md', `${name}/box/another-letter`));
+    check(trap.includes('not the one listed'), `580: a note whose permalink is not the listed one was trusted: '${trap}'`);
+    const wrongPath = await bm.readContentOrNull(session, pid, `${name}/box/delivered/letter-a`);
+    equal(wrongPath, null, '580: a project-prefixed permalink with the UUID was found (1.0 does not strip it)');
+
+    // 6. An unreadable tool list: surface unknown, the connection stands, and the helpers keep today's names.
+    for (const mode of ['error', 'empty']) {
+      const listless = await start(`list-${mode}`, ['--surface', 'bm', '--tools-list', mode]);
+      const quiet = new bm.McpSession(listless.url, 'selftest-580');
+      const opened = await refusal(() => quiet.initialize());
+      equal(opened, '', `580: initialize failed when tools/list answered ${mode}`);
+      equal(quiet.surface, 'unknown', `580: tools/list answering ${mode} was not the unknown surface`);
+      await refusal(() => bm.readExactOrNull(quiet, pid, 'notes/x.md'));
+      check(tools(listless.folder).some((line) => line.tool === 'read_note'), `580: on an unknown surface the helper did not send today's name (${mode})`);
+      const needed = await refusal(async () => bm.needTools(quiet, ['bm_list', 'bm_read'], 'selftest'));
+      check(needed.startsWith(`selftest: the Basic Memory server at ${listless.url} offers no tool list Deskpost could read; Deskpost needs bm_list, bm_read, and it lacks bm_list, bm_read. Nothing was read or written.`), `580: needTools did not refuse in its one line: '${needed}'`);
+    }
+
+    // 7. The old surface: the same helpers send today's names, and the tool list is still read once.
+    const legacy = await start('legacy', ['--surface', 'legacy']);
+    const old = new bm.McpSession(legacy.url, 'selftest-580');
+    await old.initialize();
+    equal(old.surface, 'legacy', '580: a server offering read_note was not the legacy surface');
+    await bm.writeExact(old, pid, 'notes', 'old', 'Old body.', false);
+    await bm.moveNoteTo(old, pid, 'notes/old', 'archive');
+    await listServerProjects(old);
+    const oldNames = tools(legacy.folder).map((line) => line.tool);
+    check(['write_note', 'read_note', 'move_note', 'list_memory_projects'].every((tool) => oldNames.includes(tool)) && oldNames.every((tool) => !(tool ?? '').startsWith('bm_')), `580: the legacy surface was not sent today's names: ${JSON.stringify(oldNames)}`);
+    equal(calls(legacy.folder).filter((line) => line.method === 'tools/list').length, 1, '580: tools/list was not read once on the legacy surface');
+  } catch (error) {
+    failures.push(`section 580 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(580)) await section580();
+
+// --- 581. The shared-collection writers refuse at once on a 1.0 server (kickoffs/s175 row 2; step 2 ports them). In a
+// `backend: basic-memory` workspace, each of the seven writer entries exits with its one line on the 1.0 surface, and
+// with the unknown line when the tool list cannot be read, before any write or old tool name is sent; on the old
+// surface Hub creation still writes as before.
+async function section581(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s175-writers-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const pid = 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa';
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const library = async (label: string, extra: string[]) => {
+      const storage = fakeStorage(path.join(root, `${label}-storage`));
+      const server = await startFakeBasicMemory(storage, [...extra, '--call-log']);
+      servers.push(server);
+      const workspace = path.join(root, `${label}-ws`);
+      equal(basicMemoryWorkspace(workspace, path.join(root, 'reg'), server.url, pid, { cwd: root, env, sharedRoot: storage }).exit, 0, `581: the ${label} workspace was not made`);
+      equal(runCli(['collection', 'owner', '--acquire', '--workspace', workspace, '--json'], { cwd: root, env }).exit, 0, `581: the ${label} workspace could not own its collection`);
+      const source = path.join(workspace, 'notebook', 'x');
+      fs.mkdirSync(source, { recursive: true });
+      fs.writeFileSync(path.join(source, 'page.md'), '# A page\n\nCopied.\n');
+      equal(runCli(['shelf', 'new', 'curated', '--title', 'Curated', '--summary', 'A Book to publish.', '--workspace', workspace], { cwd: root, env }).exit, 0, `581: the ${label} workspace's Shelf Book was not made`);
+      return { storage, workspace };
+    };
+    const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+    const bmLine = (operation: string) => `${operation} is refused: this Basic Memory server offers the 1.0 tools (bm_*), and Deskpost's shared-collection writers are not ported to them yet (train item basic-memory-1-0, step 2). Nothing was written.`;
+    const unknownLine = (operation: string) => `${operation} is refused: the Basic Memory server's tool list could not be read, so it may be a 1.0 server, which Deskpost's shared-collection writers are not ported to yet (train item basic-memory-1-0, step 2). Nothing was written.`;
+    const OLD = /"tool":"(?:write_note|read_note|read_content|move_note|edit_note|delete_note|list_directory|list_memory_projects|create_memory_project)"/;
+    const writers: [string[], string][] = [
+      [['hub', 'edit', 'demo', '--mode', 'add-section', '--section', 'X', '--content', 'y'], 'hub edit'],
+      [['hub', 'copy-pages', 'demo', '--source', 'notebook/x', '--title', 'T', '--purpose', 'P', '--preflight'], 'hub copy-pages'],
+      [['publish', 'curated', '--title', 'T', '--summary', 'S', '--preflight'], 'publish'],
+      [['hub', 'archive', 'demo', '--preflight'], 'hub archive'],
+      [['shared', 'archive', 'curated', '--preflight'], 'shared archive'],
+      [['shared', 'list-entry', 'curated', '--preflight'], 'shared list-entry'],
+      [['hub', 'new', 'demo', '--title', 'Demo', '--purpose', 'P'], 'hub new'],
+    ];
+    const one = await library('bm', ['--surface', 'bm']);
+    const seated = { ...env, LIBRARY_SEAT: 'alpha' };
+    // The seat's Desk, laid down as section 13 lays one: the Book to publish and the Hub to edit, open.
+    const desk = path.join(one.workspace, '.claude', 'seats', 'alpha');
+    fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/curated\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/demo\n');
+    fs.writeFileSync(path.join(one.workspace, 'shelf', 'curated', 'wiki', 'a-page.md'), '# A page\n\nTo publish.\n');
+    // A publish's preflight reads no server; the apply, with the preflight's plan_id, is what opens the session.
+    const planned = runCli(['publish', 'curated', '--title', 'T', '--summary', 'S', '--preflight', '--json', '--workspace', one.workspace], { cwd: root, env: seated });
+    const planId = String((JSON.parse(planned.stdout || '{}') as Record<string, unknown>)['plan_id'] ?? '');
+    check(planId !== '', `581: the publish preflight gave no plan_id: ${planned.stderr.trim().slice(0, 300)}`);
+    writers[2] = [['publish', 'curated', '--title', 'T', '--summary', 'S', '--user-confirmed', '--plan-id', planId], 'publish'];
+    for (const [args, operation] of writers) {
+      const answer = runCli([...args, '--workspace', one.workspace], { cwd: root, env: seated });
+      check(answer.exit !== 0 && answer.stderr.includes(bmLine(operation)), `581: ${args.slice(0, 2).join(' ')} did not refuse in its one line on 1.0: ${answer.exit} ${answer.stderr.trim().slice(0, 400)}`);
+      check(!`${answer.stdout}${answer.stderr}`.includes('Unknown tool'), `581: ${args.slice(0, 2).join(' ')} reached an Unknown tool answer`);
+    }
+    equal(read(path.join(one.storage, '.writes.log')), '', '581: a writer wrote to the 1.0 server');
+    check(!OLD.test(read(path.join(one.storage, '.calls.log'))), `581: an old tool name reached the 1.0 server: ${read(path.join(one.storage, '.calls.log')).slice(0, 400)}`);
+
+    for (const mode of ['error', 'empty']) {
+      const listless = await library(`list-${mode}`, ['--surface', 'bm', '--tools-list', mode]);
+      const answer = runCli(['hub', 'new', 'demo', '--title', 'Demo', '--purpose', 'P', '--workspace', listless.workspace], { cwd: root, env });
+      check(answer.exit !== 0 && answer.stderr.includes(unknownLine('hub new')), `581: Hub creation with tools/list answering ${mode} did not refuse in the unknown line: ${answer.stderr.trim().slice(0, 400)}`);
+      equal(read(path.join(listless.storage, '.writes.log')), '', `581: Hub creation wrote with tools/list answering ${mode}`);
+      check(!OLD.test(read(path.join(listless.storage, '.calls.log'))), `581: an old tool name was sent with tools/list answering ${mode}`);
+    }
+
+    const old = await library('legacy', ['--surface', 'legacy']);
+    const made = runCli(['hub', 'new', 'demo', '--title', 'Demo', '--purpose', 'P', '--workspace', old.workspace], { cwd: root, env });
+    check(made.exit === 0 && fs.existsSync(path.join(old.storage, 'projects', 'demo', '_project.md')) && read(path.join(old.storage, '.writes.log')).includes(`${pid}|projects/demo/_project.md`),
+      `581: Hub creation on the old surface no longer writes: ${made.exit} ${made.stderr.trim().slice(0, 400)}`);
+  } catch (error) {
+    failures.push(`section 581 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(581)) await section581();
+
+// --- 582. The Postbox on Basic Memory 1.0 (kickoffs/s175 row 3). Against the stand-in's default 1.0 surface: setup, send,
+// check and resolve between two Libraries by `bm_*` names with `project`, a listed letter read and moved by its path with
+// the project's name, an inbox of 250 filed across three pages and 120 entries read across two, a missing inbox empty,
+// a third Library's inbox untouched, a just-listed file that reads NOT_FOUND refused by name; and a server without the
+// tools refused at connect, in one line, with nothing written.
+async function section582(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s175-postbox-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const storage = path.join(root, 'server');
+    fs.mkdirSync(storage, { recursive: true });
+    const server = await startFakeBasicMemory(storage, ['--call-log', '--vanish', 'deadbeef']);
+    servers.push(server);
+    const t = await twoPostboxLibraries(root, server.url);
+    const project = path.join(storage, '.projects', 'deskpost');
+    const onServer = (relative: string) => path.join(project, ...relative.split('/'));
+    type Call = { method: string; tool?: string; args?: string[]; path?: string; project_by?: string };
+    const calls = (): Call[] => fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call);
+
+    // 1. Setup (in the fixture), send and resolve.
+    const sent = t.json(t.send(t.home, 'asker', 'Far Office', 'clerk', 'A question', 'Could you look at this?'));
+    const id = String(sent['delivery_id'] ?? '');
+    check((sent['postbox'] as Record<string, unknown> | undefined)?.['state'] === 'sent', `582: the letter was not sent on 1.0: ${JSON.stringify(sent).slice(0, 400)}`);
+    const resolved = t.json(t.cli(t.home.lib, ['postbox', 'resolve', 'Far Office', '--json']));
+    equal(resolved['library_id'], t.far.id, '582: resolve did not find the other Library on 1.0');
+
+    // 2. 250 letters and one that will read NOT_FOUND in the far inbox; 118 more entries; a third Library's waiting letter.
+    const inbox = `postbox/inbox/${t.far.id}`;
+    const letter = fs.readFileSync(onServer(`${inbox}/${id}.md`), 'utf8');
+    const copy = (suffix: string) => {
+      const other = id.replace(/[0-9a-f]{8}$/, suffix);
+      fs.writeFileSync(onServer(`${inbox}/${other}.md`), letter.split(id).join(other));
+      return other;
+    };
+    for (let n = 1; n < 250; n += 1) copy(n.toString(16).padStart(8, '0'));
+    const vanished = copy('deadbeef');
+    const entry = fs.readFileSync(onServer(`postbox/libraries/${t.home.id}.md`), 'utf8');
+    const lastEntry = 'ffffffff-0000-4000-8000-000000000118';
+    for (let n = 1; n <= 118; n += 1) {
+      const other = `ffffffff-0000-4000-8000-${n.toString().padStart(12, '0')}`;
+      fs.writeFileSync(onServer(`postbox/libraries/${other}.md`), entry.split(t.home.id).join(other));
+    }
+    const third = 'eeeeeeee-3333-4eee-8eee-eeeeeeeeeeee';
+    fs.mkdirSync(onServer(`postbox/inbox/${third}`), { recursive: true });
+    fs.writeFileSync(onServer(`postbox/inbox/${third}/waiting.md`), '---\ntitle: waiting\npermalink: postbox/inbox/waiting\n---\n\nNot for these Libraries.\n');
+
+    // 3. The far check files all 250 in full, across three pages, and names the vanished one as a refusal.
+    const far = t.json(t.cli(t.far.lib, ['postbox', 'check', '--json']));
+    const filed = (far['filed'] as unknown[] | undefined) ?? [];
+    const skipped = (far['skipped'] as Record<string, unknown>[] | undefined) ?? [];
+    check(far['reachable'] === true && filed.length === 250 && far['moved'] === 250, `582: the inbox of 250 was not filed and moved in full: ${JSON.stringify({ reachable: far['reachable'], filed: filed.length, moved: far['moved'], left: far['left'] })}`);
+    check(skipped.length === 1 && String(skipped[0]!['path']).includes(vanished) && String(skipped[0]!['why']).includes('NOT_FOUND') && !String(skipped[0]!['why']).includes('gone before'),
+      `582: a just-listed file that read NOT_FOUND was not a named refusal: ${JSON.stringify(skipped)}`);
+    check(calls().filter((line) => line.tool === 'bm_list' && line.path === inbox).length >= 3, '582: the inbox was not listed across three pages');
+
+    // 4. The home check: its inbox folder does not exist, and lists as empty.
+    check(!fs.existsSync(onServer(`postbox/inbox/${t.home.id}`)), '582: the fixture made the home inbox');
+    const home = t.json(t.cli(t.home.lib, ['postbox', 'check', '--json']));
+    check(home['reachable'] === true && ((home['filed'] as unknown[] | undefined) ?? []).length === 0 && ((home['skipped'] as unknown[] | undefined) ?? []).length === 0, `582: a missing inbox folder was not checked as empty: ${JSON.stringify(home).slice(0, 400)}`);
+
+    // 5. 120 entries, read across two pages: the last one resolves.
+    const lastResolved = t.json(t.cli(t.home.lib, ['postbox', 'resolve', lastEntry, '--json']));
+    equal(lastResolved['library_id'], lastEntry, '582: an entry on the second page was not read');
+    check(calls().filter((line) => line.tool === 'bm_list' && line.path === 'postbox/libraries').length >= 2, '582: the entries were not listed across pages');
+
+    // 6. Every call by its 1.0 name with `project` (bm_project takes none), never project_id; listed letters by the name.
+    const used = calls().filter((line) => line.method === 'tools/call');
+    check(used.length > 0 && used.every((line) => (line.tool ?? '').startsWith('bm_')), `582: an old tool name was sent: ${JSON.stringify(used.filter((line) => !(line.tool ?? '').startsWith('bm_')).slice(0, 3))}`);
+    check(used.every((line) => !(line.args ?? []).includes('project_id')), '582: a call carried project_id');
+    check(used.filter((line) => line.tool !== 'bm_project').every((line) => (line.args ?? []).includes('project')), '582: a project-scoped call left out project');
+    const moves = used.filter((line) => line.tool === 'bm_move');
+    check(moves.length >= 250 && moves.every((line) => line.project_by === 'name'), `582: a listed letter was not moved by its path with the project's name: ${moves.length}`);
+    check(used.filter((line) => line.tool === 'bm_read' && line.project_by === 'name').length >= 251, '582: the listed letters were not read with the project\'s name');
+    check(!used.some((line) => line.path === `postbox/inbox/${third}`) && fs.existsSync(onServer(`postbox/inbox/${third}/waiting.md`)), '582: a third Library\'s inbox was listed or its letter moved');
+
+    // 7. A server without the tools: refused at connect in one line, recorded, never unreachable, nothing written.
+    const statePath = path.join(t.home.lib, 'internal', 'postbox', 'state.json');
+    for (const [label, extra, lacks] of [['legacy', ['--surface', 'legacy'], 'bm_list, bm_read, bm_write, bm_move, bm_project'], ['no-move', ['--drop-tool', 'bm_move'], 'bm_move']] as [string, string[], string][]) {
+      const folder = path.join(root, label);
+      fs.mkdirSync(folder, { recursive: true });
+      const other = await startFakeBasicMemory(folder, extra);
+      servers.push(other);
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+      fs.writeFileSync(statePath, JSON.stringify({ ...state, url: other.url }, null, 2) + '\n');
+      const refused = t.cli(t.home.lib, ['postbox', 'check', '--json']);
+      check(refused.exit !== 0 && refused.stderr.includes(`The Postbox: the Basic Memory server at ${other.url} offers `) && refused.stderr.includes(`; Deskpost needs bm_list, bm_read, bm_write, bm_move, bm_project, and it lacks ${lacks}. Nothing was read or written.`),
+        `582: a ${label} server was not refused at connect in one line: ${refused.exit} ${refused.stderr.trim().slice(0, 400)}`);
+      equal(fs.existsSync(path.join(folder, '.writes.log')), false, `582: something was written to the ${label} server`);
+      const after = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+      check(Array.isArray(after['server_tools_missing']) && (after['server_tools_missing'] as string[]).join(', ') === lacks && !after['unreachable_since'], `582: the ${label} server's tools were not recorded, or it was called unreachable: ${JSON.stringify(after).slice(0, 400)}`);
+    }
+  } catch (error) {
+    failures.push(`section 582 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(582)) await section582();
+
+// --- 583. Doctor says whether the Postbox server offered what Deskpost needs (kickoffs/s175 row 4), from the cache
+// `postbox check` keeps and never from the server: PASS, WARN, and both SKIPs, from fixture caches, with a listener at the
+// cached URL that must hear nothing.
+async function section583(): Promise<void> {
+  const { createServer } = await import('node:http');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s175-doctor-')));
+  let heard = 0;
+  const listener = createServer((request, response) => { heard += 1; request.resume(); response.writeHead(500); response.end(); });
+  try {
+    const port = await listenFetchable(listener);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const workspace = path.join(root, 'lib');
+    equal(runCli(['init', workspace, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, '583: the Library was not made');
+    const row = (): Record<string, unknown> | undefined => {
+      const run = runCli(['doctor', '--json', '--workspace', workspace], { cwd: root, env });
+      const checks = (JSON.parse(run.stdout || '{}') as Record<string, unknown>)['library_checks'] as Record<string, unknown>[] | undefined;
+      return (checks ?? []).find((item) => item['check'] === 'postbox.server-tools');
+    };
+    const none = row();
+    check(none?.['status'] === 'skipped' && String(none?.['detail']).includes('no Postbox'), `583: a Library with no Postbox was not skipped: ${JSON.stringify(none)}`);
+    const statePath = path.join(workspace, 'internal', 'postbox', 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const base = { schema: 1, url: `http://127.0.0.1:${port}/mcp`, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', last_check: '2026-10-31T09:00:00Z' };
+    const put = (extra: Record<string, unknown>) => fs.writeFileSync(statePath, JSON.stringify({ ...base, ...extra }, null, 2) + '\n');
+    put({});
+    const unread = row();
+    check(unread?.['status'] === 'skipped' && String(unread?.['detail']).includes('not yet read'), `583: a cache with no recorded tools was not "not yet read": ${JSON.stringify(unread)}`);
+    const all = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
+    put({ server_tools: all, server_tools_missing: [], server_tools_utc: '2026-10-31T09:00:00Z' });
+    const pass = row();
+    check(pass?.['status'] === 'pass' && pass?.['detail'] === 'the Postbox server offered every tool Deskpost needs at its last check, 2026-10-31T09:00:00Z', `583: the PASS line is not doctor's: ${JSON.stringify(pass)}`);
+    put({ server_tools: ['read_note', 'write_note', 'list_directory'], server_tools_missing: ['bm_list', 'bm_read', 'bm_write', 'bm_move', 'bm_project'], server_tools_utc: '2026-10-31T09:05:00Z' });
+    const warn = row();
+    check(warn?.['status'] === 'warn' && String(warn?.['detail']).includes('the Postbox server offered read_note, write_note, list_directory; Deskpost needs bm_list, bm_read, bm_write, bm_move and bm_project, and it lacks bm_list, bm_read, bm_write, bm_move, bm_project'),
+      `583: the WARN line does not name what was offered and what is lacking: ${JSON.stringify(warn)}`);
+    equal(heard, 0, '583: doctor called the Postbox server');
+  } catch (error) {
+    failures.push(`section 583 stopped early: ${(error as Error).message}`);
+  } finally {
+    listener.closeAllConnections();
+    listener.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(583)) await section583();
+
+// --- 584. Kickoff names refuse linked path components before listing them, and accept canonical Book paths (c85).
+async function section584(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c85-names-')));
+  const fsDefault = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const original = fsDefault.readdirSync;
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, '584: fixture init');
+    const { kickoffNameResolver } = await import('../src/kickoffnames.ts');
+    const { kickoffNames } = await import('../src/kickoffcheck.ts');
+    const resolve = kickoffNameResolver(lib);
+    const write = (relative: string) => { const file = path.join(lib, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '# Present\n'); };
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'present.md'), '# Outside\n');
+    const hub = path.join(lib, 'collection/projects/work');
+    fs.mkdirSync(hub, { recursive: true });
+    const link = path.join(hub, 'notes');
+    fs.symlinkSync(outside, link, 'junction');
+    for (const page of ['present', 'missing']) {
+      const listings: string[] = [];
+      fsDefault.readdirSync = ((...args: Parameters<typeof fs.readdirSync>) => {
+        const folder = path.resolve(String(args[0]));
+        listings.push(folder, fs.realpathSync(folder));
+        return Reflect.apply(original, fsDefault, args);
+      }) as typeof fs.readdirSync;
+      syncBuiltinESMExports();
+      let result;
+      try { result = resolve(`projects/work/notes/${page}`); }
+      finally { fsDefault.readdirSync = original; syncBuiltinESMExports(); }
+      check(result.status === 'unreadable' && /link/.test(result.reason ?? ''), `584: linked ${page} page must name a link refusal: ${JSON.stringify(result)}`);
+      const below = (folder: string, boundary: string) => folder === boundary || folder.startsWith(boundary + path.sep);
+      check(listings.length > 0 && !listings.some(folder => below(folder, outside) || below(folder, link)), `584: outside folder was listed for ${page}: ${JSON.stringify(listings)}`);
+    }
+    for (const relative of ['shelf/local/wiki/notes/page.md', 'collection/books/only/wiki/notes/page.md', 'collection/archive/gone/wiki/notes/page.md']) write(relative);
+    for (const name of ['shelf/local', 'local', 'books/only', 'archive/gone']) {
+      for (const middle of ['', 'wiki/']) {
+        const full = `${name}/${middle}notes/page`;
+        const extracted = kickoffNames(`[[${full}]]`);
+        equal(extracted.length, 1, `584: canonical or short link extracted: ${full}`);
+        equal(resolve(extracted[0]!.name).status, 'exists', `584: canonical or short Book link resolves: ${full}`);
+      }
+    }
+    write('shelf/doubled/wiki/wiki/notes/page.md');
+    equal(resolve(kickoffNames('[[doubled/wiki/notes/page]]')[0]!.name).status, 'absent', '584: one wiki prefix dropped before building candidates');
+  } catch (error) { failures.push(`section 584 stopped early: ${(error as Error).message}`); }
+  finally {
+    fsDefault.readdirSync = original;
+    syncBuiltinESMExports();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(584)) await section584();
+
+// --- 585. The Postbox moves the listed file its read trusted, despite an old permalink at a third path (c85).
+async function section585(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c85-postbox-')));
+  const storage = path.join(root, 'server');
+  fs.mkdirSync(storage);
+  const server = await startFakeBasicMemory(storage);
+  try {
+    const t = await twoPostboxLibraries(root, server.url);
+    const project = path.join(storage, '.projects', 'deskpost');
+    const onServer = (relative: string) => path.join(project, ...relative.split('/'));
+    const moves = () => fs.readFileSync(path.join(storage, '.writes.log'), 'utf8').split('\n').filter(line => line.includes('|move '));
+    const collision = (title: string) => {
+      const sent = t.json(t.send(t.home, 'asker', 'Far Office', 'clerk', title, `About ${title}.`));
+      check((sent['postbox'] as Record<string, unknown> | undefined)?.['state'] === 'sent', `585: fixture letter sent: ${JSON.stringify(sent)}`);
+      const id = String(sent['delivery_id']);
+      const inbox = `postbox/inbox/${t.far.id}/${id}.md`;
+      const old = `postbox/elsewhere/${id}.md`;
+      const delivered = `postbox/inbox/${t.far.id}/delivered/${id}.md`;
+      const oldText = fs.readFileSync(onServer(inbox), 'utf8');
+      fs.mkdirSync(path.dirname(onServer(old)), { recursive: true });
+      fs.renameSync(onServer(inbox), onServer(old));
+      const newText = oldText.replace(/^permalink: .*$/m, `permalink: postbox/new-${id}`);
+      check(newText !== oldText, '585: new inbox note has a different permalink');
+      fs.writeFileSync(onServer(inbox), newText);
+      equal(fs.existsSync(onServer(delivered)), false, '585: collision destination absent');
+      return { id, inbox, old, delivered, oldText, newText };
+    };
+    const one = collision('Identifier collision');
+    const before = moves().length;
+    const checked = t.json(t.cli(t.far.lib, ['postbox', 'check', '--json']));
+    const moveLines = moves().slice(before);
+    check(checked['moved'] === 1 && !fs.existsSync(onServer(one.inbox)) && fs.existsSync(onServer(one.delivered)) && fs.readFileSync(onServer(one.delivered), 'utf8') === one.newText,
+      `585: new listed note moved to delivered: ${JSON.stringify(checked).slice(0, 500)}`);
+    check(fs.existsSync(onServer(one.old)) && fs.readFileSync(onServer(one.old), 'utf8') === one.oldText, '585: old note preserved byte for byte in third folder');
+    check(moveLines.length === 1 && moveLines[0]!.endsWith(`|move ${one.inbox} -> ${one.delivered}`), `585: move names the new inbox source: ${JSON.stringify(moveLines)}`);
+    process.stdout.write(`585 collision move: ${moveLines.join('; ')}\n`);
+
+    // A second collision on the new permalink refuses both reads. This guard already passes before the fix.
+    const two = collision('Both identifiers ambiguous');
+    const impostor = `postbox/aaa/${two.id}.md`;
+    fs.mkdirSync(path.dirname(onServer(impostor)), { recursive: true });
+    fs.writeFileSync(onServer(impostor), two.newText);
+    const beforeRefused = moves().length;
+    const refused = t.json(t.cli(t.far.lib, ['postbox', 'check', '--json']));
+    const skipped = (refused['skipped'] as Record<string, unknown>[] | undefined) ?? [];
+    check(skipped.some(row => row['path'] === two.inbox && String(row['why']).includes('not the file listed') && String(row['why']).includes('Left in the inbox.')),
+      `585: ambiguous reads named in skipped: ${JSON.stringify(skipped)}`);
+    check(fs.existsSync(onServer(two.inbox)) && fs.readFileSync(onServer(two.inbox), 'utf8') === two.newText, '585: untrusted note stays in inbox unchanged');
+    equal(moves().length, beforeRefused, '585: untrusted note sends no move');
+    check(fs.existsSync(onServer(two.old)) && fs.readFileSync(onServer(two.old), 'utf8') === two.oldText && fs.readFileSync(onServer(impostor), 'utf8') === two.newText,
+      '585: both old copies preserved after refused read');
+  } catch (error) { failures.push(`section 585 stopped early: ${(error as Error).message}`); }
+  finally { server.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(585)) await section585();
 
 // --- the verdict ----------------------------------------------------------------------------------------
 

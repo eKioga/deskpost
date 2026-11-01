@@ -539,10 +539,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S112',
   },
   kickoff: {
-    summary: "Send a Kickoff on this seat's Hub to a seat in another Library, byte for byte, or receive one onto this seat's Hub.",
-    // kickoffs/s159 rows 2 and 3 (PLAN-cross-office-build-loop.md steps 2.1 and 2.2).
-    usage: 'library kickoff send kickoffs/<id> --library <id-or-card> --for <seat> [--json]; library kickoff receive notes/<letter page> [--json]',
+    summary: "Check a Kickoff file, send a Kickoff on this seat's Hub to a seat in another Library, byte for byte, or receive one onto this seat's Hub.",
+    // kickoffs/s159 rows 2 and 3 (PLAN-cross-office-build-loop.md steps 2.1 and 2.2); `check`, kickoffs/s174 row 2.
+    usage: 'library kickoff check <file> [--json]; library kickoff send kickoffs/<id> --library <id-or-card> --for <seat> [--json]; library kickoff receive notes/<letter page> [--json]',
     details: {
+      check: [
+        "Judges a Kickoff file by docs/kickoff-template.md's rules, as hub edit does when it posts a kickoffs/ page, with the TRAIN id read from this Library's internal/train/register.json; it writes nothing. Exits 0 when complete, 1 naming each problem, 2 when the file cannot be read.",
+      ],
       send: [
         "Sends the page kickoffs/<id> of this seat's own Hub as a letter titled 'Kickoff: <id>' to one seat of another Library, in an",
         'envelope that carries its SHA-256 and byte count; nothing in it is filled or trimmed. A page over the proven size is refused.',
@@ -554,9 +557,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'interruption, it finishes what is left and never makes a second page or pointer.',
       ],
     },
-    actions: ['receive', 'send'],
+    actions: ['check', 'receive', 'send'],
     positional: false,
     arguments: {
+      check: { positionals: 1 },
       send: { valued: ['library', 'for'], positionals: 1 },
       receive: { positionals: 1 },
     },

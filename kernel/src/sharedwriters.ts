@@ -24,7 +24,7 @@ import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { judgeWriteResult, McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
+import { judgeWriteResult, McpSession, noteBody, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl, configuredSharedRoot } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed, isSharedCollectionRoot } from './ownership.ts';
 import { localDate } from './localdate.ts';
@@ -151,6 +151,7 @@ export async function hubArchive(argv: string[], workspace: string): Promise<Rec
   const archiveDirectory = `archive/projects/${slug}`;
   const session = new McpSession(url, 'library-project-archiver');
   await session.initialize();
+  refuseUnportedWriter(session, 'hub archive');
   const words = { stopped: 'archive stopped' };
   const activeRoot = await readExactOrNull(session, projectId, `${activeDirectory}/_project.md`, words);
   const archiveRoot = await readExactOrNull(session, projectId, `${archiveDirectory}/_project.md`, words);
@@ -375,6 +376,7 @@ export async function sharedArchive(argv: string[], workspace: string): Promise<
   const archiveDirectory = `archive/${slug}`;
   const session = new McpSession(url, 'pilot-book-archiver');
   await session.initialize();
+  refuseUnportedWriter(session, 'shared archive');
   const words = { includeFrontmatter: false, stopped: 'archive stopped' };
   const activeRoot = await readExactOrNull(session, projectId, `${activeDirectory}/wiki/_book.md`, words);
   const archiveRoot = await readExactOrNull(session, projectId, `${archiveDirectory}/wiki/_book.md`, words);
@@ -658,6 +660,7 @@ export async function sharedListEntry(argv: string[], workspace: string): Promis
 
   const session = new McpSession(url, 'library-catalog-lister');
   await session.initialize();
+  refuseUnportedWriter(session, 'shared list-entry');
   const words = { includeFrontmatter: false, stopped: 'listing stopped' };
   const rootRecord = await readExactOrNull(session, projectId, rootPage, words);
   if (rootRecord === null) refuse(`'${rootPage}' does not exist; nothing was listed.`);

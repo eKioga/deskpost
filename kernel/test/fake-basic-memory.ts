@@ -38,9 +38,35 @@
  * in this process only.
  *
  *   node fake-basic-memory.ts <folder> <port-file> [--project <name>] [--id <uuid>] [--hang]
+ *                             [--surface legacy|bm] [--drop-tool <name>] [--tools-list error|empty] [--call-log]
+ *                             [--vanish <text>]
  *
  * `--hang` accepts every connection and answers none, which is what a black-holed host looks like to a client.
  * The port it listens on is written to <port-file> once it is listening.
+ *
+ * TWO SURFACES (kickoffs/s175 rows 1 and 3). `--surface legacy` answers as above, by the old names, and lists them from
+ * `tools/list`. `--surface bm`, the default since row 3, answers as Basic Memory 1.0.0 does (the NAS since 2026-10-30; Shelf Book `basic-memory`
+ * page `basic-memory/mcp-tool-surface`, its live lines of 2026-10-31, and the v1.0.0 source): `tools/list` offers the
+ * twelve `bm_*` names and an old name is `Unknown tool`; every project-scoped call needs `project` (its name or UUID;
+ * `project_id` is accepted as an alias, as 1.0's `tool_params.py` accepts it), and a call with neither is an
+ * `isError: true` validation error naming `project`, with no typed code; a refusal is `isError: true` whose text is
+ * `{"error": <code>, "message"}` with `output_format: "json"`; a `tools/call` answer is an event stream whose first frame
+ * is a `notifications/message`, the result after it; `bm_list` is paged (`page`, `page_size` 1 to 100, default 10,
+ * `has_more`), folders first, a file's `permalink` with the project's name in front, and a missing folder lists empty;
+ * `bm_read` of a missing note is `NOT_FOUND`; `bm_write` over an existing note without `overwrite` is `ALREADY_EXISTS`;
+ * `bm_move` to the note's own path is `INVALID_ARGUMENTS` "The note is already at '<path>'." Two more title cues:
+ * `refuse-outcome-unknown-` writes the note and answers `OUTCOME_UNKNOWN`, `refuse-revision-conflict-` answers
+ * `REVISION_CONFLICT` and writes nothing. A permalink with the project's name in front is found only when `project` is
+ * the NAME (1.0 does not strip it for a UUID). UNMEASURED ON 1.0 (kickoffs/s175 STANDING ANSWER 8), kept as v0.23.2
+ * measured it: a moved note's permalink stays, a read follows a permalink before a path, and `metadata` values are
+ * quoted as v0.23.2 quoted them. `bm_edit`, `bm_delete`, `bm_find`, `bm_search`, `bm_context`, `bm_schema` and `bm_man`
+ * are listed and answer `UNSUPPORTED`.
+ *
+ * `--drop-tool <name>` leaves one tool out of `tools/list` and answers it `Unknown tool`; `--tools-list error` answers
+ * `tools/list` with an error and `--tools-list empty` with a result that has no `tools`. With `--call-log`, on both
+ * surfaces, every request is logged to `<folder>/.calls.log` (only when asked: section 43 hashes and imports the folder),
+ * one JSON line each: `method`, `tool` for a `tools/call`, the argument NAMES (never
+ * their values), for `bm_list` its `path`, and `project_by` (`name` or `id`: how the project was named, not the value).
  */
 
 import { createHash } from 'node:crypto';
@@ -57,6 +83,16 @@ const option = (name: string, fallback: string): string => {
 const hang = rest.includes('--hang');
 const projectName = option('project', 'stand-in-collection');
 const projectId = option('id', 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa');
+// 1.0 BY DEFAULT since kickoffs/s175 row 3, as the NAS is; `--surface legacy` for a section judging the old tools.
+const surface = option('surface', 'bm') === 'legacy' ? 'legacy' : 'bm';
+// `--vanish <text>`: a `bm_read` whose identifier holds it answers NOT_FOUND, as a file gone between a listing and its read.
+const vanish = option('vanish', '');
+const droppedTool = option('drop-tool', '');
+const toolsList = option('tools-list', '');
+// THE CALL LOG ONLY WHEN ASKED: a folder some sections hash and import from must hold no file the fake made unasked.
+const callLog = rest.includes('--call-log');
+const LEGACY_TOOLS = ['list_memory_projects', 'read_note', 'write_note', 'create_memory_project', 'list_directory', 'read_content', 'move_note'];
+const BM_TOOLS = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
 /** Projects made by `create_memory_project`, by name: their id and their own folder under `<folder>/.projects/`. */
 const created = new Map<string, { id: string; path: string }>();
 let createdCount = 0;
@@ -174,14 +210,30 @@ function resolveNote(root: string, identifier: string): string | null {
 function writeNote(args: Record<string, unknown>): unknown {
   const root = projectFolder(String(args['project_id'] ?? ''));
   if (root === null) return { content: [{ type: 'text', text: `Project '${String(args['project_id'])}' not found.` }], isError: true };
+  return writeAt(root, String(args['project_id']), args, false);
+}
+
+/** A 1.0 refusal: `isError: true`, its text the JSON form with `output_format: "json"`, else `<CODE>: <message>`. */
+function refusal(code: string, message: string, args: Record<string, unknown>): unknown {
+  const said = args['output_format'] === 'json' ? JSON.stringify({ error: code, message }) : `${code}: ${message}`;
+  return { content: [{ type: 'text', text: said }], isError: true };
+}
+
+/** One write into a project folder, answered as v0.23.2 (`bm` false) or as 1.0 (`bm` true) answers it. */
+function writeAt(root: string, key: string, args: Record<string, unknown>, bm: boolean): unknown {
   const directory = String(args['directory'] ?? '').replace(/^\/+|\/+$/g, '');
   const title = String(args['title'] ?? '');
   const relative = `${directory ? directory + '/' : ''}${title}.md`;
   const fault = String((args['metadata'] as Record<string, unknown> | undefined)?.['stand_in_fault'] ?? '');
-  const form = /^(refuse-(rpc-error|is-error|error-field|conflict|edit-failed|error-heading)|drop-(landed|lost))-/.exec(fault === 'drop-landed' ? 'drop-landed-' : title);
+  const form = /^(refuse-(rpc-error|is-error|error-field|conflict|edit-failed|error-heading|outcome-unknown|revision-conflict)|drop-(landed|lost))-/.exec(fault === 'drop-landed' ? 'drop-landed-' : title);
   const file = path.join(root, ...relative.split('/'));
-  const record = () => fs.appendFileSync(path.join(folder!, '.writes.log'), `${String(args['project_id'])}|${relative}\n`);
-  if (form?.[2] !== undefined) {
+  const record = () => fs.appendFileSync(path.join(folder!, '.writes.log'), `${key}|${relative}\n`);
+  const outcomeUnknown = form?.[2] === 'outcome-unknown';
+  if (form?.[2] === 'revision-conflict') {
+    record();
+    return refusal('REVISION_CONFLICT', `'${relative}' changed since you read it (current checksum 0). Nothing was replaced.`, args);
+  }
+  if (form?.[2] !== undefined && !outcomeUnknown) {
     record();
     switch (form[2]) {
       case 'rpc-error': return { rpcError: 'Internal error: the stand-in refused this write' };
@@ -195,6 +247,7 @@ function writeNote(args: Record<string, unknown>): unknown {
   const exists = fs.existsSync(file);
   if (exists && args['overwrite'] !== true && form?.[3] === undefined) {
     record();
+    if (bm) return refusal('ALREADY_EXISTS', `A note already exists at '${relative}'. Nothing was written.`, args);
     return text({ file_path: relative, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' });
   }
   record();
@@ -207,7 +260,13 @@ function writeNote(args: Record<string, unknown>): unknown {
   for (let n = 1; !exists && taken.has(permalink); n += 1) permalink = `${base}-${n}`;
   fs.writeFileSync(file, storedNote(args, title, permalink));
   if (form?.[3] === 'landed') return DROPPED;
-  if (fault === 'conflict-landed') return text({ file_path: relative, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' });
+  if (fault === 'conflict-landed') {
+    if (bm) return refusal('ALREADY_EXISTS', `A note already exists at '${relative}'. Nothing was written.`, args);
+    return text({ file_path: relative, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' });
+  }
+  if (outcomeUnknown) return refusal('OUTCOME_UNKNOWN', `The write of '${relative}' may or may not have happened: the stand-in was told to say so.`, args);
+  const checksum = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (bm) return text({ action: exists ? 'updated' : 'created', file_path: relative, permalink, checksum, title });
   return text({ file_path: relative, title, action: exists ? 'updated' : 'created', checksum: String(fs.statSync(file).size) });
 }
 
@@ -270,6 +329,115 @@ function moveNote(root: string, args: Record<string, unknown>): unknown {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.renameSync(path.join(root, ...from.split('/')), target);
   return text({ moved: true, file_path: to, title: path.basename(to, '.md') });
+}
+
+// --- the 1.0 surface (kickoffs/s175 row 1(f)) ----------------------------------------------------------------------
+
+/** The project a 1.0 call names, by its name or its UUID, or null. */
+function projectOf(value: string): { root: string; name: string; id: string } | null {
+  if (value === projectName || value === projectId) return { root: folder!, name: projectName, id: projectId };
+  for (const [name, project] of created) if (value === name || value === project.id) return { root: path.join(folder!, '.projects', name), name, id: project.id };
+  return null;
+}
+
+/** 1.0 refuses a call with no `project` before the tool runs: Pydantic's validation error, no typed code. */
+function missingProject(name: string): unknown {
+  const said = `1 validation error for call[${name}]\nproject\n  Missing required keyword only argument [type=missing_keyword_only_argument, input_value=ArgsKwargs(()), input_type=ArgsKwargs]`;
+  return { content: [{ type: 'text', text: said }], isError: true };
+}
+
+/**
+ * An identifier as 1.0 resolves it in a project: a leading slash dropped, and the project's name in front stripped only
+ * when the project was named by NAME (1.0's `project_context.py`; a UUID leaves a `<project>/...` permalink unfound).
+ */
+function bareIdentifier(project: { name: string }, addressedBy: string, identifier: string): string {
+  const bare = identifier.replace(/^\/+/, '');
+  return addressedBy === project.name && bare.startsWith(`${project.name}/`) ? bare.slice(project.name.length + 1) : bare;
+}
+
+function bmRead(project: { root: string; name: string }, addressedBy: string, args: Record<string, unknown>): unknown {
+  const identifier = String(args['identifier'] ?? '');
+  const relative = vanish && identifier.includes(vanish) ? null : resolveNote(project.root, bareIdentifier(project, addressedBy, identifier));
+  if (relative === null) return refusal('NOT_FOUND', `Note '${identifier}' not found.`, args);
+  const file = path.join(project.root, ...relative.split('/'));
+  const whole = fs.readFileSync(file, 'utf8');
+  const permalink = permalinkOf(project.root, relative) ?? relative.replace(/\.md$/, '').toLowerCase();
+  const head = { title: path.basename(relative, '.md'), permalink, file_path: relative, checksum: createHash('sha256').update(whole).digest('hex') };
+  if (args['include_content'] === false) return text({ ...head, updated_at: fs.statSync(file).mtime.toISOString() });
+  const content = args['include_frontmatter'] === false ? whole.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '') : whole;
+  return text({ ...head, content, frontmatter: null });
+}
+
+function bmMove(project: { root: string; name: string; id: string }, addressedBy: string, args: Record<string, unknown>): unknown {
+  const identifier = String(args['identifier'] ?? '');
+  const from = resolveNote(project.root, bareIdentifier(project, addressedBy, identifier));
+  if (from === null) return refusal('NOT_FOUND', `Note '${identifier}' not found.`, args);
+  const destination = String(args['destination'] ?? args['destination_folder'] ?? '');
+  const into = destination.replace(/^\/+/, '');
+  const to = into === '' || into.endsWith('/') ? `${into}${path.posix.basename(from)}` : into;
+  if (!to.endsWith('.md')) return refusal('INVALID_ARGUMENTS', `A note destination needs its extension: '${destination}'.`, args);
+  fs.appendFileSync(path.join(folder!, '.writes.log'), `${project.id}|move ${from} -> ${to}\n`);
+  if (to === from) return refusal('INVALID_ARGUMENTS', `The note is already at '${from}'.`, args);
+  const target = path.join(project.root, ...to.split('/'));
+  if (fs.existsSync(target)) return refusal('ALREADY_EXISTS', `A note already exists at '${to}'. Nothing was moved.`, args);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.renameSync(path.join(project.root, ...from.split('/')), target);
+  return text({ action: 'moved', file_path: to, previous_file_path: from, permalink: permalinkOf(project.root, to), title: path.basename(to, '.md') });
+}
+
+/** `bm_list`: one level, folders first, paged; a missing folder lists empty (the NAS, 2026-10-31). */
+function bmList(project: { root: string; name: string }, args: Record<string, unknown>): unknown {
+  const page = Number(args['page'] ?? 1);
+  const pageSize = Number(args['page_size'] ?? 10);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    return { content: [{ type: 'text', text: `1 validation error for call[bm_list]\npage_size\n  Input should be between 1 and 100 [input_value=${pageSize}]` }], isError: true };
+  }
+  const directory = String(args['path'] ?? '/').replace(/^\/+|\/+$/g, '');
+  const full = path.join(project.root, ...directory.split('/').filter(Boolean));
+  const names = fs.existsSync(full) && fs.statSync(full).isDirectory() ? fs.readdirSync(full).filter((name) => !name.startsWith('.')).sort() : [];
+  const inside = (name: string) => `${directory ? directory + '/' : ''}${name}`;
+  const folders = names.filter((name) => fs.statSync(path.join(full, name)).isDirectory())
+    .map((name) => ({ type: 'directory', name, title: name, directory_path: `/${inside(name)}`, file_path: null }));
+  const files = names.filter((name) => name.endsWith('.md') && fs.statSync(path.join(full, name)).isFile()).map((name) => {
+    const relative = inside(name);
+    const permalink = permalinkOf(project.root, relative) ?? relative.replace(/\.md$/, '').toLowerCase();
+    return {
+      type: 'file', name, title: path.basename(name, '.md'), file_path: relative, permalink: `${project.name}/${permalink}`, external_id: externalIdOf(permalink),
+      entity_id: externalIdOf(relative), note_type: 'note', content_type: 'text/markdown', updated_at: fs.statSync(path.join(full, name)).mtime.toISOString().replace('Z', '000Z'),
+    };
+  });
+  const nodes = [...folders, ...files];
+  return text({ nodes: nodes.slice((page - 1) * pageSize, page * pageSize), page, page_size: pageSize, total: nodes.length, has_more: page * pageSize < nodes.length });
+}
+
+function bmProject(args: Record<string, unknown>): unknown {
+  const command = String(args['command'] ?? '');
+  if (command === 'list') return call('list_memory_projects', {});
+  if (command !== 'create') return refusal('UNSUPPORTED', `The stand-in does not model bm_project command '${command}'.`, args);
+  const name = String(args['name'] ?? args['project_name'] ?? '');
+  const where = args['path'] ?? args['project_path'];
+  if (!name || where === undefined) return refusal('INVALID_ARGUMENTS', 'create needs `name` and `path`.', args);
+  const answer = call('create_memory_project', { project_name: name, project_path: where }) as { structuredContent?: { result?: Record<string, unknown> } };
+  const made = answer.structuredContent?.result;
+  if (made === undefined) return refusal('INVALID_ARGUMENTS', `Invalid project name '${name}'.`, args);
+  return text({ name, external_id: made['external_id'], path: String(where), created: made['created'], already_exists: made['already_exists'] });
+}
+
+function callBm(name: string, args: Record<string, unknown>): unknown {
+  if (!BM_TOOLS.includes(name)) return { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true };
+  if (name === 'bm_project') return bmProject(args);
+  if (name === 'bm_man') return refusal('UNSUPPORTED', 'The stand-in carries no manual pages.', args);
+  const addressedBy = String(args['project'] ?? args['project_id'] ?? '');
+  if (!addressedBy) return missingProject(name);
+  const project = projectOf(addressedBy);
+  if (project === null) return refusal('NOT_FOUND', `Project '${addressedBy}' not found.`, args);
+  switch (name) {
+    case 'bm_read': return bmRead(project, addressedBy, args);
+    case 'bm_write': return writeAt(project.root, project.id, args, true);
+    case 'bm_move': return bmMove(project, addressedBy, args);
+    case 'bm_list': return bmList(project, args);
+    default: return refusal('UNSUPPORTED', `The stand-in does not model ${name}.`, args);
+  }
 }
 
 function call(name: string, args: Record<string, unknown>): unknown {
@@ -340,6 +508,19 @@ const server = http.createServer((request, response) => {
     }
     const id = message['id'];
     const method = String(message['method'] ?? '');
+    // THE CALL LOG (kickoffs/s175 row 1(f)): every request, its tool and argument NAMES, never their values (but `bm_list`'s path).
+    const params = (message['params'] ?? {}) as Record<string, unknown>;
+    const args = (params['arguments'] ?? {}) as Record<string, unknown>;
+    const logged: Record<string, unknown> = { method };
+    if (method === 'tools/call') {
+      logged['tool'] = String(params['name'] ?? '');
+      logged['args'] = Object.keys(args).sort();
+      if (logged['tool'] === 'bm_list') logged['path'] = String(args['path'] ?? '/');
+      // Whether the project was named by its name or its UUID: a kind, not the value (kickoffs/s175 row 1's file_path reads).
+      const named = String(args['project'] ?? args['project_id'] ?? '');
+      if (named) logged['project_by'] = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(named) ? 'id' : 'name';
+    }
+    if (callLog) fs.appendFileSync(path.join(folder!, '.calls.log'), JSON.stringify(logged) + '\n');
     if (id === undefined) {
       response.writeHead(202).end();
       return;
@@ -348,9 +529,18 @@ const server = http.createServer((request, response) => {
     if (method === 'initialize') {
       result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fake-basic-memory', version: '0' } };
       response.setHeader('Mcp-Session-Id', 'fake-session');
+    } else if (method === 'tools/list') {
+      if (toolsList === 'error') {
+        response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: 'The stand-in was told to refuse tools/list' } }));
+        return;
+      }
+      const offered = (surface === 'bm' ? BM_TOOLS : LEGACY_TOOLS).filter((name) => name !== droppedTool);
+      result = toolsList === 'empty' ? {} : { tools: offered.map((name) => ({ name, inputSchema: { type: 'object' } })) };
     } else if (method === 'tools/call') {
-      const params = (message['params'] ?? {}) as Record<string, unknown>;
-      result = call(String(params['name'] ?? ''), (params['arguments'] ?? {}) as Record<string, unknown>);
+      const name = String(params['name'] ?? '');
+      result = name === droppedTool
+        ? { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true }
+        : surface === 'bm' ? callBm(name, args) : call(name, args);
       if (result === DROPPED) {
         response.writeHead(404, { 'Content-Type': 'text/plain' }).end('Session not found');
         return;
@@ -358,6 +548,13 @@ const server = http.createServer((request, response) => {
       const rpcError = (result as Record<string, unknown> | null)?.['rpcError'];
       if (typeof rpcError === 'string') {
         response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: rpcError } }));
+        return;
+      }
+      if (surface === 'bm') {
+        // 1.0 ON STREAMABLE HTTP (the NAS, 2026-10-31): a log message first, then the answer whose `id` is the request's.
+        const log = { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: `stand-in: ${name}` } };
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+          .end(`event: message\ndata: ${JSON.stringify(log)}\n\nevent: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result })}\n\n`);
         return;
       }
     } else {

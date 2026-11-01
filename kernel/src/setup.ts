@@ -848,7 +848,7 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
   const servedOnly = view.state === 'none' && (kept.length > 0 || refresh.length > 0);
   const libraryNote =
     servedOnly && refresh.length
-      ? `${view.dryRun ? 'would be ' : ''}brought up to date in this run: ${refresh.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
+      ? `${view.dryRun ? 'would' : 'will'} be brought up to date once the program switches: ${refresh.length === 1 ? 'the Library' : 'the Libraries'} this install serves`
       : servedOnly
       ? `kept as ${kept.length === 1 ? 'it is' : 'they are'}, behind the program until ${COMMAND_NAME} init <folder>`
       : view.state === 'none'
@@ -864,8 +864,8 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
   // EACH SERVED LIBRARY'S REFRESH, BESIDE THE PROGRAM PLAN (ADR-0063 decisions 1 and 4): a count, or the reason it is kept.
   for (const entry of refresh) {
     if (view.state !== 'none' || refresh.length > 1 || entry.refused !== null) {
-      rows.push(['', entry.workspace, entry.refused !== null ? `kept as it is: ${entry.refused}` : `${view.dryRun ? 'would be ' : ''}brought up to date: ${entry.writes} file(s)`]);
-    } else rows.push(['', '', `${entry.writes} file(s) ${view.dryRun ? 'would be ' : ''}brought up to date after the program switches`]);
+      rows.push(['', entry.workspace, entry.refused !== null ? `kept as it is: ${entry.refused}` : `${view.dryRun ? 'would' : 'will'} be brought up to date: ${entry.writes} file(s)`]);
+    } else rows.push(['', '', `${entry.writes} file(s)`]);
     if (entry.refused === null && entry.codex) rows.push(['', '', 'Codex will ask you to review this Library\'s hooks again on its next start.']);
   }
   if (view.state !== 'none') for (const folder of kept) rows.push(['', folder, `kept as it is, behind the program until ${COMMAND_NAME} init <folder>`]);
@@ -1316,7 +1316,7 @@ function refreshPlanLines(refresh: RefreshEntry[]): string[] {
   const lines: string[] = [];
   for (const entry of refresh) {
     if (entry.decision === 'refused') lines.push(`${entry.workspace} is kept as it is: ${entry.reason}`);
-    else lines.push(`${entry.workspace}: ${entry.plan?.writes.length ?? 0} file(s) brought up to date once the program switches.`);
+    else lines.push(`${entry.workspace}: ${entry.plan?.writes.length ?? 0} file(s) would be brought up to date once the program switches.`);
   }
   return lines;
 }

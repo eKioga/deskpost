@@ -16,6 +16,14 @@
  * is NOT an error either: `isError: false`, `action: "conflict"`, `error: "NOTE_ALREADY_EXISTS"`. The
  * first the oracle already handled; the second made New-ProjectHub.ps1 report `created` over another
  * writer's Hub, which was fixed there first (Test-McpHelpers.ps1 holds it) and is refused here.
+ *
+ * BASIC MEMORY 1.0 (kickoffs/s175 row 1; the NAS moved to 1.0.0 unannounced on 2026-10-30). 1.0 removed every tool above
+ * with no aliases and offers twelve `bm_*` tools; every project-scoped call needs `project`; a refusal is `isError: true`
+ * with a typed `error` code. So a session reads the server's `tools/list` at connect and keeps the names: its SURFACE is
+ * `bm` when it offers `bm_read`, `legacy` when it offers `read_note`, and `unknown` otherwise (a list that could not be
+ * read included). The helpers below speak 1.0 on `bm` and keep today's calls on `legacy` and `unknown`; a caller that
+ * needs a tool the server does not list refuses in one line (`needTools`), and the shared-collection writers, not yet
+ * ported, refuse on anything but `legacy` (`refuseUnportedWriter`; train item basic-memory-1-0, step 2).
  */
 
 import * as fs from 'node:fs';
@@ -36,9 +44,17 @@ export class SessionDropped extends BasicMemoryRefusal {}
 
 /**
  * THE TOOLS THAT CHANGE THE SERVER. `callTool` never resends one of these after a dropped session (row 7), whichever
- * writer calls it; a read is still resent once, as before.
+ * writer calls it; a read is still resent once, as before. 1.0's four change tools join them (kickoffs/s175 row 1(d)).
  */
-const WRITE_TOOLS = new Set(['write_note', 'edit_note', 'move_note', 'delete_note', 'create_memory_project', 'delete_project']);
+const WRITE_TOOLS = new Set(['write_note', 'edit_note', 'move_note', 'delete_note', 'create_memory_project', 'delete_project', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete']);
+
+/** A call that changes the server: a `WRITE_TOOLS` name, or `bm_project` creating or deleting a project (kickoffs/s175 row 1(d)). */
+function changesServer(name: string, args: Record<string, Json>): boolean {
+  return WRITE_TOOLS.has(name) || (name === 'bm_project' && (args['command'] === 'create' || args['command'] === 'delete'));
+}
+
+/** Which tools a server speaks, read from its `tools/list` at connect (kickoffs/s175 row 1(b)). */
+export type ServerSurface = 'bm' | 'legacy' | 'unknown';
 
 function refuse(message: string): never {
   throw new BasicMemoryRefusal(message);
@@ -207,6 +223,9 @@ export class McpSession {
   private nextId = 1;
   private readonly url: string;
   private readonly clientName: string;
+  /** The tool names the server's `tools/list` offered at connect, or null when the list could not be read. */
+  tools: string[] | null = null;
+  surface: ServerSurface = 'unknown';
 
   // Plain fields, not parameter properties: Node runs this file by stripping types, and a parameter
   // property is syntax it will not strip.
@@ -288,6 +307,43 @@ export class McpSession {
     const error = field(answer, 'error');
     if (error !== undefined && error !== null) refuse(`MCP initialization was rejected: ${String(field(error, 'message') ?? '')}`);
     await this.once('notifications/initialized', {}, true);
+    await this.readTools();
+  }
+
+  /** The endpoint this session talks to, as a refusal names it. */
+  get endpoint(): string {
+    return this.url;
+  }
+
+  /**
+   * WHAT THE SERVER OFFERS, READ AT CONNECT (kickoffs/s175 row 1(a), (b)): `tools/list`, following `nextCursor`. A list that
+   * answers an error, or a result with no `tools`, leaves the surface `unknown` and the connection standing: the session
+   * still works, and a caller that needs a tool says so in one line.
+   */
+  private async readTools(): Promise<void> {
+    this.tools = null;
+    this.surface = 'unknown';
+    const names: string[] = [];
+    let cursor: string | null = null;
+    try {
+      for (let page = 0; page < 50; page += 1) {
+        const answer = await this.once('tools/list', cursor === null ? {} : { cursor }, false);
+        const listed = field(field(answer, 'result'), 'tools');
+        if (isRpcError(answer) || !Array.isArray(listed)) return;
+        for (const tool of listed) {
+          const name = field(tool, 'name');
+          if (typeof name === 'string' && name) names.push(name);
+        }
+        const next = field(field(answer, 'result'), 'nextCursor');
+        if (typeof next !== 'string' || !next) break;
+        cursor = next;
+      }
+    } catch (error) {
+      if (error instanceof BasicMemoryRefusal) return;
+      throw error;
+    }
+    this.tools = names;
+    this.surface = names.includes('bm_read') ? 'bm' : names.includes('read_note') ? 'legacy' : 'unknown';
   }
 
   /**
@@ -313,9 +369,9 @@ export class McpSession {
     }
   }
 
-  /** A read is resent once after a dropped session; a write (WRITE_TOOLS) never is (kickoffs/s121 row 7). */
+  /** A read is resent once after a dropped session; a write (`changesServer`) never is (kickoffs/s121 row 7). */
   async callTool(name: string, args: Record<string, Json>): Promise<unknown> {
-    return this.request('tools/call', { name, arguments: args }, !WRITE_TOOLS.has(name));
+    return this.request('tools/call', { name, arguments: args }, !changesServer(name, args));
   }
 
   /**
@@ -325,6 +381,39 @@ export class McpSession {
   async callToolOnce(name: string, args: Record<string, Json>): Promise<unknown> {
     return this.request('tools/call', { name, arguments: args }, false);
   }
+}
+
+/**
+ * A CALLER THAT NEEDS TOOLS THE SERVER DOES NOT LIST REFUSES IN ONE LINE (kickoffs/s175 row 1(a)), so an unannounced
+ * server change is named at connect instead of surfacing as `Unknown tool` deep in a command.
+ */
+export function needTools(session: McpSession, needed: string[], who: string): void {
+  const offered = session.tools ?? [];
+  const missing = needed.filter((name) => !offered.includes(name));
+  if (missing.length === 0) return;
+  refuse(
+    `${who}: the Basic Memory server at ${session.endpoint} offers ${offered.length ? offered.join(', ') : 'no tool list Deskpost could read'}; ` +
+      `Deskpost needs ${needed.join(', ')}, and it lacks ${missing.join(', ')}. Nothing was read or written.`,
+  );
+}
+
+/**
+ * THE SHARED-COLLECTION WRITERS, NOT YET ON 1.0, REFUSE AT ONCE (kickoffs/s175 row 2). Their own calls name the old tools,
+ * which would fail mid-write after some reads; so on a `bm` server, and on one whose tool list could not be read (it may
+ * be 1.0), they refuse before anything is sent. Only on `legacy` does a writer go on as before.
+ */
+export function refuseUnportedWriter(session: McpSession, operation: string): void {
+  if (session.surface === 'legacy') return;
+  if (session.surface === 'bm') {
+    refuse(
+      `${operation} is refused: this Basic Memory server offers the 1.0 tools (bm_*), and Deskpost's shared-collection writers are not ported to them ` +
+        'yet (train item basic-memory-1-0, step 2). Nothing was written.',
+    );
+  }
+  refuse(
+    `${operation} is refused: the Basic Memory server's tool list could not be read, so it may be a 1.0 server, which Deskpost's shared-collection ` +
+      'writers are not ported to yet (train item basic-memory-1-0, step 2). Nothing was written.',
+  );
 }
 
 // --- exact records ---------------------------------------------------------------------------------
@@ -371,8 +460,37 @@ function text(value: unknown): string {
   return value === undefined || value === null ? '' : String(value);
 }
 
+/**
+ * A 1.0 REFUSAL BY ITS TYPED CODE (kickoffs/s175 row 1(e); 1.0's `refusals.py`): `isError: true` whose text is
+ * `{"error": <code>, "message", "try_instead"?}` (asked for with `output_format: "json"`), or `<CODE>: <message>` in text.
+ * Null for any other answer, a Pydantic validation error and `Unknown tool` among them.
+ */
+export function typedRefusal(response: unknown): { code: string; message: string } | null {
+  const result = toolResult(response);
+  if (field(result, 'isError') !== true) return null;
+  const content = field(result, 'content');
+  const block = Array.isArray(content) ? content.find((item) => field(item, 'type') === 'text') : undefined;
+  const said = text(field(block, 'text')).trim();
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(said) as unknown;
+  } catch {
+    parsed = null;
+  }
+  const code = field(parsed, 'error');
+  if (typeof code === 'string' && /^[A-Z][A-Z_]+$/.test(code)) return { code, message: text(field(parsed, 'message')) };
+  const plain = /^([A-Z][A-Z_]+): ([\s\S]*)$/.exec(said);
+  return plain ? { code: plain[1]!, message: plain[2]! } : null;
+}
+
+/** The text a refused read is named by: the typed code and message when there is one, else what the server said. */
+function refusalText(response: unknown): string {
+  const typed = typedRefusal(response);
+  return (typed ? `${typed.code}: ${typed.message}` : JSON.stringify(field(toolResult(response), 'content') ?? null)).substring(0, 300);
+}
+
 /** How a Basic Memory write was refused, by the form the refusal took (kickoffs/s121 row 7). */
-export type WriteRefusalForm = 'rpc-error' | 'is-error' | 'note-already-exists' | 'error-field' | 'conflict' | 'edit-failed' | 'error-heading';
+export type WriteRefusalForm = 'rpc-error' | 'is-error' | 'note-already-exists' | 'error-field' | 'conflict' | 'edit-failed' | 'error-heading' | 'outcome-unknown' | 'typed-refusal';
 
 export interface WriteVerdict {
   refused: boolean;
@@ -387,6 +505,11 @@ export interface WriteVerdict {
  * replace not found: ...` for a refused edit_note), and in text a heading (`# Error: Note already exists`, `# Edit Failed
  * - Text Not Found`). So `isError` alone is never trusted: any of these is a refusal, and the form is named. Every kernel
  * write is still followed by its readback.
+ *
+ * 1.0's TYPED REFUSALS ONTO TODAY'S FORMS (kickoffs/s175 row 1(e), STANDING ANSWER 4): `ALREADY_EXISTS` is
+ * `note-already-exists` and `REVISION_CONFLICT` is `conflict`, as before; `OUTCOME_UNKNOWN` is `outcome-unknown`, which
+ * `sendWrite` treats as a dropped session (judged by readback, never resent); any other code is `typed-refusal`, named
+ * with its code and message. A validation error (no typed code: Deskpost sent a bad call) stays `is-error`.
  */
 export function judgeWriteResult(response: unknown): WriteVerdict {
   const refused = (form: WriteRefusalForm, detail: string): WriteVerdict => ({ refused: true, form, detail: detail.substring(0, 300) });
@@ -395,6 +518,14 @@ export function judgeWriteResult(response: unknown): WriteVerdict {
   const content = field(result, 'content');
   const block = Array.isArray(content) ? content.find((item) => field(item, 'type') === 'text') : undefined;
   const firstText = text(field(block, 'text'));
+  const typed = typedRefusal(response);
+  if (typed !== null) {
+    const said = `${typed.code}: ${typed.message}`;
+    if (typed.code === 'ALREADY_EXISTS') return refused('note-already-exists', said);
+    if (typed.code === 'REVISION_CONFLICT') return refused('conflict', said);
+    if (typed.code === 'OUTCOME_UNKNOWN') return refused('outcome-unknown', said);
+    return refused('typed-refusal', said);
+  }
   if (field(result, 'isError') === true) return refused('is-error', firstText);
   const record = structuredRecord(response);
   const error = field(record, 'error');
@@ -421,6 +552,8 @@ export async function sendWrite(session: McpSession, name: string, args: Record<
     throw error;
   }
   const verdict = judgeWriteResult(response);
+  // OUTCOME_UNKNOWN (1.0): the write may have landed, as after a dropped session; the caller's readback decides.
+  if (verdict.form === 'outcome-unknown') return { dropped: true, response };
   if (verdict.refused) refuse(`${label} was refused (${verdict.form}${verdict.detail ? `: ${verdict.detail}` : ''}). Nothing was overwritten.`);
   return { dropped: false, response };
 }
@@ -441,20 +574,25 @@ export async function readExactOrNull(
   options: { includeFrontmatter?: boolean; stopped?: string; allowRedirect?: boolean } = {},
 ): Promise<NoteRecord | null> {
   const stopped = options.stopped ?? 'creation stopped';
-  const response = await session.callTool('read_note', {
-    project_id: projectId,
-    identifier: relative.substring(0, relative.length - 3),
-    output_format: 'json',
-    include_frontmatter: options.includeFrontmatter ?? true,
-  });
+  // On 1.0 the same read is `bm_read` with `project`; a missing note is the typed NOT_FOUND (kickoffs/s175 row 1(c)).
+  const bm = session.surface === 'bm';
+  const identifier = relative.substring(0, relative.length - 3);
+  const includeFrontmatter = options.includeFrontmatter ?? true;
+  const response = await session.callTool(
+    bm ? 'bm_read' : 'read_note',
+    bm
+      ? { identifier, include_frontmatter: includeFrontmatter, output_format: 'json', project: projectId }
+      : { project_id: projectId, identifier, output_format: 'json', include_frontmatter: includeFrontmatter },
+  );
   if (isRpcError(response)) refuse(`Read '${relative}' failed: ${text(field(field(response, 'error'), 'message'))}`);
   const result = toolResult(response);
   if (field(result, 'isError') === true) {
+    if (typedRefusal(response)?.code === 'NOT_FOUND') return null;
     const detail = JSON.stringify(field(result, 'content') ?? null);
-    if (/not found|does not exist|no note/i.test(detail)) return null;
-    refuse(`Read '${relative}' was rejected: ${detail}`);
+    if (!bm && /not found|does not exist|no note/i.test(detail)) return null;
+    refuse(`Read '${relative}' was rejected: ${bm ? refusalText(response) : detail}`);
   }
-  const record = field(field(result, 'structuredContent'), 'result');
+  const record = bm ? structuredRecord(response) : field(field(result, 'structuredContent'), 'result');
   if (record === undefined || record === null || !text(field(record, 'file_path')).trim()) return null;
   if (text(field(record, 'file_path')) !== relative && !options.allowRedirect) refuse(`Read '${relative}' returned '${text(field(record, 'file_path'))}'; ${stopped}.`);
   return {
@@ -475,6 +613,18 @@ export async function readExactOrNull(
  * `readPermalinkContent` below.
  */
 export async function readContentOrNull(session: McpSession, projectId: string, relative: string): Promise<string | null> {
+  if (session.surface === 'bm') {
+    // 1.0: the whole file, frontmatter included, by `bm_read` (kickoffs/s175 row 1(c)).
+    const answer = await session.callTool('bm_read', { identifier: relative, include_frontmatter: true, output_format: 'json', project: projectId });
+    if (isRpcError(answer)) refuse(`Read '${relative}' failed: ${text(field(field(answer, 'error'), 'message'))}`);
+    if (field(toolResult(answer), 'isError') === true) {
+      if (typedRefusal(answer)?.code === 'NOT_FOUND') return null;
+      refuse(`Read '${relative}' was rejected: ${refusalText(answer)}`);
+    }
+    const content = field(structuredRecord(answer), 'content');
+    if (typeof content !== 'string') refuse(`Read '${relative}' gave no text.`);
+    return content;
+  }
   const response = await session.callTool('read_content', { project_id: projectId, path: relative });
   if (isRpcError(response)) refuse(`Read '${relative}' failed: ${text(field(field(response, 'error'), 'message'))}`);
   const result = toolResult(response);
@@ -500,12 +650,60 @@ export async function readPermalinkContent(session: McpSession, projectId: strin
   if (!permalink.trim()) refuse('A listed file came with no permalink, so it was not read and not trusted.');
   const body = await readContentOrNull(session, projectId, permalink);
   if (body === null) return null;
+  checkPermalinkLine(body, permalink, permalink);
+  return body;
+}
+
+/** The text's own `permalink:` line must be `permalink`, or `permalink` without the project's name in front; refused otherwise. */
+function checkPermalinkLine(body: string, permalink: string, read: string): void {
   const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body);
   const line = front ? /^permalink:[ \t]*['"]?(.*?)['"]?[ \t]*$/m.exec(front[1]!) : null;
   const said = line ? line[1]! : '';
   if (!said || (said !== permalink && !(permalink.endsWith(`/${said}`) && !permalink.slice(0, -said.length - 1).includes('/')))) {
-    refuse(`Read '${permalink}' answered a note whose permalink is '${said || '(none)'}', not the one listed, so it was not trusted.`);
+    refuse(`Read '${read}' answered a note whose permalink is '${said || '(none)'}', not the one listed, so it was not trusted.`);
   }
+}
+
+/**
+ * ONE LISTED FILE ON 1.0 (kickoffs/s175 row 1(c), STANDING ANSWER 6): read by its `bm_list` node's `file_path` (no leading
+ * slash) with `project` the project's NAME -- 1.0 does not strip the project's name from a `deskpost/...` permalink when
+ * `project` is a UUID, so a read by permalink would not be found. Trusted only when the answer is for that very path and
+ * its own `permalink:` line is the node's (with or without the project's name in front). Null only on NOT_FOUND; on a
+ * server that is not `bm`, today's read by permalink. The optional callback receives the identifier only after the
+ * answer's path, text and permalink are trusted, so a subsequent move can name the same file (kickoffs/c85 row 2).
+ */
+export async function readListedContent(session: McpSession, project: { id: string; name: string }, filePath: string, permalink: string, trustedIdentifier?: (identifier: string) => void): Promise<string | null> {
+  if (session.surface !== 'bm') {
+    const body = await readPermalinkContent(session, project.id, permalink);
+    if (body !== null) trustedIdentifier?.(permalink);
+    return body;
+  }
+  if (!permalink.trim()) refuse('A listed file came with no permalink, so it was not read and not trusted.');
+  const response = await session.callTool('bm_read', { identifier: filePath, include_frontmatter: true, output_format: 'json', project: project.name });
+  if (isRpcError(response)) refuse(`Read '${filePath}' failed: ${text(field(field(response, 'error'), 'message'))}`);
+  if (field(toolResult(response), 'isError') === true) {
+    if (typedRefusal(response)?.code === 'NOT_FOUND') return null;
+    refuse(`Read '${filePath}' was rejected: ${refusalText(response)}`);
+  }
+  let identifier = filePath;
+  let record = structuredRecord(response);
+  let answered = text(field(record, 'file_path'));
+  if (answered !== filePath) {
+    // 1.0 STILL FOLLOWS A PERMALINK BEFORE A PATH (its `link_resolver.py`, for an identifier with no leading slash): a
+    // file re-created at a moved note's old path is answered with the moved note. Asked once more by the node's own
+    // permalink, with the project's name, it is the listed file -- trusted only if the answer says so.
+    const again = await session.callTool('bm_read', { identifier: permalink, include_frontmatter: true, output_format: 'json', project: project.name });
+    if (!isRpcError(again) && field(toolResult(again), 'isError') !== true) {
+      record = structuredRecord(again);
+      answered = text(field(record, 'file_path'));
+      identifier = permalink;
+    }
+  }
+  if (answered !== filePath) refuse(`Read '${filePath}' answered '${answered || '(no path)'}', not the file listed, so it was not trusted.`);
+  const body = field(record, 'content');
+  if (typeof body !== 'string') refuse(`Read '${filePath}' gave no text.`);
+  checkPermalinkLine(body, permalink, filePath);
+  trustedIdentifier?.(identifier);
   return body;
 }
 
@@ -517,7 +715,11 @@ export async function readPermalinkContent(session: McpSession, projectId: strin
  */
 export async function moveNoteTo(session: McpSession, projectId: string, identifier: string, destinationFolder: string): Promise<{ moved: boolean; dropped: boolean; detail: string }> {
   try {
-    const sent = await sendWrite(session, 'move_note', { project_id: projectId, identifier, destination_folder: destinationFolder, output_format: 'json' }, `Moving '${identifier}'`);
+    // On 1.0, `bm_move` into `<folder>/` keeps the file's name (kickoffs/s175 row 1(c)); `projectId` is whatever the caller
+    // addresses the project by (the Postbox uses its trusted read's identifier and the project's name).
+    const sent = session.surface === 'bm'
+      ? await sendWrite(session, 'bm_move', { identifier, destination: `${destinationFolder}/`, output_format: 'json', project: projectId }, `Moving '${identifier}'`)
+      : await sendWrite(session, 'move_note', { project_id: projectId, identifier, destination_folder: destinationFolder, output_format: 'json' }, `Moving '${identifier}'`);
     return { moved: !sent.dropped, dropped: sent.dropped, detail: '' };
   } catch (error) {
     if (error instanceof BasicMemoryRefusal) return { moved: false, dropped: false, detail: error.message };
@@ -541,7 +743,9 @@ export async function writeExact(
   // sentence it always had; a dropped session is judged by the readback below, whose body must be this write's.
   let sent: { dropped: boolean; response: unknown };
   try {
-    sent = await sendWrite(session, 'write_note', { project_id: projectId, directory, title, content: body, note_type: 'note', overwrite, output_format: 'json' }, `Write '${directory}/${title}'`);
+    sent = session.surface === 'bm'
+      ? await sendWrite(session, 'bm_write', { directory, title, content: body, note_type: 'note', overwrite, output_format: 'json', project: projectId }, `Write '${directory}/${title}'`)
+      : await sendWrite(session, 'write_note', { project_id: projectId, directory, title, content: body, note_type: 'note', overwrite, output_format: 'json' }, `Write '${directory}/${title}'`);
   } catch (error) {
     if (/\((note-already-exists|conflict)\b/.test((error as Error).message)) {
       refuse(
@@ -580,12 +784,15 @@ export async function readValidatedRecord(
   requestedPath: string,
   words: { rejected: string; unreadable: string; different: string; empty: string },
 ): Promise<NoteRecord | 'absent'> {
-  const response = await session.callTool('read_note', {
-    project_id: projectId,
-    identifier: requestedPath,
-    output_format: 'json',
-    include_frontmatter: true,
-  });
+  const bm = session.surface === 'bm';
+  const response = await session.callTool(
+    bm ? 'bm_read' : 'read_note',
+    bm
+      ? { identifier: requestedPath, include_frontmatter: true, output_format: 'json', project: projectId }
+      : { project_id: projectId, identifier: requestedPath, output_format: 'json', include_frontmatter: true },
+  );
+  // On 1.0 an absent note is the typed NOT_FOUND, not an empty record (kickoffs/s175 STANDING ANSWER 4).
+  if (bm && typedRefusal(response)?.code === 'NOT_FOUND') return 'absent';
   if (isRpcError(response) || field(toolResult(response), 'isError') === true) refuse(words.rejected);
   const record = structuredRecord(response);
   if (record === null || record === undefined) refuse(words.unreadable);

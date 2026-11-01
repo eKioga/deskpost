@@ -7,7 +7,7 @@
 # defined inside settings.json cannot validate the file that defines it. A malformed settings file
 # has already disabled the permission allowlist and both guard hooks once, silently.
 #
-# -Fast skips the spawned self-test suites so ordinary commits stay quick. Run the full suite
+# Windows keeps -Fast static checks and runs selected self-test sections plus the type check. Run the full suite
 # before a phase gate:
 #     powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1 -IncludeShared
 #
@@ -31,6 +31,12 @@ done
 IFS=$old_ifs
 set +f
 
+# No builder commits directly on the integration branch, even for documents.
+if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "master" ]; then
+    echo "pre-commit: a commit on master is refused. Nothing was committed."
+    exit 1
+fi
+
 # A DOCS-ONLY COMMIT RUNS ONLY THE DOCUMENT CHECKS (S104 row 0b; Eric, 2026-10-08: "do we need this gate?").
 # tools/docs-gate.ts decides from the staged paths: 0 is its checks passed, 3 is one failed, 4 is "not docs only".
 # Anything else -- node missing, the file missing, a crash -- is never a pass: the full runner below runs, as it
@@ -44,6 +50,13 @@ if [ $docs_status -eq 3 ]; then
     echo ""
     echo "pre-commit: the docs gate failed. Commit aborted."
     echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
+    exit 1
+fi
+
+# A code gate judges exactly the index, never unstaged or untracked working files.
+if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo "pre-commit: code commits need a clean working tree (up to ten paths below). Nothing was committed."
+    { git diff --name-only; git ls-files --others --exclude-standard; } | sed -n '1,10p'
     exit 1
 fi
 
@@ -61,6 +74,23 @@ if ! command -v powershell.exe >/dev/null 2>&1; then
     fi
     exit 0
 fi
+
+# Select from staged data; a failed helper or empty result retains the full self-test.
+selection=$(LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" node --input-type=module -e '
+import { spawnSync } from "node:child_process";
+try {
+    const { hookSections } = await import("./tools/section-select.mts");
+    const chosen = hookSections(args => { const r = spawnSync("git", args, { encoding: "utf8", timeout: 60000, maxBuffer: 32 * 1024 * 1024, windowsHide: true }); if (r.status !== 0) throw Error(r.error?.message || r.stderr || "git failed"); return r.stdout; });
+    console.log(chosen.all ? "all:" + (chosen.reasons.find(reason => reason.startsWith("every section")) || chosen.reasons[0]) : chosen.sections.join(","));
+} catch (error) { console.log("all:selection unavailable: " + String(error).replace(/[\r\n]+/g, " ")); }
+') || selection='all:selection helper failed'
+case "$selection" in
+    all:*) unset LIBRARY_SELFTEST_SECTIONS; echo "selected sections: every section (${selection#all:})" ;;
+    ''|*[!0-9,]*) unset LIBRARY_SELFTEST_SECTIONS; echo "selected sections: every section (selection helper failed or returned an empty selection)" ;;
+    *) export LIBRARY_SELFTEST_SECTIONS="$selection"
+       old_ifs=$IFS; IFS=,; set -- $selection; IFS=$old_ifs
+       echo "selected sections ($#): $selection" ;;
+esac
 
 DESKPOST_GATE_SEAT="${LIBRARY_SEAT:-}" LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" \
     node kernel/test/gate-lock.ts --tier commit -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast

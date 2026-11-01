@@ -18,6 +18,7 @@
  * file. Node does not format, and this file does not either: what goes to stdout is the document.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hubHistory } from './hubhistory.ts';
@@ -28,6 +29,8 @@ import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
 import { captureVerb, lettersCloseVerb, lettersListVerb, reportsListVerb, reportsVerb, runBookVerb } from './capture.ts';
 import { kickoffReceive, kickoffSend } from './kickoff.ts';
+import { judgeKickoff } from './hubnewpage.ts';
+import { verdictText } from './kickoffcheck.ts';
 import { reportsTriagerVerb, runPostboxVerb } from './postbox.ts';
 import { auditVerb } from './audit.ts';
 import { runRawSearch } from './rawsearch.ts';
@@ -488,13 +491,38 @@ async function main(argv: string[]): Promise<number> {
 
     // A KICKOFF BETWEEN OFFICES (kickoffs/s159 rows 2 and 3): `send` and `receive`, read from the words after it.
     case 'kickoff': {
-      if (action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: receive, send.`);
+      if (action !== 'check' && action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: check, receive, send.`);
       const parsed = parseArguments(tail, table);
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
       } catch (error) {
         refuse(`library kickoff : ${(error as Error).message}`);
+      }
+      // THE CHECK hub edit RUNS AT POSTING, ON A FILE (kickoffs/s174 row 2): the tool's lines and exits, and it writes nothing.
+      if (action === 'check') {
+        const file = parsed.positional[0] ?? '';
+        if (!file) {
+          process.stderr.write(`usage: ${VERBS.kickoff!.usage.split('; ')[0]}\n`);
+          return 2;
+        }
+        let text: string;
+        try {
+          text = fs.readFileSync(file, 'utf8');
+        } catch (error) {
+          process.stderr.write(`kickoff-check: cannot read ${file}: ${(error as Error).message}\n`);
+          return 2;
+        }
+        let verdict: { problems: string[]; warnings: string[] };
+        try {
+          verdict = judgeKickoff(text, workspace);
+        } catch (error) {
+          process.stderr.write(`kickoff-check: ${(error as Error).message}\n`);
+          return 2;
+        }
+        if (parsed.flags.has('json')) emit({ file, complete: verdict.problems.length === 0, problems: verdict.problems, warnings: verdict.warnings }, true);
+        else writeStdout(verdictText(file, verdict));
+        return verdict.problems.length === 0 ? 0 : 1;
       }
       try {
         const result = action === 'send'

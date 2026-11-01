@@ -267,7 +267,7 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
         refuse(`${pagePath} is already on this Hub and its bytes are not the Kickoff's (sha256 ${pageComparisonSha256(fs.readFileSync(pageFile, 'utf8'))}, not ${envelope.sha256}): it was not overwritten. Nothing was written.`);
       }
     } else {
-      hubNewPage({ slug: hub, page: `kickoffs/${id}`, content: envelope.payload, contentPath: '', title: `Kickoff ${id}`, seat: undefined, preflight: false, lockTimeout: 20 }, workspace);
+      hubNewPage({ slug: hub, page: `kickoffs/${id}`, content: envelope.payload, contentPath: '', title: `Kickoff ${id}`, seat: undefined, preflight: false, lockTimeout: 20, received: true }, workspace);
       if (!pageMatches()) refuse(`${pagePath} was written but does not hash to ${envelope.sha256}.`);
     }
     complete(workspace, record, 'page', `${pagePath} sha256 ${envelope.sha256}`);

@@ -28,7 +28,7 @@ import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { McpSession, noteBody, readExactOrNull, resolveCollectionId, resolveMcpUrl, writeExact } from './basicmemory.ts';
+import { McpSession, noteBody, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl, writeExact } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubEdit } from './hubedit.ts';
 import { hubTidy } from './hubtidy.ts';
@@ -234,6 +234,7 @@ async function hubNewShared(
 
   const session = new McpSession(url, 'library-project-hub');
   await session.initialize();
+  refuseUnportedWriter(session, process.argv[process.argv.indexOf('hub') + 1] === 'copy-pages' ? 'hub copy-pages' : 'hub new');
   const existingRoot = await readExactOrNull(session, projectId, rootPath);
   let catalog = await readExactOrNull(session, projectId, ACTIVE_CATALOG.join('/'));
   const existingConnections = await readExactOrNull(session, projectId, connectionsPath);

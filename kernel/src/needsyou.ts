@@ -311,7 +311,9 @@ export function refreshAfterCommand(argv: string[]): void {
   let args = argv;
   if (args[0] === '--workspace') args = [...args.slice(2), '--workspace', args[1] ?? ''];
   const [verb, action] = args;
-  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list'))) return;
+  // `kickoff check` READS A FILE AND WRITES NOTHING (kickoffs/s174 row 2), exempt by verb and action: `check` is not a read
+  // action of `checkpoint check` or `postbox check`, which keep refreshing.
+  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list')) || (verb === 'kickoff' && action === 'check')) return;
   if (args.some((item) => ['--preflight', '--help', '-h', '--dry-run'].includes(item))) return;
   let workspace: string;
   try {

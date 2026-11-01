@@ -49,9 +49,14 @@ export interface ServerProject {
   path: string;
 }
 
-/** The server's projects, as `list_memory_projects` names them: name, UUID (`external_id`), path. */
+/**
+ * The server's projects, as `list_memory_projects` names them: name, UUID (`external_id`), path. On Basic Memory 1.0 the
+ * same list is `bm_project` with `command: "list"`, in the same shape (kickoffs/s175 row 1(c)).
+ */
 export async function listServerProjects(session: McpSession): Promise<ServerProject[]> {
-  const response = await session.callTool('list_memory_projects', { output_format: 'json' });
+  const response = session.surface === 'bm'
+    ? await session.callTool('bm_project', { command: 'list', output_format: 'json' })
+    : await session.callTool('list_memory_projects', { output_format: 'json' });
   const result = field(response, 'result');
   if (field(response, 'error') !== undefined && field(response, 'error') !== null) refuse('The Basic Memory server refused to list its projects.');
   if (field(result, 'isError') === true) refuse('The Basic Memory server refused to list its projects.');

@@ -41,6 +41,22 @@
  * SO PRESENCE IS JUDGED BY LISTING (kickoffs/s131): whether a file is at a path is `list_directory` of its folder; a
  * listed file is read by its node's permalink and trusted only when its own `permalink:` line matches; a move names
  * the file by its permalink. UNPROBED: paging past 200, which this release refuses.
+ * EVERYTHING ABOVE WAS MEASURED ON v0.23.2 (the probes of 2026-10-15 and 2026-10-17), and v0.23.2 is gone.
+ *
+ * BASIC MEMORY 1.0 (kickoffs/s175 row 3; the NAS moved to 1.0.0 unannounced on 2026-10-30, and every Postbox failed with
+ * `Unknown tool: 'list_directory'`). 1.0 removed the tools above with no aliases. The Postbox now speaks 1.0 only, and
+ * every session first checks the server offers `bm_list`, `bm_read`, `bm_write`, `bm_move` and `bm_project` (`needTools`):
+ * a server that does not is refused in one line naming what it offers and lacks, never recorded as unreachable, and
+ * `check` keeps what it offered in the cache (`server_tools`, `server_tools_missing`, `server_tools_utc`), which doctor
+ * reads. What changed, call by call: `list_directory` is `bm_list`, paged 100 at a time until `has_more` is false (a
+ * folder past 50 pages is refused, never acted on in part), and a missing folder still lists empty (measured live on
+ * 2026-10-31); a listed file is read by `bm_read` and moved by `bm_move` by its node's `file_path`, with `project` the
+ * project's NAME (1.0 does not strip the project's name from a `deskpost/...` permalink when `project` is a UUID), still
+ * trusted only when its own `permalink:` line is the node's, and a not-found read of a file just listed is a refusal,
+ * never "gone"; `write_note` is `bm_write` with `project` and `overwrite` passed every time; `create_memory_project` is
+ * `bm_project` with `command: "create"`; a refusal is a typed code, judged as basicmemory.ts says. UNMEASURED ON 1.0
+ * (kickoffs/s175 STANDING ANSWER 8): a moved note's old path, a permalink followed first, and how `metadata` values are
+ * quoted are defended against as on v0.23.2, until a live check shows otherwise.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -55,7 +71,7 @@ import { writeAtomicText } from './fsx.ts';
 import { sha256OfText } from './sha.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { markerField, markerPath, readMarker, withMarkerLock } from './workspace.ts';
-import { BasicMemoryRefusal, isLocalBackend, markerConnection, McpSession, moveNoteTo, noteBody, readExactOrNull, readPermalinkContent, sendWrite } from './basicmemory.ts';
+import { BasicMemoryRefusal, isLocalBackend, markerConnection, McpSession, moveNoteTo, needTools, noteBody, readExactOrNull, readListedContent, sendWrite, typedRefusal } from './basicmemory.ts';
 import { recover, readRecords, completeStage, removeCompleted, ControlMovePending, controlTransportUnreachable, recordPendingControlMove } from './intent.ts';
 import { reportStageRunner, receiveReportOutcome, receiveReportControl } from './reportsend.ts';
 import { captureVerb } from './capture.ts';
@@ -257,18 +273,57 @@ function sameSeats(left: unknown, right: unknown): boolean {
 
 // --- the server -----------------------------------------------------------------------------------------------------
 
-/** Every `*.md` under `postbox/libraries/`, from one listing page (an assumption left for the probes: see the header). */
-async function listEntryPaths(session: McpSession, projectId: string): Promise<string[]> {
-  const response = await session.callTool('list_directory', { project_id: projectId, dir_name: ENTRY_DIRECTORY, depth: 1, page: 1, page_size: 200, output_format: 'json' });
-  const result = field(field(field(response, 'result'), 'structuredContent'), 'result');
-  if (field(field(response, 'result'), 'isError') === true || result === undefined || result === null) {
-    const detail = JSON.stringify(field(field(response, 'result'), 'content') ?? field(response, 'error') ?? null);
-    if (/not found|does not exist|no such/i.test(detail)) return [];
-    refuse(`The Postbox's list of Libraries could not be read: ${detail.substring(0, 300)}`);
+/** The tools every Postbox session needs from the server (kickoffs/s175 row 3(c)). */
+const POSTBOX_TOOLS = ['bm_list', 'bm_read', 'bm_write', 'bm_move', 'bm_project'];
+
+/**
+ * THE PROJECT'S NAME, BY ITS UUID (kickoffs/s175 row 1(c)): a listed file is read and moved with `project` the name, which
+ * the cache records beside the UUID. Remembered as a session is opened from the cache.
+ */
+const PROJECT_NAMES = new Map<string, string>();
+
+function rememberProject(state: Record<string, unknown> | null): void {
+  const id = String(state?.['project_id'] ?? '');
+  const name = String(state?.['project_name'] ?? '');
+  if (UUID.test(id) && PROJECT_NAME.test(name)) PROJECT_NAMES.set(id, name);
+}
+
+/**
+ * EVERY NODE DIRECTLY IN ONE FOLDER, PAGED (kickoffs/s175 row 3(a), STANDING ANSWER 5): `bm_list` 100 at a time until
+ * `has_more` is false. A folder that would pass 50 pages (5,000 notes) is refused with `tooMany`, so no part of it is ever
+ * acted on from a partial listing. A missing folder lists empty, as the server answers it.
+ */
+async function listFolderNodes(session: McpSession, projectId: string, folder: string, what: string, tooMany: string): Promise<unknown[]> {
+  const nodes: unknown[] = [];
+  for (let page = 1; ; page += 1) {
+    if (page > 50) refuse(tooMany);
+    const response = await session.callTool('bm_list', { path: folder, page, page_size: 100, output_format: 'json', project: projectId });
+    const answer = field(response, 'result');
+    let result = field(field(answer, 'structuredContent'), 'result');
+    if ((result === undefined || result === null) && field(answer, 'isError') !== true) {
+      const block = (field(answer, 'content') as unknown[] | undefined)?.find((item) => field(item, 'type') === 'text');
+      try {
+        result = JSON.parse(String(field(block, 'text') ?? '')) as unknown;
+      } catch {
+        result = null;
+      }
+    }
+    if (field(answer, 'isError') === true || result === undefined || result === null) {
+      if (typedRefusal(response)?.code === 'NOT_FOUND') return nodes;
+      const detail = JSON.stringify(field(answer, 'content') ?? field(response, 'error') ?? null);
+      refuse(`${what} could not be read: ${detail.substring(0, 300)}`);
+    }
+    const listed = field(result, 'nodes');
+    if (Array.isArray(listed)) nodes.push(...listed);
+    if (field(result, 'has_more') !== true) return nodes;
   }
-  if (field(result, 'has_more') === true) refuse('The Postbox lists more than 200 Libraries, and this release reads one page. Nothing was changed.');
-  const nodes = field(result, 'nodes');
-  return (Array.isArray(nodes) ? nodes : [])
+}
+
+/** Every `*.md` directly in `postbox/libraries/`, every page of it (kickoffs/s175 row 3(a)). */
+async function listEntryPaths(session: McpSession, projectId: string): Promise<string[]> {
+  const nodes = await listFolderNodes(session, projectId, ENTRY_DIRECTORY, "The Postbox's list of Libraries",
+    'The Postbox lists more than 5,000 Libraries, and this release reads at most 50 pages of 100. Nothing was changed.');
+  return nodes
     .filter((node) => field(node, 'type') === 'file')
     .map((node) => String(field(node, 'file_path') ?? ''))
     .filter((file) => file.startsWith(`${ENTRY_DIRECTORY}/`) && file.endsWith('.md'))
@@ -364,6 +419,7 @@ async function planSetup(parsed: ReturnType<typeof parseArguments>, workspace: s
   } catch (error) {
     refuse(`Nothing was written. The Postbox server ${url} did not answer: ${(error as Error).message}`);
   }
+  needTools(session, POSTBOX_TOOLS, 'deskpost postbox setup');
   // THE PROJECT FROM THE SERVER'S OWN LIST, BY NAME, KEPT BY UUID (ADR-0050). No other project is read.
   const projects = await listServerProjects(session);
   const chosen = projects.find((project) => project.name === projectName) ?? null;
@@ -443,7 +499,7 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
   // 1. The project, created only on this yes.
   let projectId = plan.projectId;
   if (projectId === null) {
-    const sent = await sendWrite(session, 'create_memory_project', { project_name: projectName, project_path: projectName }, `Creating the project '${projectName}'`);
+    const sent = await sendWrite(session, 'bm_project', { command: 'create', name: projectName, path: projectName, output_format: 'json' }, `Creating the project '${projectName}'`);
     const record = field(field(field(sent.response, 'result'), 'structuredContent'), 'result');
     let said = String(field(record, 'external_id') ?? '');
     // A dropped session or an answer without the id: the server's own list is the readback.
@@ -462,9 +518,8 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
   const target = entryPath(libraryId);
   const sent = await sendWrite(
     session,
-    'write_note',
+    'bm_write',
     {
-      project_id: projectId,
       directory: ENTRY_DIRECTORY,
       title: libraryId,
       content: text,
@@ -472,6 +527,7 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
       note_type: 'note',
       overwrite: plan.entryAction === 'refresh',
       output_format: 'json',
+      project: projectId,
     },
     `Writing the Postbox entry ${target}`,
   );
@@ -538,9 +594,8 @@ async function refreshEntry(
   const title = (process.env['LIBRARY_POSTBOX_FAULT'] ?? '') === 'refuse-entry' ? `refuse-is-error-${state.library_id}` : state.library_id;
   const sent = await sendWrite(
     session,
-    'write_note',
+    'bm_write',
     {
-      project_id: state.project_id,
       directory: ENTRY_DIRECTORY,
       title,
       content: entryText(state.library_card, seats, triagedBy),
@@ -548,6 +603,7 @@ async function refreshEntry(
       note_type: 'note',
       overwrite: true,
       output_format: 'json',
+      project: state.project_id,
     },
     `Refreshing the Postbox entry ${target}`,
   );
@@ -801,21 +857,32 @@ export function sendAfterCapture(workspace: string, deliveryId: string): Record<
 
 // --- send (plan item 4) ----------------------------------------------------------------------------------------------
 
-async function openPostbox(workspace: string, state: { url: string }): Promise<McpSession | string> {
+/**
+ * A Postbox session, or the reason the server did not answer (a string: unreachable). A server that answers but does not
+ * offer the tools the Postbox needs is REFUSED, never recorded as unreachable (kickoffs/s175 row 3(c)); with `recordTools`
+ * (`check`), what it offered and lacked is kept in the cache first, for doctor.
+ */
+async function openPostbox(workspace: string, state: { url: string }, recordTools = false): Promise<McpSession | string> {
   // One CLI command and its synchronous carriers share only a failed observation, never a live session.
   try {
     const seen = JSON.parse(process.env['LIBRARY_POSTBOX_UNREACHABLE'] ?? 'null') as {workspace:string;url:string;detail:string}|null;
     if (seen?.workspace === workspace && seen.url === state.url && typeof seen.detail === 'string') return seen.detail;
   } catch { /* An absent or malformed observation does not suppress a connection. */ }
+  rememberProject(state as unknown as Record<string, unknown>);
   const session = new McpSession(state.url, 'deskpost-postbox');
   try {
     await session.initialize();
-    return session;
   } catch (error) {
     const detail = (error as Error).message;
     process.env['LIBRARY_POSTBOX_UNREACHABLE'] = JSON.stringify({workspace,url:state.url,detail});
     return detail;
   }
+  if (recordTools) {
+    const offered = session.tools ?? [];
+    updateState(workspace, { server_tools: offered, server_tools_missing: POSTBOX_TOOLS.filter((name) => !offered.includes(name)), server_tools_utc: utcSeconds() });
+  }
+  needTools(session, POSTBOX_TOOLS, 'The Postbox');
+  return session;
 }
 
 /** Record that the Postbox could not be reached, keeping the first time it could not (plan item 6). */
@@ -876,8 +943,7 @@ async function sendOne(session: McpSession, projectId: string, workspace: string
   if (before !== null) return judge(before, false);
   let dropped = false;
   try {
-    dropped = (await sendWrite(session, 'write_note', {
-      project_id: projectId,
+    dropped = (await sendWrite(session, 'bm_write', {
       directory: inboxFolder(entry.recipient_library_id),
       title: entry.delivery_id,
       content: entry.body,
@@ -885,6 +951,7 @@ async function sendOne(session: McpSession, projectId: string, workspace: string
       note_type: 'note',
       overwrite: false,
       output_format: 'json',
+      project: projectId,
     }, `Sending ${entry.delivery_id}`)).dropped;
   } catch (error) {
     // A CONFLICT IS NOT A REFUSAL HERE: another send may have written it first. Re-read and judge.
@@ -1097,21 +1164,13 @@ interface ListedFile {
 }
 
 /**
- * The files directly in one Postbox folder, each with the server's `updated_at` and `permalink`; one page of 200
- * (UNPROBED paging).
+ * The files directly in one Postbox folder, each with the server's `updated_at` and `permalink`; every page of it
+ * (kickoffs/s175 row 3(a)).
  */
 async function listFolderFiles(session: McpSession, projectId: string, folder: string): Promise<ListedFile[]> {
-  const response = await session.callTool('list_directory', { project_id: projectId, dir_name: folder, depth: 1, page: 1, page_size: 200, output_format: 'json' });
-  const result = field(field(field(response, 'result'), 'structuredContent'), 'result');
-  if (field(field(response, 'result'), 'isError') === true || result === undefined || result === null) {
-    const detail = JSON.stringify(field(field(response, 'result'), 'content') ?? field(response, 'error') ?? null);
-    if (/not found|does not exist|no such/i.test(detail)) return [];
-    refuse(`The Postbox folder ${folder} could not be listed: ${detail.substring(0, 300)}`);
-  }
-  // UNPROBED (kickoffs/s123 STANDING ANSWER 9): paging past 200. Refuse rather than read part of an inbox.
-  if (field(result, 'has_more') === true) refuse(`The Postbox folder ${folder} holds more than 200 notes, and this release reads one page. Nothing was filed.`);
-  const nodes = field(result, 'nodes');
-  return (Array.isArray(nodes) ? nodes : [])
+  const nodes = await listFolderNodes(session, projectId, folder, `The Postbox folder ${folder}`,
+    `The Postbox folder ${folder} holds more than 5,000 notes, and this release reads at most 50 pages of 100. Nothing was filed.`);
+  return nodes
     .filter((node) => field(node, 'type') === 'file')
     .map((node) => ({ path: String(field(node, 'file_path') ?? ''), updated_at: String(field(node, 'updated_at') ?? ''), permalink: String(field(node, 'permalink') ?? '') }))
     .filter((node) => node.path.startsWith(`${folder}/`) && node.path.endsWith('.md') && !node.path.slice(folder.length + 1).includes('/'))
@@ -1125,13 +1184,18 @@ async function fileAt(session: McpSession, projectId: string, relative: string):
 }
 
 /**
- * A listed file's text, read by the permalink its node gave and checked (`readPermalinkContent`): the text, a refusal
- * named in words, or null when the server says it is gone.
+ * A listed file's text, read by its node's path with the project's name and checked (`readListedContent`, kickoffs/s175
+ * row 3(c2)): the text and its trusted read identifier, or a refusal named in words. A file just listed but then not
+ * found is a refusal too, never "gone": presence is the listing's to judge.
  */
-async function readListed(session: McpSession, projectId: string, file: ListedFile): Promise<{ text: string } | { refused: string } | null> {
+async function readListed(session: McpSession, projectId: string, file: ListedFile): Promise<{ text: string; identifier: string } | { refused: string } | null> {
   try {
-    const text = await readPermalinkContent(session, projectId, file.permalink);
-    return text === null ? null : { text };
+    const name = PROJECT_NAMES.get(projectId);
+    if (name === undefined) return { refused: "This Library's Postbox cache records no project name, so a listed file cannot be read on this server; run deskpost postbox setup again." };
+    let identifier = file.path;
+    const text = await readListedContent(session, { id: projectId, name }, file.path, file.permalink, trusted => { identifier = trusted; });
+    if (text === null) return { refused: `The server answered NOT_FOUND for ${file.path}, which its listing had just named, so it was not read.` };
+    return { text, identifier };
   } catch (error) {
     if (error instanceof BasicMemoryRefusal) return { refused: error.message };
     throw error;
@@ -1253,8 +1317,8 @@ function filingOf(workspace: string, relative: string, text: string, delivered: 
 /**
  * MOVED TO `delivered/` ONLY AFTER THE LOCAL COPY IS VERIFIED (plan item 5). A destination that already holds the
  * delivery id with the same digest counts as moved: the inbox copy is left (nothing is deleted) and recorded, so later
- * checks count it once and skip it. `delivered/` is listed before the move, the move names the file by its permalink,
- * and both folders are listed after it, each file there read by its permalink (kickoffs/s131 row 3). A move the server
+ * checks count it once and skip it. `delivered/` is listed before the move; on 1.0 the move uses the identifier a fresh
+ * listed read trusted (kickoffs/c85 row 2). Both folders are listed after it and their reads checked. A move the server
  * refuses, `DESTINATION_SAME_AS_SOURCE` among them, is judged by those listings, so it is never counted as moved.
  *
  * THE MOVE'S ANSWER COMES BACK WITH THE OUTCOME (kickoffs/s133 row 2): `answer` is `moveNoteTo`'s `{moved, dropped,
@@ -1288,7 +1352,14 @@ async function moveToDelivered(
   // SELF-TEST ONLY (`LIBRARY_POSTBOX_FAULT=move-in-place`, kickoffs/s133 row 2): the move names the inbox folder itself,
   // so the server refuses it with `DESTINATION_SAME_AS_SOURCE`, as a move racing another check's can be refused.
   const destination = (process.env['LIBRARY_POSTBOX_FAULT'] ?? '') === 'move-in-place' ? inboxFolder(recipientId) : `${inboxFolder(recipientId)}/delivered`;
-  const answer = await moveNoteTo(session, projectId, file.permalink, destination);
+  // ON 1.0, USE THE IDENTIFIER THIS READ TRUSTED (kickoffs/c85 row 2): a path can resolve to an old permalink elsewhere.
+  let identifier = file.path;
+  if (session.surface === 'bm') {
+    const read = await readListed(session, projectId, file);
+    if (read === null || 'refused' in read) return { outcome: 'not-moved', answer: { moved: false, dropped: false, detail: read === null ? 'The listed file could not be read.' : read.refused } };
+    identifier = read.identifier;
+  }
+  const answer = await moveNoteTo(session, PROJECT_NAMES.get(projectId) ?? projectId, identifier, destination);
   const atTarget = await sameText(await fileAt(session, projectId, target));
   const atInbox = await fileAt(session, projectId, file.path);
   if (atTarget !== true) return { outcome: 'not-moved', answer };
@@ -1399,7 +1470,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
       value['send_detail'] = (error as Error).message.substring(0, 300);
     }
   }
-  const session = await openPostbox(workspace, state);
+  const session = await openPostbox(workspace, state, true);
   if (typeof session === 'string') {
     const since = recordUnreachable(workspace, session);
     return { ...value, reachable: false, unreachable_since: since, detail: session.substring(0, 300) };
@@ -1715,6 +1786,7 @@ async function resolve(argv: string[], workspace: string): Promise<Record<string
   if (state === null || !UUID.test(String(state['project_id'] ?? ''))) refuse('This Library has no Postbox yet, so no address can be resolved: deskpost postbox setup --url <mcp-url> --preflight.');
   const session = new McpSession(String(state['url']), 'deskpost-postbox');
   await session.initialize();
+  needTools(session, POSTBOX_TOOLS, 'deskpost postbox resolve');
   const { entries } = await readEntries(session, String(state['project_id']));
   const entry = resolveAddress(entries, address);
   return {

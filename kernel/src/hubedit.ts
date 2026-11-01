@@ -30,7 +30,7 @@ import { writeAtomicText } from './fsx.ts';
 import { pageComparisonSha256, sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
-import { McpSession, readExactOrNull, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
+import { McpSession, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
@@ -166,6 +166,13 @@ export function sectionSpan(lines: string[], section: string): Span | null {
     }
   }
   return { start, end };
+}
+
+/** The lines under every level-two `## Next` heading of a body, together; unlike sectionSpan it never refuses a repeat. */
+function nextSectionLines(body: string): string[] {
+  const lines = toLines(body);
+  const all = headings(lines);
+  return all.flatMap((heading, at) => (heading.level === 2 && heading.text === 'Next' ? lines.slice(heading.index + 1, all[at + 1]?.index ?? lines.length) : []));
 }
 
 export function sectionText(lines: string[], span: Span | null): string {
@@ -662,6 +669,7 @@ async function sharedStore(workspace: string): Promise<PageStore> {
   const ready = async (): Promise<void> => {
     if (!initialised) {
       await session.initialize();
+      refuseUnportedWriter(session, 'hub edit');
       initialised = true;
     }
   };
@@ -806,7 +814,9 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     }
     const states = path.join(workspace, '.claude');
     const filled = fillWritePlaceholders(given, new Date(), states, () => requireSeat({ seat: newPage.seat, stateDirectory: states }));
-    const written = await hubNewPage({ ...newPage, content: filled, contentPath: '', planId: '' }, workspace);
+    // A `kickoffs/` page is judged by the text as given (kickoffs/s174 standing answer 3), as the preflight judged it: in
+    // the filled text a doubled-brace time word is single, which the placeholder rule would refuse.
+    const written = await hubNewPage({ ...newPage, content: filled, contentPath: '', planId: '', judgedText: given }, workspace);
     // THE PLAN ID IT CHECKED (kickoffs/s159 row 5), as the edit modes name `approved_sha256`: `plan_id` is the filled text's.
     return { ...(written as Record<string, PsJsonValue>), ...(newPage.planId ? { approved_plan_id: newPage.planId } : {}), time_placeholders_filled: true };
   }
@@ -837,6 +847,9 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     refuse('Page must be a canonical path below the Project root, such as _project or notes/topic/Article.');
   }
   const pagePath = `projects/${slug}/${pageName}.md`;
+  // A KICKOFF IS WRITTEN ONCE (kickoffs/s174 row 3; CONTEXT.md, "Kickoff"): the rule was on paper only, and every mode
+  // below could edit the page the reader's yes was bound to. Refused at --preflight too.
+  if (/^kickoffs\//i.test(pageName)) refuse('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.');
 
   let section = parsed.options.get('section') ?? '';
   const matchText = parsed.options.get('match-text') ?? '';
@@ -920,6 +933,18 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
   const currentBody = removeFrontmatter(existing);
   const proposedBody = newProjectBody(currentBody, mode, section, content, matchText, parsed.flags.has('uncheck'));
+  // ONE PENDING Run POINTER (kickoffs/s174 row 3, standing answer 7), judged on the `## Next` this edit would write, for
+  // every mode, at --preflight and at apply: an edit that changes `## Next` may not leave two unticked `Run` lines unless
+  // it lowers their count. `check-item --uncheck` could revive an old pointer beside the pending one.
+  const nextBefore = nextSectionLines(currentBody);
+  const nextAfter = nextSectionLines(proposedBody);
+  if (nextBefore.join('\n') !== nextAfter.join('\n')) {
+    const pending = (lines: string[]): string[] => lines.filter((line) => /^\s*- \[ \] Run /.test(line)).map((line) => line.trim());
+    const after = pending(nextAfter);
+    if (after.length > 1 && after.length >= pending(nextBefore).length) {
+      refuse(`## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first. Nothing was written.`);
+    }
+  }
   const currentLines = toLines(currentBody);
   const proposedLines = toLines(proposedBody);
   if (mode === 'CheckItem') {
