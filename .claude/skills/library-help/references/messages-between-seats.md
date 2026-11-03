@@ -62,6 +62,8 @@ and `internal/seat-registry-history.jsonl` records each change.
 
 ## The doorbell
 
+A Codex session has no `SendMessage`, so it sends no ring: the letter is the delivery, and the recipient hears of it at its next prompt or from its Desk.
+
 **The ring is mandatory when the recipient is open** (ADR-0071). Right after writing a letter, read the
 recipient's `message_name` again, from your Desk or from the `recipient_message_name` the capture
 returned, never from a value read before the write. If it is not null, send one message whose first
@@ -133,6 +135,7 @@ conversation a seat has had carries the same name. The menu resumes by the conve
 
 ## Limits
 
+- **Codex writers send letters alone.** They have no `SendMessage`; the recipient finds the letter at its next prompt or on its Desk.
 - **Codex has no inbox.** A Codex seat can neither receive nor be addressed, and is never named.
   `seat status` says `messaging: unavailable (Codex)`. It hears of its letters through the launcher's
   first prompt and its Desk.

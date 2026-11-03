@@ -503,6 +503,14 @@ export function internalWriteDenial(options: { target: string; workspace: string
   );
 }
 
+/** Agent file writes cannot enable computer use; Eric uses his own terminal (c100). */
+export function computerUseSettingDenial(options: { target: string; workspace: string; toolName: string }): string | null {
+  if (!['Write', 'Edit', 'apply_patch'].includes(options.toolName)) return null;
+  const placed = workspaceRelative(options.target, options.workspace);
+  if (placed.kind !== 'inside' || !/^\.claude\/(?:.*\/)?computer-use\.json$/i.test((placed.relative ?? '').replace(/\\/g, '/'))) return null;
+  return "Only Eric turns computer use on, in his own terminal: deskpost seat settings <seat> --computer-use on. A seat may turn it off (off or unset).";
+}
+
 export function notebookWriteDenial(options: {
   target: string;
   workspace: string;
@@ -673,6 +681,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
           if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
           if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, named, collectionRoots, context);
           if (!denial) denial = internalWriteDenial({ target: reading, workspace, toolName });
+          if (!denial) denial = computerUseSettingDenial({ target: reading, workspace, toolName });
           if (!denial) denial = notebookWriteDenial({ target: reading, workspace, toolName, seat, stateDirectory });
         }
         if (denial) deny(`This patch writes '${named}'. ${denial}`);
@@ -695,6 +704,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
   if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
   if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, target, collectionRoots, context);
   if (!denial) denial = internalWriteDenial({ target, workspace, toolName });
+  if (!denial) denial = computerUseSettingDenial({ target, workspace, toolName });
   if (!denial) denial = notebookWriteDenial({ target, workspace, toolName, seat, stateDirectory });
   if (denial) deny(denial);
 }
@@ -708,7 +718,53 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
  * fails, and the oracle's `(?:\1|\2)` would then have ended every body at the first blank line.
  */
 export function removeHeredocBodies(text: string): string {
-  return text.replace(/<<-?\s*(['"])(\w+)\1([^\n]*)\n[\s\S]*?^\s*\2\s*$/gm, ' $3 <<heredoc-body-elided ');
+  // A SINGLE-QUOTED POWERSHELL HERE-STRING IS DATA ONLY WHEN IT IS WRITTEN STRAIGHT TO A FILE (library-auditor's
+  // second read of c98, Must 3): the file sink must end its statement without a pipeline or a -Pas parameter,
+  // which can pass the body onward for execution. Any other consumer keeps its body visible to judgement.
+  return text.replace(/<<-?\s*(['"])(\w+)\1([^\n]*)\n[\s\S]*?^\s*\2\s*$/gm, ' $3 <<heredoc-body-elided ')
+    .replace(/@'\r?\n[\s\S]*?^'@/gm, (body: string, offset: number, whole: string) =>
+      (() => {
+        // deskpost-lead's c100 review: join continuations before judging the sink, including inside quotes.
+        const statement = whole.slice(offset + body.length).replace(/`[ \t]*\r?\n|\r?\n(?=[ \t]*\|)/g, ' ');
+        const sink = HERE_STRING_DATA_SINK.exec(statement);
+        const rest = sink?.[1]?.replace(/'[^']*'|"[^"]*"/g, (quoted: string) => quoted[0] === '"' && /[$`]/.test(quoted) ? '(' : ' ');
+        // library-auditor's second read of c100 and c101: nested expressions or escapes in sink arguments keep the body visible, even when inert.
+        // library-auditor's read of c102: an expanding double-quoted argument, a typographic quote or a dash parameter keeps the body too.
+        // library-auditor's read of c103: a typographic quote in raw arguments or a capture ending before the statement keeps the body.
+        const settled = sink !== null && /^(?:[;\r\n]|$)/.test(statement.slice(sink[0].length)) && !/[\u2018-\u201E]/.test(sink[1] ?? '');
+        return rest !== undefined && settled && !/[|`({]|(?:^|\s)[-\u2013-\u2015]Pas/i.test(rest) ? ' ' : body;
+      })());
+}
+
+/** Candidate file sink; its captured arguments still need an established statement boundary. */
+const HERE_STRING_DATA_SINK = /^[ \t]*\|[ \t]*(?:Set-Content|Add-Content|Out-File)(?=[\s;|]|$)((?:'[^'\r\n]*'|"[^"\r\n]*"|[^;'"\r\n])*)/i;
+
+/** A command segment whose program is a search tool, where an exclusion option names what is NOT read. */
+const SEARCH_PROGRAM = /^(?:[A-Za-z_]\w*=\S*\s+)*(?:rg|grep|egrep|fgrep|ag|git\s+grep)(?:\.exe)?(?=\s|$)/i;
+
+/** The exclusion options a search tool takes, with their values. */
+const SEARCH_EXCLUSION = /(^|[\s;&|])(?:(?:-g|--glob|--iglob)(?:[ \t]+|=)(?:'![^']*'|"![^"]*"|![^\s"';&|]+)|(?:--exclude|--exclude-dir)(?:[ \t]+|=)(?:'[^']*'|"[^"]*"|[^\s"';&|]+))/g;
+
+/**
+ * EXCLUSIONS ARE SKIPPED ONLY FOR A SEARCH TOOL (library-auditor's second read of c96, Must 2). The command is split
+ * into segments at `;`, `|`, `&` and line ends outside quotes; a segment whose program is `rg`, `grep`, `egrep`,
+ * `fgrep`, `ag` or `git grep` loses its exclusion options and their values, and every other segment keeps them, so
+ * a path after `--exclude=` given to any other program is still judged. A value containing command or process
+ * substitution stays visible (library-auditor's second read of c98, Must 2): the shell may execute that text.
+ */
+function removeSearchExclusions(text: string): string {
+  const segments: string[] = [];
+  let current = '', quote = '';
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]!;
+    if (quote) { current += ch; if (ch === quote) quote = ''; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; current += ch; continue; }
+    if (ch === ';' || ch === '|' || ch === '&' || ch === '\n') { segments.push(current, ch); current = ''; continue; }
+    current += ch;
+  }
+  segments.push(current);
+  return segments.map((segment, index) => index % 2 === 0 && SEARCH_PROGRAM.test(segment.trimStart())
+    ? segment.replace(SEARCH_EXCLUSION, (option: string, prefix: string) => /\$\(|`|[<>]\(/.test(option) ? option : prefix) : segment).join('');
 }
 
 /** `ConvertTo-PathSeparators`: a backslash separates only where it introduces a segment; else it breaks the token. */
@@ -739,7 +795,7 @@ export function convertToPathSeparators(text: string): { text: string; map: numb
 /** `Get-ShelfTokens`: every `shelf/<something>` the command names, with the command's own characters. */
 export function shelfTokens(command: string): { token: string; text: string }[] {
   if (!command || !command.trim()) return [];
-  const stripped = removeHeredocBodies(command);
+  const stripped = removeSearchExclusions(removeHeredocBodies(command));
   const normalised = convertToPathSeparators(stripped);
   const seen = new Set<string>();
   const hits: { token: string; text: string }[] = [];
@@ -850,8 +906,8 @@ function shellNotebookWriteDenial(command: string, workspace: string, seat: stri
   }
   for (const relative of [...targets].sort()) {
     const target = joinPath(workspace, relative);
-    const denial = internalWriteDenial({ target, workspace, toolName: 'Write' }) ?? notebookWriteDenial({ target, workspace, toolName: 'Write', seat, stateDirectory });
-    if (denial) return `This shell command writes '${relative}'. ${denial}`;
+    const denial = internalWriteDenial({ target, workspace, toolName: 'Write' }) ?? computerUseSettingDenial({ target, workspace, toolName: 'Write' }) ?? notebookWriteDenial({ target, workspace, toolName: 'Write', seat, stateDirectory });
+    if (denial) return `This shell command writes '${relative}'. ${denial} If the path is only text in what this command writes, write that text to a file with the file editor and pass the file by path.`;
   }
   return null;
 }
@@ -1238,8 +1294,9 @@ function settingsIntegrityGuard(options: GuardOptions, stdinText: string): strin
 // --- the verb ----------------------------------------------------------------------------------------
 
 import { runCheckpointHook } from './checkpointverb.ts';
+import { runComputerUseHook } from './computeruse.ts';
 
-export const HOOK_ACTIONS = ['checkpoint', 'shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start'] as const;
+export const HOOK_ACTIONS = ['checkpoint', 'shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'computer-use'] as const;
 
 /**
  * Run one guard over one payload and return what goes on stdout: a deny document, or '' to allow.
@@ -1326,6 +1383,7 @@ export function runHookVerb(argv: string[]): { stdout: string; refusal: string |
   if (action === 'search-hit') return { stdout: runSearchHitVerb(argv.slice(1), stdinText), refusal: null };
   if (action === 'checkpoint') return { stdout: runCheckpointHook(argv.slice(1), stdinText), refusal: null };
   if (action === 'seat-start') return { stdout: runSeatStartVerb(argv.slice(1), stdinText), refusal: null };
+  if (action === 'computer-use') return { stdout: runComputerUseHook(argv.slice(1), stdinText), refusal: null };
   const parsed = parseArguments(argv.slice(1), tableFor('hook', action));
   return {
     stdout: runGuard(

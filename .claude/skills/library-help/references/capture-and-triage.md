@@ -160,22 +160,25 @@ Never read a capture Book's map `_index` for that list, since a map listing ever
 for one reader call.
 
 Then read `notes/…` pages through `read_open_book_page` and act. A triage action is JSON, validated
-first and then run as a batch on one approval:
+first and then run as a batch, on one approval unless every action is a `review`:
 
 ```
 library triage validate --actions '[{"kind":"notebook","source":"holding","source_match":"Rendering","topic":"graphics"}]'
 library triage batch --actions '<json>' --preflight
 library triage batch --actions '<json>' --user-confirmed --plan-id <id>
+library triage batch --actions '<json>'
 ```
+
+The last form is for a batch of only `review` actions.
 
 | `kind` (from `source: holding`) | Effect | Gate |
 | --- | --- | --- |
-| `notebook` | copies the note into this seat's Notebook and marks the Shelf copy reviewed | the Book open |
-| `review` | marks the note reviewed | the Book open |
-| `shelf-book` | graduates the note into a curated Shelf Book, and closes it (`filed_to:` names the page) | **both** Books open |
+| `notebook` | copies the note into this seat's Notebook and marks the Shelf copy reviewed | the Book open; the preview's plan id and the reader's yes |
+| `review` | marks the note reviewed | the Book open; no yes: a batch of only `review` actions applies at once, as `letters close` does, unless one carries `other_seat`, which needs the preview's plan id and the reader's yes |
+| `shelf-book` | graduates the note into a curated Shelf Book, and closes it (`filed_to:` names the page) | **both** Books open; the preview's plan id and the reader's yes |
 | `discard` | deletes one note permanently | the preview's plan id and the reader's yes |
-| `collection-book` | adds the note as a page (`page_path`) of an existing collection Book, and closes it. One action per Book in a batch | the Book open at this seat |
-| `project` | on a local collection: one Hub page, `notes/<the note's file stem>`, and closes the note. Needs only `slug` | the Hub open at this seat |
+| `collection-book` | adds the note as a page (`page_path`) of an existing collection Book, and closes it. One action per Book in a batch | the Book open at this seat; the preview's plan id and the reader's yes |
+| `project` | on a local collection: one Hub page, `notes/<the note's file stem>`, and closes the note. Needs only `slug` | the Hub open at this seat; the preview's plan id and the reader's yes |
 | `book`, and `project` on Basic Memory | a new shared Book, a shared Project Hub | **not ported**: refused by name |
 
 Name the note with `source_match` (case-sensitive, matched against the note's H1 title and its
@@ -287,7 +290,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.3/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/cross-seat-reports.md).
 
 ## Reports across Libraries
 

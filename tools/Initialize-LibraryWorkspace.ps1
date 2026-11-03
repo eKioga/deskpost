@@ -1602,7 +1602,9 @@ function Invoke-LibraryWorkspaceInitSelfTest {
         $codexPaths = @(@($codexDoc.hooks.PSObject.Properties) | ForEach-Object {
             foreach ($block in @($_.Value)) { foreach ($entry in @($block.hooks)) { (Get-HookEntryText $entry) } }
         })
-        Check ($codexPaths.Count -eq 12) "init registered $($codexPaths.Count) Codex hook(s) rather than 12"
+        $codexTemplateDoc = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path '.codex' 'hooks.template.json')), $script:Utf8) | ConvertFrom-Json
+        $codexTemplateCount = @(@($codexTemplateDoc.hooks.PSObject.Properties) | ForEach-Object { foreach ($block in @($_.Value)) { @($block.hooks) } }).Count
+        Check ($codexPaths.Count -eq $codexTemplateCount) "init registered $($codexPaths.Count) Codex hook(s) rather than the template's $codexTemplateCount"
         foreach ($text in $codexPaths) {
             foreach ($token in @($text -split '\s+')) {
                 $candidate = $token.Trim('"')

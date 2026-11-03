@@ -353,6 +353,7 @@ function libraryStatements(command: string): string[][] {
     while(words[0]==='&' || /^[A-Za-z_]\w*=/.test(words[0] ?? '')) words.shift();
     const exe=words.shift() ?? '';
     if(!/(?:^|[\\/])(?:deskpost|library)(?:\.exe|\.cmd)?$/i.test(exe)) return [];
+    if(words[0]==='--workspace') words.splice(0,2);
     if(words.includes('--preflight')) return [];
     return [words];
   });
@@ -367,7 +368,7 @@ function writers(command: string): Writer[] {
       return [{kind:'book',name:literal(name),page:literal(page)?.startsWith('--') ? undefined : literal(page),where:verb==='collection'?'collection':'shelf'}];
     if(verb==='capture') return [{kind:'capture',name:literal(action),where:'shelf'}];
     if(verb==='letters'&&action==='close') return [{kind:'letters',name:'letters',page:literal(name),where:'shelf'}];
-    if(verb==='triage'&&action==='batch'&&words.includes('--user-confirmed')) return [{kind:'triage'}];
+    if(verb==='triage'&&action==='batch') return [{kind:'triage'}];
     return [];
   });
 }
@@ -428,19 +429,42 @@ export type CheckpointToolResult = {
   session_id?: string; conversation?: string; turn_id?: string; hook_event_name?: string; error?: unknown;
 };
 
+/** Decode literal commands from Codex exec scripts without running JavaScript. */
+function codexExecCommands(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const commands: string[] = [];
+  for (const match of value.matchAll(/\bexec_command\s*\(\s*\{\s*cmd\s*:\s*("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`)(?=\s*[,}])/g)) {
+    const quoted = match[1]!;
+    if (quoted.startsWith('`') && /(?<!\\)\$\{/.test(quoted)) continue;
+    try {
+      commands.push(quoted.slice(1, -1).replace(/\\(?:u\{([\da-f]+)\}|u([\da-f]{4})|x([\da-f]{2})|(\r?\n)|([\s\S]))/gi,
+        (_escape, point: string, unicode: string, hex: string, newline: string, simple: string) => point || unicode || hex
+          ? String.fromCodePoint(parseInt(point || unicode || hex, 16)) : newline ? ''
+          : ({ '0': '\0', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' } as Record<string, string>)[simple] ?? simple));
+    } catch { /* A malformed literal cannot establish a writer. */ }
+  }
+  return commands.join('\n');
+}
+
 export function observeCheckpointResult(state: CheckpointState, event: CheckpointToolResult, at: number): CheckpointState {
   for(const id of [event.tool_use_id,event.call_id,event.turn_id]) if(id!==undefined && typeof id!=='string') throw Error('Tool call and turn identities must be strings.');
   const conversation=event.conversation ?? event.session_id;
   if(conversation!==undefined && conversation!==state.conversation) throw Error('Tool result belongs to another conversation.');
-  const input=object(event.tool_input ?? event.input) ?? {};
-  const command=String(input.command ?? input.cmd ?? event.command ?? event.cmd ?? '');
+  const rawInput=event.tool_input ?? event.input, input=object(rawInput) ?? {};
+  const command=String(input.command ?? input.cmd ?? event.command ?? event.cmd ?? codexExecCommands(typeof rawInput==='string' ? rawInput : input.code ?? input.input));
   const response=event.tool_response ?? event.result ?? event.output;
   const r=object(response);
   const output=r?.stdout ?? r?.output ?? r?.content ?? response ?? event.error;
   const rendered=typeof output==='string'?output:JSON.stringify(output ?? '');
   const framedExit=/Process exited with code (\d+)|Exit code:\s*(\d+)/i.exec(rendered);
   const exit=event.exit_code ?? event.exitCode ?? r?.exit_code ?? r?.exitCode ?? (framedExit ? Number(framedExit[1] ?? framedExit[2]) : undefined);
-  const failed=exit!==undefined && exit!==0 || event.hook_event_name==='PostToolUseFailure' || !!r?.error || r?.isError===true;
+  const failedChunk = (value: unknown): boolean => {
+    if (typeof value==='string') { try { return failedChunk(JSON.parse(value)); } catch { return false; } }
+    if (Array.isArray(value)) return value.some(failedChunk);
+    const chunk=object(value);
+    return !!chunk && (typeof chunk.exit_code==='number' && chunk.exit_code!==0 || ['stdout','output','text','content'].some(key => failedChunk(chunk[key])));
+  };
+  const failed=exit!==undefined && exit!==0 || failedChunk(response) || event.hook_event_name==='PostToolUseFailure' || !!r?.error || r?.isError===true;
   const pending=exit===undefined && (r?.session_id!==undefined || r?.sessionId!==undefined || /(?:Process|Script) running with (?:session|cell) ID/i.test(rendered));
   if(pending) return {...state,tracking:true}; // The terminal result may reuse this call id; do not consume it yet.
   const id=event.tool_use_id ?? event.call_id ?? '';

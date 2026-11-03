@@ -98,6 +98,11 @@ records the full workflow.
 The Postbox now needs Basic Memory 1.0; see [Basic Memory](basic-memory.md) for the server change.
 For builders, `deskpost kickoff check` checks a Kickoff file, and each new Kickoff page is checked as it is written.
 
+## Computer use off by default, and tighter guards
+
+Only you turn on a seat's mouse and keyboard access with `deskpost seat settings <seat> --computer-use on`; see [Seats](../seats.md).
+A `triage batch` containing only review actions applies without a yes.
+
 ## Upgrading
 
 From 1.3.6, `deskpost upgrade` upgrades Deskpost from a terminal; the main menu also offers **Upgrade to <version>** when a newer release is ready.

@@ -875,7 +875,8 @@ function Invoke-PluginPackageSelfTest {
     # THE WINDOWS RENDER: `& ` before every command, idempotent, and only for a win-* stage.
     $windows = ConvertTo-WindowsCodexHooks -Document $canonical.hooks
     $windowsCommands = @(foreach ($p in @($windows.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { [string]$h.command } } })
-    Check ($windowsCommands.Count -eq 8 -and @($windowsCommands | Where-Object { $_ -cnotmatch '^& "\$\{PLUGIN_ROOT\}/bin/library" hook ' }).Count -eq 0) "the Windows render prefixes every command with & ($($windowsCommands -join ' | '))"
+    $canonicalCommandCount = @(foreach ($p in @($canonical.hooks.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { [string]$h.command } } }).Count
+    Check ($windowsCommands.Count -eq $canonicalCommandCount -and @($windowsCommands | Where-Object { $_ -cnotmatch '^& "\$\{PLUGIN_ROOT\}/bin/library" hook ' }).Count -eq 0) "the Windows render prefixes every command with & ($($windowsCommands -join ' | '))"
     $twice = ConvertTo-WindowsCodexHooks -Document $windows
     Check ((ConvertTo-PluginCanonicalJson $twice) -ceq (ConvertTo-PluginCanonicalJson $windows)) 'the Windows render is idempotent'
     Check ((ConvertTo-PluginCanonicalJson $canonical.hooks) -cne (ConvertTo-PluginCanonicalJson $windows)) 'the render did not rewrite the canonical document it was handed'
@@ -885,7 +886,7 @@ function Invoke-PluginPackageSelfTest {
     $claudeWindows = ConvertTo-WindowsClaudeHooks -Document $freshHooks
     $claudeWindowsHooks = @(foreach ($p in @($claudeWindows.hooks.PSObject.Properties)) { foreach ($b in @($p.Value)) { foreach ($h in @($b.hooks)) { $h } } })
     $notExec = @($claudeWindowsHooks | Where-Object { [string]$_.command -cne '${CLAUDE_PLUGIN_ROOT}/bin/library.exe' -or -not $_.PSObject.Properties['args'] -or [string]@($_.args)[0] -cne 'hook' })
-    Check ($claudeWindowsHooks.Count -eq 8 -and $notExec.Count -eq 0) "the Windows Claude render runs bin/library.exe in exec form for every hook ($(@($claudeWindowsHooks | ForEach-Object { [string]$_.command + ' ' + (@($_.args) -join ' ') }) -join ' | '))"
+    Check ($claudeWindowsHooks.Count -eq $canonicalCommandCount -and $notExec.Count -eq 0) "the Windows Claude render runs bin/library.exe in exec form for every hook ($(@($claudeWindowsHooks | ForEach-Object { [string]$_.command + ' ' + (@($_.args) -join ' ') }) -join ' | '))"
     $claudeDeskArgs = @(@(@($claudeWindows.hooks.UserPromptSubmit)[0].hooks)[0].args) -join ' '
     Check ($claudeDeskArgs -ceq "hook desk-context --reader-tool-prefix $pluginPrefix") "the Windows Claude render keeps each hook's arguments, one per element ($claudeDeskArgs)"
     Check ((ConvertTo-PluginCanonicalJson (ConvertTo-WindowsClaudeHooks -Document $claudeWindows)) -ceq (ConvertTo-PluginCanonicalJson $claudeWindows)) 'the Windows Claude render is idempotent'

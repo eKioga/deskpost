@@ -3,6 +3,17 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "^(mcp__computer-use__.*|mcp__remote-devices__computer.*|Bash|PowerShell|exec)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/library\" hook computer-use",
+            "timeout": 30,
+            "statusMessage": "Checking that this seat may not drive the screen"
+          }
+        ]
+      },
+      {
         "matcher": "^mcp__basic[-_]memory__.*$",
         "hooks": [
           {

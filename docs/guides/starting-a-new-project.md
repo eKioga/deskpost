@@ -35,6 +35,13 @@ Use lowercase letters, digits and single hyphens. The Librarian will propose a s
 describe. Read it before you approve, because **the slug is permanent** and several places will
 wear it for the life of the project.
 
+## Step 0: decide the approach (first pass)
+
+Before you ask for a Hub, decide how to go about the project. The Librarian follows the first pass of
+[Start a project](../start-a-project.md): it asks only for the facts that are missing, looks at what already exists,
+and ends with a provisional recommendation and one alternative. This pass needs no seat. A fix or a small, settled
+job skips it.
+
 ## Step 1: ask for the Project Hub
 
 Tell the Librarian what the project is, in a sentence or two. Not a topic word, but what you are
@@ -118,6 +125,11 @@ department, role, card, template or Book is only ever set through a preview like
 **A session that starts without a seat tells you so and asks.** In Claude Code you can answer in the
 conversation and it binds that seat there. It also lists the seats that exist and puts a
 resumed conversation back at the seat it last held. In Codex, leave and use `deskpost seat start`.
+
+**Second pass: check the Library's Books and record the decision on your Hub.** Once you are seated, the Librarian
+finishes the second pass of [Start a project](../start-a-project.md): it checks the Books that bear on the project for
+anything that changes the first pass, then records the verdict, the recommendation, the alternative and the first
+test under `## Decisions` on your Hub.
 
 ## Step 3: what is on your Desk
 

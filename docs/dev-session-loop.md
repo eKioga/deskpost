@@ -122,6 +122,7 @@ way. Since S70 the result carries `inline_warning` when an inline value may have
    Kickoff names, and takes **one yes**. The yes covers exactly that path and that hash. The builder works
    from the snapshot it read, without re-reading the Kickoff for instructions; a different hash on a
    restart is a new gate. With no yes, nothing in the CHARTER happens.
+   Eric typing `Run <p><NN>` in this session is that yes (Eric, 2026-10-31): show the same lines, record the page hash and the yes time, and go on without asking again.
 3. **Record the attempt.** (Decision, 2026-09-29) `hub edit --mode new-page` makes `notes/<date>-sNN-a<k>` (`k` the next
    unused attempt number) with a `## Run` section: the Kickoff path and hash, the yes time, the
    seat, its `seat_id` from `.claude/seats/_registry.json`, the session id or "unrecorded", the
@@ -149,6 +150,17 @@ way. Since S70 the result carries `inline_warning` when an inline value may have
    A seat with no `CLAUDE_PID` (Codex) writes `- Agent: unrecorded.` and adds `- Harness: codex.` and
    `- Binding agent_pid: <n> | null.` (from `deskpost seat status`) as extra lines; the lines above keep
    their form (Eric, 2026-10-11).
+
+   Once the unit's branch exists, copy its Kickoff page byte for byte from the Library's
+   `collection/projects/<build hub>/kickoffs/<id>.md` into the evidence folder, check that the copy's
+   SHA-256 equals the recorded `- Kickoff hash:`, and run
+   `node tools/owns.mts start --kickoff <copy> --sha256 <hash>` in the checkout. Record its printed
+   record path on the attempt page. A revision on the same branch runs it again. On a Kickoff
+   branch (`codex/`, `int/` or `dev/` and the unit's id), the commit hook refuses every commit until
+   this has run, then any staged file outside OWNS PATHS and any sensitive file allowed only through
+   a wildcard. A hand-finished merge also allows what the merged branch changed. Train item
+   `kickoff-open-close` will run this at OPEN.
+
 4. **Merge (integrator).** (Decision, 2026-10-12) Check that `origin/master` still equals the Kickoff's pinned integration
    base and each named branch still points at its recorded tip. A mismatch parks integration.
    Create `int/<kickoff>` from that base in the integrator's own checkout and merge the named tips
@@ -449,6 +461,7 @@ On Linux the builder's commit and cut tiers are evidence for the Handback, and t
   exiting 2 (the gate itself failed) parks the push for the "Needs you" list. The serial full gate,
   `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1` with the same
   variables blank and the `bin` off PATH, stays the reference the push tier is compared against.
+- The pre-push hook enforces release-only tags, deletions and public pushes, refuses non-fast-forward updates, and requires the newest green push record to name the master commit with a clean tree.
 - **What the push tier accepts:** (Eric, 2026-10-11) today's full gate's check set, exactly (PLAN-fast-gates.md Unit B). One
   pool of eight slots (`DESKPOST_GATE_WORKERS` overrides) runs the static checks once (`Invoke-LibraryChecks.ps1
   -Fast`, whose own `kernel.selftest` row is replaced), every kernel self-test section as its own child
@@ -510,17 +523,53 @@ trial 29 and 31 failed at twelve workers, and 113 at eight; all passed alone. Se
 after pooled fixture failures and left in S118, when the fixture's seat creation was given a ten-second
 deadline for the claim holder's handle instead of the verb's two-second default. There are no automatic retries.
 
-**The machine gate lock is off by default since c32:** (Eric, 2026-10-17) c30 measured **drop**: two gates side by side
-passed and finished about a quarter sooner than taking turns. Set `DESKPOST_GATE_SERIAL=1` in every
-seat's shell to take turns again; only `1` enables it. Fixtures keep their own pipe through
-`DESKPOST_GATE_LOCK_NAME`. When enabled, the fixed production pipe is `\\.\pipe\deskpost-gate-machine`
-(Linux: an abstract socket named `deskpost-gate-machine`). The parallel runner, cut/push/release tiers,
-commit tier when it selects self-tests, full commit hook and direct source self-tests (except section
-119 alone) take it. The outer holder passes `DESKPOST_GATE_LOCK`, validated by nested runners; a disabled
-tree carries `off` instead. A waiter names the holder; `--no-wait` exits 3. Each taker that waited prints
-a `gate lock wait:` record with seconds, holder seat and tier. Compiled self-tests stay outside this guarantee.
+**The machine gate lock is on by default since c93.** Only `DESKPOST_GATE_SERIAL=0` switches it off for
+one run and its descendants, to measure as c30 did; `DESKPOST_GATE_SERIAL=1` remains valid and changes
+nothing. [Decision, 2026-10-29; `PLAN-two-builders.md`, U2]
 
-**Accepted crash limit:** a dead holder frees the pipe while its children may still run. The next gate may
+The fixed production pipe `\\.\pipe\deskpost-gate-machine` (Linux: the abstract socket
+`deskpost-gate-machine`) is the door. With no slot file it is held for the whole run: one gate at a
+time, as before. With a valid slot file, a commit hook, cut tier, direct source self-test or WSL run
+takes one slot and lets the door go. A push or release first takes the push flag, then the door and
+every slot, so it runs alone; later one-slot takers wait behind the pending push. Each admission
+attempt reads the slot setting under the door. [c93; `PLAN-two-builders.md`, U2]
+
+A waiter prints `waiting: ...` and a `gate queue:` line naming the holders and waiters, with pid and
+process start beside each identity; it prints again when the view changes. Queue order shows arrival,
+with no FIFO promise among one-slot takers. Every finished wait is one JSON line in `waits.jsonl`:
+seat, tier, pid and process start, slots asked, seconds, holders and their seconds, initial queue
+position (or `null` when unavailable), and start and end UTC. The file is bounded at 1 MiB, oldest
+complete lines dropped; a failed write only warns. [c93; `PLAN-two-builders.md`, U2 steps 2, 3 and 3a]
+
+The machine files live in `%LOCALAPPDATA%\deskpost\gate` on Windows and
+`~/.local/state/deskpost/gate` on Linux. `slots` is JSON with `slots` (a positive integer) and `u2Tip`
+(40 lowercase hex characters). A missing or malformed setting uses the legacy lock; a malformed
+one warns. `DESKPOST_GATE_DIR` selects a fixture folder. A fixture lock name alone, through
+`DESKPOST_GATE_LOCK_NAME`, reads and writes no machine file. [c93, `kernel/test/gate-lock.ts`]
+
+**The slot file changes only through `node kernel/test/gate-lock.ts --set-slots <N> --u2-tip <sha40>`
+or `node kernel/test/gate-lock.ts --set-slots off`.** The command waits for holders and pending pushes
+under the push flag, door and every slot before changing the file. Nobody edits or deletes it by
+hand. [Decision, 2026-10-29; `PLAN-two-builders.md`, U2, compatibility boundary R8]
+
+The orchestrator owns the switch-over: every checkout running gates on this PC is at or after the
+U2 tip, none is mid-run on older code, and a read-only census shows no gate work running; then
+`node kernel/test/gate-lock.ts --set-slots 2 --u2-tip <the U2 tip>` and its checks are recorded on the
+Desk Hub. c94's BASE check and these documents must also be on master before activation. Rollback
+uses `--set-slots off`, which must return before any checkout goes back to code older than U2.
+While the slot file exists, every Kickoff's header names its base in full, at or after the recorded
+U2 tip; `node tools/kickoff-check.mts <file>` refuses one that does not. [Decision, 2026-10-29;
+`PLAN-two-builders.md`, U2, compatibility boundary R7; c94]
+
+The parallel runner, cut/push/release tiers, commit tier when it selects self-tests, full commit
+hook and direct source self-tests (except section 119 alone) take the lock. The outer holder passes
+`DESKPOST_GATE_LOCK`, validated by nested runners; a disabled tree carries `off` instead. A waiter
+names the holder; `--no-wait` exits 3. Each taker that waited prints a `gate lock wait:` record with
+seconds, holder seat and tier, pid and process start. Compiled self-tests stay outside this guarantee.
+[c93; existing runner contract]
+
+
+**Accepted crash limit:** a dead holder frees its slot or the door while its children may still run. The next gate may
 overlap that orphan work; a false timing failure is the expected outcome, and fixtures remain responsible
 for isolating writes. A production holder makes one bounded command-line scan, excluding itself and its
 ancestors, and warns about possible leftover gate work. The scan never waits, blocks or authorizes killing.
@@ -564,6 +613,9 @@ parallel coding agents (Eric: "make these practices default"):
    file both append to at clearly separate places may be owned by both if the orchestrator says so in each OWNS. A
    builder that needs a file it does not own parks that row and says so in its handback; it never edits
    the file.
+   The commit hook enforces OWNS PATHS at the file level (`tools/owns.mts`); parts of files stay the review's.
+   A builder branch whose name is not a unit id is refused, and a rebase's replayed commits run no pre-commit, so a rebase is never a way to change a file the list does not name.
+
 2. **Predict ownership, diagnose existing work.** (Eric, 2026-10-12) OWNS and the orchestrator's allocation of identifiers
    predict collisions before a second Kickoff. Compare both OWNS lists and resolve overlap by order.
    `git merge-tree --write-tree` on current tips diagnoses only work that already exists; it writes
@@ -577,10 +629,26 @@ parallel coding agents (Eric: "make these practices default"):
 Gates on one PC still compete for CPU: budget a Kickoff beside another for the slower pair (Eric, 2026-10-17).
 In c30, a push run took about 24 minutes beside another, versus 16 minutes alone.
 
-When `DESKPOST_GATE_SERIAL=1` is set in every seat's shell, test runs take turns on the machine lock,
-including the full commit hook and a direct source section run. A waiting seat records its wait and
-lets the holder finish; it never stops another seat's run (Eric, 2026-10-29). Documents-only commits, including their
-section-119 document check, do not wait.
+Gates on one PC take turns by default. With two slots, two one-slot gates run at once and a push
+takes the whole machine for about 20 to 25 minutes (c93's push tier measured 23 min 10 s). A unit
+beside another sizes its waits by the other unit's planned push tiers, not its commits. A waiting
+seat records its wait and lets the holder finish; it never stops another seat's run (Eric,
+2026-10-29). Documents-only commits, including their section-119 document check, do not wait.
+[Decision, 2026-10-29; `PLAN-two-builders.md`, U3]
+
+## A third builder (written down, not built)
+
+Two gates at eight workers already use this PC's 16 threads. A third builder needs CPU and memory
+headroom, room in the integrator's merge load, and section numbers allocated without collisions.
+When the PC cannot support another gate within the existing limits, move gates off it: the gate-runner
+proposal on Hub `projects/deskpost-dev`, page `notes/2026-10-10-gate-runner-proposal`, or a builder on
+Webtop (`car:webtop-builder`), are the named routes. [Decision, 2026-10-29; `PLAN-two-builders.md`, U3]
+
+The measurement deciding N is train item `host-trial-n-seats`: a repeatable
+`node tools/lock-trial.ts --runs N` host trial, reading the waits file. It is built after Eric's
+side-by-side test; it is not built by c94. Until that trial has run, `--set-slots` above 2 is not
+used. [Decision, 2026-10-29; `PLAN-two-builders.md`, U3 step 5]
+
 
 ## The Codex build seat
 

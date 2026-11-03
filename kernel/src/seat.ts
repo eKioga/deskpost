@@ -1215,6 +1215,16 @@ function renameTab(handle: string, seat: string, workspaceOfTab: string): void {
       const why = `${ran.stdout ?? ''} ${ran.stderr ?? ''} ${ran.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
       process.stderr.write(`The tab was not retitled (failed): ${why || `orca exited ${String(ran.status)}`}\n`);
     }
+    try {
+      const pane = agentSpawn(orca, ['terminal', 'set-pane-title', '--terminal', handle, '--title', seatLabel(seat, nickname)]);
+      const titled = spawnSync(pane.file, pane.args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: pane.verbatim, timeout: 10000 });
+      if (titled.status !== 0) {
+        const why = `${titled.stdout ?? ''} ${titled.stderr ?? ''} ${titled.error?.message ?? ''}`.replace(/\s+/g, ' ').trim();
+        process.stderr.write(`The pane was not titled (failed): ${why || `orca exited ${String(titled.status)}`}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`The pane was not titled (failed): ${(error as Error).message}\n`);
+    }
   } catch (error) {
     process.stderr.write(`The tab was not retitled (failed): ${(error as Error).message}\n`);
   }
@@ -2306,6 +2316,12 @@ export async function runSeatVerb(
         const split = rest.indexOf('--');
         const parsed = parseArguments(split < 0 ? rest : rest.slice(0, split), argumentTable('seat', 'settings'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        if (parsed.options.has('computer-use')) {
+          if (['pane', 'inbound', 'assistant', 'flags', 'clear-flags', 'plan-id'].some(key => parsed.options.has(key)) || parsed.flags.has('preflight') || parsed.flags.has('reset-launch') || split >= 0)
+            refuse('--computer-use is an instant setting; use it alone, without another settings mode, preflight or plan id. Nothing was changed.');
+          emitResult((await import('./computeruse.ts')).writeComputerUseSetting(workspace, parsed.positional[0] ?? '', parsed.options.get('computer-use')!));
+          return 0;
+        }
         if (parsed.options.has('pane')) {
           if (['inbound', 'assistant', 'flags', 'clear-flags', 'plan-id'].some(key => parsed.options.has(key)) || parsed.flags.has('preflight') || parsed.flags.has('reset-launch') || split >= 0)
             refuse('--pane is an instant setting; use it alone, without another settings mode, preflight or plan id. Nothing was changed.');
@@ -2359,6 +2375,7 @@ export async function runSeatVerb(
           const entry = readSeatRegistry(path.join(workspace, '.claude')).find(row => row.seat === described['seat']);
           described['project'] = entry?.project ?? null;
           described['pane'] = readPaneSetting(path.join(workspace, '.claude'), String(described['seat'])) ?? 'default (on for Codex, off for Claude)';
+          described['computer_use'] = fs.existsSync(path.join(deskStateDirectory(path.join(workspace, '.claude'), String(described['seat'])), 'computer-use.json')) ? (await import('./computeruse.ts')).readComputerUseSetting(path.join(workspace, '.claude'), String(described['seat'])) : 'off (default)';
         }
         emitResult(described);
         return 0;

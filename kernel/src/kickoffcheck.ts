@@ -29,6 +29,7 @@ export const REQUIRED_SECTIONS: readonly string[] = [
   'WHY NOW',
   'SIZE',
   'OWNS',
+  'OWNS PATHS',
   'STAY OUT OF',
   'WHERE THINGS STAND',
   'MERGE',
@@ -92,6 +93,38 @@ function sectionText(text: string, name: string): string {
   if (at < 0) return '';
   const end = at + 1 < starts.length ? starts[at + 1]!.line : lines.length;
   return lines.slice(starts[at]!.line, end).join('\n');
+}
+
+/** Whole-file ownership only; prose OWNS still describes parts of files. */
+export function ownsPaths(text: string): { patterns: string[]; problems: string[] } {
+  const patterns: string[] = [], problems: string[] = [];
+  for (const line of sectionText(text, 'OWNS PATHS').split(/\r?\n/).slice(1)) {
+    if (!line.trim()) continue;
+    const value = /^- `([^`]*)`$/.exec(line)?.[1];
+    if (value === undefined || !value || value.startsWith('/') || /^[A-Za-z]:/.test(value) || /[\\?\[\]{}!]/.test(value) ||
+        value.split('/').some(segment => !segment || segment === '.' || segment === '..' || (segment.includes('**') && segment !== '**'))) {
+      problems.push('OWNS PATHS: invalid entry ' + line); continue;
+    }
+    patterns.push(value);
+  }
+  if (!patterns.length) problems.push('OWNS PATHS: at least one entry is required');
+  return { patterns, problems };
+}
+
+/** A star stays within a segment; a double-star segment consumes zero or more segments. */
+export function ownsPatternMatches(pattern: string, path: string): boolean {
+  const segments = pattern.split('/'), parts = path.split('/');
+  const memo = new Map<string, boolean>();
+  const matches = (i: number, j: number): boolean => {
+    const key = `${i}:${j}`;
+    if (memo.has(key)) return memo.get(key)!;
+    const segment = segments[i];
+    const result = segment === undefined ? j === parts.length : segment === '**'
+      ? matches(i + 1, j) || (j < parts.length && matches(i, j + 1))
+      : j < parts.length && new RegExp('^' + segment.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*') + '$').test(parts[j]!) && matches(i + 1, j + 1);
+    memo.set(key, result); return result;
+  };
+  return matches(0, 0);
 }
 
 function pointsToKickoff(line: string): boolean {
@@ -257,10 +290,11 @@ export const SENSITIVE_PATHS: readonly RegExp[] = [
   /(?<![\w./-])(?:kernel\/src\/)?locks\.ts\b/g, // locks
   /(?<![\w./-])(?:kernel\/src\/)?(?:undo|journal)\.ts\b/g, // undo and journals
   /(?<![\w./-])(?:kernel\/src\/)?(?:netpolicy|postbox|basicmemory|bm[\w-]*|updatecheck|reportsend|install|upgrade)\.ts\b/g, // network
+  /(?<![\w./-])(?:tools\/owns\.mts|(?:kernel\/src\/)?kickoffcheck\.ts)\b/g, // ownership
 ];
 
 export function secondReadProblems(text: string): string[] {
-  const owns = sectionText(text, 'OWNS').replace(/\\/g, '/');
+  const owns = (sectionText(text, 'OWNS') + '\n' + sectionText(text, 'OWNS PATHS')).replace(/\\/g, '/');
   const first = SENSITIVE_PATHS.flatMap(pattern => [...owns.matchAll(pattern)]).sort((a, b) => a.index! - b.index!)[0]?.[0];
   if (!first) return [];
   const second = sectionText(text, 'WHY NOW').split(/\r?\n/).some(line => line.startsWith('- **Second read:**') && /\blibrary-auditor\b/.test(line));
@@ -313,7 +347,19 @@ export function requiredReadProblems(text: string): string[] {
   };
   const items = (value: string, header: string, line: number) => {
     const folder = paths(header).some(value => path(value) && value.includes('/') || (/^<[^>]+>$/.test(value) && defined(value)));
-    for (const item of value.split(';').map(s => s.trim()).filter(Boolean)) {
+    let depth = 0, code = false, start = 0;
+    const parts: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === '`') code = !code;
+      else if (!code) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        else if (ch === ';' && depth === 0) { parts.push(value.slice(start, i)); start = i + 1; }
+      }
+    }
+    parts.push(value.slice(start));
+    for (const item of parts.map(s => s.trim()).filter(Boolean)) {
       if (/^<[^>]+>\.?$/.test(item) || kickoffNames(item).length || /(?:^|[\s("'])(?:[A-Za-z]:[\\/]|~[\\/]|\/)[^\s;]+/.test(item) || paths(item).some(value => path(value) || (folder && /^[\w.-]+\.[\w]+$/.test(value)))) continue;
       problems.push(`line ${line}: required read names no checkable path or page: ${item}`);
     }
@@ -343,7 +389,7 @@ export function requiredReadProblems(text: string): string[] {
 /** The tool and both posting paths share this verdict. Received pages skip names; a bare tool warns when it has names. */
 export function kickoffVerdict(
   text: string,
-  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; resolveName?: (name: string) => NameResolution },
+  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution },
 ): { problems: string[]; warnings: string[] } {
   const names = options.names === false ? [] : kickoffNames(text);
   const nameProblems = options.resolveName ? names.flatMap(({ name, line }) => {
@@ -354,9 +400,10 @@ export function kickoffVerdict(
   }) : [];
   const problems = [
     ...describeProblems(checkKickoff(text)),
+    ...ownsPaths(text).problems,
     ...nameProblems,
     ...requiredReadProblems(text),
-    ...describeMissingAdrs(missingAdrs(text, options.adrFiles), options.adrFiles),
+    ...describeMissingAdrs(missingAdrs(text, options.adrFiles).filter(adr => options.missingAdrs !== 'warn' || adr.startsWith('new ')), options.adrFiles),
     ...describeMissingRequiredSections(missingRequiredSections(text)),
     ...describeCommaRows(commaRowLines(text)),
     ...(options.placeholders === false ? [] : placeholderProblems(text)),
@@ -365,6 +412,8 @@ export function kickoffVerdict(
     ...(options.train ? trainProblems(text, options.train.record) : []),
   ];
   const warnings = [
+    ...(options.missingAdrs === 'warn' ? missingAdrs(text, options.adrFiles).filter(adr => !adr.startsWith('new ')).map(adr =>
+      `names ${adr}, which this installed release does not have (its docs/adr/ ends at ADR-${String(highestAdr(options.adrFiles)).padStart(4, '0')}); the source check, node tools/kickoff-check.mts in the build checkout, decides`) : []),
     ...(names.length && !options.resolveName ? ['names not checked: no Library'] : []),
     ...describeSourceGreenHelperRows(sourceGreenHelperRows(text)),
     ...wslMasterRows(text).map(row => `row ${row} runs a WSL step that reads origin/master: in the WSL clone that is the shared repository's local master, which pushes never move; read origin/<the unit's branch>`),

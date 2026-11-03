@@ -100,6 +100,7 @@ that decides where any given decision belongs.
 * [ADR-0084](adr/0084-a-report-crosses-libraries-to-the-one-triaging-seat-and-its-outcome-comes-back-as-a-letter.md) - A Report crosses Libraries to the one triaging seat, keeps a sent copy and returns an outcome letter; sequenced controls, frozen-case replies, durable intent recovery and the reports-then-letters lock order (c47–c50, 2026-10-20)
 
 * [ADR-0085](adr/0085-a-department-has-five-kinds-of-seat-and-one-seat-speaks-for-the-owner.md) - A department has five kinds of seat, and one seat speaks for the owner; retired template names remain creation provenance.
+* [ADR-0087](adr/0087-the-machine-gate-lock-is-n-weighted-slots-and-a-push-takes-the-machine.md) - The machine gate lock is N weighted slots, and a push takes the machine; activation and rollback fence mixed code versions.
 
 ## Guides
 

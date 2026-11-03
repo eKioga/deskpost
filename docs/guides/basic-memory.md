@@ -45,7 +45,7 @@ it from 1.3.2.
 ```
 Basic Memory  <server URL>   reachable
   Collection  my-collection   12 Books · 5 Projects · 4 archived
-  Access      read-only (import reads the storage folder; nothing is ever written to Basic Memory in 1.1)
+  Access      the Postbox creates its project and writes its entry and letters (bm_project, bm_write, bm_move; write_note and move_note on an older server); import only reads the storage folder; the shared-collection writers refuse on a Basic Memory 1.0 server, or when its tool list cannot be read
   Compared    3 Books only there · 1 only here · 2 differ · last import 2026-09-27 10:14
 ```
 

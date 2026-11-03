@@ -206,6 +206,10 @@ function New-CodexHooksDocument {
         -Replacement ($checkpointPosix | ConvertTo-Json -Compress) -ExpectedCount 4
     $text = Expand-CodexTemplateToken -Text $text -Token '"__CHECKPOINT_WINDOWS_COMMAND__"' `
         -Replacement ($checkpointWindows | ConvertTo-Json -Compress) -ExpectedCount 4
+    $text = Expand-CodexTemplateToken -Text $text -Token '"command": "__COMPUTER_USE_GUARD_COMMAND__"' `
+        -Replacement ('"command": ' + (($checkpointPosix -creplace ' hook checkpoint$', ' hook computer-use') | ConvertTo-Json -Compress)) -ExpectedCount 1
+    $text = Expand-CodexTemplateToken -Text $text -Token '"commandWindows": "__COMPUTER_USE_GUARD_COMMAND__"' `
+        -Replacement ('"commandWindows": ' + (($checkpointWindows -creplace ' hook checkpoint$', ' hook computer-use') | ConvertTo-Json -Compress)) -ExpectedCount 1
     if ($text -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex hooks still contain a template token.' }
 
     # JUDGED HERE, NOT BY THE CALLER, so that no caller can write a document Codex will refuse. The

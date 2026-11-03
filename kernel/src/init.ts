@@ -754,6 +754,9 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
     : `& 'node' ${powerShellLiteral(source)} hook checkpoint`;
   text = text.replaceAll('"__CHECKPOINT_COMMAND__"', psJsonString(checkpointPosix))
     .replaceAll('"__CHECKPOINT_WINDOWS_COMMAND__"', psJsonString(checkpointWindows));
+  text = text.replace(/"(command|commandWindows)"(\s*:\s*)"__COMPUTER_USE_GUARD_COMMAND__"/g,
+    (_match, key: string, separator: string) => '"' + key + '"' + separator +
+      psJsonString((key === 'commandWindows' ? checkpointWindows : checkpointPosix).replace(/ hook checkpoint$/, ' hook computer-use')));
   if (/__[A-Z0-9_]+__/.test(text)) throw new Error('The rendered Codex hooks still contain a template token.');
   try {
     JSON.parse(text);

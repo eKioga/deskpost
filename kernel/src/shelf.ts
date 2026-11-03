@@ -29,7 +29,7 @@ import {
   ShelfRefusal,
   testShelfCatalogEntryText,
 } from './shelfcatalog.ts';
-import { archiveVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './shelfwriters.ts';
+import { archiveVerb, describeVerb, removeVerb, renameVerb, restoreVerb, stubVerb } from './shelfwriters.ts';
 import { updateShelfNoteIndex } from './capture.ts';
 import { shelfCarryVerb } from './shelfcarry.ts';
 import { shelfRecallVerb } from './shelfrecall.ts';
@@ -46,7 +46,7 @@ export interface VerbResult {
   humanText?: string;
 }
 
-const ACTIONS = ['render', 'new', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall', 'tidy', 'rebuild'];
+const ACTIONS = ['render', 'new', 'describe', 'rename', 'remove', 'archive', 'restore', 'stub', 'duplicates', 'carry', 'recall', 'tidy', 'rebuild'];
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -306,6 +306,12 @@ export function runShelfVerb(argv: string[], programRoot: string): VerbResult {
         const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'carry'));
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         return { refusal: null, value: shelfCarryVerb(argv.slice(1), workspace), asJson: true };
+      }
+      case 'describe': {
+        const parsed = parseArguments(argv.slice(1), argumentTable('shelf', 'describe'));
+        const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        const written = describeVerb(argv.slice(1), programRoot, workspace);
+        return { refusal: written.refusal, value: written.value, asJson: true };
       }
       case 'rename':
       case 'remove':

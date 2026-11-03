@@ -4,7 +4,7 @@
  *
  *   Basic Memory  <server URL>   reachable
  *     Collection  ai-library   24 Books · 10 Projects · 18 archived
- *     Access      read-only (import reads the storage folder; nothing is ever written to Basic Memory in 1.1)
+ *     Access      the Postbox creates its project and writes its entry and letters (bm_project, bm_write, bm_move; write_note and move_note on an older server); import only reads the storage folder; the shared-collection writers refuse on a Basic Memory 1.0 server, or when its tool list cannot be read
  *     Compared    3 Books only there · 1 only here · 2 differ · last import 2026-09-27 10:14
  *
  * REACHABILITY IS MCP; COUNTS AND THE COMPARISON ARE THE STORAGE FOLDER. The folder is read byte for byte, as import
@@ -24,6 +24,8 @@ import { markerConnection, mcpTimeoutMs, readExactOrNull, type BasicMemoryConnec
 import { openServer } from './bmconnection.ts';
 import { compareWithSource, readImportRecord, scanSource, type RootKind, type RootRow } from './bmsource.ts';
 import { boundProjects, unfinishedImportJournals } from './bmimport.ts';
+
+export const BASIC_MEMORY_ACCESS = 'the Postbox creates its project and writes its entry and letters (bm_project, bm_write, bm_move; write_note and move_note on an older server); import only reads the storage folder; the shared-collection writers refuse on a Basic Memory 1.0 server, or when its tool list cannot be read';
 
 /** The server answers `initialize` within the timeout, or the reason it did not. */
 async function reachability(connection: BasicMemoryConnection): Promise<{ reachable: boolean; detail: string; session: Awaited<ReturnType<typeof openServer>> | null }> {
@@ -79,7 +81,7 @@ export async function basicMemoryStatus(argv: string[], workspace: string): Prom
     connection: { url: connection.url, collection_name: connection.collection_name, collection_id: connection.collection_id, storage: connection.storage },
     reachable: reached.reachable,
     reachability: reached.detail,
-    access: 'read-only (import reads the storage folder; nothing is ever written to Basic Memory in 1.1)',
+    access: BASIC_MEMORY_ACCESS,
   };
 
   // COUNTS AND THE COMPARISON: the storage folder when there is one.

@@ -3,6 +3,18 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "^(Bash|exec)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__COMPUTER_USE_GUARD_COMMAND__",
+            "commandWindows": "__COMPUTER_USE_GUARD_COMMAND__",
+            "timeout": 30,
+            "statusMessage": "Checking that this seat may not drive the screen"
+          }
+        ]
+      },
+      {
         "matcher": "^mcp__basic_memory__.*$",
         "hooks": [
           {

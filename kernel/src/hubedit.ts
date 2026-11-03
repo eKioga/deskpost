@@ -1220,7 +1220,7 @@ export function writeTimeWarning(text: string, now: Date): string | null {
     const minute = (Number(match[2]) % 12 + (match[4] === 'PM' ? 12 : 0)) * 60 + Number(match[3]);
     if (match[1] === localDate(now) && Math.abs(minute - (now.getHours() * 60 + now.getMinutes())) > 5) stamps.push(match[0]);
   }
-  return stamps.length ? `Typed time ${stamps.join('; ')} differs from the write's time ${fillTimePlaceholders('{now}', now)} by more than 5 minutes; use {now}.` : null;
+  return stamps.length ? `Typed time ${stamps.join('; ')} differs from the write's time ${fillTimePlaceholders('{now}', now)} by more than 5 minutes: if it is the time of this write, use {now}; a past time quoted with its date is history and stays as written.` : null;
 }
 
 /**

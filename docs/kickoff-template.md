@@ -8,8 +8,11 @@ written out in every Kickoff, word for word, so a builder needs only the page it
 (`docs/dev-loop-orchestrator.md`, "The Kickoff") (Eric, 2026-10-11).
 
 The orchestrator runs the check with `--train <register file>` on the real train record to verify the `TRAIN:` item is open (Decision, 2026-10-27).
+OWNS PATHS is the whole-file list the commit hook enforces; OWNS's prose stays the place for parts of files.
 The check refuses a release Kickoff (`TRAIN: release-...`) without an Audit line naming library-auditor and its answering letter (Decision, 2026-10-27).
-When OWNS names a sensitive file (guard, hook, settings, lock, undo or journal, credential or network), it also requires a Second read line naming library-auditor (Decision, 2026-10-27).
+When OWNS names a sensitive file (guard, hook, settings, lock, undo or journal, the ownership check, credential or network), it also requires a Second read line naming library-auditor (Decision, 2026-10-27).
+
+The header line's `<SHA>` is the unit's base, written in full (40 characters); while the machine's slot file exists, the check refuses a base older than the recorded U2 tip.
 
 A section that does not apply still appears, with `none` and the reason (Eric, 2026-10-13). Sections stay in this order. A Kickoff may
 add a `REVIEW OF <unit>:` section after the header (the orchestrator's review of the handback it follows) and its own numbered STANDING ANSWERS.
@@ -38,13 +41,13 @@ WHY NOW:
 - **Second read:** (Decision, 2026-10-27) <for a Kickoff whose OWNS names a guard, hook, settings, lock, undo or journal, credential or network file: library-auditor reads <base>..<the pushed tip> after the handback, before the next release; otherwise "none" and why>
 - **Beside:** (Report, 2026-10-16) <each unticked `Run` pointer on every build seat's Hub when this page is written (today
   deskpost-dev's and deskpost-codex-dev's), by Kickoff and seat; `nothing` only after reading each of those
-  `## Next` sections>. A unit beside this one shares the machine gate lock, so SIZE counts its gate minutes.
+  `## Next` sections>. A unit beside this one shares the machine gate lock, so SIZE counts the other unit's planned push tiers (each takes the whole machine for about 20 to 25 minutes), not its commits.
 - `Usage: Claude NN% / Codex NN% (Orca, updated HH:MM by date) -> <seat>: <reason>` (`unknown` for any reading not
   available; match the account by the login this seat uses, `claude auth status`) (Report, 2026-10-13)
 
 SIZE: about <hours> from the yes, compared with <the measured unit it is scaled from, and its measured time>
 (Decision, 2026-10-16): <minutes per row and per cut, gate time included, and the lock waits expected
-behind each unit Beside names>. **Stop rule:** (Decision, 2026-10-16) at <time> from the yes (about one and a half
+behind each push tier Beside names>. **Stop rule:** (Decision, 2026-10-16) at <time> from the yes (about one and a half
 times SIZE), or <usage boundary>, with no green proof, hand back what is done, unpushed (RULE 4(d)).
 
 NET LINES (the 2026-10-21 rule): about <+N or -N> in `kernel/src` (<per row>); new sections beside, not counted (Decision, 2026-10-21).
@@ -52,6 +55,9 @@ NET LINES (the 2026-10-21 rule): about <+N or -N> in `kernel/src` (<per row>); n
 OWNS: <the branch>, and in it: <each file the rows may change, with the part where shared>; new self-test sections
 <numbers>; <ADR numbers>; <each existing section, fixture or generated file that pins what the rows change, named
 with its pins>. (`none other open` when no other builder's Kickoff is open.)
+
+OWNS PATHS: <each file the rows may change, whole, one per line in backticks after a dash; * stays inside one folder and ** spans folders; a sensitive file (guard, hook, settings, lock, undo or journal, the ownership check, credential or network) is always listed by its own name>
+- `<path or pattern>`
 
 STAY OUT OF: <other seats' worktrees and branches, B's worktree and `desk/*`, stashes, real seats, writing real homes
 (a Codex seat still reads `~/.codex/AGENTS.md` at OPEN), `.githooks/`, permission settings, release work, anything
@@ -106,12 +112,12 @@ RULES:
    c. **A refusal is a stall.** (Decision, 2026-10-03) A permission prompt, the auto-mode classifier or a guard refusing a step: record it in the stall log and park that step. Take no other route to the same result. An auto-mode refusal is a fault of the session, not a rule (Decision, 2026-10-13): tell the reader that restarting the session may clear it, and never record the step as one this seat can never do. CLOSE is the one exception: a refused CLOSE write (the Handback, a `## Now` line, the handback letter) is tried once more the plain way, the text written with the file editor and then the same Deskpost command run alone; if that is refused too, end the reply with the full Handback text so the reader can save it (Report, 2026-10-15). A required read the builder cannot open **before the yes** is asked of the reader in the builder's own session ("page X is missing: continue without it?"), not handed back; **after the yes**, a missing page or reference parks only the step that needs it, and the run continues.
    d. **No new PowerShell** (`AGENTS.md`) (Eric, 2026-09-30). A row that changes a `.ps1` says in its commit whether it fixes a defect or keeps an oracle or a live writer at parity.
    e. **A hook FAILs in a row's own files:** (Eric, 2026-10-29) fix it inside that row. A FAIL elsewhere: a Report, and go on only if it is independent of the next row; otherwise hand back.
-   f. **A file outside OWNS turns out to be needed:** (Eric, 2026-10-12) park that part of the row and say which file and why in the handback; never edit it.
+   f. **A file outside OWNS turns out to be needed:** (Eric, 2026-10-12) park that part of the row and say which file and why in the handback; never edit it; the commit hook refuses such a commit (`tools/owns.mts`).
    g. **Another seat's gate holds the lock:** (Eric, 2026-10-29) wait; record each wait's start and end. Never stop or touch that seat's processes.
    h. **A question this page leaves open:** (Decision, 2026-10-03) the answer you would recommend, inside this CHARTER, and go on.
    i. Only when item h cannot settle it, because no reading inside the CHARTER is one the builder would recommend: a builder-level question (how to build it, which file, what the gate needs) goes to the orchestrator; a question about what Eric wants goes to the planner (Eric, 2026-10-27). The builder parks that row, names the question on its attempt page and continues with the next row it owns. The answer is a page on the answering seat's Hub, read through the validated reader, with `author_seat:` and one of `(orchestrator)`, `(planner, standing in for Eric)` or `(Eric)`. The builder records the page and its hash on the attempt page, and the Handback lists every applied answer under its own heading. The bound is the signed CHARTER: an answer may only choose between readings the Kickoff text already supports. Anything that widens the CHARTER, changes a named exception or is on Eric's reserved list goes to Eric every time. For a seat without messaging, the question is a spec-question letter to its orchestrator or the planner, and the answer is the Hub page plus a letter naming it. The builder checks its letters only at OPEN, after each row's commit and before the handback: one read each, never a wait. If no independent row remains and no answer has arrived, or the answering seat is unavailable, the builder hands back with that row parked.
 4. **Verify in proportion to risk.** (Decision, 2026-10-27)
-   a. **One gate per cut, and none left behind.** (Eric, 2026-10-11) Stage exactly the cut, set everything else aside (the changed files copied whole to the evidence folder with a SHA-256 list, recorded on the attempt page; never a `-wip` commit, whose hook refuses unfinished work) (Report, 2026-10-23), check the working tree equals the index, then commit; the hook's line is the cut's pass mark. Before the commit, run only the self-test sections the rows touch, plus section 155 (the type check, about 15 s) when the cut changes TypeScript (Eric, 2026-10-15). Heavy gates take the machine-wide gate lock, switched on for this session with `DESKPOST_GATE_SERIAL=1`; a wait on another seat's gate is a stall to record, never a reason to stop that seat. Before each heavy job and at CLOSE, list every process your session started that is still running or waiting (background shells, waiters, watchers) by its command line, and every other seat's gate, self-test, build or matrix process, read only; stop each of your own you no longer need, by its own process ID. "Stopped" on the attempt page means a process list taken after the stop shows it gone.
+   a. **One gate per cut, and none left behind.** (Eric, 2026-10-11) Stage exactly the cut, set everything else aside (the changed files copied whole to the evidence folder with a SHA-256 list, recorded on the attempt page; never a `-wip` commit, whose hook refuses unfinished work) (Report, 2026-10-23), check the working tree equals the index, then commit; the hook's line is the cut's pass mark. Before the commit, run only the self-test sections the rows touch, plus section 155 (the type check, about 15 s) when the cut changes TypeScript (Eric, 2026-10-15). Heavy gates take the machine-wide gate lock, which is on by default (the loop doc's "The gates" says how one run switches it off, only to measure); a wait on another seat's gate is a stall to record, never a reason to stop that seat. Before each heavy job and at CLOSE, list every process your session started that is still running or waiting (background shells, waiters, watchers) by its command line, and every other seat's gate, self-test, build or matrix process, read only; stop each of your own you no longer need, by its own process ID. "Stopped" on the attempt page means a process list taken after the stop shows it gone.
    b. **The push gate** (Decision, 2026-09-29) is `node tools/gate.ts --tier push`: zero FAILs; WARN and SKIP are fine; exit 2 (the gate itself failed) parks the push like a FAIL. `gate.required-sections` prints only with `--require-sections <n,...>`, so a row that asks for it names the flag and its section numbers in its command.
    c. **A proof run fails once and passes on rerun:** (Eric, 2026-10-29) record both runs; file a Report naming the check; it is not a pass until three consecutive runs agree.
    d. **The stop rule:** (Eric, 2026-10-29) commit what is green, leave the rest as not done, hand back unpushed.
@@ -135,6 +141,7 @@ OPEN (before any work):
    "Assigning work by usage") and record them, with the account this seat runs as.
 4. Show Eric this page's title, author_seat, revision, the SHA-256 prefix of this page's content as read, and the
    CHARTER. Take ONE yes, covering this path and hash only (Decision, 2026-09-29).
+   Eric typing `Run <p><NN>` in this session is that yes (Eric, 2026-10-31): show the same lines, record the page hash and the yes time, and go on without asking again.
 5. On the yes: <create the branch>; the attempt page `notes/<date>-<p><NN>-a1` with `hub edit --mode new-page
    --content-path <file>` and `## Run` in the loop doc's fixed form; tick the pointer with `check-item --match-text
    "Run <p><NN>:"`, its `--preflight` first and then its `--plan-id`.

@@ -291,9 +291,10 @@ export function refreshNeedsYou(workspace: string): void {
   if (!needsYouOn(workspace)) return;
   try {
     const done = writeNeedsYou(workspace);
-    if (done.status === 'refused') process.stderr.write(`Deskpost did not refresh the page ${done.path}: ${done.reason}.\n`);
+    if (done.status === 'refused') process.stderr.write(`Deskpost did not refresh the page ${done.path}: ${done.reason}. The command itself finished as reported above.\n`);
   } catch (error) {
-    process.stderr.write(`Deskpost did not refresh the page Librarian/${NEEDS_YOU_PAGE}: ${String((error as Error).message ?? error).split(/\r?\n/)[0]}\n`);
+    const reason = String((error as Error).message ?? error).split(/\r?\n/)[0]!.replace(/\.$/, '');
+    process.stderr.write(`Deskpost did not refresh the page Librarian/${NEEDS_YOU_PAGE}${reason ? `: ${reason}` : ''}. The command itself finished as reported above.\n`);
   }
 }
 

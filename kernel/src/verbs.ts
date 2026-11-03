@@ -377,13 +377,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   hook: {
     summary: "The Library's hooks: a harness payload on stdin, a decision or context on stdout.",
-    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start|checkpoint> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
-    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint'],
+    usage: 'library hook <shelf-read|shell-shelf-read|basic-memory-read|settings-integrity|desk-context|compact-clear|search-hit|seat-start|checkpoint|computer-use> [--workspace <path>] [--seat <s>] [--state-directory <d>] [--agent-pid <n>] [--reader-tool-prefix <p>]',
+    actions: ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint', 'computer-use'],
     positional: false,
     // ONE TABLE FOR EVERY HOOK, as the usage is one clause: a refused hook would fail a harness event, and a
     // registration written by an older release passes the same few names to each.
     arguments: Object.fromEntries(
-      ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint'].map((action) => [
+      ['shelf-read', 'shell-shelf-read', 'basic-memory-read', 'settings-integrity', 'desk-context', 'compact-clear', 'search-hit', 'seat-start', 'checkpoint', 'computer-use'].map((action) => [
         action,
         {
           valued: ['seat', 'state-directory', 'agent-pid', 'deadline-seconds', 'reader-tool-prefix'],
@@ -915,7 +915,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       },
       rename: { valued: ['plan-id', 'resume', 'rollback'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
       retire: { valued: ['plan-id'], boolean: ['preflight'], positionals: 1 },
-      settings: { valued: ['inbound', 'assistant', 'flags', 'clear-flags', 'pane', 'plan-id'], boolean: ['preflight', 'reset-launch'], positionals: 1, passthrough: true },
+      settings: { valued: ['inbound', 'assistant', 'flags', 'clear-flags', 'pane', 'computer-use', 'plan-id'], boolean: ['preflight', 'reset-launch'], positionals: 1, passthrough: true },
       // EVERYTHING AFTER A BARE `--` IS THE AGENT'S, never checked. The two legacy names are read only to be refused.
       start: {
         valued: [
@@ -1004,12 +1004,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   shelf: {
     summary:
-      "The local Shelf: render, new, rename, remove, archive, restore, stub, carry another workspace's capture notes in, recall a collection Book to the Shelf, tidy a capture Book's closed notes, and rebuild a Book's Discovery manifest from disk.",
+      "The local Shelf: render, new, describe, rename, remove, archive, restore, stub, carry another workspace's capture notes in, recall a collection Book to the Shelf, tidy a capture Book's closed notes, and rebuild a Book's Discovery manifest from disk.",
     usage:
       // ONE CLAUSE PER ACTION (S71 row 10), each listing its own parser's flags, so `shelf <action> --help` shows it.
       'library shelf <action> [arguments] [--workspace <path>] [--json]; ' +
       'library shelf render; ' +
       'library shelf new <slug> --title <t> --summary <s> [--topics <t>] [--origin <o>] [--capture [--closed-by writer|any] [--letters]] [--preflight]; ' +
+      'library shelf describe <slug> --summary <s> (--preflight | --plan-id <id>); ' +
       'library shelf rename <slug> <new-slug> [--new-title <t>] (--preflight | --plan-id <id>); ' +
       'library shelf remove <slug> [--reason <r>] [--seat <s>] (--preflight | --plan-id <id>); ' +
       'library shelf archive <slug> [--reason <r>] (--preflight | --plan-id <id>); ' +
@@ -1020,12 +1021,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library shelf recall <book-slug> [--shelf-slug <s>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]; ' +
       'library shelf tidy <capture-book> [--days <n>] [--restore reviewed/<yyyy-mm>/<name>] (--preflight | --user-confirmed --plan-id <id>); ' +
       'library shelf rebuild [<slug>]',
-    actions: ['archive', 'carry', 'duplicates', 'new', 'rebuild', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
+    actions: ['archive', 'carry', 'describe', 'duplicates', 'new', 'rebuild', 'recall', 'remove', 'rename', 'render', 'restore', 'stub', 'tidy'],
     positional: false,
     arguments: {
       '': { positionals: 0 },
       render: { positionals: 0 },
       new: { valued: ['title', 'summary', 'topics', 'origin', 'closed-by'], boolean: ['capture', 'letters', 'preflight'], positionals: 1 },
+      describe: { valued: ['summary', 'plan-id'], boolean: ['preflight'], positionals: 1 },
       rename: { valued: ['new-title', 'plan-id'], boolean: ['preflight'], positionals: 2 },
       remove: { valued: ['reason', 'seat', 'plan-id'], boolean: ['preflight'], positionals: 1 },
       archive: { valued: ['reason', 'plan-id'], boolean: ['preflight'], positionals: 1 },

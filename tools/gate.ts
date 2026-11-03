@@ -11,7 +11,7 @@
  *   exit 0  every check passed (a WARN passes, as the runner's does);
  *   exit 1  a check failed;
  *   exit 2  the gate itself failed (an unknown argument, git or a child that could not run, a malformed claim map);
- *   exit 3  waiting refused under --no-wait. The machine-wide lock is off by default; DESKPOST_GATE_SERIAL=1 enables it.
+ *   exit 3  waiting refused under --no-wait. The machine-wide lock is on by default; DESKPOST_GATE_SERIAL=0 switches it off for one run.
  *
  * The hook runs the commit tier beside the old gate only on request (DESKPOST_GATE_COMPARE=1). --compare-with
  * appends its observations and exits 0 even on disagreement or new-gate error; the old gate still decides.
@@ -490,6 +490,8 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   const options = parseArgs(argv);
   const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
   const started = Date.now();
+  const head = git(root, ['rev-parse', 'HEAD']).trim();
+  const clean = git(root, ['status', '--porcelain']).trim() === '';
   const outcomes: Outcome[] = [];
   const say = (outcome: Outcome) => {
     outcomes.push(outcome);
@@ -539,7 +541,7 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   const failed = outcomes.filter((outcome) => outcome.status === 'fail' && !outcome.diagnostic).length;
   const overBudget = budget !== null && total > budget;
   const exit = failed ? EXIT_FAIL : EXIT_PASS;
-  const report = { schema: 1, tier: options.tier, commit: options.commit, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, selection: { ...chosen.selection, changed: chosen.changed }, checks: outcomes };
+  const report = { schema: 1, tier: options.tier, commit: options.commit, head, clean, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, selection: { ...chosen.selection, changed: chosen.changed }, checks: outcomes };
   if (options.json) {
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } else {

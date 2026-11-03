@@ -204,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.5.3**, "Basic Memory 1.0 and checked Kickoffs": the Postbox speaks Basic Memory 1.0 and moves only the letter it read, and every new Kickoff page is checked as it is written. Basic Memory and the vault stay optional. The full roadmap, with what each milestone carries and how far along it is, is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.5.4**, "Computer use off by default, and tighter guards": a seat drives your mouse and keyboard only when you turn that on, the Shelf guards catch more ways of reaching a closed Book, and a review-only triage needs no yes. Basic Memory and the vault stay optional. The full roadmap, with what each milestone carries and how far along it is, is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: 1.6.0, one collection for the household**, its plan signed off: two Libraries in one

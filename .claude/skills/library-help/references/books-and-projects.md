@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.3/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/seats.md).
 
 ## Books
 
@@ -63,6 +63,7 @@ reader or search for ordinary reader requests.
 ```
 library shelf new <slug> --title "<title>" --summary "<one line>"      # a new curated Book
 library book add-page <slug> <page> --content-path <file>             # add a page; the Book open
+library shelf describe <slug> --summary "<one line>" (--preflight | --plan-id <id>) # correct Purpose
 library shelf rename | remove | archive | restore                      # each previews first
 library shelf rebuild [<slug>]                                         # Discovery manifest from disk
 ```

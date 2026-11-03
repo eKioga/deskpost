@@ -104,7 +104,7 @@ export function judgeKickoff(text: string, workspace: string, rules: { placehold
       catch (error) { problems.push(`cannot read train register '${register}': ${(error as Error).message}`); }
     }
   }
-  const verdict = kickoffVerdict(text, { adrFiles, train, placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : kickoffNameResolver(workspace) });
+  const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : kickoffNameResolver(workspace) });
   return { problems: [...verdict.problems, ...problems], warnings: [...warnings, ...verdict.warnings] };
 }
 

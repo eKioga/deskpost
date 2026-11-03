@@ -254,6 +254,10 @@ export function triageActions(parsed: ParsedArguments, workspace: string, verb: 
   }
 }
 
+export function batchNeedsYes(requested: Record<string, unknown>[]): boolean {
+  return !requested.every(action => action?.['kind'] === 'review' && !String(action['other_seat'] ?? '').trim());
+}
+
 function runBatch(argv: string[], workspace: string): PsJsonValue {
   const parsed = parseArguments(argv, argumentTable('triage', 'batch'));
   if (parsed.options.has('plan-path')) {
@@ -265,11 +269,11 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
   const lockTimeout = Number(parsed.options.get('lock-timeout') ?? '20');
   const stateDirectory = path.join(workspace, '.claude');
   const preflight = parsed.flags.has('preflight');
-  const recovery=!preflight && parsed.flags.has('user-confirmed') && requested.some(a => a['kind'] === 'review' && a['outcome'] !== undefined)?recover(workspace, 'triage batch close', reportStageRunner(workspace)):null;
+  let recovery=!preflight && parsed.flags.has('user-confirmed') && requested.some(a => a['kind'] === 'review' && a['outcome'] !== undefined)?recover(workspace, 'triage batch close', reportStageRunner(workspace)):null;
 
   // A FINISHED BATCH SAYS SO (kickoffs/s99 row K3, ruling 8), before anything is resolved: see `finishedBatchResult`.
-  if (!preflight && parsed.flags.has('user-confirmed')) {
-    const finished = finishedBatchResult(workspace, parsed.options.get('plan-id') ?? '', requested, recovery);
+  if (!preflight && (parsed.flags.has('user-confirmed') || !batchNeedsYes(requested))) {
+    const finished = finishedBatchResult(workspace, parsed.options.get('plan-id') ?? '', requested, parsed.flags.has('user-confirmed') ? recovery : null);
     if (finished !== null) return finished;
   }
 
@@ -514,7 +518,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
         note_page: action.source_note,
         current_review: String(action.metadata['current_review'] ?? ''),
         new_review: String(action.metadata['new_review'] ?? ''),
-        ...(action.kind === 'review' && !action.metadata['outcome'] && action.metadata['current_review'] === action.metadata['new_review'] ? {
+        ...(action.kind === 'review' && !action.metadata['outcome'] && action.metadata['current_review'] === action.metadata['new_review'] && !(action.metadata['new_review'] === 'done' && (sourceNoteOf(action).note?.reviewed ?? null) === null) ? {
           status: 'already_done', reviewed: sourceNoteOf(action).note?.reviewed ?? 'unknown',
           note: `Already done (reviewed: ${sourceNoteOf(action).note?.reviewed ?? 'unknown'}); nothing to write.`,
         } : {}),
@@ -642,7 +646,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
       resume: existingJournal !== null,
       pending_count: pending.length,
       already_succeeded: done.length,
-      confirmation_required: !entries.every(entry => entry.recordedState === 'already_done'),
+      confirmation_required: batchNeedsYes(requested) && !entries.every(entry => entry.recordedState === 'already_done'),
       recoverable: entries.every((entry) => entry.resolved.action.delete_set.length === 0),
       shared_library_write: false,
     };
@@ -650,7 +654,7 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
 
   if (entries.every(entry => entry.recordedState === 'already_done')) {
     if (parsed.options.has('plan-id') && parsed.options.get('plan-id') !== batchId) {
-      if (!parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
+      if (batchNeedsYes(requested) && !parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
       refuse('Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the material changed since you approved it.');
     }
     return {
@@ -665,10 +669,15 @@ function runBatch(argv: string[], workspace: string): PsJsonValue {
     if (seat === null) refuse(seatState.message);
     assertSeatClaimHeld({ workspace, stateDirectory, seat });
   }
-  if (!parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
-  if (parsed.options.get('plan-id') !== batchId) {
+  if (batchNeedsYes(requested) && !parsed.flags.has('user-confirmed')) refuse('Library Triage is not yet performed: review the preflight and rerun with --user-confirmed.');
+  if ((batchNeedsYes(requested) || parsed.options.has('plan-id')) && parsed.options.get('plan-id') !== batchId) {
     refuse('Library Triage is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the material changed since you approved it.');
   }
+
+  // Flagless recovery follows validation and the plan-id check (library-auditor's second read of c99, Must 4):
+  // a refused review must not finish unrelated intents or write their outbox entries.
+  if (!parsed.flags.has('user-confirmed') && requested.some(a => a['kind'] === 'review' && a['outcome'] !== undefined))
+    recovery = recover(workspace, 'triage batch close', reportStageRunner(workspace));
 
   // THE PLAN RECORD, written at the first confirmed run and only if absent, named by the batch id.
   const planPath = path.join(workspace, 'internal', 'triage-plans', `${batchId}.json`);

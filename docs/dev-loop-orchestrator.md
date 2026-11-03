@@ -42,6 +42,7 @@ in this order:
 - **SIZE**: the time budget, gate minutes per row and per cut, and the stop rule.
 - **OWNS**: the files, and the new self-test section numbers, this Kickoff's rows may change; `none other open`
   when no other builder's Kickoff is open. See ["Two builders at once"](dev-session-loop.md#two-builders-at-once).
+- **OWNS PATHS**: the same files, whole, one per line, which the commit hook enforces; every sensitive file by its own name.
 - **STAY OUT OF**: what the session must not touch.
 - **WHERE THINGS STAND**: the checkout's SHA, the installed version, and what is not in scope. It pins the
   checkout, the branch the rows land on, and its base SHA (for `deskpost-codex-dev`, `codex/cNN`, created once at OPEN

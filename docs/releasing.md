@@ -49,6 +49,7 @@ How a reviewed release candidate goes to the public download, and the exact comm
    `node tools/release-tag-check.ts <app> <version>`; anything but PASS stops before the public push. Then make
    one atomic push from the publish clone, bound to the reviewed candidate SHA and the exact READY refs.
    Refuse if either moved. Nothing else publishes a release.
+   Set `DESKPOST_RELEASE_PUSH=1` for that approved source-tag push only; the pre-push hook otherwise refuses tags.
 4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
    `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
    the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.

@@ -404,7 +404,19 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.5.4: Computer use off by default, and tighter guards (released 2026-11-03)
+
+- A seat can drive your mouse and keyboard only when you turn it on with `deskpost seat settings <seat> --computer-use on`; it is off by default, a seat cannot turn it on for itself or another seat, and Claude's computer-use tools and `orca computer` are refused while it is off.
+- The Shelf guards catch more ways of reaching a closed Book: a here-string written to a file keeps its body visible when the file command's arguments are uncertain, and shell data and exclusion globs are told apart from protected paths.
+- A triage batch of only `review` actions applies without a yes, and a review stamps a closed note that had no stamp.
+- `basic-memory status` says what the Postbox writes.
+- `shelf describe` corrects a Shelf Book's Purpose line, with a preview first.
+- The agent pane is named for its seat, and the Desk dashboard no longer scrolls in an Orca split pane.
+- For builders: a Kickoff lists the files it owns and the commit hook refuses any other; two builders share the machine's gate by slots; a pre-push guard checks every push; `tools/seat-rules-check.mts` measures whether the seat rules help.
+
 ### 1.5.3: Basic Memory 1.0 and checked Kickoffs (released 2026-10-31)
+
+Shipped as public commit 60416854cfb17c8c38f7e90ecc3bc627056bb50b, from 5331ff2.
 
 - Deskpost speaks Basic Memory 1.0: the Postbox uses its `bm_*` tools, checks at each session that the server offers the five it needs and refuses in one line when it does not, and doctor says what the server offered at its last check.
 - The Postbox moves the very letter it read; a letter it cannot read for certain stays in the inbox.

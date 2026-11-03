@@ -37,6 +37,12 @@ if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "master" ]; then
     exit 1
 fi
 
+# c95, PLAN-commit-honesty-owns.md: whole-file ownership, before every gate.
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" node tools/owns.mts check
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
 # A DOCS-ONLY COMMIT RUNS ONLY THE DOCUMENT CHECKS (S104 row 0b; Eric, 2026-10-08: "do we need this gate?").
 # tools/docs-gate.ts decides from the staged paths: 0 is its checks passed, 3 is one failed, 4 is "not docs only".
 # Anything else -- node missing, the file missing, a crash -- is never a pass: the full runner below runs, as it

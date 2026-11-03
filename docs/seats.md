@@ -76,7 +76,7 @@ A department has at most one orchestrator. When it already has one, there are tw
 Init preserves a user's own skill folder or edited managed files in either harness; doctor WARNs
 instead of replacing them. If that leaves an older library-help copy, read the canonical guide in
 the installed program tree at `.claude/skills/library-help/references/building-software-with-seats.md`.
-Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.3/.claude/skills/library-help/SKILL.md)
+Its release-tagged [library-help reference list](https://github.com/eKioga/deskpost/blob/v1.5.4/.claude/skills/library-help/SKILL.md)
 is the matching online entry point. Resolve the collision yourself and run `deskpost init` again;
 do not overwrite your copy as a shortcut.
 
@@ -414,6 +414,8 @@ deskpost seat settings <seat> --clear-flags codex --plan-id <issued-id>
 deskpost seat settings <seat> --reset-launch --preflight
 deskpost seat settings <seat> --reset-launch --plan-id <issued-id>
 ```
+
+`deskpost seat settings <seat> --computer-use on|off|unset` controls permission to drive Eric's mouse and keyboard. It defaults to off; only Eric turns it on. The setting is separate from pane and inbound preferences, in the seat's `computer-use.json` containing only `{"computer_use":"on"}` or `{"computer_use":"off"}`; `unset` removes it. Missing, unreadable or malformed state means off, and `seat describe` reports `computer_use`. Use this setting alone. The [computer-use guard](hook-enforced-boundaries.md#erics-mouse-and-keyboard) describes the protected tools, command-text matching and limits.
 
 Flag set, clear and reset all need approval; removing a flag can change the client's defaults.
 Inbound, assistant, set, clear and reset are mutually exclusive. Assistant changes take no preflight.

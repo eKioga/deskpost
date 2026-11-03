@@ -602,3 +602,35 @@ binding on disk as well as the text. Thirteen routes through it were falsified o
 reddened at its own assertion; forcing the failed-bind path is what revealed that a refusal was
 injecting the child's whole PowerShell stack — CategoryInfo, source line and a FullyQualifiedErrorId
 repeating the message — into a reader's first turn. Reading the code would not have shown that.
+
+## Eric's mouse and keyboard
+
+`deskpost hook computer-use` refuses computer-use calls on `PreToolUse` unless the seat's
+`computer-use` setting is `on`. It judges desktop clicks, keys and screenshots by tool name,
+whatever their arguments, independently of the Shelf guards and without requiring an open Desk.
+
+Both plugins use `^(mcp__computer-use__.*|mcp__remote-devices__computer.*|Bash|PowerShell|exec)$`.
+The canonical `.codex-plugin/hooks.json` generates Claude's registration through
+`tools/PluginPackage.ps1 -Write`. The Codex workspace template uses `^(Bash|exec)$`, rendered to
+the same kernel verb. Codex's own computer-use plugins remain disabled by workspace configuration.
+
+The default is off, including a missing, unreadable or malformed setting and an unresolved seat.
+Only Eric turns it on, from his own terminal or a `!` line:
+`deskpost seat settings <seat> --computer-use on`. A seat's command or file write that would turn
+computer use on, for itself or another seat, is refused even when its own setting is already on.
+A seat may turn it off: `off` disables it and `unset` removes the setting; `seat describe` reports it.
+
+The shell check removes quotes, backslashes and backticks before judging the command. It recognises
+`orca`, `orca.exe` and `orca.cmd`, including options between `orca` and `computer`, and refuses
+`computer` immediately after a variable when the command names `orca`. Nested command text is
+judged too, as are quoted mentions such as `git log --grep "orca computer"`. A shell search naming
+`computer-use.json` is refused too; search for it with the file tools. Every `--computer-use` in a
+command is judged, including a variable's value or an array's item: only exactly `off` or `unset`
+written right after the flag's equals sign, colon or whitespace is allowed. Search for the flag with
+the file tools. The Shelf guard refuses `Write`, `Edit` and `apply_patch`
+targets named `computer-use.json` under the workspace's `.claude/`; reads stay allowed.
+
+Not seen: a script file or alias not named in the command, text built at run time, and a `MultiEdit`
+or `NotebookEdit` write (neither is in the Shelf guard's matcher). Same-user file access is not a
+security boundary. Hooks depend on the harness loading and running them; fixture proofs do not
+replace the real-session check after installation.

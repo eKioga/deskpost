@@ -205,12 +205,15 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
   const field = clockField(now);
   let clock: Frame['clock'];
   let first: Line | undefined;
+  // THE CLOCK FOLLOWS THE COUNTS, NOT THE RIGHT EDGE (2026-11-01, projects/deskpost-desk notes/2026-11-01-dashboard-scroll-cause):
+  // an Orca split pane can be narrower than the width its console reports (117 shown, 231 reported), and a clock
+  // right-aligned to the reported width fell outside the pane.
   for (const gap of ['    ', '  ']) {
     const candidate = join([[run('● ', claim === 'held' ? 'held' : 'attention'), ...seatLine], ...counts], gap);
     const used = dashboardCells(plain(candidate));
     if (used + dashboardCells(gap + 'as of ' + field) <= width) {
-      first = [...candidate, run(' '.repeat(width - used - 14)), run('as of ', 'label'), run(field, 'label')];
-      clock = { row: 1, column: width - 7, field }; break;
+      first = [...candidate, run(gap), run('as of ', 'label'), run(field, 'label')];
+      clock = { row: 1, column: used + dashboardCells(gap + 'as of ') + 1, field }; break;
     }
   }
   if (!first) {
@@ -285,7 +288,10 @@ export async function watchDashboard(options: { workspace: string; seat: string;
   let lastRead = 0;
   let displayedKey: string | undefined;
   let displayedClock: string | undefined;
-  let displayedRows = 0;
+  // THE WATCH DRAWS ON THE ALTERNATE SCREEN, WHICH KEEPS NO SCROLLBACK (report 2026-10-31, "Desk dashboard watch mode
+  // scrolls in an Orca panel"): an Orca pane can show fewer rows than the console it hosts reports, so each full redraw
+  // scrolled the first line into the pane's history, and the clear-scrollback code never reached that copy.
+  let onAlternateScreen = false;
   let unknownSince: number | undefined;
   let refusal = '';
   // A DAMAGED RECORD IS NOT AN UNREACHABLE DESK (kickoffs/s164 row 5; the planner's review of c54): the Desk was read,
@@ -317,9 +323,13 @@ export async function watchDashboard(options: { workspace: string; seat: string;
     if (force || frame.key !== displayedKey) {
       displayedKey = frame.key;
       displayedClock = frame.clock?.field;
-      displayedRows = frame.text.split('\n').length;
-      // One write and no final newline: a frame filling the pane must not scroll.
-      process.stdout.write(tty ? `\x1b[?25l\x1b[H\x1b[2J\x1b[3J${frame.text}\x1b[1;1H\x1b[?25l` : `---\n${frame.text}\n`);
+      // One write, and nothing in it can scroll the screen: the first frame enters the alternate screen with line
+      // wrapping off, and each line is placed at its own row, never after a newline. A pane shorter or narrower than
+      // its console reports then clips the frame's end instead of scrolling its first line away.
+      const enter = tty && !onAlternateScreen ? '\x1b[?1049h\x1b[?7l' : '';
+      if (enter) onAlternateScreen = true;
+      const placed = frame.text ? frame.text.split('\n').map((line, index) => `\x1b[${index + 1};1H${line}`).join('') : '';
+      process.stdout.write(tty ? `${enter}\x1b[?25l\x1b[H\x1b[2J\x1b[3J${placed}\x1b[1;1H\x1b[?25l` : `---\n${frame.text}\n`);
     } else if (tty && unknownSince === undefined && frame.clock && frame.clock.field !== displayedClock) {
       displayedClock = frame.clock.field;
       // The entire eight-cell field clears the previous value, including its padding.
@@ -367,7 +377,8 @@ export async function watchDashboard(options: { workspace: string; seat: string;
     process.removeListener('SIGTERM', stop);
     if (tty) {
       process.stdout.removeListener('resize', resize);
-      process.stdout.write(`${RESET}\x1b[${Math.max(1, displayedRows)};1H\r\n\x1b[?25h`);
+      // Leaving the alternate screen restores what the pane showed before the watch started.
+      process.stdout.write(`${RESET}${onAlternateScreen ? '\x1b[?7h\x1b[?1049l' : ''}\x1b[?25h`);
     }
   }
 }

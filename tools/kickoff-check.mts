@@ -6,7 +6,7 @@
  *
  * A COPY OUTSIDE A CHECKOUT REFUSES IN ONE LINE (c73-r2, section 556): `docs/adr` beside this copy is checked before the
  * kernel module is imported, so a copy with no checkout around it says so instead of failing on the import.
- * It reads text only; it never writes.
+ * It reads the machine slot setting and checks BASE ancestry in slot mode; it never writes.
  */
 
 const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires; --train <register file> also checks its TRAIN id';
@@ -44,6 +44,23 @@ async function main(argv: string[]): Promise<number> {
   }
   const verdict = kc.kickoffVerdict(text, { adrFiles, train });
   if (unreadable !== null) verdict.problems.push(unreadable);
+  const { readSlots } = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'test', 'gate-lock.ts')).href) as typeof import('../kernel/test/gate-lock.ts');
+  const slots = readSlots(line => process.stderr.write(line + '\n'));
+  if (slots) {
+    const header = text.indexOf('as committed at');
+    const base = header < 0 ? undefined : /^as committed at\s*`([a-f0-9]{40})`/.exec(text.slice(header))?.[1];
+    if (!base) verdict.problems.push(`BASE: recorded U2 ${slots.u2Tip}; the header after "as committed at" must name the base in full (40 lowercase hex characters).`);
+    else {
+      const { spawnSync } = await import('node:child_process');
+      const root = path.resolve(adrFolder, '..', '..');
+      const git = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', slots.u2Tip, base], { encoding: 'utf8', windowsHide: true });
+      if (git.status === 1) verdict.problems.push(`BASE: ${base} is before recorded U2 ${slots.u2Tip}; a Kickoff on code before U2 would not see the gate slots; rebase the unit's base, or --set-slots off first.`);
+      else if (git.status !== 0) {
+        const error = git.error?.message || `${git.stderr}${git.stdout}`.trim().split(/\r?\n/)[0] || `git exited ${git.status}`;
+        verdict.problems.push(`BASE: cannot compare ${base} with recorded U2 ${slots.u2Tip}: ${error}`);
+      }
+    }
+  }
   process.stdout.write(kc.verdictText(file, verdict));
   return verdict.problems.length === 0 ? 0 : 1;
 }

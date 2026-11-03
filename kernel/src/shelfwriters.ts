@@ -37,6 +37,7 @@ import { enterBookLock, enterSeatRegistryLock, exitBookLock, type BookLock } fro
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { newBookManifestForShelfBook } from './manifest.ts';
 import { shelfNotes } from './shelfnote.ts';
+import { updateShelfNoteIndex as updateCaptureIndex } from './capture.ts';
 import { removeBookManifestStore } from './manifeststore.ts';
 import {
   completeBookMutation,
@@ -211,6 +212,73 @@ function runRollback(steps: (() => void)[]): string {
 function settleMutation(mutation: BookMutation | null, rollback: string): void {
   if (mutation && !rollback.startsWith('FAILED')) undoBookMutation(mutation);
 }
+
+// --- describe -------------------------------------------------------------------------------------
+
+export function describeVerb(argv: string[], programRoot: string, workspace: string): WriterResult {
+  const parsed = parseArguments(argv, argumentTable('shelf', 'describe'));
+  const slug = parsed.positional[0] ?? '';
+  const raw = parsed.options.get('summary') ?? '';
+  if (!raw.trim() || /[\r\n]/.test(raw)) refuse('Summary must be a nonempty single line.');
+  const summary = raw.trim();
+  if (/^#{1,6}(?:[ \t]|$)/.test(summary)) refuse('Summary must be text, not a Markdown heading.');
+  const seat = requireSeat({ stateDirectory: stateDirectory(workspace) });
+  assertShelfBookOpen(workspace, slug, 'correcting its Purpose', seat);
+  const book = getShelfBook(workspace, slug);
+  const metadata = path.join(book.wikiPath, '_book.md');
+  const entryPath = shelfCatalogEntryPath(workspace, slug);
+  const before = readUtf8(metadata);
+  const entryBefore = readUtf8(entryPath);
+  const purpose = /^##[ \t]+Purpose[ \t]*\r?\n([\s\S]*?)(?=^##[ \t]|(?![\s\S]))/gm;
+  const purposes = [...before.matchAll(purpose)];
+  if (purposes.length !== 1) refuse('The Book metadata must have exactly one Purpose section before describing it.');
+  const field = /^([ \t]*-[ \t]+\*\*Summary:\*\*[^\S\r\n]*)[^\r\n]*(?:\r?\n(?![ \t]*-[ \t]+\*\*)[ \t]+[^\r\n]+)*/gm;
+  if ([...entryBefore.matchAll(field)].length !== 1) refuse('The catalog entry must have exactly one Summary item before describing it.');
+  const after = before.replace(purpose, () => `## Purpose\n\n${summary}\n\n`);
+  const entryAfter = entryBefore.replace(field, (_match, prefix: string) => `${prefix}${summary}`);
+  const files = [metadata, entryPath, ...(book.isCapture ? [path.join(book.wikiPath, '_index.md')] : [])];
+  const texts = files.map(file => file === metadata ? before : file === entryPath ? entryBefore : readUtf8(file));
+  const planId = 'describe-shelf-book-' + sha256OfText([summary, ...files.map((file, i) => `${workspaceRelative(workspace, file)}:${sha256OfText(texts[i]!)}`)].join('\n'));
+  const plan: Record<string, PsJsonValue> = {
+    schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Describe a Shelf Book', book: book.bookRoot,
+    old_summary: purposes[0]![1]!.trim(), new_summary: summary,
+    files: files.map(file => workspaceRelative(workspace, file)),
+    derived_files: ['shelf/_catalog.md', 'the Book Discovery manifest'],
+    plan_id: planId, confirmation_required: true, recoverable: true, shared_library_write: false,
+    scope: 'Replaces this open Book Purpose and catalog Summary, regenerates its capture map when applicable, and journals the previous texts under its Book lock.',
+  };
+  if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
+  if (parsed.options.get('plan-id') !== planId) refuse('The Book was not described: review the current preflight and rerun with its exact --plan-id.');
+  let registryLock: BookLock | null = null;
+  let lock: BookLock | null = null;
+  let journalPath: string | null = null;
+  let mutation: BookMutation | null = null;
+  try {
+    registryLock = enterSeatRegistryLock(workspace, LOCK_TIMEOUT_SECONDS);
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    assertShelfBookOpen(workspace, slug, 'correcting its Purpose', seat);
+    if (files.some((file, i) => readUtf8(file) !== texts[i])) refuse('The Book changed after approval. Nothing was written; rerun the preflight.');
+    mutation = enterBookMutation({ workspace, slug, bookRoot: book.bookRoot, reason: 'Correct Book Purpose', lock });
+    journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: 'Describe Shelf Book', paths: files, operationDigest: planId }).journalPath;
+    writeUtf8(metadata, after);
+    invokeShelfCatalogRender({ workspace, programRoot, writeEntry: [{ path: entryPath, text: entryAfter }] });
+    if (book.isCapture) updateCaptureIndex(getShelfBook(workspace, slug));
+    if (readUtf8(metadata) !== after || readUtf8(entryPath) !== entryAfter || getShelfBook(workspace, slug).summary !== summary) refuse('The corrected Purpose or Summary did not read back identically.');
+    plan['manifest'] = completeBookMutation(mutation).summary;
+    mutation = null;
+    plan['status'] = 'described';
+    plan['journal'] = workspaceRelative(workspace, journalPath);
+  } catch (error) {
+    const rollback = journalPath ? runRollback([() => restoreBookJournal(journalPath!), () => invokeShelfCatalogRenderAfterRollback(workspace, programRoot)]) : 'not required';
+    settleMutation(mutation, rollback);
+    return { refusal: `The Book was not described. ${(error as Error).message}. Rollback: ${rollback}.`, value: null };
+  } finally {
+    exitBookLock(lock);
+    exitBookLock(registryLock);
+  }
+  return { refusal: null, value: plan };
+}
+
 
 // --- rename ---------------------------------------------------------------------------------------
 

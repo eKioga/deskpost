@@ -144,6 +144,19 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         sections.forEach((section) => chosen.add(section));
         reasons.push(`${listed(sections)}: claim ${file.slice('kernel/src/'.length)}`);
       }
+    } else if (file.startsWith('.githooks/') || file.startsWith('tools/')) {
+      const name = file.slice(file.lastIndexOf('/') + 1);
+      const named = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      const lines = input.selftestText.split(/\r?\n/);
+      const sections = [...new Set(sectionRanges(input.selftestText)
+        .filter((range) => named.test(lines.slice(range.start - 1, range.end).join('\n')))
+        .map((range) => range.section))];
+      if (sections.length === 0 || sections.length > 40) {
+        all = true;
+        reasons.push(sections.length === 0 ? `every section: no section names ${file}` : `every section: more than 40 sections name ${file}`);
+      } else {
+        for (const section of sections) { chosen.add(section); reasons.push(`section ${section}: names ${file}`); }
+      }
     } else if (!file.startsWith('kernel/')) {
       reasons.push(`no section: ${file} is outside kernel/src and no section claims it`);
     }
