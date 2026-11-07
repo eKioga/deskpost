@@ -232,3 +232,5 @@ installation itself.
 specified in [Seats](../seats.md) and
 [Librarian Operation Playbooks](../librarian-operation-playbooks.md). Those two are written for
 whoever maintains the Library, not for you. You never need them to do the work on this page.*
+
+For shared Books on another computer, 1.6.0 adds previewed, recorded changes, new Books, promotion from this Library's collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books).

@@ -327,6 +327,12 @@ export function sectionNumbers(text: string, selection = process.env['LIBRARY_SE
   return [...new Set(values.length ? values : [...text.matchAll(/^if \(selected\((\d+)\)/gm)].map((m) => Number(m[1])))].sort((a, b) => a - b);
 }
 export interface Result { section: number | 'whole'; verdict: 'PASS' | 'FAIL' | 'SKIP'; checks: number; seconds: number; detail: string; output: string }
+
+/** A near-limit pass is advice, never a new verdict. Limits are milliseconds, as in parseOptions. */
+export function sectionLimitWarning(result: Pick<Result, 'section' | 'verdict' | 'seconds'>, limit: number): string {
+  return result.verdict === 'PASS' && result.seconds > limit / 1000 * 0.7
+    ? 'section ' + result.section + ' took ' + result.seconds.toFixed(1) + ' s of its ' + limit / 1000 + ' s limit' : '';
+}
 export function verdict(section: number | 'whole', status: number | null, output: string): Pick<Result, 'verdict' | 'checks' | 'detail'> {
   const last = output.trim().split(/\r?\n/).at(-1) ?? '';
   const firstError = output.split(/\r?\n/).find(line => /Error|error:/.test(line));
@@ -359,7 +365,8 @@ export function sectionEnvironment(section: number | 'whole', folder: string): N
   return env;
 }
 export async function runSection(options: Options, section: number | 'whole', runFolder: string, signal: AbortSignal): Promise<Result> {
-  const started = Date.now();
+  const started = Date.now(); // a wall-clock time: process ownership compares it with each process start
+  const clock = performance.now(); // durations only: the wall clock can step backwards (kickoffs/s181-r2 spare S2)
   const folder = path.join(runFolder, String(section)); fs.mkdirSync(folder);
   const env = sectionEnvironment(section, folder);
   let output = '', problem = '', status: number | null = null;
@@ -422,13 +429,14 @@ export async function runSection(options: Options, section: number | 'whole', ru
   }
   child.stdout.destroy(); child.stderr.destroy(); child.unref(); log.end();
   if (problem) parsed = { ...parsed, verdict: 'FAIL', detail: `${problem}; ${parsed.detail}` };
-  return { section, ...parsed, seconds: (Date.now() - started) / 1000, output };
+  return { section, ...parsed, seconds: (performance.now() - clock) / 1000, output };
 }
 /** Unit B: one bounded child of the push tier's pool. On its limit, a cancel or a stream that will not close, the
  * snapshot is written beside its log, then the tree it owns is ended and checked gone; `problem` names `label`. */
 export interface Bounded { status: number | null; output: string; problem: string; seconds: number }
 export async function runBounded(spec: { label: string; command: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; limit: number; folder: string; onOutput?: (chunk: string) => void }, signal: AbortSignal): Promise<Bounded> {
-  const started = Date.now();
+  const started = Date.now(); // a wall-clock time: process ownership compares it with each process start
+  const clock = performance.now(); // durations only: the wall clock can step backwards (kickoffs/s181-r2 spare S2)
   fs.mkdirSync(spec.folder, { recursive: true });
   const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   const identity = child.pid ? startIdentity(child.pid).catch(() => null) : Promise.resolve(null);
@@ -456,7 +464,7 @@ export async function runBounded(spec: { label: string; command: string; args: s
     try { await terminateOwnedTree(child.pid, started, expected); } catch (error) { problem += `; cleanup failed: ${String(error)}`; }
   }
   child.stdout.destroy(); child.stderr.destroy(); child.unref(); log.end();
-  return { status, output, problem, seconds: (Date.now() - started) / 1000 };
+  return { status, output, problem, seconds: (performance.now() - clock) / 1000 };
 }
 /** Unit B's one pool: shared items `slots` at a time, in the order given; then each exclusive item alone, after every
  * shared item has exited (the lane's global barrier). An item that throws stops new starts; the error is rethrown once
@@ -507,7 +515,7 @@ export async function run(options: Options, wait: GateWait | null = null): Promi
   const controller = new AbortController();
   const cancel = () => controller.abort(); process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
   const results: Result[] = [];
-  const started = Date.now();
+  const started = performance.now();
   try {
     const whole = Boolean(process.env['LIBRARY_SELFTEST_KERNEL']) || (options.workers === 1 && !options.splitSerial);
     if (whole) results.push(await runSection(options, 'whole', folder, controller.signal));
@@ -530,8 +538,9 @@ export async function run(options: Options, wait: GateWait | null = null): Promi
   const flatten = (value: string) => value.replace(/[\r\n]+/g, ' | ');
   const lines = results.map((r) => `section ${r.section}: ${r.verdict} ${r.checks} checks ${r.seconds.toFixed(3)}s${r.detail ? ` ${flatten(r.detail)}` : ''}`);
   fs.writeFileSync(path.join(folder, 'sections.log'), lines.join('\n') + '\n');
-  fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify({ seconds: (Date.now() - started) / 1000, total, cancelled: controller.signal.aborted, results: results.map(({ output: _output, ...r }) => r) }, null, 2));
+  fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify({ seconds: (performance.now() - started) / 1000, total, cancelled: controller.signal.aborted, results: results.map(({ output: _output, ...r }) => r) }, null, 2));
   for (const line of lines) process.stdout.write(line + '\n');
+  for (const result of results) { const warning = sectionLimitWarning(result, result.section === 'whole' ? options.wholeTimeout : options.sectionTimeout); if (warning) process.stdout.write(warning + '\n'); }
   // Checked before any section folder is removed, so a required section that SKIPs keeps its evidence.
   const required = options.requireSections.length ? requiredSectionsVerdict(lines.join('\n'), options.requireSections) : null;
   if (required) process.stdout.write(`${required.status.toUpperCase()} gate.required-sections: ${required.detail}\n`);

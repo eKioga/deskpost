@@ -292,6 +292,22 @@ export interface StoredBookManifest {
 }
 
 /**
+ * Whether a dirty marker's writer still runs (kickoffs/s181-r2 spare S3): `, running` when a process with that id runs
+ * (a pid can be reused, so it says no more), `, not running: ...` when none does, nothing when the pid is not a number.
+ */
+function writerState(pid: unknown): string {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return '';
+  try {
+    process.kill(pid, 0);
+    return ', running';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return ', running';
+    return code === 'ESRCH' ? ', not running: a stopped write left this marker' : '';
+  }
+}
+
+/**
  * The READ side of the store, and the authority every query defers to.
  *
  * DIRTY IS CHECKED FIRST, before a pointer and a matching generation are even looked for: a Book
@@ -319,7 +335,7 @@ export function getStoredBookManifest(workspace: string, slug: string, collectio
     result.status = 'dirty';
     try {
       const marker = JSON.parse(fs.readFileSync(dirtyPath, 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
-      result.reason = `mutation in progress: ${String(marker['reason'])} (pid ${String(marker['pid'])})`;
+      result.reason = `mutation in progress: ${String(marker['reason'])} (pid ${String(marker['pid'])}${writerState(marker['pid'])})`;
     } catch {
       result.reason = 'a dirty marker is present but does not parse';
     }

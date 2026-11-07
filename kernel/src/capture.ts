@@ -44,7 +44,7 @@ import { argumentTable } from './verbs.ts';
 import { inlineCutWarning } from './inlinecut.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
 import { reservedPages, createRecord, completeStage, noteAtReservedPath, recover, listOutstanding, blocksReportAllocation, type IntentRecord, type IntentBook } from './intent.ts';
-import { deliveryNote, reportStageRunner, changeSentReport } from './reportsend.ts';
+import { deliveryNote, reportStageRunner, changeSentReport, incomingConflict } from './reportsend.ts';
 import { assertNoSeatRename } from './seatpaths.ts';
 import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import {
@@ -147,6 +147,89 @@ function convertToNoteSlug(title: string): string {
   if (!slug.trim()) refuse('Title must contain at least one letter or digit.');
   return slug;
 }
+
+/** Render the exact saved note, including capture's heading for a headingless body. */
+export function renderCapturedPage(frontmatter: string[], body: string, title: string): { text: string; body: string } {
+  const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(body);
+  const keepsHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
+  const renderedBody = keepsHeading ? body + '\n' : `# ${title}\n\n` + body + '\n';
+  return { text: frontmatter.join('\n') + '\n\n' + renderedBody, body: renderedBody };
+}
+
+/** Publish complete bytes exclusively; a hard link cannot replace a page already there. */
+function publishFiledPage(full: string, text: string): void {
+  const temporary = path.join(path.dirname(full), `.${path.basename(full)}.${randomUUID()}.tmp`);
+  fs.writeFileSync(temporary, text, { encoding: 'utf8', flag: 'wx' });
+  try { fs.linkSync(temporary, full); }
+  finally { fs.unlinkSync(temporary); }
+}
+
+export interface ConflictCopyCapture {
+  page: string;
+  text: string;
+  digest: string;
+  published: (step: 'page' | 'index' | 'manifest') => void;
+}
+
+/** A conflict copy owns a fixed path and saved rendering, never a newly allocated note name. */
+function captureConflictCopy(workspace: string, copy: ConflictCopyCapture): WriterResult {
+  let lock: BookLock | null = null;
+  try {
+    const stray = strayControlRefusal(copy.text, 'The saved conflict copy');
+    if (stray !== null) refuse(stray);
+    if (!/^notes\/[a-z0-9][a-z0-9.-]*$/.test(copy.page) || sha256OfText(copy.text) !== copy.digest) refuse('The saved conflict copy path or text digest is invalid. Nothing was written.');
+    const book = getShelfBook(workspace, 'letters');
+    if (!book.isCapture || !book.takesLetters) refuse('The letters Book must accept captured letters before a conflict copy can be filed. Nothing was written.');
+    const full = path.join(book.wikiPath, copy.page + '.md');
+    lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+    // Check before opening a mutation: a different whole page never becomes dirty because we refused it.
+    if (fs.existsSync(full) && sha256OfText(readUtf8(full)) !== copy.digest) refuse('The fixed conflict copy page already contains different text. Nothing more was written.');
+    const mutation = enterBookMutation({workspace, slug: book.slug, bookRoot: book.bookRoot, reason: 'Capture a saved conflict copy', lock});
+    writeBookJournal({workspace, bookRoot: book.bookRoot, operation: 'Capture a saved conflict copy', paths: [full, path.join(book.wikiPath, '_index.md')]});
+    fs.mkdirSync(book.notesPath, {recursive: true});
+    if (!fs.existsSync(full)) publishFiledPage(full, copy.text);
+    if (sha256OfText(readUtf8(full)) !== copy.digest) refuse('The saved conflict copy did not read back identically. Resume the operation.');
+    copy.published('page');
+    if (process.env['LIBRARY_POSTBOX_FAULT'] === 'conflict-after-page') refuse('LIBRARY_POSTBOX_FAULT: stopped after conflict page publish.');
+    updateShelfNoteIndex(book);
+    copy.published('index');
+    if (process.env['LIBRARY_POSTBOX_FAULT'] === 'conflict-after-index') refuse('LIBRARY_POSTBOX_FAULT: stopped after conflict index regeneration.');
+    const result = completeBookMutation(mutation);
+    if (result.status !== 'committed') refuse(result.summary);
+    copy.published('manifest');
+    if (process.env['LIBRARY_POSTBOX_FAULT'] === 'conflict-after-manifest') refuse('LIBRARY_POSTBOX_FAULT: stopped after conflict manifest completion.');
+    return {refusal: null, value: {status: 'captured', page: copy.page, manifest: result.summary}};
+  } catch (error) {
+    // This is a saved operation, not an ordinary capture rollback. Keep its whole page for resume.
+    return {refusal: (error as Error).message, value: null};
+  } finally { exitBookLock(lock); }
+}
+
+/** Link once under the original Book's lock, journalling its current bytes and index. */
+export function linkConflictCopy(workspace: string, filedPage: string, copyPage: string): void {
+  if (!/^(notes|reviewed)\/[a-z0-9][a-z0-9./-]*$/.test(filedPage) || filedPage.split('/').some(p=>p==='.'||p==='..') || !/^notes\/[a-z0-9][a-z0-9.-]*$/.test(copyPage)) refuse('The saved conflict link paths are invalid.');
+  const book = getShelfBook(workspace, 'letters');
+  if (!book.isCapture || !book.takesLetters) refuse('The letters Book must accept captured letters before its conflict copy can be linked. Nothing was written.');
+  const full = path.join(book.wikiPath, filedPage + '.md');
+  const lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+  let mutation: BookMutation | null = null, journal: string | null = null;
+  try {
+    const before = readUtf8(full), existing = noteFrontmatter(before).get('conflict_copy');
+    mutation = enterBookMutation({workspace, slug: book.slug, bookRoot: book.bookRoot, reason: 'Link a conflict copy', lock});
+    journal = writeBookJournal({workspace, bookRoot: book.bookRoot, operation: 'Link a conflict copy', paths: [full, path.join(book.wikiPath, '_index.md')]}).journalPath;
+    const after = existing === copyPage ? before : setNoteField(before, 'conflict_copy', copyPage);
+    if (after !== before) writeAtomicText(full, after);
+    if (readUtf8(full) !== after) refuse('The conflict copy link did not read back identically.');
+    updateShelfNoteIndex(book);
+    const result = completeBookMutation(mutation);
+    if (result.status !== 'committed') { mutation = null; refuse(result.summary); }
+    mutation = null;
+  } catch (error) {
+    if (mutation !== null) { const rollback = runRollback(journal); settle(mutation, rollback); if (rollback.startsWith('FAILED')) throw new Error((error as Error).message + '; ' + rollback); }
+    throw error;
+  } finally { exitBookLock(lock); }
+}
+
 
 // --- reader maps -----------------------------------------------------------------------------------
 
@@ -530,8 +613,9 @@ export function captureVerb(
   // only when no letter here carries its delivery id, checked under the Book's lock.
   // THE LITERAL ROUTE (kickoffs/s159 row 2; PLAN-cross-office-build-loop.md step 2.1), never a flag: `kickoff send`'s letter
   // is written as given, with no `{now}` or `{today}` filled, so a Kickoff reaches the other office byte for byte.
-  internal: { extraFrontmatter?: [string, string][]; postbox?: PostboxFiling; mode?: 'original' | 'filing' | 'generated'; literal?: boolean } = {},
+  internal: { conflictCopy?: ConflictCopyCapture; extraFrontmatter?: [string, string][]; postbox?: PostboxFiling; mode?: 'original' | 'filing' | 'generated'; literal?: boolean } = {},
 ): WriterResult {
+  if (internal.conflictCopy) return captureConflictCopy(workspace, internal.conflictCopy);
   const filing = internal.postbox ?? null;
   const mode = filing !== null ? 'filing' : internal.mode ?? 'original';
   // THE LETTER HERE THAT CARRIES A DELIVERY ID (kickoffs/s123 rows 3 and 4), read from each note's own frontmatter: with
@@ -1007,8 +1091,9 @@ export function captureVerb(
 
     // {now} AND {today} BECOME THE TIME OF THE WRITE (kickoffs/s121 row 6), in the body only, never its title or name.
     const writtenBody = filing !== null || routed !== null || internal.literal === true ? normalisedBody : fillTimePlaceholders(normalisedBody);
-    const letterBody = keepsOwnHeading ? writtenBody + '\n' : `# ${pageTitle}\n\n` + writtenBody + '\n';
-    let page = frontmatter.join('\n') + '\n\n' + letterBody;
+    const rendered = renderCapturedPage(frontmatter, writtenBody, pageTitle);
+    const letterBody = rendered.body;
+    let page = rendered.text;
 
     const mapPath = path.join(book.wikiPath, '_index.md');
     let lock: BookLock | null = null;
@@ -1018,8 +1103,18 @@ export function captureVerb(
     let manifestSummary = '';
     let outboxCreated = '';
     let reportIntent: IntentRecord | null = null;
+    const filingLocks: BookLock[] = [];
     try {
-      lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+      if (filing !== null) {
+        for (const slug of ['reports', 'letters']) if (fs.existsSync(path.join(workspace, 'shelf', slug))) {
+          const held = enterBookLock(workspace, getShelfBook(workspace, slug).bookRoot, LOCK_TIMEOUT_SECONDS);
+          filingLocks.push(held);
+          if (slug === book.slug) lock = held;
+        }
+        const conflict = incomingConflict(workspace, filing);
+        if (conflict) return {refusal:null,value:{status:'filed-conflict',filed_conflict:conflict as unknown as PsJsonValue}};
+      } else lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
+      if (lock === null) throw new Error('The filing target has no held Book lock; nothing was captured.');
       fs.mkdirSync(book.notesPath, { recursive: true });
       // Re-selected while holding the lock. The name chosen for the preflight was chosen with
       // nobody excluded, so another session may have taken it since.
@@ -1110,9 +1205,9 @@ export function captureVerb(
         paths: [selected.full, mapPath, ...(older ? [older.fullPath] : []), ...(answered ? [answered.fullPath] : []), ...(routedAgain ? [routedAgain.fullPath] : []), ...(askerCopy ? [askerCopy.fullPath] : [])],
       }).journalPath;
 
-      // `wx` is CreateNew: a collision fails rather than overwrites, which is what makes the name
-      // race above recoverable rather than silent.
-      fs.writeFileSync(selected.full, page, { encoding: 'utf8', flag: 'wx' });
+      // Both publication routes refuse collisions, so a name race cannot replace another note.
+      if (filing !== null) publishFiledPage(selected.full, page);
+      else fs.writeFileSync(selected.full, page, { encoding: 'utf8', flag: 'wx' });
       if (readUtf8(selected.full) !== page) {
         refuse(`The note was written but did not read back identically: ${book.bookRoot}/wiki/${selected.page}`);
       }
@@ -1210,7 +1305,8 @@ export function captureVerb(
       settle(mutation, rollback);
       return { refusal: `The note was not captured. ${failure}. Rollback: ${rollback}.`, value: null };
     } finally {
-      exitBookLock(lock);
+      if (filing !== null) for (const held of filingLocks.reverse()) exitBookLock(held);
+      else exitBookLock(lock);
     }
 
     // HOW TO REACH THE RECIPIENT NOW (kickoffs/s108 ruling 5; ADR-0071), read after the write so a seat that opened in

@@ -35,7 +35,7 @@ import { psConvertToJson } from './psjson.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { psSortCompare, readStrictUtf8 } from './notebook.ts';
 import { assertShelfBookOpen, getCaptureBook, splitNoteFrontmatter } from './triage.ts';
-import { McpSession, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
+import { McpSession, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubSlug } from './hubslug.ts';
@@ -296,7 +296,7 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
     if (projectAction === 'create') await hubPlanAction(slug, title, purpose, nextActions, false);
     const session = new McpSession(resolveMcpUrl(workspace), 'library-project-copy');
     await session.initialize();
-    refuseUnportedWriter(session, 'hub copy-pages');
+    refuseRetiredWriter(session, 'hub copy-pages');
     const words = { includeFrontmatter: false, stopped: 'Project copy stopped' };
     for (const expected of records) {
       const existing = await readExactOrNull(session, projectId, expected.path, words);

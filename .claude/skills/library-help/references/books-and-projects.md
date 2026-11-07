@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/seats.md).
 
 ## Books
 
@@ -104,6 +104,16 @@ rewrites only the manifest, and an edit to the entry does not mark the Book stal
 `deskpost shared list-entry <slug> --summary "<s>" [--title "<t>"] --preflight`, then the same with
 `--user-confirmed --plan-id <id>`. On a local Library it sets that Book's one line in `collection/books/README.md`,
 where it stands, or adds it when it is missing; no other line changes.
+
+**A maintained shared Book.** One yes lets named seats keep a shared Book up to date:
+`deskpost shared upkeep <slug> --seats <seat>[,...] --preflight` (or `--any-seat` for every seat of this Library),
+then the same with `--user-confirmed --plan-id <id>`. A granted seat then runs `shared add-page`, `shared
+replace-page` (a `--from-change` restore included), `shared catalog-line` and `shared sources` on that Book with
+`--plan-id` alone: each is still recorded first and restorable, and its preview says `confirmation_required: false`.
+Removing a page or the sources, `shared new-book` and `shared promote` always need the reader's yes.
+`deskpost shared upkeep <slug> --off --preflight`, then the same with `--plan-id <id>` in place of `--preflight`,
+takes this Library's grant back without a yes. A Book made before 1.6.0's writers cannot be granted. The Desk names
+who maintains an open shared Book.
 
 ## Project Hubs
 

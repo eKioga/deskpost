@@ -152,6 +152,8 @@ command into a POSIX equivalent: there is one gate, and a substitute for it is n
 On Linux the builder's commit and cut tiers are evidence for the Handback, and the integrator's
 Windows push tier is the pass mark.
 
+In Windows PowerShell 5.1, judge a native command by `$LASTEXITCODE` read immediately after it: stderr under `*>` can set the shell status to failure even when the command succeeds.
+
 ## No new PowerShell
 
 Deskpost is going PowerShell-free (the reader's goal, 2026-09-30; `docs/roadmap.md`, 1.3.2 and

@@ -881,7 +881,7 @@ async function answerReaderToolText(context: ReaderContext, tool: string, args: 
         refuse((error as Error).message);
       }
       if (!context.deskDirectory) refuse(context.seatMessage);
-      return formatFullTextResult(findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory, place }));
+      return formatFullTextResult(await findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory, place }));
     }
     case 'discover_book_pages': {
       const query = args.required('query');

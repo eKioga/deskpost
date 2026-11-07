@@ -21,16 +21,9 @@
  *            (`node tools/docs-gate.ts`, which judges a docs-only commit and says "not docs-only" for any other);
  *            the TypeScript identity/deployment scans; the kernel self-test sections the changed files select
  *            (tools/section-select.mts, rules b-d). Comparisons also honor serial opt-in and fixture lock names.
- *   cut      the commit tier's checks, but every self-test section runs inside `Invoke-LibraryChecks.ps1 -Fast`, run
- *            as a child for everything not yet ported. Where `powershell.exe` is absent (Linux; kickoffs/s157 row 7,
- *            PLAN-cross-office-build-loop.md step 1.3): the commit tier's checks and every section the platform policy
- *            selects, through `kernel/test/run-parallel.ts`. The push and release tiers then refuse by name.
- *   push     today's full gate's check set, exactly, in one pool (PLAN-fast-gates.md Unit B, S119): the static checks
- *            once (`Invoke-LibraryChecks.ps1 -Fast`), every kernel self-test section as its own child (Unit A's
- *            contract), and each -Fast roster suite as an `-Only <name>` child. Its kernel.selftest row is the
- *            sections' verdict, and its roster rows are the suites' own. The claim map's coverage and the docs gate
- *            are diagnostics here, never acceptance; self-test section 155 is its type check.
- *   release  the push tier, and the release checks gate.ts does not run yet, each named with where it runs today.
+ *   push     the commit checks, selected over origin/master..HEAD; required sections are included explicitly.
+ *   cut      the full Windows check pool, by hand only; without PowerShell, every platform-supported section.
+ *   release  the full Windows check pool and the release-only checks named below.
  *
  * EVERY CHILD HAS A LIMIT: git 60 seconds; the type check and the docs gate 10 minutes; the cut tier's runner 45; in
  * the push pool a section 10 (Unit A), a suite 15, the three slowest suites 25, the static run 15.
@@ -42,15 +35,17 @@
  * --commit <sha> chooses the self-test sections as if <sha> were being committed (its diff against its parent, and
  * selftest.ts at <sha>), which is how S113 replayed S103's commits; every check still runs on this working tree.
  */
+import { pathChecks } from './section-select.mts';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { childEnv } from '../kernel/test/gate-env.ts';
+import { repositoryNeutralEnv } from '../kernel/src/gitenv.ts';
+import { childEnv, withHookSeat } from '../kernel/test/gate-env.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from '../kernel/test/gate-lock.ts';
-import { SERIAL_SECTIONS, fastRoster, parseOptions, readPlatformSkips, requiredListRefusals, requiredSectionsVerdict, rosterProblems, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
+import { SERIAL_SECTIONS, fastRoster, parseOptions, readPlatformSkips, requiredListRefusals, requiredSectionsVerdict, rosterProblems, sectionLimitWarning, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
 import { COVERS_PATH, SELFTEST_PATH, applyPlatformSkips, parseCovers, parseHunks, platformRefusals, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
 
 const EXIT_PASS = 0;
@@ -148,7 +143,7 @@ function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string 
 }
 
 function git(root: string, args: string[]): string {
-  const ran = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 30, timeout: GIT_LIMIT, windowsHide: true });
+  const ran = spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8', maxBuffer: 1 << 30, timeout: GIT_LIMIT, windowsHide: true });
   if (ran.error) throw new GateError(`git ${args.join(' ')} did not finish within ${GIT_LIMIT / 1000}s: ${ran.error.message}`);
   if (ran.status !== 0) throw new GateError(`git ${args.join(' ')} failed: ${`${ran.stderr ?? ''}`.trim()}`);
   return ran.stdout ?? '';
@@ -220,15 +215,14 @@ function coverage(root: string, tier: Tier): Outcome {
   return { ...base, status: 'pass', detail: `every kernel/src file is claimed by a section in ${COVERS_PATH}` };
 }
 
-/** The docs gate's SKIP for a code commit. Without PowerShell no runner child runs the document checks, so it says so
- * (kickoffs/s158 row 5); the Windows wording is unchanged. */
+/** A mixed code commit skips the document-only gate; the full Windows checks are optional. */
 export function docsSkipDetail(powerShell: boolean): string {
-  return powerShell ? 'not a docs-only commit: its document checks run in the runner child (cut and push tiers) until session 2 ports them'
-    : "not a docs-only commit: no document checks run on this platform; the integrator's Windows push tier runs them";
+  return powerShell ? 'not a docs-only commit: document checks are available in the optional cut tier'
+    : 'not a docs-only commit: no document checks run on this platform';
 }
 
-async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent()): Promise<Outcome> {
-  const ran = await runChild(process.execPath, [path.join(root, 'tools', 'docs-gate.ts')], root, CHECK_LIMIT);
+async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent(), documents: string[] = []): Promise<Outcome> {
+  const ran = await runChild(process.execPath, [path.join(root, 'tools', 'docs-gate.ts'), ...documents.flatMap(file => ['--file', file])], root, CHECK_LIMIT);
   const base = { check: 'docs.gate', tier, seconds: ran.seconds, caught: 'the document checks it names, for a docs-only commit (S104 row 0b)' };
   if (ran.status === 0) return { ...base, status: 'pass', detail: lastLines(ran.output, 1) };
   if (ran.status === 3) return { ...base, status: 'fail', detail: ran.output.split(/\r?\n/).filter((line) => line.startsWith('FAIL')).join(' | ') || lastLines(ran.output, 3) };
@@ -237,13 +231,17 @@ async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent
 }
 
 /** What the commit (or --commit <sha>) changed, and the selection rules over it. */
-function selection(root: string, commit: string | null): { selection: Selection; changed: string[] } {
-  const covers = parseCovers(fs.readFileSync(path.join(root, COVERS_PATH), 'utf8'));
-  const range = commit === null ? ['--cached', 'HEAD'] : [`${commit}^`, commit];
+export function selection(root: string, commit: string | null, outgoing = false): { selection: Selection; changed: string[] } {
+  const range = outgoing ? ['origin/master', 'HEAD'] : commit === null ? ['--cached', 'HEAD'] : [`${commit}^`, commit];
+  const current = outgoing ? 'HEAD' : commit === null ? '' : commit;
+  const previous = outgoing ? 'origin/master' : commit === null ? 'HEAD' : `${commit}^`;
+  const covers = parseCovers(git(root, ['show', `${current}:${COVERS_PATH}`]));
+  const previousCovers = parseCovers(git(root, ['show', `${previous}:${COVERS_PATH}`]));
   const changed = git(root, ['diff', '--name-only', '--no-renames', ...range]).split(/\r?\n/).filter(Boolean);
   const hunks = changed.includes(SELFTEST_PATH) ? parseHunks(git(root, ['diff', '-U0', '--no-renames', ...range, '--', SELFTEST_PATH])) : [];
-  const text = changed.includes(SELFTEST_PATH) ? git(root, ['show', commit === null ? `:${SELFTEST_PATH}` : `${commit}:${SELFTEST_PATH}`]) : '';
-  return { selection: selectSections({ changed, selftestHunks: hunks, selftestText: text, covers }), changed };
+  const text = changed.includes(SELFTEST_PATH) ? git(root, ['show', outgoing ? `HEAD:${SELFTEST_PATH}` : commit === null ? `:${SELFTEST_PATH}` : `${commit}:${SELFTEST_PATH}`])
+    : fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8');
+  return { selection: selectSections({ changed, selftestHunks: hunks, selftestText: text, covers, previousCovers }), changed };
 }
 
 async function selftestSections(root: string, tier: Tier, chosen: Selection): Promise<Outcome> {
@@ -256,7 +254,8 @@ async function selftestSections(root: string, tier: Tier, chosen: Selection): Pr
   if (policy?.line) process.stdout.write(`     ${policy.line}\n`);
   if (policy && policy.sections.length === 0) return { check, tier, status: 'skip', seconds: 0, caught, detail: `every selected section is skipped here: ${policy.line}` };
   const env: Record<string, string> = policy ? { LIBRARY_SELFTEST_SECTIONS: policy.sections.join(',') } : chosen.all ? {} : { LIBRARY_SELFTEST_SECTIONS: chosen.sections.join(',') };
-  const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'selftest.ts')], root, RUNNER_LIMIT, env);
+  const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'run-parallel.ts')], path.join(root, 'kernel'), RUNNER_LIMIT, { LIBRARY_SELFTEST_SECTIONS: '', ...env });
+  for (const line of ran.output.split(/\r?\n/)) if (/^section (?:\d+|whole) took [\d.]+ s of its [\d.]+ s limit$/.test(line)) process.stderr.write(line + '\n');
   const what = chosen.all ? 'every section' : `sections ${chosen.sections.join(', ')}`;
   if (ran.status === 0) return { check, tier, status: 'pass', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 1)}` };
   return { check, tier, status: 'fail', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 3).slice(0, 1200)}` };
@@ -265,15 +264,14 @@ async function selftestSections(root: string, tier: Tier, chosen: Selection): Pr
 /**
  * WHERE A TIER RUNS (kickoffs/s157 row 7; PLAN-cross-office-build-loop.md step 1.3). Windows always has `powershell.exe`;
  * elsewhere it is whatever PATH holds (a WSL run through tools/wsl-run.mts sees Linux's own folders only). Without it the
- * commit tier is unchanged, the cut tier runs its sections through run-parallel.ts, and the push and release tiers,
- * whose suites are PowerShell's, refuse: on Linux the builder's tiers are evidence, the integrator's push tier the pass mark.
+ * commit and push tiers use Node, the cut tier uses run-parallel.ts, and release still requires PowerShell.
  */
 export function powerShellPresent(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform, exists: (file: string) => boolean = fs.existsSync): boolean {
   if (platform === 'win32') return true;
   return (env['PATH'] ?? '').split(':').filter(Boolean).some((folder) => exists(path.posix.join(folder, 'powershell.exe')));
 }
 export function tierRoute(tier: Tier, powerShell: boolean): { route: 'powershell' | 'node' } | { refusal: string } {
-  if (tier === 'commit') return { route: 'node' };
+  if (tier === 'commit' || tier === 'push') return { route: 'node' };
   if (powerShell) return { route: 'powershell' };
   if (tier === 'cut') return { route: 'node' };
   return { refusal: `the ${tier} tier runs on Windows; hand back instead` };
@@ -352,16 +350,18 @@ async function suiteChild(root: string, name: string, folder: string, signal: Ab
  * -Only verdict. The pool's suite list is read where gate.fast-roster-matches-suites reads it and must equal the roster
  * the static run reports, and that check (in the static run) proves the roster equals every else-arm registration.
  */
-async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = []): Promise<void> {
+async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = [], chosen?: Selection): Promise<void> {
   const options = parseOptions([]);
   const selftest = path.join(root, 'kernel', 'test', 'selftest.ts');
-  const policy = applyPlatformSkips(sectionNumbers(fs.readFileSync(selftest, 'utf8'), ''), readPlatformSkips());
+  const all = sectionNumbers(fs.readFileSync(selftest, 'utf8'), '');
+  const selected = !chosen || chosen.all ? all : chosen.sections;
+  const policy = applyPlatformSkips([...new Set([...selected, ...requireSections.map(Number)])].sort((a,b) => a-b), readPlatformSkips());
   if (policy.line) note(`     ${policy.line}`);
   const sections = policy.sections;
-  const suites = fastRoster(fs.readFileSync(path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), 'utf8'));
+  const suites = chosen ? [] : fastRoster(fs.readFileSync(path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), 'utf8'));
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-push-'));
   fs.mkdirSync(path.join(folder, 'sections'));
-  note(`     push tier: ${suites.length} suites, ${sections.length} self-test sections and the static run in ${options.workers} slots; exclusive after the barrier: sections ${SERIAL_SECTIONS.join(', ')}${EXCLUSIVE_SUITES.length ? `, ${EXCLUSIVE_SUITES.join(', ')}` : ''}. Log: ${folder}`);
+  note(`     push tier: ${suites.length} suites, ${sections.length} self-test sections${chosen ? '' : ' and the static run'} in ${options.workers} slots; exclusive after the barrier: sections ${SERIAL_SECTIONS.join(', ')}${EXCLUSIVE_SUITES.length ? `, ${EXCLUSIVE_SUITES.join(', ')}` : ''}. Log: ${folder}`);
 
   type Done = { kind: 'suite'; outcome: Outcome } | { kind: 'section'; result: Result } | { kind: 'static'; outcome: Outcome; rows: RunnerRow[] | null };
   const staticRun = async (signal: AbortSignal): Promise<Done> => {
@@ -379,7 +379,7 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
   };
   const items: PoolItem<Done>[] = [
     ...suites.filter((name) => name in SLOW_SUITES).map((name) => ({ name, exclusive: EXCLUSIVE_SUITES.includes(name), run: async (signal: AbortSignal): Promise<Done> => ({ kind: 'suite', outcome: await suiteChild(root, name, path.join(folder, name), signal) }) })),
-    { name: 'static', exclusive: false, run: staticRun },
+    ...(!chosen ? [{ name: 'static', exclusive: false, run: staticRun }] : []),
     ...suites.filter((name) => !(name in SLOW_SUITES)).map((name) => ({ name, exclusive: EXCLUSIVE_SUITES.includes(name), run: async (signal: AbortSignal): Promise<Done> => ({ kind: 'suite', outcome: await suiteChild(root, name, path.join(folder, name), signal) }) })),
     ...sections.map((section) => ({ name: `section ${section}`, exclusive: SERIAL_SECTIONS.includes(section), run: async (signal: AbortSignal): Promise<Done> => ({ kind: 'section', result: await runSection(options, section, path.join(folder, 'sections'), signal) }) })),
   ];
@@ -396,11 +396,14 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
   const failedSections = results.filter((result) => result.verdict === 'FAIL');
   const flatten = (value: string) => value.replace(/[\r\n]+/g, ' | ');
   fs.writeFileSync(path.join(folder, 'sections.log'), results.map((r) => `section ${r.section}: ${r.verdict} ${r.checks} checks ${r.seconds.toFixed(3)}s${r.detail ? ` ${flatten(r.detail)}` : ''}`).join('\n') + '\n');
+  for (const result of results) { const warning = sectionLimitWarning(result, options.sectionTimeout); if (warning) note(warning); }
   if (requireSections.length) say(requiredOutcome(fs.readFileSync(path.join(folder, 'sections.log'), 'utf8'), requireSections, 'push'));
   const missingSections = sections.filter((section) => !results.some((result) => result.section === section));
   const selftestOutcome: Outcome = failedSections.length || missingSections.length || controller.signal.aborted
     ? { check: 'kernel.selftest', tier: 'push', status: 'fail', seconds: null, caught: RUNNER_CAUGHT, detail: `kernel self-test FAILED (${failedSections.length || 1} of ${total}): ${[...failedSections.map((r) => `section ${r.section}: ${flatten(r.detail)}`), ...missingSections.map((n) => `section ${n}: not run`)].join('; ').slice(0, 1200) || 'cancelled'}` }
     : { check: 'kernel.selftest', tier: 'push', status: 'pass', seconds: null, caught: RUNNER_CAUGHT, detail: `kernel self-test passed (${total} checks). ${results.length} sections pooled` };
+
+  if (chosen) { say(selftestOutcome); return; }
 
   const suiteOutcomes = new Map(done.flatMap((item) => (item.kind === 'suite' ? [[item.outcome.check, item.outcome] as const] : [])));
   const staticDone = done.find((item) => item.kind === 'static') as Extract<Done, { kind: 'static' }> | undefined;
@@ -486,6 +489,36 @@ async function scanChecks(root: string): Promise<Outcome[]> {
   });
 }
 
+/** Settings and hook templates keep their static checks even when the full runner is not used. */
+export function settingsChecksForPaths(changed: readonly string[]): string[] {
+  return pathChecks(changed);
+}
+
+export async function settingsChecks(root: string, changed: string[]): Promise<Outcome[]> {
+  const outcomes: Outcome[] = [];
+  for (const file of changed.filter(file => file.endsWith('.json'))) {
+    const target = path.join(root, file);
+    if (!fs.existsSync(target)) continue; // A deletion has no new JSON to parse; semantic checks still run.
+    try { JSON.parse(fs.readFileSync(target, 'utf8').replace(/^\uFEFF/, '')); }
+    catch(error) { outcomes.push({check:`json.parse: ${file}`,tier:'commit',status:'fail',seconds:0,detail:String(error),caught:'malformed changed configuration'}); }
+  }
+  for (const name of settingsChecksForPaths(changed)) {
+    const ran = await runChild('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), '-Only', name, '-ProgramPath', root, '-Json'], root, CHECK_LIMIT);
+    const rows = runnerReport(ran.output)?.checks;
+    const row = rows?.length === 1 && rows[0]?.check === name ? rows[0] : undefined;
+    const status = row ? STATUS_OF[row.status] : undefined;
+    // Only the supported source-only state may skip this render check. Template sections carry its verdict.
+    const absentRender = name === 'codex.project-access-config' && status === 'skip'
+      && row?.detail.startsWith('both rendered Codex files are absent (a fresh clone or worktree);')
+      && ['config.toml', 'hooks.json'].every(file => !fs.existsSync(path.join(root, '.codex', file)));
+    const detail = row?.detail ?? (ran.status === null && /ENOENT/.test(ran.output)
+      ? `powershell.exe is missing; ${name} cannot run.`
+      : `no matching settings verdict (exit ${ran.status}): ${lastLines(ran.output, 2)}`);
+    outcomes.push({ check: name, tier: 'commit', status: ran.status === 0 && (status === 'pass' || status === 'warn' || absentRender) ? status! : 'fail', seconds: ran.seconds, detail, caught: 'settings that disabled their own hooks' });
+  }
+  return outcomes;
+}
+
 async function runTier(argv: string[], tierWait: GateWait | null = null): Promise<number> {
   const options = parseArgs(argv);
   const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
@@ -501,26 +534,31 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
     }
   };
 
-  const pooled = options.tier === 'push' || options.tier === 'release';
+  const pooled = options.tier === 'release' || (options.tier === 'cut' && powerShellPresent());
   const route = tierRoute(options.tier, powerShellPresent());
-  // Section 155 is the push tier's type check; its claim-map coverage and docs gate are reported, not acceptance.
+  // Only the full pool treats coverage and the docs gate as diagnostics; selected gates enforce them.
   if (!pooled) for (const outcome of await typecheck(root, 'commit')) say(outcome);
   say({ ...coverage(root, 'commit'), diagnostic: pooled });
-  say({ ...(await docsGate(root, 'commit')), diagnostic: pooled });
-  const chosen = selection(root, options.commit);
+  const chosen = selection(root, options.commit, options.tier === 'push');
+  const documents = chosen.changed.filter(file => /\.md$/.test(file) && !/^(?:kernel|tools|templates|\.)/.test(file) && fs.existsSync(path.join(root, file)));
+  say({ ...(await docsGate(root, 'commit', powerShellPresent(), documents)), diagnostic: pooled });
   if (!options.json) {
     const what = chosen.selection.all ? 'every section' : chosen.selection.sections.length ? `sections ${chosen.selection.sections.join(', ')}` : 'no section';
-    process.stdout.write(`     self-test selection: ${what}${options.tier === 'commit' ? '' : pooled ? ' (this tier runs every section in its pool instead)' : ' (this tier runs every section in the runner child instead)'}\n`);
+    process.stdout.write(`     self-test selection: ${what}${options.tier === 'commit' || options.tier === 'push' ? '' : pooled ? ' (this tier runs every section in its pool instead)' : ' (this tier runs every section in the runner child instead)'}\n`);
     for (const reason of chosen.selection.reasons) process.stdout.write(`       ${reason}\n`);
   }
-  if (options.tier === 'commit') {
+  if (options.tier === 'commit' || options.tier === 'push') {
     for (const outcome of await scanChecks(root)) say(outcome);
+    for (const outcome of await settingsChecks(root, chosen.changed)) say(outcome);
     // Wait outside the child's run limit; its inherited hold also covers opt-in whole-suite comparisons.
     const lockSay = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
-    const selectionLock = chosen.selection.all || chosen.selection.sections.length > 0 ? await acquireGateLock(options.compare ? 'commit comparison' : 'commit', options.noWait, lockSay) : null;
+    const selectionLock = options.tier === 'commit' && (chosen.selection.all || chosen.selection.sections.length > 0) ? await withHookSeat(() => acquireGateLock(options.compare ? 'commit comparison' : 'commit', options.noWait, lockSay)) : null;
     const notice = selectionLock && gateLockOffNotice(selectionLock);
     if (notice) lockSay(notice);
-    try { say(await selftestSections(root, 'commit', chosen.selection)); } finally { await selectionLock?.release(); }
+    try {
+      if (options.tier === 'push') await pushChecks(root, say, lockSay, options.requireSections, chosen.selection);
+      else say(await selftestSections(root, 'commit', chosen.selection));
+    } finally { await selectionLock?.release(); }
     if (selectionLock?.wait) tierWait = selectionLock.wait;
   }
   else if (pooled) {

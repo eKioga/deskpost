@@ -117,13 +117,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
   'basic-memory': {
     summary: "A local Library's connection to a Basic Memory server: set it up, see how the two differ, import from it, open a shared Book.",
     usage:
-      'library basic-memory setup --url <mcp-url> --collection <name> [--storage <folder>] [--preflight]; library basic-memory disconnect [--preflight]; ' +
+      'library basic-memory setup --url <mcp-url> --collection <name> [--storage <folder>] [--shared-writes on|off] [--preflight]; library basic-memory disconnect [--preflight]; ' +
       'library basic-memory status; library basic-memory import (--preflight | --dry-run | --user-confirmed --plan-id <id> [--lock-timeout <s>]); ' +
       'library basic-memory open [<slug> [--shelf archive] [--seat <s>]]; library basic-memory rollback-check [--registry-root <d>]',
     actions: ['disconnect', 'import', 'open', 'rollback-check', 'setup', 'status'],
     positional: false,
     arguments: {
-      setup: { valued: ['url', 'collection', 'storage'], boolean: ['preflight'], positionals: 0 },
+      setup: { valued: ['url', 'collection', 'storage', 'shared-writes'], boolean: ['preflight'], positionals: 0 },
       disconnect: { boolean: ['preflight'], positionals: 0 },
       status: { positionals: 0 },
       import: { valued: ['plan-id', 'lock-timeout'], boolean: ['preflight', 'dry-run', 'user-confirmed'], positionals: 0 },
@@ -206,7 +206,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 'S15',
   },
   collection: {
-    summary: "The shared collection's ownership claim, the Local collection's Discovery manifests, and a page added to or corrected in one of its Books.",
+    summary: "The shared collection's ownership claim, Discovery manifests rebuilt locally (including shared Books over a connection), and a page added to or corrected in a collection Book.",
     usage:
       'library collection owner [--status | --acquire [--force [--user-confirmed]] | --release] [--json]; library collection rebuild [--json]; ' +
       'library collection add-page <slug> <page> (--content-path <f> | --body <b>) [--title <t>] (--preflight | --user-confirmed --plan-id <id>) [--lock-timeout <s>]; ' +
@@ -218,6 +218,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'add-page': [CONTENT_PATH_RULE],
       'replace-page': [CONTENT_PATH_RULE],
       owner: ['--status is the default: with neither --acquire nor --release, owner reports the claim, and --status changes nothing.'],
+      rebuild: ["On a local Library, rebuild its own collection's Discovery manifests and, when connected, read the Basic Memory connection to rebuild shared Books' manifests locally. An unreachable connection leaves the local result successful."],
     },
     arguments: {
       // `--status` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): it is the default, and the kernel's own
@@ -416,6 +417,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // ONE LINE PER MODE (S85 rows 1 and 3): the usage names eight modes and said nothing of what each takes, so a
     // seat put the section's own `## ` heading into its content and was told the page held the section twice.
     details: {
+      new: ['Basic Memory attached route: retired on 1.0 servers.'],
+      'copy-pages': ['Basic Memory attached route: retired on 1.0 servers.'],
+      archive: ['Basic Memory attached route: retired on 1.0 servers.'],
       history: [
         "Lists this page's publication journals oldest first: time, operation, mode, state and written hash.",
         "A read-only action; the Hub must exist and be open on this seat's Desk. Plain text by default, --json for records.",
@@ -438,6 +442,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "replace-item keeps the replaced item's own marker (its bullet and any checkbox) when the content starts without one.",
         "Gated means --preflight first, then --user-confirmed --plan-id <id> after reading the preflight; deskpost undo <journal-id> restores it.",
         'add-section, append-section and check-item given a --plan-id apply only when it is the one their --preflight gives now.',
+        'Basic Memory attached route: retired on 1.0 servers.',
         CONTENT_PATH_RULE,
       ],
       // ONE VERB FOR DECIDED HUB ITEMS (kickoffs/s125 row 3; ADR-0082): it moves, never ticks, rewrites or deletes.
@@ -662,7 +667,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     summary: "This Library's place in the Postbox, the Basic Memory project Libraries pass letters through: set it up, read what was cached, resolve an address, send what waits and file what came.",
     usage:
       'library postbox setup [--url <mcp-url>] [--project <name>] (--preflight | --user-confirmed --plan-id <id>); library postbox status; ' +
-      'library postbox resolve <library-id-or-card>; library postbox send [--only <delivery-id>]; library postbox check [--send-first]',
+      'library postbox resolve <library-id-or-card>; library postbox send [--only <delivery-id>]; library postbox check [--send-first]; ' +
+      'library postbox conflict <delivery-id> --keep-filed|--file-as-new|--reopen [--preflight | --user-confirmed --plan-id <id>] [--resume <op_id>]',
     // SEND AND CHECK (kickoffs/s123 rows 2 and 3): every letter waiting in the outbox sent exactly once by its path, and
     // every letter in this Library's inbox filed exactly once by its delivery id, then moved to delivered/.
     details: {
@@ -670,10 +676,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
       check: ["Files each letter in this Library's inbox into the letters Book, once by its delivery id, then moves it to delivered/. Nothing is deleted."],
       status: ['Prints the cache from the last setup or check, with reports_triager (the Library Reports go to) and reports_triager_conflict.'],
     },
-    actions: ['check', 'resolve', 'send', 'setup', 'status'],
+    actions: ['check', 'conflict', 'resolve', 'send', 'setup', 'status'],
     positional: false,
     arguments: {
       setup: { valued: ['url', 'project', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 0 },
+      conflict: { valued: ['plan-id', 'resume'], boolean: ['keep-filed', 'file-as-new', 'reopen', 'preflight', 'user-confirmed'], positionals: 1 },
       status: { positionals: 0 },
       resolve: { positionals: 1 },
       send: { valued: ['only'], positionals: 0 },
@@ -784,6 +791,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'Each runs --preflight first, then --user-confirmed --plan-id <id> with the id the preflight issued.',
         "A recalled Book's --title and --summary default to its Shelf entry. On a local Library a refresh is approved by its",
         'refresh_plan_id, never its candidate_plan_id.',
+        'Basic Memory attached route: retired on 1.0 servers.',
       ],
     },
     actions: ['batch', 'refresh'],
@@ -834,6 +842,13 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library reset [--seat <s>] [--clear-desk] [--preflight | --plan-id <id>] [--json]; ' +
       'library reset restore (--list | --quarantine <name> [--show | --topic <t,...>] [--adopt] [--preflight | --plan-id <id>]) [--json]',
+    // kickoffs/s193 spare S1 (`reset-keep-docs`).
+    details: {
+      '*': [
+        "No topic can be protected from a Notebook reset: the plan's topics_protected is a kept field name, always empty.",
+        'To keep a topic, take the reset, then bring that topic back with deskpost reset restore --quarantine <name> --topic <t>.',
+      ],
+    },
     actions: ['restore'],
     positional: false,
     arguments: {
@@ -986,17 +1001,87 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library shared <archive|list-entry> <slug> [--title <t>] [--summary <s>] [--kind book|project] [--collection <c>] --preflight; ' +
       'library shared archive <slug> [--kind book] --user-confirmed --plan-id <id>; ' +
-      'library shared list-entry <slug> [--title <t>] [--summary <s>] [--collection <c>] --user-confirmed --plan-id <id>',
+      'library shared list-entry <slug> [--title <t>] [--summary <s>] [--collection <c>] --user-confirmed --plan-id <id>; ' +
+      'library shared add-page <slug> <page> --content-path <file> (--preflight | [--user-confirmed] --plan-id <id>) [--seat <s>]; ' +
+      'library shared replace-page <slug> <page> (--content-path <file> | --from-change <record-id> (--base | --body)) (--preflight | [--user-confirmed] --plan-id <id>) [--seat <s>]; ' +
+      'library shared remove-page <slug> <page> [--from-change <record-id>] (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]; ' +
+      'library shared catalog-line <slug> (--title <t> --summary <s> [--collection <c>] | --from-change <record-id> --base) (--preflight | [--user-confirmed] --plan-id <id>) [--seat <s>]; ' +
+      'library shared sources <slug> (--content-path <file> | --from-change <record-id> (--base | --remove)) (--preflight | [--user-confirmed] --plan-id <id>) [--seat <s>]; ' +
+      'library shared new-book <slug> --title <t> --summary <s> [--collection <c>] (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]; ' +
+      'library shared promote <slug> (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]; ' +
+      'library shared upkeep <slug> (--seats <seat>[,...] | --any-seat) (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]; ' +
+      'library shared upkeep <slug> --off (--preflight | --plan-id <id>) [--seat <s>]; ' +
+      'library shared reconcile <slug>; ' +
+      'library shared changes [<slug>] [--since <date>]',
     details: {
-      archive: ['On a local Library, --plan-id is the plan_id the preflight issued.'],
-      'list-entry': ["On a local Library, it sets the Book's one line in collection/books/README.md, and --plan-id is the plan_id the preflight issued."],
+      'add-page': [
+        "A local Library with shared writes on (deskpost basic-memory setup --shared-writes on) adds a page to a shared Book over its Basic Memory connection.",
+        'The change is recorded first under _deskpost/changes/<slug>/, the page is created only if it is still absent, and the new page is confirmed by listing.',
+        'Without --user-confirmed, --plan-id applies only for a seat that maintains the Book under an upkeep grant (deskpost shared upkeep); the preview says confirmation_required: false and names it.',
+      ],
+      'replace-page': [
+        "A local Library with shared writes on replaces one page of a shared Book over its Basic Memory connection.",
+        'The change is recorded first, and the page is replaced only while it is still the text the preview showed.',
+        "--from-change <record-id> --base (or --body) writes that change record's base (or body) back as a new recorded change, and creates the page when it is absent.",
+        'Without --user-confirmed, --plan-id applies only for a seat that maintains the Book under an upkeep grant (deskpost shared upkeep); the preview says confirmation_required: false and names it.',
+      ],
+      'remove-page': [
+        'A local Library with shared writes on removes one page of a shared Book, recording its text first so the removal can be restored.',
+        'The page is removed only while it is still the text the preview showed. --from-change <record-id> removes a page that change added.',
+      ],
+      'catalog-line': [
+        "A local Library with shared writes on sets the Book's one line in the shared Catalog, books/README.md, where a publication puts it.",
+        'Recorded first; on a conflict it re-reads the Catalog and tries once more with a fresh record. --from-change <record-id> --base puts back the line that change replaced, or removes the line it added.',
+        'Without --user-confirmed, --plan-id applies only for a seat that maintains the Book under an upkeep grant (deskpost shared upkeep); the preview says confirmation_required: false and names it.',
+      ],
+      sources: [
+        "A local Library with shared writes on sets a shared Book's sources, books/<slug>/_sources.md, checked as a source list before anything is sent.",
+        '--from-change <record-id> --base puts back the list that change replaced; --remove removes a list that change created.',
+        "Without --user-confirmed, --plan-id applies only for a seat that maintains the Book under an upkeep grant (deskpost shared upkeep); --remove always needs the reader's yes.",
+      ],
+      'new-book': [
+        'A local Library with shared writes on makes a new shared Book: its _book.md, its reader map _index.md, then its Catalog line last, each a recorded change. Always the reader\'s yes.',
+        'An interrupted run is finished by running it again; a slug that is archived, or taken by a Book this command did not make, is refused.',
+      ],
+      promote: [
+        "Moves one Book of this Library's own collection to the shared collection: its pages are copied as recorded changes, then the local Book is archived with _moved.md, and this seat's Desk entry is swapped to shared/<slug>.",
+        'One preview and one yes cover all of it; an interrupted promote is finished by running it again.',
+      ],
+      upkeep: [
+        "Grants upkeep of a shared Book this Library can name as made by deskpost shared new-book or promote: the seats named (or any seat of this Library) then add, replace and restore its pages, its Catalog line and its sources without the reader's yes for each write. Granting takes the reader's yes.",
+        "The grant is this Library's block in _deskpost/upkeep/<slug>.md; other Libraries' blocks are kept. --off removes only this Library's block with --plan-id alone. Removing a page or the sources, and making or promoting a Book, always need the reader's yes.",
+      ],
+      reconcile: [
+        "Reads a shared Book's change records and says which is current, superseded, not current (its text kept) or damaged, and which pages were changed outside Deskpost.",
+        'It prints the restore line for every record that is not current, and writes nothing.',
+      ],
+      changes: [
+        'Lists the change records of one shared Book, or of every Book, newest first, each with its restore line.',
+        '--since <date> only filters what is shown. It writes nothing.',
+      ],
+      archive: ['On a local Library, --plan-id is the plan_id the preflight issued.', 'Basic Memory attached route: retired on 1.0 servers.'],
+      'list-entry': ["On a local Library, it sets the Book's one line in collection/books/README.md, and --plan-id is the plan_id the preflight issued.", 'Basic Memory attached route: retired on 1.0 servers.'],
     },
-    actions: ['archive', 'list-entry'],
+    actions: ['add-page', 'archive', 'catalog-line', 'changes', 'list-entry', 'new-book', 'promote', 'reconcile', 'remove-page', 'replace-page', 'sources', 'upkeep'],
     positional: false,
     arguments: {
       // Both backends' names: a local Library reads `--kind` and `--plan-id`; Basic Memory's preflight reads neither.
       archive: { valued: ['kind', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
       'list-entry': { valued: ['title', 'summary', 'kind', 'collection', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      // The connection route's writers (kickoffs/s191 row 1; PLAN-many-libraries.md Stage 2 item 2), seated as basic-memory open is.
+      'add-page': { valued: ['content-path', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+      'replace-page': { valued: ['content-path', 'from-change', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['base', 'body', 'preflight', 'user-confirmed'], positionals: 2 },
+      // The rest of 1.6.0's writers and its two readers (kickoffs/s192 row 1; PLAN-many-libraries.md r12 points 3 and 5).
+      'remove-page': { valued: ['from-change', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
+      'catalog-line': { valued: ['title', 'summary', 'collection', 'from-change', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['base', 'preflight', 'user-confirmed'], positionals: 1 },
+      sources: { valued: ['content-path', 'from-change', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['base', 'remove', 'preflight', 'user-confirmed'], positionals: 1 },
+      // A shared Book made and promoted (kickoffs/s193 rows 2 and 3; PLAN-many-libraries.md items 8 and 9): always gated.
+      'new-book': { valued: ['title', 'summary', 'collection', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      promote: { valued: ['plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['preflight', 'user-confirmed'], positionals: 1 },
+      // Upkeep grants (kickoffs/s195 row 1; PLAN-many-libraries.md item 16): the grant gated, --off with --plan-id alone.
+      upkeep: { valued: ['seats', 'plan-id', 'seat', 'claim-token'], internal: ['claim-token'], boolean: ['any-seat', 'off', 'preflight', 'user-confirmed'], positionals: 1 },
+      reconcile: { positionals: 1 },
+      changes: { valued: ['since'], positionals: 1 },
     },
     // Both preflights, against Basic Memory (S34); a confirmed run names the PowerShell helper.
     ported: true,
@@ -1052,7 +1137,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   triage: {
     summary: 'The triage inventory, plan validation, and the resumable batch.',
-    usage: 'library triage <inventory [--pending [--for-seat <seat>]]|validate|batch> [--actions <json> | --actions-path <file>] [--preflight | --user-confirmed --plan-id <id>] [arguments]',
+    usage: 'library triage <inventory [--pending [--for-seat <seat>] [--book <slug>]]|validate|batch> [--actions <json> | --actions-path <file>] [--preflight | [--user-confirmed] --plan-id <id>] [arguments]',
     // THE SOURCES, AND HOW A LETTER IS CLOSED (S85 row 5, backlog Row C): `source_slug` was nowhere in the help.
     details: {
       '*': [
@@ -1063,6 +1148,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
         '',
         'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting, and no Notebook page.',
         '--for-seat <seat>, with --pending, lists only the notes addressed to that seat, as the Desk counts its letters.',
+        '--book <slug>, with --pending, lists only notes in reports, letters or holding; counts remain whole.',
+        'A batch of only review actions, none with other_seat, needs no yes; every other batch requires --user-confirmed.',
         'validate is always a preview: it writes nothing, and --preflight changes nothing there.',
         '--actions-path <file> reads the actions as UTF-8 JSON from a file, in place of --actions: Windows PowerShell strips the',
         'quotes inside an inline JSON value. ' + CONTENT_PATH_RULE.replace('--content-path', '--actions-path'),
@@ -1075,7 +1162,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     actions: ['batch', 'inventory', 'validate'],
     positional: false,
     arguments: {
-      inventory: { valued: ['for-seat'], boolean: ['pending'], positionals: 0 },
+      inventory: { valued: ['for-seat', 'book'], boolean: ['pending'], positionals: 0 },
       // `--preflight` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): validation is always a preview, and a
       // matrix row passes it.
       validate: { valued: ['actions', 'actions-path', 'capture-date', 'seat'], boolean: ['preflight'], internal: ['capture-date'], positionals: 0 },
@@ -1180,9 +1267,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   // kickoffs/s166 row 3: the plan's measure (PLAN-fewer-yeses.md Approach 6, Goal criterion 1).
   train: {
-    summary: "The planner's ordered train: read the register, generate its page, or change an item.",
-    usage: 'deskpost train [--json] | train page | train add <id> --title <t> --place <p> [--first | --before <id> | --after <id>] [--first-asked <date>] [--source <page>] | train move <id> --place <p> [--first | --before <id> | --after <id>] | train close <id> --done|--dropped --note <one line>',
-    actions: ['add', 'move', 'close', 'page'],
+    summary: "The planner's ordered train: read the register, generate its page, change an item, or date a car's opening and arrival.",
+    usage: 'deskpost train [--json] | train page | train add <id> --title <t> --place <p> [--first | --before <id> | --after <id>] [--first-asked <date>] [--source <page>] | train move <id> --place <p> [--first | --before <id> | --after <id>] | train close <id> --done|--dropped --note <one line> | train car <car:name> (--opened | --arrived) [--on <YYYY-MM-DD>]',
+    actions: ['add', 'move', 'close', 'page', 'car'],
     positional: false,
     arguments: {
       '': { positionals: 0 },
@@ -1190,6 +1277,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       add: { valued: ['title', 'place', 'before', 'after', 'first-asked', 'source'], boolean: ['first'], positionals: 1 },
       move: { valued: ['place', 'before', 'after'], boolean: ['first'], positionals: 1 },
       close: { valued: ['note'], boolean: ['done', 'dropped'], positionals: 1 },
+      car: { valued: ['on'], boolean: ['opened', 'arrived'], positionals: 1 },
     },
     ported: true,
     row: 'c69',

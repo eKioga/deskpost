@@ -21,14 +21,20 @@ How a reviewed release candidate goes to the public download, and the exact comm
    the source kernel (`tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel 'node kernel/src/cli.ts'`, or one `-Row` per
    call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
    sentence names a `tools/*.ps1` helper is judged against a build ("The compiled arm"), never from source
-   ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Record the second reader's review
+   ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Before any proof, read every
+   line changed since the last release the way `prepare.ps1`'s staged scan will: first `git rev-parse --verify v<prev>`
+   must name the last release's tag; then, in Bash with `set -o pipefail`, `git diff v<prev> HEAD | gitleaks stdin
+   --no-banner --no-color --redact` must exit 0 and print `no leaks found`. A diff that cannot run feeds gitleaks nothing
+   and still prints `no leaks found`, so the tag check and the pipe's own exit come first (library-auditor S1,
+   2026-11-03; c105 r1 lost a release run to two values a test planted, found only at `prepare.ps1`). Record the second reader's review
    of that exact candidate SHA by [the loop's rule](dev-loop-orchestrator.md#the-second-reader) before
    any credential-bearing step. Then check routes: `git ls-remote` and reading the mirror workflow
    prove connectivity and read access only. Read Forgejo `permissions.push` where available; record
    authorization without a non-mutating source as unverified until publish. Secrets resolve only
    through `deskpost_secrets.py`'s service-account route, without printed values or bare `op`.
 2. **Prepare that candidate, locally, in a publish folder** outside the checkout (`<publish>`),
-   under a release-preparation Kickoff. A changed candidate returns to step 1 and invalidates review.
+   under a release-preparation Kickoff. A changed candidate voids only the proofs whose inputs changed, and needs
+   review of its new commits only ("What a changed candidate voids", below).
    A failed review or route check means a Report and deskpost-dev prepares after its weekly usage reset.
    The folder holds the publish script, its
    archive audit, `pub-commit.txt` (the release notes, which become the public commit's text) and `pub-tag.txt`. The
@@ -216,6 +222,36 @@ a real person, domain or account. Fixtures are made and removed by the one progr
 `npm` only with `--offline`. Until the publish, the only network reads are step 1's `git ls-remote` route checks, the
 mirror check before the yes ("Starting the mirror"), `prepare.ps1`'s clone of the public repository, and any read the
 Kickoff names.
+
+## What a changed candidate voids
+
+(Decision, 2026-11-03; `PLAN-checks-earn-their-wait.md` U6.) A proof stands for a new candidate only when **every** input it
+depends on is unchanged: byte-identical, or, for TypeScript harness source, the same parsed structure (comments and
+whitespace only; any other language, byte-identical only). Until `tools/section-select.mts` judges structure, the
+release seat judges it from the diff and writes down why. Everything else runs again.
+
+| Proof | It depends on |
+| --- | --- |
+| The doctor counts and the source matrix | `kernel/src`, `tools/acceptance-matrix.json`, every file under `tools/` except `.md` (the runner dot-sources helpers and runs scripts by name, so no hand list stays whole), and its fixtures |
+| The launch values | `kernel/src/menuaccess.ts`, and the installed `codex` and `claude` |
+| The push tier | the pushed commit (the pre-push guard needs its record) |
+| Build and judge, and the release fixtures | the archives' contents (any shipped file, `kernel/test/` included), `tools/Build-KernelRelease.ps1`, `tools/Test-BuiltRelease.ps1` and its fixtures, Bun, the previous release's `rel` |
+| The compiled sections | `library.exe` per platform, `kernel/test/selftest.ts` and what it reads, the runner copy, the previous installer |
+| The upgrade with rollback, and Linux | `library.exe` and the archives, the runner copies, the previous release's `rel`, the WSL distro |
+| The compiled arm | `library.exe`, the acceptance matrix and its fixtures, and every file under `tools/` except `.md` |
+| The candidate's review | the commits since the last reviewed candidate |
+| `prepare.ps1` to READY | always rerun: it is the publish's own input |
+
+The build is reproducible (c105 r1: two builds, one `library.exe` sha256), so a rebuilt `library.exe` byte-identical
+to the judged one is how a revision proves the program unchanged. c105-r2 is the worked example: its one change
+added two trailing comments to `kernel/test/selftest.ts`, so it reran build and judge (the archive carries that file),
+the push tier and `prepare.ps1`, and carried the counts, both matrices, the launch values, the compiled sections,
+the upgrade and Linux over from r1 while its rebuilt `library.exe` matched.
+
+**A row is the whole input list, or the proof reruns** (library-auditor M1, 2026-11-03). A carried proof records the
+commit it ran on, its command line, and the tool versions it ran with (`node`, `bun`, `pwsh` or Windows PowerShell,
+`gitleaks`); a proof whose record lacks any of them is not carried. When a proof's script starts reading a new file
+outside the folders its row names, the change that makes it read the file adds the folder to the row.
 
 ## The push (the only step that publishes)
 

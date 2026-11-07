@@ -12,7 +12,8 @@
  *
  * WHAT IS SCANNED: the records still being written (kickoffs/s112 ruling 1; Eric, 2026-10-09: "yes, go with A"). Every
  * `*.md` under the local collection's Project Hubs and Books (`collection/`) and under the Shelf (`shelf/`), EXCEPT
- * the local collection's `archive/` tree, the Shelf's `_archive/`, every Hub's `notes/` pages, and a capture Book's
+ * the local collection's `archive/` tree, the Shelf's `_archive/`, every Hub's `notes/` pages, a Hub's `kickoffs/<id>`
+ * page with no unticked Run pointer to it in that Hub's `## Next` (a finished Kickoff, kickoffs/s180), and a capture Book's
  * note whose `review` is `done` (a closed letter, Report or Holding note), and each capture Book's `wiki/reviewed/`.
  * Leading page frontmatter records provenance and is not scanned. History is never rewritten, so a link
  * there is a dated record, not a defect: counting it made doctor's WARN permanent and let a closed Report block a
@@ -23,6 +24,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { localCollectionRoot } from './collection.ts';
+import { pendingKickoffIds } from './kickoff.ts';
 import { ARCHIVE_FOLDER, convertFromShelfCatalogEntry, readUtf8, shelfCatalogPath, shelfCatalogSections } from './shelfbook.ts';
 import { shelfNotes } from './shelfnote.ts';
 
@@ -103,10 +105,21 @@ export function notebookLinks(workspace: string): NotebookLink[] {
     // A Hub's own `notes/`: `<collection>/projects/<slug>/notes`, and everything under it.
     return path.dirname(path.dirname(full)) === projects && path.basename(full) === 'notes';
   };
+  // A Hub's `kickoffs/<id>.md` with no unticked Run pointer to it in that Hub's `## Next` is a finished Kickoff
+  // (kickoffs/s180 row 2(f)): history like `notes/`. Each Hub's pointers are read once.
+  const pending = new Map<string, Set<string>>();
+  const finishedKickoff = (file: string): boolean => {
+    const full = path.resolve(file);
+    const folder = path.dirname(full);
+    if (path.basename(folder).toLowerCase() !== 'kickoffs' || path.dirname(path.dirname(folder)).toLowerCase() !== projects) return false;
+    const hub = path.basename(path.dirname(folder));
+    if (!pending.has(hub)) pending.set(hub, pendingKickoffIds(workspace, hub));
+    return !pending.get(hub)!.has(path.basename(full).slice(0, -3).toLowerCase());
+  };
   const closed = closedCaptureNotes(workspace);
   for (const root of [collection, shelf]) {
     for (const file of markdownFiles(root, history)) {
-      if (closed.has(path.resolve(file).toLowerCase())) continue;
+      if (closed.has(path.resolve(file).toLowerCase()) || finishedKickoff(file)) continue;
       let text: string;
       try {
         text = fs.readFileSync(file, 'utf8');

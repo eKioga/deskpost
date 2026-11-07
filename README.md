@@ -1,6 +1,6 @@
 # Deskpost
 
-**Status: 1.5, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
+**Status: 1.6, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -204,12 +204,10 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.5.4**, "Computer use off by default, and tighter guards": a seat drives your mouse and keyboard only when you turn that on, the Shelf guards catch more ways of reaching a closed Book, and a review-only triage needs no yes. Basic Memory and the vault stay optional. The full roadmap, with what each milestone carries and how far along it is, is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.6.0**, "One collection for the household": Libraries read and write shared Books on a Basic Memory server, with previewed, recorded changes, upkeep grants and a way back. Basic Memory and the vault stay optional. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
-- **Next: 1.6.0, one collection for the household**, its plan signed off: two Libraries in one
-  household share and edit one collection in Basic Memory, with no accounts, database or service of
-  Deskpost's own.
+- **Next: builders working from Webtop**, reading and writing the shared collection, alongside the remaining work for builders to share the gate.
 - **Alongside: development without PowerShell.** The tools that build, test and release Deskpost
   move to TypeScript, and a commit is judged in about two minutes.
 - **Exploring:** refreshing a Book from its sources; backups kept in a folder or file you choose;

@@ -52,7 +52,7 @@ import { getShelfBook, listFilesRecursive } from './shelfbook.ts';
 import { ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogEntryPath, singleTrailingNewline, testShelfCatalogEntryText } from './shelfcatalog.ts';
 import { assertShelfBookOpen } from './triage.ts';
 import { removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
-import { judgeWriteResult, McpSession, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
+import { judgeWriteResult, McpSession, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { programRoot } from './programroot.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
@@ -556,7 +556,7 @@ async function candidateConfirmed(
   try {
     const session = new McpSession(resolveMcpUrl(workspace), 'library-resumable-publisher');
     await session.initialize();
-    refuseUnportedWriter(session, 'publish');
+    refuseRetiredWriter(session, 'publish');
     const createRecord = async (expected: CandidateRecord, metadata: Record<string, PsJsonValue> | null, overwrite: boolean): Promise<void> => {
       const args: Record<string, PsJsonValue> = {
         project_id: projectId,

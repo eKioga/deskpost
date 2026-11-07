@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "about": "Add a pattern with the sections or named static checks that read the path. All matching rows are unioned. named retains filename-based self-test selection, with the existing conservative full fallback. Kernel, tools and Git hooks retain their selector rules. Plain Markdown also runs the document gate. Every changed JSON file is parsed.",
+  "paths": [
+    {"pattern": "^CONTEXT\\.md$", "sections": [], "checks": ["context.seat-vocabulary"], "contract": "context.seat-vocabulary reads the seat terms Get-SeatVocabulary declares"},
+    {"pattern": "^docs/seats\\.md$", "sections": [], "checks": ["seats.session-start-section-resolves", "seats.contract-table-matches-code", "seats.two-seat-row-matches-suite"], "contract": "the seats.* checks read it against SeatCreation.ps1 and the two-seat suite, and the SessionStart hook serves it"},
+    {"pattern": "^docs/templates/", "sections": [], "checks": ["workspace-init.selftest"], "contract": "init and upgrade ship it"},
+    {"pattern": "^docs/project-hub-design\\.md$", "sections": [], "checks": ["hub.sections-name-their-destinations", "hub.dev-template-seeds-sections"], "contract": "the hub.* checks read it against New-ProjectHub.ps1"},
+    {"pattern": "^docs/adr/0003-decisions-follow-their-subject\\.md$", "sections": [], "checks": ["hub.dev-template-seeds-sections"], "contract": "hub.dev-template-seeds-sections reads it"},
+    {"pattern": "^docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close\\.md$", "sections": [], "checks": ["hub.sections-name-their-destinations"], "contract": "hub.sections-name-their-destinations reads it"},
+    {"pattern": "^docs/supported-operation-matrix\\.md$", "sections": [], "checks": ["acceptance.matrix-doc-matches-rows"], "contract": "acceptance.matrix-doc-matches-rows renders it from the matrix"},
+    {"pattern": "^docs/kickoff-template\\.md$", "sections": [240], "checks": [], "contract": "self-test section 240 reads its fenced block and runs tools/kickoff-check.mts on it"},
+    {"pattern": "^docs/guides/.*\\.md$", "sections": [198], "checks": []},
+    {"pattern": "^(?:docs/.*|[^/]+)\\.md$", "sections": [], "checks": []},
+    {"pattern": "^\\.claude/settings(?:\\.local)?\\.json$", "sections": [], "checks": ["settings.parse", "settings.hooks-registered"]},
+    {"pattern": "^\\.claude/(?:rules|skills)/", "sections": [198, 119], "checks": []},
+    {"pattern": "^\\.codex/", "sections": [], "checks": ["codex.project-access-config", "plugin.generated-files-match"]},
+    {"pattern": "^\\.codex/workspace-config\\.template\\.toml$", "sections": [216], "checks": []},
+    {"pattern": "^\\.codex/hooks\\.template\\.json$", "sections": [605, 625], "checks": []},
+    {"pattern": "^\\.codex/config\\.template\\.toml$", "sections": [625], "checks": []},
+    {"pattern": "^\\.(?:codex|claude)-plugin/", "sections": [], "checks": ["plugin.generated-files-match"]},
+    {"pattern": "^\\.agents/", "sections": "named", "checks": ["plugin.generated-files-match"]},
+    {"pattern": "^\\.mcp\\.json$", "sections": "named", "checks": []},
+    {"pattern": "^templates/", "sections": "named", "checks": ["workspace-init.selftest"]},
+    {"pattern": "^(?:install\\.(?:sh|ps1)|library(?:\\.(?:cmd|ps1))?)$", "sections": "named", "checks": []},
+    {"pattern": "^\\.(?:gitattributes|gitignore)$", "sections": [155], "checks": []},
+    {"pattern": "^LICENSE$", "sections": [119], "checks": []},
+    {"pattern": "^\\.claude/(?:hooks|adapters)/", "sections": "named", "checks": ["library-hooks.boundary-suite"]},
+    {"pattern": "^docs/(?:librarian-operation-playbooks|model-division-of-labor)\\.md$", "sections": [], "checks": ["codex.delegation-runs-hooks"]}
+  ]
+}

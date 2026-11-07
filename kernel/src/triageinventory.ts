@@ -232,7 +232,7 @@ function sortedUnique(values: string[]): string[] {
 export function triageInventory(
   workspace: string,
   notebookRelative = 'notebook',
-  options: { pendingOnly?: boolean; forSeat?: SeatIncarnation | null } = {},
+  options: { pendingOnly?: boolean; forSeat?: SeatIncarnation | null; book?: string } = {},
 ): Record<string, PsJsonValue> {
   const root = path.resolve(workspace);
   const notebookRoot = path.join(root, ...notebookRelative.split('/'));
@@ -419,8 +419,8 @@ export function triageInventory(
     // triage, and a large Notebook buried the letters under its pages. Every count above stays whole, and
     // `pages_listed`, the last key, says which list this is, as `holding_notes_listed` does.
     pages: (options.pendingOnly ? [] : pages) as unknown as PsJsonValue,
-    holding_notes: (options.pendingOnly ? (options.forSeat ? holdingPending.filter((note) => addressed.has(note.path)) : holdingPending) : holdingNotes) as unknown as PsJsonValue,
-    holding_notes_listed: options.pendingOnly ? (options.forSeat ? `pending for seat ${options.forSeat.seat}` : 'pending') : 'all',
+    holding_notes: (options.pendingOnly ? holdingPending.filter(note => (!options.forSeat || addressed.has(note.path)) && (!options.book || note.book === options.book)) : holdingNotes) as unknown as PsJsonValue,
+    holding_notes_listed: options.pendingOnly ? (options.forSeat ? `pending for seat ${options.forSeat.seat}` : 'pending') + (options.book ? ` in Book ${options.book}` : '') : 'all',
     shared_library_write: false,
     pages_listed: options.pendingOnly ? 'none' : 'all',
   };

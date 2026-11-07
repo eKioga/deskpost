@@ -529,7 +529,7 @@ function Invoke-IdentityScanGitleaks {
     $tool = Get-Command gitleaks -ErrorAction SilentlyContinue
     if (-not $tool) { return [pscustomobject]@{ ran = $false; clean = $false; detail = 'gitleaks is not installed, so nothing scanned the staged blobs on this machine' } }
     Push-Location -LiteralPath $Workspace
-    try { $out = & $tool.Source 'protect' '--staged' '--no-banner' '--redact' 2>&1 }
+    try { $out = & $tool.Source 'git' '--staged' '--no-banner' '--redact' 2>&1 }
     finally { Pop-Location }
     if ($LASTEXITCODE -eq 0) { return [pscustomobject]@{ ran = $true; clean = $true; detail = 'gitleaks found nothing in the staged blobs' } }
     [pscustomobject]@{ ran = $true; clean = $false; detail = ('gitleaks reported a finding: ' + ((@($out) | Select-Object -Last 6) -join ' | ')) }

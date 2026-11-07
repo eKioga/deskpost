@@ -7,9 +7,8 @@
 # defined inside settings.json cannot validate the file that defines it. A malformed settings file
 # has already disabled the permission allowlist and both guard hooks once, silently.
 #
-# Windows keeps -Fast static checks and runs selected self-test sections plus the type check. Run the full suite
-# before a phase gate:
-#     powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1 -IncludeShared
+# Commits select checks from staged changes on every platform. The full suite is optional:
+#     node tools/gate.ts --tier cut
 #
 # Installed via:  git config core.hooksPath .githooks
 # Invoke-LibraryChecks asserts that installation, so an uninstalled hook fails the full suite.
@@ -43,6 +42,12 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" node tools/staged-secrets.mts
+if [ $? -ne 0 ]; then
+    echo "pre-commit: staged secrets found. Commit aborted."
+    exit 1
+fi
+
 # A DOCS-ONLY COMMIT RUNS ONLY THE DOCUMENT CHECKS (S104 row 0b; Eric, 2026-10-08: "do we need this gate?").
 # tools/docs-gate.ts decides from the staged paths: 0 is its checks passed, 3 is one failed, 4 is "not docs only".
 # Anything else -- node missing, the file missing, a crash -- is never a pass: the full runner below runs, as it
@@ -66,46 +71,12 @@ if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; t
     exit 1
 fi
 
-# WITHOUT POWERSHELL (Linux; kickoffs/s157 row 7, PLAN-cross-office-build-loop.md step 1.3) a code commit runs the commit
-# tier, which needs none: the type check, the claim map, the scans and the sections the change selects. It is the
-# builder's evidence there; the integrator's push tier on Windows stays the pass mark. Windows takes the route below.
-if ! command -v powershell.exe >/dev/null 2>&1; then
-    DESKPOST_GATE_SEAT="${LIBRARY_SEAT:-}" LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" \
-        node tools/gate.ts --tier commit
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "pre-commit: the commit tier failed. Commit aborted."
-        echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
-        exit 1
-    fi
-    exit 0
-fi
-
-# Select from staged data; a failed helper or empty result retains the full self-test.
-selection=$(LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" node --input-type=module -e '
-import { spawnSync } from "node:child_process";
-try {
-    const { hookSections } = await import("./tools/section-select.mts");
-    const chosen = hookSections(args => { const r = spawnSync("git", args, { encoding: "utf8", timeout: 60000, maxBuffer: 32 * 1024 * 1024, windowsHide: true }); if (r.status !== 0) throw Error(r.error?.message || r.stderr || "git failed"); return r.stdout; });
-    console.log(chosen.all ? "all:" + (chosen.reasons.find(reason => reason.startsWith("every section")) || chosen.reasons[0]) : chosen.sections.join(","));
-} catch (error) { console.log("all:selection unavailable: " + String(error).replace(/[\r\n]+/g, " ")); }
-') || selection='all:selection helper failed'
-case "$selection" in
-    all:*) unset LIBRARY_SELFTEST_SECTIONS; echo "selected sections: every section (${selection#all:})" ;;
-    ''|*[!0-9,]*) unset LIBRARY_SELFTEST_SECTIONS; echo "selected sections: every section (selection helper failed or returned an empty selection)" ;;
-    *) export LIBRARY_SELFTEST_SECTIONS="$selection"
-       old_ifs=$IFS; IFS=,; set -- $selection; IFS=$old_ifs
-       echo "selected sections ($#): $selection" ;;
-esac
-
+# Every platform uses the changed-path commit tier. Settings paths add their static checks there.
 DESKPOST_GATE_SEAT="${LIBRARY_SEAT:-}" LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= PATH="$clean_path" \
-    node kernel/test/gate-lock.ts --tier commit -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast
+    node tools/gate.ts --tier commit
 status=$?
-
 if [ $status -ne 0 ]; then
-    echo ""
-    echo "pre-commit: Library checks failed. Commit aborted."
-    echo "Fix the reported checks, or bypass deliberately with --no-verify if you know why."
+    echo "pre-commit: the commit tier failed. Commit aborted."
     exit 1
 fi
 

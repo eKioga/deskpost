@@ -93,6 +93,10 @@ train is stale or cannot be read. `deskpost asks` counts asks for a yes from Cla
 by Kickoff; it does not read Codex transcripts. The [development loop](../dev-session-loop.md)
 records the full workflow.
 
+## One collection for the household
+
+From 1.6.0, shared Books support previewed, recorded writes, new Books, promotion from a local collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books) for the commands and the way back.
+
 ## Basic Memory 1.0 and checked Kickoffs
 
 The Postbox now needs Basic Memory 1.0; see [Basic Memory](basic-memory.md) for the server change.

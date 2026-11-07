@@ -84,6 +84,10 @@ takes the seat's whole Notebook. There is no route to remove a single article, a
 decision rather than a gap (ADR-0024): removal from the Notebook has no destination. Leaving an
 unwanted article where it is until the next reset is a supported answer, not a workaround.
 
+**No topic can be protected from a reset.** The reset's plan still carries a `topics_protected`
+field, kept by name and always empty. To keep a topic, take the reset, then bring that topic back
+from its quarantine: `deskpost reset restore --quarantine <name> --topic <t>`.
+
 ## Getting it back
 
 **Start with the read, which needs no seat.** A reader whose session lost its seat is exactly the
@@ -151,7 +155,7 @@ A Library can sit inside a larger folder that a notes app (Obsidian, for one) sy
 Publishing a Shelf Book to a shared collection, refreshing one, and archiving a Book or a Project
 all follow the same shape: **preview, show the manifest and plan id, one clear approval, then the
 confirmed run**. The full sequences are in
-[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/librarian-operation-playbooks.md). Read the
+[docs/librarian-operation-playbooks.md](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/librarian-operation-playbooks.md). Read the
 applicable section immediately before the action. A Library on its own disk has no shared
 collection to publish to, and its Books stay on the Shelf.
 

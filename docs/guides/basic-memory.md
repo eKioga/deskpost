@@ -2,10 +2,10 @@
 
 > For a Library whose Books and Project Hubs live on your own disk (the default), when you also have a
 > Basic Memory server. The server is optional: it lets you read shared Books from another machine, and it
-> is how you move an older Basic Memory workspace into a Library. Nothing here ever writes to Basic Memory.
+> is how you move an older Basic Memory workspace into a Library. From 1.6.0, shared Books can also be changed through previewed, recorded writes.
 
 A short answer first: **your Library always keeps its own Books and Hubs, in its own `collection/` folder.**
-A Basic Memory server is a **connection**, a second place the Library can read from. You can compare the
+A Basic Memory server is a **connection**, a second place the Library can read and write shared Books. You can compare the
 two, import from the server's storage folder, and open a shared Book without copying it. Disconnecting
 removes the connection and nothing else.
 
@@ -48,6 +48,8 @@ Basic Memory  <server URL>   reachable
   Access      the Postbox creates its project and writes its entry and letters (bm_project, bm_write, bm_move; write_note and move_note on an older server); import only reads the storage folder; the shared-collection writers refuse on a Basic Memory 1.0 server, or when its tool list cannot be read
   Compared    3 Books only there · 1 only here · 2 differ · last import 2026-09-27 10:14
 ```
+
+The Access line uses the older shared-collection writer names. Those older routes remain retired on a 1.0 server; the new shared Book commands described in [Writing shared Books](#writing-shared-books) are available from 1.6.0 with a recorded tool-list proof.
 
 Status writes nothing, anywhere. **"Differ" says which side changed**, measured against the record of your
 last import: `there` (the server changed it), `here` (you did), `both`, or `unrecorded` for a Book in both
@@ -104,8 +106,8 @@ from both places, the Librarian asks which one you mean.
 ## Letters between Libraries
 
 From 1.5.0, a Library can leave a letter for a seat in another Library, on another computer or under another Claude
-account. The letters travel through **the Postbox**, a place inside one Basic Memory project of Deskpost's own. This
-is the one part of Deskpost that writes to Basic Memory, and it writes only inside `postbox/` in that project: it
+account. The letters travel through **the Postbox**, a place inside one Basic Memory project of Deskpost's own. The
+Postbox writes only inside `postbox/` in that project; shared Book writes use the separately connected collection. It
 reads, moves and changes no other project. A Library that never sets up a Postbox works exactly as before, so Basic
 Memory stays optional.
 
@@ -125,7 +127,7 @@ in the Postbox has it.
 deskpost postbox setup [--url <the server's MCP URL>] [--project <name>]
 ```
 
-From 1.5.3, the Postbox needs a Basic Memory 1.0 server offering `bm_list`, `bm_read`, `bm_write`, `bm_move` and `bm_project`. Each session checks for all five; a server missing one is refused in one line and nothing is written. Doctor's `postbox.server-tools` line says what the server offered at the last `postbox check`. On a 1.0 server, shared-collection writes (`hub new`, `hub copy-pages`, `hub archive`, `shared archive`, `shared list-entry`, `publish`) refuse and write nothing until a later release ports them.
+From 1.5.3, the Postbox needs a Basic Memory 1.0 server offering `bm_list`, `bm_read`, `bm_write`, `bm_move` and `bm_project`. Each session checks for all five; a server missing one is refused in one line and nothing is written. Doctor's `postbox.server-tools` line says what the server offered at the last `postbox check`. The older shared-collection routes (`hub new`, `hub copy-pages`, `hub archive`, `shared archive`, `shared list-entry`, `publish`) still refuse on a 1.0 server. Use the shared Book commands below for the connected collection.
 
 Setup shows its plan first and runs on your yes. It uses the project named `deskpost` unless you name another, and
 creates it only if the plan said so. It needs this Library's `letters` Book. It writes this Library's **Postbox
@@ -150,6 +152,11 @@ the server. No seat rings another computer. You can also check by hand with `des
 each waiting letter into the `letters` Book once and then moves it to the Postbox's `delivered/` folder.
 `deskpost postbox status` shows what was last seen, including the triaging Library by id/seat or its conflict;
 `deskpost postbox resolve <card or id>` shows which Library an address finds (`kernel/src/postbox.ts`).
+
+**Filed conflicts.** A retry whose body, Book or kind differs from the delivery already filed under its id stays in
+the inbox as a filed conflict, without a second note or repeated outcome. `deskpost postbox check` names it, doctor
+warns with its delivery id, and the Desk shows the open count. Preview `deskpost postbox conflict <delivery-id> --keep-filed --preflight` to keep the filed note, or use --file-as-new or --reopen for the other recorded resolutions. The conflict stays until that decision is applied. Notes filed before this change may have no receipt: an inbox copy left for one of those is
+named once as `no-receipt` after the upgrade and is kept, too.
 
 **What the Desk and doctor show.** For a Library with a Postbox, the Desk counts letters waiting to send, letters
 that could not be sent, letters received from other Libraries, and any that could not be delivered or arrived
@@ -221,3 +228,13 @@ yes. The old workspace and Basic Memory stay intact throughout, as the fallback.
 **Before the first real import into a vault,** import into a scratch Library outside the vault, and run the
 vault's own doctor over the new Library's folder. Settle anything it flags before a whole collection lands in a
 synced folder.
+
+## Writing shared Books
+
+Ask the Librarian to correct an open shared Book, make a new shared Book, or move a Book from this Library's collection to the shared one. It previews the exact change first. Each correction to an existing page records its old text before changing it, uses a conditional write, and can be restored from its record. New Book and promote records keep their history; removing a whole shared Book or reusing its name is done on the server by hand for now. A page changed since the preview is refused and needs a new preview.
+
+From 1.6.0, the commands are `deskpost shared add-page`, `deskpost shared replace-page`, `deskpost shared remove-page`, `deskpost shared catalog-line`, `deskpost shared sources`, `deskpost shared changes` and `deskpost shared reconcile`. `deskpost shared new-book` makes a Book; `deskpost shared promote` copies a Book from this Library's collection and archives the original, with a note saying where it went. No original is deleted.
+
+One previewed yes to `deskpost shared upkeep <book> --seats <seat>` lets named seats keep that Book current without another yes for each write. Removing a page, source list or Catalog line, making or promoting a Book, and granting upkeep still need your yes. Turn upkeep off with `deskpost shared upkeep <book> --off --preflight`, then apply its plan. Books made before the recorded shared writers have no making record and cannot be granted upkeep.
+
+A Basic Memory 1.0 server and a recorded proof of its tool list are required for shared writes. Doctor says whether the connected server's tool list has been proved. Discovery and full-text search cover open shared Books, and the Desk and Discovery show who maintains them. A first live server trial follows this release; the write contract has been tested against a stand-in.

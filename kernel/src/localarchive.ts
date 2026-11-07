@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { withBookLocks } from './locks.ts';
+import { enterBookLock, exitBookLock, withBookLocks, type BookLock } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
@@ -63,7 +63,7 @@ function firstHeading(text: string): string | null {
  * THIS Book's own path, rewritten from active to archived: in the body, and in every frontmatter value but the
  * three Basic Memory writes for itself (`title`, `type`, `permalink`), as `Rewrite-PublisherOwnedLinks` leaves them.
  */
-function relinked(text: string, slug: string): string {
+export function relinked(text: string, slug: string): string {
   const pattern = new RegExp(`books/${escapeRegExp(slug)}(?=/|\\||\\]|\\s|$)`, 'g');
   const match = /^(﻿?---\r?\n)([\s\S]*?)(\r?\n---[ \t]*(?:\r?\n|$))/.exec(text);
   if (!match) return text.replace(pattern, `archive/${slug}`);
@@ -133,23 +133,122 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
   if (!approved) refuse('Archiving is not yet performed: rerun --preflight and pass its plan_id with --user-confirmed --plan-id <id>. Nothing was moved.');
   if (approved !== plan['plan_id']) refuse(STALE_PLAN_ID);
 
-  return withBookLocks(workspace, [activeDirectory, archiveDirectory, 'collection/books', 'collection/archive'], 20, (locks) => {
-    // THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move. A Book archived
-    // between the preflight and the locks is said as one, as before the plan (kickoffs/s112 ruling 3a).
-    if (!fs.existsSync(activeFull) && fs.existsSync(archiveFull)) refuse(`Book '${slug}' is already archived; nothing to do.`);
-    if (!fs.existsSync(activeRoot) || !fs.existsSync(activeIndex)) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
-    if (archivePlanId(slug, kind, activeDirectory, activeFull) !== approved) refuse(STALE_PLAN_ID);
+  return archiveCollectionBookLocked(workspace, slug, {
+    recheck: () => {
+      if (archivePlanId(slug, kind, activeDirectory, activeFull) !== approved) refuse(STALE_PLAN_ID);
+    },
+  });
+}
+
+/** The archive route's own content-bound plan id for a collection Book, as its preflight issues it (`shared promote` binds it). */
+export function localArchivePlanId(workspace: string, slug: string): string {
+  return archivePlanId(slug, 'book', `books/${slug}`, path.join(workspace, 'collection', 'books', slug));
+}
+
+/**
+ * THE ARCHIVE ROUTE'S LOCKED HALF (kickoffs/s193 row 3; PLAN-many-libraries.md item 9), for `shared archive` and
+ * `shared promote` alike, so promote never holds a Book lock this route takes (`withBookLocks` has no re-entry). Under the
+ * locks, `recheck` judges the Book against what its caller approved (the plan id, or promote's per-page digests) before
+ * anything moves; `afterMove`, given the archived Book's `wiki/`, writes inside the locks after the move.
+ */
+export function archiveCollectionBookLocked(
+  workspace: string,
+  slug: string,
+  options: { recheck: (activeFull: string) => void; afterMove?: (archivedWiki: string) => void },
+): Record<string, PsJsonValue> {
+  return withBookLocks(workspace, archiveLockRoots(slug), 20, (locks) => {
+    const bookTitle = activeChecks(workspace, slug);
+    options.recheck(path.join(workspace, 'collection', 'books', slug));
+    return archiveUnderLocks(workspace, slug, locks, bookTitle, options.afterMove);
+  });
+}
+
+/**
+ * THE SAME LOCKED HALF, WITH AN ASYNC RECHECK (kickoffs/s194 row 2; library-auditor's M2 on s193). The lock wait (up to
+ * 20 s) is inside the locked half, so a check made before it misses what changed during the wait; `shared promote` reads
+ * the shared copy back here, after the locks are held and before anything moves. The roots and their order are
+ * `withBookLocks`'s (which has no async form); the synchronous function above and its callers are unchanged.
+ */
+export async function archiveCollectionBookLockedAsync(
+  workspace: string,
+  slug: string,
+  options: { recheck: (activeFull: string) => Promise<void>; afterMove?: (archivedWiki: string) => void },
+): Promise<Record<string, PsJsonValue>> {
+  const locks: BookLock[] = [];
+  try {
+    for (const root of [...new Set(archiveLockRoots(slug))].sort()) locks.push(enterBookLock(workspace, root, 20));
+    const bookTitle = activeChecks(workspace, slug);
+    await options.recheck(path.join(workspace, 'collection', 'books', slug));
+    return archiveUnderLocks(workspace, slug, locks, bookTitle, options.afterMove);
+  } finally {
+    for (const lock of [...locks].reverse()) exitBookLock(lock);
+  }
+}
+
+/**
+ * AN ARCHIVE STOPPED BETWEEN THE MOVE AND ITS LAST STEP, FINISHED (kickoffs/s194 row 3; library-auditor's S1 on s193).
+ * Only when `collection/books/<slug>` is absent and `collection/archive/<slug>` holds the moved Book without `_moved.md`;
+ * `recheck`, given the archived Book's folder, judges it against what its caller recorded before the move. Every step
+ * after the move is safe to run again on the archived Book: the relink rewrites only `books/<slug>` paths, the archive
+ * catalog adds its entry once, the Books catalog loses this Book's line only if it still has one.
+ */
+export async function finishCollectionBookArchiveAsync(
+  workspace: string,
+  slug: string,
+  options: { recheck: (archiveFull: string) => Promise<void>; afterMove?: (archivedWiki: string) => void; allowMoved?: boolean },
+): Promise<Record<string, PsJsonValue>> {
+  const locks: BookLock[] = [];
+  try {
+    for (const root of [...new Set(archiveLockRoots(slug))].sort()) locks.push(enterBookLock(workspace, root, 20));
+    const archiveFull = path.join(workspace, 'collection', 'archive', slug);
+    const archivedRoot = path.join(archiveFull, 'wiki', '_book.md');
+    if (fs.existsSync(path.join(workspace, 'collection', 'books', slug)) || !fs.existsSync(archivedRoot) || (!options.allowMoved && fs.existsSync(path.join(archiveFull, 'wiki', '_moved.md')))) {
+      refuse(`Book '${slug}' is not an archive stopped before its last step; nothing was changed.`);
+    }
+    await options.recheck(archiveFull);
+    return archiveUnderLocks(workspace, slug, locks, firstHeading(readUtf8(archivedRoot)) ?? slug, options.afterMove, true);
+  } finally {
+    for (const lock of [...locks].reverse()) exitBookLock(lock);
+  }
+}
+
+const archiveLockRoots = (slug: string) => [`books/${slug}`, `archive/${slug}`, 'collection/books', 'collection/archive'];
+
+/**
+ * THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move. A Book archived
+ * between the preflight and the locks is said as one, as before the plan (kickoffs/s112 ruling 3a). Returns its title.
+ */
+function activeChecks(workspace: string, slug: string): string {
+  const activeFull = path.join(workspace, 'collection', 'books', slug);
+  const activeRoot = path.join(activeFull, 'wiki', '_book.md');
+  if (!fs.existsSync(activeFull) && fs.existsSync(path.join(workspace, 'collection', 'archive', slug))) refuse(`Book '${slug}' is already archived; nothing to do.`);
+  if (!fs.existsSync(activeRoot) || !fs.existsSync(path.join(activeFull, 'wiki', '_index.md'))) refuse(`Active Book '${slug}' is incomplete or missing; nothing was archived.`);
+  return firstHeading(readUtf8(activeRoot)) ?? slug;
+}
+
+/** The move and everything after it, with the archive route's locks held and its checks passed. */
+function archiveUnderLocks(workspace: string, slug: string, locks: BookLock[], bookTitle: string, afterMove?: (archivedWiki: string) => void, resumed = false): Record<string, PsJsonValue> {
+  const collection = path.join(workspace, 'collection');
+  const activeDirectory = `books/${slug}`;
+  const archiveDirectory = `archive/${slug}`;
+  const activeFull = path.join(collection, 'books', slug);
+  const archiveFull = path.join(collection, 'archive', slug);
+  {
     const activeLock = locks.find((lock) => lock.bookRoot === activeDirectory)!;
     const archiveLock = locks.find((lock) => lock.bookRoot === archiveDirectory)!;
     let mutation: BookMutation | null = null;
-    let moved = false;
+    let moved = resumed;
     try {
+      // A RESUMED ARCHIVE re-enters the same mutation on the active root (its marker is still down from the stopped run),
+      // so the rename's manifest step below closes it as the first run would have.
       mutation = enterBookMutation({ workspace, slug, bookRoot: activeDirectory, reason: `Archive ${activeDirectory}`, lock: activeLock, collection: 'collection' });
-      // Re-checked under the locks: the checks above ran with nobody excluded.
-      if (fs.existsSync(archiveFull)) refuse(`Archive already contains '${slug}'; no move was attempted.`);
-      fs.mkdirSync(path.dirname(archiveFull), { recursive: true });
-      fs.renameSync(activeFull, archiveFull);
-      moved = true;
+      if (!resumed) {
+        // Re-checked under the locks: the checks above ran with nobody excluded.
+        if (fs.existsSync(archiveFull)) refuse(`Archive already contains '${slug}'; no move was attempted.`);
+        fs.mkdirSync(path.dirname(archiveFull), { recursive: true });
+        fs.renameSync(activeFull, archiveFull);
+        moved = true;
+      }
 
       const archivedRoot = path.join(archiveFull, 'wiki', '_book.md');
       const archivedIndex = path.join(archiveFull, 'wiki', '_index.md');
@@ -185,6 +284,7 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
       if (owned.length > 1) refuse('The active Book Catalog has more than one matching entry; archive stopped without changing the Catalog.');
       if (owned.length === 1) booksCatalog = writeCatalog(booksCatalogFile, withoutLine(booksCatalog, owned[0]!.index));
       if (ownedLines(booksCatalog, [`${activeDirectory}/wiki/_book`]).length > 0) refuse('Active Book Catalog readback still includes the archived Book.');
+      afterMove?.(path.join(archiveFull, 'wiki'));
 
       const manifest = completeBookRenameMutation({
         mutation,
@@ -194,6 +294,8 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
         newCollection: 'collection-archive',
         manifest: newBookManifestForCollectionBook(workspace, 'archive', slug),
       });
+      // Promote retains its recovery intent until the manifest has committed.
+      if (afterMove && manifest.status !== 'committed') refuse(manifest.summary);
       mutation = null;
       return {
         schema: 1,
@@ -215,5 +317,5 @@ export function localSharedArchive(argv: string[], workspace: string): Record<st
         : 'The active Book was left in place.';
       refuse(`Book archival stopped. ${location} ${(error as Error).message}`);
     }
-  });
+  }
 }

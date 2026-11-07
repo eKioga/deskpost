@@ -13,8 +13,8 @@ dial. ADR-0002 settles it and it is not re-litigated here.
 | | Discovery (2.2) | Full text (2.3) |
 | --- | --- | --- |
 | Reads | manifests | page bodies |
-| Covers | every Book, closed included | Shelf Books open on the Desk |
-| Collections | Shelf and shared | Shelf only, for now |
+| Covers | every Book, closed included | Books open on the Desk |
+| Collections | Shelf, Local collection and shared | Shelf, Local collection and shared |
 | A capture Book | pages withheld unless open | note bodies returned when open |
 | The canary asserts | body text **never** appears | body text appears **only** for an open Book |
 | A hit licenses | *shall I open it?* | *open that page and read it* |
@@ -32,34 +32,21 @@ ADR-0002. They share `SearchBoundaries.ps1` and nothing else.
 Every hit carries the canonical page path and the line number, so the answer feeds
 `read_open_book_page` directly rather than being a riddle.
 
-## Where the text comes from for an open *shared* Book — nowhere, and the answer says so
+## Shared Books are searched over the connection
 
-This was the question everything else hung on. A Shelf Book is a file scan. A shared Book has no
-filesystem: its pages arrive one `read_note` at a time over MCP, and an open shared Book can hold
-118 pages (`godot-engine-architecture-reference`). Rung 7's `tools/SharedBookSource.ps1` already has
-the primitive, so the question was never *how* — it was what a query costs and what the reader
-watches while it runs.
+The kernel's `search_open_books` walks an open shared Book's `wiki/` folders with paged `bm_list`
+and reads each page by its listed identifier with `bm_read`. Nested pages return the shared Book
+root, canonical page path and line number needed by `read_open_book_page`.
 
-**A hundred-odd sequential network reads is a backfill, not a query.** It cannot finish inside any
-wall-clock budget worth having, and there is no cache that could stand in: an open Book's pages
-change and nothing marks them, so a cached scan would be derived state no writer invalidates — the
-exact shape rung 6 refused when it read an open capture Book's pages live instead of storing them.
+Shared reads are slower than disk reads. Local and shared pages share the same wall clock, file
+count, per-page bytes, collected matches, returned results and matched-byte budgets. A budget stop
+sets a floor on the match count and says pages remain unread. Failed listings name the Book in
+`books_unavailable`; unread or oversized pages appear in `pages_withheld`. Other open Books still
+contribute their results. The Desk is read again before returning: a Book closed during the query
+contributes no lines or withheld pages. Closed Books are never searched.
 
-So the first form of this tier covers the local Shelf, and **an open shared Book is named in the
-answer as out of scope**, with its reason and the alternative:
-
-```
-Full text covers the local Shelf only. A shared Book's pages arrive one read over the network at a
-time, which no query-time budget can complete, so an open shared Book is named below rather than
-searched.
-- godot-engine-architecture-reference [shared], open but NOT searched: ... -- read it a page at a
-  time with read_open_book_page, or use discover_book_pages for its headings
-```
-
-Rung 6 said *local Shelf only* in every answer for the same reason. The Desk's own `.open-books` is
-the roster that makes this possible, and it is a better roster than rung 7's: it is local and
-authoritative, so there is no staleness to declare. An open shared Book is **unavailable, never
-invisible**.
+This supersedes the kernel's earlier out-of-scope answer for shared Books. The PowerShell adapter
+retains its earlier local-only behavior.
 
 ## The caps are 2.5's, and they live where all three tiers can share them
 
@@ -191,9 +178,8 @@ prevent. Plain arrays now.
 
 ## Known limits, recorded now rather than when they bite
 
-- **Open shared Books are not searched.** The largest limit, and a deliberate one — see above. Closing
-  it needs a design for a long-running query the reader can watch, or a gated cache with an
-  invalidation story, and neither is 2.3's to improvise.
+- **Shared searches can exhaust the query budget.** Unread pages and failed listings are named;
+  a stopped search reports its match total as a floor. Narrow the query or close a Book and retry.
 - **Regex is not offered**, per the decision above. Literal only.
 - **A line is matched, but a match spanning two lines is not.** A phrase broken across a wrap is
   invisible. Both the query and the line are whitespace-flattened first, so a phrase wrapped *within*

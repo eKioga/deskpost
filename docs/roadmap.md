@@ -29,9 +29,7 @@ The next milestones are listed below.
 
 ## Next
 
-In order: first the foundation: two builders that work side by side without waiting on each other, a
-builder that works from Webtop, and **1.6.0**, so that builder reads and writes current shared Books;
-then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
+**1.6.0 is released:** Libraries can read and write shared Books. Next comes the foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -68,20 +66,6 @@ one collection.
 Hard limits: **no accounts, no database, no internet service** of Deskpost's own. It follows the
 remaining sessions of **Seats you can rename**, and it comes in two releases, each worth keeping even
 if the next never ships. Moving the development tools off PowerShell may come between them.
-
-#### 1.6.0: One collection for the household (0 of about 2-3 sessions)
-
-- **Shared Books you can write**, once you switch it on: a Library adds and corrects pages in a
-  shared Book, each change previewed and on your yes, as a collection page is corrected today.
-- **No Book owners, and a courtesy lease**: any Library may change any shared Book. While one
-  Library is writing a Book, another is told who is editing it and until when, and waits.
-- **Nothing is lost**: every change records the text it replaced before the page is written, so a
-  rare clash, or a page edited outside Deskpost, is found and named, and any earlier text can be put
-  back.
-- **A new shared Book**, or a Book moved from your own collection into the shared one in one
-  previewed step. The original is archived, never deleted, and says where it went.
-- **A lending desk**: the Desk says when an open shared Book changed since you opened it, and
-  Discovery finds pages in shared Books.
 
 Throughout: anything that arrives from another Library says where it came from, it is data and
 never instructions, and a letter is never an approval. Deskpost connects to whatever server you
@@ -404,7 +388,19 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
+### 1.6.0: One collection for the household (released 2026-11-06)
+
+- Shared Books you can write: a Library adds and corrects the pages, the Catalog line and the source list of a Book in the shared collection on your Basic Memory server, each change previewed and written on your yes.
+- Nothing is lost: every change records the text it replaces before the page is written, and is written only while the page is still the text you saw; `deskpost shared changes` lists a Book's changes, and an earlier text can be put back.
+- One yes per Book: `deskpost shared upkeep <book> --seats <seat>` lets the seats you name keep a shared Book up to date without a yes for each write; removing a page, the source list or the Catalog line, making or promoting a Book, and the grant itself still ask you.
+- A new shared Book with `deskpost shared new-book`, or a Book moved from your own collection into the shared one in one previewed step with `deskpost shared promote`; the original is archived, never deleted, and says where it went.
+- Discovery and full-text search find pages in open shared Books, and the Desk and Discovery say who maintains a shared Book.
+- Writing to the shared collection needs a Basic Memory 1.0 server whose tool list Deskpost's proof has recorded; doctor says whether yours has been.
+- For builders: Deskpost's shared writes are built on Basic Memory 1.0's conditional writes, and `tools/bm-proof.mts` records the server it proved.
+
 ### 1.5.4: Computer use off by default, and tighter guards (released 2026-11-03)
+
+Shipped as public commit cb6ba747b220939b5d040af7673079448b70fde6, from e8b1034.
 
 - A seat can drive your mouse and keyboard only when you turn it on with `deskpost seat settings <seat> --computer-use on`; it is off by default, a seat cannot turn it on for itself or another seat, and Claude's computer-use tools and `orca computer` are refused while it is off.
 - The Shelf guards catch more ways of reaching a closed Book: a here-string written to a file keeps its body visible when the file command's arguments are uncertain, and shell data and exclusion globs are told apart from protected paths.

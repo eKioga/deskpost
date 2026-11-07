@@ -101,6 +101,9 @@ that decides where any given decision belongs.
 
 * [ADR-0085](adr/0085-a-department-has-five-kinds-of-seat-and-one-seat-speaks-for-the-owner.md) - A department has five kinds of seat, and one seat speaks for the owner; retired template names remain creation provenance.
 * [ADR-0087](adr/0087-the-machine-gate-lock-is-n-weighted-slots-and-a-push-takes-the-machine.md) - The machine gate lock is N weighted slots, and a push takes the machine; activation and rollback fence mixed code versions.
+* [ADR-0088](adr/0088-a-changed-delivery-is-a-filed-conflict-kept-until-a-person-decides.md) - A changed delivery is a filed conflict, kept until a person decides: durable wire receipts, locked identity checks and cache mutations, and conflicts named by check, doctor and the Desk.
+* [ADR-0089](adr/0089-shared-books-are-written-by-any-library-with-conditional-writes-change-records-and-restore-as-the-guarantee.md) - Shared Books are written by any Library, with conditional writes, change records and restore as the guarantee: opted in per connection, on a proven tool-list fingerprint, each change recorded first and written only while the page is unchanged.
+* [ADR-0090](adr/0090-shared-book-upkeep-under-a-grant-is-ungated-because-every-change-is-conditional-recorded-first-and-restorable.md) - Shared-Book upkeep under a grant is ungated because every change is conditional, recorded first and restorable: one yes per Book names the seats by seat_id; removals, new Books and promotes keep the yes; amends ADR-0070 for shared/ Books only.
 
 ## Guides
 

@@ -32,6 +32,13 @@ The collection of Books and Project Hubs kept off this disk: on the NAS, or in a
 Library reaches through its connection (ADR-0050; the shared Books of 1.6.0, ADR-0080). Never stored on this disk.
 _Avoid_: the NAS, Basic Memory, remote library, the cloud
 
+**Upkeep grant**:
+One Library's yes for one shared Book (ADR-0090): the seats it names, by `seat_id`, or any seat of that Library, may
+then add, replace and restore that Book's pages, its Catalog line and its sources without a yes for each write; every
+such write is still recorded first and restorable. Kept as that Library's block in `_deskpost/upkeep/<slug>.md`, and
+turned off with `--off`. Provenance, not authentication.
+_Avoid_: permission, lease, owner
+
 **Local collection**:
 A workspace's own collection at `collection/`, in the shared collection's exact layout, that a workspace
 with no Basic Memory endpoint writes its Books and Project Hubs to (ADR-0030). `library init` lays it out
@@ -132,6 +139,11 @@ Postbox entry under `postbox/libraries/`, and (1.5.0's second session) one inbox
 `postbox.ts` knows Basic Memory carries it (ADR-0080). In prose, "the Library's Postbox entry", never
 its registration: that word belongs to Binding.
 _Avoid_: mailbox, mail server, queue, registration
+
+**Filed conflict**:
+An inbox delivery whose body, Book or kind differs from the delivery already filed under its id, or whose filed
+note has no receipt to compare. It stays in the inbox and is named until a person decides what to keep (ADR-0088).
+_Avoid_: duplicate, failed delivery
 
 **Triaging seat**:
 The seat a Library names to verify Report claims arriving through its Postbox. It records the verdict;

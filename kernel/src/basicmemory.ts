@@ -22,10 +22,11 @@
  * with a typed `error` code. So a session reads the server's `tools/list` at connect and keeps the names: its SURFACE is
  * `bm` when it offers `bm_read`, `legacy` when it offers `read_note`, and `unknown` otherwise (a list that could not be
  * read included). The helpers below speak 1.0 on `bm` and keep today's calls on `legacy` and `unknown`; a caller that
- * needs a tool the server does not list refuses in one line (`needTools`), and the shared-collection writers, not yet
- * ported, refuse on anything but `legacy` (`refuseUnportedWriter`; train item basic-memory-1-0, step 2).
+ * needs a tool the server does not list refuses in one line (`needTools`), and the attached route's seven writers are
+ * retired on 1.0, refusing on anything but `legacy` because Hubs now stay local (`refuseRetiredWriter`; kickoffs/s178-r2 row 7).
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readMarker } from './workspace.ts';
@@ -43,6 +44,14 @@ export class BasicMemoryRefusal extends Error {}
 export class SessionDropped extends BasicMemoryRefusal {}
 
 /**
+ * A REQUEST THAT MAY HAVE REACHED THE SERVER (kickoffs/s178-r2 row 5): every failure after the request is handed to
+ * `fetch` -- a timeout, a fetch error, a non-OK answer, an incomplete or unparseable response. A change sent this way may
+ * have landed, so the write primitives (`bmwrite.ts`) settle it by listing. A refusal raised before `fetch` (the address
+ * judged unsafe) is a plain `BasicMemoryRefusal`: nothing was sent. The message is the one this file always gave.
+ */
+export class TransportUncertain extends BasicMemoryRefusal {}
+
+/**
  * THE TOOLS THAT CHANGE THE SERVER. `callTool` never resends one of these after a dropped session (row 7), whichever
  * writer calls it; a read is still resent once, as before. 1.0's four change tools join them (kickoffs/s175 row 1(d)).
  */
@@ -56,7 +65,7 @@ function changesServer(name: string, args: Record<string, Json>): boolean {
 /** Which tools a server speaks, read from its `tools/list` at connect (kickoffs/s175 row 1(b)). */
 export type ServerSurface = 'bm' | 'legacy' | 'unknown';
 
-function refuse(message: string): never {
+export function refuse(message: string): never {
   throw new BasicMemoryRefusal(message);
 }
 
@@ -89,6 +98,11 @@ export interface BasicMemoryConnection {
   collection_name: string;
   /** The server's storage folder on this machine, which import reads. '' when set-up was given none. */
   storage: string;
+  /**
+   * Whether this Library writes shared Books (PLAN-many-libraries.md Stage 2 item 1; kickoffs/s191 row 1): true only when the
+   * marker holds `shared_writes: true`. Off by default; set with `deskpost basic-memory setup --shared-writes on`.
+   */
+  shared_writes: boolean;
 }
 
 /** Whether this workspace's marker says `backend: local`. An unreadable marker is not local: it answers nothing. */
@@ -122,6 +136,7 @@ export function markerConnection(workspace: string): BasicMemoryConnection | nul
     collection_id: textField(record, 'collection_id'),
     collection_name: textField(record, 'collection_name'),
     storage: textField(record, 'storage'),
+    shared_writes: record !== null && typeof record === 'object' && !Array.isArray(record) && (record as Record<string, unknown>)['shared_writes'] === true,
   };
 }
 
@@ -195,14 +210,14 @@ export function deskPin(stateDirectory: string): string {
 
 // --- the transport ---------------------------------------------------------------------------------
 
-type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 /** `ConvertTo-AsciiJson`: every non-ASCII character escaped, so the body is ASCII on the wire as the oracle sends it. */
 function asciiJson(value: unknown): string {
   return JSON.stringify(value).replace(/[^\x00-\x7f]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
 }
 
-function field(object: unknown, name: string): unknown {
+export function field(object: unknown, name: string): unknown {
   if (object === null || typeof object !== 'object' || Array.isArray(object)) return undefined;
   return (object as Record<string, unknown>)[name];
 }
@@ -218,6 +233,25 @@ export function mcpTimeoutMs(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20000;
 }
 
+/**
+ * THE SERVER'S TOOL LIST AS ONE FINGERPRINT (kickoffs/s178-r2 row 6; PLAN-basic-memory-1-0.md Unit A item 4): the SHA-256
+ * hex of the canonical JSON of the tools, each reduced to `{ name, inputSchema }`, sorted by name, with object keys sorted
+ * at every depth. The connection cannot read Basic Memory's version, so shared writes are trusted only on the tool list
+ * a proof ran on (`tools/bm-proof.mts`).
+ */
+export function toolsFingerprint(tools: unknown[]): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value === null || typeof value !== 'object') return value;
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonical(record[key])]));
+  };
+  const reduced = tools
+    .map((tool) => ({ inputSchema: canonical(field(tool, 'inputSchema') ?? null), name: String(field(tool, 'name') ?? '') }))
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  return createHash('sha256').update(JSON.stringify(reduced), 'utf8').digest('hex');
+}
+
 export class McpSession {
   private sessionId: string | null = null;
   private nextId = 1;
@@ -226,6 +260,8 @@ export class McpSession {
   /** The tool names the server's `tools/list` offered at connect, or null when the list could not be read. */
   tools: string[] | null = null;
   surface: ServerSurface = 'unknown';
+  /** `toolsFingerprint` of that list (kickoffs/s178-r2 row 6), or null whenever `tools` is null. */
+  toolsFingerprint: string | null = null;
 
   // Plain fields, not parameter properties: Node runs this file by stripping types, and a parameter
   // property is syntax it will not strip.
@@ -264,21 +300,28 @@ export class McpSession {
       body = await response.text();
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.substring(0, 4096)}`);
     } catch (error) {
+      // FROM HERE ON THE REQUEST MAY HAVE REACHED THE SERVER (kickoffs/s178-r2 row 5): TransportUncertain, same words.
       const name = (error as Error).name;
       if (name === 'TimeoutError' || name === 'AbortError') {
-        refuse(`MCP ${method} failed: ${this.url} did not answer within ${Math.round(timeout / 100) / 10} s, so nothing was read from it.`);
+        throw new TransportUncertain(`MCP ${method} failed: ${this.url} did not answer within ${Math.round(timeout / 100) / 10} s, so nothing was read from it.`);
       }
       const cause = (error as Error & { cause?: { code?: unknown; message?: unknown } }).cause;
       const detail = cause?.code ?? cause?.message;
-      refuse(`MCP ${method} failed: ${(error as Error).message}${detail ? ` (${String(detail)})` : ''}`);
+      throw new TransportUncertain(`MCP ${method} failed: ${(error as Error).message}${detail ? ` (${String(detail)})` : ''}`);
     }
     if (method === 'initialize') {
       const session = response.headers.get('Mcp-Session-Id');
-      if (!session) refuse('The shared Library did not establish an MCP session.');
+      if (!session) throw new TransportUncertain('The shared Library did not establish an MCP session.');
       this.sessionId = session;
     }
     if (notification) return null;
-    if (body.trim().startsWith('{')) return JSON.parse(body) as unknown;
+    if (body.trim().startsWith('{')) {
+      try {
+        return JSON.parse(body) as unknown;
+      } catch (error) {
+        throw new TransportUncertain((error as Error).message);
+      }
+    }
     // Server-sent events: the LAST frame carrying this request's id. An id-less log frame is skipped
     // rather than read, as the oracle skips it.
     const frames = body
@@ -294,7 +337,7 @@ export class McpSession {
         }
       })
       .filter((frame) => frame !== null && field(frame, 'id') === id);
-    if (frames.length === 0) refuse(`MCP response for request ${id} was incomplete.`);
+    if (frames.length === 0) throw new TransportUncertain(`MCP response for request ${id} was incomplete.`);
     return frames[frames.length - 1];
   }
 
@@ -323,7 +366,9 @@ export class McpSession {
   private async readTools(): Promise<void> {
     this.tools = null;
     this.surface = 'unknown';
+    this.toolsFingerprint = null;
     const names: string[] = [];
+    const offered: unknown[] = [];
     let cursor: string | null = null;
     try {
       for (let page = 0; page < 50; page += 1) {
@@ -332,7 +377,10 @@ export class McpSession {
         if (isRpcError(answer) || !Array.isArray(listed)) return;
         for (const tool of listed) {
           const name = field(tool, 'name');
-          if (typeof name === 'string' && name) names.push(name);
+          if (typeof name === 'string' && name) {
+            names.push(name);
+            offered.push(tool);
+          }
         }
         const next = field(field(answer, 'result'), 'nextCursor');
         if (typeof next !== 'string' || !next) break;
@@ -343,6 +391,7 @@ export class McpSession {
       throw error;
     }
     this.tools = names;
+    this.toolsFingerprint = toolsFingerprint(offered);
     this.surface = names.includes('bm_read') ? 'bm' : names.includes('read_note') ? 'legacy' : 'unknown';
   }
 
@@ -398,22 +447,17 @@ export function needTools(session: McpSession, needed: string[], who: string): v
 }
 
 /**
- * THE SHARED-COLLECTION WRITERS, NOT YET ON 1.0, REFUSE AT ONCE (kickoffs/s175 row 2). Their own calls name the old tools,
- * which would fail mid-write after some reads; so on a `bm` server, and on one whose tool list could not be read (it may
- * be 1.0), they refuse before anything is sent. Only on `legacy` does a writer go on as before.
+ * THE ATTACHED ROUTE'S SEVEN WRITERS ARE RETIRED ON 1.0 (kickoffs/s178-r2 row 7; PLAN-basic-memory-1-0.md Unit A item 5,
+ * Key decision 1). They wrote a Library's Hubs or Catalog inside Basic Memory, a setup no office runs, and Hubs stay
+ * local. So on a `bm` server, and on one whose tool list could not be read (treated as 1.0), they refuse before anything
+ * is sent; only on `legacy` does a writer go on as before.
  */
-export function refuseUnportedWriter(session: McpSession, operation: string): void {
+export function refuseRetiredWriter(session: McpSession, operation: string): void {
   if (session.surface === 'legacy') return;
-  if (session.surface === 'bm') {
-    refuse(
-      `${operation} is refused: this Basic Memory server offers the 1.0 tools (bm_*), and Deskpost's shared-collection writers are not ported to them ` +
-        'yet (train item basic-memory-1-0, step 2). Nothing was written.',
-    );
-  }
-  refuse(
-    `${operation} is refused: the Basic Memory server's tool list could not be read, so it may be a 1.0 server, which Deskpost's shared-collection ` +
-      'writers are not ported to yet (train item basic-memory-1-0, step 2). Nothing was written.',
-  );
+  const retired = `${operation} is retired on Basic Memory 1.0: it wrote a Library's Hubs or Catalog inside Basic Memory (the attached setup), and Hubs now stay local. ` +
+    'Shared Books are written by the shared-collection writers of 1.6.0. Nothing was written.';
+  if (session.surface === 'bm') refuse(retired);
+  refuse(`The Basic Memory server's tool list could not be read, so it is treated as 1.0: ${retired}`);
 }
 
 // --- exact records ---------------------------------------------------------------------------------
@@ -424,18 +468,20 @@ export interface NoteRecord {
   content: string;
   /** The structured frontmatter, present whether or not `include_frontmatter` put it in `content` (measured S39). */
   frontmatter?: unknown;
+  /** `bm_read`'s checksum on a `bm` session (kickoffs/s178-r2 row 4): the base a conditional change names. */
+  checksum?: string;
 }
 
-function toolResult(response: unknown): unknown {
+export function toolResult(response: unknown): unknown {
   return field(response, 'result');
 }
 
-function isRpcError(response: unknown): boolean {
+export function isRpcError(response: unknown): boolean {
   const error = field(response, 'error');
   return error !== undefined && error !== null;
 }
 
-function structuredRecord(response: unknown): unknown {
+export function structuredRecord(response: unknown): unknown {
   const result = toolResult(response);
   const structured = field(result, 'structuredContent');
   const record = field(structured, 'result');
@@ -456,7 +502,7 @@ function structuredRecord(response: unknown): unknown {
   return null;
 }
 
-function text(value: unknown): string {
+export function text(value: unknown): string {
   return value === undefined || value === null ? '' : String(value);
 }
 
@@ -540,6 +586,56 @@ export function judgeWriteResult(response: unknown): WriteVerdict {
 }
 
 /**
+ * A 1.0 CHANGE, JUDGED BY WHAT IT CAN BE (kickoffs/s178-r2 row 4; PLAN-basic-memory-1-0.md Unit A item 1): `written`
+ * with the receipt's path and checksum, `refused` with the server's code kept verbatim (nothing changed), or `unknown`
+ * (it may or may not have landed). No caller reduces it to yes or no. `judgeWriteResult` above keeps today's forms for
+ * the legacy path and the Postbox.
+ */
+export type BmVerdict =
+  | { form: 'written'; filePath: string; checksum: string }
+  | { form: 'refused'; code: string; message: string; currentChecksum?: string }
+  | { form: 'unknown'; reason: string; observedChecksum?: string };
+
+/**
+ * THE JUDGE OF ONE 1.0 CHANGE (kickoffs/s178-r2 row 4). `OUTCOME_UNKNOWN` is `unknown`; any other typed code is `refused`
+ * with the code verbatim, an unknown code included; `REVISION_CONFLICT` also carries the current checksum, from the JSON
+ * refusal's `current_checksum` or its message. A JSON-RPC error, or an `isError` answer with no typed code (a validation
+ * error: Deskpost sent a bad call), is `refused` as `UNTYPED` with the server's words. `written` needs a receipt with a
+ * `file_path` and a `checksum`, or `action: deleted` and a `file_path` (checksum `''`); any other answer is `unknown`.
+ */
+export function judgeBmWrite(response: unknown): BmVerdict {
+  if (isRpcError(response)) return { form: 'refused', code: 'UNTYPED', message: text(field(field(response, 'error'), 'message')) };
+  const typed = typedRefusal(response);
+  if (typed !== null) {
+    if (typed.code === 'OUTCOME_UNKNOWN') return { form: 'unknown', reason: `OUTCOME_UNKNOWN: ${typed.message}` };
+    if (typed.code !== 'REVISION_CONFLICT') return { form: 'refused', code: typed.code, message: typed.message };
+    const content = field(toolResult(response), 'content');
+    const block = Array.isArray(content) ? content.find((item) => field(item, 'type') === 'text') : undefined;
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(text(field(block, 'text')).trim()) as unknown;
+    } catch {
+      parsed = null;
+    }
+    const named = text(field(parsed, 'current_checksum'));
+    const current = /^[0-9a-f]{64}$/.test(named) ? named : (/current checksum ([0-9a-f]{64})/.exec(typed.message)?.[1] ?? '');
+    return current ? { form: 'refused', code: typed.code, message: typed.message, currentChecksum: current } : { form: 'refused', code: typed.code, message: typed.message };
+  }
+  const result = toolResult(response);
+  if (field(result, 'isError') === true) {
+    const content = field(result, 'content');
+    const block = Array.isArray(content) ? content.find((item) => field(item, 'type') === 'text') : undefined;
+    return { form: 'refused', code: 'UNTYPED', message: text(field(block, 'text')).substring(0, 300) };
+  }
+  const receipt = structuredRecord(response);
+  const filePath = text(field(receipt, 'file_path'));
+  const checksum = text(field(receipt, 'checksum'));
+  if (filePath && field(receipt, 'action') === 'deleted') return { form: 'written', filePath, checksum: '' };
+  if (filePath && checksum) return { form: 'written', filePath, checksum };
+  return { form: 'unknown', reason: 'the server answered without a receipt naming the file and its checksum' };
+}
+
+/**
  * ONE WRITE, SENT ONCE AND JUDGED (kickoffs/s121 row 7). A refusal in any form refuses, naming it. A dropped session
  * returns `dropped: true` with the session re-opened and nothing resent: the caller's readback decides.
  */
@@ -600,6 +696,7 @@ export async function readExactOrNull(
     title: text(field(record, 'title')),
     content: text(field(record, 'content')),
     frontmatter: field(record, 'frontmatter'),
+    ...(bm && text(field(record, 'checksum')) ? { checksum: text(field(record, 'checksum')) } : {}),
   };
 }
 
@@ -673,10 +770,21 @@ function checkPermalinkLine(body: string, permalink: string, read: string): void
  * answer's path, text and permalink are trusted, so a subsequent move can name the same file (kickoffs/c85 row 2).
  */
 export async function readListedContent(session: McpSession, project: { id: string; name: string }, filePath: string, permalink: string, trustedIdentifier?: (identifier: string) => void): Promise<string | null> {
+  const record = await readListedRecord(session, project, filePath, permalink);
+  if (record === null) return null;
+  trustedIdentifier?.(record.identifier);
+  return record.text;
+}
+
+/**
+ * `readListedContent`'s read, KEEPING THE CHECKSUM (kickoffs/s178-r2 row 5): the same call and the same trust checks, and
+ * `{ text, checksum, identifier }` from the one `bm_read` answer that was trusted. The checksum is '' on a server that is
+ * not `bm`, whose read by permalink gives none. Null only on NOT_FOUND.
+ */
+export async function readListedRecord(session: McpSession, project: { id: string; name: string }, filePath: string, permalink: string): Promise<{ text: string; checksum: string; identifier: string } | null> {
   if (session.surface !== 'bm') {
     const body = await readPermalinkContent(session, project.id, permalink);
-    if (body !== null) trustedIdentifier?.(permalink);
-    return body;
+    return body === null ? null : { text: body, checksum: '', identifier: permalink };
   }
   if (!permalink.trim()) refuse('A listed file came with no permalink, so it was not read and not trusted.');
   const response = await session.callTool('bm_read', { identifier: filePath, include_frontmatter: true, output_format: 'json', project: project.name });
@@ -691,20 +799,70 @@ export async function readListedContent(session: McpSession, project: { id: stri
   if (answered !== filePath) {
     // 1.0 STILL FOLLOWS A PERMALINK BEFORE A PATH (its `link_resolver.py`, for an identifier with no leading slash): a
     // file re-created at a moved note's old path is answered with the moved note. Asked once more by the node's own
-    // permalink, with the project's name, it is the listed file -- trusted only if the answer says so.
+    // permalink, with the project's name, it is the listed file -- trusted only if the answer says so. Read by a
+    // permalink with the project's name in front, 1.0 answers `file_path` with that name in front too (the NAS,
+    // 2026-11-04, kickoffs/s178-r2 row 10, S6), so `<project name>/<listed path>` is the listed file (kickoffs/s180 row 3(a)).
     const again = await session.callTool('bm_read', { identifier: permalink, include_frontmatter: true, output_format: 'json', project: project.name });
     if (!isRpcError(again) && field(toolResult(again), 'isError') !== true) {
       record = structuredRecord(again);
       answered = text(field(record, 'file_path'));
       identifier = permalink;
+      if (project.name && answered === `${project.name}/${filePath}`) answered = filePath;
     }
   }
   if (answered !== filePath) refuse(`Read '${filePath}' answered '${answered || '(no path)'}', not the file listed, so it was not trusted.`);
   const body = field(record, 'content');
   if (typeof body !== 'string') refuse(`Read '${filePath}' gave no text.`);
   checkPermalinkLine(body, permalink, filePath);
-  trustedIdentifier?.(identifier);
-  return body;
+  return { text: body, checksum: text(field(record, 'checksum')), identifier };
+}
+
+/**
+ * EVERY NODE DIRECTLY IN ONE FOLDER, PAGED (kickoffs/s175 row 3(a), STANDING ANSWER 5): `bm_list` 100 at a time until
+ * `has_more` is false. A folder that would pass 50 pages (5,000 notes) is refused with `tooMany`, so no part of it is ever
+ * acted on from a partial listing. A missing folder lists empty, as the server answers it. Moved here from the Postbox
+ * (kickoffs/s178-r2 row 5), unchanged, so the write primitives settle by the same listing.
+ * A LISTING PROVES ABSENCE ONLY WHEN IT IS WHOLE (kickoffs/s181-r2 row 1; library-auditor M1): a page is refused unless
+ * `nodes` is a list, `has_more` is true or false, and every node is a `file` or `directory`. A file's `file_path` must
+ * be nonempty with no surrounding whitespace; malformed paths are refused, never trimmed. A directory may have a null
+ * `file_path`. NOT_FOUND lists empty only on page 1. So malformed evidence never settles a lost delete `written`.
+ */
+export async function listFolderNodes(session: McpSession, projectId: string, folder: string, what: string, tooMany: string): Promise<unknown[]> {
+  const nodes: unknown[] = [];
+  for (let page = 1; ; page += 1) {
+    if (page > 50) refuse(tooMany);
+    const response = await session.callTool('bm_list', { path: folder, page, page_size: 100, output_format: 'json', project: projectId });
+    const answer = field(response, 'result');
+    let result = field(field(answer, 'structuredContent'), 'result');
+    if ((result === undefined || result === null) && field(answer, 'isError') !== true) {
+      const block = (field(answer, 'content') as unknown[] | undefined)?.find((item) => field(item, 'type') === 'text');
+      try {
+        result = JSON.parse(String(field(block, 'text') ?? '')) as unknown;
+      } catch {
+        result = null;
+      }
+    }
+    const notWhole = (missing: string): never => refuse(`${what} could not be read: the listing's answer is not a whole page (${missing})`);
+    if (field(answer, 'isError') === true || result === undefined || result === null) {
+      if (typedRefusal(response)?.code === 'NOT_FOUND') return page === 1 ? nodes : notWhole(`page ${page} answered NOT_FOUND`);
+      const detail = JSON.stringify(field(answer, 'content') ?? field(response, 'error') ?? null);
+      refuse(`${what} could not be read: ${detail.substring(0, 300)}`);
+    }
+    const listed = field(result, 'nodes');
+    const more = field(result, 'has_more');
+    if (!Array.isArray(listed)) return notWhole('`nodes` is not a list');
+    if (typeof more !== 'boolean') return notWhole('`has_more` is not true or false');
+    const odd = (node: unknown): boolean => {
+      const type = field(node, 'type');
+      const filePath = field(node, 'file_path');
+      return node === null || typeof node !== 'object' || (type !== 'file' && type !== 'directory')
+        || (type === 'file' && (typeof filePath !== 'string' || filePath === '' || filePath.trim() !== filePath));
+    };
+    const oddIndex = listed.findIndex(odd);
+    if (oddIndex !== -1) return notWhole(`a node with an invalid type or file path: ${String(JSON.stringify(listed[oddIndex])).substring(0, 200)}`);
+    nodes.push(...listed);
+    if (!more) return nodes;
+  }
 }
 
 /**

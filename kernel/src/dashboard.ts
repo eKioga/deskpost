@@ -261,6 +261,13 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
     const changed = label(train['changed_at']), handbacks = Number(train['handbacks_since']);
     const attention = handbacks > 0 || now - Date.parse(changed) > 7 * 86400000;
     lines.push(...wrap([run(`Train  changed ${changed}, ${handbacks} handbacks since`, attention ? 'attention' : 'name')], width));
+    // kickoffs/s184 row 2: the front car's days open and the week's arrivals, in full words.
+    const front = object(train['front_car']), arrived = Number(train['cars_arrived_last_7_days'] ?? 0);
+    const days = Number(front['days_open']);
+    const open = typeof front['place'] === 'string'
+      ? `${label(front['place'].replace(/^car:/, ''))}, ${days === 0 ? 'opened today' : `open ${days} ${days === 1 ? 'day' : 'days'}`}`
+      : 'No front car';
+    lines.push(...wrap([run(`Front car  ${open}; ${arrived} ${arrived === 1 ? 'car' : 'cars'} arrived in the last 7 days`, 'name')], width));
   }
   if (Number.isInteger(options.rows) && options.rows! > 0) lines = lines.slice(0, options.rows);
   if (clock && clock.row > lines.length) clock = undefined;

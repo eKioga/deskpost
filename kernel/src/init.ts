@@ -152,11 +152,14 @@ function newMarkerContent(
     const kept = previous !== null && typeof previous === 'object' && !Array.isArray(previous) ? (previous as Record<string, PsJsonValue>) : {};
     // A URL given again keeps what set-up chose for it; a new URL starts a connection of its own.
     const sameServer = String(kept['url'] ?? '') === String(connection['url']);
+    const collectionId = String(connection['collection_id'] ?? '') || (sameServer ? String(kept['collection_id'] ?? '') : '');
     others['basic_memory'] = {
       url: connection['url']!,
-      collection_id: String(connection['collection_id'] ?? '') || (sameServer ? String(kept['collection_id'] ?? '') : ''),
+      collection_id: collectionId,
       collection_name: sameServer ? String(kept['collection_name'] ?? '') : '',
       storage: sameServer ? String(kept['storage'] ?? '') : '',
+      // Kept only for the same server AND collection (kickoffs/s191 row 1): shared writes are opted into per collection.
+      shared_writes: sameServer && collectionId === String(kept['collection_id'] ?? '') && kept['shared_writes'] === true,
     };
     marker['connections'] = others;
   }
@@ -1309,6 +1312,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       collection_id: (options.collectionId ?? '').trim(),
       collection_name: '',
       storage: '',
+      shared_writes: false,
     };
   }
 

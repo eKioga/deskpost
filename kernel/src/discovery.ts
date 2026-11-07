@@ -36,6 +36,7 @@ import { parseBookRoot } from './places.ts';
 import { collectionBookSlugs } from './collectionbooks.ts';
 import { isLocalBackend, markerConnection } from './basicmemory.ts';
 import { getStoredBookManifest, MANIFEST_COLLECTIONS } from './manifeststore.ts';
+import { SHARED_FAILURE_CLASSES, type SharedMaintainer } from './sharedmanifests.ts';
 import {
   ARCHIVE_FOLDER,
   ARCHIVE_RECORD_NAME,
@@ -51,7 +52,7 @@ const DEFAULT_MAX_RESULTS = 50;
 const MAX_PAGES_PER_BOOK = 2000;
 
 // ADVICE NAMES ONLY WHAT SHIPS (S85 row 1): the manifest rebuilders these named are PowerShell helpers a release does
-// not carry. A Shelf Book's manifest is rebuilt by any write to it; a shared one has no rebuilder in this program.
+// not carry. The attached route keeps this advice; a connected local Library rebuilds shared manifests itself.
 const SHARED_REBUILDER_MISSING = 'this program has no command that builds shared-collection manifests';
 const SHARED_NOTE_NONE =
   'No shared-collection manifests are present, so this answer covers the local Shelf only -- ' + SHARED_REBUILDER_MISSING + '.';
@@ -69,8 +70,7 @@ const CLOSING_RULE =
   'and never what the page says. Open it with read_open_book_page before answering from it.';
 const COLLECTION_REPAIR_HINT = "run `deskpost collection rebuild` to rebuild the Local collection's Discovery manifests";
 const SHARED_NOTE_NOT_REBUILT =
-  'The shared collection this Library connects to is NOT covered: ' + SHARED_REBUILDER_MISSING + ". Open a shared " +
-  "Book from its catalog, read_book_catalog with location 'shared'.";
+  'The shared collection this Library connects to is NOT covered yet: run deskpost collection rebuild to build its Discovery manifests.';
 
 /**
  * Deterministic ordering. Book-level matches come before page-level ones because they ORIENT: a
@@ -267,17 +267,25 @@ function discoveryLivePages(wikiRoot: string): LivePage[] {
 }
 
 /** The shared collection's roster. Unreadable or malformed reads as NO roster, honestly out of scope. */
-function sharedRoster(workspace: string, manifestCollection = 'shared'): { slugs: string[]; asOf: string } | null {
+type SharedRosterEntry = { slug: string; unavailable?: string; unavailable_class?: string; pages_withheld?: { page: string; reason: string }[]; maintained_by?: SharedMaintainer[]; maintained_unreadable?: string };
+function sharedRoster(workspace: string, manifestCollection = 'shared'): { slugs: string[]; entries: SharedRosterEntry[]; asOf: string; upkeep_unreadable?: string } | null {
   const file = path.join(workspace, 'internal', 'book-manifests', manifestCollection, '_roster.json');
   if (!fs.existsSync(file)) return null;
   try {
     const roster = JSON.parse(readUtf8(file)) as Record<string, unknown>;
     if (!('books' in roster)) return null;
-    const slugs = ((roster['books'] as Record<string, unknown>[]) ?? [])
-      .map((entry) => String(entry['slug']))
-      .filter((slug) => /^[a-z0-9][a-z0-9-]*$/.test(slug));
-    if (!slugs.length) return null;
-    return { slugs, asOf: 'generated_utc' in roster ? String(roster['generated_utc']) : '' };
+    const reasonClass = (value: unknown) => typeof value === 'string' && (SHARED_FAILURE_CLASSES as readonly string[]).includes(value);
+    if (roster['upkeep_unreadable'] !== undefined && !reasonClass(roster['upkeep_unreadable'])) return null;
+    const entries = ((roster['books'] as SharedRosterEntry[]) ?? [])
+      .filter((entry) => /^[a-z0-9][a-z0-9-]*$/.test(entry.slug));
+    if (entries.some(entry => (entry.unavailable !== undefined && typeof entry.unavailable !== 'string') ||
+      (entry.pages_withheld !== undefined && (!Array.isArray(entry.pages_withheld) || entry.pages_withheld.some(page => typeof page.page !== 'string' || typeof page.reason !== 'string'))) ||
+      (entry.unavailable_class !== undefined && !reasonClass(entry.unavailable_class)) ||
+      (entry.maintained_unreadable !== undefined && !reasonClass(entry.maintained_unreadable)) ||
+      (entry.maintained_by !== undefined && (!Array.isArray(entry.maintained_by) || !entry.maintained_by.length || entry.maintained_by.some(item => !item || typeof item.library_id !== 'string' || typeof item.card !== 'string' || typeof item.any_seat !== 'boolean' || !Array.isArray(item.names) || !item.names.length || item.names.some(name => typeof name !== 'string' || !name.trim())))) ||
+      (entry.maintained_by !== undefined && entry.maintained_unreadable !== undefined))) return null;
+    return { slugs: entries.map(entry => entry.slug), entries, asOf: 'generated_utc' in roster ? String(roster['generated_utc']) : '',
+      ...(roster['upkeep_unreadable'] ? { upkeep_unreadable: String(roster['upkeep_unreadable']) } : {}) };
   } catch {
     return null;
   }
@@ -437,6 +445,9 @@ export interface DiscoveryResult {
   books_unavailable: UnavailableBook[];
   /** Present only when a Shelf Book's pages differ from its manifest (S87), so an answer with none reads as before. */
   books_stale?: StaleBook[];
+  books_partly_read?: { book: string; book_root: string; book_shelf: string; pages_withheld_count: number; repair: string }[];
+  books_maintained?: { book: string; book_root: string; maintained_by?: SharedMaintainer[]; maintained_unreadable?: string }[];
+  upkeep_unreadable?: string;
   match_count: number;
   result_count: number;
   truncated: boolean;
@@ -461,6 +472,7 @@ export function findBookPages(options: {
   const overlaps = overlapIndex(root);
   const open = openRoots(options.deskStateDirectory);
   const localBackend = isLocalBackend(root);
+  const connected = localBackend && markerConnection(root) !== null;
 
   const roster = sharedRoster(root, 'shared');
   const sharedSlugs = roster ? roster.slugs : [];
@@ -481,9 +493,9 @@ export function findBookPages(options: {
 
   const rosters: Record<string, { slugs: string[]; repair: string }> = {
     shelf: { slugs, repair: REPAIR_HINT },
-    shared: { slugs: sharedSlugs, repair: SHARED_REPAIR_HINT },
+    shared: { slugs: sharedSlugs, repair: connected ? "run deskpost collection rebuild to rebuild the shared manifests" : SHARED_REPAIR_HINT },
     'shelf-archive': { slugs: shelfArchiveSlugs, repair: SHELF_ARCHIVE_REPAIR_HINT },
-    'shared-archive': { slugs: sharedArchiveSlugs, repair: SHARED_ARCHIVE_REPAIR_HINT },
+    'shared-archive': { slugs: sharedArchiveSlugs, repair: connected ? 'run deskpost collection rebuild to rebuild the shared archive manifests' : SHARED_ARCHIVE_REPAIR_HINT },
     collection: { slugs: collectionSlugs, repair: COLLECTION_REPAIR_HINT },
     'collection-archive': { slugs: collectionArchiveSlugs, repair: COLLECTION_REPAIR_HINT },
   };
@@ -491,6 +503,7 @@ export function findBookPages(options: {
   const hits: { order: number; rank: number; hit: DiscoveryHit }[] = [];
   const unavailable: UnavailableBook[] = [];
   const stale: StaleBook[] = [];
+  const partlyRead: NonNullable<DiscoveryResult['books_partly_read']> = [];
   const searchedByCollection: Record<string, number> = {};
   for (const name of MANIFEST_COLLECTIONS) searchedByCollection[name] = 0;
   let order = 0;
@@ -523,6 +536,13 @@ export function findBookPages(options: {
         }
       }
 
+      const rebuildEntry = (manifestCollection === 'shared' ? roster : manifestCollection === 'shared-archive' ? archiveRoster : null)?.entries.find(entry => entry.slug === slug);
+      if (rebuildEntry?.unavailable !== undefined) {
+        unavailable.push({ book: slug, book_root: bookRoot, book_title: slug, collection: parts.collection,
+          book_shelf: parts.shelf, book_open: isOpen, status: 'unread-at-rebuild', reason: isOpen ? rebuildEntry.unavailable : rebuildEntry.unavailable_class ?? 'server error',
+          repair: plan.repair.replace('<slug>', slug) });
+        continue;
+      }
       const stored = resolveFailure ? null : getStoredBookManifest(root, slug, manifestCollection);
       if (resolveFailure || stored === null || stored.status !== 'ok') {
         unavailable.push({
@@ -540,6 +560,9 @@ export function findBookPages(options: {
       }
       searchedByCollection[manifestCollection] = (searchedByCollection[manifestCollection] ?? 0) + 1;
       const manifest = stored.manifest!;
+      if (rebuildEntry?.pages_withheld?.length) partlyRead.push({ book: slug, book_root: bookRoot, book_shelf: parts.shelf,
+        pages_withheld_count: rebuildEntry.pages_withheld.length,
+        repair: plan.repair.replace('<slug>', slug) });
       // THE STORED DIGEST AGAINST THE PAGES ON DISK, for an active Shelf Book only (S87, ruling 4): a page corrected in
       // place leaves an `ok` manifest describing the old page. A digest that cannot be read is not called stale.
       if (isLocal && parts.shelf === 'active' && book !== null) {
@@ -593,23 +616,25 @@ export function findBookPages(options: {
   const sharedUnavailable = unavailable.filter(
     (entry) => entry.collection === 'shared' && entry.book_shelf === 'active',
   ).length;
-  const sharedCovered = sharedSlugs.length > 0;
+  const sharedCovered = roster !== null;
+  const sharedPartial = partlyRead.filter(entry => entry.book_shelf === 'active').length;
+  const archivePartial = partlyRead.filter(entry => entry.book_shelf === 'archive').length;
   // A Book added to the shared catalog since the last backfill is not merely unread, it is UNKNOWN,
   // and no count can reveal it. Saying how old the roster is turns a blind spot into a judgement
   // the reader can make.
   const asOfText = !sharedRosterAsOf.trim()
     ? ''
     : ` Shared Book list as of ${sharedRosterAsOf.substring(0, Math.min(10, sharedRosterAsOf.length))}; a Book added since then is not in this answer.`;
-  // A LOCAL LIBRARY WITH A CONNECTION HAS NO REBUILDER FOR ITS SHARED MANIFESTS YET (step 5): the rebuild is
-  // PowerShell, which a release does not ship. So that absence is named as what it is, not as a script to run.
-  const connected = localBackend && markerConnection(root) !== null;
+  const rebuildNote = connected ? ' Run deskpost collection rebuild to refresh shared coverage.' : '';
   const sharedNote = !sharedCovered
     ? connected
       ? SHARED_NOTE_NOT_REBUILT
       : SHARED_NOTE_NONE
+    : sharedPartial > 0
+      ? `Shared collection: ${sharedSearched} of ${sharedSlugs.length} Books searched -- ${sharedUnavailable} could not be read and ${sharedPartial} partly read, named below, so this answer is PARTIAL for the shared collection.${asOfText}${rebuildNote}`
     : sharedUnavailable > 0
-      ? `Shared collection: ${sharedSearched} of ${sharedSlugs.length} Books searched -- ${sharedUnavailable} could not be read, named below, so this answer is PARTIAL for the shared collection.${asOfText}`
-      : `Shared collection: all ${sharedSearched} Book(s) searched.${asOfText}`;
+      ? `Shared collection: ${sharedSearched} of ${sharedSlugs.length} Books searched -- ${sharedUnavailable} could not be read, named below, so this answer is PARTIAL for the shared collection.${asOfText}${rebuildNote}`
+      : `Shared collection: all ${sharedSearched} Book(s) searched.${asOfText}${rebuildNote}`;
 
   // THE ARCHIVE SENTENCE IS SEPARATE AND UNCONDITIONAL. An archive with nothing in it still says
   // so, because "no archived Books" and "archived Books not searched" are different facts and a
@@ -630,11 +655,14 @@ export function findBookPages(options: {
   );
   archiveParts.push(
     archiveRoster === null
-      ? SHARED_ARCHIVE_NOTE_NONE
+      ? (connected ? 'the shared archive is NOT covered yet: run deskpost collection rebuild' : SHARED_ARCHIVE_NOTE_NONE)
+      : archivePartial > 0
+        ? `shared archive: ${sharedArchiveSearched} of ${sharedArchiveSlugs.length} searched -- ${sharedArchiveUnavailable} could not be read and ${archivePartial} partly read, named below, so this answer is PARTIAL for the shared archive`
       : sharedArchiveUnavailable > 0
         ? `shared archive: ${sharedArchiveSearched} of ${sharedArchiveSlugs.length} searched -- ${sharedArchiveUnavailable} could not be read, named below`
         : `shared archive: all ${sharedArchiveSearched} Book(s) searched`,
   );
+  if (archiveRoster !== null && connected) archiveParts.push(`shared archive list as of ${sharedArchiveRosterAsOf}; run deskpost collection rebuild to refresh it`);
 
   // THE LOCAL COLLECTION IS NAMED WHENEVER IT HOLDS A BOOK, active or archived, and its partial state is a
   // state of its own as the shared collection's is. A Library whose collection holds none reads exactly as it
@@ -655,7 +683,7 @@ export function findBookPages(options: {
     scope,
     shared_books_covered: sharedCovered,
     shared_roster_as_of: sharedRosterAsOf,
-    shared_books_note: sharedNote,
+    shared_books_note: sharedNote + (roster?.upkeep_unreadable ? ` Who maintains shared Books could not be read (${roster.upkeep_unreadable}).` : ''),
     archive_note: `Archived Books are covered and labelled -- ${archiveParts.join('; ')}.`,
     shared_archive_covered: archiveRoster !== null,
     shared_archive_roster_as_of: sharedArchiveRosterAsOf,
@@ -676,6 +704,9 @@ export function findBookPages(options: {
     books_searched: shelfSearched + sharedSearched + shelfArchiveSearched + sharedArchiveSearched + collectionSearched + collectionArchiveSearched,
     books_unavailable: unavailable,
     ...(stale.length ? { books_stale: stale } : {}),
+    ...(partlyRead.length ? { books_partly_read: partlyRead } : {}),
+    ...((roster?.entries ?? []).some(entry => entry.maintained_by || entry.maintained_unreadable) ? { books_maintained: roster!.entries.filter(entry => entry.maintained_by || entry.maintained_unreadable).map(entry => ({ book: entry.slug, book_root: `${collectionPrefix('shared', localBackend)}/${entry.slug}`, ...(entry.maintained_by ? { maintained_by: entry.maintained_by } : { maintained_unreadable: entry.maintained_unreadable! }) })) } : {}),
+    ...(roster?.upkeep_unreadable ? { upkeep_unreadable: roster.upkeep_unreadable } : {}),
     match_count: sorted.length,
     result_count: returned.length,
     truncated: sorted.length > returned.length,
@@ -708,6 +739,13 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
       lines.push(`- ${entry.book} [${entry.book_root}] (${entry.status}): ${entry.reason} -- ${entry.repair}`);
     }
   }
+  if (result.books_partly_read?.length) {
+    lines.push('');
+    lines.push('Books partly read at rebuild, so this answer is PARTIAL for them:');
+    for (const entry of result.books_partly_read) {
+      lines.push(`- ${entry.book} [${entry.book_root}]: ${entry.pages_withheld_count} page(s) withheld -- ${entry.repair}`);
+    }
+  }
   if (result.books_stale?.length) {
     lines.push('');
     lines.push('Shelf Books searched from a STALE manifest, so their hits may be out of date:');
@@ -736,7 +774,10 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
         // of covering the archive at all, so the label rides every hit group.
         const shelfText = hit.book_shelf === 'archive' ? ', ARCHIVED' : '';
         lines.push('');
-        lines.push(`${hit.book_title} [${hit.book_root}, ${hit.book_kind}, ${openText}${shelfText}]${overlapText}`);
+        const maintained = result.books_maintained?.find(entry => entry.book_root === hit.book_root);
+        const upkeep = maintained?.maintained_unreadable ? ` -- who maintains it could not be read (${maintained.maintained_unreadable})`
+          : maintained?.maintained_by ? ' -- maintained by ' + maintained.maintained_by.map(item => item.any_seat ? `any seat of ${item.card}` : `${item.names.join(', ')} (${item.card})`).join('; ') : '';
+        lines.push(`${hit.book_title} [${hit.book_root}, ${hit.book_kind}, ${openText}${shelfText}]${overlapText}${upkeep}`);
       }
       const where = hit.page !== null ? hit.page : '(Book level)';
       const what = hit.heading !== null ? ` -- ${hit.heading}` : '';

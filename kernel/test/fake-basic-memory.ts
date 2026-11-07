@@ -39,7 +39,29 @@
  *
  *   node fake-basic-memory.ts <folder> <port-file> [--project <name>] [--id <uuid>] [--hang]
  *                             [--surface legacy|bm] [--drop-tool <name>] [--tools-list error|empty] [--call-log]
- *                             [--vanish <text>]
+ *                             [--vanish <text>] [--outcome-unknown <tool>:<n>[:lost]]... [--drop-session-after <tool>:<n>]...
+ *                             [--lose-response <tool>:<n>]... [--race] [--fault-both-win] [--offer-project-delete]
+ *                             [--malformed-list <shape>:<n>]...
+ *                             [--create-at-moved-path refuse|refuse-other|written-unlisted] [--hide-listed <text>:<n>]...
+ *                             [--change-before <tool>:<n>]...
+ *
+ * `--change-before <tool>:<n>` (kickoffs/s192 row 1) changes the note the n-th call of that tool names (a `bm_write`'s
+ * `directory`/`title`, a `bm_delete`'s or `bm_edit`'s `identifier`) just before the call is answered, as another writer
+ * landing between a read and a write would: a line is added to its end, so its checksum changes. A call whose note is
+ * absent changes nothing. Every call of the tool is counted, as for the faults below.
+ *
+ * `--hide-listed <text>:<n>` (kickoffs/s191 row 1) leaves out of the first n `bm_list` answers that would have held a file
+ * whose path holds <text> that file, as a listing that has not yet caught up with a create would (s189's live S6); answers
+ * without such a file do not count. The file stays on disk and is read as before.
+ *
+ * `--malformed-list <shape>:<n>` (kickoffs/s181-r2 row 1) answers the n-th `bm_list` call in a shape that is not a whole
+ * page: `empty-object` (`{}`), `no-nodes`, `nodes-not-array`, `no-has-more`, `has-more-string`, `file-no-path` (every
+ * file node without its `file_path`), `file-path-empty|whitespace|leading|trailing`, `type-empty|unknown`,
+ * `not-found` (`NOT_FOUND`), or `late-not-found` (its own page with `has_more: true`,
+ * then call n+1 answered `NOT_FOUND`). `--create-at-moved-path` (kickoffs/s181-r2 row 3.1) changes a `bm_write` create at
+ * a path whose file is gone but whose permalink a moved note still holds: `refuse` answers `ALREADY_EXISTS` as the NAS did
+ * on 2026-11-04 and writes nothing; `refuse-other` answers `INVALID_ARGUMENTS` and writes nothing; `written-unlisted`
+ * answers a receipt and writes nothing.
  *
  * `--hang` accepts every connection and answers none, which is what a black-holed host looks like to a client.
  * The port it listens on is written to <port-file> once it is listening.
@@ -57,10 +79,30 @@
  * `bm_move` to the note's own path is `INVALID_ARGUMENTS` "The note is already at '<path>'." Two more title cues:
  * `refuse-outcome-unknown-` writes the note and answers `OUTCOME_UNKNOWN`, `refuse-revision-conflict-` answers
  * `REVISION_CONFLICT` and writes nothing. A permalink with the project's name in front is found only when `project` is
- * the NAME (1.0 does not strip it for a UUID). UNMEASURED ON 1.0 (kickoffs/s175 STANDING ANSWER 8), kept as v0.23.2
+ * the NAME (1.0 does not strip it for a UUID), and is answered with the project's name in front of its `file_path`
+ * (MEASURED on the NAS 2026-11-04, kickoffs/s178-r2 row 10, S6; UNMEASURED for any other identifier form, which answers
+ * its plain path). UNMEASURED ON 1.0 (kickoffs/s175 STANDING ANSWER 8), kept as v0.23.2
  * measured it: a moved note's permalink stays, a read follows a permalink before a path, and `metadata` values are
- * quoted as v0.23.2 quoted them. `bm_edit`, `bm_delete`, `bm_find`, `bm_search`, `bm_context`, `bm_schema` and `bm_man`
- * are listed and answer `UNSUPPORTED`.
+ * quoted as v0.23.2 quoted them. `bm_find`, `bm_search`, `bm_context`, `bm_schema` and `bm_man` are listed and answer
+ * `UNSUPPORTED`.
+ *
+ * THE 1.0 CHANGE GUARD (kickoffs/s178-r2 row 4; Book `basic-memory`, page `write-semantics-and-retry-safety`). `bm_write`
+ * (with `overwrite: true`, which `expected_checksum` implies), `bm_edit`, `bm_move` and `bm_delete` honour
+ * `expected_checksum`: a mismatch, or a checksum for a path no note owns, answers `REVISION_CONFLICT` naming the current
+ * checksum in its message only ("current checksum <hex>", measured live 2026-11-04) and changes nothing. A note whose
+ * frontmatter holds `locked: true` answers `LOCKED` to every change. `bm_edit` models `append` and `prepend` (one newline
+ * between the old body and the new text), `find_replace` (`find_text`, `content`, `expected_replacements`, default 1) and
+ * `replace_section` (`section`, `content`); `bm_delete` removes one note and answers `action: deleted` with no checksum.
+ * `--outcome-unknown <tool>:<n>` answers the n-th call of that tool `OUTCOME_UNKNOWN` after applying it, and
+ * `<tool>:<n>:lost` without applying it; `--drop-session-after <tool>:<n>` applies the n-th call and then answers HTTP 404
+ * "Session not found"; `--lose-response <tool>:<n>` applies it and closes the connection unanswered. Each may be given
+ * more than once; every call of a tool is counted, refused or not.
+ *
+ * TWO CLIENTS, INTERLEAVED (kickoffs/s178-r2 row 9). With `--race`, a `bm_write` or `bm_edit` is held until a second call to
+ * the same tool and the same note arrives; then both are applied in the order they arrived. A call with no partner within
+ * 500 ms is applied alone. `--fault-both-win`, for section 633 only, applies the second of a pair as an unguarded
+ * overwrite, so both writers get through: the fault the proof must catch. `--offer-project-delete` lists and models
+ * `bm_project_delete` (`name`), which the NAS does not offer.
  *
  * `--drop-tool <name>` leaves one tool out of `tools/list` and answers it `Unknown tool`; `--tools-list error` answers
  * `tools/list` with an error and `--tools-list empty` with a result that has no `tools`. With `--call-log`, on both
@@ -80,6 +122,28 @@ const option = (name: string, fallback: string): string => {
   const at = rest.indexOf(`--${name}`);
   return at >= 0 && rest[at + 1] !== undefined ? rest[at + 1]! : fallback;
 };
+/** Every value given for a flag that may be repeated (kickoffs/s178-r2 rows 4 and 5). */
+const options = (name: string): string[] => rest.flatMap((value, at) => (value === `--${name}` && rest[at + 1] !== undefined ? [rest[at + 1]!] : []));
+/** `<tool>:<n>[:lost]`, each parsed once. */
+const faults = (name: string) => options(name).map((value) => {
+  const [tool, n, lost] = value.split(':');
+  return { tool: tool ?? '', n: Number(n), lost: lost === 'lost' };
+});
+const outcomeUnknown = faults('outcome-unknown');
+const dropSessionAfter = faults('drop-session-after');
+const loseResponse = faults('lose-response');
+const changeBefore = faults('change-before');
+const race = rest.includes('--race');
+const faultBothWin = rest.includes('--fault-both-win');
+const offerProjectDelete = rest.includes('--offer-project-delete');
+const malformedList = options('malformed-list').map((value) => ({ shape: value.split(':')[0] ?? '', n: Number(value.split(':')[1]) }));
+const createAtMovedPath = option('create-at-moved-path', '');
+/** `--hide-listed <text>:<n>`, each with the answers it has still to change. */
+const hideListed = options('hide-listed').map((value) => ({ text: value.slice(0, value.lastIndexOf(':')), left: Number(value.slice(value.lastIndexOf(':') + 1)) }));
+/** Calls held by `--race` until their partner arrives, by tool, project and note. */
+const held = new Map<string, { go: () => void; timer: NodeJS.Timeout }>();
+/** How many times each tool has been called, refused or not, for the faults above. */
+const callCounts = new Map<string, number>();
 const hang = rest.includes('--hang');
 const projectName = option('project', 'stand-in-collection');
 const projectId = option('id', 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa');
@@ -93,6 +157,8 @@ const toolsList = option('tools-list', '');
 const callLog = rest.includes('--call-log');
 const LEGACY_TOOLS = ['list_memory_projects', 'read_note', 'write_note', 'create_memory_project', 'list_directory', 'read_content', 'move_note'];
 const BM_TOOLS = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
+/** The 1.0 tools this stand-in lists: the twelve, and `bm_project_delete` with `--offer-project-delete`. */
+const OFFERED_BM_TOOLS = offerProjectDelete ? [...BM_TOOLS, 'bm_project_delete'] : BM_TOOLS;
 /** Projects made by `create_memory_project`, by name: their id and their own folder under `<folder>/.projects/`. */
 const created = new Map<string, { id: string; path: string }>();
 let createdCount = 0;
@@ -111,6 +177,33 @@ function projectNameOf(id: string): string | null {
 
 /** What `call` answers when the session is to look dropped: the HTTP layer turns it into a 404. */
 const DROPPED = Symbol('dropped');
+
+/** A whole stored file's SHA-256, as 1.0's receipts and `bm_read` give it. */
+function checksumOf(file: string): string {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+/** `locked: true` in a note's frontmatter (1.0's lock; Book `basic-memory`). */
+function isLocked(file: string): boolean {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(file, 'utf8'));
+  return front !== null && /^locked:[ \t]*true[ \t]*$/m.test(front[1]!);
+}
+
+/**
+ * THE 1.0 CHANGE GUARD for a change to `file` (kickoffs/s178-r2 row 4): `LOCKED` for a locked note, then
+ * `REVISION_CONFLICT` naming the current checksum when `expected_checksum` is given and is not the file's (or no file is
+ * there); null when the change may go ahead.
+ */
+function guardChange(file: string, relative: string, args: Record<string, unknown>): unknown {
+  const exists = fs.existsSync(file);
+  if (exists && isLocked(file)) return refusal('LOCKED', `'${relative}' is locked. Nothing was changed.`, args);
+  const expected = args['expected_checksum'];
+  if (expected === undefined || expected === null || expected === '') return null;
+  if (!exists) return refusal('REVISION_CONFLICT', `No note is at '${relative}', so it is not the revision you read. Nothing was changed.`, args);
+  const current = checksumOf(file);
+  if (String(expected) === current) return null;
+  return refusal('REVISION_CONFLICT', `'${relative}' changed since you read it (current checksum ${current}). Nothing was changed.`, args);
+}
 
 function textOnly(body: string): unknown {
   return { content: [{ type: 'text', text: body }], isError: false };
@@ -214,8 +307,8 @@ function writeNote(args: Record<string, unknown>): unknown {
 }
 
 /** A 1.0 refusal: `isError: true`, its text the JSON form with `output_format: "json"`, else `<CODE>: <message>`. */
-function refusal(code: string, message: string, args: Record<string, unknown>): unknown {
-  const said = args['output_format'] === 'json' ? JSON.stringify({ error: code, message }) : `${code}: ${message}`;
+function refusal(code: string, message: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}): unknown {
+  const said = args['output_format'] === 'json' ? JSON.stringify({ error: code, message, ...extra }) : `${code}: ${message}`;
   return { content: [{ type: 'text', text: said }], isError: true };
 }
 
@@ -245,17 +338,31 @@ function writeAt(root: string, key: string, args: Record<string, unknown>, bm: b
     }
   }
   const exists = fs.existsSync(file);
-  if (exists && args['overwrite'] !== true && form?.[3] === undefined) {
+  // `expected_checksum` IMPLIES `overwrite: true` on 1.0 (kickoffs/s178-r2 row 4; Book `basic-memory`).
+  const guarded = bm && args['expected_checksum'] !== undefined && args['expected_checksum'] !== null && args['expected_checksum'] !== '';
+  if (exists && args['overwrite'] !== true && !guarded && form?.[3] === undefined) {
     record();
     if (bm) return refusal('ALREADY_EXISTS', `A note already exists at '${relative}'. Nothing was written.`, args);
     return text({ file_path: relative, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' });
   }
+  if (bm) {
+    const refused = guardChange(file, relative, args);
+    if (refused !== null) {
+      record();
+      return refused;
+    }
+  }
   record();
   if (form?.[3] === 'lost') return DROPPED;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   // A NEW NOTE'S PERMALINK IS ITS PATH, unless another note holds it (a note moved away keeps it, S6): then `-1`, `-2`.
   const base = permalinkFor(directory, title);
   const taken = new Set(allNotes(root).filter((other) => other !== relative).map((other) => permalinkOf(root, other)));
+  if (bm && createAtMovedPath && !exists && taken.has(base)) {
+    if (createAtMovedPath === 'refuse') return refusal('ALREADY_EXISTS', `A note already exists at '${relative}'. Nothing was written.`, args);
+    if (createAtMovedPath === 'refuse-other') return refusal('INVALID_ARGUMENTS', `The stand-in was told to refuse '${relative}'. Nothing was written.`, args);
+    return text({ action: 'created', file_path: relative, permalink: `${base}-1`, checksum: '0'.repeat(64), title });
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   let permalink = exists ? (permalinkOf(root, relative) ?? base) : base;
   for (let n = 1; !exists && taken.has(permalink); n += 1) permalink = `${base}-${n}`;
   fs.writeFileSync(file, storedNote(args, title, permalink));
@@ -362,7 +469,10 @@ function bmRead(project: { root: string; name: string }, addressedBy: string, ar
   const file = path.join(project.root, ...relative.split('/'));
   const whole = fs.readFileSync(file, 'utf8');
   const permalink = permalinkOf(project.root, relative) ?? relative.replace(/\.md$/, '').toLowerCase();
-  const head = { title: path.basename(relative, '.md'), permalink, file_path: relative, checksum: createHash('sha256').update(whole).digest('hex') };
+  // Read by a permalink with the project's name in front, 1.0 answers `file_path` with that name in front too (measured on
+  // the NAS 2026-11-04, kickoffs/s178-r2 row 10, S6; kickoffs/s180 row 3(c)).
+  const prefixed = addressedBy === project.name && identifier.replace(/^\/+/, '').startsWith(`${project.name}/`);
+  const head = { title: path.basename(relative, '.md'), permalink, file_path: prefixed ? `${project.name}/${relative}` : relative, checksum: createHash('sha256').update(whole).digest('hex') };
   if (args['include_content'] === false) return text({ ...head, updated_at: fs.statSync(file).mtime.toISOString() });
   const content = args['include_frontmatter'] === false ? whole.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '') : whole;
   return text({ ...head, content, frontmatter: null });
@@ -378,11 +488,81 @@ function bmMove(project: { root: string; name: string; id: string }, addressedBy
   if (!to.endsWith('.md')) return refusal('INVALID_ARGUMENTS', `A note destination needs its extension: '${destination}'.`, args);
   fs.appendFileSync(path.join(folder!, '.writes.log'), `${project.id}|move ${from} -> ${to}\n`);
   if (to === from) return refusal('INVALID_ARGUMENTS', `The note is already at '${from}'.`, args);
+  const refused = guardChange(path.join(project.root, ...from.split('/')), from, args);
+  if (refused !== null) return refused;
   const target = path.join(project.root, ...to.split('/'));
   if (fs.existsSync(target)) return refusal('ALREADY_EXISTS', `A note already exists at '${to}'. Nothing was moved.`, args);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.renameSync(path.join(project.root, ...from.split('/')), target);
-  return text({ action: 'moved', file_path: to, previous_file_path: from, permalink: permalinkOf(project.root, to), title: path.basename(to, '.md') });
+  return text({ action: 'moved', file_path: to, previous_file_path: from, permalink: permalinkOf(project.root, to), title: path.basename(to, '.md'), checksum: checksumOf(target) });
+}
+
+/** The body of a stored note and the frontmatter in front of it, split as `bm_edit` changes only the body. */
+function splitStored(whole: string): { front: string; body: string } {
+  const match = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)([\s\S]*)$/.exec(whole);
+  return match ? { front: match[1]!, body: match[2]! } : { front: '', body: whole };
+}
+
+/** `bm_edit` (kickoffs/s178-r2 row 4): `append`, `prepend`, `find_replace` and `replace_section`, guarded, with a receipt. */
+function bmEdit(project: { root: string; name: string; id: string }, addressedBy: string, args: Record<string, unknown>): unknown {
+  const identifier = String(args['identifier'] ?? '');
+  const relative = resolveNote(project.root, bareIdentifier(project, addressedBy, identifier));
+  if (relative === null) return refusal('NOT_FOUND', `Note '${identifier}' not found.`, args);
+  const file = path.join(project.root, ...relative.split('/'));
+  const refused = guardChange(file, relative, args);
+  if (refused !== null) return refused;
+  const command = String(args['command'] ?? '');
+  const content = String(args['content'] ?? '');
+  const { front, body } = splitStored(fs.readFileSync(file, 'utf8'));
+  let edited: string;
+  if (command === 'append') edited = `${body.replace(/\s+$/, '')}\n${content}`;
+  else if (command === 'prepend') edited = `\n${content}\n${body.replace(/^\s+/, '')}`;
+  else if (command === 'find_replace') {
+    const find = String(args['find_text'] ?? '');
+    const wanted = Number(args['expected_replacements'] ?? 1);
+    const found = find ? body.split(find).length - 1 : 0;
+    if (!find || found !== wanted) return refusal('INVALID_ARGUMENTS', `find_replace expected ${wanted} replacement(s) of the text and found ${found}. Nothing was changed.`, args);
+    edited = body.split(find).join(content);
+  } else if (command === 'replace_section') {
+    const lines = body.split('\n');
+    const at = lines.findIndex((line) => /^#{1,6} /.test(line) && line.replace(/^#{1,6} /, '').trim() === String(args['section'] ?? ''));
+    if (at < 0) return refusal('INVALID_ARGUMENTS', `No section '${String(args['section'] ?? '')}' in '${relative}'. Nothing was changed.`, args);
+    const level = /^#+/.exec(lines[at]!)![0].length;
+    let end = at + 1;
+    while (end < lines.length && !(/^#{1,6} /.test(lines[end]!) && /^#+/.exec(lines[end]!)![0].length <= level)) end += 1;
+    edited = [...lines.slice(0, at + 1), content, ...lines.slice(end)].join('\n');
+  } else return refusal('UNSUPPORTED', `The stand-in does not model bm_edit command '${command}'.`, args);
+  fs.writeFileSync(file, front + edited);
+  fs.appendFileSync(path.join(folder!, '.writes.log'), `${project.id}|edit ${relative}\n`);
+  return text({ action: 'edited', file_path: relative, permalink: permalinkOf(project.root, relative), checksum: checksumOf(file), title: path.basename(relative, '.md') });
+}
+
+/** `bm_delete`: one note, guarded; the live receipt names the removed file without a checksum (2026-11-04). */
+function bmDelete(project: { root: string; name: string; id: string }, addressedBy: string, args: Record<string, unknown>): unknown {
+  const identifier = String(args['identifier'] ?? args['path'] ?? '');
+  const relative = resolveNote(project.root, bareIdentifier(project, addressedBy, identifier));
+  if (relative === null) return refusal('NOT_FOUND', `Note '${identifier}' not found.`, args);
+  const file = path.join(project.root, ...relative.split('/'));
+  const refused = guardChange(file, relative, args);
+  if (refused !== null) return refused;
+  fs.rmSync(file);
+  fs.appendFileSync(path.join(folder!, '.writes.log'), `${project.id}|delete ${relative}\n`);
+  return text({ action: 'deleted', file_path: relative, title: path.basename(relative, '.md') });
+}
+
+/** `--change-before` (kickoffs/s192 row 1): the note a call names, changed by another writer before the call is answered. */
+function changeNamedNote(name: string, args: Record<string, unknown>): void {
+  const project = projectOf(String(args['project'] ?? args['project_id'] ?? ''));
+  if (project === null) return;
+  const directory = String(args['directory'] ?? '').replace(/^\/+|\/+$/g, '');
+  const named = name === 'bm_write'
+    ? `${directory ? directory + '/' : ''}${String(args['title'] ?? '')}.md`
+    : resolveNote(project.root, bareIdentifier(project, String(args['project'] ?? args['project_id'] ?? ''), String(args['identifier'] ?? '')));
+  if (named === null) return;
+  const file = path.join(project.root, ...named.split('/'));
+  if (!fs.existsSync(file)) return;
+  fs.appendFileSync(file, '\nChanged by another writer.\n');
+  fs.appendFileSync(path.join(folder!, '.writes.log'), `${project.id}|changed-before ${named}\n`);
 }
 
 /** `bm_list`: one level, folders first, paged; a missing folder lists empty (the NAS, 2026-10-31). */
@@ -406,8 +586,38 @@ function bmList(project: { root: string; name: string }, args: Record<string, un
       entity_id: externalIdOf(relative), note_type: 'note', content_type: 'text/markdown', updated_at: fs.statSync(path.join(full, name)).mtime.toISOString().replace('Z', '000Z'),
     };
   });
-  const nodes = [...folders, ...files];
+  let shown = files;
+  for (const hide of hideListed) {
+    if (hide.left > 0 && shown.some((file) => file.file_path.includes(hide.text))) {
+      hide.left -= 1;
+      shown = shown.filter((file) => !file.file_path.includes(hide.text));
+    }
+  }
+  const nodes = [...folders, ...shown];
   return text({ nodes: nodes.slice((page - 1) * pageSize, page * pageSize), page, page_size: pageSize, total: nodes.length, has_more: page * pageSize < nodes.length });
+}
+
+/** `--malformed-list` (kickoffs/s181-r2 row 1): the n-th `bm_list` answer, `answer`, changed into the named shape. */
+function malformList(nth: number, answer: unknown, args: Record<string, unknown>): unknown {
+  const fault = malformedList.find((one) => one.n === nth) ?? malformedList.find((one) => one.shape === 'late-not-found' && one.n + 1 === nth);
+  if (fault === undefined) return answer;
+  if (fault.shape === 'not-found' || fault.n !== nth) return refusal('NOT_FOUND', `Folder '${String(args['path'] ?? '/')}' not found.`, args);
+  if (fault.shape === 'empty-object') return text({});
+  const page = { ...((answer as { structuredContent?: { result?: Record<string, unknown> } }).structuredContent?.result ?? {}) };
+  if (fault.shape === 'no-nodes') delete page['nodes'];
+  else if (fault.shape === 'nodes-not-array') page['nodes'] = { count: 1 };
+  else if (fault.shape === 'no-has-more') delete page['has_more'];
+  else if (fault.shape === 'has-more-string') page['has_more'] = String(page['has_more']);
+  else if (fault.shape === 'late-not-found') page['has_more'] = true;
+  else if (fault.shape === 'file-no-path') {
+    page['nodes'] = ((page['nodes'] ?? []) as Record<string, unknown>[]).map((node) => (node['type'] === 'file' ? Object.fromEntries(Object.entries(node).filter(([key]) => key !== 'file_path')) : node));
+  } else if (fault.shape.startsWith('file-path-')) {
+    const paths: Record<string, string> = { empty: '', whitespace: ' \t ', leading: ' notes/d.md', trailing: 'notes/d.md ' };
+    page['nodes'] = [{ type: 'file', file_path: paths[fault.shape.slice('file-path-'.length)] }];
+  } else if (fault.shape === 'type-empty' || fault.shape === 'type-unknown') {
+    page['nodes'] = [{ type: fault.shape === 'type-empty' ? '' : 'note', file_path: 'notes/d.md' }];
+  }
+  return text(page);
 }
 
 function bmProject(args: Record<string, unknown>): unknown {
@@ -423,9 +633,32 @@ function bmProject(args: Record<string, unknown>): unknown {
   return text({ name, external_id: made['external_id'], path: String(where), created: made['created'], already_exists: made['already_exists'] });
 }
 
+/** `bm_project_delete` (`--offer-project-delete` only): a project this stand-in created, removed with its folder. */
+function bmProjectDelete(args: Record<string, unknown>): unknown {
+  const name = String(args['name'] ?? args['project_name'] ?? '');
+  const project = created.get(name);
+  if (project === undefined) return refusal('NOT_FOUND', `Project '${name}' not found.`, args);
+  created.delete(name);
+  fs.rmSync(path.join(folder!, '.projects', name), { recursive: true, force: true });
+  fs.appendFileSync(path.join(folder!, '.writes.log'), `delete_project|${name}\n`);
+  return text({ deleted: true, name, external_id: project.id });
+}
+
+/** The note a raced call names, so two calls to one note pair up; null for a call `--race` does not hold. */
+function raceKey(name: string, args: Record<string, unknown>): string | null {
+  const project = String(args['project'] ?? args['project_id'] ?? '');
+  if (name === 'bm_write') {
+    const directory = String(args['directory'] ?? '').replace(/^\/+|\/+$/g, '');
+    return `${name}|${project}|${directory ? directory + '/' : ''}${String(args['title'] ?? '')}.md`;
+  }
+  if (name === 'bm_edit') return `${name}|${project}|${String(args['identifier'] ?? '').replace(/^\/+/, '').replace(/(\.md)?$/, '.md')}`;
+  return null;
+}
+
 function callBm(name: string, args: Record<string, unknown>): unknown {
-  if (!BM_TOOLS.includes(name)) return { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true };
+  if (!OFFERED_BM_TOOLS.includes(name)) return { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true };
   if (name === 'bm_project') return bmProject(args);
+  if (name === 'bm_project_delete') return bmProjectDelete(args);
   if (name === 'bm_man') return refusal('UNSUPPORTED', 'The stand-in carries no manual pages.', args);
   const addressedBy = String(args['project'] ?? args['project_id'] ?? '');
   if (!addressedBy) return missingProject(name);
@@ -435,6 +668,8 @@ function callBm(name: string, args: Record<string, unknown>): unknown {
     case 'bm_read': return bmRead(project, addressedBy, args);
     case 'bm_write': return writeAt(project.root, project.id, args, true);
     case 'bm_move': return bmMove(project, addressedBy, args);
+    case 'bm_edit': return bmEdit(project, addressedBy, args);
+    case 'bm_delete': return bmDelete(project, addressedBy, args);
     case 'bm_list': return bmList(project, args);
     default: return refusal('UNSUPPORTED', `The stand-in does not model ${name}.`, args);
   }
@@ -534,29 +769,64 @@ const server = http.createServer((request, response) => {
         response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: 'The stand-in was told to refuse tools/list' } }));
         return;
       }
-      const offered = (surface === 'bm' ? BM_TOOLS : LEGACY_TOOLS).filter((name) => name !== droppedTool);
+      const offered = (surface === 'bm' ? OFFERED_BM_TOOLS : LEGACY_TOOLS).filter((name) => name !== droppedTool);
       result = toolsList === 'empty' ? {} : { tools: offered.map((name) => ({ name, inputSchema: { type: 'object' } })) };
     } else if (method === 'tools/call') {
       const name = String(params['name'] ?? '');
-      result = name === droppedTool
-        ? { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true }
-        : surface === 'bm' ? callBm(name, args) : call(name, args);
-      if (result === DROPPED) {
-        response.writeHead(404, { 'Content-Type': 'text/plain' }).end('Session not found');
+      const answerCall = (args: Record<string, unknown>): void => {
+        // THE LOST-ANSWER FAULTS (kickoffs/s178-r2 rows 4 and 5), by the n-th call of a tool.
+        const nth = (callCounts.get(name) ?? 0) + 1;
+        callCounts.set(name, nth);
+        const hit = (list: { tool: string; n: number; lost: boolean }[]) => list.find((fault) => fault.tool === name && fault.n === nth);
+        if (hit(changeBefore)) changeNamedNote(name, args);
+        const unknownFault = hit(outcomeUnknown);
+        let result: unknown = unknownFault?.lost
+          ? refusal('OUTCOME_UNKNOWN', `The stand-in was told to lose call ${nth} of ${name} without applying it.`, args)
+          : name === droppedTool
+            ? { content: [{ type: 'text', text: `Unknown tool: '${name}'` }], isError: true }
+            : surface === 'bm' ? callBm(name, args) : call(name, args);
+        if (unknownFault && !unknownFault.lost) result = refusal('OUTCOME_UNKNOWN', `The stand-in applied call ${nth} of ${name} and was told to say it may not have.`, args);
+        if (name === 'bm_list' && malformedList.length > 0) result = malformList(nth, result, args);
+        if (hit(dropSessionAfter)) result = DROPPED;
+        if (hit(loseResponse)) {
+          request.socket.destroy();
+          return;
+        }
+        if (result === DROPPED) {
+          response.writeHead(404, { 'Content-Type': 'text/plain' }).end('Session not found');
+          return;
+        }
+        const rpcError = (result as Record<string, unknown> | null)?.['rpcError'];
+        if (typeof rpcError === 'string') {
+          response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: rpcError } }));
+          return;
+        }
+        if (surface === 'bm') {
+          // 1.0 ON STREAMABLE HTTP (the NAS, 2026-10-31): a log message first, then the answer whose `id` is the request's.
+          const log = { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: `stand-in: ${name}` } };
+          response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+            .end(`event: message\ndata: ${JSON.stringify(log)}\n\nevent: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result })}\n\n`);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+      };
+      // --race (kickoffs/s178-r2 row 9): the first call to a note waits for its partner, or 500 ms.
+      const key = race ? raceKey(name, args) : null;
+      if (key !== null) {
+        const waiting = held.get(key);
+        if (waiting !== undefined) {
+          held.delete(key);
+          clearTimeout(waiting.timer);
+          waiting.go();
+          answerCall(faultBothWin ? { ...args, overwrite: true, expected_checksum: null } : args);
+          return;
+        }
+        const go = () => answerCall(args);
+        held.set(key, { go, timer: setTimeout(() => { held.delete(key); go(); }, 500) });
         return;
       }
-      const rpcError = (result as Record<string, unknown> | null)?.['rpcError'];
-      if (typeof rpcError === 'string') {
-        response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: rpcError } }));
-        return;
-      }
-      if (surface === 'bm') {
-        // 1.0 ON STREAMABLE HTTP (the NAS, 2026-10-31): a log message first, then the answer whose `id` is the request's.
-        const log = { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: `stand-in: ${name}` } };
-        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-          .end(`event: message\ndata: ${JSON.stringify(log)}\n\nevent: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result })}\n\n`);
-        return;
-      }
+      answerCall(args);
+      return;
     } else {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } }));
       return;

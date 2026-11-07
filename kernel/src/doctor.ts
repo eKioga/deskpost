@@ -1694,8 +1694,12 @@ function postboxOutbox(workspace: string): string {
   const stale = outbox.filter((entry) => entry.state === 'unsent' && Date.parse(entry.created_utc) < dayAgo);
   const refused = outbox.filter((entry) => entry.state === 'refused');
   const left = Array.isArray(state['left_inbox_copies']) ? (state['left_inbox_copies'] as unknown[]).length : 0;
-  const leftLine = left ? `; ${left} inbox ${left === 1 ? 'copy' : 'copies'} left beside ${left === 1 ? 'its' : 'their'} delivered twin, counted once and never deleted` : '';
+  const leftLine = left ? `; ${left} inbox ${left === 1 ? 'copy' : 'copies'} kept, counted once and never deleted` : '';
   const problems: string[] = [];
+  const conflicts=Array.isArray(state['filed_conflicts'])?(state['filed_conflicts'] as {delivery_id:string;disposition:unknown}[]).filter(row=>row.disposition===null):[];
+  if(conflicts.length)problems.push(`filed conflicts kept in the inbox: ${conflicts.map(row=>`${row.delivery_id}: deskpost postbox conflict ${row.delivery_id} --preflight`).join('; ')}`);
+  const operations=Array.isArray(state['conflict_operations']) ? (state['conflict_operations'] as {delivery_id:string;op_id:string;state:string}[]).filter(op=>op.state!=='done') : [];
+  for(const op of operations)problems.push(`unfinished conflict copy for ${op.delivery_id}: deskpost postbox conflict ${op.delivery_id} --resume ${op.op_id}`);
   if (stale.length) {
     problems.push(`${stale.length} ${stale.length === 1 ? 'letter' : 'letters'} in the outbox older than a day and not yet sent (${stale.map((entry) => `${entry.delivery_id}, written ${entry.created_utc}`).join('; ')}): deskpost postbox send tries again`);
   }
@@ -1729,7 +1733,15 @@ function postboxServerTools(workspace: string): string {
   if (!when) return "SKIP: not yet read: no postbox check has recorded what the Postbox server offers";
   const names = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
   const missing = names(state['server_tools_missing']);
-  if (!missing.length) return `the Postbox server offered every tool Deskpost needs at its last check, ${when}`;
+  if (!missing.length) {
+    const line = `the Postbox server offered every tool Deskpost needs at its last check, ${when}`;
+    // WHETHER THAT TOOL LIST IS THE ONE A PROOF RAN ON (kickoffs/s178-r2 row 6): no fingerprint cached keeps today's line.
+    const measured = typeof state['server_tools_fingerprint'] === 'string' ? state['server_tools_fingerprint'] : '';
+    const proven = typeof state['server_tools_proven_fingerprint'] === 'string' ? state['server_tools_proven_fingerprint'] : '';
+    if (!measured) return line;
+    if (!proven) return `WARN: ${line}; fingerprint not yet proven`;
+    return measured === proven ? `${line}; fingerprint proven` : `WARN: ${line}; the server's tool list changed since the last proof (node tools/bm-proof.mts re-proves it)`;
+  }
   const offered = names(state['server_tools']);
   return `WARN: at its last check, ${when}, the Postbox server offered ${offered.length ? offered.join(', ') : 'no tool list Deskpost could read'}; ` +
     `Deskpost needs bm_list, bm_read, bm_write, bm_move and bm_project, and it lacks ${missing.join(', ')}`;

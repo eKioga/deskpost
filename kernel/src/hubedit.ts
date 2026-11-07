@@ -30,7 +30,7 @@ import { writeAtomicText } from './fsx.ts';
 import { pageComparisonSha256, sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
-import { McpSession, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
+import { McpSession, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
@@ -353,7 +353,8 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
     if (split >= 0) {
       refuse(
         `Line ${split + 1} of the content is a level-two heading, '${addition[split]!.trim()}', which would end section '${section}' ` +
-          'and start another. Use ### inside a section, or add-section for a new one.',
+          "and start another. --section supplies the heading; the content is its body only. Use ### inside a section" +
+          (mode === 'AddSection' ? '.' : ', or add-section for a new one.'),
       );
     }
   }
@@ -453,7 +454,7 @@ function lineSequenceInSpan(lines: string[], needle: string[], span: Span | null
 }
 
 /** `Assert-NowStructure`: `Now` is orientation and open items, every column-zero entry with a status. */
-function assertNowStructure(currentBody: string, proposedBody: string, mode: EditMode, section: string, content: string): void {
+function assertNowStructure(currentBody: string, proposedBody: string, mode: EditMode, section: string, content: string, matchText: string): void {
   if (mode === 'CheckItem') return;
   if (!['AppendSection', 'AddSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem'].includes(mode)) return;
   const proposedLines = toLines(proposedBody);
@@ -467,7 +468,13 @@ function assertNowStructure(currentBody: string, proposedBody: string, mode: Edi
   }
   if (!targetsNow) return;
   if (mode !== 'ReplaceBody') {
-    const contentLines = removeTrailingBlank(toLines(content));
+    let contentLines = removeTrailingBlank(toLines(content));
+    if (mode === 'ReplaceItem') {
+      const currentLines = toLines(currentBody);
+      const scope = section ? sectionSpan(currentLines, section) : null;
+      const block = findUniqueBlock(currentLines, scope ? scope.start + 1 : 0, scope ? scope.end : currentLines.length, matchText, false);
+      contentLines = replacementItemLines(currentLines[block.start]!, contentLines);
+    }
     if (headings(contentLines).some((heading) => heading.level <= 2)) {
       refuse("Content targeting 'Now' must not contain a level-one or level-two heading.");
     }
@@ -483,7 +490,7 @@ function assertNowStructure(currentBody: string, proposedBody: string, mode: Edi
 /** `New-ProjectBody`: the proposed page, or the refusal that stops the edit before any write. */
 export function newProjectBody(currentBody: string, mode: EditMode, section: string, content: string, matchText: string, uncheck: boolean): string {
   const proposed = newProjectBodyRaw(currentBody, mode, section, content, matchText, uncheck);
-  assertNowStructure(currentBody, proposed, mode, section, content);
+  assertNowStructure(currentBody, proposed, mode, section, content, matchText);
   return proposed;
 }
 
@@ -517,10 +524,14 @@ export function sizeExempt(pagePath: string): boolean {
   return /(^|\/)(notes\/|limits(\.md)?$)/.test(pagePath.replace(/\\/g, '/'));
 }
 
-export function pageSizeRemedy(pagePath: string): string {
+export function pageSizeRemedy(pagePath: string, body = ''): string {
   const normalized = pagePath.replace(/\\/g, '/');
   if (/(^|\/)connections\.md$/.test(normalized)) return 'Prune entries that no longer earn their place, or split them onto topic pages.';
   if (/(^|\/)_project\.md$/.test(normalized)) {
+    const largest = sectionSizes(body).sort((a, b) => b.size_bytes - a.size_bytes)[0];
+    if (largest?.section === 'Decisions') {
+      return 'Move whole entries from ## Decisions, word for word, to a dated notes/ record page with new-page; leave one grouped pointer line with replace-section.';
+    }
     return 'Move history to a dated notes/ page, connections to the companion connections page, and accepted limits to the limits page (ADR-0013).';
   }
   return 'Move detail onto a linked page and keep this one to what a reader needs on arrival.';
@@ -624,10 +635,10 @@ function entrySizeStatus(body: string, pagePath: string, previousBody: string): 
   };
 }
 
-function sizeWarningLines(warnings: Record<string, PsJsonValue>[], pagePath: string, written: boolean): string[] {
+function sizeWarningLines(warnings: Record<string, PsJsonValue>[], pagePath: string, written: boolean, body = ''): string[] {
   const out: string[] = [];
   const [page, section, entry] = warnings as [Record<string, PsJsonValue>, Record<string, PsJsonValue>, Record<string, PsJsonValue>];
-  if (page['warn']) out.push(`Project Hub page '${pagePath}' ${written ? 'is' : 'would be'} ${page['size_after_bytes']} bytes after this edit. ${pageSizeRemedy(pagePath)}`);
+  if (page['warn']) out.push(`Project Hub page '${pagePath}' ${written ? 'is' : 'would be'} ${page['size_after_bytes']} bytes after this edit. ${pageSizeRemedy(pagePath, body)}`);
   if (section['warn']) {
     for (const oversized of section['warned_sections'] as { section: string; size_bytes: number; size_before_bytes: number }[]) {
       // SAID AS WHAT IT IS (kickoffs/s98 row K1): a preflight's section WOULD grow; an apply's grew, and the first sentence
@@ -669,7 +680,7 @@ async function sharedStore(workspace: string): Promise<PageStore> {
   const ready = async (): Promise<void> => {
     if (!initialised) {
       await session.initialize();
-      refuseUnportedWriter(session, 'hub edit');
+      refuseRetiredWriter(session, 'hub edit');
       initialised = true;
     }
   };
@@ -944,6 +955,16 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     if (after.length > 1 && after.length >= pending(nextBefore).length) {
       refuse(`## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first. Nothing was written.`);
     }
+    // A RUN POINTER THE RULE CAN SEE (kickoffs/s181-r2 spare S1): a line this edit adds that names `Run <id>:` and a
+    // `kickoffs/` link must be the canonical form (`kickoff.ts`), or the count above and /meanwhile miss it. A line already
+    // there, ticked or not, is never judged.
+    const unticked = (line: string) => line.trim().replace(/^- \[[xX]\]/, '- [ ]');
+    const had = new Set(nextBefore.map(unticked));
+    const shaped = nextAfter.map((line) => line.trim()).find((line) => !had.has(unticked(line)) && /\bRun [A-Za-z0-9._-]+:/.test(line) && line.includes('kickoffs/')
+      && !/^- \[[ xX]\] Run [A-Za-z0-9._-]+: \[\[projects\/[^\]/]+\/kickoffs\/[^\]]+\]\]/.test(line));
+    if (shaped !== undefined) {
+      refuse(`A Run pointer in ## Next must read "- [ ] Run <id>: [[projects/<hub>/kickoffs/<id>]] ...", the form the one-pointer rule and /meanwhile read; this line does not: ${shaped}. Nothing was written.`);
+    }
   }
   const currentLines = toLines(currentBody);
   const proposedLines = toLines(proposedBody);
@@ -1019,6 +1040,10 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     shared_library_write: false,
   };
 
+  if (plan['unchanged'] && mode === 'CheckItem') {
+    plan['unchanged_reason'] = `${parsed.flags.has('uncheck') ? 'already unticked' : 'already ticked'}: ${String(itemBefore)}`;
+  }
+
   // Computed BEFORE the preflight return, from the proposed body, so a preflight can report them.
   const sizeWarnings = [
     pageSizeStatus(proposedBody, pagePath, currentBody),
@@ -1026,7 +1051,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     entrySizeStatus(proposedBody, pagePath, currentBody),
   ];
   const warn = (written: boolean): void => {
-    for (const line of sizeWarningLines(sizeWarnings, pagePath, written)) process.stderr.write(`WARNING: ${line}\n`);
+    for (const line of sizeWarningLines(sizeWarnings, pagePath, written, proposedBody)) process.stderr.write(`WARNING: ${line}\n`);
   };
 
   if (parsed.flags.has('preflight')) {
@@ -1039,7 +1064,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
   if (plan['unchanged']) {
     // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5), beside `written`, which stays.
-    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, written: false, status: 'unchanged', journal: null, shared_library_write: false };
+    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, ...(plan['unchanged_reason'] ? { unchanged_reason: plan['unchanged_reason'] } : {}), written: false, status: 'unchanged', journal: null, shared_library_write: false };
   }
   if (isReplacing) {
     if (!parsed.flags.has('user-confirmed')) refuse(`${cliMode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);

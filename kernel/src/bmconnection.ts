@@ -165,7 +165,15 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
     checks.push({ field: 'Storage folder', value: '', status: 'blank', detail: 'status and open-shared work; import needs the folder' });
   }
 
-  const connection: BasicMemoryConnection = { url, collection_id: chosen.id, collection_name: chosen.name, storage: storage ? path.resolve(storage) : '' };
+  // SHARED WRITES, OPTED INTO (kickoffs/s191 row 1; PLAN-many-libraries.md Stage 2 item 1): `--shared-writes on|off` sets it;
+  // without the flag a re-run keeps it for the same server and collection, and a changed URL or collection turns it off.
+  const sharedOption = parsed.options.get('shared-writes');
+  if (sharedOption !== undefined && sharedOption !== 'on' && sharedOption !== 'off') refuse(`Nothing was saved. --shared-writes takes on or off; got '${sharedOption}'.`);
+  const sameConnection = current !== null && current.url === url && current.collection_id === chosen.id;
+  const sharedWrites = sharedOption !== undefined ? sharedOption === 'on' : sameConnection && current.shared_writes;
+  checks.push({ field: 'Shared writes', value: sharedWrites ? 'on' : 'off', status: 'ok', detail: sharedWrites ? 'this Library may write shared Books, each change recorded first' : 'shared Books are read only from this Library' });
+
+  const connection: BasicMemoryConnection = { url, collection_id: chosen.id, collection_name: chosen.name, storage: storage ? path.resolve(storage) : '', shared_writes: sharedWrites };
   const result: Record<string, PsJsonValue> = {
     schema: 1,
     operation: 'Connect Basic Memory',

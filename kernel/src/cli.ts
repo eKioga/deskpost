@@ -109,9 +109,16 @@ function hostHookOutput(stdout: string): string {
   }
 }
 
+/**
+ * A REFUSAL UNWINDS TO THE TOP LEVEL, WHICH SAYS IT AND SETS THE EXIT CODE (kickoffs/s192 row 1, cli-refuse-drains). It no
+ * longer calls `process.exit(1)`: exiting while fetch's sockets are still closing trips a libuv assertion on Windows
+ * (`UV_HANDLE_CLOSING`, exit 3221226505), which s191 row 2 met after a Basic Memory call. A catch that re-refuses with the
+ * caught message (`refuse((error as Error).message)`) says the same words once.
+ */
+class CliRefusal extends Error {}
+
 function refuse(message: string): never {
-  process.stderr.write(hostRemedies(message) + '\n');
-  process.exit(1);
+  throw new CliRefusal(message);
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -403,7 +410,7 @@ async function main(argv: string[]): Promise<number> {
         }
         return 0;
       }
-      const result = runCollectionVerb(rest, workspace);
+      const result = await runCollectionVerb(rest, workspace);
       if (result.refusal !== null) refuse(result.refusal);
       emit(result.value!, true);
       return 0;
@@ -680,9 +687,10 @@ async function main(argv: string[]): Promise<number> {
       const parsed = parseArguments(tail, table);
       try {
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        let changeSummary = '';
         const record = action === '' || action === 'page' ? readTrain(workspace)
-          : changeTrain(workspace, action, parsed.positional[0] ?? '', parsed.options, parsed.flags);
-        emit(record as PsJsonValue, parsed.flags.has('json'), trainText(record, action === 'page'));
+          : changeTrain(workspace, action, parsed.positional[0] ?? '', parsed.options, parsed.flags, new Date(), summary => { changeSummary = summary; });
+        emit(record as PsJsonValue, parsed.flags.has('json'), changeSummary || trainText(record, action === 'page'));
       } catch (error) {
         refuse((error as Error).message);
       }
@@ -942,8 +950,12 @@ if (invokedDirectly) {
       if (code === 0) refreshAfterCommand(process.argv.slice(2));
     })
     .catch((error: unknown) => {
-      process.stderr.write(((error as Error).message ?? String(error)) + '\n');
+      const message = (error as Error).message ?? String(error);
+      process.stderr.write((error instanceof CliRefusal ? hostRemedies(message) : message) + '\n');
       process.exitCode = 1;
+      // A BACKSTOP, NOT THE EXIT: the loop ends on its own once the transport has closed. Only a handle a refused verb left
+      // open (a timer, a child's pipe) keeps it past ten seconds, and then the exit is forced; unref'd, it never waits.
+      setTimeout(() => process.exit(1), 10_000).unref();
     });
 }
 

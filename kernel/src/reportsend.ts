@@ -39,6 +39,49 @@ export function deliveryNote(book: ShelfBook, id: string, sent: boolean): ShelfN
   return null;
 }
 
+export interface IncomingIdentity {
+  book: string;
+  kind: string;
+  page: string;
+  receipt: string | null;
+}
+export interface FiledConflict extends IncomingIdentity { conflict: 'changed' | 'moved-book' | 'no-receipt' }
+
+/** Pure lookup; the caller holds reports then letters when this decides a write. Receipts outlive intent expiry. */
+export function incomingIdentity(workspace: string, deliveryId: string): IncomingIdentity | null {
+  const records = readRecords(workspace).filter(r => r.direction === 'incoming' && r.delivery_id === deliveryId);
+  const record = records[0];
+  const recordedFiling = record?.payload['filing'] as PostboxFiling | undefined;
+  const recordedReceipt = recordedFiling?.wireDigest ?? record?.payload['wire_digest'];
+  const receipt = typeof recordedReceipt === 'string' ? recordedReceipt : null;
+  const recordKind = record ? (record.kind === 'report-outcome-applied' ? 'outcome' : record.kind === 'report-control-applied' ? 'control' : recordedFiling?.kind ?? record.kind) : null;
+  for (const slug of ['letters', 'reports']) {
+    // Some older capture fixtures have only their target Book. No Book is created by the lookup.
+    if (!fs.existsSync(path.join(workspace, 'shelf', slug))) continue;
+    const note = deliveryNote(getShelfBook(workspace, slug), deliveryId, false);
+    if (!note) continue;
+    const fields = noteFrontmatter(readUtf8(note.fullPath));
+    const kind = recordKind === 'control' && record?.book === slug ? 'control'
+      : fields.has('closes_delivery_id') || fields.has('outcome') ? 'outcome'
+      : fields.has('amends_delivery_id') || fields.has('withdraws_delivery_id') ? 'control' : slug === 'reports' ? 'report' : 'letter';
+    return { book: slug, kind, page: note.page, receipt: fields.get('postbox_wire_digest') ?? receipt };
+  }
+  if (!record) return null;
+  const parent = record.payload['report_id'];
+  const parentPage = record.book === 'reports' && typeof parent === 'string' && fs.existsSync(path.join(workspace,'shelf','reports'))
+    ? deliveryNote(getShelfBook(workspace,'reports'),parent,false)?.page : null;
+  return {book: record.book, kind: recordKind!, page: record.identities.pages.find(p=>p.book===record.book)?.page ?? parentPage ?? '', receipt};
+}
+
+/** Compare identity before allocating a note, intent, or effect. Different routing wins over a body mismatch. */
+export function incomingConflict(workspace: string, filing: PostboxFiling): FiledConflict | null {
+  const prior = incomingIdentity(workspace, filing.deliveryId);
+  if (!prior) return null;
+  const conflict = prior.book !== filing.book || prior.kind !== filing.kind ? 'moved-book'
+    : prior.receipt === null ? 'no-receipt' : prior.receipt !== (filing.wireDigest ?? payloadDigest(filing.body)) ? 'changed' : null;
+  return conflict ? {...prior, conflict} : null;
+}
+
 export function reportStageRunner(workspace: string): StageRunner {
   return (record, stage, locks) => {
     if (record.kind === 'report-control-applied') return incomingControlStage(workspace,record,stage,locks);
@@ -267,7 +310,7 @@ function outcomeStage(workspace: string, record: IntentRecord, stage: IntentStag
 }
 
 /** File an outcome and apply its effect through the same incoming intent on every retry. */
-export function receiveReportOutcome(workspace: string, filing: PostboxFiling): {page: string; already: boolean; effect: string} {
+export function receiveReportOutcome(workspace: string, filing: PostboxFiling): {page: string; already: boolean; effect: string; filedConflict?: FiledConflict} {
   const reports=getShelfBook(workspace,'reports'); const letters=getShelfBook(workspace,'letters');
   if (!reports.isCapture || !letters.isCapture || !letters.takesLetters) throw new Error('Filing an outcome needs the reports capture Book and a letters capture Book that accepts letters.');
   const fields=new Map(filing.fields);
@@ -277,7 +320,11 @@ export function receiveReportOutcome(workspace: string, filing: PostboxFiling): 
   try {
     held.set('reports',enterBookLock(workspace,reports.bookRoot));
     held.set('letters',enterBookLock(workspace,letters.bookRoot));
+    const conflict=incomingConflict(workspace,filing);
+    if(conflict)return {page:conflict.page,already:true,effect:'',filedConflict:conflict};
     const prior=deliveryNote(letters,filing.deliveryId,false);
+    // The filed receipt is durable. An expired completed intent must never re-apply its effect.
+    if(prior && !readRecords(workspace).some(r=>r.direction==='incoming'&&r.delivery_id===filing.deliveryId))return {page:prior.page,already:true,effect:'already filed'};
     let record=readRecords(workspace).find(r=>r.direction==='incoming'&&r.delivery_id===filing.deliveryId);
     if(!record) {
       const now=new Date().toISOString().replace(/\.\d{3}Z$/,'Z');
@@ -299,7 +346,7 @@ function incomingOutcomeStage(workspace: string, record: IntentRecord, stage: In
 }
 
 /** Incoming controls are applied under reports then letters, by parent provenance and sequence. */
-type ControlResult={status:'applied'|'duplicate'|'deferred'|'conflict';parent:string;why?:string;effect?:string};
+type ControlResult={status:'applied'|'duplicate'|'deferred'|'conflict';parent:string;why?:string;effect?:string;filedConflict?:FiledConflict};
 export function receiveReportControl(workspace:string,filing:PostboxFiling):ControlResult {
   for(let pass=0;pass<3;pass++){
     recover(workspace,'postbox check',reportStageRunner(workspace));
@@ -323,6 +370,8 @@ function controlAttempt(workspace:string,filing:PostboxFiling):ControlResult|nul
   const held=new Map<IntentBook,BookLock>();let record:IntentRecord|undefined;let status:'applied'|'duplicate'|'deferred'|'conflict'='applied';
   try {
     held.set('reports',enterBookLock(workspace,reports.bookRoot));held.set('letters',enterBookLock(workspace,letters.bookRoot));
+    const filedConflict=incomingConflict(workspace,filing);
+    if(filedConflict)return {status:'conflict',parent,filedConflict};
     const report=deliveryNote(reports,parent,false);
     if(!report)return {status:'deferred',parent,why:'parent Report has not arrived'};
     const before=readUtf8(report.fullPath);const reportFields=noteFrontmatter(before);

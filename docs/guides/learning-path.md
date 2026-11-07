@@ -141,3 +141,5 @@ Inbox.
   in the order they have to happen.
 - [Library Workflow Guide](workflow-guide.md): the same behaviour drawn as pictures.
 - [Quick Start](quick-start.md): if you skipped it, the ten-minute version from a fresh install.
+
+For shared Books on another computer, 1.6.0 adds previewed, recorded changes, new Books, promotion from this Library's collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books).

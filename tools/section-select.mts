@@ -7,14 +7,36 @@
  * and every file no section reached that way is claimed by the sections that claim a file importing it. The rules:
  *   (a) a `kernel/src` file no section claims is refused, so the map cannot go stale quietly (`unclaimedFiles`);
  *   (b) every section claiming a changed `kernel/src` file runs;
- *   (c) a changed file on the shared list (below), or the map itself, runs every section;
+ *   (c) a changed file on the shared list (below) runs every section; added claim-map keys select their sections,
+ *       while changed existing claims, removed keys or an unavailable earlier map run every section;
  *   (d) a changed `kernel/test/selftest.ts` maps each changed hunk to the section whose `if (selected(N))` block holds
- *       it, read from the file at the new revision; a hunk outside every section block (imports, shared helpers, the
- *       runner, the verdict) runs every section.
+ *       it, read from the file at the new revision. A hunk may span that section's function and run guard, in either
+ *       order, with blank lines between; every nonblank line must belong to the same section. A hunk reaching imports,
+ *       shared helpers, another section, the runner or the verdict runs every section.
  * The cut tier always runs every section, so a wrong claim costs at most one cut.
  *
  * THE LINUX SELECTION (kickoffs/s153 row 6), below, is the one platform policy every caller applies after these rules.
  */
+
+import fs from 'node:fs';
+
+export const CHECK_MAP_PATH = 'tools/check-map.json';
+class UnmappedPathError extends Error {
+  constructor(file: string) { super(`unmapped changed path ${file}: add its covering checks to ${CHECK_MAP_PATH}`); }
+}
+type CheckRule = { pattern: string; sections: number[] | 'named'; checks: string[]; contract?: string };
+const checkMap = JSON.parse(fs.readFileSync(new URL('./check-map.json', import.meta.url), 'utf8')) as {schema:number;paths:CheckRule[]};
+if (checkMap.schema !== 1 || !Array.isArray(checkMap.paths) || checkMap.paths.some(row =>
+  typeof row.pattern !== 'string' || !(row.sections === 'named' || Array.isArray(row.sections) && row.sections.every(n => Number.isInteger(n) && n > 0))
+  || (row.contract !== undefined && (typeof row.contract !== 'string' || !row.contract || row.sections !== 'named' && !row.sections.length && !row.checks?.length))
+  || !Array.isArray(row.checks) || row.checks.some(n => typeof n !== 'string' || !n))) throw Error(`${CHECK_MAP_PATH}: invalid mapping`);
+const rules = checkMap.paths.map(row => ({...row, match: new RegExp(row.pattern)}));
+export function contractDocuments(): { match: (file: string) => boolean; why: string }[] {
+  return rules.filter(row => row.contract).map(row => ({match: file => row.match.test(file), why: row.contract!}));
+}
+export function pathChecks(changed: readonly string[]): string[] {
+  return [...new Set(changed.flatMap(file => rules.filter(row => row.match.test(file)).flatMap(row => row.checks)))].sort();
+}
 
 export const COVERS_PATH = 'kernel/test/section-covers.json';
 export const SELFTEST_PATH = 'kernel/test/selftest.ts';
@@ -26,8 +48,8 @@ export const SHARED_FILES: ReadonlySet<string> = new Set([
   'kernel/package.json',
   'kernel/package-lock.json',
   'kernel/tsconfig.json',
-  COVERS_PATH,
   'tools/section-select.mts',
+  CHECK_MAP_PATH,
 ]);
 
 /** One section's block in selftest.ts: 1-based lines, inclusive, its leading comment lines included. */
@@ -120,7 +142,7 @@ function listed(sections: Iterable<number>): string {
 }
 
 /** Rules (b)-(d) over one commit's changed paths (repository-relative, forward slashes). */
-export function selectSections(input: { changed: readonly string[]; selftestHunks: readonly Hunk[]; selftestText: string; covers: Covers }): Selection {
+export function selectSections(input: { changed: readonly string[]; selftestHunks: readonly Hunk[]; selftestText: string; covers: Covers; previousCovers?: Covers }): Selection {
   const reasons: string[] = [];
   const chosen = new Set<number>();
   let all = false;
@@ -129,9 +151,29 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
     for (const file of files) claimants.set(file, [...(claimants.get(file) ?? []), Number(section)]);
   }
   for (const file of [...input.changed].sort()) {
-    if (SHARED_FILES.has(file)) {
+    const mapped = rules.filter(row => row.match.test(file));
+    for (const row of mapped) if (Array.isArray(row.sections)) {
+      row.sections.forEach(section => chosen.add(section));
+      if (row.sections.length) reasons.push(`${listed(row.sections)}: ${CHECK_MAP_PATH} maps ${file}`);
+    }
+    const staticChecks = pathChecks([file]);
+    if (staticChecks.length) reasons.push(`${file}: ${staticChecks.join(', ')}`);
+    if (mapped.length && !staticChecks.length && mapped.every(row => Array.isArray(row.sections) && !row.sections.length)) reasons.push(`document gate: ${file}`);
+    if (file === COVERS_PATH) {
+      const before = input.previousCovers?.sections;
+      const after = input.covers.sections;
+      if (!before || Object.entries(before).some(([section, claims]) =>
+        !Object.hasOwn(after, section) || JSON.stringify([...claims].sort()) !== JSON.stringify([...after[section]!].sort()))) {
+        all = true;
+        reasons.push(`every section: existing claims in ${file} changed or the earlier map is unavailable`);
+      } else {
+        const added = Object.keys(after).filter(section => !Object.hasOwn(before, section)).map(Number);
+        added.forEach(section => chosen.add(section));
+        if (added.length) reasons.push(`${listed(added)}: added claim-map keys`);
+      }
+    } else if (SHARED_FILES.has(file)) {
       all = true;
-      reasons.push(file === COVERS_PATH ? `every section: the claim map ${file} changed` : `every section: ${file} is on the shared list`);
+      reasons.push(`every section: ${file} is on the shared list`);
     } else if (file.startsWith('kernel/test/') && file !== SELFTEST_PATH) {
       all = true;
       reasons.push(`every section: ${file} is a self-test helper`);
@@ -144,7 +186,7 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         sections.forEach((section) => chosen.add(section));
         reasons.push(`${listed(sections)}: claim ${file.slice('kernel/src/'.length)}`);
       }
-    } else if (file.startsWith('.githooks/') || file.startsWith('tools/')) {
+    } else if (file.startsWith('.githooks/') || file.startsWith('tools/') || mapped.some(row => row.sections === 'named')) {
       const name = file.slice(file.lastIndexOf('/') + 1);
       const named = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
       const lines = input.selftestText.split(/\r?\n/);
@@ -157,8 +199,8 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
       } else {
         for (const section of sections) { chosen.add(section); reasons.push(`section ${section}: names ${file}`); }
       }
-    } else if (!file.startsWith('kernel/')) {
-      reasons.push(`no section: ${file} is outside kernel/src and no section claims it`);
+    } else if (!file.startsWith('kernel/') && mapped.length === 0) {
+      throw new UnmappedPathError(file);
     }
   }
   if (input.changed.includes(SELFTEST_PATH)) {
@@ -180,7 +222,8 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
       }
       const home = inside(first);
       const span = hunk.count === 0 ? `after line ${hunk.start}` : first === last ? `line ${first}` : `lines ${first}-${last}`;
-      if (home && last <= home.end) {
+      if (home && lines.slice(first - 1, last).every((line, offset) =>
+        line.trim() === '' || ranges.some(range => range.section === home.section && first + offset >= range.start && first + offset <= range.end))) {
         chosen.add(home.section);
         reasons.push(`section ${home.section}: ${SELFTEST_PATH} ${span} is inside it`);
       } else {
@@ -265,12 +308,14 @@ export function hookSections(git: (args: string[]) => string): Selection {
   try {
     const changed = git(['diff', '--name-only', '--no-renames', '--cached', 'HEAD']).split(/\r?\n/).filter(Boolean);
     const covers = parseCovers(git(['show', `:${COVERS_PATH}`]));
+    const previousCovers = parseCovers(git(['show', `HEAD:${COVERS_PATH}`]));
     const selftestText = git(['show', `:${SELFTEST_PATH}`]);
     const selftestHunks = changed.includes(SELFTEST_PATH)
       ? parseHunks(git(['diff', '-U0', '--no-renames', '--cached', 'HEAD', '--', SELFTEST_PATH])) : [];
-    const chosen = selectSections({ changed, covers, selftestText, selftestHunks });
+    const chosen = selectSections({ changed, covers, previousCovers, selftestText, selftestHunks });
     return chosen.all ? chosen : { ...chosen, sections: [...new Set([...chosen.sections, 155])].sort((a, b) => a - b) };
   } catch (error) {
+    if (error instanceof UnmappedPathError) throw error;
     return { all: true, sections: [], reasons: [`selection unavailable: ${String(error).replace(/[\r\n]+/g, ' ')}`] };
   }
 }

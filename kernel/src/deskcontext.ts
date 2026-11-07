@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { archivedSinceOpened, missingBookRepair, missingSinceOpened, pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
+import { archivedSinceOpened, missingBookRepair, missingSinceOpened, movedNoteLine, pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
@@ -208,7 +208,11 @@ export function bookRootLabel(entry: string, localBackend = false, workspace = '
   if (parts.shelf === 'archive') {
     return place === 'shelf' ? `${parts.slug} (shelf, archived)` : place === 'collection' ? `${parts.slug} (collection, archived)` : `${parts.slug} (archived)`;
   }
-  if (archivedSinceOpened(workspace, parts.root, localBackend)) return `${parts.slug} (collection, archived since opened)`;
+  if (archivedSinceOpened(workspace, parts.root, localBackend)) {
+    // A BOOK `shared promote` MOVED (kickoffs/s194 spare S2) reads as the overview names it (desk.ts, movedEntry).
+    if (movedNoteLine(workspace, parts.slug) !== null) return `${parts.slug} (collection, moved to shared/${parts.slug})`;
+    return `${parts.slug} (collection, archived since opened)`;
+  }
   return `${parts.slug} (${place})`;
 }
 

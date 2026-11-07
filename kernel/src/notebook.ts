@@ -180,6 +180,29 @@ export function scopeIndexDrift(scope: NotebookScope): string[] {
   return indexDrift(scope.root, scope.relative, 'library notebook render', true, scope.seat);
 }
 
+/**
+ * Why each topic cannot be rendered, in slug order: every topic whose `_index.md` is missing or has no single usable H1
+ * (kickoffs/s180 row 2(g)), so doctor names them all at once while rendering still refuses on the first. `first` is the
+ * render's own message, kept when the topics cannot be listed or none of them fails on its own.
+ */
+function unrenderableTopics(notebookRoot: string, relative: string, first: string): string[] {
+  let slugs: string[];
+  try {
+    slugs = notebookDirectories(notebookRoot, (name) => `${relative}/${name} is a reparse point`).sort(psSortCompare);
+  } catch {
+    return [first];
+  }
+  const messages: string[] = [];
+  for (const slug of slugs) {
+    try {
+      topicHeading(path.join(notebookRoot, slug, '_index.md'));
+    } catch (error) {
+      messages.push((error as Error).message);
+    }
+  }
+  return messages.length ? messages : [first];
+}
+
 function indexDrift(notebookRoot: string, relative: string, repair: string, absentIsEmpty: boolean, seat?: string | null): string[] {
   const masterPath = path.join(notebookRoot, SEAT_INDEX_NAME);
   if (!fs.existsSync(notebookRoot) || !fs.statSync(notebookRoot).isDirectory()) return absentIsEmpty ? [] : [`${relative}/ is missing`];
@@ -188,10 +211,12 @@ function indexDrift(notebookRoot: string, relative: string, repair: string, abse
   try {
     expected = masterIndexText(notebookRoot, relative);
   } catch (error) {
-    const problem = `a topic cannot be rendered: ${(error as Error).message}`;
-    return [seat
-      ? `${relative}: ${problem}; it belongs to seat ${seat}: give that topic an _index.md with one H1 heading, or move the folder out of the Notebook, then run ${repair}`
-      : problem];
+    return unrenderableTopics(notebookRoot, relative, (error as Error).message).map((message) => {
+      const problem = `a topic cannot be rendered: ${message}`;
+      return seat
+        ? `${relative}: ${problem}; it belongs to seat ${seat}: give that topic an _index.md with one H1 heading, or move the folder out of the Notebook, then run ${repair}`
+        : problem;
+    });
   }
   const problems: string[] = [];
   const bytes = fs.readFileSync(masterPath);

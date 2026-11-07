@@ -1,6 +1,7 @@
 ---
 paths:
   - "tools/**"
+  - "kernel/test/**"
   - ".claude/**"
   - "docs/**"
   - ".githooks/**"
@@ -225,6 +226,16 @@ the next change, not records of a past one, so they belong beside the code they 
   green. Verify that by doing it, not by reasoning about it. And pin **both directions**: the
   positives, and the safe forms that must NOT be flagged, which are what stop the check firing on
   correct code.
+- **A value a test plants to look like a secret says so, on its own line:** end that line with
+  `// gitleaks:allow (a value this test plants)` (Decision, 2026-11-03). Release preparation scans every changed
+  line with gitleaks, and two unmarked values s176 planted stopped release 1.5.4 at `prepare.ps1`, after its proofs.
+  Before committing such a test, the commit hook's `tools/staged-secrets.mts` names the rule, file and line.
+- **Every line that spawns git names repositoryNeutralEnv( itself.** Self-test section 92 matches each line holding
+  `spawnSync('git'` for the literal `repositoryNeutralEnv(`, so an environment built on the line before is refused
+  (c106, 2026-11-03).
+- **A cut that adds a self-test section adds its key in `kernel/test/section-covers.json` in the same cut.** Section
+  215 refuses a commit that adds a section without its key (c106 lost a cut tier to a Kickoff that split them,
+  2026-11-03).
 
 ## Before you write to durable storage
 

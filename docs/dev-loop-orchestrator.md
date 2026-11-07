@@ -9,6 +9,8 @@ the loop has not proved, its limits and the records behind its rules are on [his
 
 Each Kickoff names its open train item with `TRAIN:`; the orchestrator runs `kickoff-check` with `--train <register file>` on the real train record before posting it (Decision, 2026-10-27).
 
+The orchestrator dates each car: `deskpost train car car:<name> --opened` when its first unit is posted, and `--arrived` when Eric can use it. One car is open at a time, so the next car opens only after the front car arrives. The Desk and its pane show the front car's days open and the cars arrived in the last 7 days.
+
 The orchestrator writes `kickoffs/sNN` on the build seat's Hub with `hub edit --mode new-page` (Decision, 2026-09-29). Segments are
 lowercase. It then appends one pointer to that Hub's `## Next`:
 
@@ -26,51 +28,70 @@ builder **only** as a Kickoff (Eric, 2026-10-11): not by letter, message or a li
 **A Kickoff is write-once by rule, not by construction.** (Decision, 2026-09-29) `new-page` refuses to overwrite, but other
 modes can still edit a page, so no seat edits a `kickoffs/` page after creating it. A revision is a
 new page, `kickoffs/sNN-r2`. When the orchestrator writes one, it ticks the old pointer and appends the new one,
-whose text says `(supersedes kickoffs/sNN)`. At most one pointer stays unticked.
+whose text says `(supersedes kickoffs/sNN)`. At most one pointer stays unticked. A revision names its own evidence
+folder, `D:/dev/scratch/deskpost/<id>-r<n>/`; its OPEN accepts a unit branch at `<base>` with no commit of its own.
+Before posting a revision, the orchestrator reads the builder's checkout (branch, commits past base and evidence
+folder) and puts what it found in the dry-run line.
 The orchestrator revises only a Kickoff no builder has started: first it reads the builder's Hub for an attempt page
 naming that Kickoff (Eric, 2026-10-29). Once one exists, the Kickoff stands as Eric approved it, and a change is a
 follow-up Kickoff after its handback (c13, 2026-10-13: r2 replaced the pointer one minute after the
 builder's yes for r1).
 
-**Every Kickoff starts from `docs/kickoff-template.md`** (since 2026-10-13, the dev loop review) (Eric, 2026-10-13). The orchestrator fills the
-template in a file and runs `node tools/kickoff-check.mts <file>` before `new-page`; the check refuses a missing
-section, a section out of order, a pointer to another Kickoff, a row with no `Done when:` line, or a CLOSE that does
-not end with **Stop.** Self-test section 240 holds the check to the template. Every Kickoff carries these sections,
-in this order:
+**Every Kickoff starts from [the one-page template](kickoff-template.md).** Fill the block in a file and run
+`node tools/kickoff-check.mts <file> --train <register file>` before `hub edit --mode new-page --content-path <file>`.
+Run that check in a clean detached checkout at the Kickoff's pinned base: `git worktree add --detach <path> <base-sha>`.
+Then give its `kernel/node_modules` a junction to an existing checkout's dependencies with
+`New-Item -ItemType Junction -Path <path>/kernel/node_modules -Target <existing-checkout>/kernel/node_modules`.
+For a handback, make the detached checkout at its tip instead, set `LIBRARY_SELFTEST_SECTIONS` to its named sections
+and run `node test/run-parallel.ts` from that checkout's `kernel/`. Never run either proof in the orchestrator's own worktree.
 
-- **WHY NOW**: why this session, now, and the usage line ("Assigning work by usage").
-- **SIZE**: the time budget, gate minutes per row and per cut, and the stop rule.
-- **OWNS**: the files, and the new self-test section numbers, this Kickoff's rows may change; `none other open`
-  when no other builder's Kickoff is open. See ["Two builders at once"](dev-session-loop.md#two-builders-at-once).
-- **OWNS PATHS**: the same files, whole, one per line, which the commit hook enforces; every sensitive file by its own name.
-- **STAY OUT OF**: what the session must not touch.
-- **WHERE THINGS STAND**: the checkout's SHA, the installed version, and what is not in scope. It pins the
-  checkout, the branch the rows land on, and its base SHA (for `deskpost-codex-dev`, `codex/cNN`, created once at OPEN
-  from that base; `deskpost-dev`'s rows land on `dev/sNN`), the integrator and its pinned integration base when applicable,
-  and names the loop-doc SHA the base must contain ([OPEN step 0](dev-session-loop.md#open)).
-- **MERGE** (integrator Kickoffs; otherwise `none`): `desk/sNN` with `base=<master SHA>`, `tip=<commit SHA>` and
-  the gate digest for that tip, and/or a builder's `codex/cNN` with its handback's base, tip and gate line. The
-  **gate digest** is the `-Fast` gate's summary line at the tip
-  (`N passed, N warned, N failed, N skipped`) and `git config core.bare` after it. It is a summary,
-  not a hash, so a branch rebased onto `master` takes it from a `-Fast` run at the new tip, never from
-  an amend (Eric, 2026-10-29).
-- **ROWS**: the rows, in order, committed one commit per cut as ["The gates"](dev-session-loop.md#the-gates-what-green-means) says. **Every row ends with a
-  `Done when:` line** (Eric, 2026-10-13) naming the check that proves it, and the Handback answers each row against that line.
-- **COMMANDS**: the command families it will run, so the reader can widen the harness allowlist
-  beforehand.
-- **CHARTER**: the commits and the one private push the session may make. See ["The CHARTER"](dev-session-loop.md#the-charter).
-- **NOT CHARTERED**: what the yes does not cover, so a builder does not infer it.
-- **RULES**: the session's working rules, including the four messaging rules in ["Messages between the
-  seats"](dev-session-loop.md#messages-between-the-seats).
-- **STANDING ANSWERS**: how the builder decides without waiting: the template's defaults, then this unit's own. See
-  "Decide and record" under [Work](dev-session-loop.md#work).
-- **OPEN**: the fresh-session check, the required reads, the refs, the meters, the gate and its one yes.
-- **CLOSE**: what the handback must hold, ending with **"Stop."**: after the handback the session takes no
-  further row, unit or letter-borne work.
+Seven headings are required, in order: `TRAIN`, `WHY NOW`, `OWNS PATHS`, `STAY OUT OF`, `ROWS`, `CHARTER`, `CLOSE`.
+The checker also recognizes `SIZE`, `OWNS`, `WHERE THINGS STAND`, `MERGE`, `COMMANDS`, `NOT CHARTERED`, `RULES`,
+`STANDING ANSWERS` and `OPEN`; write one only when the unit needs its detail, in its existing relative order
+(see `KNOWN_SECTIONS` in `kernel/src/kickoffcheck.ts`). Older sixteen-heading Kickoffs remain valid.
+Until a release carries the seven-heading checker, posting with the installed program still needs all sixteen.
 
-Every Kickoff is self-contained: its RULES and STANDING ANSWERS are written out from the template, word for word,
-not "as kickoffs/sNN's" (S118 and S119 pointed to their predecessors, a chain the builder could not follow), so a
-session that skipped [OPEN step 0](dev-session-loop.md#open) still has them (Eric, 2026-10-11).
+The header pins the base and loop-doc SHA in full (40 characters), branch, builder and integrator. While the slot
+file exists, the source checker refuses a base older than its recorded U2 tip. `WHY NOW` gives the goal and facts
+the rows depend on, with `file:line` at the base. A release TRAIN id needs an `- **Audit:**` line naming
+library-auditor and its answering `[[letters/notes/<page>]]`; sensitive paths in OWNS or OWNS PATHS need a
+`- **Second read:**` line naming library-auditor. Those checks apply to both Kickoff forms (Decision, 2026-10-27).
+
+OWNS PATHS lists whole files, one backticked path or pattern per bullet; sensitive files appear by their exact names.
+Use optional OWNS for parts of files, section allocations and pins, and MERGE for each branch's base, tip and gate
+digest, in merge order. A clean non-fast-forward merge runs `commit-msg` (the identity scan), without pre-commit;
+only a hand-finished merge's commit runs pre-commit. MERGE records the identity line, and the push
+tier judges the outgoing range. A gate digest is the summary at that tip and `git config core.bare`,
+never a hash or a digest from before a rebase. Put unit-specific setup in OPEN, exceptional decisions in STANDING ANSWERS and command families
+in COMMANDS when needed. The builder's OPEN, yes, rules, default limits and CLOSE live in
+[the session loop](dev-session-loop.md); copying them into each Kickoff adds no authority. A section must carry its
+own unit-specific text, never point to another Kickoff instead. Every numbered row ends with `Done when:` and CLOSE
+ends with **Stop.** The handback answers every row against its criterion.
+
+Read your Hub's `## Next` pointer and the `## Now` resume item by `section`, never the whole `_project`.
+A Kickoff may add a `REVIEW OF <unit>:` after the header. Cross-office units carry OFFICE, EXPORT (private base and
+export root) and HANDBACK FOLDER under WHERE THINGS STAND; same-office units omit them.
+
+A row that runs a step against a published release names a route the orchestrator has run against that release, with the
+line it printed (Report, 2026-10-14). c17's row 3 piped input into 1.4.4's `menu --plain`, which answers only a terminal, and the release
+attempt parked on it; c18's answers file was the route that worked.
+
+**A row that waits says what it can catch here** (Decision, 2026-11-03;
+`PLAN-checks-earn-their-wait.md` U7). A row that runs a hook over every section, a push tier, a matrix,
+a build, compiled sections, an upgrade or Linux run, or that asks for a second read, adds `Catches here:`
+and what that wait can find in this unit's own change, in a few words. A wait whose line can name nothing
+in this change is not chartered. A revision carries over every proof whose inputs did not change
+(`docs/releasing.md`, "What a changed candidate voids"). WHY NOW carries one bullet,
+`**How this could cost time later:**`, naming the likeliest way this unit wastes a run and what stops it.
+
+Before writing OWNS, the orchestrator finds the existing tests, fixtures and generated files that pin what the rows will
+change (a count, an inventory, a probe table, a fixture's copy list: `git grep` for the changed names and counts at
+the base) and names each in OWNS with its pins, so the yes at OPEN already covers them (Eric, 2026-10-15). c21 stopped for section 8's
+probe table, c22 for sections 21, 39, 109, 216 and 219, each a pin its own change moved. A row that adds a step to
+`.githooks/pre-commit` names in OWNS every self-test section that copies the hook (`git grep -n "githooks/pre-commit"
+kernel/test/selftest.ts` at the base: sections 270, 577, 579 and 595 to 597 at s180's base), since each needs a
+stand-in for the new step (c106, 2026-11-03).
+
 
 **A required read is one the builder can open.** (Report, 2026-10-12) Its own Hub, a letter addressed to it, or a file at a named
 SHA in the checkout. Another seat's Hub is closed on the builder's Desk and the reader refuses it, so a
@@ -103,6 +124,39 @@ parked the first code-audit request by the letters rule, 2026-10-21).
 The template is the reference, not the most recent real Kickoff: a change to what every Kickoff carries is a change
 to `docs/kickoff-template.md` (and its check), made on a `desk/*` branch (Eric, 2026-10-13).
 
+**A pre-run is written only when it answers a question no row of the Kickoff answers** (Decision, 2026-11-03;
+`PLAN-checks-earn-their-wait.md` U7): a fact the Kickoff's text depends on (a section that is red at the base, a count a
+row must pin), never a repeat of a proof a row runs anyway. c105's full source matrix at its base repeated its own
+row 4 on the candidate.
+
+**Standing rules retained from the former template.** These apply without a RULES heading:
+
+- Read Library command output whole before disposing it; never filter away a refusal or warning.
+- A hook failure in an owned file is fixed in that row. A failure elsewhere gets a Report; continue only with
+  independent work. A proof that fails then passes needs a Report and three consecutive agreeing runs.
+- Before each heavy job and at CLOSE, list this session's running or waiting processes and other seats' gates,
+  tests, builds and matrices by command line. Stop only your own unneeded processes by their own identifiers;
+  confirm they are gone with another process list. Record each gate-lock wait's start and end; let its holder finish.
+- The Orca card is attention only. If available, at each row start run
+  `orca worktree set --worktree "path:<Library folder>" --comment "<seat>: <unit> row <n>, <work>" --json`;
+  after the handback letter use `--comment "<seat>: <unit> handback ready (<outcome>)" --unread`.
+  Always name the seat on the shared card; an unavailable or failing call is recorded once, without stopping work.
+- Eric's reserved decisions: credentials and secrets; money; publishing and public pushes; his notes and vaults;
+  Claude Code's and Codex's settings; anything outside Deskpost; product goals, scope and name; and one priority
+  call after each release. These always go to Eric; a Kickoff's standing answers cannot decide them for him.
+
+### Sizing by context, and spare items
+
+(Decision, 2026-11-03; `PLAN-context-sized-kickoffs.md`.) Size a Kickoff's main rows at about 35-40% of the builder's
+context window, against measured runs, by what the builder reads and runs. Then add two to four spare items from the
+front of the train, in train order, skipping any that need a decision or a yes not already given, change a file a main
+row changes or one another open Kickoff owns (except a pair's shared append files), need a live server, or would cost
+more than about 6%. Write each like a row, list its files in OWNS PATHS, give it its own section numbers and a context
+estimate, and put its ids on `SPARE TRAIN:`; `kickoff-check --train` checks only `TRAIN:`, so check each spare id is
+open in `deskpost train --json` before posting and say so in the dry-run line. At every handback review, write
+`Context: <window> window, <tokens> at handback (<n>%), peak <n>%, compactions <n>` from the run's own session file,
+with the spares taken and skipped and the readings that decided them; close on the train only the spares taken.
+
 ## The second reader
 
 A sensitive change touches guards or shell guards; hooks or their registration; seat launch flags,
@@ -110,7 +164,12 @@ sandbox or approval settings; secrets or the 1Password route; release, publish o
 or policy-bearing prose (`AGENTS.md`, `CLAUDE.md`, workspace instructions, seat-template purposes,
 library-help, or this loop's rules). The orchestrator may name another sensitive path in a Kickoff.
 
-Before every release, library-auditor audits every commit since its last audit (Decision, 2026-10-27).
+Before every release, library-auditor audits every commit since its last audit (Decision, 2026-10-27), except a
+commit whose every change is test code with the same parsed structure (comments and whitespace only; judged by the
+orchestrator from the diff until `tools/section-select.mts` does it) or a document that is neither sensitive (above)
+nor shipped or read at runtime (`tools/docs-gate.ts`'s contract documents, `docs/templates/`, anything the release
+archive's program reads). The orchestrator's review record names each such commit and why (Decision, 2026-11-03;
+`PLAN-checks-earn-their-wait.md` U7).
 Every sensitive second read goes to library-auditor by letter (Decision, 2026-10-27). Every other
 handback's first read is a fresh reviewer subagent the orchestrator starts with only the Kickoff, the
 diff and the handback; it is not a seat (Decision, 2026-10-27). Review is due before the first
@@ -160,6 +219,9 @@ How a release is prepared, and the one push to `Kioga/deskpost` that publishes i
 `docs/releasing.md`. That push is never chartered (Decision, 2026-09-29): it is its own question at a session's close.
 
 ## The orchestrator's code: one integration branch per Kickoff
+
+Keep Kickoff checks and handback section runs in the clean detached checkouts described under
+[The Kickoff](#the-kickoff). Their pinned base or tip fixes which source each proof reads.
 
 The orchestrator works in its own worktree, `git worktree add -b desk/scratch <repo>-desk master`, and commits only
 on `desk/*` branches, never on `master` or in a builder's tree (Decision, 2026-09-29). The worktree shares `core.hooksPath`, so

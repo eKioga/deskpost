@@ -156,11 +156,13 @@ library desk open book holding --location shelf
 ```
 
 To list the notes still waiting, run `library triage inventory --pending`: it names each one's title and page.
+Add `--book reports`, `--book letters` or `--book holding` to list only that capture Book; the counts stay
+whole. Combine it with `--for-seat <seat>` to narrow the same list by recipient. Both filters need `--pending`.
 Never read a capture Book's map `_index` for that list, since a map listing every closed note can be too large
 for one reader call.
 
 Then read `notes/…` pages through `read_open_book_page` and act. A triage action is JSON, validated
-first and then run as a batch, on one approval unless every action is a `review`:
+first and then run as a batch, on one approval unless every action is a `review` and none carries `other_seat`:
 
 ```
 library triage validate --actions '[{"kind":"notebook","source":"holding","source_match":"Rendering","topic":"graphics"}]'
@@ -169,7 +171,8 @@ library triage batch --actions '<json>' --user-confirmed --plan-id <id>
 library triage batch --actions '<json>'
 ```
 
-The last form is for a batch of only `review` actions.
+The last form is for a batch of only `review` actions, none with `other_seat`: it needs no yes.
+If you pass a plan id, it must still match the current preflight.
 
 | `kind` (from `source: holding`) | Effect | Gate |
 | --- | --- | --- |
@@ -190,6 +193,13 @@ approval meant. A batch that is interrupted resumes when the same actions are ru
 copy is the working version. The other destinations leave the note where it is. Filing it into a
 Shelf Book also closes it, so a graduated note cannot be discarded in the same batch. Rerunning a
 batch that filed a note skips that action as `already-filed` while its page still exists.
+
+## The train
+
+`deskpost train` reads the ordered work list; `train page` renders it as Markdown. Use `train add` to
+name an item and its `--title` and `--place`, `train move` to change its place, and `train close` with
+`--done` or `--dropped` and a `--note` to record its outcome. Places are `foundation`, `running`,
+`bucket:1`, `bucket:2`, `car:<name>` and `lane:<name>`; a mutation names the item it changed.
 
 ## Keeping the Holding Shelf small
 
@@ -274,7 +284,7 @@ library capture reports --title "<what broke>" --content-path <local-markdown-fi
 ```
 
 `library reports list [--json]` names this seat's own pending Reports, oldest first, the ones it may still amend or
-withdraw; `library triage inventory --pending` lists every pending Report.
+withdraw; `library triage inventory --pending --book reports` lists every pending Report.
 
 Write the failing command, its arguments and its output **into the note**. That is the half that
 makes a report worth more than a summary: it is written while the context is still live, by the only
@@ -290,7 +300,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/cross-seat-reports.md).
 
 ## Reports across Libraries
 
@@ -325,7 +335,8 @@ If triage already touched the receiver's Report, an amendment is filed as a gene
 a withdrawal adds a `Withdrawal asked` section. The triage disposition stays as it was. Both return ordinary
 letters with no closing effect, and generated Reports are never dispatched (`kernel/src/capture.ts`, `reportsend.ts`).
 
-A received Report's terminal close uses `review`, an `outcome` and `outcome_note`. The five verdicts are
+Only a review close of a Report received from another Library takes `outcome` and `outcome_note`.
+A local Report's close refuses those fields. A received Report's terminal close requires both. The five verdicts are
 `confirmed`, `confirmed-by-design`, `not-reproduced`, `already-fixed` and `declined`. Other terminal actions
 on a pending received Report are refused; a hold sends nothing. The outcome letter closes only the matching
 copy at a newer generation, using its recorded address even if the current pin changed. It is still a
@@ -352,6 +363,39 @@ does no global recovery (`kernel/src/desk.ts`, `doctor.ts`, `postbox.ts`, `inten
 Tidy keeps closed copies under `reviewed/`; delivery lookups include them. Check removes completed incoming
 records older than 30 days. Claims and ordinary letters remain data, and a return letter is never an approval.
 Design: ADR-0084; implementation in `kernel/src/shelftidy.ts`, `intent.ts`, `reportsend.ts`, `postbox.ts`.
+
+## Filed Postbox conflicts
+
+When check or doctor names a filed conflict, show the reader a fresh preview:
+
+```
+deskpost postbox conflict <delivery-id> --preflight
+```
+
+It shows the filed Book, page and receipt, the local text digest, the inbox Book and digest, and up to
+40 lines of a unified body diff. The local body may have been edited since filing. This first preview
+defaults to keeping the filed note. Choose the disposition with the reader, then preflight that flag
+and apply only its returned plan identifier with `--user-confirmed --plan-id <id>`:
+
+- `--keep-filed` keeps the filed note and records the inbox copy as deliberately left. For a Report,
+  triage still closes the original through a review with an outcome; this decision does not close it.
+- `--file-as-new` files an ordinary letter as a separate conflict copy linked from the original.
+  Reports and outcomes are refused: copying them could bypass the Report close or repeat a verdict.
+- `--reopen` clears a keep-filed decision and only its left-copy record. A file-as-new decision is final;
+  review its copy as an ordinary letter instead.
+
+A plan identifier for one disposition never approves another, and a changed body or conflict row needs
+a fresh preview. None of these commands deletes or moves the changed inbox body. If copying stops,
+doctor names the existing approved operation and the command to finish it:
+
+```
+deskpost postbox conflict <delivery-id> --resume <op_id>
+```
+
+Resume needs no new approval. It uses the saved text and fixed page, repairs the index and manifest,
+and links the original once. A different page at that path is refused. If the inbox changed again,
+the older copy still finishes; the changed body stays for the next check, and an already recorded
+newer conflict stays open. See ADR-0088 and `kernel/src/postbox.ts`, `capture.ts`.
 
 ## Adding another capture Book
 

@@ -54,6 +54,7 @@ import { linkedComponent } from './vault.ts';
 import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
 import { parseBookRoot } from './places.ts';
 import { readSeatIdentityView, seatIncarnation, SEAT_ID_PATTERN } from './seatincarnation.ts';
+import { restoreLine } from './sharedwrite.ts';
 
 const JOURNAL_DIRECTORIES = ['publication-journals', 'shelf-journals', 'triage-journals'];
 const RECORD_DIRECTORY = 'undo';
@@ -281,9 +282,37 @@ function saveRecord(workspace: string, record: UndoRecord): void {
   writeAtomicText(path.join(recordsDirectory(workspace), `${record.id}.json`), psConvertToJson(record as unknown as PsJsonValue));
 }
 
+/**
+ * A SHARED WRITE IS RECOVERED FROM ITS CHANGE RECORD, NOT A LOCAL JOURNAL (kickoffs/s191 row 4, s192 row 2;
+ * PLAN-many-libraries.md r12 Stage 2 items 11 and 16). Given the id of a receipt in `internal/shared-receipts/`, undo
+ * refuses and names the one restore line for that record, from its target (page, catalog or sources) and whether its base
+ * was absent, word for word as the writer printed it (`restoreLine`). Nothing is read from the server and nothing changes.
+ * The closing sentence is s191's, kept while self-test section 665 pins it (kickoffs/s192's handback names it).
+ */
+function sharedReceiptRefusal(workspace: string, id: string): void {
+  const file = path.join(workspace, 'internal', 'shared-receipts', `${id}.json`);
+  if (!fs.existsSync(file)) return;
+  let receipt: Record<string, unknown>;
+  try {
+    receipt = readJson(file);
+  } catch (error) {
+    refuse(`internal/shared-receipts/${id}.json does not parse: ${(error as Error).message}. Nothing was changed.`);
+  }
+  const slug = String(receipt['slug'] ?? '');
+  const notePath = String(receipt['page'] ?? '');
+  const target = String(receipt['target'] ?? 'page');
+  const knownPath = target === 'catalog' ? notePath === 'books/README.md' : target === 'sources' ? notePath === `books/${slug}/_sources.md` : target === 'page' && /^books\/[^/]+\/wiki\/.+\.md$/.test(notePath);
+  if (!SEAT.test(slug) || !knownPath || receipt['record_id'] !== id) refuse(`internal/shared-receipts/${id}.json is not a receipt deskpost writes. Nothing was changed.`);
+  const restore = restoreLine(target, slug, notePath, receipt['base_absent'] === true, id, String(receipt['made_by'] ?? ''));
+  // A BOOK-MAKING RECORD HAS NO RESTORE (kickoffs/s193 row 2; r12 point 8): its words name the recovery instead.
+  if (restore.command === '') refuse(`${id} is a shared write, and its recovery is its change record, not a local journal: ${restore.says}. Nothing was changed.`);
+  refuse(`${id} is a shared write, and its recovery is its change record, not a local journal: ${restore.command} ${restore.says}. Nothing was changed.`);
+}
+
 /** The journal or record an id names, from the three journal folders or the records. */
 function findSource(workspace: string, id: string): Source {
   if (!ID.test(id)) refuse(`'${id}' is not a journal id: give the journal's file name without .json. Nothing was changed.`);
+  sharedReceiptRefusal(workspace, id);
   for (const directory of [...JOURNAL_DIRECTORIES, RECORD_DIRECTORY]) {
     const file = path.join(workspace, 'internal', directory, `${id}.json`);
     if (!fs.existsSync(file)) continue;

@@ -316,7 +316,8 @@ export function checkpointResults(value: unknown): unknown[] {
 }
 
 type Writer = { kind: 'hub' | 'book' | 'capture' | 'letters' | 'triage'; name?: string; page?: string; where?: string };
-function variable(value: string | undefined): boolean { return !!value && /^(?:\$(?:\{?[\w:]+\}?)|%\w+%)$/.test(value); }
+/** `$name`, `${name}`, `$name.Member` (a loop's `$p.BaseName`), `$(...)` and `%name%` (kickoffs/s180 row 2(h)). */
+function variable(value: string | undefined): boolean { return !!value && /^(?:\$(?:\{?[\w:]+\}?(?:\.\w+)*|\(.*\))|%\w+%)$/s.test(value); }
 function literal(value: string | undefined): string | undefined { return value && !variable(value) ? value : undefined; }
 
 /** Quoted command text and heredoc bodies are data, never another command. */
@@ -336,6 +337,8 @@ function shellStatements(command: string): string[][] {
     }
   }
   const text = safe.join('\n'), statements: string[][] = []; let tokens: string[] = [], token='', quote='', escaped=false;
+  // Open `${`, `$(`, `@{`, `@(` still in the word, so their closes stay in it too (kickoffs/s180 row 2(h)).
+  const held: string[] = [];
   const word = () => { if (token) { tokens.push(token); token=''; } };
   const statement = () => { word(); if(tokens.length) statements.push(tokens); tokens=[]; };
   for (let i=0; i<text.length; i++) {
@@ -343,6 +346,10 @@ function shellStatements(command: string): string[][] {
     if (escaped) { token+=ch; escaped=false; continue; }
     if (quote) { if(ch===quote) quote=''; else if(ch==='`' && quote==='"') escaped=true; else token+=ch; continue; }
     if(ch==='"'||ch==="'") { quote=ch; continue; }
+    if((ch==='{'||ch==='(') && (held.length || /[$@]$/.test(token))) { held.push(ch); token+=ch; continue; }
+    if(held.length) { if(ch===(held[held.length-1]==='{'?'}':')')) held.pop(); else if(ch==='}'||ch===')') held.length=0; token+=ch; continue; }
+    // A block's braces and parentheses end a statement, so `foreach (...) { deskpost ... }` keeps its writer.
+    if(ch==='{'||ch==='}'||ch==='('||ch===')') { statement(); continue; }
     if(ch===';'||ch==='\n'||ch==='|'||(ch==='&' && text[i+1]==='&')) { statement(); if(text[i+1]===ch) i++; continue; }
     if(/\s/.test(ch)) word(); else token+=ch;
   }
@@ -350,7 +357,7 @@ function shellStatements(command: string): string[][] {
 }
 function libraryStatements(command: string): string[][] {
   return shellStatements(command).flatMap(words => {
-    while(words[0]==='&' || /^[A-Za-z_]\w*=/.test(words[0] ?? '')) words.shift();
+    while(words[0]==='&' || /^(?:do|then|else|elif)$/.test(words[0] ?? '') || /^[A-Za-z_]\w*=/.test(words[0] ?? '')) words.shift();
     const exe=words.shift() ?? '';
     if(!/(?:^|[\\/])(?:deskpost|library)(?:\.exe|\.cmd)?$/i.test(exe)) return [];
     if(words[0]==='--workspace') words.splice(0,2);

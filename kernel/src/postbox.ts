@@ -47,7 +47,8 @@
  * `Unknown tool: 'list_directory'`). 1.0 removed the tools above with no aliases. The Postbox now speaks 1.0 only, and
  * every session first checks the server offers `bm_list`, `bm_read`, `bm_write`, `bm_move` and `bm_project` (`needTools`):
  * a server that does not is refused in one line naming what it offers and lacks, never recorded as unreachable, and
- * `check` keeps what it offered in the cache (`server_tools`, `server_tools_missing`, `server_tools_utc`), which doctor
+ * `check` keeps what it offered in the cache (`server_tools`, `server_tools_missing`, `server_tools_utc`, and the tool
+ * list's `server_tools_fingerprint`, kickoffs/s178-r2 row 6), which doctor
  * reads. What changed, call by call: `list_directory` is `bm_list`, paged 100 at a time until `has_more` is false (a
  * folder past 50 pages is refused, never acted on in part), and a missing folder still lists empty (measured live on
  * 2026-10-31); a listed file is read by `bm_read` and moved by `bm_move` by its node's `file_path`, with `project` the
@@ -71,13 +72,16 @@ import { writeAtomicText } from './fsx.ts';
 import { sha256OfText } from './sha.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { markerField, markerPath, readMarker, withMarkerLock } from './workspace.ts';
-import { BasicMemoryRefusal, isLocalBackend, markerConnection, McpSession, moveNoteTo, needTools, noteBody, readExactOrNull, readListedContent, sendWrite, typedRefusal } from './basicmemory.ts';
+import { BasicMemoryRefusal, isLocalBackend, listFolderNodes, markerConnection, McpSession, moveNoteTo, needTools, noteBody, readExactOrNull, readListedContent, sendWrite } from './basicmemory.ts';
 import { recover, readRecords, completeStage, removeCompleted, ControlMovePending, controlTransportUnreachable, recordPendingControlMove } from './intent.ts';
 import { reportStageRunner, receiveReportOutcome, receiveReportControl } from './reportsend.ts';
-import { captureVerb } from './capture.ts';
+import { captureVerb, renderCapturedPage, linkConflictCopy } from './capture.ts';
+import { noteFrontmatter } from './shelfnote.ts';
 import { listServerProjects } from './bmconnection.ts';
 import { getShelfBook } from './shelfbook.ts';
 import { readSeatIdentityView } from './seatincarnation.ts';
+import { enterPostboxStateLock, exitBookLock } from './locks.ts';
+import type { FiledConflict } from './reportsend.ts';
 
 export class PostboxRefusal extends Error {}
 
@@ -286,37 +290,6 @@ function rememberProject(state: Record<string, unknown> | null): void {
   const id = String(state?.['project_id'] ?? '');
   const name = String(state?.['project_name'] ?? '');
   if (UUID.test(id) && PROJECT_NAME.test(name)) PROJECT_NAMES.set(id, name);
-}
-
-/**
- * EVERY NODE DIRECTLY IN ONE FOLDER, PAGED (kickoffs/s175 row 3(a), STANDING ANSWER 5): `bm_list` 100 at a time until
- * `has_more` is false. A folder that would pass 50 pages (5,000 notes) is refused with `tooMany`, so no part of it is ever
- * acted on from a partial listing. A missing folder lists empty, as the server answers it.
- */
-async function listFolderNodes(session: McpSession, projectId: string, folder: string, what: string, tooMany: string): Promise<unknown[]> {
-  const nodes: unknown[] = [];
-  for (let page = 1; ; page += 1) {
-    if (page > 50) refuse(tooMany);
-    const response = await session.callTool('bm_list', { path: folder, page, page_size: 100, output_format: 'json', project: projectId });
-    const answer = field(response, 'result');
-    let result = field(field(answer, 'structuredContent'), 'result');
-    if ((result === undefined || result === null) && field(answer, 'isError') !== true) {
-      const block = (field(answer, 'content') as unknown[] | undefined)?.find((item) => field(item, 'type') === 'text');
-      try {
-        result = JSON.parse(String(field(block, 'text') ?? '')) as unknown;
-      } catch {
-        result = null;
-      }
-    }
-    if (field(answer, 'isError') === true || result === undefined || result === null) {
-      if (typedRefusal(response)?.code === 'NOT_FOUND') return nodes;
-      const detail = JSON.stringify(field(answer, 'content') ?? field(response, 'error') ?? null);
-      refuse(`${what} could not be read: ${detail.substring(0, 300)}`);
-    }
-    const listed = field(result, 'nodes');
-    if (Array.isArray(listed)) nodes.push(...listed);
-    if (field(result, 'has_more') !== true) return nodes;
-  }
 }
 
 /** Every `*.md` directly in `postbox/libraries/`, every page of it (kickoffs/s175 row 3(a)). */
@@ -572,8 +545,12 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
     reports_triager: (field(previous?.['reports_triager'], 'library_id') === libraryId && triagedBy === null ? null : previous?.['reports_triager'] ?? null) as PsJsonValue,
     reports_triager_conflict: (previous?.['reports_triager_conflict'] ?? null) as PsJsonValue,
   };
-  fs.mkdirSync(path.dirname(statePath(workspace)), { recursive: true });
-  writeAtomicText(statePath(workspace), psConvertToJson(state as PsJsonValue) + '\n');
+  const cacheLock=enterPostboxStateLock(workspace);
+  try {
+    const current=readState(workspace);
+    const kept=current?.['library_id']===libraryId ? Object.fromEntries(['filed_conflicts','conflict_operations','left_inbox_copies'].filter(key=>key in current).map(key=>[key,current[key]])) : {};
+    writeState(workspace,{...state,...kept});
+  } finally {exitBookLock(cacheLock);}
   return { ...plan.value, project_id: projectId, written: true, last_check: lastCheck, readback_matched: true };
 }
 
@@ -763,9 +740,25 @@ function writeState(workspace: string, state: Record<string, unknown>): void {
 
 /** Merge `changes` into the cache, read fresh, so two verbs that each record one thing keep both. */
 function updateState(workspace: string, changes: Record<string, unknown>): void {
-  const state = readState(workspace);
-  if (state === null) return;
-  writeState(workspace, { ...state, ...changes });
+  mutateState(workspace,state=>({...state,...changes}));
+}
+
+/** Never write back a row list read before this lock: concurrent checks must keep each other's rows. */
+function mutateState(workspace: string, change: (state: Record<string,unknown>)=>Record<string,unknown>): void {
+  const lock=enterPostboxStateLock(workspace);
+  try {const state=readState(workspace);if(state!==null)writeState(workspace,change(state));}
+  finally {exitBookLock(lock);}
+}
+
+/**
+ * A PROOF'S FINGERPRINT, RECORDED (kickoffs/s178-r2 row 9; PLAN-basic-memory-1-0.md Unit B item 3): `tools/bm-proof.mts
+ * --record` writes the measured fingerprint as both the server's and the proven one, when and where the proof's result
+ * is, into this Library's Postbox cache and nothing else. False, with nothing written, for a Library with no Postbox.
+ */
+export function recordProvenFingerprint(workspace: string, proof: { fingerprint: string; utc: string; result: string }): boolean {
+  if (readState(workspace) === null) return false;
+  updateState(workspace, { server_tools_fingerprint: proof.fingerprint, server_tools_proven_fingerprint: proof.fingerprint, server_tools_proven_utc: proof.utc, server_tools_proven_result: proof.result });
+  return true;
 }
 
 /** The cached Postbox as the Desk and doctor read it: no server is called (plan item 6). */
@@ -879,7 +872,7 @@ async function openPostbox(workspace: string, state: { url: string }, recordTool
   }
   if (recordTools) {
     const offered = session.tools ?? [];
-    updateState(workspace, { server_tools: offered, server_tools_missing: POSTBOX_TOOLS.filter((name) => !offered.includes(name)), server_tools_utc: utcSeconds() });
+    updateState(workspace, { server_tools: offered, server_tools_missing: POSTBOX_TOOLS.filter((name) => !offered.includes(name)), server_tools_utc: utcSeconds(), server_tools_fingerprint: session.toolsFingerprint });
   }
   needTools(session, POSTBOX_TOOLS, 'The Postbox');
   return session;
@@ -1149,6 +1142,7 @@ interface LeftCopy {
   path: string;
   delivery_id: string;
   updated_at: string;
+  added_by?: 'conflict-disposition';
 }
 
 function leftCopies(state: Record<string, unknown> | null): LeftCopy[] {
@@ -1293,6 +1287,7 @@ function filingOf(workspace: string, relative: string, text: string, delivered: 
     ...(kind === 'outcome' ? ['closes_delivery_id','outcome','outcome_gen'].filter(key=>fields.has(key)).map(key=>line(key,fields.get(key)!)) : []),
     ...(fields.has('sent_for') && (kind === 'report' || kind === 'outcome') ? [line('sent_for',fields.get('sent_for')!)] : []),
     ['postbox_path',relative],
+    ...(kind !== 'control' && process.env['LIBRARY_POSTBOX_FAULT'] !== 'no-receipt' ? [['postbox_wire_digest',wireDigest] as [string,string]] : []),
     ...(live ? [] : [['stale_delivery','true'] as [string,string]]),
     ...(damaged ? [line('payload_digest','true')] : []),
     ...[...fields].flatMap(([key,value]) => DELIVERY_FIELDS[key]?.envelope && kind === 'report' ? [line(key,value)] : []),
@@ -1325,7 +1320,7 @@ function filingOf(workspace: string, relative: string, text: string, delivered: 
  * detail}` when a move was sent, and null when the listing settled it first. It only explains; the outcome is still the
  * listings'.
  */
-async function moveToDelivered(
+export async function moveToDelivered(
   session: McpSession,
   projectId: string,
   workspace: string,
@@ -1336,9 +1331,7 @@ async function moveToDelivered(
 ): Promise<{ outcome: 'moved' | 'left' | 'not-moved'; answer: { moved: boolean; dropped: boolean; detail: string } | null }> {
   const target = deliveredPath(recipientId, deliveryId);
   const leave = (): 'left' => {
-    const state = readState(workspace);
-    const rows = leftCopies(state).filter((row) => row.path !== file.path);
-    updateState(workspace, { left_inbox_copies: [...rows, { path: file.path, delivery_id: deliveryId, updated_at: file.updated_at }] });
+    mutateState(workspace,state=>({...state,left_inbox_copies:[...leftCopies(state).filter(row=>row.path!==file.path),{path:file.path,delivery_id:deliveryId,updated_at:file.updated_at}]}));
     return 'left';
   };
   const sameText = async (listed: ListedFile | null): Promise<boolean | null> => {
@@ -1346,19 +1339,37 @@ async function moveToDelivered(
     const read = await readListed(session, projectId, listed);
     return read !== null && 'text' in read && payloadDigest(read.text) === digest;
   };
-  const there = await sameText(await fileAt(session, projectId, target));
-  if (there !== null) return { outcome: there ? leave() : 'not-moved', answer: null };
-  // UNPROBED (kickoffs/s123 STANDING ANSWER 9): a move onto an existing file. Looked for first, above, so it is never asked.
-  // SELF-TEST ONLY (`LIBRARY_POSTBOX_FAULT=move-in-place`, kickoffs/s133 row 2): the move names the inbox folder itself,
-  // so the server refuses it with `DESTINATION_SAME_AS_SOURCE`, as a move racing another check's can be refused.
-  const destination = (process.env['LIBRARY_POSTBOX_FAULT'] ?? '') === 'move-in-place' ? inboxFolder(recipientId) : `${inboxFolder(recipientId)}/delivered`;
-  // ON 1.0, USE THE IDENTIFIER THIS READ TRUSTED (kickoffs/c85 row 2): a path can resolve to an old permalink elsewhere.
-  let identifier = file.path;
-  if (session.surface === 'bm') {
-    const read = await readListed(session, projectId, file);
-    if (read === null || 'refused' in read) return { outcome: 'not-moved', answer: { moved: false, dropped: false, detail: read === null ? 'The listed file could not be read.' : read.refused } };
-    identifier = read.identifier;
-  }
+  rememberProject(readState(workspace));
+  const freshRead = async (): Promise<{identifier:string}|{detail:string}> => {
+    if(process.env['LIBRARY_POSTBOX_FAULT']==='change-before-move') {
+      // Self-test only: rewrite through this session's ordinary write tool.
+      const old=await readListed(session,projectId,file);
+      if(old && 'text' in old){
+        const metadata=Object.fromEntries(deliveredFields(old.text));
+        const content=keptBody(old.text)+'\nBody B.\n';
+        await sendWrite(session,session.surface==='bm'?'bm_write':'write_note',session.surface==='bm'
+          ? {project:projectId,directory:inboxFolder(recipientId),title:deliveryId,content,metadata,overwrite:true,output_format:'json'}
+          : {project_id:projectId,directory:inboxFolder(recipientId),title:deliveryId,content,metadata,overwrite:true},'Changing the fixture inbox body');
+      }
+    }
+    const read=await readListed(session,projectId,file);
+    if(read===null || 'refused' in read)return {detail:read===null?'The listed file could not be read.':read.refused};
+    if(payloadDigest(read.text)!==digest)return {detail:'changed-after-read'};
+    return {identifier:session.surface==='bm'?read.identifier:file.path};
+  };
+  const notMoved=(detail:string)=>({outcome:'not-moved' as const,answer:{moved:false,dropped:false,detail}});
+  // Legacy entry points are retired; the retained helper still checks that surface before any 1.0-only listing.
+  const legacyRead=session.surface==='bm'?null:await freshRead();
+  if(legacyRead && 'detail' in legacyRead)return notMoved(legacyRead.detail);
+  // UNPROBED: a move onto an existing file. Looked for first, so it is never asked.
+  const there=await sameText(await fileAt(session,projectId,target));
+  if(there!==null)return {outcome:there?leave():'not-moved',answer:null};
+  // SELF-TEST ONLY: move-in-place asks the source folder, which the server refuses.
+  const destination=process.env['LIBRARY_POSTBOX_FAULT']==='move-in-place'?inboxFolder(recipientId):inboxFolder(recipientId)+'/delivered';
+  // On 1.0 the fresh body and trusted identifier are read immediately before the move.
+  const read=legacyRead??await freshRead();
+  if('detail' in read)return notMoved(read.detail);
+  const identifier=read.identifier;
   const answer = await moveNoteTo(session, PROJECT_NAMES.get(projectId) ?? projectId, identifier, destination);
   const atTarget = await sameText(await fileAt(session, projectId, target));
   const atInbox = await fileAt(session, projectId, file.path);
@@ -1368,7 +1379,15 @@ async function moveToDelivered(
 
 /** SELF-TEST ONLY (`LIBRARY_POSTBOX_FAULT=crash-after-file`): the check stops after its first filing, before the move. */
 function crashAfterFileForTest(): void {
-  if ((process.env['LIBRARY_POSTBOX_FAULT'] ?? '') === 'crash-after-file') refuse('LIBRARY_POSTBOX_FAULT: the check stopped between filing and moving.');
+  if (['crash-after-file','no-receipt'].includes(process.env['LIBRARY_POSTBOX_FAULT'] ?? '')) refuse('LIBRARY_POSTBOX_FAULT: the check stopped between filing and moving.');
+}
+
+interface FiledConflictRow {
+  delivery_id:string;path:string;updated_at:string;kind:FiledConflict['conflict'];filed_book:string;filed_page:string;
+  filed_digest:string|null;inbox_book:string;inbox_digest:string;first_seen_utc:string;disposition:unknown;
+}
+function conflictRows(state:Record<string,unknown>|null):FiledConflictRow[]{
+  return Array.isArray(state?.['filed_conflicts'])?state['filed_conflicts'] as FiledConflictRow[]:[];
 }
 
 /** Synchronous control transport stays in the carrier, bounded like capture's existing child. */
@@ -1484,11 +1503,21 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
   const refused:Record<string,PsJsonValue>[]=[];
   const deferred:Record<string,PsJsonValue>[]=[];
   const controls:Record<string,PsJsonValue>[]=[];
+  const conflicts:FiledConflictRow[]=[];
+  const recordConflict=(file:ListedFile,filing:PostboxFiling,conflict:FiledConflict)=>{
+    mutateState(workspace,state=>{
+      const prior=conflictRows(state).find(row=>row.path===file.path);
+      const row:FiledConflictRow={delivery_id:filing.deliveryId,path:file.path,updated_at:file.updated_at,kind:conflict.conflict,filed_book:conflict.book,filed_page:conflict.page,filed_digest:conflict.receipt,inbox_book:filing.book,inbox_digest:filing.wireDigest!,first_seen_utc:prior?.first_seen_utc??utcSeconds(),disposition:null};
+      conflicts.push(row);
+      return {...state,filed_conflicts:[...conflictRows(state).filter(r=>r.path!==file.path),row]};
+    });
+  };
   const controlConflict:Record<string,PsJsonValue>[]=[];
   let alreadyFiled = 0;
   let moved = 0;
   let left = 0;
   const known = new Map(leftCopies(state).map((row) => [row.path, row.updated_at]));
+  for(const row of conflictRows(state))if(row.disposition===null)known.set(row.path,row.updated_at);
   for (const file of await listFolderFiles(session, state.project_id, folder)) {
     if (known.get(file.path) === file.updated_at) continue;
     const deliveryId = file.path.slice(folder.length + 1).replace(/\.md$/, '');
@@ -1525,6 +1554,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
         refused.push({delivery_id:deliveryId,...(parent?{parent}:{}),why,first_refused_utc:typeof first==='string'&&Number.isFinite(Date.parse(first))?first:utcSeconds(),...(Number.isSafeInteger(seq)&&seq>0?{report_seq:seq}:{})});
         skipped.push({path:file.path,why});continue;
       }
+      if(control.filedConflict){recordConflict(file,filing,control.filedConflict);continue;}
       const row={delivery_id:deliveryId,parent:control.parent,status:control.status,report_seq:Number(controlFields.get('report_seq_applied')),...(control.effect?{effect:control.effect}:{})};
       if(control.status==='deferred'){deferred.push({...row,why:control.why??'',first_deferred_utc:priorDeferred.find(r=>r.delivery_id===deliveryId)?.first_deferred_utc??utcSeconds()});continue;}
       controls.push(row);if(control.status==='conflict')controlConflict.push(row);
@@ -1534,7 +1564,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
       if(result.outcome!=='not-moved'&&process.env['LIBRARY_POSTBOX_FAULT']==='after:control-server-write')refuse('LIBRARY_POSTBOX_FAULT: the control server move landed before its local receipt.');
       if(result.outcome==='moved'){moved++;recordControlMove(workspace,deliveryId,'verified in delivered/');}
       else if(result.outcome==='left'){left++;recordControlMove(workspace,deliveryId,'matching delivered/ copy; inbox copy recorded');}
-      else skipped.push({path:file.path,why:'control applied here and not yet moved to delivered/; the next check moves it',move_answer:result.answer?.detail??'no move was sent'});
+      else skipped.push(result.answer?.detail==='changed-after-read'?{path:file.path,why:'its body changed after it was read; the next check judges it again',move_answer:'no move was sent'}:{path:file.path,why:'control applied here and not yet moved to delivered/; the next check moves it',move_answer:result.answer?.detail??'no move was sent'});
       continue;
     }
     let said: Record<string, PsJsonValue>;
@@ -1548,6 +1578,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
         continue;
       }
       const received = receiveReportOutcome(workspace,filing);
+      if(received.filedConflict){recordConflict(file,filing,received.filedConflict);continue;}
       said = {status:received.already?'already-filed':'captured', note_page:'shelf/letters/wiki/'+received.page, answered:{effect:received.effect}};
     } else {
       const result = captureVerb([filing.book, '--title', deliveryId], workspace, { postbox: filing, mode:'filing' });
@@ -1556,6 +1587,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
         continue;
       }
       said = (result.value ?? {}) as Record<string, PsJsonValue>;
+      if(said['status']==='filed-conflict'){recordConflict(file,filing,said['filed_conflict'] as unknown as FiledConflict);continue;}
     }
     if (said['status'] === 'already-filed') alreadyFiled += 1;
     else filed.push({ book:filing.book, kind:filing.kind, dropped_keys:filing.droppedKeys, delivery_id: deliveryId, note_page: said['note_page'] ?? null, for_seat: filing.forSeat, stale_delivery: filing.fields.some(([key]) => key === 'stale_delivery'), postbox_damaged: filing.fields.some(([key]) => key === 'postbox_damaged'), ...(said['answered'] ? { answered: said['answered'] } : {}) });
@@ -1566,7 +1598,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
     else {
       // WHAT THE MOVE WAS ANSWERED (kickoffs/s133 row 2): the server's words, cut at 300 characters, or `dropped`.
       const moveAnswer = answer === null ? 'no move was sent' : answer.dropped ? 'dropped' : answer.detail ? answer.detail.substring(0, 300) : 'answered as moved, but the listings do not find it in delivered/';
-      skipped.push({ path: file.path, why: 'filed here, and not yet moved to delivered/; the next check moves it', move_answer: moveAnswer });
+      skipped.push(answer?.detail==='changed-after-read'?{path:file.path,why:'its body changed after it was read; the next check judges it again',move_answer:'no move was sent'}:{ path: file.path, why: 'filed here, and not yet moved to delivered/; the next check moves it', move_answer: moveAnswer });
     }
   }
   // Enrich after the whole listing: a refused predecessor may sort after its waiting successor.
@@ -1620,6 +1652,8 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
   });
   return {
     ...value, last_check: lastCheck, controls_refused:refused, controls_refused_count:refused.length, controls:controls as unknown as PsJsonValue, deferred:deferred as unknown as PsJsonValue, deferred_count:deferred.length, control_conflict:controlConflict as unknown as PsJsonValue, control_conflict_count:controlConflict.length, not_handled:notHandled as unknown as PsJsonValue, not_handled_count:notHandled.length, filed: filed as unknown as PsJsonValue, already_filed: alreadyFiled, moved, left, skipped: skipped as unknown as PsJsonValue,
+    filed_conflicts:conflicts as unknown as PsJsonValue,filed_conflicts_count:conflictRows(readState(workspace)).filter(row=>row.disposition===null).length,
+    ...(conflicts.length?{filed_conflict_notice:conflicts.map(row=>`Delivery ${row.delivery_id} stays in the inbox because ${row.kind==='changed'?'its body differs from the filed body':row.kind==='moved-book'?'its Book or delivery kind differs from the filed delivery':'the filed delivery has no receipt'}; filed at ${row.filed_book}/${row.filed_page}.`)}:{}),
     entry_refreshed: refreshed, ...(entryDetail === null ? {} : { entry_detail: entryDetail }), ...(droppedLine === null ? {} : { reports_triager_dropped: droppedLine }),
     reports_triager: (readState(workspace)?.['reports_triager'] ?? null) as PsJsonValue, reports_triager_conflict: (readState(workspace)?.['reports_triager_conflict'] ?? null) as PsJsonValue,
     held: readOutbox(workspace).filter((entry) => entry.state === 'unsent' && entry.held).length, ...(discoveryDetail === null ? {} : { discovery_detail: discoveryDetail }),
@@ -1795,7 +1829,176 @@ async function resolve(argv: string[], workspace: string): Promise<Record<string
   };
 }
 
-export const POSTBOX_ACTIONS = ['check', 'resolve', 'send', 'setup', 'status'];
+interface ConflictOperation {
+  op_id: string; delivery_id: string; state: 'started' | 'done'; copy_page: string; copy_text_digest: string;
+  inbox_path: string; inbox_updated_at: string; inbox_digest: string; filed_page: string;
+  page?: boolean; index?: boolean; manifest?: boolean; linked?: boolean; left_copy?: 'recorded' | 'changed';
+}
+function conflictOperations(state: Record<string, unknown> | null): ConflictOperation[] {
+  return Array.isArray(state?.['conflict_operations']) ? state['conflict_operations'] as ConflictOperation[] : [];
+}
+function conflictOperationPath(workspace: string, id: string): string {
+  if (!/^conflict-[0-9a-f]{64}$/.test(id)) refuse('The conflict operation identifier is invalid. Nothing was written.');
+  return path.join(workspace, 'internal/postbox/conflict-operations', id + '.json');
+}
+function recordConflictStep(workspace: string, id: string, change: Partial<ConflictOperation>): void {
+  mutateState(workspace, state => {
+    if (!conflictOperations(state).some(op=>op.op_id===id)) refuse('The saved conflict operation is missing from the cache.');
+    return {...state, conflict_operations: conflictOperations(state).map(op=>op.op_id===id ? {...op, ...change} : op)};
+  });
+}
+
+/** Resume uses only the saved rendering for Book writes, even if a newer inbox body replaced the row. */
+async function resumeConflict(workspace: string, id: string, deliveryId: string): Promise<Record<string, PsJsonValue>> {
+  const file = conflictOperationPath(workspace, id);
+  const state = requireState(workspace);
+  const op = conflictOperations(state).find(row=>row.op_id===id);
+  if (!op || (deliveryId && op.delivery_id!==deliveryId)) refuse('No matching approved conflict operation is recorded. Nothing was written.');
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as ConflictOperation & {copy_text: string};
+  for (const key of ['op_id','delivery_id','copy_page','copy_text_digest','inbox_path','inbox_updated_at','inbox_digest','filed_page'] as const) {
+    if (saved[key]!==op[key]) refuse('The saved conflict operation does not match its cache row. Nothing was written.');
+  }
+  if (typeof saved.copy_text!=='string' || sha256OfText(saved.copy_text)!==op.copy_text_digest) refuse('The saved conflict text does not match its digest. Nothing was written.');
+  if (op.state==='done') return {schema:1, operation:'Resume a filed conflict', op_id:id, delivery_id:op.delivery_id, state:'done', written:false};
+  const captured = captureVerb([], workspace, {conflictCopy: {page:op.copy_page,text:saved.copy_text,digest:op.copy_text_digest,
+    published:step=>recordConflictStep(workspace,id,{[step]:true})}});
+  if (captured.refusal) refuse(captured.refusal);
+  if (process.env['LIBRARY_POSTBOX_FAULT']==='conflict-after-copy') refuse('LIBRARY_POSTBOX_FAULT: stopped after conflict copy.');
+  linkConflictCopy(workspace, op.filed_page, op.copy_page);
+  recordConflictStep(workspace,id,{linked:true});
+  if (process.env['LIBRARY_POSTBOX_FAULT']==='conflict-after-link') refuse('LIBRARY_POSTBOX_FAULT: stopped after original conflict link.');
+  const session = await openPostbox(workspace,state);
+  if (typeof session==='string') refuse(session);
+  const inbox = await fileAt(session,state.project_id,op.inbox_path);
+  const read = inbox ? await readListed(session,state.project_id,inbox) : null;
+  if (read && 'refused' in read) refuse(read.refused);
+  const unchanged = inbox?.updated_at===op.inbox_updated_at && read!==null && 'text' in read && payloadDigest(read.text)===op.inbox_digest;
+  mutateState(workspace,current=>{
+    const operation=conflictOperations(current).find(row=>row.op_id===id);
+    if(!operation?.page||!operation.index||!operation.manifest||!operation.linked)refuse('The conflict copy publishing steps are not all recorded; resume the operation.');
+    const left=leftCopies(current);
+    return {...current,
+      left_inbox_copies: unchanged ? [...left.filter(row=>!(row.path===op.inbox_path&&row.delivery_id===op.delivery_id&&row.added_by==='conflict-disposition')),{path:op.inbox_path,delivery_id:op.delivery_id,updated_at:op.inbox_updated_at,added_by:'conflict-disposition'}] : left,
+      conflict_operations: conflictOperations(current).map(row=>row.op_id===id ? {...row,left_copy:unchanged?'recorded':'changed',state:'done'} : row),
+      // An envelope can change without changing its body digest; settle only the approved inbox version.
+      filed_conflicts: conflictRows(current).map(row=>row.delivery_id===op.delivery_id && row.path===op.inbox_path && row.inbox_digest===op.inbox_digest && row.updated_at===op.inbox_updated_at ?
+        {...row,disposition:{decided:'file-as-new',decided_utc:utcSeconds(),op_id:id,copy_page:op.copy_page}} : row)};
+  });
+  return {schema:1,operation:'Settle a filed conflict',op_id:id,delivery_id:op.delivery_id,state:'done',copy_page:op.copy_page,written:true};
+}
+
+/** Save the immutable complete rendering before any Book mutation, with only the operation row in the cache. */
+async function startConflictCopy(workspace: string, row: FiledConflictRow, filing: PostboxFiling, local: string, title: string): Promise<Record<string, PsJsonValue>> {
+  const copyPage='notes/'+path.posix.basename(row.filed_page)+'-conflict-'+row.inbox_digest.slice(0,12);
+  const opId='conflict-'+sha256OfText(JSON.stringify({delivery:row.delivery_id,path:row.path,digest:row.inbox_digest,updated:row.updated_at,page:copyPage}));
+  const front=['---',`captured: ${utcSeconds()}`,'review: pending'];
+  if(filing.fromSeat)front.push(`from_seat: ${filing.fromSeat}`,'from_seat_source: postbox');
+  if(filing.forSeat)front.push(`for_seat: ${filing.forSeat}`,'why: for-seat');
+  if(filing.forSeatId)front.push(`for_seat_id: ${filing.forSeatId}`);
+  if(filing.originSeat)front.push(`origin_seat: ${filing.originSeat}`);
+  if(filing.originSeatId)front.push(`origin_seat_id: ${filing.originSeatId}`);
+  for(const [key,value] of filing.fields)front.push(`${key==='delivery_id'?'conflict_of_delivery_id':key}: ${value}`);
+  front.push(`conflict_of: ${row.filed_page}`,'---');
+  const text=renderCapturedPage(front,filing.body,title).text;
+  const stray=strayControlRefusal(text,'The rendered conflict copy');
+  if(stray!==null)refuse(stray);
+  const op:ConflictOperation={op_id:opId,delivery_id:row.delivery_id,state:'started',copy_page:copyPage,copy_text_digest:sha256OfText(text),inbox_path:row.path,inbox_updated_at:row.updated_at,inbox_digest:row.inbox_digest,filed_page:row.filed_page};
+  const saved=conflictOperationPath(workspace,opId);
+  mutateState(workspace,current=>{
+    if(JSON.stringify(conflictRows(current).find(r=>r.path===row.path))!==JSON.stringify(row) || fs.readFileSync(path.join(getShelfBook(workspace,'letters').wikiPath,row.filed_page+'.md'),'utf8')!==local)refuse('The conflict changed after preflight. Nothing was written.');
+    if(conflictOperations(current).some(r=>r.op_id===opId))return current;
+    // A crash before the cache replace may leave the immutable file: reuse its exact rendering.
+    if(fs.existsSync(saved)){
+      const prior=JSON.parse(fs.readFileSync(saved,'utf8')) as ConflictOperation & {copy_text:string};
+      if(prior.op_id!==opId || prior.copy_page!==copyPage || prior.inbox_digest!==row.inbox_digest || prior.delivery_id!==row.delivery_id || prior.inbox_path!==row.path || prior.inbox_updated_at!==row.updated_at || prior.filed_page!==row.filed_page || prior.state!=='started' || typeof prior.copy_text!=='string' || sha256OfText(prior.copy_text)!==prior.copy_text_digest)refuse('The saved conflict operation is inconsistent. Nothing was written.');
+      const {copy_text:_text,...priorRow}=prior;
+      return {...current,conflict_operations:[...conflictOperations(current),priorRow]};
+    }
+    fs.mkdirSync(path.dirname(saved),{recursive:true});
+    writeAtomicText(saved,JSON.stringify({...op,copy_text:text},null,2)+'\n');
+    return {...current,conflict_operations:[...conflictOperations(current),op]};
+  });
+  return resumeConflict(workspace,opId,row.delivery_id);
+}
+
+
+/** A bounded unified diff; labels distinguish the edited local body from the fresh carrier body. */
+function conflictDiff(local: string, incoming: string): string {
+  const a=keptBody(local).split('\n'), b=keptBody(incoming).split('\n');
+  let prefix=0;
+  while(prefix<a.length&&prefix<b.length&&a[prefix]===b[prefix])prefix++;
+  let suffix=0;
+  while(suffix<a.length-prefix&&suffix<b.length-prefix&&a[a.length-1-suffix]===b[b.length-1-suffix])suffix++;
+  const start=Math.max(0,prefix-3), endA=Math.min(a.length,a.length-suffix+3), endB=Math.min(b.length,b.length-suffix+3);
+  return ['--- filed body (may have been edited here since filing)','+++ inbox body',
+    `@@ -${start+1},${endA-start} +${start+1},${endB-start} @@`,
+    ...a.slice(start,prefix).map(line=>' '+line),...a.slice(prefix,a.length-suffix).map(line=>'-'+line),
+    ...b.slice(prefix,b.length-suffix).map(line=>'+'+line),...a.slice(a.length-suffix,endA).map(line=>' '+line)].slice(0,40).join('\n');
+}
+
+/** Decisions change only their current cache rows, never restore an earlier cache snapshot. */
+async function conflict(argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
+  const parsed=parseArguments(argv,argumentTable('postbox','conflict'));
+  const id=parsed.positional[0]??'';
+  const resume=parsed.options.get('resume');
+  if(resume){
+    if((id&&!DELIVERY_ID.test(id))||parsed.flags.has('keep-filed')||parsed.flags.has('reopen')||parsed.flags.has('preflight'))refuse('Resume names an approved file-as-new operation, without another disposition or preflight.');
+    return resumeConflict(workspace,resume,id);
+  }
+  const dispositions=['keep-filed','file-as-new','reopen'].filter(flag=>parsed.flags.has(flag));
+  if(dispositions.length===0&&parsed.flags.has('preflight'))dispositions.push('keep-filed');
+  if(!DELIVERY_ID.test(id)||dispositions.length!==1)refuse('Name one delivery id and exactly one of --keep-filed, --file-as-new or --reopen. Nothing was written.');
+  const disposition=dispositions[0]!;
+  const state=requireState(workspace);
+  const rows=conflictRows(state).filter(row=>row.delivery_id===id);
+  if(rows.length!==1)refuse('This delivery needs exactly one filed conflict in the cache. Run deskpost postbox check first. Nothing was written.');
+  const row=rows[0]!;
+  if(row.path!==inboxPath(state.library_id,id))refuse('The conflict does not name this delivery in this Library inbox. Nothing was written.');
+  if(disposition==='reopen'&&(row.disposition as {decided?:string}|null)?.decided!=='keep-filed')refuse('Only a keep-filed decision can be reopened. A file-as-new copy is final and remains an ordinary letter. Nothing was written.');
+  if(!['letters','reports'].includes(row.filed_book)||! /^(notes|reviewed)\/[a-z0-9][a-z0-9./-]*$/.test(row.filed_page)||row.filed_page.split('/').some(part=>part==='.'||part==='..'))refuse('The filed conflict does not name a safe filed page. Nothing was written.');
+  const book=getShelfBook(workspace,row.filed_book), full=path.join(book.wikiPath,row.filed_page+'.md');
+  const local=fs.readFileSync(full,'utf8');
+  const session=await openPostbox(workspace,state);
+  if(typeof session==='string')refuse(session);
+  const file=await fileAt(session,state.project_id,row.path);
+  if(!file)refuse('The inbox file is no longer there. Nothing was written.');
+  const read=await readListed(session,state.project_id,file);
+  if(!read||!('text' in read))refuse(read&&'refused' in read?read.refused:'The inbox file could not be read. Nothing was written.');
+  const digest=payloadDigest(read.text);
+  if(digest!==row.inbox_digest||file.updated_at!==row.updated_at)refuse('The inbox changed since this conflict was recorded. Run deskpost postbox check and preflight again. Nothing was written.');
+  const planId='postbox-conflict-'+sha256OfText(JSON.stringify({row,disposition,local:sha256OfText(local),inbox:digest}));
+  const value:Record<string,PsJsonValue>={schema:1,operation:'Settle a filed conflict',delivery_id:id,disposition,
+    filed_book:row.filed_book,filed_page:row.filed_page,filed_digest:row.filed_digest,local_digest:sha256OfText(local),
+    inbox_book:row.inbox_book,inbox_digest:digest,diff:conflictDiff(local,read.text),plan_id:planId,written:false,shared_library_write:false};
+  const filing=filingOf(workspace,row.path,read.text,deliveredFields(read.text));
+  if(disposition==='file-as-new'){
+    if(row.filed_book!=='letters'||row.inbox_book!=='letters'||filing.kind!=='letter'||filing.book!=='letters'||noteFrontmatter(local).has('closes_delivery_id')||noteFrontmatter(local).has('amends_delivery_id')||noteFrontmatter(local).has('withdraws_delivery_id'))refuse('File-as-new is only for ordinary letters. A Report must close through review with an outcome, and copying an outcome could repeat its verdict. Use --keep-filed. Nothing was written.');
+    if(!book.isCapture||!book.takesLetters)refuse('The letters Book must accept captured letters before filing a conflict copy. Nothing was written.');
+    const stray=strayControlRefusal(filing.body,'The conflict body');
+    if(stray!==null)refuse(stray);
+    const copyPage='notes/'+path.posix.basename(row.filed_page)+'-conflict-'+row.inbox_digest.slice(0,12);
+    if(fs.existsSync(path.join(book.wikiPath,copyPage+'.md'))){
+      const operation=conflictOperations(state).find(op=>op.delivery_id===id&&op.inbox_digest===digest);
+      refuse(operation ? `The fixed conflict copy already exists: deskpost postbox conflict ${id} --resume ${operation.op_id}. Nothing was written.` : 'The fixed conflict copy page already exists without an operation to resume. Nothing was written.');
+    }
+  }
+  if(parsed.flags.has('preflight'))return value;
+  if(!parsed.flags.has('user-confirmed')||parsed.options.get('plan-id')!==planId)refuse('Use --preflight, then --user-confirmed --plan-id <its plan_id>. The bodies, row or decision changed if the plan id differs. Nothing was written.');
+  if(disposition==='file-as-new')return startConflictCopy(workspace,row,filing,local,/^# +(.+)$/m.exec(keptBody(local))?.[1]??'Conflict copy');
+  mutateState(workspace,current=>{
+    const now=conflictRows(current).find(r=>r.path===row.path);
+    if(JSON.stringify(now)!==JSON.stringify(row)||fs.readFileSync(full,'utf8')!==local)refuse('The conflict changed after preflight. Nothing was written.');
+    const left=leftCopies(current);
+    const ours=(copy:LeftCopy)=>copy.path===row.path&&copy.delivery_id===id&&copy.added_by==='conflict-disposition';
+    const updated={...row,disposition:disposition==='reopen'?null:{decided:'keep-filed',decided_utc:utcSeconds()}};
+    return {...current,filed_conflicts:conflictRows(current).map(r=>r.path===row.path?updated:r),
+      left_inbox_copies:disposition==='reopen'?left.filter(copy=>!ours(copy)):
+        [...left.filter(copy=>!ours(copy)),{path:row.path,delivery_id:id,updated_at:row.updated_at,added_by:'conflict-disposition'}]};
+  });
+  return {...value,written:true};
+}
+
+export const POSTBOX_ACTIONS = ['check', 'conflict', 'resolve', 'send', 'setup', 'status'];
 
 /** `deskpost postbox setup|status|resolve|send|check`. */
 export async function runPostboxVerb(argv: string[], workspace: string): Promise<{ refusal: string | null; value: Record<string, PsJsonValue> | null }> {
@@ -1806,6 +2009,7 @@ export async function runPostboxVerb(argv: string[], workspace: string): Promise
     if (action === 'resolve') return { refusal: null, value: await resolve(argv.slice(1), workspace) };
     if (action === 'send') return { refusal: null, value: await send(argv.slice(1), workspace) };
     if (action === 'check') return { refusal: null, value: await check(argv.slice(1), workspace) };
+    if (action === 'conflict') return { refusal: null, value: await conflict(argv.slice(1), workspace) };
     return { refusal: `deskpost postbox has no action '${action}'. It has: ${POSTBOX_ACTIONS.join(', ')}.`, value: null };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

@@ -600,6 +600,10 @@ Invoke-WorkspaceCheck 'workspace.codex-guards-registered' {
     "$registrations Codex hook registration(s) resolve, the project is trusted in $($trust.home) with every hook reviewed, and the validated reader is declared"
 }
 
+if (-not $WorkspaceOnly -and -not (Test-Path -LiteralPath (Join-Path $program '.codex/config.toml')) -and
+    -not (Test-Path -LiteralPath (Join-Path $program '.codex/hooks.json'))) {
+    Add-Result 'codex.project-access-config' 'skipped' 'both rendered Codex files are absent (a fresh clone or worktree); render them with powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Initialize-CodexLibrary.ps1'
+} else {
 Invoke-Check 'codex.project-access-config' {
     $configTemplatePath = Join-Path $program (Join-Path '.codex' 'config.template.toml')
     $hooksTemplatePath = Join-Path $program (Join-Path '.codex' 'hooks.template.json')
@@ -698,6 +702,7 @@ Invoke-Check 'codex.project-access-config' {
     }
 
     'both MCP servers required; events nested under hooks; Desk guard, shell guard, patch guard and context hook registered, and every path they name resolves'
+}
 }
 
 Invoke-Check 'codex.delegation-runs-hooks' {

@@ -36,11 +36,14 @@
  *     checks it (section 240 and docs/kickoff-template.md, kickoffs/s127 row 3).
  * Both scans run in one Node process; the PowerShell oracle remains unchanged.
  *
- * Usage: node tools/docs-gate.ts [--commit-message-file <file>]
+ * With --file, check only named working documents before staging or review. The same checks and summary run.
+ * Usage: node tools/docs-gate.ts [--file <path>]... [--commit-message-file <file>]
  */
+import { contractDocuments } from './section-select.mts';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 const EXIT_PASS = 0;
 const EXIT_FAIL = 3;
@@ -53,16 +56,7 @@ const BEHAVIOUR_ROOTS = new Set(['kernel', 'tools', 'templates']);
  * Documents the runner reads through PowerShell logic, or the program reads at runtime. Staging one keeps the full
  * runner. Each names the checks that read it.
  */
-const CONTRACT_DOCUMENTS: ReadonlyArray<{ match: (p: string) => boolean; why: string }> = [
-  { match: (p) => p === 'CONTEXT.md', why: 'context.seat-vocabulary reads the seat terms Get-SeatVocabulary declares' },
-  { match: (p) => p === 'docs/seats.md', why: 'the seats.* checks read it against SeatCreation.ps1 and the two-seat suite, and the SessionStart hook serves it' },
-  { match: (p) => p.startsWith('docs/templates/'), why: 'init and upgrade ship it' },
-  { match: (p) => p === 'docs/project-hub-design.md', why: 'the hub.* checks read it against New-ProjectHub.ps1' },
-  { match: (p) => p === 'docs/adr/0003-decisions-follow-their-subject.md', why: 'hub.dev-template-seeds-sections reads it' },
-  { match: (p) => p === 'docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close.md', why: 'hub.sections-name-their-destinations reads it' },
-  { match: (p) => p === 'docs/supported-operation-matrix.md', why: 'acceptance.matrix-doc-matches-rows renders it from the matrix' },
-  { match: (p) => p === 'docs/kickoff-template.md', why: 'self-test section 240 reads its fenced block and runs tools/kickoff-check.mts on it' },
-];
+const CONTRACT_DOCUMENTS = contractDocuments();
 
 type Outcome = { check: string; status: 'pass' | 'warn' | 'fail'; detail: string };
 
@@ -118,12 +112,14 @@ class Index {
   private readonly folders: Set<string>;
   private readonly texts = new Map<string, string | null>();
   private readonly root: string;
+  private readonly files?: string[];
 
-  constructor(root: string) {
+  constructor(root: string, files?: string[]) {
     this.root = root;
+    this.files = files;
     const listed = git(root, ['ls-files', '-z']);
     if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr.trim()}`);
-    this.paths = listed.stdout.toString('utf8').split('\0').filter((entry) => entry.length > 0);
+    this.paths = [...new Set([...listed.stdout.toString('utf8').split('\0').filter((entry) => entry.length > 0), ...(files ?? [])])];
     if (!this.paths.length) throw new Error('git ls-files returned nothing, so this gate read no files rather than proving anything.');
     this.lower = new Set(this.paths.map((entry) => entry.toLowerCase()));
     this.folders = new Set();
@@ -133,9 +129,18 @@ class Index {
     }
   }
 
+  rootPath(): string { return this.root; }
+
   load(paths: string[]): void {
     const wanted = [...new Set(paths)].filter((entry) => !this.texts.has(entry));
     if (!wanted.length) return;
+    if (this.files) {
+      for (const entry of wanted) {
+        const file = path.join(this.root, entry);
+        this.texts.set(entry, fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '') : null);
+      }
+      return;
+    }
     const batch = git(this.root, ['cat-file', '--batch'], wanted.map((entry) => `:${entry}\n`).join(''));
     if (batch.status !== 0) throw new Error(`git cat-file --batch failed: ${batch.stderr.trim()}`);
     const out = batch.stdout;
@@ -160,6 +165,8 @@ class Index {
     return this.texts.get(relative) ?? null;
   }
 
+  subjects(): string[] { return this.files ?? this.paths; }
+
   /** As the runner's Test-Path answers it: a file or a folder, in the index or on disk, case-insensitively. */
   exists(relative: string): boolean {
     const key = relative.toLowerCase();
@@ -177,7 +184,7 @@ const LINK = /\]\(([^)#:]+\.md)(?:#[^)]*)?\)/g;
 
 function plansDeclareTheirOwner(index: Index): Outcome {
   const check = 'workspace.plans-declare-their-owner';
-  const plans = index.paths.filter((entry) => !entry.includes('/') && /^plan.*\.md$/i.test(entry)).sort();
+  const plans = index.subjects().filter((entry) => !entry.includes('/') && /^plan.*\.md$/i.test(entry)).sort();
   if (!plans.length) return { check, status: 'pass', detail: 'no root plan files' };
   index.load(plans);
   const unqualified = ['PLAN.md', 'PLAN-REVIEW-LOG.md'];
@@ -274,7 +281,7 @@ function alwaysOnBudget(index: Index, root: string): Outcome {
 
 function linksResolve(index: Index): Outcome {
   const check = 'docs.links-resolve';
-  const files = index.paths.filter((entry) => (entry.startsWith('docs/') || !entry.includes('/')) && entry.endsWith('.md'));
+  const files = index.subjects().filter((entry) => (entry.startsWith('docs/') || !entry.includes('/')) && entry.endsWith('.md'));
   index.load(files);
   const broken: string[] = [];
   for (const file of files) {
@@ -300,7 +307,11 @@ function adrIndexIsComplete(index: Index): Outcome {
   const missing = onDisk.filter((name) => !linked.includes(name));
   const stale = linked.filter((name) => !onDisk.includes(name));
   if (missing.length) return { check, status: 'fail', detail: `docs/_index.md links no entry for: ${missing.join(', ')}` };
-  if (stale.length) return { check, status: 'fail', detail: `docs/_index.md links ADR(s) that are not on disk: ${stale.join(', ')}` };
+  if (stale.length) {
+    const commands = stale.filter(name => fs.existsSync(path.join(index.rootPath(), 'docs/adr', name)))
+      .map(name => `git add docs/adr/${name}`);
+    return { check, status: 'fail', detail: `docs/_index.md links architecture decision records that are not tracked or staged: ${stale.join(', ')}${commands.length ? '; ' + commands.join('; ') : ''}` };
+  }
   return { check, status: 'pass', detail: `all ${onDisk.length} ADRs are linked from docs/_index.md, and every ADR link resolves to one` };
 }
 
@@ -418,9 +429,9 @@ function delegationRunsHooks(index: Index): Outcome {
 }
 
 /** Both scans share the TypeScript port; DeploymentScan.ps1 stays the parity oracle. */
-function scans(root: string, documents: string[], messageFile: string): Outcome[] {
+function scans(root: string, documents: string[], messageFile: string, env = process.env): Outcome[] {
   const ran = spawnSync(process.execPath, [path.join(root, 'tools/scan.ts'), '--identity', '--deployment', '--files', documents.join('\n'), ...(messageFile ? ['--commit-message-file', messageFile] : []), '--json'], {
-    cwd: root, env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26,
+    cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26,
   });
   try {
     if (ran.error || ran.status === 2 || ran.status === null) throw Error(ran.stderr || String(ran.error));
@@ -438,11 +449,12 @@ function scans(root: string, documents: string[], messageFile: string): Outcome[
   }
 }
 
-function rulesRegister(root: string): Outcome {
-  const check = 'kernel.selftest (section 119, the rules register)';
+function rulesRegister(root: string, documents: string[]): Outcome {
+  const sections = documents.some(file => file.startsWith('docs/guides/')) ? '119,198' : '119';
+  const check = `kernel.selftest (sections ${sections}, rules and usage)`;
   const ran = spawnSync(process.execPath, [path.join(root, 'kernel', 'test', 'selftest.ts')], {
     cwd: root,
-    env: { ...process.env, LIBRARY_SELFTEST_SECTIONS: '119' },
+    env: { ...process.env, LIBRARY_SELFTEST_SECTIONS: sections },
     encoding: 'utf8',
   });
   const lines = `${ran.stdout ?? ''}${ran.stderr ?? ''}`.trim().split(/\r?\n/);
@@ -452,15 +464,37 @@ function rulesRegister(root: string): Outcome {
 
 function main(argv: string[]): number {
   let messageFile = '';
+  const requested: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--commit-message-file' && i + 1 < argv.length) messageFile = argv[++i]!;
-    else throw new Error(`unknown argument '${argv[i]}'. Usage: node tools/docs-gate.ts [--commit-message-file <file>]`);
+    else if (argv[i] === '--file' && i + 1 < argv.length) requested.push(argv[++i]!);
+    else { process.stderr.write(`docs gate: invalid argument '${argv[i]}'. Usage: node tools/docs-gate.ts [--file <path>]... [--commit-message-file <file>]\n`); return 2; }
   }
   const top = git(process.cwd(), ['rev-parse', '--show-toplevel']);
   if (top.status !== 0) throw new Error(`not in a git working tree: ${top.stderr.trim()}`);
   const root = path.resolve(top.stdout.toString('utf8').trim());
 
-  const changes = stagedChanges(root);
+  const files: string[] = [];
+  for (const file of requested) {
+    const absolute = path.resolve(file);
+    const relative = path.relative(root, absolute);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || !fs.existsSync(absolute) || !fs.statSync(absolute).isFile() || !fs.realpathSync(absolute).startsWith(fs.realpathSync(root) + path.sep)) {
+      process.stderr.write(`docs gate: --file must name a file inside the repository: ${file}\n`); return 2;
+    }
+    const named = relative.split(path.sep).join('/');
+    // Only a document is checked here (kickoffs/s180 row 2(a)): a code file would pass checks that never read it.
+    if (!named.endsWith('.md') || (named.includes('/') && !named.startsWith('docs/'))) {
+      process.stderr.write(`docs-gate: --file ${file} is not a document (a root .md or a file under docs/); nothing was checked\n`); return 2;
+    }
+    files.push(named);
+  }
+  const requestedContracts = files.filter(file => CONTRACT_DOCUMENTS.some(row => row.match(file)));
+  if (requestedContracts.length === files.length && files.length) {
+    process.stdout.write(`docs gate: not a docs-only commit (contract documents: ${requestedContracts.join(', ')}); mapped checks cover them.\n`);
+    return EXIT_NOT_DOCS;
+  }
+  for (const contract of requestedContracts) files.splice(files.indexOf(contract), 1);
+  const changes = files.length ? files.map(file => ({ status: 'M', paths: [file] })) : stagedChanges(root);
   const reason = notDocsOnly(changes);
   if (reason !== null) {
     process.stdout.write(`docs gate: not a docs-only commit (${reason}); the full runner checks it.\n`);
@@ -468,9 +502,9 @@ function main(argv: string[]): number {
   }
   const documents = changes.map((change) => change.paths[0]!);
   const started = Date.now();
-  process.stdout.write(`docs gate: ${documents.length} staged document(s), every one a document; running the document checks.\n`);
+  process.stdout.write(`docs gate: ${documents.length} ${files.length ? 'working' : 'staged'} document(s), every one a document; running the document checks.\n`);
 
-  const index = new Index(root);
+  const index = new Index(root, files.length ? files : undefined);
   const outcomes: Outcome[] = [plansDeclareTheirOwner(index)];
   if (documents.includes('CLAUDE.md') || documents.includes('AGENTS.md')) outcomes.push(alwaysOnBudget(index, root));
   outcomes.push(
@@ -481,8 +515,8 @@ function main(argv: string[]): number {
     resetVocabulary(index),
     hitIsALocation(index),
     delegationRunsHooks(index),
-    ...scans(root, documents, messageFile),
-    rulesRegister(root),
+    ...workingScans(root, documents, messageFile, files.length > 0),
+    rulesRegister(root, documents),
   );
 
   for (const outcome of outcomes) {
@@ -493,6 +527,30 @@ function main(argv: string[]): number {
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   process.stdout.write(`docs gate: ${count('pass')} passed, ${count('warn')} warned, ${failed} failed (${seconds}s)\n`);
   return failed ? EXIT_FAIL : EXIT_PASS;
+}
+
+/** A private index lets the existing scans judge working bytes without staging the reader's files. */
+function workingScans(root: string, documents: string[], messageFile: string, working: boolean): Outcome[] {
+  if (!working) return scans(root, documents, messageFile);
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-gate-'));
+  try {
+    const objects = git(root, ['rev-parse', '--git-path', 'objects']);
+    if (objects.status !== 0) throw Error('could not locate repository objects for document scan');
+    fs.mkdirSync(path.join(folder, 'objects'));
+    const env = { ...process.env, GIT_INDEX_FILE: path.join(folder, 'index'), GIT_OBJECT_DIRECTORY: path.join(folder, 'objects'),
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: [path.resolve(root, objects.stdout.toString('utf8').trim()), process.env['GIT_ALTERNATE_OBJECT_DIRECTORIES']].filter(Boolean).join(path.delimiter) };
+    const run = (args: string[], input?: Buffer) => {
+      const r = spawnSync('git', args, { cwd: root, env, input, encoding: 'utf8', windowsHide: true });
+      if (r.status !== 0) throw Error('could not prepare document scan index');
+      return r.stdout.trim();
+    };
+    run(['read-tree', '--empty']);
+    for (const file of documents) {
+      const hash = run(['hash-object', '-w', '--stdin'], fs.readFileSync(path.join(root, file)));
+      run(['update-index', '--add', '--cacheinfo', '100644', hash, file]);
+    }
+    return scans(root, documents, messageFile, env);
+  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
 }
 
 let code: number;

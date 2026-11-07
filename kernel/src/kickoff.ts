@@ -183,15 +183,46 @@ function complete(workspace: string, record: ReceiveRecord, name: StageName, pro
   fault(name);
 }
 
-/** The `## Next` lines that name the Kickoff's link, ticked or not. */
-function pointerLines(workspace: string, hub: string, link: string): string[] {
-  const text = fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8').replace(/\r\n/g, '\n');
-  const lines = text.split('\n');
+/** The lines of a Hub's `## Next`, or null when its `_project.md` text has none. */
+function nextLines(text: string): string[] | null {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
   const start = lines.findIndex((line) => /^##[ \t]+Next[ \t]*$/.test(line));
-  if (start < 0) refuse(`projects/${hub}/_project has no ## Next section for the Kickoff's pointer. Nothing was written.`);
+  if (start < 0) return null;
   let end = lines.findIndex((line, index) => index > start && /^##[ \t]/.test(line));
   if (end < 0) end = lines.length;
-  return lines.slice(start + 1, end).filter((line) => line.includes(link));
+  return lines.slice(start + 1, end);
+}
+
+/** The `## Next` lines that name the Kickoff's link, ticked or not. */
+function pointerLines(workspace: string, hub: string, link: string): string[] {
+  const next = nextLines(fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8'));
+  if (next === null) refuse(`projects/${hub}/_project has no ## Next section for the Kickoff's pointer. Nothing was written.`);
+  return next.filter((line) => line.includes(link));
+}
+
+/**
+ * The ids (lower case) of the Kickoffs a Hub's `## Next` still holds an unticked pointer to: a `- [ ]` line naming
+ * `[[projects/<hub>/kickoffs/<id>]]`, the link `pointerLines` finds. Never a refusal: a Hub with no `_project.md` or no
+ * `## Next` has none pending (kickoffs/s180 row 2(f); `notebooklinks.ts` reads every other Kickoff page as history).
+ */
+export function pendingKickoffIds(workspace: string, hub: string): Set<string> {
+  const ids = new Set<string>();
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8');
+  } catch {
+    return ids;
+  }
+  const prefix = `[[projects/${hub}/kickoffs/`.toLowerCase();
+  for (const line of nextLines(text) ?? []) {
+    if (!/^\s*- \[ \]/.test(line)) continue;
+    const lower = line.toLowerCase();
+    for (let at = lower.indexOf(prefix); at >= 0; at = lower.indexOf(prefix, at + 1)) {
+      const id = /^[^\]|/]+/.exec(lower.slice(at + prefix.length))?.[0];
+      if (id) ids.add(id);
+    }
+  }
+  return ids;
 }
 
 function unticked(line: string): string {

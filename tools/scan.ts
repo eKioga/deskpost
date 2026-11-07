@@ -74,7 +74,7 @@ function terms(file: string): string[] | null {
   return values.length ? values : null;
 }
 export function gitleaks(root: string): { ran: boolean; clean: boolean; detail: string } {
-  const ran = spawnSync('gitleaks', ['protect', '--staged', '--no-banner', '--redact'], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 24 });
+  const ran = spawnSync('gitleaks', ['git', '--staged', '--no-banner', '--redact'], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 24 });
   if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { ran: false, clean: false, detail: 'gitleaks is not installed, so nothing scanned the staged blobs on this machine' };
   if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
   if (ran.status === 0) return { ran: true, clean: true, detail: 'gitleaks found nothing in the staged blobs' };
@@ -87,7 +87,7 @@ export function secretsScan(root: string): Scan {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-secrets-'));
   try {
     const hits: Hit[] = [];
-    for (const [where, args] of [['files', ['detect', '--no-git', '--source', root]], ['staged blobs', ['protect', '--staged']]] as const) {
+    for (const [where, args] of [['files', ['detect', '--no-git', '--source', root]], ['staged blobs', ['git', '--staged']]] as const) {
       const report = path.join(reports, `${where.replace(' ', '-')}.json`);
       const ran = spawnSync('gitleaks', [...args, '--no-banner', '--redact', '--report-format', 'json', '--report-path', report], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 24 });
       if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { status: 'fail', hits: [], detail: `gitleaks is not installed, so nothing scanned ${root} for secrets. Install it; this scan never falls back to another.` };
@@ -101,11 +101,12 @@ export function secretsScan(root: string): Scan {
     fs.rmSync(reports, { recursive: true, force: true });
   }
 }
-export function identityScan(root: string, messageFile = '', termRoot = path.join(process.env['USERPROFILE'] || os.homedir(), '.library')): Scan {
+export function identityScan(root: string, messageFile = '', termRoot = path.join(process.env['USERPROFILE'] || os.homedir(), '.library'), requested?: string[]): Scan {
   const denyPath = path.join(termRoot, 'identity-denylist.txt'), allowPath = path.join(termRoot, 'identity-allowlist.txt');
   const deny = terms(denyPath), allow = terms(allowPath) ?? [];
   const base = git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], true).length ? 'HEAD' : '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-  const files = decode(git(root, ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', base])).split('\0').filter(file => file && product(file));
+  // A named list is read whole from the index (kickoffs/s180 row 2(b)): a file identical to HEAD is still scanned.
+  const files = (requested ?? decode(git(root, ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', base])).split('\0')).filter(file => file && product(file));
   const sources = files.flatMap(source => { const bytes = git(root, ['cat-file', 'blob', `:${source}`]); return bytes.includes(0) ? [] : [{ source, text: decode(bytes) }]; });
   const scope = `${sources.length} staged blob(s)${messageFile ? ' and the commit message' : ''}`;
   if (messageFile) {
@@ -196,7 +197,7 @@ function main(args: string[]): number {
   }
   if (!identity && !deployment && !secrets) throw Error('Usage: node tools/scan.ts --identity [--commit-message-file <file>] | --deployment [--files <newline-separated paths>] | --secrets [--root <dir>] [--json]');
   const result: { identity?: Scan; deployment?: Scan; secrets?: Scan } = {};
-  if (identity) result.identity = identityScan(root, message, termRoot);
+  if (identity) result.identity = identityScan(root, message, termRoot, files);
   if (deployment) result.deployment = deploymentScan(root, files);
   if (secrets) result.secrets = secretsScan(root);
   if (json) process.stdout.write(JSON.stringify(result) + '\n');

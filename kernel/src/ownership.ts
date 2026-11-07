@@ -22,6 +22,7 @@ import { utcRoundTrip } from './journal.ts';
 import { parseArguments } from './argv.ts';
 import { verbTable } from './verbs.ts';
 import { rebuildAllCollectionManifests } from './collectionbooks.ts';
+import { rebuildSharedManifests } from './sharedmanifests.ts';
 import { configuredCollectionId, configuredMcpUrl, configuredSharedRoot, isLocalBackend } from './basicmemory.ts';
 
 const OWNERSHIP_SCHEMA = '1';
@@ -497,7 +498,7 @@ function exitCollectionOwnership(collectionRoot: string, workspaceId: string, wo
 }
 
 /** `Set-CollectionOwner.ps1`: `library collection owner [--status | --acquire [--force [--user-confirmed]] | --release]`. */
-export function runCollectionVerb(argv: string[], workspace: string): { refusal: string | null; value: Record<string, PsJsonValue> | null } {
+export async function runCollectionVerb(argv: string[], workspace: string): Promise<{ refusal: string | null; value: Record<string, PsJsonValue> | null }> {
   try {
     const parsed = parseArguments(argv, verbTable('collection'));
     const action = parsed.positional[0] ?? '';
@@ -510,7 +511,14 @@ export function runCollectionVerb(argv: string[], workspace: string): { refusal:
             'its shared manifests are rebuilt by tools/Update-SharedBookManifests.ps1. Nothing was changed.',
         );
       }
-      return { refusal: null, value: rebuildAllCollectionManifests(workspace) };
+      const value = rebuildAllCollectionManifests(workspace);
+      try {
+        const shared = await rebuildSharedManifests(workspace);
+        if (shared !== null) value['shared'] = shared;
+      } catch (error) {
+        value['shared'] = { status: 'not reached', reason: (error as Error).message };
+      }
+      return { refusal: null, value };
     }
     if (action !== 'owner') {
       return { refusal: `library collection has no action '${action}'. It has: add-page, owner, rebuild, replace-page.`, value: null };

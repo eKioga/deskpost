@@ -59,7 +59,7 @@ import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 import { deskAuditFacts } from './audit.ts';
 import { hubPages } from './hubpages.ts';
 import { asksDeskLine } from './asks.ts';
-import { readTrain } from './train.ts';
+import { daysBetween, frontCar, localDate, readTrain } from './train.ts';
 
 /** The schema version `Write-LibraryResult -Json` stamps on every helper document. */
 const LIBRARY_OUTPUT_SCHEMA = 1;
@@ -96,6 +96,68 @@ export function missingSinceOpened(workspace: string, root: string, localBackend
   return parts.form === 'books' && parts.shelf === 'active' &&
     !fs.existsSync(path.join(workspace, 'collection', 'books', parts.slug, 'wiki')) &&
     !fs.existsSync(path.join(workspace, 'collection', 'archive', parts.slug, 'wiki', '_book.md'));
+}
+
+/**
+ * A Book `shared promote` moved (kickoffs/s193 row 4; PLAN-many-libraries.md item 13): the line its archived `_moved.md`
+ * says, or null when the archived Book has none. Local metadata only.
+ */
+export function movedNoteLine(workspace: string, slug: string): string | null {
+  const file = path.join(workspace, 'collection', 'archive', slug, 'wiki', '_moved.md');
+  if (!fs.existsSync(file)) return null;
+  return readUtf8(file).split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '' && !line.startsWith('#') && !line.startsWith('---')) ?? null;
+}
+
+/** What a Desk entry for a moved Book says: the move, the shared slug, and the one command to open it and to close the old entry. */
+function movedEntry(slug: string, says: string): Record<string, PsJsonValue> {
+  return { says, shared: `shared/${slug}`, open: `deskpost basic-memory open ${slug}`, close: `deskpost desk close book ${slug} --location collection` };
+}
+
+/**
+ * EVERY SEAT IN THIS LIBRARY STILL HOLDING A MOVED BOOK'S OLD ENTRY (item 13): for each archived collection Book with a
+ * `_moved.md`, the seats whose Desk files list `books/<slug>`, read from those files and written by nobody.
+ */
+function movedBooksStillOpen(workspace: string, stateDirectory: string, localBackend: boolean): PsJsonValue[] {
+  const archive = path.join(workspace, 'collection', 'archive');
+  if (!localBackend || !fs.existsSync(archive)) return [];
+  const seats = seatDirectoryNames(stateDirectory);
+  const rows: PsJsonValue[] = [];
+  for (const slug of fs.readdirSync(archive).sort()) {
+    const says = movedNoteLine(workspace, slug);
+    if (says === null) continue;
+    const holding = seats.filter((one) => {
+      try {
+        return seatOpenBooks(workspace, one).includes(`books/${slug}`);
+      } catch {
+        return false;
+      }
+    });
+    if (holding.length) rows.push({ book: `books/${slug}`, ...movedEntry(slug, says), seats: holding });
+  }
+  return rows;
+}
+
+/**
+ * WHO KEEPS AN OPEN SHARED BOOK UP TO DATE (kickoffs/s195 row 3; PLAN-many-libraries.md item 16), from this Library's own
+ * copy of its upkeep grant, `internal/shared-upkeep/<slug>.json` (written by `shared upkeep`): each granted `seat_id`
+ * under its current name, a retired one named as retired, or "any seat of this Library". Null with no copy, so a Desk
+ * with no grant is byte for byte today's (the acceptance matrix compares it with the PowerShell oracle). No server call.
+ */
+function maintainedBy(workspace: string, stateDirectory: string, slug: string): PsJsonValue[] | null {
+  const file = path.join(workspace, 'internal', 'shared-upkeep', `${slug}.json`);
+  if (!fs.existsSync(file)) return null;
+  let grant: Record<string, unknown>;
+  try {
+    grant = JSON.parse(readUtf8(file)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (grant['any_seat'] === true) return ['any seat of this Library'];
+  const ids = Array.isArray(grant['seat_ids']) ? grant['seat_ids'].map(String) : [];
+  const names = Array.isArray(grant['names']) ? grant['names'].map(String) : [];
+  const live = readSeatRegistry(stateDirectory);
+  const retired = readSeatRetirementRecords(workspace).records;
+  return ids.map((id, at) => live.find((row) => row.seatId === id)?.seat ?? `${retired.find((record) => record.seat_id === id)?.seat ?? names[at] ?? id} (retired)`);
 }
 
 /** What to do about a missing open Book, in the full-text search's words (`fulltext.ts`). */
@@ -184,9 +246,14 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   const overviewLocal = overviewMarker !== null && String(overviewMarker['backend'] ?? '') === 'local';
   const openBooks = openBookRoots.map((root) => {
     const parts = splitBookRoot(root);
+    const archived = archivedSinceOpened(workspace, root, overviewLocal);
+    const moved = archived ? movedNoteLine(workspace, parts.slug) : null;
+    const maintained = parts.form === 'shared' ? maintainedBy(workspace, stateDirectory, parts.slug) : null;
     return {
       slug: parts.slug, location: placeOfRoot(parts, overviewLocal), shelf: parts.shelf, root: parts.root,
-      ...(archivedSinceOpened(workspace, root, overviewLocal) ? { archived_since_opened: true } : {}),
+      ...(archived ? { archived_since_opened: true } : {}),
+      ...(moved !== null ? { moved: movedEntry(parts.slug, moved) } : {}),
+      ...(maintained !== null ? { maintained_by: maintained } : {}),
       ...(missingSinceOpened(workspace, root, overviewLocal) ? { state: 'missing', repair: missingBookRepair(parts.slug) } : {}),
     };
   });
@@ -459,6 +526,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         unexpected_reports:reports.filter(r=>r.fields.get('unexpected_report')==='true').length,
         controls_deferred:Array.isArray(state['controls_deferred'])?state['controls_deferred'].length:0,
         controls_refused:Array.isArray(state['controls_refused'])?state['controls_refused'].length:0,
+        filed_conflicts_count:Array.isArray(state['filed_conflicts'])?(state['filed_conflicts'] as {disposition:unknown}[]).filter(row=>row.disposition===null).length:0,
         records_incomplete:listOutstanding(workspace).length,
         outcomes_received:pendingNotes.filter(({book,note})=>book.slug==='letters' && isFromAnotherLibrary(note) && isAddressedTo(note,self) && noteFrontmatter(readUtf8(note.fullPath)).has('closes_delivery_id')).length,
         ...((state['reports_triager'] as {library_id?:string}|null)?.library_id && (state['reports_triager'] as {library_id:string}).library_id !== state['library_id'] && reports.some(r=>!r.fields.has('delivery_id') && (!r.note.fromLibraryId || r.note.fromLibraryId === r.note.localLibraryId)) ? {send_pending_route:'deskpost reports send-pending --preflight'} : {}),
@@ -469,6 +537,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         received_from_other_libraries: received.length,
         undeliverable: marked('stale_delivery'),
         damaged: marked('postbox_damaged'),
+        // WHETHER THE SERVER'S TOOL LIST IS THE ONE A PROOF RAN ON (kickoffs/s178-r2 row 9), by doctor's comparison.
+        server_tools_fingerprint_state: typeof state['server_tools_fingerprint'] !== 'string' || !state['server_tools_fingerprint'] ? 'unknown'
+          : typeof state['server_tools_proven_fingerprint'] !== 'string' || !state['server_tools_proven_fingerprint'] ? 'unproven'
+          : state['server_tools_fingerprint'] === state['server_tools_proven_fingerprint'] ? 'proven' : 'changed',
       };
     } catch {
       return null;
@@ -570,8 +642,17 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         .map(name => path.join(reviewed, name)).filter(folder => fs.statSync(folder).isDirectory())] : [];
       return [book.notesPath, ...folders].flatMap(notesPath => shelfNotes({ ...book, notesPath }));
     }).filter(note => isAddressedTo(note, self) && note.title.includes(' handback: ') && Date.parse(note.captured) > Date.parse(trainRecord.changed_at)).length,
+    // THE FRONT CAR AND THE WEEK'S ARRIVALS (kickoffs/s184 row 2): local dates, counted from today's local date.
+    ...(() => {
+      const today = localDate(), front = frontCar(trainRecord);
+      return {
+        front_car: front === null ? null : { place: front.place, opened: front.opened, days_open: Math.max(0, daysBetween(front.opened, today)) },
+        cars_arrived_last_7_days: (trainRecord.cars ?? []).filter(car => car.arrived !== null && daysBetween(car.arrived, today) >= 0 && daysBetween(car.arrived, today) < 7).length,
+      };
+    })(),
   };
 
+  const stillOpen = movedBooksStillOpen(workspace, stateDirectory, overviewLocal);
   return {
     schema: LIBRARY_OUTPUT_SCHEMA,
     operation: 'Desk Overview',
@@ -598,6 +679,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     ...(auditFacts !== null && auditFacts.auditsDue !== null ? { audits_due: auditFacts.auditsDue } : {}),
     seat_consistency: seatRegistryConsistency(workspace, stateDirectory),
     open_books: auditFacts === null ? openBooks : openBooks.map((book) => (auditFacts!.dueTargets.has(auditTargetOf(book) ?? '') ? { ...book, audit_due: true } : book)),
+    ...(stillOpen.length ? { moved_books_still_open: stillOpen } : {}),
     open_projects: openProjects,
     ...(dueProjects.length ? { audit_due_projects: dueProjects } : {}),
     hub_pages: hubPageRows,
@@ -1267,6 +1349,13 @@ export interface DeskWriteOptions {
   slug: string;
   seat?: string | undefined;
   claimToken?: string | undefined;
+  /** An `open` that takes this entry's place, in the same locked write (`shared promote`'s swap, kickoffs/s193 row 3). */
+  replacing?: string | undefined;
+}
+
+/** One seat's open Book roots as its Desk file lists them, written by nobody; empty when it has none. */
+export function seatOpenBooks(workspace: string, seat: string): string[] {
+  return readStateLines(deskFilePath(path.join(workspace, '.claude'), seat, 'books'), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', true).map(convertToBookRoot);
 }
 
 /**
@@ -1348,7 +1437,9 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
             refuse(`No Book '${options.slug}' exists in this workspace's local collection at collection/${wikiRelative}.`);
           }
         }
-        if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
+        const at = options.replacing === undefined ? -1 : openBooks.indexOf(options.replacing);
+        if (at >= 0) openBooks = openBooks.includes(bookRoot) ? openBooks.filter((entry) => entry !== options.replacing) : openBooks.map((entry, index) => (index === at ? bookRoot : entry));
+        else if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
       } else if (options.location === undefined) {
         // NO --location CLOSES THE ONE OPEN BOOK OF THAT SLUG, WHEREVER IT IS OPEN (S85 row 4, ruling 4). It meant the
         // collection, so closing a Shelf Book without `--location shelf` closed nothing, exited 0, and left the seat

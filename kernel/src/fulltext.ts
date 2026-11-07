@@ -1,5 +1,5 @@
 /**
- * `search_open_books` -- the full text of Shelf Books that are OPEN on the Desk, and no other.
+ * `search_open_books` -- full text of Books OPEN on the Desk, from disk or the Basic Memory connection.
  *
  * A CLOSED BOOK IS NOT SEARCHED AND IS NOT LISTED. Closed-Book coverage is Discovery's job, over
  * metadata rather than bodies; this tier reads bodies, so the Desk is what decides whether it may
@@ -15,9 +15,8 @@
  * THE COVERAGE LINES COME FIRST AND UNCONDITIONALLY. An answer that looks complete when a Book was
  * skipped, out of scope, or closed underneath it is worse than no answer.
  *
- * A SHARED BOOK OPEN ON THE DESK IS NAMED, NEVER SEARCHED. Its pages arrive one network read at a
- * time, which no query-time budget can complete, so it is reported as out of scope with the route
- * that does work.
+ * Shared pages arrive through paged listings and exact listed reads, charged to the same scan and reply budgets.
+ * A slow or incomplete connection is named in the answer, along with any budget that stopped the query.
  */
 
 import * as fs from 'node:fs';
@@ -34,7 +33,8 @@ import {
 } from './rawsearch.ts';
 import { getArchivedShelfBook, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
 import { parseBookRoot, placeOfRoot, type BookPlace, type BookRootParts } from './places.ts';
-import { isLocalBackend } from './basicmemory.ts';
+import { isLocalBackend, markerConnection, McpSession, readListedContent, resolveMcpUrl, configuredCollectionId } from './basicmemory.ts';
+import { sharedPages } from './sharedmanifests.ts';
 import { collectionBookIdentity, collectionBookWiki } from './collectionbooks.ts';
 
 const FULL_TEXT_SCHEMA = 1;
@@ -50,10 +50,6 @@ const MAX_FILE_BYTES = 2097152;
 
 const CLOSED_NOTE =
   'Closed Books are not searched at all and are not listed here. Use discover_book_pages to find which Book covers a subject.';
-const SHARED_NOTE =
-  "Full text covers the local Shelf only. A shared Book's pages arrive one read over the network at a time, which no " +
-  'query-time budget can complete, so an open shared Book is named below rather than searched.';
-const SHARED_ALTERNATIVE = 'read it a page at a time with read_open_book_page, or use discover_book_pages for its headings';
 const CLOSING_RULE =
   'A hit is a location, not a reading: a matched line says the term occurs on that page. Open the page with ' +
   'read_open_book_page before answering from it.';
@@ -156,27 +152,27 @@ export interface FullTextResult {
   results: FullTextHit[];
 }
 
-export function findOpenBookLines(options: {
+export async function findOpenBookLines(options: {
   workspace: string;
   query: string;
   maxResults?: number;
   deskStateDirectory: string;
   /** Only the open Books in this place (PLAN-basic-memory.md step 1, Fable #5). Absent, every open Book. */
   place?: BookPlace | null;
-}): FullTextResult {
+  /** Internal callers may tighten the production scan limits, never widen them. */
+  limits?: { wallClockSeconds?: number; maxFilesScanned?: number };
+}): Promise<FullTextResult> {
   const root = path.resolve(options.workspace);
   const needle = assertSearchQuery(options.query);
   const cap = options.maxResults ?? DEFAULT_MAX_RESULTS;
   const budget: SearchBudget = newSearchBudget({
-    wallClockSeconds: WALL_CLOCK_SECONDS,
+    wallClockSeconds: Math.min(WALL_CLOCK_SECONDS, options.limits?.wallClockSeconds ?? WALL_CLOCK_SECONDS),
     maxMatchedBytes: MAX_MATCHED_BYTES,
-    maxFilesScanned: MAX_FILES_SCANNED,
+    maxFilesScanned: Math.min(MAX_FILES_SCANNED, options.limits?.maxFilesScanned ?? MAX_FILES_SCANNED),
     maxCollectedMatches: MAX_COLLECTED_MATCHES,
   });
 
-  // A LOCAL LIBRARY'S OWN COLLECTION IS ON THIS DISK (step 1), so its open Books are searched like the Shelf's;
-  // only a Book reached over the network -- a `shared/` connection Book, or any collection Book of a workspace
-  // attached to Basic Memory -- is named rather than searched.
+  // Disk pages and connection pages share one budget and the unconditional second Desk read.
   const localBackend = isLocalBackend(root);
   const byRoot = (left: ParsedRoot, right: ParsedRoot) => (left.root < right.root ? -1 : left.root > right.root ? 1 : 0);
   // On a workspace attached to Basic Memory its collection IS the shared one, so `collection` names that place.
@@ -187,10 +183,7 @@ export function findOpenBookLines(options: {
     .filter((entry) => !place || placeOfRoot(entry, localBackend) === place);
   const shelfBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'shelf').sort(byRoot);
   const collectionBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'collection').sort(byRoot);
-  const sharedSlugs = parsedRoots
-    .filter((entry) => placeOfRoot(entry, localBackend) === 'shared')
-    .map((entry) => entry.slug)
-    .sort();
+  const sharedBooksOpen = parsedRoots.filter(entry => placeOfRoot(entry, localBackend) === 'shared').sort(byRoot);
 
   const hits: { order: number; hit: FullTextHit }[] = [];
   const unavailable: Record<string, unknown>[] = [];
@@ -199,6 +192,35 @@ export function findOpenBookLines(options: {
   let searched: string[] = [];
   let pagesScanned = 0;
   let order = 0;
+
+  const scanPage = (openBook: ParsedRoot, title: string, kind: string, page: string, text: string): boolean => {
+    const slug = openBook.slug;
+    let contributed = false;
+    let lineNumber = 0;
+    for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+      lineNumber += 1;
+      if (!testSearchContains(line, needle)) continue;
+      const rendered = convertToSearchLine(line);
+      hits.push({
+        order,
+        hit: {
+          book: slug,
+          book_root: openBook.root,
+          book_title: title,
+          book_kind: kind,
+          book_shelf: openBook.shelf,
+          page,
+          line: lineNumber,
+          text: rendered.text,
+          line_truncated: rendered.truncated,
+        },
+      });
+      budget.collectedMatches += 1;
+      contributed = true;
+      if (testSearchBudgetSpent(budget)) break;
+    }
+    return contributed;
+  };
 
   for (const openBook of [...shelfBooksOpen, ...collectionBooksOpen]) {
     const slug = openBook.slug;
@@ -289,31 +311,58 @@ export function findOpenBookLines(options: {
       const page = convertToCanonicalPagePath(wikiRoot, file);
       const text = fs.readFileSync(file, 'utf8');
 
-      let lineNumber = 0;
-      for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
-        lineNumber += 1;
-        if (!testSearchContains(line, needle)) continue;
-        const rendered = convertToSearchLine(line);
-        hits.push({
-          order,
-          hit: {
-            book: slug,
-            book_root: openBook.root,
-            book_title: book.title,
-            book_kind: kind,
-            book_shelf: openBook.shelf,
-            page,
-            line: lineNumber,
-            text: rendered.text,
-            line_truncated: rendered.truncated,
-          },
-        });
-        budget.collectedMatches += 1;
-        contributed = true;
-        if (testSearchBudgetSpent(budget)) break;
-      }
+      contributed = scanPage(openBook, book.title, kind, page, text) || contributed;
     }
 
+    if (contributed && kind === 'capture') captureBooks.push(openBook.root);
+  }
+
+  for (const openBook of sharedBooksOpen) {
+    if (testSearchBudgetSpent(budget)) break;
+    order += 1;
+    let title = openBook.slug;
+    let kind = 'unknown';
+    let contributed = false;
+    try {
+      const connection = localBackend ? markerConnection(root) : {
+        url: resolveMcpUrl(root), collection_id: configuredCollectionId(root), collection_name: configuredCollectionId(root),
+      };
+      if (!connection) throw new Error('This Library has no Basic Memory connection; run deskpost basic-memory setup.');
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(connection.collection_id)) throw new Error('The Basic Memory connection records no collection UUID; run deskpost basic-memory setup again.');
+      const session = new McpSession(connection.url, 'deskpost-shared-fulltext');
+      await session.initialize();
+      if (testSearchBudgetSpent(budget)) break;
+      const project = { id: connection.collection_id, name: connection.collection_name || connection.collection_id };
+      const wiki = openBook.storeWiki;
+      for await (const node of sharedPages(session, project.id, wiki, () => testSearchBudgetSpent(budget))) {
+        if (testSearchBudgetSpent(budget)) break;
+        const file = String(node.file_path);
+        const page = file.slice(wiki.length + 1, -3);
+        try {
+          const text = await readListedContent(session, project, file, String(node.permalink ?? ''));
+          if (text === null) throw new Error('The listed page was not found; it was not scanned.');
+          const size = Buffer.byteLength(text, 'utf8');
+          if (size > MAX_FILE_BYTES) throw new Error(`the page is ${size} bytes, above the ${MAX_FILE_BYTES}-byte per-page cap; it was not scanned`);
+          if (page === '_book') {
+            title = /^#[ \t]+(.+)$/m.exec(text)?.[1]?.trim() ?? title;
+            kind = /^\s*-\s+\*\*Kind:\*\*\s+capture\s*$/m.test(text) ? 'capture' : 'curated';
+          }
+          // The in-flight read may have crossed the clock limit; scan no further lines after that.
+          if ((Date.now() - budget.started) / 1000 >= budget.wallClockSeconds) { testSearchBudgetSpent(budget); break; }
+          budget.filesScanned += 1;
+          pagesScanned += 1;
+          contributed = scanPage(openBook, title, kind, page, text) || contributed;
+        } catch (error) {
+          withheld.push({ book: openBook.slug, book_root: openBook.root, page, reason: (error as Error).message });
+        }
+      }
+      searched.push(openBook.root);
+    } catch (error) {
+      unavailable.push({ book: openBook.slug, book_root: openBook.root, collection: 'shared', book_shelf: openBook.shelf,
+        reason: (error as Error).message, repair: `check the Basic Memory connection and retry, or close the Book with deskpost desk close book ${openBook.slug} --location shared` });
+    }
+    // The root page can arrive after a nested match. Its identity applies to every line from this Book.
+    for (const entry of hits) if (entry.hit.book_root === openBook.root) { entry.hit.book_title = title; entry.hit.book_kind = kind; }
     if (contributed && kind === 'capture') captureBooks.push(openBook.root);
   }
 
@@ -323,7 +372,7 @@ export function findOpenBookLines(options: {
   const closedDuringQuery: Record<string, unknown>[] = [];
   const endRoots = openBookRoots(options.deskStateDirectory);
   const stillOpen = new Set<string>();
-  for (const bookRoot of searched) {
+  for (const bookRoot of parsedRoots.map(book => book.root)) {
     if (endRoots.includes(bookRoot)) {
       stillOpen.add(bookRoot);
       continue;
@@ -351,24 +400,17 @@ export function findOpenBookLines(options: {
     returned.push(entry.hit);
   }
 
-  const outOfScope = sharedSlugs.map((slug) => ({
-    book: slug,
-    collection: 'shared',
-    reason: 'a shared Book has no local pages to scan, and reading one over the network is a backfill rather than a query',
-    alternative: SHARED_ALTERNATIVE,
-  }));
-
   return {
     schema: FULL_TEXT_SCHEMA,
     query: convertToSearchDisplay(options.query),
-    scope: collectionBooksOpen.length ? 'Shelf and Local collection Books open on the Desk' : 'Shelf Books open on the Desk',
-    books_open_total: shelfBooksOpen.length + collectionBooksOpen.length + sharedSlugs.length,
+    scope: sharedBooksOpen.length ? 'Shelf, Local collection and shared Books open on the Desk' : collectionBooksOpen.length ? 'Shelf and Local collection Books open on the Desk' : 'Shelf Books open on the Desk',
+    books_open_total: shelfBooksOpen.length + collectionBooksOpen.length + sharedBooksOpen.length,
     shelf_books_open: shelfBooksOpen.length,
     collection_books_open: collectionBooksOpen.length,
-    shared_books_open: sharedSlugs.length,
+    shared_books_open: sharedBooksOpen.length,
     books_searched: searched.length,
-    books_unavailable: unavailable,
-    books_out_of_scope: outOfScope,
+    books_unavailable: unavailable.filter(entry => endRoots.includes(String(entry['book_root']))),
+    books_out_of_scope: [],
     books_closed_during_query: closedDuringQuery,
     capture_books: captureBooks,
     pages_withheld: liveWithheld,
@@ -386,7 +428,9 @@ export function findOpenBookLines(options: {
 export function formatFullTextResult(result: FullTextResult): string {
   const lines: string[] = [];
   lines.push(
-    result.collection_books_open
+    result.shared_books_open
+      ? `Full text over ${result.books_searched} of ${result.books_open_total} open Book(s) -- ${result.shared_books_open} shared, read over the connection -- for: ${result.query}`
+      : result.collection_books_open
       ? `Full text over ${result.books_searched} of ${result.shelf_books_open + result.collection_books_open} open local Book(s) -- ` +
           `${result.shelf_books_open} on the Shelf, ${result.collection_books_open} in the Local collection -- for: ${result.query}`
       : `Full text over ${result.books_searched} of ${result.shelf_books_open} open Shelf Book(s) for: ${result.query}`,
@@ -401,13 +445,6 @@ export function formatFullTextResult(result: FullTextResult): string {
     lines.push(`Showing the first ${result.result_count} of ${total} matching lines; ask for more with a larger result cap.`);
   }
   if (result.budget_note.trim()) lines.push(result.budget_note);
-  if (result.books_out_of_scope.length) {
-    lines.push('');
-    lines.push(result.collection_books_open ? SHARED_NOTE.replace('the local Shelf only', 'the Shelf and the Local collection only') : SHARED_NOTE);
-    for (const entry of result.books_out_of_scope) {
-      lines.push(`- ${entry['book']} [${entry['collection']}], open but NOT searched: ${entry['reason']} -- ${entry['alternative']}`);
-    }
-  }
   if (result.books_unavailable.length) {
     lines.push('');
     lines.push('Books that are open but could NOT be read, so this answer is incomplete for them:');
@@ -440,7 +477,8 @@ export function formatFullTextResult(result: FullTextResult): string {
   }
   lines.push('');
   if (!result.results.length) {
-    lines.push('No page of the open Books carries that term.');
+    lines.push(result.books_unavailable.length || result.pages_withheld.length || result.match_count_is_floor
+      ? 'No matching line was returned from the pages searched.' : 'No page of the open Books carries that term.');
   } else {
     // Grouped on the ROOT: `shelf/x` and `shelf/_archive/x` are two Books sharing one name, and a
     // slug key would print one heading over both.

@@ -55,7 +55,7 @@
             "powershell": ""
           },
           {
-            "kernel": "\ndeskpost_version: 1.5.4",
+            "kernel": "\ndeskpost_version: 1.6.0",
             "powershell": ""
           }
         ]
@@ -602,6 +602,23 @@
           { "kernel": "open it with deskpost desk open book <slug> --location shelf.", "powershell": "open it with tools/Set-VirtualDesk.ps1." },
           { "kernel": "Pass --clear-desk for the full Library Reset.", "powershell": "Pass -ClearDesk for the full Library Reset." },
           { "kernel": "Bring them back with deskpost reset restore, its own preflighted, approved operation.", "powershell": "Bring them back with tools/Restore-NotebookQuarantine.ps1, or destroy them for good with tools/Remove-NotebookQuarantine.ps1 -- each is its own preflighted, approved operation." }
+        ]
+      }
+    },
+    "kernel-shared-fulltext-description": {
+      "reason": "c118 row 3 (1.6.0, PLAN-many-libraries.md item 12): the kernel searches open shared Books through the connection under the same budgets as local pages. The PowerShell adapter retains its earlier local-only description. Only the exact search_open_books description is paired; the remaining tools/list fields are compared.",
+      "approved_by": "kickoffs/c118 r1, row 3, Eric Run c118",
+      "approved_on": "2026-11-06",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.description$",
+        "phrases": [
+          {
+            "kernel": "Search the FULL TEXT of Shelf, Local collection and shared Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. Open shared Books are searched over the Basic Memory connection, within the same budgets as local pages. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.",
+            "powershell": "Search the FULL TEXT of Shelf Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. An open SHARED Book is named in the answer as out of scope rather than searched, because its pages arrive one network read at a time. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page."
+          }
         ]
       }
     },

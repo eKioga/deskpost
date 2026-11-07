@@ -6,8 +6,8 @@
  * fixtures and on the template itself.
  *
  * The rules, each one a drift the review found in real Kickoffs:
- *   (a) every required section is present, as a line that starts with its name and a colon (`WHY NOW:`), in the
- *       template's order;
+ *   (a) seven required sections are present, as lines starting with their name and a colon (`WHY NOW:`);
+ *       all known headings, including optional ones, keep the template's order;
  *   (b) no section points to another Kickoff in place of its text ("as kickoffs/s117's");
  *   (c) every numbered row under ROWS has a `Done when:` line;
  *   (d) CLOSE ends with **Stop.**
@@ -23,8 +23,8 @@
  * Pure: text in, lines out. It imports nothing, reads nothing and writes nothing.
  */
 
-/** The sections every Kickoff carries, in order. */
-export const REQUIRED_SECTIONS: readonly string[] = [
+/** Required and optional headings, in their shared order; older full Kickoffs remain valid. */
+export const KNOWN_SECTIONS: readonly string[] = [
   'TRAIN',
   'WHY NOW',
   'SIZE',
@@ -43,13 +43,18 @@ export const REQUIRED_SECTIONS: readonly string[] = [
   'CLOSE',
 ];
 
+/** The seven headings every Kickoff carries, in the same relative order. */
+export const REQUIRED_SECTIONS: readonly string[] = [
+  'TRAIN', 'WHY NOW', 'OWNS PATHS', 'STAY OUT OF', 'ROWS', 'CHARTER', 'CLOSE',
+];
+
 export type KickoffProblems = {
   missing: string[];
   outOfOrder: string[];
   pointers: string[];
   rowsWithoutDone: number[];
   noStop: boolean;
-  /** Required names whose line starts like a heading but is not one (`ROWS (…). Prose:`), named instead of "missing". */
+  /** Known names whose line starts like a heading but is not one (`ROWS (…). Prose:`), named instead of "missing". */
   malformed: string[];
 };
 
@@ -62,9 +67,9 @@ export function sectionStarts(text: string): { name: string; line: number }[] {
   const starts: { name: string; line: number }[] = [];
   lines.forEach((line, index) => {
     const m = /^([A-Z][A-Z ]*[A-Z])(?: \([^)]*\))?:/.exec(line);
-    if (m && REQUIRED_SECTIONS.includes(m[1]!)) { starts.push({ name: m[1]!, line: index }); return; }
+    if (m && KNOWN_SECTIONS.includes(m[1]!)) { starts.push({ name: m[1]!, line: index }); return; }
     const open = /^([A-Z][A-Z ]*[A-Z]) \([^)]*$/.exec(line);
-    if (!open || !REQUIRED_SECTIONS.includes(open[1]!)) return;
+    if (!open || !KNOWN_SECTIONS.includes(open[1]!)) return;
     const closing = lines.slice(index + 1).find((next) => next.includes(')'));
     if (closing !== undefined && /^[^)]*\):/.test(closing)) starts.push({ name: open[1]!, line: index });
   });
@@ -72,7 +77,7 @@ export function sectionStarts(text: string): { name: string; line: number }[] {
 }
 
 /**
- * A REQUIRED NAME AT COLUMN 0 WHOSE LINE IS NOT A HEADING (kickoffs/s157 row 9; triage of 2026-10-23, item 6): a line
+ * A KNOWN NAME AT COLUMN 0 WHOSE LINE IS NOT A HEADING (kickoffs/s157 row 9; triage of 2026-10-23, item 6): a line
  * that starts with the name and ` (` or `:`, which `sectionStarts` did not take, as `ROWS (in order). Prose:` read as a
  * missing ROWS. Each name once, and only while no line starts that section.
  */
@@ -80,7 +85,7 @@ export function malformedHeadings(text: string): string[] {
   const starts = sectionStarts(text);
   const names = text.split(/\r?\n/).flatMap((line, index) => {
     const m = /^([A-Z][A-Z ]*[A-Z])(?: \(|:)/.exec(line);
-    return m && REQUIRED_SECTIONS.includes(m[1]!) && !starts.some((start) => start.line === index) ? [m[1]!] : [];
+    return m && KNOWN_SECTIONS.includes(m[1]!) && !starts.some((start) => start.line === index) ? [m[1]!] : [];
   });
   return [...new Set(names)].filter((name) => !starts.some((start) => start.name === name));
 }
@@ -108,11 +113,13 @@ export function ownsPaths(text: string): { patterns: string[]; problems: string[
     patterns.push(value);
   }
   if (!patterns.length) problems.push('OWNS PATHS: at least one entry is required');
+  if (patterns.includes('none') && patterns.length > 1) problems.push('OWNS PATHS: `none` means no tracked file, so it stands alone');
   return { patterns, problems };
 }
 
 /** A star stays within a segment; a double-star segment consumes zero or more segments. */
 export function ownsPatternMatches(pattern: string, path: string): boolean {
+  if (pattern === 'none') return false;
   const segments = pattern.split('/'), parts = path.split('/');
   const memo = new Map<string, boolean>();
   const matches = (i: number, j: number): boolean => {
@@ -129,7 +136,7 @@ export function ownsPatternMatches(pattern: string, path: string): boolean {
 
 function pointsToKickoff(line: string): boolean {
   const plain = line.replace(/`/g, '');
-  const sections = REQUIRED_SECTIONS.join('|');
+  const sections = KNOWN_SECTIONS.join('|');
   return /\bas kickoffs\/[a-z]*\d+[a-z0-9-]*'s\b/i.test(plain) || /\bread there\b/i.test(plain) ||
     new RegExp('\\bas\\s+kickoffs/[a-z0-9-]+\\s+(?:(?:row|rule|standing answer)\\s+\\d+\\s+says\\b|(?:' + sections + ')\\b)', 'i').test(plain);
 }
@@ -139,8 +146,8 @@ export function checkKickoff(text: string): KickoffProblems {
   const seen = starts.map((start) => start.name);
   const malformed = malformedHeadings(text);
   const missing = REQUIRED_SECTIONS.filter((name) => !seen.includes(name) && !malformed.includes(name));
-  const firsts = REQUIRED_SECTIONS.filter((name) => seen.includes(name)).map((name) => seen.indexOf(name));
-  const outOfOrder = REQUIRED_SECTIONS.filter((name) => seen.includes(name)).filter((_, i) => i > 0 && firsts[i]! < firsts[i - 1]!);
+  const firsts = KNOWN_SECTIONS.filter((name) => seen.includes(name)).map((name) => seen.indexOf(name));
+  const outOfOrder = KNOWN_SECTIONS.filter((name) => seen.includes(name)).filter((_, i) => i > 0 && firsts[i]! < firsts[i - 1]!);
   const pointers = text.split(/\r?\n/).flatMap((line, index) => pointsToKickoff(line) ? [`line ${index + 1}: ${line.trim()}`] : []);
   const rows = sectionText(text, 'ROWS').split(/\r?\n/);
   const rowsWithoutDone: number[] = [];
@@ -193,10 +200,12 @@ export function missingAdrs(text: string, adrFiles: readonly string[]): string[]
   ];
 }
 
-/** Rows asking for the required-sections verdict must name the flag that prints it. */
+/** Rows running the push or release gate and asking for its required-sections verdict must name the flag that prints it. */
 export function missingRequiredSections(text: string): number[] {
   const rows = sectionText(text, 'ROWS').split(/(?=^\d+\. )/m);
-  return rows.filter((row) => /^\d+\. /.test(row) && row.includes('gate.required-sections') && !row.includes('--require-sections'))
+  // Only a row that runs the gate (kickoffs/s180 row 2(e)): naming the check as data asks for nothing.
+  const runsGate = (row: string) => /gate\.ts\b[^\n`]*--tier[ \t]+(?:push|release)\b/.test(row);
+  return rows.filter((row) => /^\d+\. /.test(row) && runsGate(row) && row.includes('gate.required-sections') && !row.includes('--require-sections'))
     .map((row) => Number(/^(\d+)\./.exec(row)![1]));
 }
 
@@ -309,6 +318,20 @@ export function wslMasterRows(text: string): number[] {
     .map(row => Number(/^(\d+)\./.exec(row)![1]));
 }
 
+/** A Done when document command cannot judge files owned by behaviour checks. */
+export function docsFileRouteWarnings(text: string): string[] {
+  return sectionText(text, 'ROWS').split(/(?=^\d+\. )/m).flatMap(row => {
+    const number = /^(\d+)\./.exec(row)?.[1];
+    if (!number || !row.includes('Done when:')) return [];
+    const done = row.slice(row.indexOf('Done when:'));
+    return [...done.matchAll(/docs-gate\.ts([^\n;]*)/g)]
+      .flatMap(command => [...command[1]!.matchAll(/--file[ \t]+[`'"]?([^\s`'"]+)/g)])
+      .map(match => match[1]!)
+      .filter(file => /^(?:\.[^/]+|kernel|tools|templates)\//.test(file))
+      .map(file => `row ${number} asks docs-gate.ts --file to judge ${file}, which is a behaviour file: stage it and let the commit hook run its mapped checks (node tools/gate.ts --tier commit)`);
+  });
+}
+
 /** A page name the Kickoff gives explicitly; page placeholders describe future pages and are not lookups. */
 export function kickoffNames(text: string): { name: string; line: number }[] {
   return text.split(/\r?\n/).flatMap((line, index) => {
@@ -386,11 +409,53 @@ export function requiredReadProblems(text: string): string[] {
   return problems;
 }
 
+/**
+ * SECTIONS A KICKOFF LEAVES PINNED (kickoffs/s194 spare S1, `kickoff-check-pinned-sections`; s192 had to change section
+ * 665's words for `kernel/src/undo.ts` while its STAY OUT OF kept every section but 672 to 677). For each `kernel/src`
+ * file OWNS PATHS names, the sections `covers` (kernel/test/section-covers.json's `sections`) says claim it, outside the
+ * one range STAY OUT OF leaves open in the form `every self-test section but <a> to <b>`, and not named in OWNS. Only
+ * that form is recognised; a Kickoff without it, or a check given no covers, warns of nothing.
+ */
+export function pinnedSectionWarnings(text: string, covers: Record<string, readonly string[]>): string[] {
+  const range = /every self-test section but (\d+) to (\d+)/.exec(sectionText(text, 'STAY OUT OF').replace(/\s+/g, ' '));
+  if (!range) return [];
+  const [low, high] = [Number(range[1]), Number(range[2])];
+  const named = new Set<number>();
+  const owns = sectionText(text, 'OWNS').replace(/\s+/g, ' ');
+  for (const m of owns.matchAll(/\b(\d+) to (\d+)\b/g)) for (let n = Number(m[1]); n <= Number(m[2]) && n - Number(m[1]) < 1000; n += 1) named.add(n);
+  for (const m of owns.matchAll(/\b\d+\b/g)) named.add(Number(m[0]));
+  const files = ownsPaths(text).patterns.filter((pattern) => pattern.startsWith('kernel/src/'));
+  const warnings: string[] = [];
+  for (const pattern of files) {
+    const claimed = Object.entries(covers)
+      .filter(([key, paths]) => /^\d+$/.test(key) && paths.some((file) => ownsPatternMatches(pattern, file)))
+      .map(([key]) => Number(key))
+      .filter((n) => (n < low || n > high) && !named.has(n))
+      .sort((a, b) => a - b);
+    if (claimed.length) {
+      warnings.push(`OWNS PATHS names ${pattern}, and sections ${claimed.join(', ')} claim it in kernel/test/section-covers.json outside STAY OUT OF's ${low} to ${high}: ` +
+        'a row that changes words they pin cannot change them; name in OWNS the ones it may change');
+    }
+  }
+  return warnings;
+}
+
+/** A revision must keep its evidence apart from an earlier attempt. Advice only, for the pinned path form. */
+export function revisionEvidenceWarnings(text: string): string[] {
+  const id = /^# ([a-z][a-z0-9-]*) kickoff:/m.exec(text)?.[1];
+  const revision = Number(/Revision:\s*\*\*r(\d+)\*\*/.exec(text)?.[1] ?? 0);
+  if (!id || revision < 2) return [];
+  const original = `D:/dev/scratch/deskpost/${id}/`;
+  const paths = text.matchAll(/D:\/dev\/scratch\/deskpost\/([a-z0-9-]+)\/(?=$|[\s`'"),.;\]])/gm);
+  return [...paths].some(match => match[1] === id)
+    ? [`Revision r${revision} names the original evidence folder ${original}; name D:/dev/scratch/deskpost/${id}-r${revision}/ instead.`] : [];
+}
+
 /** The tool and both posting paths share this verdict. Received pages skip names; a bare tool warns when it has names. */
 export function kickoffVerdict(
   text: string,
-  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution },
-): { problems: string[]; warnings: string[] } {
+  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution; covers?: Record<string, readonly string[]> },
+): { problems: string[]; warnings: string[]; sectionCount: number } {
   const names = options.names === false ? [] : kickoffNames(text);
   const nameProblems = options.resolveName ? names.flatMap(({ name, line }) => {
     try {
@@ -412,19 +477,24 @@ export function kickoffVerdict(
     ...(options.train ? trainProblems(text, options.train.record) : []),
   ];
   const warnings = [
+    ...ownsPaths(text).patterns.filter(pattern => pattern.includes('*') && pattern.split('/').includes('fixtures')).map(pattern =>
+      `OWNS PATHS ${pattern} covers a fixtures folder: sensitive-named fixtures under it are accepted; the handback names each one`),
     ...(options.missingAdrs === 'warn' ? missingAdrs(text, options.adrFiles).filter(adr => !adr.startsWith('new ')).map(adr =>
       `names ${adr}, which this installed release does not have (its docs/adr/ ends at ADR-${String(highestAdr(options.adrFiles)).padStart(4, '0')}); the source check, node tools/kickoff-check.mts in the build checkout, decides`) : []),
     ...(names.length && !options.resolveName ? ['names not checked: no Library'] : []),
     ...describeSourceGreenHelperRows(sourceGreenHelperRows(text)),
+    ...docsFileRouteWarnings(text),
+    ...revisionEvidenceWarnings(text),
+    ...(options.covers ? pinnedSectionWarnings(text, options.covers) : []),
     ...wslMasterRows(text).map(row => `row ${row} runs a WSL step that reads origin/master: in the WSL clone that is the shared repository's local master, which pushes never move; read origin/<the unit's branch>`),
   ];
-  return { problems, warnings };
+  return { problems, warnings, sectionCount: sectionStarts(text).length };
 }
 
 /** The lines the check prints for `file`: the warnings first, then the verdict, as the tool has always printed them. */
-export function verdictText(file: string, verdict: { problems: readonly string[]; warnings: readonly string[] }): string {
+export function verdictText(file: string, verdict: { problems: readonly string[]; warnings: readonly string[]; sectionCount?: number }): string {
   const warnings = verdict.warnings.map((line) => `kickoff-check: warning: ${line}\n`).join('');
   return verdict.problems.length === 0
-    ? `${warnings}kickoff-check: ${file} is complete (${REQUIRED_SECTIONS.length} sections, every row has "Done when:").\n`
+    ? `${warnings}kickoff-check: ${file} is complete (${verdict.sectionCount} sections, every row has "Done when:").\n`
     : `${warnings}kickoff-check: ${file} is not complete:\n${verdict.problems.map((line) => `- ${line}`).join('\n')}\n`;
 }

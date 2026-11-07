@@ -238,7 +238,7 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
   const inboundFor = (rows: SeatTarget[], loose: string[]): InboundLink[] =>
     inboundNotebookLinks(workspace, scope.relative, [...rows.map((row) => row.topic), ...loose]);
   const inbound = inboundFor(targets, looseScan.movable);
-  const planId = resetPlanId({ seat, desk: clearDesk, targets, loose: looseScan.movable, inbound });
+  const planId = inbound.length ? '' : resetPlanId({ seat, desk: clearDesk, targets, loose: looseScan.movable, inbound });
 
   const leftovers = looseScan.reserved.length;
   const predictedRemaining = {
@@ -260,11 +260,13 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
   const result: Record<string, PsJsonValue> = {
     schema: 1,
     operation: 'Reset local notebook',
+    refusals: inbound.length ? [inboundRefusal(inbound)] : [],
+    ...(inbound.length ? { next: `${NOTEBOOK_LINK_REPAIR}, then rerun the preflight.` } : {}),
     workspace,
     seat,
     target: scope.root,
     item_count: itemCount,
-    confirmation_required: true,
+    confirmation_required: inbound.length === 0,
     topics_to_quarantine: targets.map((row) => row.topic),
     topics_protected: [],
     topics_owned_by_other_seats: [],
@@ -275,7 +277,6 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
     sweep: { requested: false, seats_resolved: 0, claim_probes: 0, to_sweep: [], skipped: [], message: NO_SWEEP_MESSAGE },
     loose_files_to_quarantine: looseScan.movable,
     loose_files_left_reserved_name: looseScan.reserved,
-    refusals: inbound.length ? [inboundRefusal(inbound)] : [],
     inbound_links: inbound as unknown as PsJsonValue,
     plan_id: planId,
     recoverable:
@@ -296,7 +297,9 @@ function resetVerb(workspace: string, argv: string[]): PsJsonValue {
 
   assertSeatClaimHeld({ workspace, stateDirectory, seat });
   if (preflight) return result;
-  if (!approvedPlanId) throw new Error('Reset aborted: review the preflight and rerun with its exact --plan-id.');
+  if (!approvedPlanId) throw new Error(inbound.length
+    ? `Reset refused and nothing was moved: ${inboundRefusal(inbound)}`
+    : 'Reset aborted: review the preflight. Rerun the current preflight and pass its exact plan_id as --plan-id.');
 
   const topicLocks: BookLock[] = [];
   const start = beginSeatMutation(workspace, seat);

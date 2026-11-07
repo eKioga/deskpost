@@ -112,8 +112,7 @@ flowchart TD
     C --> C2["a Book in a shared collection\nonly if you have one"]
 ```
 
-Publishing a Book for other machines needs a **shared collection** (see the README's *Sharing a
-collection across machines*). A Library on your own disk keeps its Books on the Shelf, where they are
+Moving a Book for other machines needs a **shared collection** (see [Writing shared Books](basic-memory.md#writing-shared-books)). A Library on your own disk keeps its Books on the Shelf, where they are
 just as durable.
 
 ## What a reset moves, and how it comes back
@@ -229,3 +228,5 @@ just to search it. Knowing what a Book is about only earns the suggestion to ope
   previews first and waits for one clear yes.
 - Search and discovery say where a term occurs, never what it means. Opening the hit is what
   licenses an answer.
+
+For shared Books on another computer, 1.6.0 adds previewed, recorded changes, new Books, promotion from this Library's collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books).

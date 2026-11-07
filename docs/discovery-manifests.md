@@ -5,11 +5,27 @@
 > transaction that holds the Book's own lock across the whole of it, the retrofit that makes every
 > Shelf writer go through it, the backfill that put a committed manifest on all twelve Shelf Books,
 > and **Discovery itself, landed 2026-08-19** — so the Library can now be asked which Book covers a
-> subject without opening one. What does not exist yet: **shared Books have no manifests**, so every
-> Discovery answer covers the local Shelf only and says so in its own body. That is rung 7, the last
-> one, listed at the foot of this page.
+> subject without opening one. Shared Books are covered after a connected local Library runs
+> `deskpost collection rebuild`. Attached workspaces use the PowerShell backfill described in rung 7.
 
 ## Why 2.2 is built as a ladder
+
+A connected local Library's `deskpost collection rebuild` retains every listed shared Book in its
+roster, including the shared archive. A failed root read, listing or lock marks that Book unavailable
+with its reason; its previous manifest stays intact but Discovery does not use it as current.
+Discovery names it with status `unread-at-rebuild` and the rebuild command as repair. When individual
+pages cannot be read, the readable pages are saved and searched, while the roster retains the withheld
+pages and reasons. Discovery names those Books in `books_partly_read`, counts the withheld pages and
+labels the answer PARTIAL for them. The answer reports counts rather than withheld page names, so a
+closed capture Book reveals no note filenames. The roster retains the failure details for rebuilding.
+A fully readable rebuild omits that field and its text lines.
+
+The rebuild also lists `_deskpost/upkeep` and reads each listed active Book's grant note, never the
+shared archive's grants. Discovery names its maintaining Libraries and seats from that snapshot;
+this Library's seat ids resolve to their current names, or "retired seat". Missing notes add no field.
+An unreadable or malformed note is named as unknown upkeep, with a fixed reason class; a failed
+upkeep listing says once that who maintains shared Books could not be read. `books_maintained`
+includes granted Books without hits, while text adds upkeep only to Book headers that have hits.
 
 2.2 is the largest item in `PLAN.md`, and the shape of its failure is specific: a transaction wired
 into half the writers, or a query reading manifests that nothing keeps fresh, is worse than nothing
@@ -643,9 +659,10 @@ closed-capture canary immediately.
 
 ### The Shelf only, said in the answer rather than in this document
 
-Shared Books have no manifests until rung 7, so `shared_books_covered` is `false`, `shared_books_note`
-names the gap, and the rendered answer repeats it on the first line — on every query, not only on the
-ones that find nothing. A partial answer that does not admit it is partial is worse than the missing
+Until shared manifests have been built, `shared_books_covered` is `false` and `shared_books_note`
+names the gap. On a connected local Library it names `deskpost collection rebuild`; an attached
+workspace retains the PowerShell route. The rendered answer repeats the coverage on every query.
+A partial answer that does not admit it is partial is worse than the missing
 half, and a limitation recorded only in a design document is not a limitation the reader is told
 about.
 
@@ -733,6 +750,24 @@ ends with that sentence every time, which is a reminder rather than a guard; 2.6
 safeguard belongs.
 
 ## Rung 7: the shared backfill, and Discovery over both collections
+
+### The kernel route on a connected local Library
+
+Run `deskpost collection rebuild` to rebuild the Local collection manifests and, when the Library
+has a Basic Memory connection, its shared and shared-archive manifests. The kernel pages through
+`bm_list` for `books/` and `archive/`, walks each Book's `wiki/` subfolders and reads each page by
+its listed identifier with `bm_read`. This writes only local metadata under
+`internal/book-manifests/shared/` and `shared-archive/`, including their dated rosters.
+
+Each result names Books and pages it could not read. A missing `_book.md` leaves that Book out of
+the roster; capture Books disclose no page metadata. Complete listings retire stores for Books
+no longer listed. An unreachable connection preserves shared stores and the successful local
+rebuild result and exit status. With no connection, only the Local collection is rebuilt.
+Discovery answers offline from these stores, names their roster date and the command to refresh
+them, and returns shared Book roots with canonical page paths for the validated reader.
+
+The PowerShell tool below remains the attached-workspace route. Its historical preflight,
+journal and backfill procedure describes that route, rather than the kernel rebuild command.
 
 `tools/Update-SharedBookManifests.ps1` with `tools/SharedBookSource.ps1` beneath it, landed
 2026-08-19. It is the rung that makes rung 6's first line stop being necessary: Discovery now spans

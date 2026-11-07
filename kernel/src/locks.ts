@@ -130,6 +130,17 @@ export function enterBookLock(workspace: string, bookRoot: string, timeoutSecond
   // The export's own lock is taken by the exporter and never through here, so this cannot refuse it.
   assertNoCollectionExport(workspace, `writing to ${bookRoot}`);
   const lockPath = path.join(bookLockDirectory(workspace), `${lockName}.lock`);
+  return enterFileLock(lockPath, bookRoot, lockName, timeoutSeconds);
+}
+
+/** Postbox cache writes take this last, for their fresh read-change-write only. */
+export function enterPostboxStateLock(workspace: string): BookLock {
+  const directory = path.join(workspace, 'internal', 'postbox');
+  ensureDirectory(directory);
+  return enterFileLock(path.join(directory, 'state.lock'), 'Postbox cache', 'postbox-state', 20);
+}
+
+function enterFileLock(lockPath: string, bookRoot: string, lockName: string, timeoutSeconds: number): BookLock {
   const deadline = Date.now() + timeoutSeconds * 1000;
 
   const judgedAlive = new Map<string, number>();

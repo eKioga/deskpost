@@ -954,7 +954,12 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
         }
         forSeat = candidate;
       }
-      const inventory = triageInventory(workspace, relative, { pendingOnly: parsed.flags.has('pending'), forSeat });
+      const book = parsed.options.get('book');
+      if (parsed.options.has('book') || parsed.flags.has('book')) {
+        if (!parsed.flags.has('pending')) return { refusal: '--book narrows the pending list, so it needs --pending. Nothing was listed.', value: null };
+        if (!['reports', 'letters', 'holding'].includes(book ?? '')) return { refusal: '--book must name reports, letters or holding. Nothing was listed.', value: null };
+      }
+      const inventory = triageInventory(workspace, relative, { pendingOnly: parsed.flags.has('pending'), forSeat, book });
       if (scopedSeat !== null) inventory['notebook_scope'] = `seat ${scopedSeat}: ${relative}/ only; another seat's Notebook is its own`;
       return { refusal: null, value: inventory as PsJsonValue };
     }

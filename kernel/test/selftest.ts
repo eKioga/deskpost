@@ -20044,6 +20044,16 @@ if (selected(214)) {
     fs.writeFileSync(path.join(store, 'dirty.json'), JSON.stringify({ reason: 'fixture', pid: 1 }));
     const dirtyManifest = revision('shelf/guide');
     check(dirtyManifest['revision'] === 'unknown' && String(dirtyManifest['reason']).includes('dirty'), `a dirty manifest was not unknown: ${JSON.stringify(dirtyManifest)}`);
+    // The dirty marker says whether its writer still runs (kickoffs/s181-r2 spare S3): this process is running; a child
+    // that has exited is not.
+    const { getStoredBookManifest } = await import('../src/manifeststore.ts');
+    fs.writeFileSync(path.join(store, 'dirty.json'), JSON.stringify({ reason: 'fixture', pid: process.pid }));
+    const live = getStoredBookManifest(ws, 'guide').reason;
+    check(live === `mutation in progress: fixture (pid ${process.pid}, running)`, `214: a marker naming a running process: ${live}`);
+    const ended = spawnSync(process.execPath, ['-e', '0']).pid;
+    fs.writeFileSync(path.join(store, 'dirty.json'), JSON.stringify({ reason: 'fixture', pid: ended }));
+    const stopped = getStoredBookManifest(ws, 'guide').reason;
+    check(stopped === `mutation in progress: fixture (pid ${ended}, not running: a stopped write left this marker)`, `214: a marker naming a process that is not running: ${stopped}`);
     fs.rmSync(path.join(store, 'dirty.json'));
     fs.writeFileSync(path.join(repo, 'scratch.txt'), 'not committed\n');
     const dirtyRepo = revision(repoTarget);
@@ -20158,7 +20168,7 @@ if (selected(215)) {
     check(!none.all && none.sections.length === 0, `a change no section covers chose sections: ${JSON.stringify(none)}`);
     const outside = choose(['tools/kickoff-check.mts', 'docs/roadmap.md']);
     check(outside.all && outside.reasons.includes('every section: no section names tools/kickoff-check.mts'), 'an unnamed tool did not select every section');
-    check(outside.reasons.includes('no section: docs/roadmap.md is outside kernel/src and no section claims it'), 'docs lost their no-section reason');
+    check(outside.reasons.includes('document gate: docs/roadmap.md'), 'docs lost their document-gate reason');
 
     // (c) The shared list, the map and a helper run everything; so does a changed file no section claims.
     for (const file of ['kernel/src/cli.ts', 'kernel/src/verbs.ts', 'kernel/package.json', 'kernel/tsconfig.json', select.COVERS_PATH, 'kernel/test/helper.ts', 'kernel/src/delta.ts']) {
@@ -22152,10 +22162,26 @@ if (selected(240)) {
     check(templateDoc.includes('node tools/kickoff-check.mts'), 'the template does not tell the planner to run the check');
 
     const body = (sections: Record<string, string>) => Object.entries(sections).map(([name, text]) => `${name}: ${text}`).join('\n');
-    const good: Record<string, string> = Object.fromEntries(kc.REQUIRED_SECTIONS.map((name: string) => [name, 'filled']));
+    const good: Record<string, string> = Object.fromEntries(kc.KNOWN_SECTIONS.map((name: string) => [name, 'filled']));
     good['ROWS'] = '\n1. **First row**: change a.\n   Done when: section 1 passes.\n2. **Second row**: change b.\n   Done when: the hook passes.';
     good['CLOSE'] = '\n- the Handback.\n- **Stop.**';
+    good['OWNS PATHS'] = '\n- `a.ts`';
     equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(body(good)))), '[]', 'a complete fixture Kickoff did not pass');
+
+    // c110: the seven-heading form and the older sixteen-heading form share all other rules.
+    const known = ['TRAIN', 'WHY NOW', 'SIZE', 'OWNS', 'OWNS PATHS', 'STAY OUT OF', 'WHERE THINGS STAND', 'MERGE', 'ROWS', 'COMMANDS', 'CHARTER', 'NOT CHARTERED', 'RULES', 'STANDING ANSWERS', 'OPEN', 'CLOSE'];
+    const required = ['TRAIN', 'WHY NOW', 'OWNS PATHS', 'STAY OUT OF', 'ROWS', 'CHARTER', 'CLOSE'];
+    const short = body(Object.fromEntries(required.map(name => [name, good[name]!])));
+    const full = body(Object.fromEntries(known.map(name => [name, good[name] ?? 'filled'])));
+    equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(short))), '[]', '240: seven headings pass');
+    equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(full))), '[]', '240: sixteen headings still pass');
+    check(kc.checkKickoff(short.replace('CHARTER: filled\n', '')).missing.includes('CHARTER'), '240: missing CHARTER refused');
+    check(kc.checkKickoff(short.replace('ROWS:', 'OPEN: filled\nROWS:')).outOfOrder.length > 0, '240: optional OPEN before ROWS refused');
+    check(kc.checkKickoff(short.replace('ROWS:', 'OPEN (before work). Prose:\nROWS:')).malformed.includes('OPEN'), '240: malformed optional heading refused');
+    for (const [text, count] of [[short, 7], [full, 16]] as const) {
+      const verdict = kc.kickoffVerdict(text, { adrFiles: [] });
+      check(kc.verdictText('fixture.md', verdict).includes(`(${count} sections,`), `240: verdict counts ${count} present headings`);
+    }
 
     // (b) The old names: WHY FIRST and PARTS in place of WHY NOW and ROWS.
     const old: Record<string, string> = {};
@@ -22196,8 +22222,9 @@ if (selected(240)) {
     equal(JSON.stringify(kc.missingAdrs(body({ ...good, OWNS: 'ADR-0028 froze the PowerShell.' }), adrFiles)), '[]', 'an ADR with a file was named as missing');
     equal(JSON.stringify(kc.missingAdrs(block, adrFiles)), '[]', 'the template names an ADR with no file');
 
-    const requiredRows = body({ ...good, ROWS: '\n1. Run the gate with --require-sections 155,240.\n   Done when: gate.required-sections PASS.\n9. Run the push gate.\n   Done when: gate.required-sections PASS.' });
-    equal(JSON.stringify(kc.missingRequiredSections(requiredRows)), '[9]', 'only the row missing the flag should be named');
+    // Only a row that runs the gate is asked for the flag (kickoffs/s180 row 2(e)): row 10 names the check as data only.
+    const requiredRows = body({ ...good, ROWS: '\n1. Run the gate with --require-sections 155,240.\n   Done when: gate.required-sections PASS.\n9. Run the push gate (`node tools/gate.ts --tier push`).\n   Done when: gate.required-sections PASS.\n10. Quote the gate.required-sections line in the Handback.\n   Done when: the Handback holds it.' });
+    equal(JSON.stringify(kc.missingRequiredSections(requiredRows)), '[9]', 'only the row running the gate without the flag should be named');
     equal(JSON.stringify(kc.describeMissingRequiredSections(kc.missingRequiredSections(requiredRows))), '["row 9 asks for gate.required-sections but its command has no --require-sections <n,...>"]', 'the missing flag has no actionable problem line');
     equal(JSON.stringify(kc.missingRequiredSections(block)), '[]', 'the template asks for a check its command cannot print');
 
@@ -22215,7 +22242,8 @@ if (selected(240)) {
     const proseBody = body(good).replace('ROWS: ', 'ROWS (in order). Prose: ');
     check(proseBody.includes('ROWS (in order). Prose:'), 'the malformed-heading fixture did not change ROWS');
     equal(JSON.stringify(kc.describeProblems(kc.checkKickoff(proseBody))), JSON.stringify(['ROWS: its heading line is not ROWS (…):; keep any text after the parenthesis inside it']), 'a heading with text after its parenthesis was not named as malformed');
-    check(templateDoc.includes("Read your Hub's `## Next` pointer and the `## Now` resume item by `section`"), 'the template does not read the build Hub by section');
+    check(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/dev-loop-orchestrator.md'), 'utf8').includes("Read your Hub's `## Next` pointer and the `## Now` resume item by `section`"), 'the authoring guide does not read the build Hub by section');
+    check(block.split(/\r?\n/).length <= 40, '240: template stays one page');
   } catch (error) {
     failures.push(`section 240 stopped early: ${(error as Error).message}`);
   }
@@ -22251,6 +22279,7 @@ if (selected(242) && prerequisite(242, () => !isCompiled(), 'requires source typ
       if (/\.(?:ts|mts)$/.test(file) || ['package.json', 'tsconfig.json'].includes(file))
         fs.copyFileSync(path.join(PROGRAM_ROOT, 'tools', file), path.join(tools, file));
     }
+    fs.cpSync(path.join(PROGRAM_ROOT, 'tools/seat-rules-check'), path.join(tools, 'seat-rules-check'), { recursive: true });
     // Reuse pinned dependencies and the source kernel without copying or modifying either.
     fs.symlinkSync(path.join(PROGRAM_ROOT, 'kernel'), path.join(root, 'kernel'), process.platform === 'win32' ? 'junction' : 'dir');
     fs.appendFileSync(path.join(tools, 'gate.ts'), '\nconst c11PlantedTypeError: string = 42;\n');
@@ -23517,6 +23546,8 @@ if (selected(261)) {
         const ran = cli(['hub', 'edit', 'work', '--mode', mode, '--section', section, '--content-path', body(`${mode}-${line}`, text), ...(mode === 'replace-section' ? ['--preflight'] : [])]);
         const said = ran.stdout + ran.stderr;
         check(ran.exit !== 0 && said.includes(`Line ${line} of the content is a level-two heading, '${heading}'`) && said.includes('Use ### inside a section'), `${mode} on ${section} with '${heading}' at line ${line} was not refused by line and name: ${said.trim().slice(0, 300)}`);
+        check(said.includes('--section supplies the heading') && said.includes('body only'), '261: heading refusal explains content');
+        if (mode === 'add-section') check(!said.includes('or add-section'), '261: add-section refusal does not recommend itself');
       }
     }
     equal(fs.readFileSync(page, 'utf8'), before, 'a refused level-two heading changed the Hub page');
@@ -23713,7 +23744,9 @@ if (selected(263) && prerequisite(263, () => !isCompiled(), 'requires source gat
     for(const key of ['LIBRARY_SELFTEST_SECTIONS','LIBRARY_SELFTEST_KERNEL','DESKPOST_GATE_LOCK','DESKPOST_GATE_LOCK_NAME']) delete (env as Record<string,string|undefined>)[key];
     const run=(exe:string,args:string[])=>spawnSync(exe,args,{cwd:root,env:repositoryNeutralEnv(env),encoding:'utf8',windowsHide:true,maxBuffer:1<<25,timeout:120_000});
     const git=(...args:string[])=>{const out=run('git',args);if(out.status!==0)throw Error(out.stderr);return out.stdout.trim();};
-    git('init','-q');fs.writeFileSync(path.join(root,'seed'),'safe fixture\n');git('add','seed');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-q','-m','baseline');
+    git('init','-q');fs.writeFileSync(path.join(root,'seed'),'safe fixture\n');git('add','seed');
+    git('update-index','--add','--cacheinfo','100644',git('hash-object','-w',path.join(PROGRAM_ROOT,'kernel/test/section-covers.json')),'kernel/test/section-covers.json');
+    git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-q','-m','baseline');
     fs.mkdirSync(path.join(root,'.library'));fs.writeFileSync(path.join(root,'.library/identity-denylist.txt'),'fixture-denied-value\n');
     // Junctions refer to source tools; no source file is edited, and the fixture owns only the links.
     for(const name of ['tools','kernel']) fs.symlinkSync(path.join(PROGRAM_ROOT,name),path.join(root,name),process.platform==='win32'?'junction':'dir');
@@ -24371,6 +24404,7 @@ if (selected(270) && prerequisite(270, () => !isCompiled(), 'requires source mac
     git('config', 'core.hooksPath', hooks);
     fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755);
     fs.writeFileSync(path.join(repo, 'tools/owns.mts'), 'process.exit(0);\n');
+    fs.writeFileSync(path.join(repo, 'tools/staged-secrets.mts'), 'process.exit(0);\n');
     fs.writeFileSync(path.join(repo, 'tools/docs-gate.ts'), `import{spawnSync}from'node:child_process';import{repositoryNeutralEnv}from ${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT,'kernel/src/gitenv.ts')).href)};const r=spawnSync('git',['diff','--cached','--name-only'],{env:repositoryNeutralEnv(),encoding:'utf8'});if(r.status!==0||!r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith('.md')))process.exit(4);const check=spawnSync(process.execPath,[${JSON.stringify(selftestPath)}],{env:{...process.env,LIBRARY_SELFTEST_SECTIONS:'119'},encoding:'utf8'});console.log(check.stdout+check.stderr);process.exit(check.status??1);\n`);
     fs.writeFileSync(path.join(repo, 'README.md'), '# Fixture\n'); git('add', 'README.md');
     const docs = await start('git', ['commit', '-m', 'fixture docs'], {}, repo).done;
@@ -24423,6 +24457,8 @@ if (selected(270) && prerequisite(270, () => !isCompiled(), 'requires source mac
     };
     tierGit('init', '-q'); tierGit('config', 'user.name', 'Fixture'); tierGit('config', 'user.email', 'fixture@example.invalid');
     const tierHooks = path.join(tierRepo, '.git', 'no-hooks'); fs.mkdirSync(tierHooks); tierGit('config', 'core.hooksPath', tierHooks);
+    put('kernel/test/section-covers.json', JSON.stringify({schema:1,about:'fixture',sections:{'1':['kernel/src/fixture.ts']}}));
+    tierGit('add', 'kernel/test/section-covers.json');
     tierGit('commit', '--allow-empty', '-qm', 'fixture initial');
     put('README.md', '# Tier fixture\n'); tierGit('add', 'README.md'); tierGit('commit', '-qm', 'fixture docs');
     const docsCommit = tierGit('rev-parse', 'HEAD');
@@ -24433,6 +24469,7 @@ if (selected(270) && prerequisite(270, () => !isCompiled(), 'requires source mac
     put('tools/scan.ts', 'console.log(JSON.stringify({identity:{status:"pass",detail:"fixture"},deployment:{status:"pass",detail:"fixture"}}));\n');
     const childMarker = path.join(tierRepo, 'child-started');
     put('kernel/test/selftest.ts', `import fs from 'node:fs';import{acquireGateLock}from ${JSON.stringify(pathToFileURL(lockPath).href)};const lock=await acquireGateLock('fixture-child',true);if(!lock.inherited)throw Error('child did not inherit tier lock');fs.writeFileSync(${JSON.stringify(childMarker)},'started');console.log('kernel self-test passed (1 checks).');\n`);
+    put('kernel/test/run-parallel.ts', fs.readFileSync(path.join(tierRepo, 'kernel/test/selftest.ts'), 'utf8'));
     tierGit('add', 'kernel/src/fixture.ts');
     const tierRelease = path.join(root, 'release-tier');
     const tierHolder = start(process.execPath, [fixtureHolder, tierRelease], {LIBRARY_SEAT:'fixture-holder'});
@@ -25083,8 +25120,13 @@ if (selected(278)) {
 
     const legacy = path.join(root, 'legacy');
     fs.mkdirSync(path.join(legacy, 'notebook', 'missing-index'), { recursive: true });
+    // A second topic with no index (kickoffs/s180 row 2(g)): the drift names both, one line each, not only the first.
+    fs.mkdirSync(path.join(legacy, 'notebook', 'missing-too'), { recursive: true });
     fs.writeFileSync(path.join(legacy, 'notebook', '_master-index.md'), '# Notebook Index\n');
-    equal(JSON.stringify(masterIndexDrift(legacy)), JSON.stringify([`a topic cannot be rendered: the topic index is missing: ${path.join(legacy, 'notebook', 'missing-index', '_index.md')}`]), 'the legacy diagnostic changed');
+    equal(JSON.stringify(masterIndexDrift(legacy)), JSON.stringify([
+      `a topic cannot be rendered: the topic index is missing: ${path.join(legacy, 'notebook', 'missing-index', '_index.md')}`,
+      `a topic cannot be rendered: the topic index is missing: ${path.join(legacy, 'notebook', 'missing-too', '_index.md')}`,
+    ]), 'the legacy diagnostic did not name both topics without an index');
   } catch (error) {
     failures.push(`section 278 stopped early: ${(error as Error).message}`);
   } finally {
@@ -26614,7 +26656,9 @@ async function section304(): Promise<void> {
     const git = (...args: string[]) => { const out = run('git', args); if (out.status !== 0) throw Error(out.stderr); return out.stdout; };
     git('init', '-q');
     fs.copyFileSync(path.join(PROGRAM_ROOT, '.gitignore'), path.join(root, '.gitignore'));
-    git('add', '.gitignore'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'baseline');
+    git('add', '.gitignore');
+    git('update-index', '--add', '--cacheinfo', '100644', git('hash-object', '-w', path.join(PROGRAM_ROOT, 'kernel/test/section-covers.json')).trim(), 'kernel/test/section-covers.json');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'baseline');
     fs.mkdirSync(path.join(root, '.library')); fs.writeFileSync(path.join(root, '.library/identity-denylist.txt'), 'fixture-denied-value\n');
     // Junctions refer to source tools, as section 263's do; no source file is edited.
     for (const name of ['tools', 'kernel']) fs.symlinkSync(path.join(PROGRAM_ROOT, name), path.join(root, name), process.platform === 'win32' ? 'junction' : 'dir');
@@ -31785,12 +31829,12 @@ async function section433(): Promise<void> {
     equal(JSON.stringify(routes), JSON.stringify([
       ['commit', { route: 'node' }, { route: 'node' }],
       ['cut', { route: 'node' }, { route: 'powershell' }],
-      ['push', { refusal: 'the push tier runs on Windows; hand back instead' }, { route: 'powershell' }],
+      ['push', { route: 'node' }, { route: 'node' }],
       ['release', { refusal: 'the release tier runs on Windows; hand back instead' }, { route: 'powershell' }],
     ]), '433: the tier choice');
     const hook = fs.readFileSync(path.join(PROGRAM_ROOT, '.githooks', 'pre-commit'), 'utf8');
-    check(/^if ! command -v powershell\.exe >\/dev\/null 2>&1; then\r?\n[\s\S]*?node tools\/gate\.ts --tier commit\r?\n/m.test(hook), '433: the hook has no route that runs the commit tier without PowerShell');
-    check(hook.includes('    node kernel/test/gate-lock.ts --tier commit -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools/Invoke-LibraryChecks.ps1" -Fast'), "433: the hook's Windows route changed");
+    check(hook.includes('node tools/gate.ts --tier commit'), '433: every platform must run the commit tier');
+    check(!hook.includes('node kernel/test/gate-lock.ts --tier commit -- powershell.exe'), '433: hook still runs the full Windows runner');
   } catch (error) {
     failures.push(`section 433 stopped early: ${(error as Error).message}`);
   }
@@ -31882,8 +31926,8 @@ async function section437(): Promise<void> {
     check(fs.readFileSync(gatePath, 'utf8').includes('export function docsSkipDetail('), '437: tools/gate.ts has no docs SKIP wording to import');
     if (!fs.readFileSync(gatePath, 'utf8').includes('export function docsSkipDetail(')) return;
     const gate = await import(pathToFileURL(gatePath).href);
-    equal(gate.docsSkipDetail(false), "not a docs-only commit: no document checks run on this platform; the integrator's Windows push tier runs them", '437: the SKIP without PowerShell');
-    equal(gate.docsSkipDetail(true), 'not a docs-only commit: its document checks run in the runner child (cut and push tiers) until session 2 ports them', '437: the SKIP with PowerShell changed');
+    equal(gate.docsSkipDetail(false), 'not a docs-only commit: no document checks run on this platform', '437: the SKIP without PowerShell');
+    equal(gate.docsSkipDetail(true), 'not a docs-only commit: document checks are available in the optional cut tier', '437: the SKIP with PowerShell changed');
     equal(gate.docsSkipDetail(gate.powerShellPresent({ PATH: '/usr/bin:/bin' }, 'linux', () => false)), gate.docsSkipDetail(false), "437: a Linux PATH without powershell.exe did not choose the node route's wording");
   } catch (error) {
     failures.push(`section 437 stopped early: ${(error as Error).message}`);
@@ -36637,7 +36681,12 @@ async function section549(): Promise<void> {
     check(prior.equals(f.bytes(f.hubPage)!),'549: prior page bytes were not restored');
     equal(closed.exit,0,`549: waiting close failed: ${f.said(closed)}`);
     check(!fs.readFileSync(desk,'utf8').includes('projects/alpha'),'549: close did not finish after undo');
-    equal(f.cli(['desk','open','project','alpha']).exit,0,'549: reopen before refusal control');
+    // Under load the waiting close can still hold the Desk lock for a moment after it exits: retry the reopen until it
+    // succeeds, within 20 seconds, and fail with the last result if it never does (s187's pooled hook, 2026-11-05).
+    const reopenDeadline = Date.now()+20000;
+    let reopened = f.cli(['desk','open','project','alpha']);
+    while(reopened.exit!==0 && Date.now()<reopenDeadline){ await sleep(250); reopened = f.cli(['desk','open','project','alpha']); }
+    equal(reopened.exit,0,`549: reopen before refusal control: ${f.said(reopened)}`);
     const control = f.applied(['hub','edit','alpha','--mode','replace-section','--section','Now','--content-path',f.file('control549.md','- [ ] Timeout control\n')]);
     const written = f.bytes(f.hubPage)!;
     const holder = enterSeatRegistryLock(f.lib);
@@ -36828,7 +36877,7 @@ async function section555(): Promise<void> {
     try {
       const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
       const file = path.join(temp, 'kickoff.md');
-      fs.writeFileSync(file, block.replace(/^OWNS:.*$/m, 'OWNS: kernel/src/locks.ts').replace(/^- \*\*Second read:\*\*.*\r?\n/m, ''));
+      fs.writeFileSync(file, block.replace('`<path or pattern>`', '`kernel/src/locks.ts`').replace(/^- \*\*Second read:\*\*.*\r?\n/m, ''));
       const child = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts'), file], { env: kickoffFixtureEnv(temp),encoding:'utf8',windowsHide:true});
       check(child.status === 1 && child.stdout.includes('Second read'), '555: CLI did not collect sensitive second-read rule');
     } finally {fs.rmSync(temp,{recursive:true,force:true});}
@@ -37704,6 +37753,21 @@ async function section572(): Promise<void> {
     const lower = cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Run a:']);
     check(lower.exit === 0, `572: ticking one of two pending pointers was refused: ${lower.stderr}`);
 
+    // A RUN POINTER IN ANOTHER SHAPE IS REFUSED (kickoffs/s181-r2 spare S1): a bold pointer added is refused with nothing
+    // written; a canonical one is accepted; an old bold line already in ## Next blocks no unrelated edit, nor its own tick.
+    equal(cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Run b:']).exit, 0, '572: ticking b before the shape cases');
+    const shaped = fs.readFileSync(hub, 'utf8');
+    const bold = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', file('bold.md', '- [ ] **Run d:** [[projects/work/kickoffs/d]] (posted)\n')]);
+    check(bold.exit !== 0 && bold.stderr.includes('A Run pointer in ## Next must read "- [ ] Run <id>: [[projects/<hub>/kickoffs/<id>]] ...", the form the one-pointer rule and /meanwhile read; this line does not: - [ ] **Run d:** [[projects/work/kickoffs/d]] (posted). Nothing was written.'), `572: a bold Run pointer was not refused: ${bold.exit} ${bold.stderr}`);
+    equal(fs.readFileSync(hub, 'utf8'), shaped, '572: a refused bold pointer changed the Hub');
+    const canonical = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', file('canonical.md', '- [ ] Run d: [[projects/work/kickoffs/d]] (posted)\n')]);
+    check(canonical.exit === 0 && fs.readFileSync(hub, 'utf8').includes('- [ ] Run d: [[projects/work/kickoffs/d]] (posted)'), `572: a canonical Run pointer was refused: ${canonical.stderr}`);
+    fs.writeFileSync(hub, fs.readFileSync(hub, 'utf8').replace('- [ ] Run d:', '- [ ] **Run e:** [[projects/work/kickoffs/e]] (old)\n- [ ] Run d:'));
+    const unrelated = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Now', '--content-path', file('now2.md', '- [ ] Another orientation line.\n')]);
+    check(unrelated.exit === 0, `572: an old bold pointer blocked an unrelated edit: ${unrelated.stderr}`);
+    const oldTick = cli(['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Run e:']);
+    check(oldTick.exit === 0 && fs.readFileSync(hub, 'utf8').includes('- [x] **Run e:**'), `572: ticking an old bold pointer was refused: ${oldTick.stderr}`);
+
     // A Codex Kickoff's pointer is advised as an s Kickoff's is.
     const c3 = cli(['hub', 'edit', 'work', '--mode', 'new-page', '--page', 'kickoffs/c3', '--content-path', file('c3.md', kickoff('c3')), '--json']);
     let advice = '';
@@ -37821,7 +37885,7 @@ if (selected(574)) await section574();
 // --- 575. KICKOFF REFERENCES, CHAINS, READS, ROW FLAGS AND CARRIED TRAIN IDS (c83 row 2) ---------------------
 async function section575(): Promise<void> {
   const kc = await import('../src/kickoffcheck.ts');
-  const page = (extra: string, open = 'filled', train = 'first') => kc.REQUIRED_SECTIONS.map(name =>
+  const page = (extra: string, open = 'filled', train = 'first') => kc.KNOWN_SECTIONS.map(name =>
     name === 'WHY NOW' ? `WHY NOW:\n${extra}` : name === 'OPEN' ? `OPEN:\n${open}` : name === 'TRAIN' ? `TRAIN: ${train}` :
     name === 'ROWS' ? 'ROWS:\n1. A change.\n   Done when: proved.' : name === 'CLOSE' ? 'CLOSE:\n- **Stop.**' : name === 'OWNS PATHS' ? 'OWNS PATHS:\n- `a.ts`' : `${name}: filled`).join('\n');
   const verdict = (extra: string, open = 'filled', options: Parameters<typeof kc.kickoffVerdict>[1] = { adrFiles: [] }) => kc.kickoffVerdict(page(extra, open), options);
@@ -37926,6 +37990,7 @@ async function section576(): Promise<void> {
       const command = args.join(' '); calls.push(command);
       if (broken) throw Error('fixture git failed');
       if (command === 'show :kernel/test/section-covers.json') return covers;
+      if (command === 'show HEAD:kernel/test/section-covers.json') return map;
       if (command === 'show :kernel/test/selftest.ts') return 'if (selected(12)) {\n}\n';
       if (args.includes('--name-only')) return changed.join('\n');
       if (args.includes('-U0')) return '@@ -1 +1 @@\n';
@@ -37933,7 +37998,9 @@ async function section576(): Promise<void> {
     });
     equal(choose(['kernel/src/one.ts']).sections.join(','), '12,88,155', '576: claimants plus type check');
     check(choose(['tools/only.ts']).all, '576: unnamed tool selects every section');
-    for (const file of ['docs/history.md', 'outside.txt']) equal(choose([file]).sections.join(','), '155', '576: non-kernel path still checks types: ' + file);
+    equal(choose(['docs/history.md']).sections.join(','), '155', '576: plain documents still check types');
+    let unmapped = ''; try { choose(['outside.txt']); } catch(error) { unmapped=String(error); }
+    check(unmapped.includes('outside.txt') && unmapped.includes('tools/check-map.json'), '576: unmapped behavior must refuse by name');
     for (const file of ['kernel/src/cli.ts', 'kernel/test/helper.ts']) check(choose([file]).all, '576: shared/helper path selects all: ' + file);
     const malformed = choose(['kernel/src/one.ts'], '{');
     check(malformed.all && malformed.reasons.join().length > 0, '576: malformed map falls back with reason');
@@ -37957,41 +38024,51 @@ async function section576(): Promise<void> {
 }
 if (selected(576)) await section576();
 
-// --- 577. THE WINDOWS HOOK CARRIES A NONEMPTY SELECTION OR FALLS BACK TO EVERY SECTION (c84 row 2). ---
+// --- 577. Changed-path gates dispatch on every platform and cover the outgoing range (c109). ---
 async function section577(): Promise<void> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c84-hook-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c109-gates-'));
   try {
-    const { hookSections } = await import('../../tools/section-select.mts');
-    for (const changed of ['docs/history.md', 'tools/only.ts', 'unclaimed.txt']) {
-      const chosen = hookSections(args => args[0] === 'show' ? (args[1]!.includes('json') ? '{"schema":1,"sections":{}}' : '') : changed);
-      if (changed.startsWith('tools/')) check(chosen.all, '577: unnamed tool selects every section');
-      else equal(chosen.sections.join(','), '155', '577: never empty for ' + changed);
-    }
-    if (process.platform !== 'win32') { check(true, '577: Windows hook dispatch fixture is Windows-only; pure rule checked'); return; }
-    const repo = path.join(root, 'repo'), receipt = path.join(root, 'receipt.json'); fs.mkdirSync(repo);
     const { childEnv } = await import('./gate-env.ts');
-    const env = { ...repositoryNeutralEnv(childEnv()), C84_RECEIPT: receipt, LIBRARY_SELFTEST_SECTIONS: '999' };
-    const run = (...args: string[]) => spawnSync('git', args, { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30000 });
-    const git = (...args: string[]) => { const r = run(...args); if (r.status !== 0) throw Error(r.stdout + r.stderr); return r.stdout; };
-    const put = (file: string, body: string) => { const p = path.join(repo, file); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
+    const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+    const receipt = path.join(root, '.git/receipt.json');
+    const env = { ...repositoryNeutralEnv(childEnv()), C109_RECEIPT: receipt };
+    const run = (...args: string[]) => spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const git = (...args: string[]) => { const ran = run(...args); if (ran.status !== 0) throw Error(ran.stdout + ran.stderr); return ran.stdout.trim(); };
+    const put = (file: string, body: string) => { const p = path.join(root, file); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
     git('init', '-q', '-b', 'fixture'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'core.hooksPath', '.git/no-hooks');
-    put('tools/owns.mts', 'process.exit(0);\n');
-    put('tools/docs-gate.ts', 'process.exit(4);\n');
-    put('tools/section-select.mts', 'export function hookSections(){if(process.env.C84_MODE==="exit"){console.log("12,155");process.exit(1);}if(process.env.C84_MODE==="crash")throw Error("fixture selection crash");return process.env.C84_MODE==="empty"?{all:false,sections:[],reasons:[]}:{all:false,sections:[12,155],reasons:[]};}\n');
-    // The fake PowerShell boundary executes JavaScript at the real -File path; no PowerShell is added.
-    put('tools/Invoke-LibraryChecks.ps1', 'import fs from "node:fs";fs.writeFileSync(process.env.C84_RECEIPT,JSON.stringify({selection:process.env.LIBRARY_SELFTEST_SECTIONS??null}));console.log("fixture Fast runner");\n');
-    put('kernel/test/gate-lock.ts', 'import fs from"node:fs";import{spawnSync}from"node:child_process";const a=process.argv.slice(2),f=a[a.indexOf("-File")+1];if(f!=="tools/Invoke-LibraryChecks.ps1"||!a.includes("-Fast"))throw Error("wrong Fast route");const r=spawnSync(process.execPath,["--input-type=module"],{input:fs.readFileSync(f,"utf8"),stdio:["pipe","inherit","inherit"]});process.exit(r.status??1);\n');
-    put('code.ts', 'baseline\n'); git('add', '.'); git('commit', '-qm', 'fixture baseline');
-    const hooks = path.join(repo, '.git/hooks'); fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755); git('config', 'core.hooksPath', '.git/hooks');
-    for (const mode of ['crash', 'empty', 'narrow', 'exit']) {
-      put('code.ts', mode + '\n'); git('add', 'code.ts');
-      const r = spawnSync('git', ['commit', '-qm', 'fixture ' + mode], { cwd: repo, env: repositoryNeutralEnv({ ...env, C84_MODE: mode }), encoding: 'utf8', windowsHide: true, timeout: 30000 });
-      const output = r.stdout + r.stderr;
-      equal(r.status, 0, '577: fixture hook failed: ' + output);
-      const selected = JSON.parse(fs.readFileSync(receipt, 'utf8')).selection;
-      equal(selected, mode === 'narrow' ? '12,155' : null, '577: runner selection for ' + mode);
-      equal((output.match(/^selected sections[^\r\n]*/gm) ?? []).length, 1, '577: exactly one selection line for ' + mode);
-      check(mode === 'narrow' ? output.includes('selected sections (2): 12,155') : /selected sections: every section \(.+\)/.test(output), '577: selection/fallback line missing for ' + mode + ': ' + output);
+    put('tools/owns.mts', 'process.exit(0);\n'); put('tools/staged-secrets.mts', 'process.exit(0);\n'); put('tools/docs-gate.ts', 'process.exit(4);\n');
+    put('tools/gate.ts', 'import fs from"node:fs";fs.writeFileSync(process.env.C109_RECEIPT,JSON.stringify(process.argv.slice(2)));process.exit(Number(process.env.C109_EXIT??0));\n');
+    put('kernel/test/section-covers.json', JSON.stringify({ schema: 1, sections: { '12': ['kernel/src/one.ts'], '88': ['kernel/src/two.ts'] } }));
+    put('kernel/test/selftest.ts', 'if (selected(12)) {\n// gate.ts\n}\nif (selected(88)) {\n}\n');
+    put('kernel/src/one.ts', 'baseline\n'); put('kernel/src/two.ts', 'baseline\n');
+    git('add', '.'); git('commit', '-qm', 'baseline'); git('update-ref', 'refs/remotes/origin/master', 'HEAD');
+    put('kernel/src/one.ts', 'first change\n'); git('add', '.'); git('commit', '-qm', 'first');
+    put('kernel/src/two.ts', 'second change\n'); git('add', '.'); git('commit', '-qm', 'second');
+    equal(gate.selection(root, null, true).selection.sections.join(','), '12,88', '577: push must cover both outgoing commits with an empty index');
+    equal(gate.selection(root, null).changed.length, 0, '577: commit selection must remain staged only');
+    put('tools/gate.ts', fs.readFileSync(path.join(root,'tools/gate.ts'),'utf8') + '// changed\n'); git('add', '.');
+    equal(gate.selection(root, null).selection.sections.join(','), '12', '577: tool selection needs unchanged selftest text'); git('commit', '-qm', 'tool');
+    const hooks = path.join(root, '.git/hooks'); fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755); git('config', 'core.hooksPath', '.git/hooks');
+    for (const file of ['kernel/src/one.ts', '.claude/settings.json']) {
+      put(file, file.endsWith('.json') ? '{}' : 'hook change\n'); git('add', file);
+      const ran = run('commit', '-qm', 'dispatch'); equal(ran.status, 0, '577: hook failed: ' + ran.stdout + ran.stderr);
+      equal(fs.readFileSync(receipt, 'utf8'), '["--tier","commit"]', '577: hook must run the commit tier');
+    }
+    put('kernel/src/one.ts', 'refused\n'); git('add', '.');
+    const bad = spawnSync('git', ['commit', '-qm', 'must refuse'], { cwd: root, env: repositoryNeutralEnv({ ...env, C109_EXIT: '1' }), encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    check(bad.status !== 0 && (bad.stdout + bad.stderr).includes('commit tier failed'), '577: failed tier must block the commit');
+    check(gate.settingsChecksForPaths(['.claude/settings.json']).includes('settings.hooks-registered'), '577: Claude settings registration');
+    for (const file of ['.codex/config.toml','.claude-plugin/hooks/hooks.json','.codex-plugin/hooks.json','docs/templates/codex-hooks.json']) check(gate.settingsChecksForPaths([file]).some((name: string) => name === 'plugin.generated-files-match' || name === 'workspace-init.selftest'), '577: covering check for ' + file);
+    equal(gate.settingsChecksForPaths(['kernel/src/one.ts']).length, 0, '577: code must not run settings checks');
+    if (process.platform === 'win32') {
+      const settingsRoot = path.join(root, 'settings-fixture'); fs.mkdirSync(path.join(settingsRoot, '.claude'), { recursive: true });
+      fs.symlinkSync(path.join(PROGRAM_ROOT, 'tools'), path.join(settingsRoot, 'tools'), 'junction');
+      fs.copyFileSync(path.join(PROGRAM_ROOT, '.claude/settings.json'), path.join(settingsRoot, '.claude/settings.json'));
+      const good = await gate.settingsChecks(settingsRoot, ['.claude/settings.json']);
+      check(good.length >= 2 && good.every((row: {status: string}) => row.status === 'pass' || row.status === 'warn'), '577: valid fixture settings failed: ' + JSON.stringify(good));
+      fs.writeFileSync(path.join(settingsRoot, '.claude/settings.json'), '{broken');
+      const badSettings = await gate.settingsChecks(settingsRoot, ['.claude/settings.json']);
+      check(badSettings.length >= 2 && badSettings.every((row: {status: string}) => row.status === 'fail'), '577: malformed fixture settings must fail: ' + JSON.stringify(badSettings));
     }
   } catch (error) { failures.push(`section 577 stopped early: ${(error as Error).message}`); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -38009,6 +38086,7 @@ async function section579(): Promise<void> {
     const put = (file: string, body: string) => { const p = path.join(root, file); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
     git('init', '-q', '-b', 'master'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'core.hooksPath', '.git/no-hooks');
     put('tools/owns.mts', 'process.exit(0);\n');
+    put('tools/staged-secrets.mts', 'process.exit(0);\n');
     put('tools/docs-gate.ts', 'import{spawnSync}from"node:child_process";const r=spawnSync("git",["diff","--cached","--name-only","HEAD"],{encoding:"utf8"});process.exit(r.status===0&&r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith(".md"))?0:4);\n');
     put('tools/section-select.mts', 'export function hookSections(){return{all:false,sections:[155],reasons:[]};}\n');
     put('tools/Invoke-LibraryChecks.ps1', 'import fs from"node:fs";fs.writeFileSync(process.env.C84_RECEIPT,"ran");\n');
@@ -38029,7 +38107,7 @@ async function section579(): Promise<void> {
     fs.unlinkSync(path.join(root, 'loose.txt')); const clean = run('commit', '-qm', 'clean code');
     equal(clean.status, 0, '579: clean code failed: ' + clean.stdout + clean.stderr);
     check(fs.existsSync(receipt), '579: clean code never reached runner');
-    if (process.platform === 'win32') check((clean.stdout + clean.stderr).includes('selected sections (1): 155'), '579: clean code never reached selection');
+    check(fs.existsSync(receipt), '579: clean code never reached the commit tier');
     put('loose.txt', 'unrelated\n'); put('README.md', '# Docs with unrelated file\n'); git('add', 'README.md');
     const docs = run('commit', '-qm', 'docs fast path'); equal(docs.status, 0, '579: docs commit with untracked file failed: ' + docs.stdout + docs.stderr);
     check(!(docs.stdout + docs.stderr).includes('selected sections'), '579: docs commit reached selection');
@@ -38192,8 +38270,8 @@ async function section581(): Promise<void> {
       return { storage, workspace };
     };
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
-    const bmLine = (operation: string) => `${operation} is refused: this Basic Memory server offers the 1.0 tools (bm_*), and Deskpost's shared-collection writers are not ported to them yet (train item basic-memory-1-0, step 2). Nothing was written.`;
-    const unknownLine = (operation: string) => `${operation} is refused: the Basic Memory server's tool list could not be read, so it may be a 1.0 server, which Deskpost's shared-collection writers are not ported to yet (train item basic-memory-1-0, step 2). Nothing was written.`;
+    const bmLine = (operation: string) => `${operation} is retired on Basic Memory 1.0: it wrote a Library's Hubs or Catalog inside Basic Memory (the attached setup), and Hubs now stay local. Shared Books are written by the shared-collection writers of 1.6.0. Nothing was written.`;
+    const unknownLine = (operation: string) => `The Basic Memory server's tool list could not be read, so it is treated as 1.0: ${bmLine(operation)}`;
     const OLD = /"tool":"(?:write_note|read_note|read_content|move_note|edit_note|delete_note|list_directory|list_memory_projects|create_memory_project)"/;
     const writers: [string[], string][] = [
       [['hub', 'edit', 'demo', '--mode', 'add-section', '--section', 'X', '--content', 'y'], 'hub edit'],
@@ -38248,11 +38326,13 @@ if (selected(581)) await section581();
 
 // --- 582. The Postbox on Basic Memory 1.0 (kickoffs/s175 row 3). Against the stand-in's default 1.0 surface: setup, send,
 // check and resolve between two Libraries by `bm_*` names with `project`, a listed letter read and moved by its path with
-// the project's name, an inbox of 250 filed across three pages and 120 entries read across two, a missing inbox empty,
+// the project's name, an inbox of 201 filed across three pages and 101 entries read across two, a missing inbox empty,
 // a third Library's inbox untouched, a just-listed file that reads NOT_FOUND refused by name; and a server without the
 // tools refused at connect, in one line, with nothing written.
 async function section582(): Promise<void> {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s175-postbox-')));
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c120' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(parent, 'postbox-')));
   const servers: { stop(): void }[] = [];
   try {
     const storage = path.join(root, 'server');
@@ -38272,41 +38352,48 @@ async function section582(): Promise<void> {
     const resolved = t.json(t.cli(t.home.lib, ['postbox', 'resolve', 'Far Office', '--json']));
     equal(resolved['library_id'], t.far.id, '582: resolve did not find the other Library on 1.0');
 
-    // 2. 250 letters and one that will read NOT_FOUND in the far inbox; 118 more entries; a third Library's waiting letter.
+    // 2. 201 letters and one that will read NOT_FOUND in the far inbox; a third Library's waiting letter.
     const inbox = `postbox/inbox/${t.far.id}`;
     const letter = fs.readFileSync(onServer(`${inbox}/${id}.md`), 'utf8');
     const copy = (suffix: string) => {
-      const other = id.replace(/[0-9a-f]{8}$/, suffix);
+      const other = `copy-${suffix}`;
       fs.writeFileSync(onServer(`${inbox}/${other}.md`), letter.split(id).join(other));
       return other;
     };
-    for (let n = 1; n < 250; n += 1) copy(n.toString(16).padStart(8, '0'));
+    for (let n = 1; n < 201; n += 1) copy(n.toString(16).padStart(8, '0'));
     const vanished = copy('deadbeef');
-    const entry = fs.readFileSync(onServer(`postbox/libraries/${t.home.id}.md`), 'utf8');
-    const lastEntry = 'ffffffff-0000-4000-8000-000000000118';
-    for (let n = 1; n <= 118; n += 1) {
-      const other = `ffffffff-0000-4000-8000-${n.toString().padStart(12, '0')}`;
-      fs.writeFileSync(onServer(`postbox/libraries/${other}.md`), entry.split(t.home.id).join(other));
-    }
     const third = 'eeeeeeee-3333-4eee-8eee-eeeeeeeeeeee';
     fs.mkdirSync(onServer(`postbox/inbox/${third}`), { recursive: true });
     fs.writeFileSync(onServer(`postbox/inbox/${third}/waiting.md`), '---\ntitle: waiting\npermalink: postbox/inbox/waiting\n---\n\nNot for these Libraries.\n');
 
-    // 3. The far check files all 250 in full, across three pages, and names the vanished one as a refusal.
+    // 3. The far check files all 201 in full, across three pages, and names the vanished one as a refusal.
     const far = t.json(t.cli(t.far.lib, ['postbox', 'check', '--json']));
     const filed = (far['filed'] as unknown[] | undefined) ?? [];
     const skipped = (far['skipped'] as Record<string, unknown>[] | undefined) ?? [];
-    check(far['reachable'] === true && filed.length === 250 && far['moved'] === 250, `582: the inbox of 250 was not filed and moved in full: ${JSON.stringify({ reachable: far['reachable'], filed: filed.length, moved: far['moved'], left: far['left'] })}`);
+    check(far['reachable'] === true && filed.length === 201 && far['moved'] === 201, `582: the inbox of 201 was not filed and moved in full: ${JSON.stringify({ reachable: far['reachable'], filed: filed.length, moved: far['moved'], left: far['left'] })}`);
     check(skipped.length === 1 && String(skipped[0]!['path']).includes(vanished) && String(skipped[0]!['why']).includes('NOT_FOUND') && !String(skipped[0]!['why']).includes('gone before'),
       `582: a just-listed file that read NOT_FOUND was not a named refusal: ${JSON.stringify(skipped)}`);
     check(calls().filter((line) => line.tool === 'bm_list' && line.path === inbox).length >= 3, '582: the inbox was not listed across three pages');
+
+    // Filing is proven. Retain its delivered letters outside the server's project so entry lookups do not rescan them.
+    const filedLetters = path.join(root, 'filed-letters');
+    fs.renameSync(onServer(`${inbox}/delivered`), filedLetters);
+    equal(fs.readdirSync(filedLetters).filter((name) => name.endsWith('.md')).length, 201, '582: all filed letters retained');
+
+    // The entry pagination case needs these copies only after letter filing has been proven.
+    const entry = fs.readFileSync(onServer(`postbox/libraries/${t.home.id}.md`), 'utf8');
+    const lastEntry = 'ffffffff-0000-4000-8000-000000000099';
+    for (let n = 1; n <= 99; n += 1) {
+      const other = `ffffffff-0000-4000-8000-${n.toString().padStart(12, '0')}`;
+      fs.writeFileSync(onServer(`postbox/libraries/${other}.md`), entry.split(t.home.id).join(other));
+    }
 
     // 4. The home check: its inbox folder does not exist, and lists as empty.
     check(!fs.existsSync(onServer(`postbox/inbox/${t.home.id}`)), '582: the fixture made the home inbox');
     const home = t.json(t.cli(t.home.lib, ['postbox', 'check', '--json']));
     check(home['reachable'] === true && ((home['filed'] as unknown[] | undefined) ?? []).length === 0 && ((home['skipped'] as unknown[] | undefined) ?? []).length === 0, `582: a missing inbox folder was not checked as empty: ${JSON.stringify(home).slice(0, 400)}`);
 
-    // 5. 120 entries, read across two pages: the last one resolves.
+    // 5. 101 entries, read across two pages: the last one resolves.
     const lastResolved = t.json(t.cli(t.home.lib, ['postbox', 'resolve', lastEntry, '--json']));
     equal(lastResolved['library_id'], lastEntry, '582: an entry on the second page was not read');
     check(calls().filter((line) => line.tool === 'bm_list' && line.path === 'postbox/libraries').length >= 2, '582: the entries were not listed across pages');
@@ -38317,8 +38404,8 @@ async function section582(): Promise<void> {
     check(used.every((line) => !(line.args ?? []).includes('project_id')), '582: a call carried project_id');
     check(used.filter((line) => line.tool !== 'bm_project').every((line) => (line.args ?? []).includes('project')), '582: a project-scoped call left out project');
     const moves = used.filter((line) => line.tool === 'bm_move');
-    check(moves.length >= 250 && moves.every((line) => line.project_by === 'name'), `582: a listed letter was not moved by its path with the project's name: ${moves.length}`);
-    check(used.filter((line) => line.tool === 'bm_read' && line.project_by === 'name').length >= 251, '582: the listed letters were not read with the project\'s name');
+    check(moves.length >= 201 && moves.every((line) => line.project_by === 'name'), `582: a listed letter was not moved by its path with the project's name: ${moves.length}`);
+    check(used.filter((line) => line.tool === 'bm_read' && line.project_by === 'name').length >= 202, '582: the listed letters were not read with the project\'s name');
     check(!used.some((line) => line.path === `postbox/inbox/${third}`) && fs.existsSync(onServer(`postbox/inbox/${third}/waiting.md`)), '582: a third Library\'s inbox was listed or its letter moved');
 
     // 7. A server without the tools: refused at connect in one line, recorded, never unreachable, nothing written.
@@ -39013,7 +39100,7 @@ async function section594(): Promise<void> {
       check(grammar.ownsPaths('OWNS PATHS:\n' + line).problems.some(p => p.includes(line)), '594: malformed entry named ' + line);
     }
     check(grammar.ownsPaths('OWNS PATHS:\n\n').problems.length > 0, '594: empty list refused');
-    const before = without.replace(/^OWNS:/m, 'OWNS PATHS:\n- `a.ts`\nOWNS:');
+    const before = without.replace(/^STAY OUT OF:/m, 'OWNS PATHS:\n- `a.ts`\nOWNS: parts\nSTAY OUT OF:');
     check(kc.checkKickoff(before).outOfOrder.includes('OWNS PATHS'), '594: out of order refused');
     for (const [pattern, file, expected] of [
       ['kernel/src/*.ts', 'kernel/src/a.ts', true], ['kernel/src/*.ts', 'kernel/src/x/a.ts', false],
@@ -39058,6 +39145,7 @@ async function ownsFixture(label: string) {
     const source = path.join(PROGRAM_ROOT, file);
     if (fs.existsSync(source)) put(file, fs.readFileSync(source, 'utf8'));
   }
+  put('tools/staged-secrets.mts', 'process.exit(0);\n');
   put('tools/docs-gate.ts', 'import fs from "node:fs";import{spawnSync}from"node:child_process";fs.writeFileSync(process.env.C95_RECEIPT,"ran");const r=spawnSync("git",["diff","--cached","--name-only"],{encoding:"utf8"});process.exit(r.status===0&&r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith(".md"))?0:4);\n');
   put('tools/section-select.mts', 'export function hookSections(){return{all:false,sections:[155],reasons:[]};}\n');
   put('tools/Invoke-LibraryChecks.ps1', 'console.log("fixture Fast runner");\n');
@@ -40390,6 +40478,5234 @@ async function section622(): Promise<void> {
 }
 if (selected(622)) await section622();
 
+
+// --- 623. Document checks read named unstaged files (c106 row 2). ---
+async function section623(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-doc-file-'));
+  try {
+    const repo = path.join(root, 'repo');
+    const home = path.join(root, 'home'); fs.mkdirSync(path.join(home, '.library'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.library/identity-denylist.txt'), 'fixture-denied-value\n');
+    const env = repositoryNeutralEnv({ ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+      LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry') });
+    const clone = spawnSync('git', ['clone', '--shared', '--quiet', PROGRAM_ROOT, repo], { env: repositoryNeutralEnv(env), encoding: 'utf8', timeout: 60_000 });
+    equal(clone.status, 0, '623: fixture clone: ' + clone.stderr);
+    const run = (...args: string[]) => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/docs-gate.ts'), ...args], { cwd: repo, env, encoding: 'utf8', timeout: 120_000 });
+    const workingText = `# C106 working bytes ${path.basename(root)}\n`;
+    fs.writeFileSync(path.join(repo, 'PLAN-fixture.md'), workingText);
+    const hash = spawnSync('git', ['hash-object', '--stdin'], { cwd: repo, env: repositoryNeutralEnv(env), input: workingText, encoding: 'utf8' }).stdout.trim();
+    const bad = run('--file', 'PLAN-fixture.md');
+    equal(bad.status, 3, '623: unstaged owner failure: ' + bad.stdout + bad.stderr);
+    check(/FAIL\s+workspace.plans-declare-their-owner/.test(bad.stdout), '623: names owner check');
+    const retained = spawnSync('git', ['cat-file', '-e', hash], { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8' });
+    check(retained.status !== 0, '623: working bytes leave no object in the checkout');
+    fs.writeFileSync(path.join(repo, 'PLAN-fixture.md'), '# Fixture\n\n> **Owner:** fixture\n');
+    const good = run('--file', 'PLAN-fixture.md');
+    equal(good.status, 0, '623: unstaged owner passes: ' + good.stdout + good.stderr);
+    fs.writeFileSync(path.join(repo, 'docs/file-fixture.md'), '# Fixture\n\n[broken](missing-c106.md)\n');
+    const link = run('--file', 'docs/file-fixture.md');
+    equal(link.status, 3, '623: broken link refuses');
+    check(/FAIL\s+docs.links-resolve/.test(link.stdout), '623: names link check');
+    equal(run('--file', path.join(root, 'outside.md')).status, 2, '623: outside rejected');
+    equal(run('--file', 'docs').status, 2, '623: folder rejected');
+    equal(run('--unknown').status, 2, '623: unknown argument rejected');
+    // A code file is no document (kickoffs/s180 row 2(a)): refused, not passed as "every one a document".
+    const code = run('--file', 'kernel/src/guards.ts');
+    check(code.status === 2 && code.stderr.includes('docs-gate: --file kernel/src/guards.ts is not a document (a root .md or a file under docs/); nothing was checked') && !code.stdout.includes('every one a document'),
+      '623: a code file was not refused as no document: ' + code.status + ' ' + code.stdout + code.stderr);
+    // A named file identical to HEAD is still read by the identity scan (kickoffs/s180 row 2(b)). The gate runs the
+    // clone's own tools/scan.ts, so the one under test is copied in first.
+    fs.copyFileSync(path.join(PROGRAM_ROOT, 'tools/scan.ts'), path.join(repo, 'tools/scan.ts'));
+    fs.writeFileSync(path.join(repo, 'docs/identity-fixture.md'), '# Fixture\n\nThis names fixture-denied-value.\n');
+    const staged = spawnSync('git', ['add', '--', 'docs/identity-fixture.md'], { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8' });
+    const added = spawnSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8' });
+    equal(`${staged.status} ${added.status}`, '0 0', '623: the identity fixture was not committed: ' + staged.stderr + added.stderr);
+    const same = run('--file', 'docs/identity-fixture.md');
+    check(same.status === 3 && /FAIL\s+public.identity-scan/.test(same.stdout) && same.stdout.includes('fixture-denied-value'),
+      '623: a named file identical to HEAD was not identity-scanned: ' + same.status + ' ' + same.stdout.slice(-800));
+    const index = spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8' });
+    equal(index.stdout.trim(), '', '623: working checks never stage files');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(623) && prerequisite(623, () => !isCompiled(), 'requires source document gate')) await section623();
+
+// --- 624. Staged secret reports expose metadata only (c106 row 2). ---
+async function section624(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-staged-secrets-'));
+  try {
+    const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+    // A native Node executable plus --import supplies a stand-in on Windows without cmd quoting.
+    const standin = path.join(bin, process.platform === 'win32' ? 'gitleaks.exe' : 'gitleaks');
+    fs.copyFileSync(process.execPath, standin); fs.chmodSync(standin, 0o755);
+    const stub = path.join(root, 'stub.mjs');
+    fs.writeFileSync(stub, `import fs from 'node:fs';
+      if(process.argv[0].includes('gitleaks')) {
+        const args=process.argv.slice(1); if(args[0]?.endsWith('version')) {console.log('8.30.1');process.exit(0);}
+        if(!/(^|[\\\\/])git$/.test(args[0] ?? '')) {console.error('stand-in gitleaks: expected the git subcommand, got '+args[0]);process.exit(7);}
+        const at=args.indexOf('--report-path');
+        if(process.env.FIXTURE_LEAKS==='yes') {
+          fs.writeFileSync(args[at+1],JSON.stringify([{RuleID:'fixture-alpha',File:'docs/a.md',StartLine:7,Secret:'never-print-this-value'}, {RuleID:'fixture-beta',File:'test/b.ts',StartLine:19,Match:'never-print-this-match'}]));process.exit(1);
+        } process.exit(0);
+      }`);
+    const run = (leaks: string, onPath = true) => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/staged-secrets.mts')], {
+      cwd: root, env: { ...process.env, PATH: onPath ? bin : path.join(root, 'absent'), NODE_OPTIONS: `--import=${pathToFileURL(stub).href}`, FIXTURE_LEAKS: leaks }, encoding: 'utf8', timeout: 30_000,
+    });
+    const bad = run('yes');
+    equal(bad.status, 1, '624: findings refuse: ' + bad.stdout + bad.stderr);
+    check(bad.stdout.includes('fixture-alpha in docs/a.md:7') && bad.stdout.includes('fixture-beta in test/b.ts:19'), '624: both metadata rows printed: ' + bad.stdout + bad.stderr);
+    check(!`${bad.stdout}${bad.stderr}`.includes('never-print-this'), '624: values stay private');
+    check(bad.stdout.includes('gitleaks:allow (a value this test plants)'), '624: remedy printed');
+    const good = run('no'); equal(good.status, 0, '624: clean passes: ' + good.stdout + good.stderr);
+    check(good.stdout.includes('no leaks found (gitleaks 8.30.1)'), '624: version printed');
+    const missing = run('no', false); equal(missing.status, 0, '624: absent scanner warns');
+    check(missing.stdout.includes('WARN gitleaks is not installed'), '624: absent scanner says nothing scanned');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(624) && prerequisite(624, () => !isCompiled(), 'requires source staged scanner')) await section624();
+
+// --- 625. A fresh checkout skips absent Codex renders; partial renders fail (c106 row 2). ---
+async function section625(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-absent-'));
+  try {
+    const codex = path.join(root, '.codex'); fs.mkdirSync(codex);
+    for (const file of ['config.template.toml', 'hooks.template.json']) fs.copyFileSync(path.join(PROGRAM_ROOT, '.codex', file), path.join(codex, file));
+    const env = { ...repositoryNeutralEnv(process.env as Record<string, string>), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry'), HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root };
+    const run = () => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(PROGRAM_ROOT, 'tools/Invoke-LibraryChecks.ps1'), '-ProgramPath', root, '-Fast', '-Only', 'codex.project-access-config', '-Json'], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+    const absent = run(); equal(absent.status, 0, '625: absent passes: ' + absent.stdout + absent.stderr);
+    check(absent.stdout.includes('skipped') && absent.stdout.includes('both rendered Codex files are absent'), '625: absence is SKIP');
+    // A folder at a rendered path is not an absent file (kickoffs/s180 row 2(d)): it reaches the check and fails.
+    fs.mkdirSync(path.join(codex, 'config.toml'));
+    const folder = run(); equal(folder.status, 1, '625: a folder at config.toml is a FAIL, not a SKIP: ' + folder.stdout + folder.stderr);
+    check(folder.stdout.includes('.codex/config.toml is missing') && !folder.stdout.includes('both rendered Codex files are absent'), '625: the folder case names the missing file');
+    fs.rmdirSync(path.join(codex, 'config.toml'));
+    let config = fs.readFileSync(path.join(codex, 'config.template.toml'), 'utf8');
+    config = config.replace('__BASIC_MEMORY_URL__', 'http://fixture.invalid/mcp').replace('"__BASIC_MEMORY_ENABLED__"', 'true').replace('"__BASIC_MEMORY_REQUIRED__"', 'true').replace('__VALIDATED_READER_PATH__', path.join(PROGRAM_ROOT, '.claude/adapters/Validated-BookReader.ps1').replace(/\\/g, '/'));
+    fs.writeFileSync(path.join(codex, 'config.toml'), config);
+    const partial = run(); equal(partial.status, 1, '625: partial refuses'); check(partial.stdout.includes('.codex/hooks.json is missing'), '625: partial names missing file');
+    const { newCodexHooksDocument } = await import('../src/init.ts');
+    fs.writeFileSync(path.join(codex, 'hooks.json'), newCodexHooksDocument(path.join(codex, 'hooks.template.json'), path.join(PROGRAM_ROOT, '.claude/hooks')));
+    const both = run(); equal(both.status, 0, '625: rendered passes: ' + both.stdout + both.stderr);
+    check(both.stdout.includes('both MCP servers required'), '625: full validation still runs');
+    fs.rmSync(path.join(codex, 'config.toml'));
+    const other = run(); equal(other.status, 1, '625: hooks-only refuses'); check(other.stdout.includes('.codex/config.toml is missing'), '625: other partial names missing file');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(625) && prerequisite(625, () => !isCompiled() && process.platform === 'win32', 'requires source Windows runner')) await section625();
+
+// --- 626. Gate ledger counts, failure kinds and append-only classifications (c106 row 3). ---
+async function section626(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-gate-ledger-'));
+  try {
+    const records = path.join(root, '.gate/runs'); fs.mkdirSync(records, { recursive: true });
+    const put = (file: string, tier: string, seconds: number, checks: { check: string; seconds: number | null; status: string; detail: string }[]) => {
+      fs.writeFileSync(path.join(records, file), JSON.stringify({ schema: 1, tier, total_seconds: seconds, exit: checks.some(c => c.status === 'fail') ? 1 : 0, checks }));
+    };
+    const a = '20261101T000000Z-push.json', b = '20261102T000000Z-push.json', c = '20261103T000000Z-cut.json';
+    put(a, 'push', 100, [{ check: 'fixture.suite', seconds: 95, status: 'fail', detail: 'exceeded its limit of 1500s' }]);
+    put(b, 'push', 200, [{ check: 'gate.required-sections', seconds: 1, status: 'fail', detail: 'required section missing' }, { check: 'fixture.suite', seconds: 190, status: 'pass', detail: 'done' }]);
+    put(c, 'cut', 60, [{ check: 'fixture.suite', seconds: null, status: 'skip', detail: 'not applicable' }]);
+    const before = [a, b, c].map(file => fs.readFileSync(path.join(records, file), 'utf8'));
+    const run = (...args: string[]) => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/gate-ledger.mts'), ...args], { cwd: root, env: process.env, encoding: 'utf8', timeout: 30_000 });
+    const first = run('--json'); equal(first.status, 0, '626: ledger runs: ' + first.stdout + first.stderr);
+    const data = JSON.parse(first.stdout);
+    const push = data.tiers.find((row: { tier: string }) => row.tier === 'push');
+    equal(push.runs, 2, '626: two push runs'); equal(push.median_seconds, 150, '626: even median'); equal(push.longest_seconds, 200, '626: longest'); equal(push.failed_runs, 2, '626: failed runs');
+    equal(data.tiers.find((row: { tier: string }) => row.tier === 'cut').median_seconds, 60, '626: odd median');
+    equal(data.failures.find((row: { record: string }) => row.record === a).kind, 'time-limit', '626: automatic time limit');
+    equal(data.failures.find((row: { record: string }) => row.record === b).kind, 'unknown', '626: unclassified failure');
+    equal(data.checks[0].check, 'fixture.suite', '626: slowest first'); equal(data.checks[0].skip, 1, '626: skip counted');
+    equal(data.checks[0].untimed_runs, 1, '626: historical null timings are named');
+    equal(run('classify', b, 'gate.required-sections', 'bookkeeping', '--note', 'fixture review').status, 0, '626: classification appends');
+    const after = JSON.parse(run('--json').stdout);
+    equal(after.failures.find((row: { record: string }) => row.record === b).kind, 'bookkeeping', '626: classification read');
+    equal(run('classify', b, 'absent', 'defect', '--note', 'fixture').status, 1, '626: unknown check refused');
+    equal(run('classify', 'unknown.json', 'fixture.suite', 'defect', '--note', 'fixture').status, 1, '626: unknown record refused');
+    equal(run('classify', b, 'gate.required-sections', 'other', '--note', 'fixture').status, 1, '626: unknown kind refused');
+    equal(run('classify', b, 'gate.required-sections', 'defect', '--note', 'second review').status, 0, '626: second classification appends');
+    equal(fs.readFileSync(path.join(root, '.gate/classifications.jsonl'), 'utf8').trim().split('\n').length, 2, '626: two complete lines retained');
+    equal(JSON.parse(run('--since', '2026-11-03', '--json').stdout).tiers[0].runs, 1, '626: date filter');
+    equal(run('--since', '2026-02-30').status, 1, '626: invalid date refused');
+    equal(JSON.stringify([a, b, c].map(file => fs.readFileSync(path.join(records, file), 'utf8'))), JSON.stringify(before), '626: every record byte unchanged');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(626) && prerequisite(626, () => !isCompiled(), 'requires source gate ledger')) await section626();
+
+// --- 627. Typed 1.0 verdicts, and reads that keep the checksum (kickoffs/s178-r2 row 4; PLAN-basic-memory-1-0.md Unit A
+// items 1 and 3). `judgeBmWrite` on a receipt, on each refusal code (a made-up one kept verbatim), on OUTCOME_UNKNOWN and
+// on a receipt with no checksum; `readExactOrNull` keeps the stand-in's checksum; the stand-in refuses a stale
+// `expected_checksum` on each of the four change tools, naming the current checksum, and leaves the file's bytes alone.
+async function s178Session(url: string): Promise<import('../src/basicmemory.ts').McpSession> {
+  const { McpSession } = await import('../src/basicmemory.ts');
+  const session = new McpSession(url, 'selftest-s178');
+  await session.initialize();
+  return session;
+}
+
+/** A note laid down as the stand-in's `bm_write` leaves one, its permalink its path. */
+function s178Lay(project: string, relative: string, body: string, extra = ''): string {
+  const file = path.join(project, ...relative.split('/'));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const permalink = relative.replace(/\.md$/, '').toLowerCase();
+  fs.writeFileSync(file, `---\ntitle: ${path.basename(relative, '.md')}\ntype: note\npermalink: ${permalink}\n${extra}tags: []\n---\n\n${body}`);
+  return file;
+}
+
+function s178Sha(file: string): string {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+async function section627(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-verdicts-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const judge = (bm as unknown as Record<string, unknown>)['judgeBmWrite'] as (response: unknown) => Record<string, unknown>;
+    check(typeof judge === 'function', '627: basicmemory.ts exports no judgeBmWrite');
+    const answer = (result: unknown) => ({ jsonrpc: '2.0', id: 1, result });
+    const receipt = (record: Record<string, unknown>) => answer({ content: [{ type: 'text', text: JSON.stringify(record) }], structuredContent: { result: record }, isError: false });
+    const refused = (code: string, message: string, extra: Record<string, unknown> = {}) => answer({ content: [{ type: 'text', text: JSON.stringify({ error: code, message, ...extra }) }], isError: true });
+    const hex = 'ab'.repeat(32);
+    const written = judge(receipt({ action: 'created', file_path: 'notes/a.md', checksum: hex }));
+    check(written['form'] === 'written' && written['filePath'] === 'notes/a.md' && written['checksum'] === hex, `627: a receipt was not written with its path and checksum: ${JSON.stringify(written)}`);
+    for (const code of ['ALREADY_EXISTS', 'LOCKED', 'NOT_FOUND', 'OUTSIDE_PROJECT', 'INVALID_ARGUMENTS', 'NEW_CODE']) {
+      const verdict = judge(refused(code, `the stand-in says ${code}`));
+      check(verdict['form'] === 'refused' && verdict['code'] === code && verdict['message'] === `the stand-in says ${code}`, `627: ${code} was not refused with its code verbatim: ${JSON.stringify(verdict)}`);
+    }
+    const conflict = judge(refused('REVISION_CONFLICT', 'changed since you read it', { current_checksum: hex }));
+    check(conflict['form'] === 'refused' && conflict['code'] === 'REVISION_CONFLICT' && conflict['currentChecksum'] === hex, `627: REVISION_CONFLICT did not carry current_checksum: ${JSON.stringify(conflict)}`);
+    const worded = judge(answer({ content: [{ type: 'text', text: `REVISION_CONFLICT: 'x.md' changed (current checksum ${hex}).` }], isError: true }));
+    check(worded['form'] === 'refused' && worded['currentChecksum'] === hex, `627: REVISION_CONFLICT's message did not give the current checksum: ${JSON.stringify(worded)}`);
+    equal(judge(refused('OUTCOME_UNKNOWN', 'may or may not'))['form'], 'unknown', '627: OUTCOME_UNKNOWN is not unknown');
+    equal(judge(receipt({ action: 'created', file_path: 'notes/a.md' }))['form'], 'unknown', '627: a receipt with no checksum is not unknown');
+    const rpc = judge({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'boom' } });
+    check(rpc['form'] === 'refused' && rpc['code'] === 'UNTYPED' && rpc['message'] === 'boom', `627: a JSON-RPC error is not refused as UNTYPED: ${JSON.stringify(rpc)}`);
+    const invalid = judge(answer({ content: [{ type: 'text', text: '1 validation error for call[bm_write]' }], isError: true }));
+    check(invalid['form'] === 'refused' && invalid['code'] === 'UNTYPED' && String(invalid['message']).includes('validation error'), `627: an untyped isError is not refused as UNTYPED: ${JSON.stringify(invalid)}`);
+
+    // Against the stand-in: the read keeps the checksum, and every change tool refuses a stale one with nothing changed.
+    const storage = path.join(root, 'server');
+    fs.mkdirSync(storage, { recursive: true });
+    const server = await startFakeBasicMemory(storage);
+    servers.push(server);
+    const session = await s178Session(server.url);
+    const project = 'stand-in-collection';
+    const a = s178Lay(storage, 'notes/a.md', 'Alpha.\n');
+    const record = await bm.readExactOrNull(session, project, 'notes/a.md');
+    equal((record as Record<string, unknown> | null)?.['checksum'], s178Sha(a), '627: readExactOrNull did not keep the checksum the file hashes to');
+    const stale = '0'.repeat(64);
+    const calls: [string, Record<string, unknown>][] = [
+      ['bm_write', { directory: 'notes', title: 'a', content: 'Replaced.', overwrite: true, expected_checksum: stale }],
+      ['bm_edit', { identifier: 'notes/a.md', command: 'append', content: 'More.', expected_checksum: stale }],
+      ['bm_move', { identifier: 'notes/a.md', destination: 'moved/', expected_checksum: stale }],
+      ['bm_delete', { identifier: 'notes/a.md', expected_checksum: stale }],
+    ];
+    for (const [tool, args] of calls) {
+      const before = fs.readFileSync(a);
+      const said = await session.callTool(tool, { ...args, output_format: 'json', project } as never);
+      const verdict = judge(said);
+      check(verdict['form'] === 'refused' && verdict['code'] === 'REVISION_CONFLICT' && verdict['currentChecksum'] === s178Sha(a), `627: ${tool} with a stale checksum was not REVISION_CONFLICT naming the current one: ${JSON.stringify(verdict)}`);
+      check(fs.existsSync(a) && Buffer.compare(before, fs.readFileSync(a)) === 0 && !fs.existsSync(path.join(storage, 'moved', 'a.md')), `627: ${tool} with a stale checksum changed the file`);
+    }
+    const locked = s178Lay(storage, 'notes/locked.md', 'Kept.\n', 'locked: true\n');
+    for (const [tool, args] of [
+      ['bm_write', { directory: 'notes', title: 'locked', content: 'No.', overwrite: true }],
+      ['bm_edit', { identifier: 'notes/locked.md', command: 'find_replace', find_text: 'Kept', content: 'No' }],
+      ['bm_move', { identifier: 'notes/locked.md', destination: 'moved/' }],
+      ['bm_delete', { identifier: 'notes/locked.md' }],
+    ] as [string, Record<string, unknown>][]) {
+      const before = fs.readFileSync(locked);
+      const verdict = judge(await session.callTool(tool, { ...args, output_format: 'json', project } as never));
+      check(verdict['form'] === 'refused' && verdict['code'] === 'LOCKED' && fs.existsSync(locked) && Buffer.compare(before, fs.readFileSync(locked)) === 0, `627: ${tool} of a locked note was not LOCKED with nothing changed: ${JSON.stringify(verdict)}`);
+    }
+  } catch (error) {
+    failures.push(`section 627 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(627)) await section627();
+
+// --- 628. The five 1.0 write primitives, each answered in its written and refused forms (kickoffs/s178-r2 row 5), and
+// an additive edit without a checksum refused by the helper with no call sent; a server that is not 1.0 refused with
+// nothing sent.
+async function section628(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-primitives-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const w = await import('../src/bmwrite.ts');
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(root, 'server');
+    fs.mkdirSync(storage, { recursive: true });
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = await s178Session(server.url);
+    const project = 'stand-in-collection';
+    const onDisk = (relative: string) => path.join(storage, ...relative.split('/'));
+    const callLines = () => (fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').split('\n').filter(Boolean).length : 0);
+    const body = (relative: string) => fs.readFileSync(onDisk(relative), 'utf8').replace(/^---\n[\s\S]*?\n---\n\n?/, '');
+    const show = (value: unknown) => JSON.stringify(value).slice(0, 300);
+
+    const made = await w.createNote(session, project, 'notes/a.md', 'Alpha.');
+    check(made.form === 'written' && made.filePath === 'notes/a.md' && made.checksum === s178Sha(onDisk('notes/a.md')), `628: createNote was not written with the file's checksum: ${show(made)}`);
+    const again = await w.createNote(session, project, 'notes/a.md', 'Alpha again.');
+    check(again.form === 'refused' && again.code === 'ALREADY_EXISTS' && body('notes/a.md').trim() === 'Alpha.', `628: a second createNote was not ALREADY_EXISTS with nothing changed: ${show(again)}`);
+
+    const staleReplace = await w.replaceNote(session, project, 'notes/a.md', 'Beta.', '0'.repeat(64));
+    check(staleReplace.form === 'refused' && staleReplace.code === 'REVISION_CONFLICT' && staleReplace.currentChecksum === s178Sha(onDisk('notes/a.md')), `628: a stale replaceNote was not REVISION_CONFLICT with the current checksum: ${show(staleReplace)}`);
+    const base = await bm.readExactOrNull(session, project, 'notes/a.md');
+    const replaced = await w.replaceNote(session, project, 'notes/a.md', 'Beta.', String(base?.checksum ?? ''));
+    check(replaced.form === 'written' && body('notes/a.md').trim() === 'Beta.' && replaced.checksum === s178Sha(onDisk('notes/a.md')), `628: replaceNote with the read's checksum was not written: ${show(replaced)}`);
+
+    const beforeRefusal = callLines();
+    const unguarded = await w.editNote(session, project, 'notes/a.md', 'append', { content: 'Gamma.' });
+    check(unguarded.form === 'refused' && unguarded.code === 'CHECKSUM_REQUIRED', `628: an append with no checksum was not CHECKSUM_REQUIRED: ${show(unguarded)}`);
+    equal(callLines(), beforeRefusal, '628: an append with no checksum reached the stand-in');
+    const appended = await w.editNote(session, project, 'notes/a.md', 'append', { content: 'Gamma.' }, replaced.form === 'written' ? replaced.checksum : '');
+    check(appended.form === 'written' && body('notes/a.md').trim() === 'Beta.\nGamma.', `628: a guarded append was not written: ${show(appended)} ${JSON.stringify(body('notes/a.md'))}`);
+    const swapped = await w.editNote(session, project, 'notes/a.md', 'find_replace', { find_text: 'Gamma', content: 'Delta' });
+    check(swapped.form === 'written' && body('notes/a.md').trim() === 'Beta.\nDelta.', `628: a find_replace was not written: ${show(swapped)}`);
+    const staleEdit = await w.editNote(session, project, 'notes/a.md', 'append', { content: 'No.' }, '0'.repeat(64));
+    check(staleEdit.form === 'refused' && staleEdit.code === 'REVISION_CONFLICT' && !body('notes/a.md').includes('No.'), `628: a stale append was not REVISION_CONFLICT with nothing changed: ${show(staleEdit)}`);
+
+    const staleMove = await w.moveNote(session, project, 'notes/a.md', 'moved/', '0'.repeat(64));
+    check(staleMove.form === 'refused' && staleMove.code === 'REVISION_CONFLICT' && fs.existsSync(onDisk('notes/a.md')), `628: a stale moveNote was not REVISION_CONFLICT: ${show(staleMove)}`);
+    const moved = await w.moveNote(session, project, 'notes/a.md', 'moved/');
+    check(moved.form === 'written' && moved.filePath === 'moved/a.md' && fs.existsSync(onDisk('moved/a.md')) && !fs.existsSync(onDisk('notes/a.md')), `628: moveNote was not written to the destination: ${show(moved)}`);
+    const movedMissing = await w.moveNote(session, project, 'notes/never.md', 'moved/');
+    check(movedMissing.form === 'refused' && movedMissing.code === 'NOT_FOUND', `628: moving a missing note was not NOT_FOUND: ${show(movedMissing)}`);
+
+    const staleDelete = await w.deleteNote(session, project, 'moved/a.md', '0'.repeat(64));
+    check(staleDelete.form === 'refused' && staleDelete.code === 'REVISION_CONFLICT' && fs.existsSync(onDisk('moved/a.md')), `628: a stale deleteNote was not REVISION_CONFLICT: ${show(staleDelete)}`);
+    const deleted = await w.deleteNote(session, project, 'moved/a.md');
+    check(deleted.form === 'written' && !fs.existsSync(onDisk('moved/a.md')), `628: deleteNote was not written: ${show(deleted)}`);
+    const deletedMissing = await w.deleteNote(session, project, 'moved/a.md');
+    check(deletedMissing.form === 'refused' && deletedMissing.code === 'NOT_FOUND', `628: deleting a missing note was not NOT_FOUND: ${show(deletedMissing)}`);
+
+    s178Lay(storage, 'notes/locked.md', 'Kept.\n', 'locked: true\n');
+    const lockedRead = await bm.readExactOrNull(session, project, 'notes/locked.md');
+    const lockedReplace = await w.replaceNote(session, project, 'notes/locked.md', 'No.', String(lockedRead?.checksum ?? ''));
+    check(lockedReplace.form === 'refused' && lockedReplace.code === 'LOCKED', `628: replacing a locked note was not LOCKED: ${show(lockedReplace)}`);
+
+    // A server that is not 1.0: refused before anything is sent.
+    const legacyStorage = path.join(root, 'legacy');
+    fs.mkdirSync(legacyStorage, { recursive: true });
+    const legacy = await startFakeBasicMemory(legacyStorage, ['--surface', 'legacy', '--call-log']);
+    servers.push(legacy);
+    const old = await s178Session(legacy.url);
+    let said = '';
+    try {
+      await w.createNote(old, project, 'notes/b.md', 'No.');
+    } catch (error) {
+      said = (error as Error).message;
+    }
+    check(said.includes('Nothing was sent') && !fs.readFileSync(path.join(legacyStorage, '.calls.log'), 'utf8').includes('"tools/call"'), `628: a legacy server was not refused before sending: ${said}`);
+  } catch (error) {
+    failures.push(`section 628 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(628)) await section628();
+
+// --- 629. Settling an uncertain change by listing (kickoffs/s178-r2 row 5; PLAN-basic-memory-1-0.md Unit A item 2). For
+// each primitive, a change applied and then answered OUTCOME_UNKNOWN, a dropped session or a lost connection is
+// `written`, and one lost before it was applied is `unknown`; a replace overwritten by a second writer before settlement
+// is `unknown`; a lost move whose source someone else removed, with an unrelated file at the destination, is `unknown`;
+// and the call log shows every change sent exactly once.
+async function section629(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-settle-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const w = await import('../src/bmwrite.ts');
+    const bm = await import('../src/basicmemory.ts');
+    const project = 'stand-in-collection';
+    const expected = ['written', 'written', 'written', 'unknown'];
+    const faultsFor = (tool: string) => ['--outcome-unknown', `${tool}:1`, '--drop-session-after', `${tool}:2`, '--lose-response', `${tool}:3`, '--outcome-unknown', `${tool}:4:lost`];
+    const stand = async (label: string, tool: string, extra: string[] = []) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...faultsFor(tool), ...extra]);
+      servers.push(server);
+      const sent = () => fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { tool?: string }).filter((line) => line.tool === tool).length;
+      return { storage, session: await s178Session(server.url), sent };
+    };
+    const forms = (label: string, got: { form: string }[]) => check(JSON.stringify(got.map((v) => v.form)) === JSON.stringify(expected), `629: ${label} settled as ${JSON.stringify(got.map((v) => v.form))}, not ${JSON.stringify(expected)}: ${JSON.stringify(got).slice(0, 600)}`);
+
+    // createNote: bm_write calls 1 to 4.
+    const c = await stand('create', 'bm_write');
+    const created = [];
+    for (let n = 1; n <= 4; n += 1) created.push(await w.createNote(c.session, project, `notes/c${n}.md`, `Created ${n}.`));
+    forms('createNote', created);
+    equal(c.sent(), 4, '629: createNote sent a change more than once');
+
+    // replaceNote: notes laid down first, then bm_write calls 1 to 4 with each read's checksum.
+    const r = await stand('replace', 'bm_write');
+    const replaced = [];
+    for (let n = 1; n <= 4; n += 1) {
+      s178Lay(r.storage, `notes/r${n}.md`, `Base ${n}.\n`);
+      const read = await bm.readExactOrNull(r.session, project, `notes/r${n}.md`);
+      replaced.push(await w.replaceNote(r.session, project, `notes/r${n}.md`, `Replaced ${n}.`, String(read?.checksum ?? '')));
+    }
+    forms('replaceNote', replaced);
+    const lostReplace = replaced[3]!;
+    check(lostReplace.form === 'unknown' && lostReplace.observedChecksum === s178Sha(path.join(r.storage, 'notes', 'r4.md')), `629: a lost replace did not keep the observed checksum: ${JSON.stringify(lostReplace)}`);
+    equal(r.sent(), 4, '629: replaceNote sent a change more than once');
+
+    // editNote: guarded appends, bm_edit calls 1 to 4.
+    const e = await stand('edit', 'bm_edit');
+    const edited = [];
+    for (let n = 1; n <= 4; n += 1) {
+      s178Lay(e.storage, `notes/e${n}.md`, `Base ${n}.\n`);
+      const read = await bm.readExactOrNull(e.session, project, `notes/e${n}.md`);
+      edited.push(await w.editNote(e.session, project, `notes/e${n}.md`, 'append', { content: `Added ${n}.` }, String(read?.checksum ?? '')));
+    }
+    forms('editNote', edited);
+    equal(e.sent(), 4, '629: editNote sent a change more than once');
+
+    // moveNote: bm_move calls 1 to 4, into moved/.
+    const m = await stand('move', 'bm_move');
+    const moved = [];
+    for (let n = 1; n <= 4; n += 1) {
+      s178Lay(m.storage, `notes/m${n}.md`, `Moving ${n}.\n`);
+      moved.push(await w.moveNote(m.session, project, `notes/m${n}.md`, 'moved/'));
+    }
+    forms('moveNote', moved);
+    equal(m.sent(), 4, '629: moveNote sent a change more than once');
+
+    // deleteNote: bm_delete calls 1 to 4.
+    const d = await stand('delete', 'bm_delete');
+    const deleted = [];
+    for (let n = 1; n <= 4; n += 1) {
+      s178Lay(d.storage, `notes/d${n}.md`, `Deleting ${n}.\n`);
+      deleted.push(await w.deleteNote(d.session, project, `notes/d${n}.md`));
+    }
+    forms('deleteNote', deleted);
+    equal(d.sent(), 4, '629: deleteNote sent a change more than once');
+
+    // A replace that lands, its answer lost, and a second writer overwrites it before settlement: unknown.
+    const o = await stand('overwritten', 'bm_write');
+    const target = s178Lay(o.storage, 'notes/o.md', 'Base.\n');
+    // Calls 1 and 2 of bm_write are spent first, so the replace below is call 3: applied, then the connection lost.
+    for (let n = 1; n <= 2; n += 1) await w.createNote(o.session, project, `notes/spent${n}.md`, 'Spent.');
+    const read = await bm.readExactOrNull(o.session, project, 'notes/o.md');
+    const original = o.session.callTool.bind(o.session);
+    let interfered = false;
+    o.session.callTool = async (name, args) => {
+      if (name === 'bm_list' && !interfered) {
+        interfered = true;
+        s178Lay(o.storage, 'notes/o.md', 'The second writer.\n');
+      }
+      return original(name, args);
+    };
+    const overwritten = await w.replaceNote(o.session, project, 'notes/o.md', 'Mine.', String(read?.checksum ?? ''));
+    check(interfered && overwritten.form === 'unknown' && overwritten.observedChecksum === s178Sha(target), `629: a replace overwritten before settlement was not unknown: ${JSON.stringify(overwritten)}`);
+    equal(o.sent(), 3, '629: the overwritten replace was sent again');
+
+    // A lost move (call 4, not applied); the source removed by someone else and an unrelated file at the destination.
+    const x = await stand('move-elsewhere', 'bm_move');
+    for (let n = 1; n <= 3; n += 1) {
+      s178Lay(x.storage, `notes/spent${n}.md`, 'Spent.\n');
+      await w.moveNote(x.session, project, `notes/spent${n}.md`, 'moved/');
+    }
+    const source = s178Lay(x.storage, 'notes/x.md', 'The note that moves.\n');
+    const moveList = x.session.callTool.bind(x.session);
+    let listed = 0;
+    x.session.callTool = async (name, args) => {
+      // The first listing is the primitive's own read of the source before sending; the second is settlement's.
+      if (name === 'bm_list' && (listed += 1) === 2) {
+        fs.rmSync(source);
+        s178Lay(x.storage, 'moved/x.md', 'Someone else\'s note.\n');
+      }
+      return moveList(name, args);
+    };
+    const elsewhere = await w.moveNote(x.session, project, 'notes/x.md', 'moved/');
+    check(elsewhere.form === 'unknown', `629: a lost move with an unrelated file at the destination was not unknown: ${JSON.stringify(elsewhere)}`);
+    equal(x.sent(), 4, '629: the lost move was sent again');
+  } catch (error) {
+    failures.push(`section 629 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(629)) await section629();
+
+// --- 630. The server's tool list as one fingerprint, and doctor's clause on it (kickoffs/s178-r2 row 6;
+// PLAN-basic-memory-1-0.md Unit A item 4). The same tools in another order, or with keys in another order, give the same
+// fingerprint and one changed inputSchema another; on the stand-in a session's fingerprint changes when a tool is left
+// out and is null when tools/list fails; doctor's postbox.server-tools line for a proven, changed, unproven and absent
+// fingerprint, and for missing tools, from fixture caches.
+async function section630(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-fingerprint-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const fingerprint = (bm as unknown as Record<string, unknown>)['toolsFingerprint'] as (tools: unknown[]) => string;
+    check(typeof fingerprint === 'function', '630: basicmemory.ts exports no toolsFingerprint');
+    const tools = [
+      { name: 'bm_read', inputSchema: { type: 'object', properties: { identifier: { type: 'string' }, project: { type: 'string' } }, required: ['identifier'] }, description: 'Read.' },
+      { name: 'bm_write', inputSchema: { type: 'object', properties: { content: { type: 'string' } } } },
+    ];
+    const reordered = [
+      { description: 'Ignored.', inputSchema: { properties: { content: { type: 'string' } }, type: 'object' }, name: 'bm_write' },
+      { inputSchema: { required: ['identifier'], properties: { project: { type: 'string' }, identifier: { type: 'string' } }, type: 'object' }, name: 'bm_read' },
+    ];
+    const one = fingerprint(tools);
+    check(/^[0-9a-f]{64}$/.test(one), `630: the fingerprint is not SHA-256 hex: ${one}`);
+    equal(fingerprint(reordered), one, '630: the same tools in another order, or with keys in another order, gave another fingerprint');
+    const changed = [tools[0], { name: 'bm_write', inputSchema: { type: 'object', properties: { content: { type: 'string' }, overwrite: { type: 'boolean' } } } }];
+    check(fingerprint(changed) !== one, '630: a changed inputSchema gave the same fingerprint');
+
+    const session = async (label: string, extra: string[]) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      const opened = new bm.McpSession(server.url, 'selftest-s178');
+      await opened.initialize();
+      return (opened as unknown as Record<string, unknown>)['toolsFingerprint'];
+    };
+    const whole = await session('whole', []);
+    const lessOne = await session('less-one', ['--drop-tool', 'bm_man']);
+    const failed = await session('failed', ['--tools-list', 'error']);
+    check(typeof whole === 'string' && /^[0-9a-f]{64}$/.test(whole) && typeof lessOne === 'string' && whole !== lessOne, `630: a session's fingerprint did not change when bm_man was left out: ${String(whole)} ${String(lessOne)}`);
+    equal(failed, null, '630: a session whose tools/list failed has a fingerprint');
+
+    // Doctor's clause, from fixture caches; nothing is called.
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const workspace = path.join(root, 'lib');
+    equal(runCli(['init', workspace, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, '630: the Library was not made');
+    const statePath = path.join(workspace, 'internal', 'postbox', 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const all = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
+    const base = { schema: 1, url: 'http://127.0.0.1:9/mcp', project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', last_check: '2026-11-03T09:00:00Z', server_tools: all, server_tools_missing: [], server_tools_utc: '2026-11-03T09:00:00Z' };
+    const row = (extra: Record<string, unknown>): Record<string, unknown> | undefined => {
+      fs.writeFileSync(statePath, JSON.stringify({ ...base, ...extra }, null, 2) + '\n');
+      const run = runCli(['doctor', '--json', '--workspace', workspace], { cwd: root, env });
+      const checks = (JSON.parse(run.stdout || '{}') as Record<string, unknown>)['library_checks'] as Record<string, unknown>[] | undefined;
+      return (checks ?? []).find((item) => item['check'] === 'postbox.server-tools');
+    };
+    const line = 'the Postbox server offered every tool Deskpost needs at its last check, 2026-11-03T09:00:00Z';
+    const a = 'a'.repeat(64), b = 'b'.repeat(64);
+    const proven = row({ server_tools_fingerprint: a, server_tools_proven_fingerprint: a });
+    check(proven?.['status'] === 'pass' && proven?.['detail'] === `${line}; fingerprint proven`, `630: a proven fingerprint is not doctor's PASS: ${JSON.stringify(proven)}`);
+    const moved = row({ server_tools_fingerprint: b, server_tools_proven_fingerprint: a });
+    check(moved?.['status'] === 'warn' && moved?.['detail'] === `${line}; the server's tool list changed since the last proof (node tools/bm-proof.mts re-proves it)`, `630: a changed fingerprint is not doctor's WARN: ${JSON.stringify(moved)}`);
+    const unproven = row({ server_tools_fingerprint: a });
+    check(unproven?.['status'] === 'warn' && unproven?.['detail'] === `${line}; fingerprint not yet proven`, `630: an unproven fingerprint is not doctor's WARN: ${JSON.stringify(unproven)}`);
+    const none = row({});
+    check(none?.['status'] === 'pass' && none?.['detail'] === line, `630: a cache with no fingerprint did not keep today's line: ${JSON.stringify(none)}`);
+    const lacking = row({ server_tools_missing: ['bm_move'], server_tools_fingerprint: a, server_tools_proven_fingerprint: a });
+    check(lacking?.['status'] === 'warn' && String(lacking?.['detail']).includes('and it lacks bm_move') && !String(lacking?.['detail']).includes('fingerprint'), `630: missing tools did not keep today's WARN alone: ${JSON.stringify(lacking)}`);
+  } catch (error) {
+    failures.push(`section 630 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(630)) await section630();
+
+// --- 631. The attached route's seven writers retire on Basic Memory 1.0 (kickoffs/s178-r2 row 7; PLAN-basic-memory-1-0.md
+// Unit A item 5). On a 1.0 stand-in each prints the retired sentence, exits non-zero and sends no change; on the old
+// surface each still reaches its old path; and the old helper's name is gone from kernel/src.
+async function section631(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-retired-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const pid = 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa';
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const seated = { ...env, LIBRARY_SEAT: 'alpha' };
+    const retired = (operation: string) => `${operation} is retired on Basic Memory 1.0: it wrote a Library's Hubs or Catalog inside Basic Memory (the attached setup), and Hubs now stay local. Shared Books are written by the shared-collection writers of 1.6.0. Nothing was written.`;
+    type Call = { method: string; tool?: string };
+    const library = async (label: string, surface: string) => {
+      const storage = fakeStorage(path.join(root, `${label}-storage`));
+      const server = await startFakeBasicMemory(storage, ['--surface', surface, '--call-log']);
+      servers.push(server);
+      const workspace = path.join(root, `${label}-ws`);
+      equal(basicMemoryWorkspace(workspace, path.join(root, 'reg'), server.url, pid, { cwd: root, env, sharedRoot: storage }).exit, 0, `631: the ${label} workspace was not made`);
+      equal(runCli(['collection', 'owner', '--acquire', '--workspace', workspace, '--json'], { cwd: root, env }).exit, 0, `631: the ${label} workspace could not own its collection`);
+      const source = path.join(workspace, 'notebook', 'x');
+      fs.mkdirSync(source, { recursive: true });
+      fs.writeFileSync(path.join(source, 'page.md'), '# A page\n\nCopied.\n');
+      equal(runCli(['shelf', 'new', 'curated', '--title', 'Curated', '--summary', 'A Book to publish.', '--workspace', workspace], { cwd: root, env }).exit, 0, `631: the ${label} Shelf Book was not made`);
+      const desk = path.join(workspace, '.claude', 'seats', 'alpha');
+      fs.mkdirSync(desk, { recursive: true });
+      fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/curated\n');
+      fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/demo\n');
+      fs.writeFileSync(path.join(workspace, 'shelf', 'curated', 'wiki', 'a-page.md'), '# A page\n\nTo publish.\n');
+      const planned = runCli(['publish', 'curated', '--title', 'T', '--summary', 'S', '--preflight', '--json', '--workspace', workspace], { cwd: root, env: seated });
+      const planId = String((JSON.parse(planned.stdout || '{}') as Record<string, unknown>)['plan_id'] ?? '');
+      check(planId !== '', `631: the ${label} publish preflight gave no plan_id: ${planned.stderr.trim().slice(0, 300)}`);
+      const calls = (): Call[] => (fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call) : []);
+      const writers: [string[], string][] = [
+        [['hub', 'new', 'demo', '--title', 'Demo', '--purpose', 'P'], 'hub new'],
+        [['hub', 'copy-pages', 'demo2', '--source', 'notebook/x', '--title', 'T', '--purpose', 'P', '--preflight'], 'hub copy-pages'],
+        [['hub', 'edit', 'demo', '--mode', 'add-section', '--section', 'X', '--content', 'y'], 'hub edit'],
+        [['hub', 'archive', 'demo', '--preflight'], 'hub archive'],
+        [['publish', 'curated', '--title', 'T', '--summary', 'S', '--user-confirmed', '--plan-id', planId], 'publish'],
+        [['shared', 'archive', 'curated', '--preflight'], 'shared archive'],
+        [['shared', 'list-entry', 'curated', '--preflight'], 'shared list-entry'],
+      ];
+      return { workspace, calls, writers };
+    };
+
+    const one = await library('bm', 'bm');
+    for (const [args, operation] of one.writers) {
+      const answer = runCli([...args, '--workspace', one.workspace], { cwd: root, env: seated });
+      check(answer.exit !== 0 && answer.stderr.includes(retired(operation)), `631: ${operation} did not print the retired sentence on 1.0: ${answer.exit} ${answer.stderr.trim().slice(0, 400)}`);
+    }
+    const changes = one.calls().filter((line) => ['bm_write', 'bm_edit', 'bm_move', 'bm_delete'].includes(line.tool ?? ''));
+    equal(changes.length, 0, '631: a retired writer sent a change to the 1.0 server');
+
+    const old = await library('legacy', 'legacy');
+    for (const [args, operation] of old.writers) {
+      const before = old.calls().filter((line) => line.method === 'tools/call').length;
+      const answer = runCli([...args, '--workspace', old.workspace], { cwd: root, env: seated });
+      const after = old.calls().filter((line) => line.method === 'tools/call').length;
+      check(after > before && !answer.stderr.includes('is retired on Basic Memory 1.0'), `631: ${operation} on the old surface did not reach its old path: ${answer.exit} ${answer.stderr.trim().slice(0, 300)}`);
+    }
+
+    // The old helper's name, built here so this file does not hold it, is gone from every kernel/src file.
+    const oldName = 'refuse' + 'Unported' + 'Writer';
+    const holders = fs.readdirSync(path.join(PROGRAM_ROOT, 'kernel', 'src')).filter((name) => name.endsWith('.ts'))
+      .filter((name) => fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'src', name), 'utf8').includes(oldName));
+    equal(holders.join(', '), '', '631: kernel/src still names the old helper');
+  } catch (error) {
+    failures.push(`section 631 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(631)) await section631();
+
+// --- 632. The direct-access guard names Basic Memory 1.0's tools (kickoffs/s178-r2 row 8; PLAN-basic-memory-1-0.md Unit A
+// item 6). Each of the twelve bm_* names, in both spellings, with and without the pinned project_id and with `project`
+// set, is denied with the sentence that names the validated reader; a seatless call is still refused in the seat
+// resolver's words; read_note keeps today's reader sentence; and a name that only starts with bm_ is not one of them.
+async function section632(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-guard-')));
+  try {
+    const pin = '00000000-0000-0000-0000-000000000000';
+    const workspace = path.join(root, 'ws');
+    const desk = path.join(workspace, '.claude', 'seats', 'alpha');
+    fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.claude', '.library-project'), pin + '\n');
+    fs.writeFileSync(path.join(desk, '.open-books'), 'books/demo\n');
+    const hook = (tool: string, input: unknown, seat: string[] = ['--seat', 'alpha']) => {
+      const result = spawnSync(process.execPath, [CLI, 'hook', 'basic-memory-read', '--workspace', workspace, ...seat], {
+        cwd: PROGRAM_ROOT,
+        env: { ...process.env, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry'), ...QUIET_TAB },
+        input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input }),
+        encoding: 'utf8',
+      });
+      const stdout = (result.stdout ?? '').trim();
+      let reason = '';
+      try {
+        reason = stdout ? String((JSON.parse(stdout) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason) : '';
+      } catch {
+        reason = `unparsed: ${stdout.slice(0, 200)}`;
+      }
+      return { allowed: stdout === '', reason, stderr: result.stderr ?? '' };
+    };
+    const SENTENCE = "Seats do not call Basic Memory directly on 1.0: read open Books through the validated reader (read_open_book_page), and shared writes go through deskpost's own commands.";
+    const names = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
+    const inputs: Record<string, unknown>[] = [{ identifier: 'books/demo/wiki/a' }, { project_id: pin, identifier: 'books/demo/wiki/a' }, { project_id: pin, project: 'deskpost', identifier: 'books/demo/wiki/a' }, { project: 'deskpost', path: 'books' }];
+    const wrong: string[] = [];
+    for (const name of names) {
+      for (const prefix of ['mcp__basic-memory__', 'mcp__basic_memory__']) {
+        for (const input of inputs) {
+          const judged = hook(prefix + name, input);
+          if (judged.allowed || judged.reason !== SENTENCE) wrong.push(`${prefix}${name} ${JSON.stringify(input)}: ${judged.allowed ? 'allowed' : judged.reason}`);
+        }
+      }
+    }
+    equal(wrong.slice(0, 5).join(' | '), '', '632: a 1.0 tool was not denied with the validated-reader sentence');
+
+    // Seatless: refused in the seat resolver's words, exactly as an old tool is, never with the new sentence.
+    const seatlessNew = hook('mcp__basic-memory__bm_read', { project_id: pin, identifier: 'x' }, []);
+    const seatlessOld = hook('mcp__basic-memory__read_note', { project_id: pin, identifier: 'x' }, []);
+    check(!seatlessNew.allowed && seatlessNew.reason !== SENTENCE && seatlessNew.reason === seatlessOld.reason, `632: a seatless bm_read was not refused in the seat resolver's words: ${seatlessNew.reason} / ${seatlessOld.reason}`);
+
+    const reader = hook('mcp__basic-memory__read_note', { project_id: pin, identifier: 'books/demo/wiki/a' });
+    equal(reader.reason, 'Direct shared-content readers and search are suspended pending a return-validating adapter.', '632: read_note lost its reader sentence');
+    const lookalike = hook('mcp__basic-memory__bm_readx', { project_id: pin, identifier: 'x' });
+    check(!lookalike.allowed && lookalike.reason !== SENTENCE, `632: a name that only starts with bm_read got the 1.0 sentence: ${lookalike.reason}`);
+  } catch (error) {
+    failures.push(`section 632 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(632)) await section632();
+
+// --- 633. The proof script, the proven fingerprint and the Desk's line (kickoffs/s178-r2 row 9; PLAN-basic-memory-1-0.md
+// Unit B). `tools/bm-proof.mts --trials 5` against a racing stand-in passes all four proofs and names its project, and
+// removes it only where the server offers removal; a stand-in that lets both writers through fails the create race and
+// --record writes nothing; --record on a passing run writes exactly the four fields, and doctor then says "fingerprint
+// proven"; and the Desk's postbox block names the fingerprint's state for each of the four cache states.
+async function section633(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s178-proof-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const script = path.join(PROGRAM_ROOT, 'tools', 'bm-proof.mts');
+    check(fs.existsSync(script), '633: tools/bm-proof.mts does not exist');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const proof = async (label: string, extra: string[], args: string[] = []) => {
+      const storage = path.join(root, `${label}-server`);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, ['--race', ...extra]);
+      servers.push(server);
+      const out = path.join(root, `${label}-out`);
+      const ran = spawnSync(process.execPath, [script, '--url', server.url, '--out', out, '--trials', '5', ...args], { cwd: root, env: { ...process.env, ...QUIET_TAB, ...env }, encoding: 'utf8', timeout: 300000 });
+      const summary = fs.existsSync(path.join(out, 'summary.txt')) ? fs.readFileSync(path.join(out, 'summary.txt'), 'utf8') : '';
+      const result = fs.existsSync(path.join(out, 'result.json')) ? JSON.parse(fs.readFileSync(path.join(out, 'result.json'), 'utf8')) as Record<string, unknown> : {};
+      return { exit: ran.status ?? -1, stdout: ran.stdout ?? '', stderr: ran.stderr ?? '', summary, result, storage };
+    };
+    const fourPass = (summary: string) => ['create race: 5/5', 'conditional race: 5/5', 'S5: pass', 'S6: pass'].every((line) => summary.includes(line));
+
+    // 1. A passing run, its project left and named; with removal offered, removed.
+    const kept = await proof('kept', []);
+    const project = String(kept.result['project'] ?? '');
+    check(kept.exit === 0 && fourPass(kept.summary) && /^deskpost-proof-[0-9]{8}-[0-9]{6}$/.test(project) && kept.summary.includes(`project: ${project} (left for the reader to remove)`) && kept.result['project_removed'] === false,
+      `633: a passing proof did not pass all four runs and name its project: ${kept.exit} ${kept.summary.slice(0, 600)} ${kept.stderr.slice(0, 300)}`);
+    check(fs.existsSync(path.join(kept.storage, '.projects', project)), '633: the project was removed where the server offers no removal');
+    const removed = await proof('removed', ['--offer-project-delete']);
+    const gone = String(removed.result['project'] ?? '');
+    check(removed.exit === 0 && fourPass(removed.summary) && removed.result['project_removed'] === true && gone !== '' && !fs.existsSync(path.join(removed.storage, '.projects', gone)),
+      `633: a server offering removal did not have its project removed: ${removed.exit} ${removed.summary.slice(0, 400)}`);
+
+    // 2. A fixture Library with a Postbox cache; a failing proof records nothing there.
+    const workspace = path.join(root, 'lib');
+    equal(runCli(['init', workspace, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, '633: the Library was not made');
+    equal(runCli(['hub', 'new', 'work', '--title', 'Work', '--workspace', workspace], { cwd: root, env }).exit, 0, '633: the fixture Hub was not made');
+    equal(runCli(['seat', 'start', 'alpha', '--project', 'work', '--no-launch', '--workspace', workspace], { cwd: root, env }).exit, 0, '633: the fixture seat was not made');
+    const statePath = path.join(workspace, 'internal', 'postbox', 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const all = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man'];
+    const cache = { schema: 1, url: 'http://127.0.0.1:9/mcp', project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', last_check: '2026-11-03T09:00:00Z', server_tools: all, server_tools_missing: [], server_tools_utc: '2026-11-03T09:00:00Z' };
+    fs.writeFileSync(statePath, JSON.stringify(cache, null, 2) + '\n');
+    const before = fs.readFileSync(statePath, 'utf8');
+    const faulty = await proof('both-win', ['--fault-both-win'], ['--record', '--workspace', workspace]);
+    check(faulty.exit !== 0 && !faulty.summary.includes('create race: 5/5') && faulty.summary.includes('nothing recorded: a proof failed'), `633: a server letting both writers through did not fail the create race: ${faulty.exit} ${faulty.summary.slice(0, 400)}`);
+    equal(fs.readFileSync(statePath, 'utf8'), before, '633: a failing proof wrote to the Postbox cache');
+
+    // 3. A passing proof with --record writes exactly the four fields, and doctor says so.
+    const recorded = await proof('recorded', [], ['--record', '--workspace', workspace]);
+    const after = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    const added = Object.keys(after).filter((key) => !(key in cache)).sort();
+    const changed = Object.keys(cache).filter((key) => JSON.stringify(after[key]) !== JSON.stringify((cache as Record<string, unknown>)[key]));
+    check(recorded.exit === 0 && JSON.stringify(added) === JSON.stringify(['server_tools_fingerprint', 'server_tools_proven_fingerprint', 'server_tools_proven_result', 'server_tools_proven_utc']) && changed.length === 0,
+      `633: --record did not write exactly the four fields: ${recorded.exit} added ${JSON.stringify(added)} changed ${JSON.stringify(changed)} ${recorded.summary.slice(0, 300)}`);
+    check(/^[0-9a-f]{64}$/.test(String(after['server_tools_fingerprint'])) && after['server_tools_fingerprint'] === after['server_tools_proven_fingerprint'] && after['server_tools_fingerprint'] === recorded.result['fingerprint'] && String(after['server_tools_proven_result']).endsWith('result.json'),
+      `633: the recorded fields are not the proof's: ${JSON.stringify(after).slice(0, 500)}`);
+    const doctor = runCli(['doctor', '--json', '--workspace', workspace], { cwd: root, env });
+    const checks = (JSON.parse(doctor.stdout || '{}') as Record<string, unknown>)['library_checks'] as Record<string, unknown>[] | undefined;
+    const tools = (checks ?? []).find((item) => item['check'] === 'postbox.server-tools');
+    check(tools?.['status'] === 'pass' && String(tools?.['detail']).endsWith('; fingerprint proven'), `633: doctor did not say "fingerprint proven" after --record: ${JSON.stringify(tools)}`);
+
+    // 4. The Desk's line, for each of the four states.
+    const a = 'a'.repeat(64), b = 'b'.repeat(64);
+    for (const [state, extra] of [['proven', { server_tools_fingerprint: a, server_tools_proven_fingerprint: a }], ['changed', { server_tools_fingerprint: b, server_tools_proven_fingerprint: a }], ['unproven', { server_tools_fingerprint: a }], ['unknown', {}]] as [string, Record<string, unknown>][]) {
+      fs.writeFileSync(statePath, JSON.stringify({ ...cache, ...extra }, null, 2) + '\n');
+      const desk = runCli(['desk', '--seat', 'alpha', '--workspace', workspace, '--json'], { cwd: root, env });
+      let box: Record<string, unknown> | undefined;
+      try {
+        box = (JSON.parse(desk.stdout || '{}') as Record<string, unknown>)['postbox'] as Record<string, unknown> | undefined;
+      } catch {
+        box = undefined;
+      }
+      equal(box?.['server_tools_fingerprint_state'], state, `633: the Desk's fingerprint state for a ${state} cache (${desk.exit} ${desk.stderr.trim().slice(0, 200)})`);
+    }
+  } catch (error) {
+    failures.push(`section 633 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(633) && prerequisite(633, () => !isCompiled(), 'requires the source tools/bm-proof.mts')) await section633();
+
+// --- 634. A finished Kickoff is history (kickoffs/s180 row 2(f)). A Notebook link in a Hub's `kickoffs/<id>` page counts
+// for the Reset's `inbound_links` and doctor's `notebook.links-resolve` only while that Hub's `## Next` holds an unticked
+// Run pointer to it; the same link in a Kickoff whose pointer is ticked counts for neither; and a Hub with no `## Next`
+// (or no `_project.md`) reads its Kickoffs as history without throwing.
+async function section634(): Promise<void> {
+  const w = await seatClaimWorkspace('kickoff-history');
+  try {
+    const ws = w.workspace;
+    const json = (run: { stdout: string; stderr: string }): Record<string, any> => {
+      try {
+        return JSON.parse(run.stdout) as Record<string, any>;
+      } catch {
+        return { unreadable: `${run.stdout.slice(0, 200)} ${run.stderr.trim().slice(0, 300)}` };
+      }
+    };
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, '634: the seat first could not be created');
+    fs.mkdirSync(path.join(ws, 'internal'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'internal', 'notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+    const topic = path.join(ws, 'notebook', 'first', 'findings');
+    fs.mkdirSync(topic, { recursive: true });
+    fs.writeFileSync(path.join(topic, '_index.md'), '# findings\n\nA topic.\n');
+    fs.writeFileSync(path.join(topic, 'page.md'), '# A finding\n\nWorth keeping.\n');
+    const projects = path.join(ws, 'collection', 'projects');
+    const projectFile = path.join(projects, 'alpha', '_project.md');
+    const hubText = fs.readFileSync(projectFile, 'utf8');
+    const pointers = '- [ ] Run s901: [[projects/alpha/kickoffs/s901]] (pending)\n- [x] **Run s902:** [[projects/alpha/kickoffs/s902]] (finished)\n';
+    fs.writeFileSync(projectFile, /^## Next[ \t]*\r?$/m.test(hubText) ? hubText.replace(/^## Next[ \t]*\r?\n/m, (heading) => `${heading}\n${pointers}`) : `${hubText.trimEnd()}\n\n## Next\n\n${pointers}`);
+    const body = (id: string) => `# ${id} kickoff\n\nEvidence: [[notebook/first/findings/page]].\n`;
+    const pages: Record<string, string> = {
+      pending: 'collection/projects/alpha/kickoffs/s901.md',
+      finished: 'collection/projects/alpha/kickoffs/s902.md',
+      noNext: 'collection/projects/beta/kickoffs/s903.md',
+      noHub: 'collection/projects/gamma/kickoffs/s904.md',
+    };
+    for (const [key, page] of Object.entries(pages)) {
+      const full = path.join(ws, ...page.split('/'));
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, body(key));
+    }
+    fs.writeFileSync(path.join(projects, 'beta', '_project.md'), '# Beta\n\n## Now\n\n- [ ] Nothing pending.\n');
+
+    const kickoff = (await import('../src/kickoff.ts')) as unknown as Record<string, unknown>;
+    const pending = kickoff['pendingKickoffIds'] as ((workspace: string, hub: string) => Set<string>) | undefined;
+    check(typeof pending === 'function', '634: kickoff.ts exports no pendingKickoffIds');
+    if (typeof pending === 'function') {
+      equal(JSON.stringify([...pending(ws, 'alpha')]), '["s901"]', '634: alpha\'s pending Kickoffs');
+      equal(pending(ws, 'beta').size + pending(ws, 'gamma').size, 0, '634: a Hub with no ## Next, or no _project.md, has a pending Kickoff');
+    }
+    const { notebookLinks } = await import('../src/notebooklinks.ts');
+    let scanned: string[] = [];
+    try {
+      scanned = notebookLinks(ws).map((link) => link.page);
+    } catch (error) {
+      check(false, `634: the scan threw on a Hub with no ## Next: ${(error as Error).message}`);
+    }
+    for (const key of ['finished', 'noNext', 'noHub']) check(!scanned.includes(pages[key]!), `634: the scan read a finished Kickoff as live, ${pages[key]}: ${scanned.join(', ')}`);
+    check(scanned.includes(pages['pending']!), `634: the scan skipped the pending Kickoff: ${scanned.join(', ')}`);
+
+    const rows = ((json(w.as(agent, ['reset', '--seat', 'first', '--workspace', ws, '--json', '--preflight']))['inbound_links'] ?? []) as { page: string }[]).map((row) => row.page);
+    check(rows.includes(pages['pending']!), `634: the Reset did not list the pending Kickoff's link: ${rows.join(', ')}`);
+    for (const key of ['finished', 'noNext', 'noHub']) check(!rows.includes(pages[key]!), `634: the Reset listed a finished Kickoff's link, ${pages[key]}: ${rows.join(', ')}`);
+
+    fs.rmSync(path.join(topic, 'page.md'));
+    const detail = ((json(w.as(process.pid, ['doctor', '--workspace', ws, '--json']))['library_checks'] ?? []) as { check: string; detail: string }[]).find((row) => row.check === 'notebook.links-resolve')?.detail ?? '';
+    check(detail.includes(`${pages['pending']} line`), `634: doctor did not count the pending Kickoff's dead link: ${detail.slice(0, 600)}`);
+    for (const key of ['finished', 'noNext', 'noHub']) check(!detail.includes(pages[key]!), `634: doctor counted a finished Kickoff's dead link, ${pages[key]}: ${detail.slice(0, 600)}`);
+  } catch (error) {
+    failures.push(`section 634 stopped early: ${(error as Error).message}`);
+  } finally {
+    w.dispose();
+  }
+}
+if (selected(634)) await section634();
+
+// --- 635. The checkpoint finds a writer inside a block (kickoffs/s180 row 2(h)). The same receipt is recorded under a
+// PowerShell `foreach`, `if` and `ForEach-Object` block and a Bash `for ... do ... done`; `${name}` and `$(Get-Book)` stay
+// one word, a variable, never the literal `$`; a `{` inside a quoted argument is no boundary; and quoted text naming a
+// writer is still data.
+async function section635(): Promise<void> {
+  const { emptyCheckpoint, observeCheckpointResult } = await import('../src/checkpoint.ts');
+  const book = JSON.stringify({ written: true, page_path: 'shelf/sbox-docs/wiki/research-x.md' });
+  const hub = JSON.stringify({ written: true, page_path: 'collection/projects/my-hub/notes/x.md' });
+  const cases: [string, string, string, string, number][] = [
+    ['a foreach', 'PowerShell', 'foreach ($p in $ps) { deskpost book add-page sbox-docs $p.BaseName --content-path x }', book, 1],
+    ['b if', 'PowerShell', 'if ($ok) { deskpost hub edit my-hub --mode new-page --page notes/x --content-path y }', hub, 1],
+    ['c ForEach-Object', 'PowerShell', '$ps | ForEach-Object { deskpost book add-page sbox-docs $_ --content-path x }', book, 1],
+    ['d bash for', 'Bash', 'for p in a b; do deskpost book add-page sbox-docs "$p" --content-path x; done', book, 1],
+    ['e ${name}', 'PowerShell', 'deskpost hub edit ${name} --mode new-page --page notes/x --content-path y', hub, 1],
+    ['f $(Get-Book)', 'PowerShell', 'deskpost book add-page $(Get-Book) research-x --content-path x', book, 1],
+    ['g quoted brace', 'PowerShell', 'deskpost book add-page sbox-docs research-x --title "a { b" --content-path x', book, 1],
+    ['h quoted writer', 'PowerShell', "Write-Output '{ deskpost book add-page sbox-docs research-x }'", book, 0],
+  ];
+  for (const [label, tool, command, receipt, expected] of cases) {
+    const state = emptyCheckpoint('s180', 'fixture');
+    const observed = observeCheckpointResult(state, { tool_name: tool, tool_use_id: `635 ${label}`, tool_input: { command }, tool_response: { exit_code: 0, output: receipt } }, 50);
+    equal(observed.writes.length, expected, `635 ${label}: write count for ${command}`);
+  }
+}
+if (selected(635)) await section635();
+
+// --- 636. The listed read trusts 1.0's prefixed answer (kickoffs/s180 row 3). Against the
+// stand-in: (1) a note created, moved, and a new note created at its old path is read, by its listing, as the new note;
+// (2) a second read answering another project's name in front, another path, or a bare `/` with no project name is
+// still refused with today's words; (3)
+// `tools/bm-proof.mts --trials 5` passes S6.
+async function section636(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s180-listed-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const w = await import('../src/bmwrite.ts');
+    const bm = await import('../src/basicmemory.ts');
+    const project = 'stand-in-collection';
+    const named = { id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', name: project };
+    const stand = async (label: string, extra: string[] = []) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      return { storage, url: server.url, session: await s178Session(server.url) };
+    };
+
+    // 1. Re-created at a moved note's old path: the listing's read is the new note.
+    const r = await stand('recreate');
+    const made = [await w.createNote(r.session, project, 's6-from/note.md', 'The first note.'), await w.moveNote(r.session, project, 's6-from/note.md', 's6-to/'), await w.createNote(r.session, project, 's6-from/note.md', 'The new note.')];
+    equal(JSON.stringify(made.map((v) => v.form)), '["written","written","written"]', `636(1): the fixture's create, move and create: ${JSON.stringify(made).slice(0, 400)}`);
+    const nodes = await bm.listFolderNodes(r.session, project, 's6-from', 'The folder s6-from', 'too many');
+    const node = nodes.find((item) => bm.field(item, 'file_path') === 's6-from/note.md');
+    const permalink = bm.text(bm.field(node, 'permalink'));
+    let read = '';
+    try {
+      read = (await bm.readListedRecord(r.session, named, 's6-from/note.md', permalink))?.text ?? '(not found)';
+    } catch (error) {
+      read = `refused: ${(error as Error).message}`;
+    }
+    check(read.includes('The new note.'), `636(1): the re-created note was not read by its listing (permalink ${permalink}): ${read.slice(0, 400)}`);
+
+    // 2. Any other second answer is refused, in today's words.
+    const answer = (record: Record<string, unknown>) => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(record) }], structuredContent: { result: record }, isError: false } });
+    const stub = (second: string) => ({
+      surface: 'bm', endpoint: 'stub',
+      callTool: async (_tool: string, args: Record<string, unknown>) => answer(args['identifier'] === 's6-from/note.md'
+        ? { file_path: 's6-to/note.md', content: '---\npermalink: s6-from/note\n---\nThe moved note.', checksum: '1' }
+        : { file_path: second, content: '---\npermalink: s6-from/note-1\n---\nThe new note.', checksum: '2' }),
+    }) as unknown as import('../src/basicmemory.ts').McpSession;
+    const second = async (answered: string, name: string) => {
+      try {
+        return (await bm.readListedRecord(stub(answered), { id: named.id, name }, 's6-from/note.md', `${name ? name + '/' : ''}s6-from/note-1`))?.text ?? '(not found)';
+      } catch (error) {
+        return `refused: ${(error as Error).message}`;
+      }
+    };
+    equal(await second(`${project}/s6-from/note.md`, project), '---\npermalink: s6-from/note-1\n---\nThe new note.', '636(2): the project-prefixed second answer was not trusted');
+    for (const [answered, name] of [['other-project/s6-from/note.md', project], ['s6-to/note.md', project], ['/s6-from/note.md', '']]) {
+      equal(await second(answered!, name!), `refused: Read 's6-from/note.md' answered '${answered}', not the file listed, so it was not trusted.`, `636(2): the second answer '${answered}' (project name '${name}')`);
+    }
+
+    // 3. The proof script passes S6 against the stand-in; whole-file move identity is covered by section 644.
+    const script = path.join(PROGRAM_ROOT, 'tools', 'bm-proof.mts');
+    const p = await stand('proof', ['--race']);
+    const out = path.join(root, 'proof-out');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const ran = spawnSync(process.execPath, [script, '--url', p.url, '--out', out, '--trials', '5'], { cwd: root, env: { ...process.env, ...QUIET_TAB, ...env }, encoding: 'utf8', timeout: 300000 });
+    const summary = fs.existsSync(path.join(out, 'summary.txt')) ? fs.readFileSync(path.join(out, 'summary.txt'), 'utf8') : '';
+    check(ran.status === 0 && summary.includes('S6: pass'), `636(3): the proof did not pass S6 against the stand-in: ${ran.status} ${summary.slice(0, 600)} ${(ran.stderr ?? '').slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 636 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(636) && prerequisite(636, () => !isCompiled(), 'requires the source tools/bm-proof.mts')) await section636();
+
+// --- 637. Postbox receipts preserve equal retries (c108-r3 A2/A3). ----------------------------------------
+async function filedConflictFixture(section: number, legacy = false) {
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),`kernel-c108-${section}-`)));
+  const storage=path.join(root,'server');fs.mkdirSync(storage,{recursive:true});
+  const server=await startFakeBasicMemory(storage);
+  const t=await outcomeFixture(root,server.url);
+  const onServer=(relative:string)=>path.join(storage,'.projects','deskpost',relative);
+  const inbox=(id:string,home=false)=>onServer(`postbox/inbox/${home?t.home.id:t.far.id}/${id}.md`);
+  const checkBox=(extra:Record<string,string>={},home=false)=>t.cli(home?t.home.lib:t.far.lib,['postbox','check','--json'],'',extra);
+  const send=(title:string)=>String(t.json(t.send(t.home,'asker','Far Office','clerk',title,'Body A.'))['delivery_id']);
+  const note=(id:string,home=false)=>path.join(t.notesOf(home?t.home.lib:t.far.lib),t.withDelivery(home?t.home.lib:t.far.lib,id)[0]??'missing');
+  const change=(id:string,home=false)=>fs.writeFileSync(inbox(id,home),fs.readFileSync(inbox(id,home),'utf8')+'\nBody B.\n');
+  const rows=(answer:Record<string,unknown>)=>(answer['filed_conflicts']??[]) as Record<string,unknown>[];
+  return {...t,root,storage,server,onServer,inbox,checkBox,sendLetter:send,note,change,rows,
+    stop:()=>{server.stop();fs.rmSync(root,{recursive:true,force:true});}};
+}
+async function section637():Promise<void>{
+  const t=await filedConflictFixture(637);
+  try{
+    const {payloadDigest}=await import('../src/postbox.ts');
+    const id=t.sendLetter('Equal receipt');const wire=fs.readFileSync(t.inbox(id),'utf8');
+    check(t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'}).exit!==0,'637: crash not injected');
+    const local=fs.readFileSync(t.note(id),'utf8');
+    check(local.includes('postbox_wire_digest: '+payloadDigest(wire)),'637: receipt differs from wire');
+    const answer=t.json(t.checkBox());
+    equal(answer['moved'],1,'637: equal retry not moved');equal(t.withDelivery(t.far.lib,id).length,1,'637: duplicate note');
+    equal(JSON.stringify(answer['filed_conflicts']),'[]','637: empty conflicts key');equal(answer['filed_conflicts_count'],0,'637: empty count');
+    const quiet=t.json(t.checkBox());equal(quiet['already_filed'],0,'637: unchanged check refiled');
+  }finally{t.stop();}
+}
+if(selected(637))await section637();
+
+// --- 638. Postbox compares the fresh body before moving on both surfaces (c108-r3 A1). --------------------
+async function section638():Promise<void>{
+  for(const legacy of [false,true]){
+    const t=await filedConflictFixture(638,legacy);
+    try{
+      const id=t.sendLetter('Change before move');
+      let answer:Record<string,unknown>;
+      if(legacy){
+        // Postbox entry points require 1.0 since s175; exercise its retained legacy move helper directly.
+        const old=await startFakeBasicMemory(t.storage,['--surface','legacy']);
+        const prior=process.env['LIBRARY_POSTBOX_FAULT'];
+        try{
+          const p=await import('../src/postbox.ts');const bm=await import('../src/basicmemory.ts');
+          await p.runPostboxVerb(['status'],t.far.lib);
+          const state=JSON.parse(fs.readFileSync(path.join(t.far.lib,'internal','postbox','state.json'),'utf8'));
+          const session=await s178Session(old.url);
+          await session.callTool('create_memory_project',{project_name:'deskpost',project_path:'deskpost'});
+          const relative=`postbox/inbox/${t.far.id}/${id}.md`;
+          const response=await session.callTool('list_directory',{project_id:state.project_id,dir_name:path.posix.dirname(relative)});
+          const legacyResponse=bm.field(response,'result') as {content:{text:string}[];structuredContent?:{result:unknown}};
+          const listing=legacyResponse.structuredContent?.result??JSON.parse(legacyResponse.content[0]!.text);
+          const node=(bm.field(listing,'nodes') as unknown[]).find(n=>bm.field(n,'file_path')===relative)!;
+          process.env['LIBRARY_POSTBOX_FAULT']='change-before-move';
+          const result=await p.moveToDelivered(session,state.project_id,t.far.lib,t.far.id,{path:relative,updated_at:String(bm.field(node,'updated_at')),permalink:String(bm.field(node,'permalink'))},id,p.payloadDigest(fs.readFileSync(t.inbox(id),'utf8')));
+          equal(result.answer?.detail,'changed-after-read','638: legacy pre-move detail');
+          answer={moved:result.outcome==='moved'?1:0,skipped:result.answer?.detail==='changed-after-read'?[{why:'its body changed after it was read; the next check judges it again',move_answer:'no move was sent'}]:[]};
+        }finally{if(prior===undefined)delete process.env['LIBRARY_POSTBOX_FAULT'];else process.env['LIBRARY_POSTBOX_FAULT']=prior;old.stop();}
+      }else answer=t.json(t.checkBox({LIBRARY_POSTBOX_FAULT:'change-before-move'}));
+      equal(answer['moved'],0,'638: changed body moved');
+      check(fs.existsSync(t.inbox(id))&&fs.readFileSync(t.inbox(id),'utf8').includes('Body B.'),'638: body B not kept');
+      check(!fs.existsSync(path.join(path.dirname(t.inbox(id)),'delivered',id+'.md')),'638: delivered copy exists');
+      const skipped=answer['skipped'] as Record<string,unknown>[];
+      check(skipped?.some(r=>r['why']==='its body changed after it was read; the next check judges it again'&&r['move_answer']==='no move was sent'),'638: changed-after-read reason absent');
+    }finally{t.stop();}
+  }
+}
+if(selected(638))await section638().catch(error=>failures.push('section 638 stopped early: '+(error as Error).message));
+
+// --- 639. A changed Postbox retry is kept, cached and named offline (c108-r3 A3/A4). -----------------------
+async function section639():Promise<void>{
+  const t=await filedConflictFixture(639);
+  try{
+    const {payloadDigest}=await import('../src/postbox.ts');
+    const id=t.sendLetter('Changed retry');const wire=fs.readFileSync(t.inbox(id),'utf8');
+    t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'});const before=fs.readFileSync(t.note(id),'utf8');t.change(id);
+    const answer=t.json(t.checkBox());const row=t.rows(answer)[0];
+    equal(answer['moved'],0,'639: changed retry moved');equal(t.withDelivery(t.far.lib,id).length,1,'639: second note');
+    equal(fs.readFileSync(t.note(id),'utf8'),before,'639: filed bytes changed');
+    check(row?.['kind']==='changed'&&row['filed_digest']===payloadDigest(wire)&&row['inbox_digest']===payloadDigest(fs.readFileSync(t.inbox(id),'utf8')),'639: wrong conflict digests');
+    const quiet=t.json(t.checkBox());equal(t.rows(quiet).length,0,'639: unchanged conflict rejudged');equal(quiet['filed_conflicts_count'],1,'639: cached conflict lost');
+    const doctor=t.json(t.cli(t.far.lib,['doctor','--json']));
+    const finding=(doctor['library_checks'] as Record<string,unknown>[]).find(row=>row['check']==='postbox.outbox');
+    check(finding?.['status']==='warn'&&String(finding['detail']).includes(id),'639: doctor does not name conflict');
+    const desk=t.json(t.cli(t.far.lib,['desk','--json'],'clerk'));equal((desk['postbox'] as Record<string,unknown>)?.['filed_conflicts_count'],1,'639: Desk count');
+    const setup=t.json(t.cli(t.far.lib,['postbox','setup','--url',t.server.url,'--preflight','--json']));
+    equal(t.cli(t.far.lib,['postbox','setup','--url',t.server.url,'--user-confirmed','--plan-id',String(setup['plan_id'])]).exit,0,'639: repeat setup');
+    equal(t.json(t.checkBox())['filed_conflicts_count'],1,'639: setup lost conflict');
+    if(fs.existsSync(t.inbox(id))) {t.change(id);equal(t.rows(t.json(t.checkBox())).length,1,'639: changed conflict not rejudged');}
+  }finally{t.stop();}
+}
+if(selected(639))await section639();
+
+// --- 640. A Postbox note without a receipt is kept (c108-r3 D2). ------------------------------------------
+async function section640():Promise<void>{
+  const t=await filedConflictFixture(640);
+  try{
+    const id=t.sendLetter('Old receipt');
+    check(t.checkBox({LIBRARY_POSTBOX_FAULT:'no-receipt'}).exit!==0,'640: no-receipt fixture did not stop after filing');
+    check(fs.existsSync(t.inbox(id)),'640: no-receipt fixture did not leave inbox');
+    check(!fs.readFileSync(t.note(id),'utf8').includes('postbox_wire_digest:'),'640: fixture has receipt');
+    const answer=t.json(t.checkBox());equal(t.rows(answer)[0]?.['kind'],'no-receipt','640: missing receipt not a conflict');equal(answer['moved'],0,'640: no-receipt moved');
+  }finally{t.stop();}
+}
+if(selected(640))await section640();
+
+// --- 641. Postbox outcomes retain their receipt after intent expiry (c108-r3 A6). ------------------------
+async function section641():Promise<void>{
+  const t=await filedConflictFixture(641);
+  try{
+    const {readOutbox}=await import('../src/postbox.ts');const {readRecords}=await import('../src/intent.ts');
+    const report=t.report('Outcome conflict');check(t.close(report.page).value['all_succeeded']===true,'641: close failed');
+    const entry=readOutbox(t.far.lib).find(e=>e.metadata['closes_delivery_id']===report.id)!;
+    check(t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'},true).exit!==0,'641: crash absent');
+    const before=fs.readFileSync(report.copy,'utf8');const letter=fs.readFileSync(t.note(entry.delivery_id,true),'utf8');
+    const count=readRecords(t.home.lib).length;t.change(entry.delivery_id,true);
+    const changed=t.json(t.checkBox({},true));equal(t.rows(changed)[0]?.['kind'],'changed','641: outcome retry not conflict');
+    equal(readRecords(t.home.lib).length,count,'641: new intent');equal(changed['moved'],0,'641: outcome moved');
+    equal(fs.readFileSync(report.copy,'utf8'),before,'641: outcome effect repeated');equal(fs.readFileSync(t.note(entry.delivery_id,true),'utf8'),letter,'641: outcome letter changed');
+    // Locate only this fixture's intent file; the expired record must actually be removed by check.
+    const findIntent=(directory:string):string[]=>fs.readdirSync(directory,{withFileTypes:true}).flatMap(e=>e.isDirectory()?findIntent(path.join(directory,e.name)):[path.join(directory,e.name)]);
+    const candidates=findIntent(path.join(t.home.lib,'internal')).filter(f=>f.endsWith('.intent.json'));
+    const file=candidates.find(f=>{try{return JSON.parse(fs.readFileSync(f,'utf8')).delivery_id===entry.delivery_id;}catch{return false;}})!;
+    const record=JSON.parse(fs.readFileSync(file,'utf8'));record.completed_utc='2000-01-01T00:00:00Z';fs.writeFileSync(file,JSON.stringify(record));
+    if(fs.existsSync(t.inbox(entry.delivery_id,true)))t.change(entry.delivery_id,true);
+    const expired=t.json(t.checkBox({},true));equal(t.rows(expired)[0]?.['kind'],'changed','641: expired receipt lost');
+    check(!readRecords(t.home.lib).some(r=>r.delivery_id===entry.delivery_id),'641: intent not removed or recreated');
+    equal(fs.readFileSync(report.copy,'utf8'),before,'641: expired effect repeated');equal(expired['moved'],0,'641: expired outcome moved');
+  }finally{t.stop();}
+}
+if(selected(641))await section641();
+
+// --- 642. Postbox identities cross Books and kinds under ordered locks (c108-r3 A3). ----------------------
+async function section642():Promise<void>{
+  const t=await filedConflictFixture(642);
+  try{
+    const {readOutbox}=await import('../src/postbox.ts');
+    const letter=t.sendLetter('Letter as Report');t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'});
+    const {setNoteField}=await import('../src/shelfnote.ts');
+    fs.writeFileSync(t.inbox(letter),setNoteField(fs.readFileSync(t.inbox(letter),'utf8'),'book','reports'));
+    equal(t.rows(t.json(t.checkBox()))[0]?.['kind'],'moved-book','642: letter as Report');equal(t.reportWithDelivery(t.far.lib,letter).length,0,'642: second Book filing');
+    const report=t.report('Report as letter');const serverReport=path.join(path.dirname(t.inbox(report.id)),'delivered',report.id+'.md');
+    fs.writeFileSync(t.inbox(report.id),fs.readFileSync(serverReport,'utf8').replace(/^book: reports$/m,'book: letters').replace(/^permalink: (.*)$/m,'permalink: $1-again'));
+    equal(t.rows(t.json(t.checkBox()))[0]?.['kind'],'moved-book','642: Report as letter');equal(t.withDelivery(t.far.lib,report.id).length,0,'642: Report copied as letter');
+    check(t.close(report.page).value['all_succeeded']===true,'642: close failed');
+    const outcome=readOutbox(t.far.lib).find(e=>e.metadata['closes_delivery_id']===report.id)!;
+    t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'},true);
+    fs.writeFileSync(t.inbox(outcome.delivery_id,true),fs.readFileSync(t.inbox(outcome.delivery_id,true),'utf8').replace(/^(closes_delivery_id|outcome|outcome_gen):.*\n/gm,''));
+    equal(t.rows(t.json(t.checkBox({},true)))[0]?.['kind'],'moved-book','642: outcome as letter');
+    const controlReport=t.report('Control parent');
+    const update=path.join(t.root,'update.md');fs.writeFileSync(update,'A bounded update.');
+    const amend=t.cli(t.home.lib,['reports','amend','notes/'+path.basename(controlReport.copy,'.md'),'--content-path',update,'--json'],'asker');
+    const control=t.json(amend);const controlId=String(control['delivery_id']);
+    check(amend.exit===0,'642: control fixture failed '+amend.stderr);
+    const normal=t.json(t.checkBox());equal(normal['moved'],1,'642: normal control not moved');
+    const {incomingIdentity}=await import('../src/reportsend.ts');
+    equal(incomingIdentity(t.far.lib,controlId)?.kind,'control','642: control identity kind');
+    equal(incomingIdentity(t.far.lib,controlId)?.page,controlReport.page,'642: control identity has no parent page');
+    const delivered=path.join(path.dirname(t.inbox(controlId)),'delivered',controlId+'.md');
+    fs.writeFileSync(t.inbox(controlId),fs.readFileSync(delivered,'utf8').replace(/^book: reports$/m,'book: letters').replace(/^(amends_delivery_id|withdraws_delivery_id|report_seq):.*\n/gm,'').replace(/^permalink: (.*)$/m,'permalink: $1-again'));
+    equal(t.rows(t.json(t.checkBox()))[0]?.['kind'],'moved-book','642: control as letter');
+    const race=t.sendLetter('Concurrent filing');
+    const both=await Promise.all([0,1].map(()=>runCliAsync(['postbox','check','--workspace',t.far.lib,'--json'],{cwd:t.root,env:t.env})));
+    equal(t.withDelivery(t.far.lib,race).length,1,'642: concurrent duplicate');check(both.every(r=>r.exit===0),'642: concurrent check failed');
+  }finally{t.stop();}
+}
+if(selected(642))await section642().catch(error=>failures.push('section 642 stopped early: '+(error as Error).message));
+
+// --- 643. A listing proves absence only when it is whole (kickoffs/s181-r2 row 1; library-auditor M1). Against the
+// stand-in's `--malformed-list`: `listFolderNodes` refuses `{}`, `nodes` missing or not a list, `has_more` missing or a
+// string, a file node with no `file_path`, and a NOT_FOUND on page 2; a lost `bm_delete` (not applied) settled by each of
+// those answers is `unknown`, never `written`; a genuine empty folder and a NOT_FOUND on page 1 still list empty; and a
+// lost `bm_delete` that did apply still settles `written`.
+async function section643(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s181-listing-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const w = await import('../src/bmwrite.ts');
+    const bm = await import('../src/basicmemory.ts');
+    const project = 'stand-in-collection';
+    let made = 0;
+    const stand = async (extra: string[]) => {
+      const storage = path.join(root, String((made += 1)));
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      return { storage, session: await s178Session(server.url) };
+    };
+    const list = async (session: import('../src/basicmemory.ts').McpSession, folder: string) => {
+      try {
+        return JSON.stringify((await bm.listFolderNodes(session, project, folder, `The folder ${folder}`, 'too many')).map((node) => bm.text(bm.field(node, 'file_path'))));
+      } catch (error) {
+        return `refused: ${(error as Error).message}`;
+      }
+    };
+    for (const shape of ['empty-object', 'no-nodes', 'nodes-not-array', 'no-has-more', 'has-more-string', 'file-no-path', 'late-not-found']) {
+      const s = await stand(['--malformed-list', `${shape}:1`]);
+      s178Lay(s.storage, 'notes/a.md', 'Here.\n');
+      const said = await list(s.session, 'notes');
+      check(said.startsWith('refused: The folder notes could not be read: the listing\'s answer is not a whole page ('), `643: a listing answered ${shape} was not refused: ${said.slice(0, 300)}`);
+      const d = await stand(['--outcome-unknown', 'bm_delete:1:lost', '--malformed-list', `${shape}:1`]);
+      s178Lay(d.storage, 'notes/d.md', 'Still here.\n');
+      const verdict = await w.deleteNote(d.session, project, 'notes/d.md');
+      check(verdict.form === 'unknown' && fs.existsSync(path.join(d.storage, 'notes', 'd.md')), `643: a lost delete settled by a listing answered ${shape} was ${JSON.stringify(verdict).slice(0, 300)}`);
+    }
+    const e = await stand([]);
+    fs.mkdirSync(path.join(e.storage, 'empty'));
+    equal(await list(e.session, 'empty'), '[]', '643: a genuine empty folder');
+    const f = await stand(['--malformed-list', 'not-found:1']);
+    equal(await list(f.session, 'gone'), '[]', '643: a NOT_FOUND on page 1');
+    const a = await stand(['--outcome-unknown', 'bm_delete:1']);
+    s178Lay(a.storage, 'notes/d.md', 'Going.\n');
+    const applied = await w.deleteNote(a.session, project, 'notes/d.md');
+    check(applied.form === 'written' && !fs.existsSync(path.join(a.storage, 'notes', 'd.md')), `643: a lost delete that applied was ${JSON.stringify(applied).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 643 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(643)) await section643();
+
+// --- 644. An uncertain move is `written` only when the whole file is the one moved (kickoffs/s181-r2 row 2;
+// library-auditor M2). A lost move (not applied), the source removed by someone else before settlement, with a note of the
+// same body and other frontmatter at the destination, or an empty body, or a frontmatter-only note: `unknown`. A lost
+// move that did apply, its bytes unchanged: `written`.
+async function section644(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s181-move-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const w = await import('../src/bmwrite.ts');
+    const project = 'stand-in-collection';
+    let made = 0;
+    const stand = async (extra: string[]) => {
+      const storage = path.join(root, String((made += 1)));
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      return { storage, session: await s178Session(server.url) };
+    };
+    const raw = (storage: string, relative: string, whole: string) => {
+      const file = path.join(storage, ...relative.split('/'));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, whole);
+      return file;
+    };
+    const lostMove = async (label: string, laySource: (storage: string) => string, layDestination: (storage: string) => unknown) => {
+      const s = await stand(['--outcome-unknown', 'bm_move:1:lost']);
+      const source = laySource(s.storage);
+      const original = s.session.callTool.bind(s.session);
+      let listed = 0;
+      s.session.callTool = async (name, args) => {
+        // The first listing is the primitive's own read of the source before sending; the second is settlement's.
+        if (name === 'bm_list' && (listed += 1) === 2) {
+          fs.rmSync(source);
+          layDestination(s.storage);
+        }
+        return original(name, args);
+      };
+      const verdict = await w.moveNote(s.session, project, 'notes/x.md', 'moved/');
+      check(listed >= 2 && verdict.form === 'unknown', `644: a lost move with ${label} at the destination settled ${JSON.stringify(verdict).slice(0, 300)}`);
+    };
+    await lostMove('a note of the same body and other frontmatter', (st) => s178Lay(st, 'notes/x.md', 'The same body.\n'), (st) => s178Lay(st, 'moved/x.md', 'The same body.\n', 'kind: another\n'));
+    await lostMove('a note of an empty body', (st) => s178Lay(st, 'notes/x.md', ''), (st) => s178Lay(st, 'moved/x.md', '', 'kind: another\n'));
+    await lostMove('a frontmatter-only note', (st) => raw(st, 'notes/x.md', '---\npermalink: notes/x\n---\n'), (st) => raw(st, 'moved/x.md', '---\npermalink: moved/x\ntitle: someone else\n---\n'));
+    const a = await stand(['--lose-response', 'bm_move:1']);
+    const before = s178Sha(s178Lay(a.storage, 'notes/x.md', 'Moving.\n'));
+    const applied = await w.moveNote(a.session, project, 'notes/x.md', 'moved/');
+    const after = fs.existsSync(path.join(a.storage, 'moved', 'x.md')) ? s178Sha(path.join(a.storage, 'moved', 'x.md')) : '';
+    check(applied.form === 'written' && after === before, `644: a lost move that applied, bytes unchanged, settled ${JSON.stringify(applied).slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 644 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(644)) await section644();
+
+// --- 645. S6 accepts the NAS's refusal (kickoffs/s181-r2 row 3.1). `tools/bm-proof.mts` against the stand-in passes S6
+// when the create at a moved note's old path is written (outcome a) and when it is refused ALREADY_EXISTS with nothing
+// listed there (outcome b, `--create-at-moved-path refuse`), printing the S6 line with the right counts; it fails S6 when
+// the create is answered written but nothing is listed there, or refused with another code.
+async function section645(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s181-proof-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const script = path.join(PROGRAM_ROOT, 'tools', 'bm-proof.mts');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const proof = async (label: string, extra: string[]) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, ['--race', ...extra]);
+      servers.push(server);
+      const out = path.join(root, `${label}-out`);
+      const ran = spawnSync(process.execPath, [script, '--url', server.url, '--out', out, '--trials', '2'], { cwd: root, env: { ...process.env, ...QUIET_TAB, ...env }, encoding: 'utf8', timeout: 300000 });
+      const summary = fs.existsSync(path.join(out, 'summary.txt')) ? fs.readFileSync(path.join(out, 'summary.txt'), 'utf8') : '';
+      return { status: ran.status, summary, said: `${ran.status} ${summary.slice(0, 900)} ${(ran.stderr ?? '').slice(0, 300)}` };
+    };
+    const a = await proof('written', []);
+    check(a.status === 0 && a.summary.includes('S6: pass\n'), `645: outcome (a) did not pass S6: ${a.said}`);
+    check(a.summary.includes('S6 create at the old path (two-second pause after each move): 10 written, 0 refused ALREADY_EXISTS\n'), `645: outcome (a)'s S6 line: ${a.said}`);
+    const b = await proof('refused', ['--create-at-moved-path', 'refuse']);
+    check(b.status === 0 && b.summary.includes('S6: pass\n'), `645: outcome (b) did not pass S6: ${b.said}`);
+    check(b.summary.includes('S6 create at the old path (two-second pause after each move): 0 written, 10 refused ALREADY_EXISTS\n'), `645: outcome (b)'s S6 line: ${b.said}`);
+    for (const fault of ['written-unlisted', 'refuse-other']) {
+      const c = await proof(fault, ['--create-at-moved-path', fault]);
+      check(c.status === 1 && c.summary.includes('S6: fail\n'), `645: a create at the old path answered ${fault} did not fail S6: ${c.said}`);
+    }
+  } catch (error) {
+    failures.push(`section 645 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(645) && prerequisite(645, () => !isCompiled(), 'requires the source tools/bm-proof.mts')) await section645();
+
+/** Today's local date as YYYY-MM-DD, moved by whole days: the train's car dates are local dates. */
+function localDay(offset = 0): string {
+  const d = new Date(); d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// --- 646. CARS IN THE TRAIN REGISTER (kickoffs/s184 row 1). `train car <place> --opened|--arrived [--on <date>]`
+// writes the car's date under the lock with one history line each; a second open car, an arrival for a car never
+// opened and a bad list are refused; a register with no `cars` key keeps it absent until a car action.
+async function section646(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s184-cars-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'planner', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '646: init');
+    const train = (args: string[]) => runCli(['train', ...args, '--workspace', lib], { cwd: root, env });
+    const file = path.join(lib, 'internal', 'train', 'register.json');
+    const history = path.join(lib, 'internal', 'train', 'history.jsonl');
+    const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+    equal(train(['add', 'first', '--title', 'First', '--place', 'car:x']).exit, 0, '646: add');
+    check(!('cars' in read()), '646: a register with no cars key keeps none after another action');
+    const itemsBefore = JSON.stringify(read().items);
+    const opened = train(['car', 'car:x', '--opened']);
+    equal(opened.exit, 0, `646: opened: ${opened.stderr}`);
+    equal(JSON.stringify(read().cars), JSON.stringify([{ place: 'car:x', opened: localDay(), arrived: null }]), '646: opened today, local date');
+    equal(JSON.stringify(read().items), itemsBefore, '646: a car action leaves the items as they were');
+    const second = train(['car', 'car:y', '--opened']);
+    check(second.exit !== 0 && second.stderr.includes('car:x'), `646: a second open car refused naming the open one: ${second.stderr}`);
+    const never = train(['car', 'car:z', '--arrived']);
+    check(never.exit !== 0 && never.stderr.includes('car:z'), `646: arrival for a car never opened refused: ${never.stderr}`);
+    const bad: string[][] = [
+      ['car', 'lane:fixes', '--opened'], ['car', 'car:x', '--opened', '--arrived'], ['car', 'car:x'],
+      ['car', 'car:x', '--arrived', '--on', '2026-02-30'], ['car', 'car:x', '--arrived', '--on', localDay(-400)],
+      ['car', 'car:x', '--opened', '--on', localDay(-1)],
+    ];
+    for (const args of bad) {
+      const before = fs.readFileSync(file), log = fs.readFileSync(history);
+      check(train(args).exit !== 0, `646: refused ${args.join(' ')}`);
+      check(before.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), `646: refusal wrote nothing: ${args.join(' ')}`);
+    }
+    const arrived = train(['car', 'car:x', '--arrived', '--on', localDay()]);
+    equal(arrived.exit, 0, `646: arrived: ${arrived.stderr}`);
+    equal(JSON.stringify(read().cars), JSON.stringify([{ place: 'car:x', opened: localDay(), arrived: localDay() }]), '646: both dates written');
+    check(train(['car', 'car:x', '--arrived']).exit !== 0, '646: a second arrival refused');
+    equal(train(['car', 'car:y', '--opened', '--on', '2026-11-01']).exit, 0, '646: the next car opens once none is open');
+    const rows = fs.readFileSync(history, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.action === 'car');
+    equal(rows.length, 3, '646: one history line per car change');
+    equal(`${rows[0].id} ${rows[0].from} ${rows[0].to}`, `car:x null opened ${localDay()}`, '646: history of the opening');
+    equal(`${rows[1].id} ${rows[1].from} ${rows[1].to}`, `car:x opened ${localDay()} arrived ${localDay()}`, '646: history of the arrival');
+    check(rows.every(r => r.by === 'planner' && Number.isFinite(Date.parse(r.at))), '646: history provenance');
+    const base = { schema: 1, changed_at: '2026-11-04T00:00:00Z', changed_by: 'planner', items: [] };
+    const lists: unknown[] = [
+      'not a list', [{ place: 'lane:x', opened: '2026-11-01', arrived: null }], [{ place: 'car:x', opened: '2026-13-01', arrived: null }],
+      [{ place: 'car:x', opened: '2026-11-01', arrived: null }, { place: 'car:x', opened: '2026-11-02', arrived: '2026-11-03' }],
+      [{ place: 'car:x', opened: '2026-11-01', arrived: null }, { place: 'car:y', opened: '2026-11-02', arrived: null }],
+      [{ place: 'car:x', opened: '2026-11-03', arrived: '2026-11-01' }],
+    ];
+    for (const cars of lists) {
+      fs.writeFileSync(file, JSON.stringify({ ...base, cars }));
+      const refused = train(['--json']);
+      check(refused.exit !== 0 && /car/i.test(refused.stderr), `646: bad cars list refused: ${JSON.stringify(cars)}: ${refused.stderr}`);
+    }
+    fs.writeFileSync(file, JSON.stringify({ ...base, cars: [{ place: 'car:x', opened: '2026-11-01', arrived: null }] }));
+    equal(train(['--json']).exit, 0, '646: a good cars list reads');
+  } catch (error) {
+    failures.push(`section 646 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(646)) await section646();
+
+// --- 647. THE FRONT CAR ON THE DESK (kickoffs/s184 row 2). The Desk's train object carries `front_car` and
+// `cars_arrived_last_7_days`; the dashboard prints one line in full words, or `No front car`.
+async function section647(): Promise<void> {
+  const w = await seatClaimWorkspace('s184-front-car', { pin: false });
+  try {
+    const { deskOverview } = await import('../src/desk.ts');
+    const { dashboardText } = await import('../src/dashboard.ts');
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, '647: fixture seat');
+    const dir = path.join(w.workspace, 'internal', 'train'), file = path.join(dir, 'register.json');
+    fs.mkdirSync(dir, { recursive: true });
+    const base = { schema: 1, changed_at: '2026-11-04T00:00:00Z', changed_by: 'first', items: [] };
+    const view = (cars?: unknown) => {
+      fs.writeFileSync(file, JSON.stringify(cars === undefined ? base : { ...base, cars }));
+      const overview = deskOverview({ workspace: w.workspace, seat: 'first' });
+      const lineOf = dashboardText(overview, { width: 160, now: Date.now() }).split('\n').find(l => l.includes('front car') || l.startsWith('Front car')) ?? '';
+      return { train: overview['train'] as Record<string, PsJsonValue>, line: lineOf };
+    };
+    const open = (days: number) => view([{ place: 'car:two-builders', opened: localDay(-days), arrived: null }]);
+    const today = open(0);
+    equal(JSON.stringify(today.train['front_car']), JSON.stringify({ place: 'car:two-builders', opened: localDay(), days_open: 0 }), '647: front car object');
+    equal(today.train['cars_arrived_last_7_days'], 0, '647: no arrivals');
+    check(today.line.includes('Front car  two-builders, opened today; 0 cars arrived in the last 7 days'), `647: opened today: ${today.line}`);
+    check(open(1).line.includes('two-builders, open 1 day;'), `647: open 1 day: ${open(1).line}`);
+    check(open(5).line.includes('two-builders, open 5 days;'), `647: open 5 days: ${open(5).line}`);
+    const arrivals = view([
+      { place: 'car:old', opened: localDay(-20), arrived: localDay(-8) },
+      { place: 'car:edge', opened: localDay(-10), arrived: localDay(-6) },
+      { place: 'car:new', opened: localDay(-5), arrived: localDay() },
+    ]);
+    equal(arrivals.train['front_car'], null, '647: no open car, front car null');
+    equal(arrivals.train['cars_arrived_last_7_days'], 2, '647: a car arrived 8 days ago is not counted');
+    check(arrivals.line.includes('No front car; 2 cars arrived in the last 7 days'), `647: no open car line: ${arrivals.line}`);
+    const one = view([{ place: 'car:new', opened: localDay(-5), arrived: localDay() }]);
+    check(one.line.includes('1 car arrived in the last 7 days'), `647: one car, singular: ${one.line}`);
+    const none = view();
+    equal(none.train['front_car'], null, '647: no cars list, front car null');
+    check(none.line.includes('No front car'), `647: no cars list line: ${none.line}`);
+    console.log(`647: ${open(2).line}`);
+  } catch (error) {
+    failures.push(`section 647 stopped early: ${(error as Error).message}`);
+  } finally { w.dispose(); }
+}
+if (selected(647)) await section647();
+
+// --- 648. Every changed path has a covering check, at commit and push (c111 M1). ---
+async function section648(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c111-map-'));
+  try {
+    const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+    const selector = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+    const git = (...args: string[]) => {
+      const ran = spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8', windowsHide: true });
+      if (ran.status !== 0) throw Error(ran.stdout + ran.stderr); return ran.stdout.trim();
+    };
+    const put = (file: string, body: string) => { const p = path.join(root, file); fs.mkdirSync(path.dirname(p), {recursive:true}); fs.writeFileSync(p, body); };
+    git('init','-q','-b','fixture'); git('config','user.name','Fixture'); git('config','user.email','fixture@example.invalid'); git('config','core.hooksPath','.git/no-hooks');
+    put('kernel/test/section-covers.json', JSON.stringify({schema:1,sections:{'240':['kernel/src/one.ts']}}));
+    put('kernel/test/selftest.ts', 'if (selected(240)) {\n}\n');
+    put('docs/kickoff-template.md','# Base\n'); git('add','.'); git('commit','-qm','base'); git('update-ref','refs/remotes/origin/master','HEAD');
+    put('docs/kickoff-template.md','# Changed\n'); git('add','.');
+    check(gate.selection(root,null).selection.sections.includes(240), '648: commit template must select 240');
+    git('commit','-qm','template');
+    check(gate.selection(root,null,true).selection.sections.includes(240), '648: outgoing template must select 240');
+    const input = {changed:['docs/guides/arbitrary-guide.md'],selftestText:'',selftestHunks:[],covers:{schema:1,sections:{}}};
+    check(selector.selectSections(input).sections.includes(198), '648: documents must select usage-line section 198, including newly added usage');
+    put('unmapped-behaviour.xyz','behavior\n'); git('add','unmapped-behaviour.xyz');
+    let refusal = ''; try { gate.selection(root,null); } catch(error) { refusal=String(error); }
+    check(refusal.includes('unmapped-behaviour.xyz') && refusal.includes('tools/check-map.json'), '648: unmapped path must be refused by name and map');
+    const tracked = spawnSync('git',['ls-files'],{cwd:PROGRAM_ROOT,env:repositoryNeutralEnv(),encoding:'utf8'});
+    equal(tracked.status,0,'648: tracked inventory');
+    for (const file of tracked.stdout.trim().split(/\r?\n/)) {
+      try { selector.selectSections({...input,changed:[file],selftestText:fs.readFileSync(path.join(PROGRAM_ROOT,'kernel/test/selftest.ts'),'utf8')}); }
+      catch(error) { failures.push(`648: tracked path refused ${file}: ${error}`); }
+    }
+    check(true,'648: tracked inventory resolved');
+    const docs = spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'tools/docs-gate.ts'),'--file','docs/kickoff-template.md'],{cwd:PROGRAM_ROOT,env:repositoryNeutralEnv(),encoding:'utf8'});
+    equal(docs.status,4,'648: explicit push document must retain contract classification');
+  } catch(error) { failures.push(`section 648 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root,{recursive:true,force:true}); }
+}
+if (selected(648)) await section648();
+
+// --- 649. Each settings surface is parsed and selects its actual checks (c111 M2). ---
+async function section649(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c111-settings-'));
+  try {
+    const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/gate.ts')).href);
+    for (const file of ['.codex/hooks.template.json','.codex-plugin/hooks.json','.claude-plugin/hooks/hooks.json']) {
+      const names = gate.settingsChecksForPaths([file]);
+      check(names.includes('plugin.generated-files-match'), `649: generation check missing for ${file}`);
+      check(!names.includes('settings.hooks-registered'), `649: unrelated Claude settings selected for ${file}`);
+    }
+    if (process.platform === 'win32') {
+      fs.symlinkSync(path.join(PROGRAM_ROOT,'tools'),path.join(root,'tools'),'junction');
+      fs.cpSync(path.join(PROGRAM_ROOT,'kernel/src'),path.join(root,'kernel/src'),{recursive:true});
+      fs.copyFileSync(path.join(PROGRAM_ROOT,'kernel/package.json'),path.join(root,'kernel/package.json'));
+      fs.symlinkSync(path.join(PROGRAM_ROOT,'kernel/node_modules'),path.join(root,'kernel/node_modules'),'junction');
+      for (const folder of ['.agents','.claude','.codex','.codex-plugin','.claude-plugin']) fs.cpSync(path.join(PROGRAM_ROOT,folder),path.join(root,folder),{recursive:true});
+      for (const file of ['.codex/hooks.template.json','.codex-plugin/hooks.json','.claude-plugin/hooks/hooks.json']) {
+        const target=path.join(root,file), original=fs.readFileSync(target,'utf8');
+        fs.writeFileSync(target,'{broken');
+        const bad=await gate.settingsChecks(root,[file]);
+        check(bad.some((row: {status:string})=>row.status==='fail'),`649: malformed ${file} passed: ${JSON.stringify(bad)}`);
+        fs.writeFileSync(target,original);
+        const good=await gate.settingsChecks(root,[file]);
+        check(good.length>0 && good.every((row: {check:string;status:string;detail:string})=>row.status==='pass'||row.status==='warn'||row.check==='codex.project-access-config'&&row.status==='skip'&&row.detail.includes('both rendered Codex files are absent')),`649: valid ${file} failed: ${JSON.stringify(good)}`);
+      }
+    }
+  } catch(error) { failures.push(`section 649 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root,{recursive:true,force:true}); }
+}
+if (selected(649)) await section649();
+
+// --- 650. TRAIN CHANGES NAME THEIR SEAT, DATE THEIR DAY, AND REFUSE A FUTURE DATE (kickoffs/s185 rows 1 and 2).
+// (a) a seat bound by the launcher, with no LIBRARY_SEAT, changes the train and is its `changed_by`; with neither,
+// the change is refused as before. (b) at 2026-11-05T03:30Z under the Pacific zone (7:30 PM on 2026-11-04), `add`
+// dates `first_asked` 2026-11-04, and a later `--first-asked` or car `--on` is refused with nothing written.
+async function section650(): Promise<void> {
+  const w = await seatClaimWorkspace('s185-train', { pin: false });
+  const saved = { TZ: process.env['TZ'], LIBRARY_SEAT: process.env['LIBRARY_SEAT'], LIBRARY_SEAT_CLAIM: process.env['LIBRARY_SEAT_CLAIM'] };
+  try {
+    const ws = w.workspace;
+    const file = path.join(ws, 'internal', 'train', 'register.json');
+    const history = path.join(ws, 'internal', 'train', 'history.jsonl');
+    const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+    // (a) The binding names the seat.
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, '650: fixture seat');
+    const bound = w.as(agent, ['train', 'add', 'bound', '--title', 'Bound', '--place', 'foundation', '--workspace', ws]);
+    equal(bound.exit, 0, `650 (a): a bound seat with no LIBRARY_SEAT adds: ${bound.stderr.trim()}`);
+    if (fs.existsSync(file)) {
+    equal(read().changed_by, 'first', '650 (a): changed_by is the bound seat');
+    const rows = () => fs.readFileSync(history, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    equal(rows().at(-1).by, 'first', '650 (a): the history line carries the bound seat');
+    const before = fs.readFileSync(file), log = fs.readFileSync(history);
+    const seatless = w.as(process.pid, ['train', 'add', 'seatless', '--title', 'Seatless', '--place', 'foundation', '--workspace', ws]);
+    check(seatless.exit !== 0 && seatless.stderr.includes('A named seat is required to change the train.'), `650 (a): a seatless session refused as before: ${seatless.stderr.trim()}`);
+    check(before.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), '650 (a): the seatless refusal wrote nothing');
+    }
+
+    // (b) The local day at a pinned clock, in process: the zone is this process's, so set it and set it back.
+    const { changeTrain } = await import('../src/train.ts');
+    process.env['TZ'] = 'America/Los_Angeles';
+    process.env['LIBRARY_SEAT'] = 'planner';
+    process.env['LIBRARY_SEAT_CLAIM'] = '';
+    const now = new Date('2026-11-05T03:30:00Z');
+    if (now.getDate() !== 4) { failures.push(`650 (b): TZ did not take effect in process (local day ${now.getDate()})`); return; }
+    const change = (action: string, id: string, options: [string, string][], flags: string[] = []) =>
+      changeTrain(ws, action, id, new Map(options), new Set(flags), now);
+    change('add', 'evening', [['title', 'Evening'], ['place', 'foundation'], ['source', 'x']]);
+    equal(read().items.find((i: { id: string }) => i.id === 'evening')?.first_asked, '2026-11-04', '650 (b): first_asked is the local day, not the UTC one');
+    const refused = (label: string, run: () => unknown, dates: string[]) => {
+      const b = fs.readFileSync(file), l = fs.readFileSync(history);
+      let message = '';
+      try { run(); } catch (error) { message = (error as Error).message; }
+      check(dates.every(d => message.includes(d)), `650 (b): ${label} refused naming ${dates.join(' and ')}: '${message}'`);
+      check(b.equals(fs.readFileSync(file)) && l.equals(fs.readFileSync(history)), `650 (b): ${label} wrote nothing`);
+    };
+    refused('add --first-asked tomorrow', () => change('add', 'later', [['title', 'Later'], ['place', 'foundation'], ['source', 'x'], ['first-asked', '2026-11-05']]), ['2026-11-05', '2026-11-04']);
+    refused('car --opened --on tomorrow', () => change('car', 'car:x', [['on', '2026-11-05']], ['opened']), ['2026-11-05', '2026-11-04']);
+    change('add', 'earlier', [['title', 'Earlier'], ['place', 'foundation'], ['source', 'x'], ['first-asked', '2026-11-03']]);
+    equal(read().items.find((i: { id: string }) => i.id === 'earlier')?.first_asked, '2026-11-03', '650 (b): an earlier first-asked accepted');
+    change('car', 'car:x', [['on', '2026-11-04']], ['opened']);
+    refused('car --arrived --on tomorrow', () => change('car', 'car:x', [['on', '2026-11-05']], ['arrived']), ['2026-11-05', '2026-11-04']);
+    change('car', 'car:x', [['on', '2026-11-04']], ['arrived']);
+    change('car', 'car:y', [['on', '2026-11-01']], ['opened']);
+    equal(JSON.stringify(read().cars), JSON.stringify([{ place: 'car:x', opened: '2026-11-04', arrived: '2026-11-04' }, { place: 'car:y', opened: '2026-11-01', arrived: null }]), '650 (b): today and an earlier date accepted');
+    equal(read().changed_by, 'planner', '650 (b): LIBRARY_SEAT still names the seat when nothing is bound');
+  } catch (error) {
+    failures.push(`section 650 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    w.dispose();
+  }
+}
+if (selected(650) && prerequisite(650, () => !isCompiled(), 'sets the time zone in process, which a compiled Bun binary on Windows ignores')) await section650();
+
+// --- 651. Malformed node values cannot prove absence (c112 row 1; library-auditor M1). ---
+async function section651(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c112-nodes-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const w = await import('../src/bmwrite.ts');
+    const project = 'stand-in-collection';
+    const stand = async (extra: string[]) => {
+      const storage = path.join(root, String(servers.length));
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      return { storage, session: await s178Session(server.url) };
+    };
+    const list = (session: import('../src/basicmemory.ts').McpSession) => bm.listFolderNodes(session, project, 'notes', 'The folder notes', 'too many');
+    for (const shape of ['file-path-empty', 'file-path-whitespace', 'file-path-leading', 'file-path-trailing', 'type-empty', 'type-unknown']) {
+      const s = await stand(['--malformed-list', `${shape}:1`]);
+      s178Lay(s.storage, 'notes/d.md', 'Still here.\n');
+      let said = '';
+      try { await list(s.session); } catch (error) { said = (error as Error).message; }
+      check(said.includes('not a whole page'), `651: ${shape} was not refused: ${said}`);
+      const d = await stand(['--outcome-unknown', 'bm_delete:1:lost', '--malformed-list', `${shape}:1`]);
+      const file = s178Lay(d.storage, 'notes/d.md', 'Still here.\n');
+      const verdict = await w.deleteNote(d.session, project, 'notes/d.md');
+      check(verdict.form === 'unknown' && fs.existsSync(file), `651: lost delete with ${shape}: ${JSON.stringify(verdict)}`);
+    }
+    const good = await stand([]);
+    fs.mkdirSync(path.join(good.storage, 'notes', 'nested'), { recursive: true });
+    s178Lay(good.storage, 'notes/d.md', 'Here.\n');
+    const nodes = await list(good.session);
+    check(nodes.some(node => bm.field(node, 'type') === 'directory' && bm.field(node, 'file_path') === null), '651: genuine directory with null file_path still lists');
+    check(nodes.some(node => bm.field(node, 'type') === 'file' && bm.field(node, 'file_path') === 'notes/d.md'), '651: genuine file still lists');
+  } catch (error) {
+    failures.push(`section 651 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(651)) await section651();
+
+// --- 652. Live delete and conflict receipts, through the stand-in (c112 rows 2 and 3). ---
+async function section652(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c112-receipts-')));
+  let server: { stop(): void } | undefined;
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const w = await import('../src/bmwrite.ts');
+    const answer = (record: Record<string, unknown>) => ({ result: { content: [{ type: 'text', text: JSON.stringify(record) }], isError: false } });
+    const live = bm.judgeBmWrite(answer({ action: 'deleted', title: 'gone', file_path: 'e6/gone.md' }));
+    check(live.form === 'written' && live.filePath === 'e6/gone.md' && live.checksum === '', `652(a): live delete: ${JSON.stringify(live)}`);
+    for (const record of [{ file_path: 'x.md' }, { action: 'edited', file_path: 'x.md' }, { action: 'deleted' }]) {
+      equal(bm.judgeBmWrite(answer(record)).form, 'unknown', `652(a): incomplete receipt ${JSON.stringify(record)}`);
+    }
+    server = await startFakeBasicMemory(root, []);
+    const session = await s178Session((server as Awaited<ReturnType<typeof startFakeBasicMemory>>).url);
+    const project = 'stand-in-collection';
+    const file = s178Lay(root, 'notes/current.md', 'Current.\n');
+    const current = s178Sha(file);
+    const raw = await session.callToolOnce('bm_write', { directory: 'notes', title: 'current', content: 'Stale.', overwrite: true, expected_checksum: '0'.repeat(64), output_format: 'json', project });
+    const result = bm.field(raw, 'result');
+    const blocks = bm.field(result, 'content') as { text: string }[];
+    const refusal = JSON.parse(blocks[0]!.text);
+    check(!Object.hasOwn(refusal, 'current_checksum') && refusal.message.includes(`current checksum ${current}`), '652(b): stand-in conflict must name checksum only in message');
+    const verdict = bm.judgeBmWrite(raw);
+    check(verdict.form === 'refused' && verdict.code === 'REVISION_CONFLICT' && verdict.currentChecksum === current, `652(b): conflict parsed from message: ${JSON.stringify(verdict)}`);
+    equal(s178Sha(file), current, '652(b): stale write changed nothing');
+    const deleted = await session.callToolOnce('bm_delete', { identifier: 'notes/current.md', output_format: 'json', project });
+    const receipt = bm.structuredRecord(deleted);
+    check(bm.field(receipt, 'checksum') === undefined, '652(a): stand-in delete has no checksum');
+    const judged = bm.judgeBmWrite(deleted);
+    check(judged.form === 'written' && judged.checksum === '', `652(a): stand-in delete: ${JSON.stringify(judged)}`);
+    s178Lay(root, 'notes/primitive.md', 'Delete directly.\n');
+    let listings = 0;
+    const call = session.callTool.bind(session);
+    session.callTool = async (name, args) => { if (name === 'bm_list') listings += 1; return call(name, args); };
+    const direct = await w.deleteNote(session, project, 'notes/primitive.md');
+    check(direct.form === 'written' && direct.checksum === '' && listings === 0, `652(a): clean delete needed settlement: ${JSON.stringify(direct)}, listings ${listings}`);
+  } catch (error) {
+    failures.push(`section 652 stopped early: ${(error as Error).message}`);
+  } finally {
+    server?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(652)) await section652();
+
+// --- 653. A ONE-SLOT TOKEN NEVER CARRIES A PUSH; A KICKOFF'S BASE COMES FROM ITS HEADER (s186 rows 1 and 2) ---
+async function section653(): Promise<void> {
+  // (a) Own fixture lock address (slotFixture), never this machine's live gate lock.
+  const f = await slotFixture(653);
+  try {
+    const one = f.start('commit'); await f.wait(one, '"held":true');
+    const slotToken = String(f.held(one).token);
+    check(/^slot:\d+:/.test(slotToken), `653(a): one-slot holder token not slot form: ${slotToken}`);
+    const pushChild = f.start('push', {DESKPOST_GATE_LOCK: slotToken, NO_WAIT: '1'});
+    pushChild.release(); const refused = await pushChild.done;
+    check(refused.code === 2 && !refused.out.includes('"held":true') && refused.out.includes('push') && refused.out.includes('one slot'),
+      `653(a): push child under a one-slot holder was not refused with its tier named: ${refused.code} ${refused.out}`);
+    const commitChild = f.start('commit', {DESKPOST_GATE_LOCK: slotToken, NO_WAIT: '1'});
+    await f.wait(commitChild, '"held":true');
+    check(f.held(commitChild).inherited === true, '653(a): commit child under a one-slot holder did not inherit');
+    await f.finish(commitChild); await f.finish(one);
+    const whole = f.start('push'); await f.wait(whole, '"held":true');
+    const wholeToken = String(f.held(whole).token);
+    const pushUnderWhole = f.start('push', {DESKPOST_GATE_LOCK: wholeToken, NO_WAIT: '1'});
+    await f.wait(pushUnderWhole, '"held":true');
+    check(f.held(pushUnderWhole).inherited === true, '653(a): push child under an exclusive holder did not inherit');
+    await f.finish(pushUnderWhole); await f.finish(whole);
+  } catch (error) { failures.push(`section 653(a) stopped early: ${(error as Error).message}`); }
+  finally { await f.close(); }
+  // (b) The base is read from the header lines before TRAIN:, never from a decoy in the body.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-kickoff-header-'));
+  try {
+    const kc = await import('../src/kickoffcheck.ts');
+    const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
+    const u2 = 'b6c4cf11d05ba0299d9402c90fd1b9de42aa607b';
+    const gate = path.join(root, 'gate'); fs.mkdirSync(gate);
+    fs.writeFileSync(path.join(gate, 'slots'), JSON.stringify({ slots: 2, u2Tip: u2 }));
+    const file = path.join(root, 'kickoff.md');
+    const run = (text: string) => {
+      fs.writeFileSync(file, text);
+      const r = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/kickoff-check.mts'), file],
+        { cwd: root, encoding: 'utf8', windowsHide: true, env: { ...process.env, DESKPOST_GATE_DIR: gate } });
+      const out = `${r.stdout}${r.stderr}`;
+      return { code: r.status, out, problems: out.split(/\r?\n/).filter(line => line.startsWith('- BASE:')) };
+    };
+    const marker = 'as committed at `<SHA>`';
+    check(block.includes(marker) && block.indexOf(marker) < block.search(/^TRAIN:/m), '653(b): template base marker is not in the header');
+    const headed = run(block.replace(marker, `as committed at \`${u2}\``));
+    check(headed.code === 0 && headed.problems.length === 0, `653(b): header base refused: ${headed.code} ${headed.out}`);
+    const decoy = block.replace(marker, 'at the base') +`\nNOTES: the loop doc as committed at \`${u2}\` is quoted here.\n`;
+    const body = run(decoy);
+    check(body.code === 1 && body.problems.length === 1 && body.problems[0]!.includes('name the base in full'),
+      `653(b): body decoy passed BASE: ${body.code} ${body.out}`);
+  } catch (error) { failures.push(`section 653(b) stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(653) && prerequisite(653, () => !isCompiled(), 'requires source slot fixtures and kickoff tool')) await section653();
+
+// --- 654. Source templates select tests that reject valid-syntax broken contents (c113 M1). ---
+async function section654(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c113-template-'));
+  try {
+    const selector = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/section-select.mts')).href);
+    const cases: [string, number[]][] = [
+      ['workspace-config.template.toml', [216]], ['hooks.template.json', [605,625]], ['config.template.toml', [625]],
+    ];
+    fs.mkdirSync(path.join(root,'.codex'));
+    for (const [file, required] of cases) {
+      fs.copyFileSync(path.join(PROGRAM_ROOT,'.codex',file),path.join(root,'.codex',file));
+      const selected = selector.selectSections({changed:[`.codex/${file}`],selftestText:'',selftestHunks:[],covers:{schema:1,sections:{}}});
+      check(!selected.all && required.every(n=>selected.sections.includes(n)), `654: ${file} must select ${required}: ${JSON.stringify(selected)}`);
+    }
+    for (const folder of ['.codex-plugin','.claude-plugin']) fs.cpSync(path.join(PROGRAM_ROOT,folder),path.join(root,folder),{recursive:true});
+    const run = (section: number) => spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'kernel/test/selftest.ts')],{
+      cwd:PROGRAM_ROOT,env:{...repositoryNeutralEnv(),LIBRARY_SELFTEST_SECTIONS:String(section),LIBRARY_SELFTEST_PROGRAM_ROOT:root},encoding:'utf8',timeout:120_000,windowsHide:true,
+    });
+    const workspace = path.join(root,'.codex/workspace-config.template.toml');
+    fs.writeFileSync(workspace,fs.readFileSync(workspace,'utf8').replace('default_tools_approval_mode = "approve"','default_tools_approval_mode = "auto"'));
+    const badWorkspace = run(216);
+    check(badWorkspace.status === 1 && badWorkspace.stderr.includes('not rendered with approval mode'), `654: section 216 must reject auto: ${badWorkspace.stderr}`);
+    const hooks = path.join(root,'.codex/hooks.template.json');
+    const document = JSON.parse(fs.readFileSync(hooks,'utf8'));
+    document.hooks.PreToolUse = document.hooks.PreToolUse.filter((entry: {hooks:{command:string}[]})=>!entry.hooks.some(h=>h.command==='__COMPUTER_USE_GUARD_COMMAND__'));
+    fs.writeFileSync(hooks,JSON.stringify(document));
+    const badHooks = run(605);
+    check(badHooks.status === 1 && badHooks.stderr.includes('one computer-use registration in .codex/hooks.template.json'), `654: section 605 must reject broken registration: ${badHooks.stderr}`);
+  } catch(error) { failures.push(`section 654 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root,{recursive:true,force:true}); }
+}
+if (selected(654)) await section654();
+
+// --- 655. A source-only checkout keeps an absent render skipped and validates its templates (c113 S1). ---
+async function section655(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c113-clone-'));
+  try {
+    const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/gate.ts')).href);
+    fs.symlinkSync(path.join(PROGRAM_ROOT,'tools'),path.join(root,'tools'),'junction');
+    fs.mkdirSync(path.join(root,'.codex'));
+    for (const file of ['workspace-config.template.toml','config.template.toml','hooks.template.json']) fs.copyFileSync(path.join(PROGRAM_ROOT,'.codex',file),path.join(root,'.codex',file));
+    for (const folder of ['.codex-plugin','.claude-plugin','.agents','.claude']) fs.cpSync(path.join(PROGRAM_ROOT,folder),path.join(root,folder),{recursive:true});
+    fs.mkdirSync(path.join(root,'kernel'));
+    fs.cpSync(path.join(PROGRAM_ROOT,'kernel/src'),path.join(root,'kernel/src'),{recursive:true});
+    fs.symlinkSync(path.join(PROGRAM_ROOT,'kernel/node_modules'),path.join(root,'kernel/node_modules'),'junction');
+    fs.copyFileSync(path.join(PROGRAM_ROOT,'kernel/package.json'),path.join(root,'kernel/package.json'));
+    const changed = ['.codex/workspace-config.template.toml'];
+    const target = path.join(root,changed[0]!);
+    fs.appendFileSync(target,'\n# Valid source-only edit\n');
+    check(!fs.existsSync(path.join(root,'.codex/config.toml')) && !fs.existsSync(path.join(root,'.codex/hooks.json')), '655: fixture has no rendered Codex files');
+    const rows = await gate.settingsChecks(root,changed);
+    check(rows.some((r:{check:string;status:string;detail:string})=>r.check==='codex.project-access-config' && r.status==='skip' && r.detail.includes('both rendered Codex files are absent')), `655: expected skip and reason: ${JSON.stringify(rows)}`);
+    check(rows.every((r:{status:string})=>r.status!=='fail'), `655: valid source-only edit failed: ${JSON.stringify(rows)}`);
+    const selector = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/section-select.mts')).href);
+    const selected = selector.selectSections({changed,selftestText:'',selftestHunks:[],covers:{schema:1,sections:{}}});
+    const run = () => spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'kernel/test/selftest.ts')],{cwd:PROGRAM_ROOT,
+      env:{...repositoryNeutralEnv(),LIBRARY_SELFTEST_SECTIONS:selected.sections.join(','),LIBRARY_SELFTEST_PROGRAM_ROOT:root},encoding:'utf8',timeout:120_000,windowsHide:true});
+    check(!selected.all && selected.sections.includes(216), '655: template proof selected');
+    if (selected.sections.includes(216)) {
+      const good = run(); equal(good.status,0,`655: valid template proof: ${good.stderr}`);
+      fs.writeFileSync(target,fs.readFileSync(target,'utf8').replace('default_tools_approval_mode = "approve"','default_tools_approval_mode = "auto"'));
+      const bad = run(); check(bad.status===1 && bad.stderr.includes('not rendered with approval mode'),`655: invalid template proof: ${bad.stderr}`);
+    }
+    fs.writeFileSync(path.join(root,'.codex/config.toml'),'# Partial render\n');
+    const partial = await gate.settingsChecks(root,changed);
+    check(partial.some((r:{check:string;status:string})=>r.check==='codex.project-access-config' && r.status==='fail'),'655: a partial render still fails');
+    const script = path.join(root,'missing-powershell.mjs');
+    fs.writeFileSync(script,`const gate = await import(${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT,'tools/gate.ts')).href)}); console.log(JSON.stringify(await gate.settingsChecks(${JSON.stringify(root)},${JSON.stringify(changed)})));`);
+    const missing = spawnSync(process.execPath,[script],{cwd:root,env:{...repositoryNeutralEnv(),PATH:path.join(root,'empty-path')},encoding:'utf8',timeout:30_000,windowsHide:true});
+    equal(missing.status,0,`655: missing PowerShell fixture: ${missing.stderr}`);
+    const unavailable = JSON.parse(missing.stdout) as {check:string;status:string;detail:string}[];
+    check(unavailable.length>0 && unavailable.every(row=>row.status==='fail' && row.detail.includes('powershell.exe is missing') && row.detail.includes(row.check)),`655: missing PowerShell must name the prerequisite and check: ${missing.stdout}`);
+  } catch(error) { failures.push(`section 655 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(root,{recursive:true,force:true}); }
+}
+if (selected(655) && prerequisite(655, () => !isCompiled() && process.platform === 'win32', 'requires source Windows runner')) await section655();
+
+// --- 656. Added claim-map keys and appended sections select only themselves (c114). ---
+async function section656(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c114-selection-'));
+  try {
+    const selector = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+    const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+    const before = { schema: 1 as const, about: 'fixture', sections: { '12': ['kernel/src/one.ts'] } };
+    const after = { ...before, sections: { ...before.sections, '656': [] } };
+    const choose = (covers: { schema: 1; about: string; sections: Record<string, string[]> }) => selector.selectSections({ changed: [selector.COVERS_PATH], covers,
+      previousCovers: before, selftestText: '', selftestHunks: [] });
+    const added = choose(after);
+    check(!added.all && added.sections.join(',') === '656', '656(a): added key selects only its section');
+    check(choose({ ...before, sections: { '12': [] } }).all, '656(a): changed existing claim selects every section');
+    check(choose({ ...before, sections: {} }).all, '656(a): removed key selects every section');
+    check(!choose(before).all, '656(a): unchanged claims select no extra section');
+    const appended = ['// section 656', 'async function section656(): Promise<void> {', '  check(true);', '}', '', 'if (selected(656)) await section656();'].join('\n');
+    const span = (selftestText: string, start: number, count: number) => selector.selectSections({ changed: [selector.SELFTEST_PATH, selector.COVERS_PATH],
+      covers: after, previousCovers: before, selftestText, selftestHunks: [{ start, count }] });
+    const append = span(appended, 1, 6);
+    check(!append.all && append.sections.join(',') === '656', '656(b): appended function, guard and empty key select exactly 656');
+    const reversed = ['if (selected(656)) await section656();', '', appended.split('\n').slice(0, 4).join('\n')].join('\n');
+    check(!span(reversed, 1, 6).all, '656(b): guard before function selects the same section');
+    const helper = appended.replace('}\n\n', '}\nconst sharedHelper = true;\n');
+    check(span(helper, 1, 6).all, '656(b): hunk crossing shared helper selects every section');
+    const other = appended.replace('}\n\n', '}\nif (selected(12)) await section12();\n');
+    check(span(other, 1, 6).all, '656(b): hunk crossing another section selects every section');
+    check(span(appended + '\nconst helper = true;', 1, 7).all, '656(b): hunk spilling past guard selects every section');
+    const git = (args: string[]) => { const ran = spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8', windowsHide: true }); if (ran.status !== 0) throw Error(ran.stderr); return ran.stdout.trim(); };
+    const putMap = (map: unknown) => fs.writeFileSync(path.join(root, selector.COVERS_PATH), typeof map === 'string' ? map : JSON.stringify(map));
+    git(['init', '-q']); git(['config', 'user.name', 'Fixture']); git(['config', 'user.email', 'fixture@example.invalid']); git(['config', 'core.hooksPath', '.git/no-hooks']);
+    fs.mkdirSync(path.join(root, 'kernel/test'), { recursive: true });
+    fs.writeFileSync(path.join(root, selector.SELFTEST_PATH), 'if (selected(12)) {\n}\n');
+    putMap(before); git(['add', '.']); git(['commit', '-qm', 'base']);
+    git(['update-ref', 'refs/remotes/origin/master', 'HEAD']);
+    putMap(after); git(['add', '.']); putMap('{broken working map');
+    equal(gate.selection(root, null).selection.sections.join(','), '656', '656(a): staged map comes from index');
+    equal(selector.hookSections(git).sections.join(','), '155,656', '656(a): hook compares index to HEAD');
+    putMap(after); git(['commit', '-qm', 'add key']);
+    const commit = git(['rev-parse', 'HEAD']);
+    putMap('{broken working map');
+    equal(gate.selection(root, commit).selection.sections.join(','), '656', '656(a): commit map comes from commit');
+    equal(gate.selection(root, null, true).selection.sections.join(','), '656', '656(a): outgoing map comes from HEAD');
+    putMap('{'); git(['add', '.']); git(['commit', '-qm', 'malformed previous map']);
+    putMap(after); git(['add', '.']);
+    let refused = false; try { gate.selection(root, null); } catch { refused = true; }
+    check(refused, '656(a): gate refuses malformed previous map');
+    const fallback = selector.hookSections(git);
+    check(fallback.all && fallback.reasons.some((reason: string) => reason.includes('selection unavailable')), '656(a): hook explains malformed previous map fallback');
+  } catch (error) { failures.push('section 656 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(656)) await section656();
+
+// --- 657. THE OBSERVE TOOL RECORDS AND JUDGES NOTHING (kickoffs/s187 rows 1 to 3). `tools/bm-probe.mts` against the
+// stand-in: (a) a calls file holding one unsafe or malformed call is refused whole, naming the call, with nothing sent to
+// the server (its `.calls.log` stays empty), and a valid file is accepted; (b) a run records each call whole (a
+// refusal included), with its SHA-256, `SHA256SUMS` and a summary naming the project it leaves, and a tool the server does
+// not list is refused before any project is made; (c) the S6 scenario `s6-old-path.json` runs whole, 50 calls recorded.
+async function section657(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s187-probe-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const script = path.join(PROGRAM_ROOT, 'tools', 'bm-probe.mts');
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const standIn = async (label: string, extra: string[] = []) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      return { storage, url: server.url };
+    };
+    const probe = (url: string, callsFile: string, out: string) => {
+      const ran = spawnSync(process.execPath, [script, '--url', url, '--calls', callsFile, '--out', out], { cwd: root, env: { ...process.env, ...QUIET_TAB, ...env }, encoding: 'utf8', timeout: 120000 });
+      return { status: ran.status, stdout: ran.stdout ?? '', stderr: ran.stderr ?? '', said: `${ran.status} ${(ran.stdout ?? '').slice(0, 400)} ${(ran.stderr ?? '').slice(0, 400)}` };
+    };
+    const callsFile = (name: string, calls: unknown) => {
+      const file = path.join(root, `${name}.json`);
+      fs.writeFileSync(file, typeof calls === 'string' ? calls : JSON.stringify(calls));
+      return file;
+    };
+    const logged = (storage: string) => (fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').trim() : '');
+    const list = { tool: 'bm_list', args: { path: '/', output_format: 'json' } };
+
+    // (a) Refused whole, before anything is sent.
+    const a = await standIn('a');
+    const unsafe: [string, unknown, RegExp][] = [
+      ['names project', [list, { tool: 'bm_read', args: { identifier: 'x', project: 'other' } }], /call 2 \(bm_read\): args name project/],
+      ['names project_id', [list, { tool: 'bm_read', args: { identifier: 'x', project_id: 'other' } }], /call 2 \(bm_read\): args name project_id/],
+      ['bm_project', [list, { tool: 'bm_project', args: { command: 'list' } }], /call 2 \(bm_project\): bm_project is refused/],
+      ['bm_project_delete', [list, { tool: 'bm_project_delete', args: { name: 'x' } }], /call 2 \(bm_project_delete\): bm_project_delete is refused/],
+      ['no args', [list, { tool: 'bm_read' }], /call 2 \(bm_read\): args must be an object/],
+      ['not an object', [list, 'bm_read'], /call 2: not an object/],
+      ['an extra field', [list, { tool: 'bm_read', args: {}, project: 'other' }], /call 2 \(bm_read\): unexpected field project/],
+      ['not a bm_ tool', [list, { tool: 'delete_project', args: {} }], /call 2 \(delete_project\): tool must be a bm_ tool name/],
+      ['a bad pause', [list, { tool: 'bm_read', args: {}, pause_ms: -1 }], /call 2 \(bm_read\): pause_ms must be/],
+      ['not an array', '{"tool":"bm_list","args":{}}', /not a non-empty JSON array/],
+    ];
+    for (const [label, calls, reason] of unsafe) {
+      const out = path.join(root, `a-out-${label.replace(/\W+/g, '-')}`);
+      const ran = probe(a.url, callsFile(`a-${label.replace(/\W+/g, '-')}`, calls), out);
+      check(ran.status === 2 && reason.test(ran.stderr) && ran.stderr.trim().split(/\r?\n/)[0]!.startsWith('bm-probe refused: '), `657 (a): a calls file that ${label} was not refused in one line naming the call: ${ran.said}`);
+      check(!fs.existsSync(path.join(out, 'calls.jsonl')), `657 (a): a refused file (${label}) wrote calls.jsonl`);
+    }
+    equal(logged(a.storage), '', '657 (a): a refused calls file reached the server');
+    const good = probe(a.url, callsFile('a-good', [list]), path.join(root, 'a-out-good'));
+    check(good.status === 0 && /calls sent: 1 /.test(good.stdout), `657 (a): a valid calls file was not accepted: ${good.said}`);
+
+    // (b) It records and judges nothing: the second call is refused ALREADY_EXISTS, recorded whole, and the run exits 0.
+    const b = await standIn('b');
+    const write = (content: string) => ({ tool: 'bm_write', args: { directory: 'probe', title: 'note', content, note_type: 'note', overwrite: false, output_format: 'json' } });
+    const sent = [write('first'), write('second'), { tool: 'bm_read', args: { identifier: 'probe/note.md', output_format: 'json' }, pause_ms: 10 }];
+    const bOut = path.join(root, 'b-out');
+    const ran = probe(b.url, callsFile('b', sent), bOut);
+    const summary = fs.existsSync(path.join(bOut, 'summary.txt')) ? fs.readFileSync(path.join(bOut, 'summary.txt'), 'utf8') : '';
+    const project = /project left for the reader to remove: (deskpost-probe-\d{8}-\d{6})\n/.exec(summary)?.[1] ?? '';
+    check(ran.status === 0 && project !== '', `657 (b): the run did not exit 0 naming its project: ${ran.said} ${summary}`);
+    const lines = fs.existsSync(path.join(bOut, 'calls.jsonl')) ? fs.readFileSync(path.join(bOut, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>) : [];
+    equal(lines.length, 3, '657 (b): calls.jsonl does not hold one line per call');
+    lines.forEach((line, at) => {
+      check(line['index'] === at + 1 && line['tool'] === sent[at]!.tool && typeof line['started_utc'] === 'string' && typeof line['ended_utc'] === 'string', `657 (b): line ${at + 1}'s index, tool or times: ${JSON.stringify(line).slice(0, 300)}`);
+      equal(JSON.stringify(line['args']), JSON.stringify({ ...sent[at]!.args, project }), `657 (b): line ${at + 1}'s arguments as sent`);
+      check('answer' in line && line['sha256'] === createHash('sha256').update(JSON.stringify(line['answer'])).digest('hex'), `657 (b): line ${at + 1}'s SHA-256 is not that of its answer`);
+    });
+    const refusedText = JSON.stringify(lines[1]?.['answer'] ?? null);
+    check(/"isError":true/.test(refusedText) && refusedText.includes('ALREADY_EXISTS'), `657 (b): the stand-in's refusal was not recorded whole: ${refusedText.slice(0, 300)}`);
+    const sums = fs.existsSync(path.join(bOut, 'SHA256SUMS')) ? fs.readFileSync(path.join(bOut, 'SHA256SUMS'), 'utf8') : '';
+    for (const name of ['calls.jsonl', 'summary.txt']) {
+      check(sums.includes(`${createHash('sha256').update(fs.readFileSync(path.join(bOut, name))).digest('hex')}  ${name}\n`), `657 (b): SHA256SUMS does not hold ${name}'s hash: ${sums}`);
+    }
+    check(project !== '' && fs.existsSync(path.join(b.storage, '.projects', project)), `657 (b): the project ${project} is not there afterwards`);
+
+    // (b) A tool the server does not list is refused before the project is made.
+    const dropped = await standIn('b-dropped', ['--drop-tool', 'bm_move']);
+    const moved = probe(dropped.url, callsFile('b-dropped', [write('x'), { tool: 'bm_move', args: { identifier: 'probe/note.md', destination: 'moved/note.md', output_format: 'json' } }]), path.join(root, 'b-dropped-out'));
+    check(moved.status === 2 && /call 2 \(bm_move\): the server does not list bm_move/.test(moved.stderr), `657 (b): an unlisted tool was not refused: ${moved.said}`);
+    const writes = fs.existsSync(path.join(dropped.storage, '.writes.log')) ? fs.readFileSync(path.join(dropped.storage, '.writes.log'), 'utf8') : '';
+    check(!writes.includes('create_memory_project|'), `657 (b): a project was made before the unlisted tool was refused: ${writes}`);
+
+    // (c) The S6 scenario, tools/bm-probe/s6-old-path.json, runs whole: ten repetitions of five calls.
+    const c = await standIn('c');
+    const cOut = path.join(root, 'c-out');
+    const s6 = probe(c.url, path.join(PROGRAM_ROOT, 'tools', 'bm-probe', 's6-old-path.json'), cOut);
+    const s6Lines = fs.existsSync(path.join(cOut, 'calls.jsonl')) ? fs.readFileSync(path.join(cOut, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { tool: string }) : [];
+    const shape = Array.from({ length: 10 }, () => ['bm_write', 'bm_move', 'bm_write', 'bm_list', 'bm_list']).flat();
+    check(s6.status === 0 && /calls sent: 50 /.test(s6.stdout), `657 (c): the S6 scenario did not run whole: ${s6.said}`);
+    equal(JSON.stringify(s6Lines.map((line) => line.tool)), JSON.stringify(shape), '657 (c): the S6 scenario did not record ten repetitions of its five calls');
+  } catch (error) {
+    failures.push(`section 657 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(657) && prerequisite(657, () => !isCompiled(), 'requires the source tools/bm-probe.mts')) await section657();
+
+// --- 658. Sensitive names under explicitly declared fixture folders (c115). ---
+async function section658(): Promise<void> {
+  const kc = await import('../src/kickoffcheck.ts');
+  const block = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
+  const options = { adrFiles: fs.readdirSync(path.join(PROGRAM_ROOT, 'docs/adr')) };
+  for (const [pattern, warns] of [
+    ['tools/probe/fixtures/**', true], ['tools/probe/**', false],
+    ['tools/probe/fixtures/settings.ini', false], ['tools/probe/fixtures-other/**', false],
+  ] as const) {
+    const text = block.replace(/^OWNS PATHS:[^\n]*\n(?:- `[^`]*`\r?\n)*/m, 'OWNS PATHS:\n- `' + pattern + '`\n')
+      .replace(/^WHY NOW:/m, 'WHY NOW:\n- **Second read:** library-auditor reads the range.');
+    const verdict = kc.kickoffVerdict(text, options);
+    const warning = `OWNS PATHS ${pattern} covers a fixtures folder: sensitive-named fixtures under it are accepted; the handback names each one`;
+    equal(verdict.warnings.includes(warning), warns, `658: fixture posting warning for ${pattern}`);
+    equal(JSON.stringify(verdict.problems), '[]', `658: posting warning leaves valid kickoff without problems for ${pattern}`);
+  }
+  const f = await ownsFixture('sensitive-fixtures');
+  try {
+    const patterns = ['tools/probe/fixtures/**', 'tools/other/**', 'kernel/src/*.ts'];
+    equal(f.start(patterns).result.status, 0, '658: start fixture ownership');
+    for (const [file, accepted] of [
+      ['tools/probe/fixtures/one-line-fix/settings.ini', true],
+      ['tools/probe/fixtures/secret-trap/a.txt', true],
+      ['tools/other/fixtures/settings.ini', false],
+      ['tools/other/settings.json', false],
+      ['tools/probe/fixtures/.githooks/settings.json', false],
+      ['kernel/src/guards.ts', false],
+      ['tools/probe/fixtures-other/settings.json', false],
+    ] as const) {
+      f.put(file, 'fixture\n'); f.git('add', '--', file);
+      const ran = f.tool('check'), out = f.output(ran);
+      equal(ran.status, accepted ? 0 : 1, `658: ${file}: ${out}`);
+      if (accepted) check(out.includes(`sensitive fixture accepted: ${file}`), `658: accepted file named: ${out}`);
+      else check(!out.includes('sensitive fixture accepted:'), `658: refused file not accepted: ${out}`);
+      f.git('restore', '--staged', '--', file);
+    }
+    // An exact name still permits a sensitive file without invoking the exception.
+    const exact = 'tools/other/settings.json';
+    equal(f.start([exact]).result.status, 0, '658: start exact ownership');
+    f.git('add', '--', exact);
+    const ran = f.tool('check');
+    equal(ran.status, 0, '658: exact sensitive name still accepted: ' + f.output(ran));
+    check(!f.output(ran).includes('sensitive fixture accepted:'), '658: exact name is not a fixture exception');
+  } catch (error) { failures.push(`section 658 stopped early: ${(error as Error).message}`); }
+  finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+}
+if (selected(658) && prerequisite(658, () => !isCompiled(), 'requires source Node ownership tool and git fixtures')) await section658();
+
+// --- 659. A BASIC MEMORY TOOL LETS ITS LOOP DRAIN (kickoffs/s188 row 2). Every `tools/*.mts` that imports
+// `../kernel/src/basicmemory.ts` sets `process.exitCode` and never calls `process.exit(`: exiting while fetch's sockets
+// close trips a libuv assertion on Windows (s187, bm-probe). The scan must find bm-proof and bm-probe, so an emptied
+// scan cannot pass.
+async function section659(): Promise<void> {
+  try {
+    const tools = path.join(PROGRAM_ROOT, 'tools');
+    const found: string[] = [];
+    const exits: string[] = [];
+    for (const name of fs.readdirSync(tools).filter((entry) => entry.endsWith('.mts')).sort()) {
+      const text = fs.readFileSync(path.join(tools, name), 'utf8');
+      if (!/['"]\.\.\/kernel\/src\/basicmemory\.ts['"]/.test(text)) continue;
+      found.push(name);
+      text.split(/\r?\n/).forEach((line, index) => { if (line.includes('process.exit(')) exits.push(`tools/${name}:${index + 1}`); });
+    }
+    for (const name of ['bm-probe.mts', 'bm-proof.mts']) check(found.includes(name), `659: the scan did not find tools/${name} importing ../kernel/src/basicmemory.ts (found: ${found.join(', ') || 'none'})`);
+    check(exits.length === 0, `659: process.exit( in a Basic Memory tool; set process.exitCode and let the loop drain: ${exits.join(', ')}`);
+  } catch (error) {
+    failures.push(`section 659 stopped early: ${(error as Error).message}`);
+  }
+}
+if (selected(659) && prerequisite(659, () => !isCompiled(), 'requires the source tools/*.mts')) await section659();
+
+// --- 660. Postbox conflict decisions bind current bodies and preserve fresh cache keys (c116). ------------
+async function section660(): Promise<void> {
+  const t = await filedConflictFixture(660);
+  try {
+    const stateFile = path.join(t.far.lib, 'internal/postbox/state.json');
+    const state = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const command = (id: string, disposition: string, extra: string[]) => t.cli(t.far.lib, ['postbox', 'conflict', id, disposition, ...extra, '--json']);
+    const make = (title: string) => { const id=t.sendLetter(title); t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'}); t.change(id); t.checkBox(); return id; };
+    const id=make('Keep and reopen');
+    const preview=command(id,'--keep-filed',['--preflight']);
+    check(preview.exit===0,'660: conflict preview unavailable: '+preview.stderr);
+    if(preview.exit!==0)return;
+    const p=t.json(preview);
+    const localFile=t.note(id),localBefore=fs.readFileSync(localFile,'utf8'),cacheBeforeLocal=fs.readFileSync(stateFile,'utf8');
+    const localEdit=localBefore+'\nLocal edit after preview.\n';fs.writeFileSync(localFile,localEdit);
+    check(command(id,'--keep-filed',['--user-confirmed','--plan-id',String(p['plan_id'])]).exit!==0,'660: stale local digest approved');
+    equal(fs.readFileSync(stateFile,'utf8'),cacheBeforeLocal,'660: stale local digest wrote cache');
+    equal(fs.readFileSync(localFile,'utf8'),localEdit,'660: stale local digest changed the Book');fs.writeFileSync(localFile,localBefore);
+    equal(t.cli(t.far.lib,['postbox','conflict',id,'--preflight','--json']).exit,0,'660: doctor preview command failed');
+    check(typeof p['filed_digest']==='string'&&typeof p['inbox_digest']==='string'&&String(p['diff']).includes('Body B.'),'660: digests or unified diff missing');
+    const before=fs.readFileSync(stateFile,'utf8'); t.change(id);
+    check(command(id,'--keep-filed',['--user-confirmed','--plan-id',String(p['plan_id'])]).exit!==0,'660: stale plan accepted');
+    equal(fs.readFileSync(stateFile,'utf8'),before,'660: stale plan wrote cache'); t.checkBox();
+    const decide=(target:string,flag:string)=>{ const pre=t.json(command(target,flag,['--preflight'])); return command(target,flag,['--user-confirmed','--plan-id',String(pre['plan_id'])]); };
+    equal(decide(id,'--keep-filed').exit,0,'660: keep failed');
+    equal(state().filed_conflicts[0].disposition.decided,'keep-filed','660: disposition absent');
+    equal(state().left_inbox_copies[0].added_by,'conflict-disposition','660: left copy origin absent');
+    const warn=()=>((t.json(t.cli(t.far.lib,['doctor','--json']))['library_checks'] as Record<string,unknown>[]).find(r=>r['check']==='postbox.outbox'))!;
+    check(warn()['status']!=='warn','660: kept conflict still warns');
+    t.checkBox(); const fresh=state();
+    equal(decide(id,'--reopen').exit,0,'660: reopen failed');
+    const reopened=state(); equal(reopened.filed_conflicts[0].disposition,null,'660: reopen left disposition');
+    equal(reopened.left_inbox_copies.length,0,'660: reopen left its row');
+    for(const key of Object.keys(fresh).filter(k=>!['filed_conflicts','left_inbox_copies'].includes(k)))equal(JSON.stringify(reopened[key]),JSON.stringify(fresh[key]),'660: reopen changed '+key);
+    equal(warn()['status'],'warn','660: reopened conflict does not warn');
+    const second=make('Concurrent second');
+    const plans=[id,second].map(target=>t.json(command(target,'--keep-filed',['--preflight'])));
+    const run=(target:string,plan:Record<string,unknown>)=>runCliAsync(['postbox','conflict',target,'--keep-filed','--user-confirmed','--plan-id',String(plan['plan_id']),'--workspace',t.far.lib,'--json'],{cwd:t.root,env:t.env});
+    const results=await Promise.all([run(id,plans[0]!),run(second,plans[1]!)]);
+    check(results.every(r=>r.exit===0),'660: concurrent decision refused: '+results.map(r=>r.stderr).join('; '));
+    equal(state().filed_conflicts.filter((r:any)=>r.disposition?.decided==='keep-filed').length,2,'660: concurrent disposition lost');
+    equal(state().left_inbox_copies.length,2,'660: concurrent left copy lost');
+  } catch(error) { failures.push('section 660 stopped early: '+(error as Error).message); }
+  finally { t.stop(); }
+}
+if(selected(660))await section660();
+
+// --- 661. Postbox conflict copies resume their saved atomic capture and preserve newer inbox bodies (c116).
+async function section661(): Promise<void> {
+  const t=await filedConflictFixture(661);
+  try {
+    const {payloadDigest,readOutbox}=await import('../src/postbox.ts');
+    const {noteFrontmatter,setNoteField}=await import('../src/shelfnote.ts');
+    const {sha256OfText}=await import('../src/sha.ts');
+    const {readBookManifestDirty}=await import('../src/manifeststore.ts');
+    const cacheFile=(home=false)=>path.join(home?t.home.lib:t.far.lib,'internal/postbox/state.json');
+    const cache=(home=false)=>JSON.parse(fs.readFileSync(cacheFile(home),'utf8'));
+    const command=(id:string,flags:string[],extra:Record<string,string>={},home=false)=>t.cli(home?t.home.lib:t.far.lib,['postbox','conflict',id,...flags,'--json'],'',extra);
+    const decide=(id:string,flag:string,extra:Record<string,string>={},home=false)=>{
+      const pre=command(id,[flag,'--preflight'],{},home);
+      if(pre.exit!==0)return pre;
+      return command(id,[flag,'--user-confirmed','--plan-id',String(t.json(pre)['plan_id'])],extra,home);
+    };
+    const make=(title:string,headingless=false)=>{
+      const id=t.sendLetter(title);t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'});
+      if(headingless){const wire=fs.readFileSync(t.inbox(id),'utf8');fs.writeFileSync(t.inbox(id),wire.replace(/\n# [^\n]+\n/,'\n')+'\nBody B.\n');}
+      else t.change(id);
+      t.checkBox();return id;
+    };
+    const doctor=()=>((t.json(t.cli(t.far.lib,['doctor','--json']))['library_checks'] as Record<string,unknown>[]).find(r=>r['check']==='postbox.outbox'))!;
+    const points=['conflict-after-copy','conflict-after-link','conflict-after-page','conflict-after-index','conflict-after-manifest'];
+    for(const point of points){
+      const id=make('Resume '+point,point==='conflict-after-page');
+      const keep=t.json(command(id,['--keep-filed','--preflight']));
+      const before=fs.readFileSync(cacheFile(),'utf8');
+      check(command(id,['--file-as-new','--user-confirmed','--plan-id',String(keep['plan_id'])]).exit!==0,'661: keep plan approved a copy');
+      equal(fs.readFileSync(cacheFile(),'utf8'),before,'661: wrong disposition plan wrote cache');
+      const stopped=decide(id,'--file-as-new',{LIBRARY_POSTBOX_FAULT:point});
+      check(stopped.exit!==0&&stopped.stderr.includes('LIBRARY_POSTBOX_FAULT'),'661: stop not reached '+point+': '+stopped.stderr);
+      const op=cache().conflict_operations?.find((r:any)=>r.delivery_id===id);
+      check(!!op,'661: no saved operation at '+point);
+      if(!op)continue;
+      const operationFile=path.join(t.far.lib,'internal/postbox/conflict-operations',op.op_id+'.json');
+      const saved=JSON.parse(fs.readFileSync(operationFile,'utf8'));
+      equal(op.state,'started','661: stopped operation already done');
+      check(String(doctor()['detail']).includes('--resume '+op.op_id),'661: doctor omits unfinished resume');
+      const copy=path.join(t.far.lib,'shelf/letters/wiki',op.copy_page+'.md');
+      equal(sha256OfText(fs.readFileSync(copy,'utf8')),op.copy_text_digest,'661: published digest differs from saved rendering');
+      equal(fs.readFileSync(copy,'utf8'),saved.copy_text,'661: saved text differs');
+      if(point==='conflict-after-page')check(/^# /m.test(saved.copy_text),'661: headingless copy lacks capture heading');
+      if(point==='conflict-after-page'){
+        const prior=fs.readFileSync(cacheFile(),'utf8');
+        fs.appendFileSync(copy,'A different whole page.\n');
+        check(command(id,['--resume',op.op_id]).exit!==0,'661: a different copy page was accepted');
+        equal(fs.readFileSync(cacheFile(),'utf8'),prior,'661: different copy page changed cache');
+        fs.writeFileSync(copy,saved.copy_text);
+      }
+      if(point==='conflict-after-copy'){
+        const setup=t.json(t.cli(t.far.lib,['postbox','setup','--url',t.server.url,'--preflight','--json']));
+        const previous=cache();
+        equal(t.cli(t.far.lib,['postbox','setup','--url',t.server.url,'--user-confirmed','--plan-id',String(setup['plan_id'])]).exit,0,'661: repeat setup failed');
+        for(const key of ['filed_conflicts','left_inbox_copies','conflict_operations'])equal(JSON.stringify(cache()[key]),JSON.stringify(previous[key]),'661: setup lost '+key);
+      }
+      const resumed=command(id,['--resume',op.op_id]);
+      equal(resumed.exit,0,'661: resume failed '+point+': '+resumed.stderr);
+      const done=cache().conflict_operations.find((r:any)=>r.op_id===op.op_id);
+      check(done.state==='done'&&done.page&&done.index&&done.manifest&&done.linked&&done.left_copy==='recorded','661: missing completion stages');
+      const text=fs.readFileSync(copy,'utf8'),fields=noteFrontmatter(text);
+      equal(fields.get('conflict_of_delivery_id'),id,'661: copy lost delivery provenance');
+      equal(fields.get('conflict_of'),op.filed_page,'661: copy lost original link');
+      check(!fields.has('delivery_id'),'661: copy duplicates delivery identity');
+      equal(t.withDelivery(t.far.lib,id).length,1,'661: deliveryNote identity duplicated');
+      equal(noteFrontmatter(fs.readFileSync(t.note(id),'utf8')).get('conflict_copy'),op.copy_page,'661: original missing copy link');
+      const index=fs.readFileSync(path.join(t.far.lib,'shelf/letters/wiki/_index.md'),'utf8');
+      equal(index.split('[['+op.copy_page+'|').length-1,1,'661: copy index link not unique');
+      equal(readBookManifestDirty(t.far.lib,'letters'),null,'661: copy manifest still dirty');
+      check(command(id,['--reopen','--preflight']).exit!==0,'661: file-as-new reopened');
+      equal(command(id,['--resume',op.op_id]).exit,0,'661: completed resume not idempotent');
+      equal(fs.readFileSync(copy,'utf8'),text,'661: completed resume changed copy');
+    }
+    const newer=make('Changed while stopped');
+    decide(newer,'--file-as-new',{LIBRARY_POSTBOX_FAULT:'conflict-after-copy'});
+    const op=cache().conflict_operations?.find((r:any)=>r.delivery_id===newer);
+    if(op){
+      fs.appendFileSync(t.inbox(newer),'\nBody C.\n');
+      t.checkBox();
+      const digest=payloadDigest(fs.readFileSync(t.inbox(newer),'utf8'));
+      equal(command(newer,['--resume',op.op_id]).exit,0,'661: changed-inbox resume failed');
+      const after=cache();
+      check(after.filed_conflicts.some((r:any)=>r.delivery_id===newer&&r.inbox_digest===digest&&r.disposition===null),'661: newer conflict was settled by old operation');
+      check(!after.left_inbox_copies.some((r:any)=>r.delivery_id===newer),'661: newer inbox recorded as old left copy');
+      check(fs.readFileSync(t.inbox(newer),'utf8').includes('Body C.'),'661: newer body removed');
+      check(!fs.readFileSync(path.join(t.far.lib,'shelf/letters/wiki',op.copy_page+'.md'),'utf8').includes('Body C.'),'661: resume rendered the newer body');
+    }
+    const envelope=make('Envelope changed while stopped');
+    check(decide(envelope,'--file-as-new',{LIBRARY_POSTBOX_FAULT:'conflict-after-copy'}).exit!==0,'661: envelope copy did not stop');
+    const envelopeOp=cache().conflict_operations?.find((r:any)=>r.delivery_id===envelope);
+    check(!!envelopeOp,'661: envelope operation missing');
+    if(envelopeOp){
+      fs.writeFileSync(t.inbox(envelope),setNoteField(fs.readFileSync(t.inbox(envelope),'utf8'),'book','reports'));
+      t.checkBox();
+      const changed=cache().filed_conflicts.find((r:any)=>r.delivery_id===envelope);
+      check(changed?.kind==='moved-book'&&changed.inbox_book==='reports'&&changed.inbox_digest===envelopeOp.inbox_digest,'661: envelope fixture must change kind without changing body digest: '+JSON.stringify(changed));
+      check(changed?.updated_at!==envelopeOp.inbox_updated_at,'661: envelope fixture did not advance its version');
+      equal(command(envelope,['--resume',envelopeOp.op_id]).exit,0,'661: envelope resume failed');
+      equal(cache().filed_conflicts.find((r:any)=>r.delivery_id===envelope)?.disposition,null,'661: old copy decided a newer envelope conflict');
+      check(!cache().left_inbox_copies.some((r:any)=>r.delivery_id===envelope),'661: newer envelope recorded as left copy');
+    }
+    const simultaneous=make('Keep during a check');
+    const preview=t.json(command(simultaneous,['--keep-filed','--preflight']));
+    const concurrent=await Promise.all([
+      runCliAsync(['postbox','check','--workspace',t.far.lib,'--json'],{cwd:t.root,env:t.env}),
+      runCliAsync(['postbox','conflict',simultaneous,'--keep-filed','--user-confirmed','--plan-id',String(preview['plan_id']),'--workspace',t.far.lib,'--json'],{cwd:t.root,env:t.env}),
+    ]);
+    check(concurrent.every(r=>r.exit===0),'661: concurrent keep/check refused: '+concurrent.map(r=>r.stderr).join('; '));
+    equal(cache().filed_conflicts.find((r:any)=>r.delivery_id===simultaneous)?.disposition?.decided,'keep-filed','661: check lost concurrent decision');
+    const report=t.report('Refuse a Report copy');
+    const delivered=path.join(path.dirname(t.inbox(report.id)),'delivered',report.id+'.md');
+    fs.writeFileSync(t.inbox(report.id),fs.readFileSync(delivered,'utf8').replace(/^permalink: (.*)$/m,'permalink: $1-again')+'\nBody B.\n');
+    t.checkBox();
+    const beforeReport=fs.readFileSync(cacheFile(),'utf8');
+    const refusedReport=command(report.id,['--file-as-new','--preflight']);
+    check(refusedReport.exit!==0&&/Report|outcome/.test(refusedReport.stderr),'661: Report copy not refused in words');
+    equal(fs.readFileSync(cacheFile(),'utf8'),beforeReport,'661: Report refusal wrote cache');
+    equal(decide(report.id,'--keep-filed').exit,0,'661: Report keep failed');
+    check(t.close(report.page).value['all_succeeded']===true,'661: kept Report could not close through real triage');
+    const outcome=readOutbox(t.far.lib).find(e=>e.metadata['closes_delivery_id']===report.id)!;
+    t.checkBox({LIBRARY_POSTBOX_FAULT:'crash-after-file'},true);t.change(outcome.delivery_id,true);t.checkBox({},true);
+    const beforeOutcome=fs.readFileSync(cacheFile(true),'utf8');
+    const refusedOutcome=command(outcome.delivery_id,['--file-as-new','--preflight'],{},true);
+    check(refusedOutcome.exit!==0&&/Report|outcome/.test(refusedOutcome.stderr),'661: outcome copy not refused in words');
+    equal(fs.readFileSync(cacheFile(true),'utf8'),beforeOutcome,'661: outcome refusal wrote cache');
+  }catch(error){failures.push('section 661 stopped early: '+(error as Error).message);}
+  finally{t.stop();}
+}
+if (selected(661)) await section661();
+
+// --- 662. SHARED WRITES ARE OPTED INTO (kickoffs/s191 row 1; PLAN-many-libraries.md r12 Stage 2 item 1). The connection's
+// `shared_writes` is off for a new connection, set by `basic-memory setup --shared-writes on`, kept by a set-up re-run and
+// by `init --mcp-url` for the same server and collection, and reset by a changed URL or collection. With it off,
+// `shared add-page` refuses in one line naming the set-up command and sends the server nothing. The stand-in's
+// `--hide-listed x:1` leaves a file out of one listing, then lists it.
+async function section662(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s191-optin-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const stand = async (label: string, extra: string[] = []) => {
+      const storage = path.join(root, label);
+      fs.mkdirSync(storage, { recursive: true });
+      const server = await startFakeBasicMemory(storage, extra);
+      servers.push(server);
+      return { ...server, storage };
+    };
+    const first = await stand('first', ['--call-log']);
+    const second = await stand('second', ['--call-log', '--id', 'cccccccc-3333-4ccc-8ccc-cccccccccccc']);
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, '662: the Library was not made');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const connection = (workspace = lib) => {
+      const marker = JSON.parse(fs.readFileSync(path.join(workspace, '.library', 'workspace.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>;
+      return ((marker['connections'] as Record<string, unknown> | undefined)?.['basic_memory'] ?? null) as Record<string, unknown> | null;
+    };
+    const setup = (url: string, extra: string[] = []) => {
+      const ran = cli(['basic-memory', 'setup', '--url', url, '--collection', 'stand-in-collection', ...extra, '--json']);
+      equal(ran.exit, 0, `662: basic-memory setup ${extra.join(' ')} failed: ${ran.stderr.trim()}`);
+    };
+
+    // 1. A new connection starts off; --shared-writes on sets it; a re-run without the flag keeps it.
+    setup(first.url);
+    equal(connection()?.['shared_writes'], false, '662: a new connection did not start with shared writes off');
+    setup(first.url, ['--shared-writes', 'on']);
+    equal(connection()?.['shared_writes'], true, '662: --shared-writes on did not set it');
+    setup(first.url);
+    equal(connection()?.['shared_writes'], true, '662: a set-up re-run for the same server did not keep shared writes');
+    // 2. init --mcp-url for the same server and collection keeps it; another collection id turns it off.
+    const reinit = (url: string, id: string) => runCli(['init', lib, '--registry-root', path.join(root, 'reg'), '--mcp-url', url, '--collection-id', id], { cwd: root, env });
+    equal(reinit(first.url, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa').exit, 0, '662: init --mcp-url for the same server failed');
+    equal(connection()?.['shared_writes'], true, '662: init --mcp-url for the same server and collection did not keep shared writes');
+    equal(reinit(first.url, 'dddddddd-4444-4ddd-8ddd-dddddddddddd').exit, 0, '662: init --mcp-url with another collection failed');
+    equal(connection()?.['shared_writes'], false, '662: init --mcp-url with another collection kept shared writes');
+    // 3. A changed URL resets it.
+    setup(first.url, ['--shared-writes', 'on']);
+    setup(second.url);
+    equal(connection()?.['shared_writes'], false, '662: a set-up to another server kept shared writes');
+    // 4. init --mcp-url on a new folder starts off.
+    const fresh = path.join(root, 'fresh');
+    equal(runCli(['init', fresh, '--registry-root', path.join(root, 'reg'), '--mcp-url', first.url, '--collection-id', 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa'], { cwd: root, env }).exit, 0, '662: init --mcp-url on a new folder failed');
+    equal(connection(fresh)?.['shared_writes'], false, '662: a connection made by init --mcp-url did not start off');
+
+    // 5. Off: one line naming the set-up command, and nothing sent to the server.
+    const log = path.join(second.storage, '.calls.log');
+    fs.rmSync(log, { force: true });
+    const page = path.join(root, 'page.md');
+    fs.writeFileSync(page, '# A page\n\nText.\n');
+    const refused = cli(['shared', 'add-page', 'demo', 'notes/one', '--content-path', page, '--preflight', '--json']);
+    check(refused.exit !== 0 && refused.stderr.includes('deskpost basic-memory setup --shared-writes on') && refused.stderr.trim().split(/\r?\n/).length === 1,
+      `662: shared add-page with shared writes off was not refused in one line naming the set-up: ${refused.exit} ${refused.stderr.trim()}`);
+    check(!fs.existsSync(log) || fs.readFileSync(log, 'utf8').trim() === '', `662: a refused shared add-page called the server: ${fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(0, 300) : ''}`);
+
+    // 6. --hide-listed x:1: the file is left out of the first listing that would hold it, then listed.
+    const hidden = await stand('hidden', ['--hide-listed', 'x-page:1']);
+    fs.mkdirSync(path.join(hidden.storage, 'books', 'demo', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(hidden.storage, 'books', 'demo', 'wiki', 'x-page.md'), '# X\n');
+    fs.writeFileSync(path.join(hidden.storage, 'books', 'demo', 'wiki', 'other.md'), '# Other\n');
+    const bm = await import('../src/basicmemory.ts');
+    const session = new bm.McpSession(hidden.url, 'selftest-662');
+    await session.initialize();
+    const listed = async () => (await bm.listFolderNodes(session, 'stand-in-collection', 'books/demo/wiki', 'the folder', 'too many'))
+      .map((node) => String(bm.field(node, 'file_path') ?? '')).filter(Boolean).sort().join(',');
+    equal(await listed(), 'books/demo/wiki/other.md', '662: --hide-listed x-page:1 did not leave the file out of the first listing');
+    equal(await listed(), 'books/demo/wiki/other.md,books/demo/wiki/x-page.md', '662: --hide-listed x-page:1 left the file out of the second listing too');
+  } catch (error) {
+    failures.push(`section 662 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(662) && prerequisite(662, () => !isCompiled(), 'requires the source stand-in')) await section662();
+// --- 663. A SHARED PAGE WRITTEN, RECORD FIRST, ON A PROVEN FINGERPRINT (kickoffs/s191 row 2; PLAN-many-libraries.md r12
+// Stage 2 items 2, 4 and 15). Against the stand-in with its call log: with no proof recorded, and with a changed tool list
+// (`--drop-tool` on a tool the writer never calls), `shared replace-page` refuses with the sentence word for word and sends
+// no `bm_write`; the command it prints, run exactly as printed against a stand-in without `--race`, lets the next write
+// pass. Then `replace-page` and `add-page` are written, each record's companions decoding to the base and the body; a page
+// changed between preview and apply is refused by the plan id; a REVISION_CONFLICT is reported with the record left; a lost
+// page write (`--outcome-unknown bm_write:4:lost`) is unsettled, with the record id, and not sent again; and a session that
+// does not hold the seat's claim is refused.
+async function section663(): Promise<void> {
+  const w = await seatClaimWorkspace('s191-write', { pin: false });
+  const servers: { stop(): void }[] = [];
+  try {
+    const sw = await import('../src/sharedwrite.ts');
+    const bm = await import('../src/basicmemory.ts');
+    const agent = w.startAgent();
+    w.seatMade('writer', 'alpha', agent, '663: the writing seat was not made');
+    const lib = w.workspace;
+    const statePath = path.join(lib, 'internal', 'postbox', 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: 'http://127.0.0.1:9/mcp', project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home' }, null, 2) + '\n');
+    const START = '# Start\n\nThe first text.\n';
+    let made = 0;
+    const stand = async (extra: string[] = []) => {
+      const storage = path.join(w.root, `server-${(made += 1)}`);
+      fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki'), { recursive: true });
+      fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', '_book.md'), '# Demo\n');
+      fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', 'start.md'), START);
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      const connected = w.as(agent, ['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--workspace', lib, '--json']);
+      equal(connected.exit, 0, `663: the connection to a stand-in was not set up: ${connected.stderr.trim()}`);
+      fs.rmSync(path.join(storage, '.calls.log'), { force: true });
+      const writes = () => (fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8') : '').split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+      return { ...server, storage, writes };
+    };
+    const fingerprintOf = async (url: string) => {
+      const session = new bm.McpSession(url, 'selftest-663');
+      await session.initialize();
+      return session.toolsFingerprint ?? '';
+    };
+    const textFile = (name: string, value: string) => {
+      const file = path.join(w.root, name);
+      fs.writeFileSync(file, value);
+      return file;
+    };
+    const run = (action: string, page: string, file: string, tail: string[], who = agent) =>
+      w.as(who, ['shared', action, 'demo', page, '--content-path', file, ...tail, '--seat', 'writer', '--workspace', lib, '--json']);
+    const json = (ran: { stdout: string }): Record<string, unknown> => {
+      try { return JSON.parse(ran.stdout) as Record<string, unknown>; } catch { return {}; }
+    };
+    const write = (action: string, page: string, file: string) => {
+      const preview = run(action, page, file, ['--preflight']);
+      const planId = String(json(preview)['plan_id'] ?? '');
+      return { preview, planId, applied: run(action, page, file, ['--user-confirmed', '--plan-id', planId]) };
+    };
+    const records = (storage: string) => {
+      const folder = path.join(storage, '_deskpost', 'changes', 'demo');
+      return fs.existsSync(folder) ? fs.readdirSync(folder).sort() : [];
+    };
+    const said = (ran: { exit: number; stdout: string; stderr: string }) => `${ran.exit} ${(ran.stdout + ran.stderr).replace(/\s+/g, ' ').slice(0, 700)}`;
+    const corrected = textFile('corrected.md', '# Start\n\nThe corrected text.\n');
+    const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const paused = (fingerprint: string, proven: string, url: string) =>
+      new RegExp(`Shared writes are paused: this server's tool-list fingerprint is ${fingerprint}, the proven one is ${proven}, so nothing was written; ` +
+        `re-prove it with: (node \\S+/tools/bm-proof\\.mts --url ${escaped(url)} --out \\S+/internal/bm-proof/[0-9]{8}T[0-9]{6}Z --record --workspace \\S+)$`);
+
+    // 1. No proof recorded: refused word for word, no bm_write; the printed command is the program's own, for this Library.
+    const a = await stand();
+    const proofOf = await fingerprintOf(a.url);
+    const unproven = run('replace-page', 'start', corrected, ['--preflight']);
+    const line = unproven.stderr.trim().split(/\r?\n/).pop() ?? '';
+    const matched = paused(proofOf, 'none yet', a.url).exec(line.replace(/^.*?(Shared writes are paused)/, '$1'));
+    check(unproven.exit !== 0 && matched !== null, `663: with no proof recorded, the refusal was not the sentence: ${said(unproven)}`);
+    equal(a.writes(), 0, '663: an unproven fingerprint still sent a bm_write');
+    const printed = matched?.[1] ?? '';
+    const parts = printed.split(' ');
+    check(parts[1] === path.join(PROGRAM_ROOT, 'tools', 'bm-proof.mts').replace(/\\/g, '/') || path.resolve(parts[1] ?? '') === path.join(PROGRAM_ROOT, 'tools', 'bm-proof.mts'),
+      `663: the printed command does not name this program's own bm-proof: ${printed}`);
+    check(path.resolve(parts[parts.length - 1] ?? '') === path.resolve(lib), `663: the printed command does not name this Library: ${printed}`);
+
+    // 2. The printed command, run exactly as printed, records the proof; the next write passes the fingerprint check.
+    const began = Date.now();
+    const proved = spawnSync(process.execPath, parts.slice(1), { cwd: w.root, env: { ...process.env, ...QUIET_TAB, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' }, encoding: 'utf8', timeout: 540000 });
+    const seconds = Math.round((Date.now() - began) / 1000);
+    check(proved.status === 0, `663: the printed proof did not pass in ${seconds} s: ${proved.status} ${(proved.stdout ?? '').slice(-500)} ${(proved.stderr ?? '').slice(0, 300)}`);
+    if (seconds > 180) process.stderr.write(`663: the printed proof took ${seconds} s\n`);
+    const passing = run('replace-page', 'start', corrected, ['--preflight']);
+    check(passing.exit === 0 && String(json(passing)['plan_id'] ?? '').startsWith('shared-write-'), `663: after the printed proof, the write did not pass the fingerprint check: ${said(passing)}`);
+
+    // 3. replace-page and add-page, written; each record's companions decode to the base and the body.
+    const replaced = write('replace-page', 'start', corrected);
+    const replacedId = String(json(replaced.applied)['record_id'] ?? '');
+    check(replaced.applied.exit === 0 && json(replaced.applied)['verdict'] === 'written' && /^[0-9]{8}T[0-9]{6}Z-bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb-[0-9a-f]{8}$/.test(replacedId),
+      `663: replace-page was not written with a record id: ${said(replaced.applied)}`);
+    const companion = (storage: string, id: string, kind: string) => {
+      const file = path.join(storage, '_deskpost', 'changes', 'demo', `${id}.${kind}.md`);
+      return fs.existsSync(file) ? sw.decodePage(fs.readFileSync(file, 'utf8')) : null;
+    };
+    equal(companion(a.storage, replacedId, 'base'), START, "663: replace-page's base companion does not decode to the page it replaced");
+    equal(companion(a.storage, replacedId, 'body'), '# Start\n\nThe corrected text.\n', "663: replace-page's body companion does not decode to the new text");
+    check(fs.readFileSync(path.join(a.storage, 'books', 'demo', 'wiki', 'start.md'), 'utf8').includes('The corrected text.'), '663: replace-page did not change the page');
+    const recordText = fs.readFileSync(path.join(a.storage, '_deskpost', 'changes', 'demo', `${replacedId}.md`), 'utf8');
+    check(['target: page', 'page: books/demo/wiki/start.md', `base_sha256: ${createHash('sha256').update(START).digest('hex')}`, 'library_id: bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', 'library_card: Home', 'seat: writer'].every((item) => recordText.includes(item)) && /seat_id: [0-9a-f]{32}/.test(recordText),
+      `663: the change record does not hold what item 4 names: ${recordText.slice(0, 600)}`);
+    const fresh = textFile('fresh.md', '# Fresh\n\nA new page.\n');
+    const added = write('add-page', 'fresh', fresh);
+    const addedId = String(json(added.applied)['record_id'] ?? '');
+    check(added.applied.exit === 0 && json(added.applied)['verdict'] === 'written' && addedId !== '', `663: add-page was not written: ${said(added.applied)}`);
+    check(companion(a.storage, addedId, 'base') === null && !fs.existsSync(path.join(a.storage, '_deskpost', 'changes', 'demo', `${addedId}.base.md`)), '663: add-page wrote a base companion for an absent page');
+    equal(companion(a.storage, addedId, 'body'), '# Fresh\n\nA new page.\n', "663: add-page's body companion does not decode to the new page");
+    check(fs.readFileSync(path.join(a.storage, '_deskpost', 'changes', 'demo', `${addedId}.md`), 'utf8').includes('base: absent'), "663: add-page's record does not say base: absent");
+
+    // 4. A page changed between preview and apply: refused by the plan id, nothing written.
+    const later = textFile('later.md', '# Start\n\nA later text.\n');
+    const planned = run('replace-page', 'start', later, ['--preflight']);
+    fs.writeFileSync(path.join(a.storage, 'books', 'demo', 'wiki', 'start.md'), '# Start\n\nChanged on the server.\n');
+    const before = records(a.storage).join();
+    const stale = run('replace-page', 'start', later, ['--user-confirmed', '--plan-id', String(json(planned)['plan_id'] ?? '')]);
+    check(stale.exit !== 0 && stale.stderr.includes("the plan_id given is not this preview's"), `663: a page changed after the preview was not refused by the plan id: ${said(stale)}`);
+    equal(records(a.storage).join(), before, '663: a refused plan id still wrote a record');
+
+    // 5. REVISION_CONFLICT on the page write: reported, the record left.
+    fs.writeFileSync(path.join(a.storage, 'books', 'demo', 'wiki', 'refuse-revision-conflict-page.md'), '# Contested\n');
+    const conflict = write('replace-page', 'refuse-revision-conflict-page', later);
+    const conflictId = /change record (\S+) stays/.exec(conflict.applied.stderr)?.[1] ?? '';
+    check(conflict.applied.exit !== 0 && conflict.applied.stderr.includes('REVISION_CONFLICT') && conflict.applied.stderr.includes('books/demo/wiki/refuse-revision-conflict-page.md') && conflict.applied.stderr.includes('current checksum'),
+      `663: a REVISION_CONFLICT was not reported with the page and its checksum: ${said(conflict.applied)}`);
+    check(conflictId !== '' && records(a.storage).includes(`${conflictId}.md`), `663: the record of a refused write was not left: ${conflictId}`);
+
+    // 6. A lost page write: unsettled, its record id named, never sent again.
+    const lost = await stand(['--outcome-unknown', 'bm_write:4:lost']);
+    const lostWrite = write('replace-page', 'start', corrected);
+    const lostId = /change record is (\S+);/.exec(lostWrite.applied.stderr)?.[1] ?? '';
+    check(lostWrite.applied.exit !== 0 && lostWrite.applied.stderr.includes('is unsettled') && lostWrite.applied.stderr.includes('deskpost shared reconcile demo') && lostId !== '' && records(lost.storage).includes(`${lostId}.md`),
+      `663: a lost page write was not reported unsettled with its record id: ${said(lostWrite.applied)}`);
+    equal(lost.writes(), 4, '663: a lost page write was sent again (base, body, record and page are four bm_write calls)');
+    equal(fs.readFileSync(path.join(lost.storage, 'books', 'demo', 'wiki', 'start.md'), 'utf8'), START, '663: a lost page write changed the page');
+
+    // 7. A changed tool list: refused word for word, no bm_write.
+    const changed = await stand(['--drop-tool', 'bm_schema']);
+    const changedPrint = await fingerprintOf(changed.url);
+    const refusedChanged = run('replace-page', 'start', corrected, ['--preflight']);
+    const changedLine = (refusedChanged.stderr.trim().split(/\r?\n/).pop() ?? '').replace(/^.*?(Shared writes are paused)/, '$1');
+    check(refusedChanged.exit !== 0 && changedPrint !== proofOf && paused(changedPrint, proofOf, changed.url).test(changedLine), `663: a changed tool list was not refused with the sentence: ${said(refusedChanged)}`);
+    equal(changed.writes(), 0, '663: a changed fingerprint still sent a bm_write');
+
+    // 8. A session that does not hold the seat's claim.
+    const intruder = run('replace-page', 'start', corrected, ['--preflight'], process.pid);
+    check(intruder.exit !== 0 && intruder.stderr.includes('does not hold seat'), `663: a session not holding the seat's claim was not refused: ${said(intruder)}`);
+  } catch (error) {
+    failures.push(`section 663 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    w.dispose();
+  }
+}
+if (selected(663) && prerequisite(663, () => !isCompiled(), 'requires the source stand-in and tools/bm-proof.mts')) await section663();
+// --- 664. THE CREATE GUARD (kickoffs/s191 row 3; PLAN-many-libraries.md r12 point 4). After a create answered written, the
+// writer lists the folder; a file not listed is listed again after two seconds, then created once more (ALREADY_EXISTS
+// counting as "go and list") and listed again; still absent is unsettled with the record id. Through the stand-in's
+// `--hide-listed`: a page hidden once is written after one wait; hidden twice, after the second create; hidden three
+// times, unsettled; and a record companion hidden once is written.
+async function section664(): Promise<void> {
+  const f = await undoFixture('s191-guard');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    let made = 0;
+    const stand = async (extra: string[]) => {
+      const storage = path.join(f.w.root, `server-${(made += 1)}`);
+      fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki'), { recursive: true });
+      fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', '_book.md'), '# Demo\n');
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      return { ...server, storage };
+    };
+    const first = await stand([]);
+    const session = new bm.McpSession(first.url, 'selftest-664');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    const add = async (page: string, hide: string) => {
+      const server = await stand(['--hide-listed', hide]);
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, `664: the connection for ${page} was not set up`);
+      fs.rmSync(path.join(server.storage, '.calls.log'), { force: true });
+      const began = Date.now();
+      const { ran, result } = f.gated(['shared', 'add-page', 'demo', page, '--content-path', f.file(`${page}.md`, `# ${page}\n\nGuarded.\n`), '--seat', 'first']);
+      const writes = fs.readFileSync(path.join(server.storage, '.calls.log'), 'utf8').split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+      const landed = fs.existsSync(path.join(server.storage, 'books', 'demo', 'wiki', `${page}.md`));
+      return { ran, result, writes, landed, seconds: (Date.now() - began) / 1000 };
+    };
+
+    const once = await add('guard-one', 'guard-one:1');
+    check(once.ran.exit === 0 && once.result['verdict'] === 'written' && once.writes === 3 && once.seconds >= 2, `664: a page hidden from one listing was not written after one wait: ${f.said(once.ran)} (${once.writes} bm_write, ${once.seconds} s)`);
+    const twice = await add('guard-two', 'guard-two:2');
+    check(twice.ran.exit === 0 && twice.result['verdict'] === 'written' && twice.writes === 4, `664: a page hidden from two listings was not written after the second create: ${f.said(twice.ran)} (${twice.writes} bm_write)`);
+    const thrice = await add('guard-three', 'guard-three:3');
+    const recordId = /change record is (\S+);/.exec(thrice.ran.stderr)?.[1] ?? '';
+    check(thrice.ran.exit !== 0 && thrice.ran.stderr.includes('is unsettled') && recordId !== '' && thrice.writes === 4 && thrice.landed,
+      `664: a page hidden from three listings was not unsettled with its record id after one more create: ${f.said(thrice.ran)} (${thrice.writes} bm_write)`);
+    const companion = await add('guard-companion', '.body.md:1');
+    check(companion.ran.exit === 0 && companion.result['verdict'] === 'written' && companion.writes === 3, `664: a record companion hidden from one listing was not written: ${f.said(companion.ran)} (${companion.writes} bm_write)`);
+  } catch (error) {
+    failures.push(`section 664 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(664) && prerequisite(664, () => !isCompiled(), 'requires the source stand-in')) await section664();
+// --- 665. A SHARED WRITE LEAVES A RECEIPT, AND UNDO NAMES ITS RESTORE LINE (kickoffs/s191 row 4; PLAN-many-libraries.md
+// r12 Stage 2 item 11). After its record reads back and before the page write, a shared write leaves
+// `internal/shared-receipts/<record-id>.json`; `deskpost undo <record-id>` refuses, naming word for word the restore line
+// for a page with a base and for one that was absent, and changes nothing; a refused write keeps its receipt; and an
+// ordinary journal undo is unchanged.
+async function section665(): Promise<void> {
+  const f = await undoFixture('s191-receipts');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    const wiki = path.join(storage, 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nThe first text.\n');
+    fs.writeFileSync(path.join(wiki, 'refuse-revision-conflict-page.md'), '# Contested\n');
+    const server = await startFakeBasicMemory(storage);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-665');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '665: the connection was not set up');
+    const write = (action: string, page: string, text: string) => f.gated(['shared', action, 'demo', page, '--content-path', f.file(`${page}.md`, text), '--seat', 'first']);
+    const receipt = (id: string): Record<string, unknown> | null => {
+      const file = f.at(`internal/shared-receipts/${id}.json`);
+      return fs.existsSync(file) ? JSON.parse(withoutBom(fs.readFileSync(file, 'utf8'))) as Record<string, unknown> : null;
+    };
+
+    // 1. A receipt for each base state.
+    const replaced = write('replace-page', 'start', '# Start\n\nThe corrected text.\n');
+    const replacedId = String(replaced.result['record_id'] ?? '');
+    const added = write('add-page', 'fresh', '# Fresh\n\nA new page.\n');
+    const addedId = String(added.result['record_id'] ?? '');
+    check(replaced.ran.exit === 0 && added.ran.exit === 0 && replacedId !== '' && addedId !== '', `665: the fixture writes failed: ${f.said(replaced.ran)} / ${f.said(added.ran)}`);
+    const expect = (id: string, page: string, baseAbsent: boolean) => {
+      const found = receipt(id);
+      const seatId = String(found?.['seat_id'] ?? '');
+      same({ ...found, seat_id: /^[0-9a-f]{32}$/.test(seatId) ? 'a seat id' : seatId },
+        { collection_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', slug: 'demo', page: `books/demo/wiki/${page}.md`, record_id: id, seat: 'first', seat_id: 'a seat id', target: 'page', base_absent: baseAbsent },
+        `665: the receipt of ${id} does not hold what item 11 names`);
+    };
+    expect(replacedId, 'start', false);
+    expect(addedId, 'fresh', true);
+
+    // 2. undo refuses each, word for word, and changes nothing.
+    const later = 'Nothing was changed.';
+    const tree = () => [...listFiles(f.lib).filter((name) => /^(collection|internal\/(shared-receipts|undo|publication-journals|shelf-journals|triage-journals))\//.test(name)), ...listFiles(storage).map((name) => `server/${name}`)]
+      .map((name) => `${name} ${sha256Hex(fs.readFileSync(name.startsWith('server/') ? path.join(storage, name.slice(7)) : f.at(name)))}`).join('\n');
+    const before = tree();
+    const withBase = f.cli(['undo', replacedId, '--json']);
+    check(withBase.exit !== 0 && withBase.stderr.includes(`${replacedId} is a shared write, and its recovery is its change record, not a local journal: deskpost shared replace-page demo start --from-change ${replacedId} --base puts the page back. ${later}`),
+      `665: undo of a shared write with a base did not name its restore line: ${f.said(withBase)}`);
+    const absent = f.cli(['undo', addedId, '--json']);
+    check(absent.exit !== 0 && absent.stderr.includes(`${addedId} is a shared write, and its recovery is its change record, not a local journal: deskpost shared remove-page demo fresh --from-change ${addedId} removes the page it added, and needs the reader's yes. ${later}`),
+      `665: undo of a shared write that added a page did not name its removal line: ${f.said(absent)}`);
+    equal(tree(), before, '665: a refused undo of a shared write changed something');
+
+    // 3. A refused write keeps its receipt.
+    const conflict = write('replace-page', 'refuse-revision-conflict-page', '# Contested\n\nMine.\n');
+    const conflictId = /change record (\S+) stays/.exec(conflict.ran.stderr)?.[1] ?? '';
+    check(conflict.ran.exit !== 0 && conflictId !== '' && receipt(conflictId) !== null, `665: a refused write did not keep its receipt: ${f.said(conflict.ran)}`);
+
+    // 4. An ordinary journal undo is unchanged.
+    equal(f.cli(['hub', 'edit', 'alpha', '--mode', 'add-section', '--section', 'Scratch', '--content-path', f.file('scratch.md', '- [ ] first item\n'), '--json']).exit, 0, '665: the section was not added');
+    const prior = f.bytes(f.hubPage)!;
+    const edited = f.applied(['hub', 'edit', 'alpha', '--mode', 'replace-section', '--section', 'Scratch', '--content-path', f.file('s2.md', '- [ ] second item\n')]);
+    const undone = f.cli(['undo', f.idOf(edited['journal']), '--json']);
+    check(undone.exit === 0 && f.json(undone)['status'] === 'undone' && f.bytes(f.hubPage)!.equals(prior), `665: an ordinary journal undo no longer undoes: ${f.said(undone)}`);
+  } catch (error) {
+    failures.push(`section 665 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(665) && prerequisite(665, () => !isCompiled(), 'requires the source stand-in')) await section665();
+
+// --- 666. A COMMIT HOOK'S LOCK NAMES ITS SEAT (kickoffs/c117 row 1, `gate-lock-hook-seat`; triage
+// `notes/2026-11-05-triage-owns-none-and-unseated-gate-holder`). The hook blanks LIBRARY_SEAT and hands the seat over as
+// DESKPOST_GATE_SEAT, and `tools/gate.ts` maps it only around the lock call through `withHookSeat`. A fixture lock held by a `commit`
+// taker in the hook's environment, with a seated `push` waiter behind it: the waiter's queue line and its wait record name
+// the holder's seat, not `unseated`.
+async function section666(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s191-lockseat-')));
+  const children: { kill(): boolean }[] = [];
+  try {
+    const lockPath = pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/test/gate-lock.ts')).href;
+    const envPath = pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/test/gate-env.ts')).href;
+    const gateEnv = await import('../test/gate-env.ts') as unknown as { childEnv(): NodeJS.ProcessEnv; withHookSeat?: <T>(fn: () => Promise<T>) => Promise<T> };
+    const before = process.env['DESKPOST_GATE_SEAT'];
+    try { process.env['DESKPOST_GATE_SEAT'] = 'hook-seat'; equal(gateEnv.childEnv()['DESKPOST_GATE_SEAT'], '', '666: childEnv leaked hook seat'); }
+    finally { if (before === undefined) delete process.env['DESKPOST_GATE_SEAT']; else process.env['DESKPOST_GATE_SEAT'] = before; }
+    const released = path.join(root, 'release');
+    const holderScript = path.join(root, 'holder.mjs');
+    fs.writeFileSync(holderScript, `import fs from 'node:fs';import{acquireGateLock}from ${JSON.stringify(lockPath)};const gateEnv=await import(${JSON.stringify(envPath)});const lock=await (gateEnv.withHookSeat??(fn=>fn()))(()=>acquireGateLock('commit'));console.log('holder-ready');console.log('seat-after='+JSON.stringify(process.env.LIBRARY_SEAT));` +
+      `try{const until=Date.now()+60000;while(!fs.existsSync(${JSON.stringify(released)})){if(Date.now()>until)throw Error('release deadline');await new Promise(r=>setTimeout(r,50));}}finally{await lock.release();}\n`);
+    const waiterScript = path.join(root, 'waiter.mjs');
+    fs.writeFileSync(waiterScript, `import{acquireGateLock}from ${JSON.stringify(lockPath)};const lock=await acquireGateLock('push');console.log('waiter-taken');await lock.release();\n`);
+    const env = { ...process.env, ...QUIET_TAB, DESKPOST_GATE_DIR: root, DESKPOST_GATE_LOCK: '', DESKPOST_GATE_LOCK_NAME: `deskpost-s191-${process.pid}-${Date.now()}`, LIBRARY_WORKSPACE: '', LIBRARY_SEAT_CLAIM: '' };
+    const start = (script: string, extra: Record<string, string>) => {
+      const child = spawn(process.execPath, [script], { cwd: root, env: { ...env, ...extra }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child);
+      let output = '';
+      child.stdout.on('data', (chunk) => (output += String(chunk)));
+      child.stderr.on('data', (chunk) => (output += String(chunk)));
+      const done = new Promise<number | null>((resolve) => child.on('close', (code) => resolve(code)));
+      return { child, done, output: () => output };
+    };
+    const waitFor = async (job: ReturnType<typeof start>, needle: string) => {
+      const until = Date.now() + 30000;
+      while (!job.output().includes(needle) && job.child.exitCode === null && Date.now() < until) await sleep(25);
+      if (!job.output().includes(needle)) throw new Error(`the lock fixture missed '${needle}': ${job.output().slice(0, 500)}`);
+    };
+    // The hook's environment: the seat blanked, handed over as DESKPOST_GATE_SEAT.
+    const holder = start(holderScript, { LIBRARY_SEAT: '', DESKPOST_GATE_SEAT: 'hook-seat' });
+    await waitFor(holder, 'holder-ready');
+    await waitFor(holder, 'seat-after=');
+    check(holder.output().includes('seat-after=""'), '666: hook seat was not restored after lock acquisition');
+    const waiter = start(waiterScript, { LIBRARY_SEAT: 'waiter-seat', DESKPOST_GATE_SEAT: '' });
+    await waitFor(waiter, 'waiting: ');
+    check(waiter.output().includes("waiting: hook-seat's commit gate"), `666: the waiter's line does not name the hook's seat: ${waiter.output().slice(0, 500)}`);
+    fs.writeFileSync(released, 'release');
+    const [held, waited] = await Promise.all([holder.done, waiter.done]);
+    equal(held, 0, `666: the holder did not finish: ${holder.output().slice(0, 300)}`);
+    equal(waited, 0, `666: the waiter did not take the lock: ${waiter.output().slice(0, 300)}`);
+    const record = /gate lock wait: (\{.*\})/.exec(waiter.output())?.[1] ?? '{}';
+    const wait = JSON.parse(record) as { seat?: string; tier?: string; holders?: { seat: string }[] };
+    check(wait.seat === 'hook-seat' && wait.tier === 'commit' && (wait.holders ?? []).some((item) => item.seat === 'hook-seat') && !record.includes('unseated'),
+      `666: the wait record does not name the holder's seat: ${record}`);
+  } catch (error) {
+    failures.push(`section 666 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const child of children) { try { child.kill(); } catch { /* already gone */ } }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(666) && prerequisite(666, () => !isCompiled(), 'requires the source gate lock')) await section666();
+// --- 667. A reset preview with inbound links refuses before offering a plan (c117 row 2). ---
+async function section667(): Promise<void> {
+  const w = await seatClaimWorkspace('c117-reset-preview');
+  try {
+    const agent = w.startAgent();
+    w.seatMade('first', 'alpha', agent, '667: create fixture seat');
+    const ws = w.workspace;
+    fs.mkdirSync(path.join(ws, 'internal'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'internal/notebook-layout.json'), '{"schema":1,"layout":"seat-owned"}');
+    const topic = path.join(ws, 'notebook/first/findings');
+    fs.mkdirSync(topic, { recursive: true });
+    fs.writeFileSync(path.join(topic, '_index.md'), '# Findings\n');
+    fs.writeFileSync(path.join(topic, 'page.md'), '# A finding\n');
+    const hub = path.join(ws, 'collection/projects/alpha/_project.md');
+    const original = fs.readFileSync(hub, 'utf8');
+    fs.writeFileSync(hub, original + '\nEvidence: [[notebook/first/findings/page]].\n');
+    const preview = () => {
+      const ran = w.as(agent, ['reset', '--seat', 'first', '--workspace', ws, '--json', '--preflight']);
+      equal(ran.exit, 0, '667: preview command failed: ' + ran.stderr);
+      return JSON.parse(ran.stdout) as Record<string, any>;
+    };
+    const blocked = preview();
+    check(Object.hasOwn(blocked, 'next'), '667: blocked preview omitted next');
+    equal(blocked['plan_id'], '', '667: blocked preview issued a plan');
+    equal(blocked['confirmation_required'], false, '667: blocked preview asked for confirmation');
+    check(blocked['refusals'].length > 0 && String(blocked['next']).includes((await import('../src/notebooklinks.ts')).NOTEBOOK_LINK_REPAIR), '667: refusal has no repair instruction');
+    check(Object.keys(blocked).indexOf('refusals') < Object.keys(blocked).indexOf('topics_to_quarantine'), '667: refusal is buried below proposed changes');
+    fs.writeFileSync(hub, original);
+    const ready = preview();
+    check(String(ready['plan_id']).length > 0 && ready['confirmation_required'] === true && ready['refusals'].length === 0, '667: unlinked topic has no usable plan');
+    check(fs.existsSync(path.join(topic, 'page.md')), '667: preview changed Notebook contents');
+    check(!Object.hasOwn(ready, 'next'), '667: unblocked preview included next');
+    const applied = w.as(agent, ['reset', '--seat', 'first', '--workspace', ws, '--json', '--plan-id', String(ready['plan_id'])]);
+    equal(applied.exit, 0, '667: approved reset failed: ' + applied.stderr);
+    check(!Object.hasOwn(JSON.parse(applied.stdout), 'next'), '667: successful reset included next');
+  } catch (error) { failures.push('section 667 stopped early: ' + (error as Error).message); }
+  finally { w.dispose(); }
+}
+if (selected(667)) await section667();
+
+
+// --- 668. OWNS PATHS `none` OWNS NO TRACKED FILE (kickoffs/c117 row 3, `owns-paths-none`; s189 had to own a file it
+// never edited). A lone `` - `none` `` is accepted by the Kickoff checker and by `owns.mts start`; `none` beside another
+// entry is refused by both; and on a branch so recorded, `owns.mts check` refuses every staged file.
+async function section668(): Promise<void> {
+  const f = await ownsFixture('owns-none');
+  try {
+    const { ownsPaths } = await import('../src/kickoffcheck.ts');
+    const page = (entries: string[]) => 'OWNS PATHS:\n' + entries.map((entry) => '- `' + entry + '`').join('\n') + '\nSTAY OUT OF: none\n';
+    const alone = ownsPaths(page(['none']));
+    check(alone.problems.length === 0 && JSON.stringify(alone.patterns) === '["none"]', `668: the Kickoff checker refused a lone none: ${JSON.stringify(alone)}`);
+    const beside = ownsPaths(page(['none', 'a.ts']));
+    check(beside.problems.some((problem) => problem.includes('`none` means no tracked file')), `668: the Kickoff checker accepted none beside another entry: ${JSON.stringify(beside)}`);
+    f.refused(668, 'none beside another entry', f.start(['none', 'a.ts']).result, ['`none` means no tracked file']);
+    const started = f.start(['none']).result;
+    equal(started.status, 0, `668: owns.mts start refused a lone none: ${f.output(started)}`);
+    for (const file of ['a.ts', 'none']) {
+      f.put(file, 'changed\n');
+      f.git('add', '--', file);
+      f.refused(668, `a staged ${file} under none`, f.tool('check'), [`"${file}": this Kickoff owns no tracked file`]);
+      f.git('reset', '-q', '--', file);
+    }
+  } catch (error) {
+    failures.push(`section 668 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+}
+if (selected(668) && prerequisite(668, () => !isCompiled(), 'requires source Node ownership tool and git fixtures')) await section668();
+
+
+
+// --- 669. Done when routes behaviour files through their mapped commit checks (c117 row 3). ---
+async function section669(): Promise<void> {
+  const kc = await import('../src/kickoffcheck.ts');
+  const template = kc.templateBlock(fs.readFileSync(path.join(PROGRAM_ROOT, 'docs/kickoff-template.md'), 'utf8'));
+  const withRow = (file: string) => template.replace(/ROWS:[\s\S]*?(?=^CHARTER\b)/m,
+    `ROWS:\n1. Change the file.\n   Done when: node tools/docs-gate.ts --file ${file} passes.\n\n`);
+  for (const file of ['.claude/skills/library-help/SKILL.md', 'kernel/readme.md', 'tools/readme.md', 'templates/readme.md']) {
+    const verdict = kc.kickoffVerdict(withRow(file), { adrFiles: [], placeholders: false });
+    check(verdict.warnings.some(line => line.includes(file) && line.includes('mapped') && line.includes('commit')), '669: no mapped-route warning for ' + file);
+    check(!verdict.problems.some(line => line.includes('docs-gate')), '669: route warning refused a Kickoff');
+  }
+  const repeated = kc.kickoffVerdict(withRow('docs/adr/0001-fixture.md --file .claude/second.md'), { adrFiles: [], placeholders: false });
+  check(repeated.warnings.some(line => line.includes('.claude/second.md')), '669: a supported first --file hid a later behaviour path');
+  const good = kc.kickoffVerdict(withRow('docs/adr/0001-fixture.md'), { adrFiles: [], placeholders: false });
+  check(!good.warnings.some(line => line.includes('docs-gate')), '669: document route warned for an ADR');
+}
+if (selected(669)) await section669();
+
+// --- 670. An ADR on disk but absent from the index gets the staging remedy (c117 row 4). ---
+async function section670(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c117-adr-')));
+  try {
+    const repo = path.join(root, 'repo'), home = path.join(root, 'home');
+    fs.mkdirSync(path.join(home, '.library'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.library/identity-denylist.txt'), 'fixture-c117-denied-value\n');
+    const env = repositoryNeutralEnv({ ...process.env, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+      LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'registry') });
+    const cloned = spawnSync('git', ['clone', '--shared', '--quiet', PROGRAM_ROOT, repo], { env: repositoryNeutralEnv(env), encoding: 'utf8', timeout: 60000 });
+    equal(cloned.status, 0, '670: fixture clone: ' + cloned.stderr);
+    const relative = 'docs/adr/9999-c117-fixture.md';
+    fs.writeFileSync(path.join(repo, relative), '# Fixture\n');
+    fs.appendFileSync(path.join(repo, 'docs/_index.md'), '\n- [Fixture](adr/9999-c117-fixture.md)\n');
+    const run = () => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/docs-gate.ts'), '--file', 'docs/_index.md'], { cwd: repo, env, encoding: 'utf8', timeout: 120000 });
+    const red = run();
+    check(red.status === 3 && red.stdout.includes('not tracked or staged') && red.stdout.includes('git add ' + relative) && !red.stdout.includes('not on disk'), '670: untracked ADR lacks staging remedy: ' + red.stdout + red.stderr);
+    const added = spawnSync('git', ['add', '--', relative], { cwd: repo, env: repositoryNeutralEnv(env), encoding: 'utf8' });
+    equal(added.status, 0, '670: staging fixture ADR failed');
+    const green = run();
+    equal(green.status, 0, '670: staged ADR failed: ' + green.stdout + green.stderr);
+    check(green.stdout.includes('PASS') && green.stdout.includes('docs.adr-index-is-complete'), '670: staged ADR did not run index check');
+  } catch (error) { failures.push('section 670 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(670) && prerequisite(670, () => !isCompiled(), 'requires source document gate and fixture git clone')) await section670();
+
+
+// --- 672. THE REST OF THE SHARED ACTIONS, OPTED INTO, AND A REFUSAL THAT LETS THE LOOP DRAIN (kickoffs/s192 row 1;
+// PLAN-many-libraries.md r12 points 3 and 5). `deskpost shared --help` names remove-page, catalog-line, sources, reconcile,
+// changes and replace-page's --from-change; with shared writes off each refuses in s191's one opt-in line and sends the
+// stand-in nothing; and a verb refusing after a stand-in call (an unproven fingerprint, found by `tools/list`) exits 1
+// with its message, five runs in a row, where `process.exit(1)` in cli.ts's `refuse` tripped Windows' libuv assertion.
+// The stand-in's `--change-before bm_write:1` changes the named note before the first write is answered.
+async function section672(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s192-actions-')));
+  const servers: { stop(): void }[] = [];
+  try {
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    const storage = path.join(root, 'server');
+    fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', '_book.md'), '# Demo\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib, '--registry-root', path.join(root, 'reg')], { cwd: root, env }).exit, 0, '672: the Library was not made');
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    const said = (ran: { exit: number; stdout: string; stderr: string }) => `${ran.exit} ${(ran.stdout + ran.stderr).replace(/\s+/g, ' ').slice(0, 500)}`;
+
+    // 1. The help names every new action and form.
+    const help = runCli(['shared', '--help'], { cwd: root, env });
+    for (const form of ['shared remove-page <slug> <page>', 'shared catalog-line <slug>', 'shared sources <slug>', 'shared reconcile <slug>', 'shared changes [<slug>] [--since <date>]', '--from-change <record-id> (--base | --body)', '--from-change <record-id> (--base | --remove)']) {
+      check(help.exit === 0 && help.stdout.includes(form), `672: deskpost shared --help does not name '${form}': ${said(help)}`);
+    }
+
+    // 2. Shared writes off: each new action refuses in the one opt-in line, and the stand-in is sent nothing.
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '672: the connection was not set up');
+    const log = path.join(storage, '.calls.log');
+    fs.rmSync(log, { force: true });
+    const content = path.join(root, 'content.md');
+    fs.writeFileSync(content, '# A page\n\nText.\n');
+    const record = '20261105T000000Z-bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb-0000abcd';
+    const offs: [string, string[]][] = [
+      ['replace-page --from-change', ['shared', 'replace-page', 'demo', 'notes/one', '--from-change', record, '--base', '--preflight']],
+      ['remove-page', ['shared', 'remove-page', 'demo', 'notes/one', '--preflight']],
+      ['catalog-line', ['shared', 'catalog-line', 'demo', '--title', 'Demo', '--summary', 'A demo.', '--preflight']],
+      ['sources', ['shared', 'sources', 'demo', '--content-path', content, '--preflight']],
+      ['reconcile', ['shared', 'reconcile', 'demo']],
+      ['changes', ['shared', 'changes']],
+    ];
+    for (const [name, args] of offs) {
+      const refused = cli([...args, '--json']);
+      check(refused.exit === 1 && refused.stderr.includes('deskpost basic-memory setup --shared-writes on') && refused.stderr.trim().split(/\r?\n/).length === 1,
+        `672: shared ${name} with shared writes off was not refused in the one opt-in line: ${said(refused)}`);
+    }
+    check(!fs.existsSync(log) || fs.readFileSync(log, 'utf8').trim() === '', `672: a refused action called the stand-in: ${fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(0, 300) : ''}`);
+
+    // 3. A refusal after a stand-in call exits 1 with its message, five runs in a row.
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '672: shared writes were not turned on');
+    const statePath = path.join(lib, 'internal', 'postbox', 'state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_proven_fingerprint: '0'.repeat(64) }, null, 2) + '\n');
+    for (let run = 1; run <= 5; run += 1) {
+      fs.rmSync(log, { force: true });
+      const paused = cli(['shared', 'reconcile', 'demo', '--json']);
+      const called = fs.existsSync(log) && fs.readFileSync(log, 'utf8').includes('"method":"tools/list"');
+      check(paused.exit === 1 && paused.stderr.includes('Shared writes are paused') && called,
+        `672: run ${run} of a refusal after a stand-in call did not exit 1 with its message (3221226505 is the libuv assertion): ${said(paused)} (called the stand-in: ${called})`);
+    }
+
+    // 4. --change-before bm_write:1: the named note is changed before the first write is answered.
+    const changing = await startFakeBasicMemory(path.join(root, 'changing'), ['--change-before', 'bm_write:1']);
+    servers.push(changing);
+    fs.mkdirSync(path.join(root, 'changing', 'notes'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'changing', 'notes', 'n.md'), '# N\n');
+    const bm = await import('../src/basicmemory.ts');
+    const bw = await import('../src/bmwrite.ts');
+    const session = new bm.McpSession(changing.url, 'selftest-672');
+    await session.initialize();
+    const read = await bm.readExactOrNull(session, 'stand-in-collection', 'notes/n.md');
+    const verdict = await bw.replaceNote(session, 'stand-in-collection', 'notes/n.md', '# N\n\nMine.\n', read?.checksum ?? '');
+    check(verdict.form === 'refused' && verdict.code === 'REVISION_CONFLICT' && fs.readFileSync(path.join(root, 'changing', 'notes', 'n.md'), 'utf8').includes('Changed by another writer.'),
+      `672: --change-before bm_write:1 did not change the note before the write: ${JSON.stringify(verdict)}`);
+  } catch (error) {
+    failures.push(`section 672 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+if (selected(672) && prerequisite(672, () => !isCompiled(), 'requires the source stand-in')) await section672();
+// --- 673. A PAGE REMOVED AND RESTORED FROM ITS CHANGE RECORD (kickoffs/s192 row 2; PLAN-many-libraries.md r12 Stage 2
+// items 2, 4, 11 and 16). Against the stand-in: `shared remove-page` is written, its record holding the page as its base
+// and `body: absent`; the restore line it prints (`replace-page --from-change <id> --base`) puts the page back as a new
+// recorded change; an add-page's line (`remove-page --from-change <id>`) removes what it added; a replace-page is
+// restored with --base and redone with --body; a page changed between preview and apply is refused by the plan id; a
+// REVISION_CONFLICT on the delete (`--change-before bm_delete:1`) is reported with the record left; a record whose
+// companion does not match its digest is refused as damaged with nothing written; and `undo` names the restore line for a
+// removal, and for a Catalog record with a base and without one, word for word.
+async function section673(): Promise<void> {
+  const f = await undoFixture('s192-pages');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const sw = await import('../src/sharedwrite.ts');
+    const storage = path.join(f.w.root, 'server');
+    const wiki = path.join(storage, 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    const START = '# Start\n\nThe first text.\n';
+    fs.writeFileSync(path.join(wiki, 'start.md'), START);
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '673: the connection was not set up');
+      return server;
+    };
+    const first = await serve();
+    const session = new bm.McpSession(first.url, 'selftest-673');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    let files = 0;
+    const gated = (args: string[]) => f.gated([...args, '--seat', 'first']);
+    const write = (action: string, page: string, text: string) => gated(['shared', action, 'demo', page, '--content-path', f.file(`p${(files += 1)}.md`, text)]);
+    const restore = (result: Record<string, unknown>) => gated(String(result['restore'] ?? '').split(' ').slice(1));
+    const changes = path.join(storage, '_deskpost', 'changes', 'demo');
+    const records = () => (fs.existsSync(changes) ? fs.readdirSync(changes).sort() : []);
+    const recordOf = (id: string) => (fs.existsSync(path.join(changes, `${id}.md`)) ? fs.readFileSync(path.join(changes, `${id}.md`), 'utf8') : '');
+    const companion = (id: string, side: string) => {
+      const file = path.join(changes, `${id}.${side}.md`);
+      return fs.existsSync(file) ? sw.decodePage(fs.readFileSync(file, 'utf8')) : null;
+    };
+    const pageText = (page: string) => (fs.existsSync(path.join(wiki, `${page}.md`)) ? fs.readFileSync(path.join(wiki, `${page}.md`), 'utf8') : null);
+    const holds = (page: string, text: string) => (pageText(page) ?? '').replace(/^---\n[\s\S]*?\n---\n/, '').trim() === text.trim();
+    const written = (ran: { ran: { exit: number; stdout: string; stderr: string }; result: Record<string, unknown> }) => ran.ran.exit === 0 && ran.result['verdict'] === 'written';
+
+    // 1. remove-page: written; its record holds the page as its base and body: absent; it prints its restore line.
+    const removed = gated(['shared', 'remove-page', 'demo', 'start']);
+    const removedId = String(removed.result['record_id'] ?? '');
+    check(written(removed) && pageText('start') === null, `673: remove-page was not written: ${f.said(removed.ran)}`);
+    check(recordOf(removedId).includes('body: absent') && recordOf(removedId).includes('target: page') && companion(removedId, 'base') === START && !fs.existsSync(path.join(changes, `${removedId}.body.md`)),
+      `673: the removal's record does not hold the page as its base and body: absent: ${recordOf(removedId).slice(0, 400)}`);
+    equal(removed.result['restore'], `deskpost shared replace-page demo start --from-change ${removedId} --base`, "673: remove-page did not print its restore line");
+
+    // 2. That line puts the page back, as a new recorded change.
+    const before = records().length;
+    const back = restore(removed.result);
+    const backId = String(back.result['record_id'] ?? '');
+    check(written(back) && holds('start', START) && backId !== removedId && records().length > before && recordOf(backId).includes('base: absent'),
+      `673: the removal's restore line did not put the page back as a new recorded change: ${f.said(back.ran)}`);
+
+    // 3. An add-page's line removes what it added.
+    const added = write('add-page', 'fresh', '# Fresh\n\nA new page.\n');
+    const addedId = String(added.result['record_id'] ?? '');
+    equal(added.result['restore'], `deskpost shared remove-page demo fresh --from-change ${addedId}`, "673: add-page did not print remove-page's restore line");
+    const unadded = restore(added.result);
+    check(written(unadded) && pageText('fresh') === null && recordOf(String(unadded.result['record_id'] ?? '')).includes('body: absent'), `673: an add-page's restore line did not remove the page: ${f.said(unadded.ran)}`);
+
+    // 4. A replace-page restored with --base and redone with --body.
+    const CORRECTED = '# Start\n\nThe corrected text.\n';
+    const replaced = write('replace-page', 'start', CORRECTED);
+    const replacedId = String(replaced.result['record_id'] ?? '');
+    check(written(replaced) && holds('start', CORRECTED), `673: replace-page was not written: ${f.said(replaced.ran)}`);
+    const based = gated(['shared', 'replace-page', 'demo', 'start', '--from-change', replacedId, '--base']);
+    check(written(based) && holds('start', START), `673: replace-page --from-change --base did not put the base back: ${f.said(based.ran)}`);
+    const bodied = gated(['shared', 'replace-page', 'demo', 'start', '--from-change', replacedId, '--body']);
+    check(written(bodied) && holds('start', CORRECTED), `673: replace-page --from-change --body did not write the body again: ${f.said(bodied.ran)}`);
+    const wrongSide = gated(['shared', 'replace-page', 'demo', 'start', '--from-change', addedId, '--base']);
+    check(wrongSide.ran.exit !== 0 && wrongSide.ran.stderr.includes(`is a change to books/demo/wiki/fresh.md, not to books/demo/wiki/start.md`), `673: a record of another page was not refused: ${f.said(wrongSide.ran)}`);
+
+    // 5. A page changed between preview and apply: refused by the plan id, nothing written.
+    const planned = f.cli(['shared', 'remove-page', 'demo', 'start', '--seat', 'first', '--preflight', '--json']);
+    fs.writeFileSync(path.join(wiki, 'start.md'), '# Start\n\nChanged on the server.\n');
+    const unchanged = records().join();
+    const stale = f.cli(['shared', 'remove-page', 'demo', 'start', '--seat', 'first', '--user-confirmed', '--plan-id', String(f.json(planned)['plan_id'] ?? ''), '--json']);
+    check(stale.exit !== 0 && stale.stderr.includes("the plan_id given is not this preview's") && pageText('start') !== null, `673: a page changed after the preview was not refused by the plan id: ${f.said(stale)}`);
+    equal(records().join(), unchanged, '673: a refused plan id still wrote a record');
+
+    // 6. REVISION_CONFLICT on the delete: reported with the page and its checksum, the record left.
+    await serve(['--change-before', 'bm_delete:1']);
+    const conflict = gated(['shared', 'remove-page', 'demo', 'start']);
+    const conflictId = /change record (\S+) stays/.exec(conflict.ran.stderr)?.[1] ?? '';
+    check(conflict.ran.exit !== 0 && conflict.ran.stderr.includes('REVISION_CONFLICT') && conflict.ran.stderr.includes('current checksum') && pageText('start') !== null,
+      `673: a REVISION_CONFLICT on the delete was not reported: ${f.said(conflict.ran)}`);
+    check(conflictId !== '' && recordOf(conflictId).includes('body: absent'), `673: the record of a refused removal was not left: ${conflictId}`);
+    await serve();
+
+    // 7. A damaged record (a companion whose digest does not match) is refused, and nothing is written.
+    const bodyFile = path.join(changes, `${replacedId}.body.md`);
+    fs.writeFileSync(bodyFile, fs.readFileSync(bodyFile, 'utf8').replace(/sha256=([0-9a-f])/, (_, c: string) => `sha256=${c === '0' ? '1' : '0'}`));
+    const pageBefore = pageText('start');
+    const recordsBefore = records().join();
+    const damaged = gated(['shared', 'replace-page', 'demo', 'start', '--from-change', replacedId, '--body']);
+    check(damaged.ran.exit !== 0 && damaged.ran.stderr.includes(`The change record ${replacedId} is damaged: its body companion`), `673: a damaged record was not refused as damaged: ${f.said(damaged.ran)}`);
+    check(pageText('start') === pageBefore && records().join() === recordsBefore, '673: a refused damaged record still wrote something');
+
+    // 8. undo names the restore line for a removal, and for a Catalog record with a base and without one, word for word.
+    const later = 'Nothing was changed.';
+    const undoRemoved = f.cli(['undo', removedId, '--json']);
+    check(undoRemoved.exit !== 0 && undoRemoved.stderr.includes(`${removedId} is a shared write, and its recovery is its change record, not a local journal: ${String(removed.result['restore'])} puts the page back. ${later}`),
+      `673: undo of a removal did not name its restore line: ${f.said(undoRemoved)}`);
+    for (const [baseAbsent, says] of [[true, 'removes the Catalog line it added'], [false, "puts the Book's Catalog line back"]] as const) {
+      const id = `20261105T00000${baseAbsent ? 1 : 2}Z-bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb-0000abcd`;
+      fs.writeFileSync(f.at(`internal/shared-receipts/${id}.json`), JSON.stringify({ collection_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', slug: 'demo', page: 'books/README.md', record_id: id, seat: 'first', seat_id: '', target: 'catalog', base_absent: baseAbsent }) + '\n');
+      const line = sw.restoreLine('catalog', 'demo', 'books/README.md', baseAbsent, id);
+      equal(line.command, `deskpost shared catalog-line demo --from-change ${id} --base`, '673: the Catalog restore line is not the one item 16 names');
+      const undone = f.cli(['undo', id, '--json']);
+      check(undone.exit !== 0 && undone.stderr.includes(`${id} is a shared write, and its recovery is its change record, not a local journal: ${line.command} ${says}. ${later}`),
+        `673: undo of a Catalog record (base absent ${baseAbsent}) did not name its restore line: ${f.said(undone)}`);
+    }
+  } catch (error) {
+    failures.push(`section 673 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(673) && prerequisite(673, () => !isCompiled(), 'requires the source stand-in')) await section673();
+// --- 674. THE CATALOG LINE (kickoffs/s192 row 3; PLAN-many-libraries.md r12 Stage 2 item 5). `shared catalog-line` writes
+// this Book's one line in `books/README.md` in a publication's form and place, as a whole-file conditional replace through
+// the safe path (`target: catalog`): inserted (its record `base: absent`, no line before), then changed; one
+// REVISION_CONFLICT (`--change-before bm_write:4`) re-read, re-applied, recorded afresh and written, the first record kept;
+// two conflicts refused; an `unknown` not retried; two owned lines refused; and each record's restore line puts the old
+// line back or removes the added one.
+async function section674(): Promise<void> {
+  const f = await undoFixture('s192-catalog');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', '_book.md'), '# Demo\n');
+    const README = path.join(storage, 'books', 'README.md');
+    const OTHER = '- [[books/other/wiki/_book|Other]] — Another Book.';
+    fs.writeFileSync(README, `# Books\n\nThe shared Books.\n\n## Open a Book\n\n${OTHER}\n`);
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '674: the connection was not set up');
+      fs.rmSync(path.join(storage, '.calls.log'), { force: true });
+      return server;
+    };
+    const first = await serve();
+    const session = new bm.McpSession(first.url, 'selftest-674');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    const gated = (args: string[]) => f.gated([...args, '--seat', 'first']);
+    const line = (summary: string) => gated(['shared', 'catalog-line', 'demo', '--title', 'Demo', '--summary', summary]);
+    const entry = (summary: string) => `- [[books/demo/wiki/_book|Demo]] — ${summary}`;
+    const catalog = () => fs.readFileSync(README, 'utf8').replace(/\r\n/g, '\n');
+    const owned = () => catalog().split('\n').filter((one) => one.includes('[[books/demo/wiki/_book|'));
+    const changes = path.join(storage, '_deskpost', 'changes', 'demo');
+    const records = () => (fs.existsSync(changes) ? fs.readdirSync(changes).filter((name) => !/\.(base|body)\.md$/.test(name)).sort() : []);
+    const recordOf = (id: string) => (fs.existsSync(path.join(changes, `${id}.md`)) ? fs.readFileSync(path.join(changes, `${id}.md`), 'utf8') : '');
+    const writes = () => (fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8') : '').split('\n').filter((one) => one.includes('"tool":"bm_write"')).length;
+    const written = (ran: { ran: { exit: number }; result: Record<string, unknown> }) => ran.ran.exit === 0 && ran.result['verdict'] === 'written';
+
+    // 1. Inserted under ## Open a Book, the other Book's line kept; its record says base: absent and target: catalog.
+    const inserted = line('First.');
+    const insertedId = String(inserted.result['record_id'] ?? '');
+    check(written(inserted) && owned().join() === entry('First.') && catalog().includes(OTHER) && catalog().includes(`## Open a Book\n\n${entry('First.')}`),
+      `674: the line was not inserted under ## Open a Book: ${f.said(inserted.ran)} ${catalog()}`);
+    check(recordOf(insertedId).includes('target: catalog') && recordOf(insertedId).includes('page: books/README.md') && recordOf(insertedId).includes('base: absent'),
+      `674: the insert's record does not say target: catalog and base: absent: ${recordOf(insertedId).slice(0, 400)}`);
+    equal(inserted.result['restore'], `deskpost shared catalog-line demo --from-change ${insertedId} --base`, '674: the insert did not print its restore line');
+
+    // 2. Changed where it stands.
+    const changed = line('Second.');
+    const changedId = String(changed.result['record_id'] ?? '');
+    check(written(changed) && owned().join() === entry('Second.') && recordOf(changedId).includes('base_sha256:'), `674: the line was not changed: ${f.said(changed.ran)}`);
+
+    // 3. One REVISION_CONFLICT: re-read, re-applied, a fresh record, written; the first record stays.
+    await serve(['--change-before', 'bm_write:4']);
+    const before = records().length;
+    const retried = line('Third.');
+    const firstTry = String(retried.result['retried_after'] ?? '');
+    check(written(retried) && owned().join() === entry('Third.') && catalog().includes('Changed by another writer.') && firstTry !== '' && firstTry !== retried.result['record_id'],
+      `674: one conflict was not retried and written: ${f.said(retried.ran)}`);
+    check(records().length === before + 2 && recordOf(firstTry) !== '', `674: a retried write did not leave both records (${records().length - before} new)`);
+    equal(writes(), 8, '674: a retried Catalog write did not send four writes twice (base, body, record, Catalog)');
+
+    // 4. Two conflicts: refused, nothing overwritten, both records kept.
+    await serve(['--change-before', 'bm_write:4', '--change-before', 'bm_write:8']);
+    const twice = line('Fourth.');
+    check(twice.ran.exit !== 0 && twice.ran.stderr.includes('twice') && twice.ran.stderr.includes('REVISION_CONFLICT') && owned().join() === entry('Third.'), `674: two conflicts were not refused: ${f.said(twice.ran)}`);
+    equal(writes(), 8, '674: a second conflict was retried again');
+
+    // 5. An unknown Catalog write is unsettled and never retried.
+    await serve(['--outcome-unknown', 'bm_write:4:lost']);
+    const lost = line('Fifth.');
+    check(lost.ran.exit !== 0 && lost.ran.stderr.includes('is unsettled') && lost.ran.stderr.includes('deskpost shared reconcile demo') && owned().join() === entry('Third.'),
+      `674: an unknown Catalog write was not unsettled: ${f.said(lost.ran)}`);
+    equal(writes(), 4, '674: an unknown Catalog write was sent again');
+    await serve();
+
+    // 6. Two owned lines: refused before anything is written.
+    const kept = fs.readFileSync(README, 'utf8');
+    fs.writeFileSync(README, `${kept.replace(/\s+$/, '')}\n${entry('A second line.')}\n`);
+    const doubled = gated(['shared', 'catalog-line', 'demo', '--title', 'Demo', '--summary', 'Sixth.']);
+    check(doubled.ran.exit !== 0 && doubled.ran.stderr.includes('carries 2 entry lines') && writes() === 0, `674: two owned lines were not refused: ${f.said(doubled.ran)}`);
+    fs.writeFileSync(README, kept);
+
+    // 7. The restores: the change's --base puts the line it replaced back; the insert's removes the line.
+    const putBack = gated(String(changed.result['restore'] ?? '').split(' ').slice(1));
+    check(written(putBack) && owned().join() === entry('First.') && catalog().includes(OTHER), `674: the change's restore line did not put the old line back: ${f.said(putBack.ran)} ${owned().join()}`);
+    const removed = gated(String(inserted.result['restore'] ?? '').split(' ').slice(1));
+    check(written(removed) && owned().length === 0 && catalog().includes(OTHER), `674: the insert's restore line did not remove the line: ${f.said(removed.ran)} ${owned().join()}`);
+  } catch (error) {
+    failures.push(`section 674 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(674) && prerequisite(674, () => !isCompiled(), 'requires the source stand-in')) await section674();
+// --- 675. THE BOOK'S SOURCES (kickoffs/s192 row 4; PLAN-many-libraries.md r12 Stage 2 items 2 and 16). `shared sources`
+// writes `books/<slug>/_sources.md` (outside `wiki/`) through the safe path (`target: sources`), its content checked as a
+// source list before connecting: a list created (`base: absent`) and replaced; an invalid list refused with the stand-in
+// sent nothing; `--from-change <id> --base` putting the replaced list back and `--remove` deleting the list a change
+// created, its preview saying it removes the Book's sources; and `undo` naming both restore lines word for word.
+async function section675(): Promise<void> {
+  const f = await undoFixture('s192-sources');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', '_book.md'), '# Demo\n');
+    fs.writeFileSync(path.join(storage, 'books', 'demo', 'wiki', 'page.md'), '# Page\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-675');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '675: the connection was not set up');
+    const log = path.join(storage, '.calls.log');
+    const gated = (args: string[]) => f.gated([...args, '--seat', 'first']);
+    const list = (id: string, address: string) => '# Source list\n\n```json\n' + JSON.stringify({ schema: 1, pin: null, sources: [{ id, address, kind: 'web', feeds: ['page'], compiled_sha256: null, compiled_utc: null, note: null }] }, null, 2) + '\n```\n';
+    const sourcesFile = path.join(storage, 'books', 'demo', '_sources.md');
+    const sourcesText = () => (fs.existsSync(sourcesFile) ? fs.readFileSync(sourcesFile, 'utf8') : null);
+    const holds = (id: string) => (sourcesText() ?? '').includes(`"id": "${id}"`);
+    const changes = path.join(storage, '_deskpost', 'changes', 'demo');
+    const recordOf = (id: string) => (fs.existsSync(path.join(changes, `${id}.md`)) ? fs.readFileSync(path.join(changes, `${id}.md`), 'utf8') : '');
+    const written = (ran: { ran: { exit: number }; result: Record<string, unknown> }) => ran.ran.exit === 0 && ran.result['verdict'] === 'written';
+
+    // 1. Created: base: absent, target: sources, outside wiki/.
+    const created = gated(['shared', 'sources', 'demo', '--content-path', f.file('one.md', list('one', 'https://example.org/one'))]);
+    const createdId = String(created.result['record_id'] ?? '');
+    check(written(created) && holds('one') && recordOf(createdId).includes('target: sources') && recordOf(createdId).includes('page: books/demo/_sources.md') && recordOf(createdId).includes('base: absent'),
+      `675: the source list was not created with a record saying base: absent: ${f.said(created.ran)} ${recordOf(createdId).slice(0, 300)}`);
+    equal(created.result['restore'], `deskpost shared sources demo --from-change ${createdId} --remove`, '675: a created list did not print its --remove line');
+
+    // 2. Replaced.
+    const replaced = gated(['shared', 'sources', 'demo', '--content-path', f.file('two.md', list('two', 'https://example.org/two'))]);
+    const replacedId = String(replaced.result['record_id'] ?? '');
+    check(written(replaced) && holds('two') && !holds('one') && recordOf(replacedId).includes('base_sha256:'), `675: the source list was not replaced: ${f.said(replaced.ran)}`);
+    equal(replaced.result['restore'], `deskpost shared sources demo --from-change ${replacedId} --base`, '675: a replaced list did not print its --base line');
+
+    // 3. An invalid list: refused before connecting.
+    fs.rmSync(log, { force: true });
+    const invalid = f.cli(['shared', 'sources', 'demo', '--content-path', f.file('bad.md', list('bad', 'https://example.org/bad').replace('"web"', '"ftp"')), '--seat', 'first', '--preflight', '--json']);
+    check(invalid.exit !== 0 && invalid.stderr.includes('is not a valid source list') && invalid.stderr.includes('a kind is web, file or git'), `675: an invalid list was not refused: ${f.said(invalid)}`);
+    check(!fs.existsSync(log) || fs.readFileSync(log, 'utf8').trim() === '', `675: an invalid list reached the stand-in: ${fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(0, 200) : ''}`);
+
+    // 4. --base puts the replaced list back.
+    const based = gated(['shared', 'sources', 'demo', '--from-change', replacedId, '--base']);
+    check(written(based) && holds('one') && !holds('two'), `675: --from-change --base did not put the replaced list back: ${f.said(based.ran)}`);
+
+    // 5. --remove deletes the list the first change created; its preview says so.
+    const preview = f.cli(['shared', 'sources', 'demo', '--from-change', createdId, '--remove', '--seat', 'first', '--preflight', '--json']);
+    check(String(f.json(preview)['scope'] ?? '').includes("removes the Book's sources") && f.json(preview)['proposed_sha256'] === 'absent', `675: the --remove preview does not say it removes the Book's sources: ${f.said(preview)}`);
+    const removed = gated(['shared', 'sources', 'demo', '--from-change', createdId, '--remove']);
+    check(written(removed) && sourcesText() === null && recordOf(String(removed.result['record_id'] ?? '')).includes('body: absent'), `675: --remove did not delete the list: ${f.said(removed.ran)}`);
+    const wrong = gated(['shared', 'sources', 'demo', '--from-change', replacedId, '--remove']);
+    check(wrong.ran.exit !== 0 && wrong.ran.stderr.includes('did not create the source list'), `675: --remove of a change that did not create the list was not refused: ${f.said(wrong.ran)}`);
+
+    // 6. undo names both lines, word for word as the writer printed them.
+    const later = 'Nothing was changed.';
+    const undoCreated = f.cli(['undo', createdId, '--json']);
+    check(undoCreated.exit !== 0 && undoCreated.stderr.includes(`${createdId} is a shared write, and its recovery is its change record, not a local journal: ${String(created.result['restore'])} removes the source list it created, and needs the reader's yes. ${later}`),
+      `675: undo of a created list did not name its --remove line: ${f.said(undoCreated)}`);
+    const undoReplaced = f.cli(['undo', replacedId, '--json']);
+    check(undoReplaced.exit !== 0 && undoReplaced.stderr.includes(`${replacedId} is a shared write, and its recovery is its change record, not a local journal: ${String(replaced.result['restore'])} puts the Book's source list back. ${later}`),
+      `675: undo of a replaced list did not name its --base line: ${f.said(undoReplaced)}`);
+  } catch (error) {
+    failures.push(`section 675 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(675) && prerequisite(675, () => !isCompiled(), 'requires the source stand-in')) await section675();
+// --- 676. RECONCILE, ON DEMAND (kickoffs/s192 row 5; PLAN-many-libraries.md r12 point 3). `shared reconcile <slug>` lists
+// the Book's change records once and classifies each, keeping nothing: current (a's second, d's second), superseded (a's
+// first: its body is the second's base), not current with its text kept (b's, whose page was then edited on the server),
+// and damaged (d's first, a companion whose digest does not match); it names b as changed outside Deskpost, and only b; it
+// prints a restore line for every record not current. Two writes left unknown by row 2's path are classed later: one the
+// server applied (`--outcome-unknown bm_write:3` with its settling listing hidden) as current, one it lost
+// (`--outcome-unknown bm_write:4:lost`) as not current, text kept. Reconcile writes nothing, exits 0, and never says unsettled.
+async function section676(): Promise<void> {
+  const f = await undoFixture('s192-reconcile');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    const wiki = path.join(storage, 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    fs.writeFileSync(path.join(wiki, 'b.md'), '# B\n\nThe first text.\n');
+    fs.writeFileSync(path.join(wiki, 'f.md'), '# F\n\nThe first text.\n');
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '676: the connection was not set up');
+      fs.rmSync(path.join(storage, '.calls.log'), { force: true });
+      return server;
+    };
+    const first = await serve();
+    const session = new bm.McpSession(first.url, 'selftest-676');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    let files = 0;
+    const write = (action: string, page: string, text: string) => f.gated(['shared', action, 'demo', page, '--content-path', f.file(`r${(files += 1)}.md`, text), '--seat', 'first']);
+    const idOf = (ran: { ran: { exit: number; stdout: string; stderr: string }; result: Record<string, unknown> }, label: string) => {
+      const id = String(ran.result['record_id'] ?? '') || (/change record is (\S+);/.exec(ran.ran.stderr)?.[1] ?? '');
+      check(id !== '', `676: the ${label} write left no record id: ${f.said(ran.ran)}`);
+      return id;
+    };
+
+    const a1 = idOf(write('add-page', 'a', '# A\n\nOne.\n'), 'a1');
+    const a2 = idOf(write('replace-page', 'a', '# A\n\nTwo.\n'), 'a2');
+    const b1 = idOf(write('replace-page', 'b', '# B\n\nMine.\n'), 'b1');
+    fs.writeFileSync(path.join(wiki, 'b.md'), '# B\n\nEdited on the server, outside Deskpost.\n');
+    const d1 = idOf(write('add-page', 'd', '# D\n\nOne.\n'), 'd1');
+    const d2 = idOf(write('replace-page', 'd', '# D\n\nTwo.\n'), 'd2');
+    const companion = path.join(storage, '_deskpost', 'changes', 'demo', `${d1}.body.md`);
+    fs.writeFileSync(companion, fs.readFileSync(companion, 'utf8').replace(/sha256=([0-9a-f])/, (_, c: string) => `sha256=${c === '0' ? '1' : '0'}`));
+    await serve(['--outcome-unknown', 'bm_write:3', '--hide-listed', 'wiki/e.md:1']);
+    const applied = write('add-page', 'e', '# E\n\nApplied.\n');
+    check(applied.ran.exit !== 0 && applied.ran.stderr.includes('is unsettled') && fs.existsSync(path.join(wiki, 'e.md')), `676: the applied write was not left unsettled: ${f.said(applied.ran)}`);
+    const e1 = idOf(applied, 'e1');
+    await serve(['--outcome-unknown', 'bm_write:4:lost']);
+    const lost = write('replace-page', 'f', '# F\n\nLost.\n');
+    check(lost.ran.exit !== 0 && lost.ran.stderr.includes('is unsettled'), `676: the lost write was not left unsettled: ${f.said(lost.ran)}`);
+    const f1 = idOf(lost, 'f1');
+
+    await serve();
+    const ran = f.cli(['shared', 'reconcile', 'demo', '--json']);
+    const result = f.json(ran);
+    const rows = (result['records'] ?? []) as Record<string, unknown>[];
+    const classOf = (id: string) => String(rows.find((row) => row['record_id'] === id)?.['class'] ?? 'missing');
+    check(ran.exit === 0 && !/unsettled/i.test(ran.stdout + ran.stderr), `676: reconcile did not exit 0 without saying unsettled: ${f.said(ran)}`);
+    const expected: [string, string, string][] = [
+      ['a1', a1, 'superseded'], ['a2', a2, 'current'], ['b1', b1, 'not current, text kept'], ['d1', d1, 'damaged'], ['d2', d2, 'current'],
+      ['e1 (applied, unknown)', e1, 'current'], ['f1 (lost, unknown)', f1, 'not current, text kept'],
+    ];
+    for (const [label, id, kind] of expected) equal(classOf(id), kind, `676: record ${label} was not classed ${kind}`);
+    equal(rows.length, expected.length, '676: reconcile did not list every record once');
+    const outside = ((result['changed_outside_deskpost'] ?? []) as Record<string, unknown>[]).map((row) => String(row['page'])).join();
+    equal(outside, 'books/demo/wiki/b.md', '676: the page changed outside Deskpost was not named, alone');
+    for (const id of [a1, b1, f1]) {
+      const row = rows.find((one) => one['record_id'] === id);
+      check(typeof row?.['restore'] === 'string' && String(row['restore']).includes(`--from-change ${id}`), `676: no restore line for the record ${id}, which is not current`);
+    }
+    equal(rows.find((one) => one['record_id'] === a2)?.['restore'], null, '676: a current record was given a restore line');
+    const log = fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8') : '';
+    check(!/"tool":"bm_(write|delete|edit|move)"/.test(log) && log.includes('"tool":"bm_list"'), `676: reconcile wrote, or listed nothing: ${log.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 676 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(676) && prerequisite(676, () => !isCompiled(), 'requires the source stand-in')) await section676();
+// --- 677. THE CHANGES, LISTED (kickoffs/s192 row 5; PLAN-many-libraries.md r12 point 3, item 16). `shared changes [<slug>]
+// [--since <date>]` lists the change records, each with its time as the record carries it, target, page, seat, Library
+// card, record id and restore line, newest first by the record's own time; with no slug, every Book under
+// `_deskpost/changes/`; `--since` only filters what is shown (a record whose time says January is left out by a June
+// date); a date that is not one is refused; and nothing is written.
+async function section677(): Promise<void> {
+  const f = await undoFixture('s192-changes');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    for (const book of ['demo', 'two']) {
+      fs.mkdirSync(path.join(storage, 'books', book, 'wiki'), { recursive: true });
+      fs.writeFileSync(path.join(storage, 'books', book, 'wiki', '_book.md'), `# ${book}\n`);
+    }
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-677');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '677: the connection was not set up');
+    let files = 0;
+    const write = (book: string, action: string, page: string, text: string) => {
+      const ran = f.gated(['shared', action, book, page, '--content-path', f.file(`c${(files += 1)}.md`, text), '--seat', 'first']);
+      check(ran.ran.exit === 0, `677: the fixture write ${book} ${page} failed: ${f.said(ran.ran)}`);
+      return ran.result;
+    };
+    const old = write('demo', 'add-page', 'p1', '# P1\n\nOne.\n');
+    const newer = write('demo', 'replace-page', 'p1', '# P1\n\nTwo.\n');
+    const other = write('two', 'add-page', 'q1', '# Q1\n\nOne.\n');
+    const oldId = String(old['record_id']);
+    const oldRecord = path.join(storage, '_deskpost', 'changes', 'demo', `${oldId}.md`);
+    fs.writeFileSync(oldRecord, fs.readFileSync(oldRecord, 'utf8').replace(/^time: .*$/m, 'time: 2026-01-01T00:00:00.000Z'));
+    fs.rmSync(path.join(storage, '.calls.log'), { force: true });
+
+    const listed = (args: string[]) => {
+      const ran = f.cli(['shared', 'changes', ...args, '--json']);
+      check(ran.exit === 0, `677: shared changes ${args.join(' ')} did not exit 0: ${f.said(ran)}`);
+      return ((f.json(ran)['changes'] ?? []) as Record<string, unknown>[]);
+    };
+    // 1. One Book, newest first, each row whole.
+    const demo = listed(['demo']);
+    equal(demo.map((row) => row['record_id']).join(), [newer['record_id'], oldId].join(), '677: shared changes demo is not newest first by the record time');
+    const row = demo[0] ?? {};
+    same({ book: row['book'], target: row['target'], page: row['page'], seat: row['seat'], library_card: row['library_card'], restore: row['restore'], timed: typeof row['time'] === 'string' && !Number.isNaN(Date.parse(String(row['time']))) },
+      { book: 'shared/demo', target: 'page', page: 'books/demo/wiki/p1.md', seat: 'first', library_card: 'Home', restore: newer['restore'], timed: true }, '677: a listed change does not carry what item 16 names');
+    equal(demo[1]?.['time'], '2026-01-01T00:00:00.000Z', "677: a change's time is not the record's own");
+    // 2. Every Book.
+    const all = listed([]);
+    const ids = all.map((one) => String(one['record_id']));
+    check(all.length === 3 && ids.includes(String(other['record_id'])) && ids[2] === oldId && all.some((one) => one['book'] === 'shared/two'), `677: shared changes without a slug did not list every Book's records: ${ids.join()}`);
+    // 3. --since filters what is shown.
+    equal(listed(['demo', '--since', '2026-06-01']).map((one) => one['record_id']).join(), String(newer['record_id']), '677: --since did not leave out the record from January');
+    const bad = f.cli(['shared', 'changes', '--since', 'last week', '--json']);
+    check(bad.exit !== 0 && bad.stderr.includes('--since takes a date'), `677: a --since that is not a date was not refused: ${f.said(bad)}`);
+    // 4. Nothing written, by either reader.
+    equal(f.cli(['shared', 'reconcile', 'two', '--json']).exit, 0, '677: reconcile two did not exit 0');
+    const log = fs.existsSync(path.join(storage, '.calls.log')) ? fs.readFileSync(path.join(storage, '.calls.log'), 'utf8') : '';
+    check(log.includes('"tool":"bm_list"') && !/"tool":"bm_(write|delete|edit|move)"/.test(log), `677: the readers wrote, or listed nothing: ${log.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 677 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(677) && prerequisite(677, () => !isCompiled(), 'requires the source stand-in')) await section677();
+// --- 678. THE AUDITOR'S TWO FIXES, AND NO WRITE WITHOUT A seat_id (kickoffs/s193 row 1; library-auditor's second reads
+// through a408d73, M1 and S1). A record note whose readback has a line added (`--change-before bm_read:<n>` on the record
+// note's own readback) is refused as damaged, with no receipt and no target write; `shared reconcile` and `shared changes`
+// over a folder listing a record whose note answers NOT_FOUND (`--vanish <record id>`) exit 0 and name it damaged beside a
+// good record; and a seat with no `seat_id` in the registry is refused before the server is called.
+async function section678(): Promise<void> {
+  const f = await undoFixture('s193-fixes');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    const wiki = path.join(storage, 'books', 'demo', 'wiki');
+    fs.mkdirSync(wiki, { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '# Demo\n');
+    const log = path.join(storage, '.calls.log');
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '678: the connection was not set up');
+      fs.rmSync(log, { force: true });
+      fs.rmSync(path.join(storage, '.writes.log'), { force: true });
+      return server;
+    };
+    const first = await serve();
+    const session = new bm.McpSession(first.url, 'selftest-678');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '');
+    const writes = () => calls().split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+    const receipts = () => (fs.existsSync(f.at('internal/shared-receipts')) ? fs.readdirSync(f.at('internal/shared-receipts')).sort() : []);
+    const add = (page: string, tail: string[]) => f.cli(['shared', 'add-page', 'demo', page, '--content-path', f.file(`${page}.md`, `# ${page}\n\nText.\n`), '--seat', 'first', ...tail, '--json']);
+
+    // 1. M1: the record note's readback with a line added. In the apply, bm_read calls are the Book's _book.md, the page
+    // (absent), the body companion's readback, then the record note's readback: the fourth.
+    const planned = add('m-one', ['--preflight']);
+    const planId = String(f.json(planned)['plan_id'] ?? '');
+    check(planned.exit === 0 && planId !== '', `678: the add-page preview failed: ${f.said(planned)}`);
+    await serve(['--change-before', 'bm_read:4']);
+    const receiptsBefore = receipts().join();
+    const damaged = add('m-one', ['--user-confirmed', '--plan-id', planId]);
+    const changed = fs.existsSync(path.join(storage, '.writes.log')) ? fs.readFileSync(path.join(storage, '.writes.log'), 'utf8') : '';
+    const recordId = /changed-before _deskpost\/changes\/demo\/(\S+)\.md/.exec(changed)?.[1] ?? '';
+    check(recordId !== '' && !/\.(base|body)$/.test(recordId), `678: --change-before bm_read:4 did not change the record note itself: ${changed.trim()}`);
+    check(damaged.exit !== 0 && damaged.stderr.includes(`The change record ${recordId} is damaged: _deskpost/changes/demo/${recordId}.md does not read back as written. Nothing more was written.`),
+      `678: a record note read back with a line added was not refused as damaged: ${f.said(damaged)}`);
+    check(!fs.existsSync(path.join(wiki, 'm-one.md')) && writes() === 2, `678: the target was written after a damaged record (${writes()} bm_write; 2 is the body companion and the record)`);
+    equal(receipts().join(), receiptsBefore, '678: a damaged record still left a receipt');
+
+    // 2. S1: a listed record whose note answers NOT_FOUND is a damaged row beside a good record, in both readers.
+    await serve();
+    const good = f.gated(['shared', 'add-page', 'demo', 'good', '--content-path', f.file('good.md', '# Good\n\nText.\n'), '--seat', 'first']);
+    const goodId = String(good.result['record_id'] ?? '');
+    const gone = f.gated(['shared', 'add-page', 'demo', 'gone', '--content-path', f.file('gone.md', '# Gone\n\nText.\n'), '--seat', 'first']);
+    const goneId = String(gone.result['record_id'] ?? '');
+    check(goodId !== '' && goneId !== '', `678: the two fixture records were not written: ${f.said(good.ran)} ${f.said(gone.ran)}`);
+    await serve(['--vanish', goneId]);
+    const reconciled = f.cli(['shared', 'reconcile', 'demo', '--json']);
+    const rows = (f.json(reconciled)['records'] ?? []) as Record<string, unknown>[];
+    const rowOf = (list: Record<string, unknown>[], id: string) => list.find((row) => row['record_id'] === id);
+    check(reconciled.exit === 0 && rowOf(rows, goneId)?.['class'] === 'damaged' && rowOf(rows, goneId)?.['why'] === 'listed, and its note did not read' && rowOf(rows, goodId)?.['class'] === 'current',
+      `678: reconcile did not name the unreadable record damaged beside the good one: ${f.said(reconciled)}`);
+    const listed = f.cli(['shared', 'changes', 'demo', '--json']);
+    const changes = (f.json(listed)['changes'] ?? []) as Record<string, unknown>[];
+    check(listed.exit === 0 && rowOf(changes, goneId)?.['damaged'] === 'listed, and its note did not read' && typeof rowOf(changes, goodId)?.['restore'] === 'string',
+      `678: changes did not name the unreadable record damaged beside the good one: ${f.said(listed)}`);
+
+    // 3. A seat with no seat_id in the registry: refused before the server is called.
+    await serve();
+    const registry = f.at('.claude/seats/_registry.json');
+    const kept = fs.readFileSync(registry, 'utf8');
+    const rewritten = JSON.parse(kept.replace(/^﻿/, '')) as { seats: Record<string, unknown>[] };
+    for (const row of rewritten.seats) if (row['seat'] === 'first') delete row['seat_id'];
+    fs.writeFileSync(registry, JSON.stringify(rewritten, null, 2) + '\n');
+    try {
+      const seatless = add('no-id', ['--preflight']);
+      check(seatless.exit !== 0 && seatless.stderr.includes("The seat first has no seat_id in this Library's registry") && seatless.stderr.includes('deskpost seat cards'),
+        `678: a seat with no seat_id was not refused: ${f.said(seatless)}`);
+      check(calls().trim() === '', `678: a seat with no seat_id still called the server: ${calls().slice(0, 300)}`);
+    } finally {
+      fs.writeFileSync(registry, kept);
+    }
+  } catch (error) {
+    failures.push(`section 678 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(678) && prerequisite(678, () => !isCompiled(), 'requires the source stand-in')) await section678();
+// --- 679. A SHARED BOOK MADE (kickoffs/s193 row 2; PLAN-many-libraries.md item 8, r12 points 6 and 8). `shared new-book`
+// writes `_book.md`, `_index.md` and the Catalog line, in that order, each a recorded change with `base: absent` and
+// `made_by: new-book`, and the Book then opens through `basic-memory open`'s `_book.md` check; a rerun as asked writes
+// nothing, and one with another summary refuses, naming the difference; an archived slug and a slug taken by a `_book.md`
+// no new-book made are refused; and `shared changes` and `undo` give a Book-making record the same words, which name the
+// recovery instead of a restore.
+async function section679(): Promise<void> {
+  const f = await undoFixture('s193-newbook');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books', 'taken', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'taken', 'wiki', '_book.md'), '# Taken\n');
+    fs.mkdirSync(path.join(storage, 'archive', 'old', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'archive', 'old', 'wiki', '_book.md'), '# Old\n');
+    const README = path.join(storage, 'books', 'README.md');
+    fs.writeFileSync(README, '# Books\n\nThe shared Books.\n\n## Open a Book\n\n- [[books/taken/wiki/_book|Taken]] — Another Book.\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-679');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '679: the connection was not set up');
+    const make = (slug: string, summary = 'A fresh Book.') => f.gated(['shared', 'new-book', slug, '--title', 'Fresh', '--summary', summary, '--seat', 'first']);
+    const recordOf = (slug: string, id: string) => {
+      const file = path.join(storage, '_deskpost', 'changes', slug, `${id}.md`);
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    };
+    const SAYS = 'a Book-making record has no restore: finish a half-made Book by rerunning deskpost shared new-book fresh; a Book made by mistake is removed on the server by Eric';
+
+    // 1. The help names both new actions.
+    const help = f.cli(['shared', '--help']);
+    for (const form of ['shared new-book <slug> --title <t> --summary <s>', 'shared promote <slug>']) check(help.stdout.includes(form), `679: deskpost shared --help does not name '${form}'`);
+
+    // 2. Made: three records, in order, the Catalog line last, each base: absent and made_by: new-book.
+    const made = make('fresh');
+    const records = (made.result['records'] ?? []) as Record<string, unknown>[];
+    equal(records.map((row) => row['page']).join(), 'books/fresh/wiki/_book.md,books/fresh/wiki/_index.md,books/README.md', `679: new-book did not write _book.md, _index.md and the Catalog line in order: ${f.said(made.ran)}`);
+    const texts = records.map((row) => recordOf('fresh', String(row['record_id'])));
+    check(texts.length === 3 && texts.every((one) => one.includes('made_by: new-book') && one.includes('base: absent')), `679: a Book-making record lacks made_by: new-book or base: absent: ${texts.map((one) => one.slice(0, 200)).join(' | ')}`);
+    const times = texts.map((one) => Date.parse(/^time: (.*)$/m.exec(one)?.[1] ?? ''));
+    check(times[0]! <= times[1]! && times[1]! <= times[2]!, `679: the Catalog line was not recorded last: ${times.join()}`);
+    const book = fs.readFileSync(path.join(storage, 'books', 'fresh', 'wiki', '_book.md'), 'utf8');
+    const map = fs.readFileSync(path.join(storage, 'books', 'fresh', 'wiki', '_index.md'), 'utf8');
+    check(book.includes('# Fresh') && book.includes('## Purpose\n\nA fresh Book.') && book.includes('[[books/fresh/wiki/_index|Open the reader map]]') && map.includes('[[books/fresh/wiki/_book|Book metadata and limits]]'),
+      `679: _book.md or _index.md is not in a publication's form: ${book} ${map}`);
+    check(fs.readFileSync(README, 'utf8').includes('## Open a Book\n\n- [[books/fresh/wiki/_book|Fresh]] — A fresh Book.') || fs.readFileSync(README, 'utf8').includes('- [[books/fresh/wiki/_book|Fresh]] — A fresh Book.'),
+      `679: the Catalog line was not written: ${fs.readFileSync(README, 'utf8')}`);
+    const opened = f.cli(['basic-memory', 'open', 'fresh', '--seat', 'first', '--json']);
+    check(opened.exit === 0 && f.json(opened)['book'] === 'shared/fresh', `679: the made Book did not open: ${f.said(opened)}`);
+
+    // 3. A rerun as asked writes nothing; one with another summary refuses, naming the difference.
+    const again = f.cli(['shared', 'new-book', 'fresh', '--title', 'Fresh', '--summary', 'A fresh Book.', '--seat', 'first', '--preflight', '--json']);
+    equal(f.json(again)['status'], 'unchanged', `679: a rerun as asked was not unchanged: ${f.said(again)}`);
+    const other = f.cli(['shared', 'new-book', 'fresh', '--title', 'Fresh', '--summary', 'Another summary.', '--seat', 'first', '--preflight', '--json']);
+    check(other.exit !== 0 && other.stderr.includes('books/fresh/wiki/_book.md was made earlier with other text') && other.stderr.includes('A fresh Book.') && other.stderr.includes('Another summary.'),
+      `679: a rerun with another summary did not refuse naming the difference: ${f.said(other)}`);
+
+    // 4. An archived slug, and a slug taken by a _book.md no new-book made: refused, nothing written.
+    const archived = make('old');
+    check(archived.ran.exit !== 0 && archived.ran.stderr.includes('The slug old was archived (archive/old is listed)') && !fs.existsSync(path.join(storage, 'books', 'old')), `679: an archived slug was not refused: ${f.said(archived.ran)}`);
+    const taken = make('taken');
+    check(taken.ran.exit !== 0 && taken.ran.stderr.includes('The slug taken is taken: books/taken/wiki/_book.md exists, and no deskpost shared new-book from this Library made it.'), `679: a taken slug was not refused: ${f.said(taken.ran)}`);
+    check(!fs.existsSync(path.join(storage, '_deskpost', 'changes', 'taken')), '679: a refused new-book wrote a record');
+
+    // 5. Book-making records have no restore, in shared changes and in undo, word for word.
+    const listed = (f.json(f.cli(['shared', 'changes', 'fresh', '--json']))['changes'] ?? []) as Record<string, unknown>[];
+    check(listed.length === 3 && listed.every((row) => row['restore'] === null && row['restore_says'] === SAYS), `679: shared changes did not give the Book-making records the recovery words: ${JSON.stringify(listed).slice(0, 600)}`);
+    for (const row of records) {
+      const id = String(row['record_id']);
+      const undone = f.cli(['undo', id, '--json']);
+      check(undone.exit !== 0 && undone.stderr.includes(`${id} is a shared write, and its recovery is its change record, not a local journal: ${SAYS}. Nothing was changed.`), `679: undo of a Book-making record did not name its recovery: ${f.said(undone)}`);
+    }
+  } catch (error) {
+    failures.push(`section 679 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(679) && prerequisite(679, () => !isCompiled(), 'requires the source stand-in')) await section679();
+// --- 680. A HALF-MADE BOOK FINISHED BY A RERUN (kickoffs/s193 row 2; r12 point 6). A `shared new-book` stopped after
+// `_book.md` (the stand-in loses the fourth `bm_write`, `_index.md`'s body companion) leaves the Book unlisted; the same
+// command run again skips `_book.md`, its own record found, and writes only `_index.md` and the Catalog line.
+async function section680(): Promise<void> {
+  const f = await undoFixture('s193-resume');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    const README = path.join(storage, 'books', 'README.md');
+    fs.writeFileSync(README, '# Books\n\n## Open a Book\n');
+    const log = path.join(storage, '.calls.log');
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '680: the connection was not set up');
+      fs.rmSync(log, { force: true });
+      return server;
+    };
+    const first = await serve();
+    const session = new bm.McpSession(first.url, 'selftest-680');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    const args = ['shared', 'new-book', 'half', '--title', 'Half', '--summary', 'A Book made in two runs.', '--seat', 'first'];
+    const writes = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+    const wiki = path.join(storage, 'books', 'half', 'wiki');
+
+    // 1. Stopped after _book.md: the fourth bm_write (_index.md's body companion) is lost.
+    const planned = f.cli([...args, '--preflight', '--json']);
+    const planId = String(f.json(planned)['plan_id'] ?? '');
+    await serve(['--outcome-unknown', 'bm_write:4:lost']);
+    const stopped = f.cli([...args, '--user-confirmed', '--plan-id', planId, '--json']);
+    check(stopped.exit !== 0 && fs.existsSync(path.join(wiki, '_book.md')) && !fs.existsSync(path.join(wiki, '_index.md')) && !fs.readFileSync(README, 'utf8').includes('books/half/'),
+      `680: new-book was not stopped after _book.md with the Book unlisted: ${f.said(stopped)}`);
+
+    // 2. The rerun: _book.md skipped, then only _index.md and the Catalog line.
+    await serve();
+    const preview = f.cli([...args, '--preflight', '--json']);
+    const steps = (f.json(preview)['steps'] ?? []) as Record<string, unknown>[];
+    check(String(steps[0]?.['does'] ?? '').includes('skipped') && steps[1]?.['does'] === 'create', `680: the rerun's preview does not skip _book.md and create _index.md: ${f.said(preview)}`);
+    fs.rmSync(log, { force: true });
+    const finished = f.cli([...args, '--user-confirmed', '--plan-id', String(f.json(preview)['plan_id'] ?? ''), '--json']);
+    const records = (f.json(finished)['records'] ?? []) as Record<string, unknown>[];
+    equal(records.map((row) => row['page']).join(), 'books/half/wiki/_index.md,books/README.md', `680: the rerun did not write only _index.md and the Catalog line: ${f.said(finished)}`);
+    equal(writes(), 6, '680: the rerun sent other writes than _index.md and the Catalog line (body, record and note, twice)');
+    check(fs.existsSync(path.join(wiki, '_index.md')) && fs.readFileSync(README, 'utf8').includes('- [[books/half/wiki/_book|Half]] — A Book made in two runs.'), '680: the rerun did not finish the Book');
+  } catch (error) {
+    failures.push(`section 680 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(680) && prerequisite(680, () => !isCompiled(), 'requires the source stand-in')) await section680();
+// --- 681. A COLLECTION BOOK PROMOTED (kickoffs/s193 row 3; PLAN-many-libraries.md item 9). `shared promote demo` copies
+// the fixture's collection Book (`_book.md`, `_index.md`, a page, `_sources.md`) and its Catalog line, last, from the local
+// Catalog's words and heading; a page changed locally while the apply waits at the archive lock is named and the archive
+// refused, the shared copy kept; the rerun copies only that page, archives the local Book with `_moved.md`, and swaps the
+// promoting seat's Desk entry for `shared/demo` while a second seat's Desk file stays byte for byte. A Shelf Book is refused.
+async function section681(): Promise<void> {
+  const f = await undoFixture('s193-promote');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-681');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '681: the connection was not set up');
+    // The collection Book `demo` (undoFixture's, open on seat first's Desk) gains a source list and a local Catalog line.
+    const SOURCES = '# Source list\n\n```json\n{"schema": 1, "pin": null, "sources": []}\n```\n';
+    fs.writeFileSync(f.at('collection/books/demo/_sources.md'), SOURCES);
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Reference\n\n- [[books/demo/wiki/_book|Demo Guide]] — The fixture Book, promoted.\n');
+    equal(f.cli(['collection', 'rebuild', '--json']).exit, 0, '681: the collection manifests were not rebuilt');
+    const second = f.w.startAgent();
+    f.w.seatMade('second', 'beta', second, '681: the second seat was not made');
+    equal(f.w.as(second, ['desk', 'open', 'book', 'demo', '--location', 'collection', '--seat', 'second', '--workspace', f.lib]).exit, 0, '681: the second seat could not open demo');
+    const secondDesk = f.at('.claude/seats/second/.open-books');
+    const secondBytes = fs.readFileSync(secondDesk);
+    const promote = (tail: string[]) => f.cli(['shared', 'promote', 'demo', '--seat', 'first', ...tail, '--json']);
+    const shared = (relative: string) => path.join(storage, 'books', 'demo', ...relative.split('/'));
+
+    // 1. A Shelf Book is refused, named as one.
+    equal(f.cli(['shelf', 'new', 'shelfy', '--title', 'Shelfy', '--summary', 'A Shelf Book.', '--json']).exit, 0, '681: the Shelf Book was not made');
+    const shelfy = f.cli(['shared', 'promote', 'shelfy', '--seat', 'first', '--preflight', '--json']);
+    check(shelfy.exit !== 0 && shelfy.stderr.includes('shelfy is a Shelf Book') && shelfy.stderr.includes('deskpost publish shelfy'), `681: a Shelf Book was not refused: ${f.said(shelfy)}`);
+
+    // 2. The preview lists every page with its digest, the target and the archive route's plan.
+    const preview = promote(['--preflight']);
+    const shown = f.json(preview);
+    const listed = ((shown['pages'] ?? []) as Record<string, unknown>[]).map((row) => String(row['page']));
+    check(preview.exit === 0 && ['wiki/_book.md', 'wiki/_index.md', 'wiki/guide/start.md', '_sources.md'].every((name) => listed.includes(`collection/books/demo/${name}`))
+      && String((shown['archive'] as Record<string, unknown> | undefined)?.['plan_id'] ?? '').startsWith('shared-archive-') && String(shown['target']).startsWith('books/demo/'),
+      `681: the preview does not list every page, the target and the archive plan: ${f.said(preview)}`);
+
+    // 3. A page changed while the apply waits at the archive lock: the archive is refused, naming it; the copy stays.
+    // undoFixture keeps its agent's pid to itself; the seat's binding names it.
+    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const lock = f.at('internal/book-locks/collection-archive.lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
+    const waiting = runCliAsync(['shared', 'promote', 'demo', '--seat', 'first', '--user-confirmed', '--plan-id', String(shown['plan_id'] ?? ''), '--json', '--workspace', f.lib],
+      { cwd: f.w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: firstAgent, AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' } });
+    const catalogHasDemo = () => fs.readFileSync(path.join(storage, 'books', 'README.md'), 'utf8').includes('[[books/demo/wiki/_book|');
+    for (let waited = 0; waited < 150 && !catalogHasDemo(); waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    check(catalogHasDemo(), '681: the copy did not reach the Catalog line while the archive lock was held');
+    fs.writeFileSync(f.at('collection/books/demo/wiki/guide/start.md'), '# Getting Started\n\nChanged after the copy.\n');
+    fs.rmSync(lock, { force: true });
+    const refused = await waiting;
+    check(refused.exit !== 0 && refused.stderr.includes('The local Book changed after it was copied, so it was not archived: collection/books/demo/wiki/guide/start.md.'),
+      `681: a page changed between copy and archive was not named: ${f.said(refused)}`);
+    check(fs.existsSync(f.at('collection/books/demo/wiki/_book.md')) && fs.existsSync(shared('wiki/guide/start.md')) && fs.readFileSync(shared('wiki/guide/start.md'), 'utf8').includes('The first text.'),
+      '681: a refused archive moved the local Book or lost the shared copy');
+    const catalog = fs.readFileSync(path.join(storage, 'books', 'README.md'), 'utf8');
+    check(catalog.includes('## Reference\n\n- [[books/demo/wiki/_book|Demo Guide]] — The fixture Book, promoted.'), `681: the Catalog line was not taken from the local Catalog's words and heading: ${catalog}`);
+    check(fs.existsSync(shared('_sources.md')) && fs.existsSync(shared('wiki/_index.md')), '681: the sources or the reader map were not copied');
+
+    // 4. The rerun copies only the changed page, archives with _moved.md, and swaps only this seat's Desk entry.
+    const finished = f.gated(['shared', 'promote', 'demo', '--seat', 'first']);
+    const records = (finished.result['records'] ?? []) as Record<string, unknown>[];
+    equal(records.map((row) => row['page']).join(), 'books/demo/wiki/guide/start.md', `681: the rerun did not copy only the changed page: ${f.said(finished.ran)}`);
+    check(fs.readFileSync(shared('wiki/guide/start.md'), 'utf8').includes('Changed after the copy.'), '681: the changed page was not copied again');
+    const moved = f.at('collection/archive/demo/wiki/_moved.md');
+    check(finished.ran.exit === 0 && !fs.existsSync(f.at('collection/books/demo')) && fs.existsSync(moved)
+      && /moved to the shared collection as `shared\/demo`, \d{4}-\d{2}-\d{2}, by Home/.test(fs.readFileSync(moved, 'utf8')), `681: the local Book was not archived with _moved.md: ${f.said(finished.ran)}`);
+    const firstDesk = fs.readFileSync(f.at('.claude/seats/first/.open-books'), 'utf8');
+    check(/^shared\/demo\r?$/m.test(firstDesk) && !/^books\/demo\r?$/m.test(firstDesk), `681: the promoting seat's Desk does not name shared/demo: ${firstDesk}`);
+    check(fs.readFileSync(secondDesk).equals(secondBytes), "681: the second seat's Desk file changed");
+    const recordText = fs.readFileSync(path.join(storage, '_deskpost', 'changes', 'demo', `${String(records[0]?.['record_id'])}.md`), 'utf8');
+    check(recordText.includes('made_by: promote'), `681: a promote record lacks made_by: promote: ${recordText.slice(0, 300)}`);
+  } catch (error) {
+    failures.push(`section 681 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(681) && prerequisite(681, () => !isCompiled(), 'requires the source stand-in')) await section681();
+// --- 682. A PROMOTE STOPPED AFTER THE COPY, FINISHED BY A RERUN (kickoffs/s193 row 3; r12 point 6). The apply copies the
+// Book and its Catalog line, and the archive half refuses (a folder already at `collection/archive/demo`); with that folder
+// gone, the same command copies nothing again (no `bm_write`), archives the local Book and swaps this seat's Desk entry; a
+// third run finds it all done and leaves the Desk as it is.
+async function section682(): Promise<void> {
+  const f = await undoFixture('s193-promote-resume');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-682');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '682: the connection was not set up');
+    const log = path.join(storage, '.calls.log');
+    const writes = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+    const promote = () => f.gated(['shared', 'promote', 'demo', '--seat', 'first']);
+
+    // 1. Stopped after the copy: the archive half refuses, the local Book stays.
+    const blocker = f.at('collection/archive/demo');
+    fs.mkdirSync(blocker, { recursive: true });
+    const stopped = promote();
+    check(stopped.ran.exit !== 0 && stopped.ran.stderr.includes("Archive already contains 'demo'") && fs.existsSync(f.at('collection/books/demo/wiki/_book.md'))
+      && fs.readFileSync(path.join(storage, 'books', 'README.md'), 'utf8').includes('[[books/demo/wiki/_book|Demo]]'), `682: the promote was not stopped after the copy: ${f.said(stopped.ran)}`);
+    fs.rmSync(blocker, { recursive: true, force: true });
+
+    // 2. The rerun copies nothing again, archives, and swaps this seat's Desk entry.
+    fs.rmSync(log, { force: true });
+    const finished = promote();
+    check(finished.ran.exit === 0 && ((finished.result['records'] ?? []) as unknown[]).length === 0 && writes() === 0, `682: the rerun copied something again (${writes()} bm_write): ${f.said(finished.ran)}`);
+    check(fs.existsSync(f.at('collection/archive/demo/wiki/_moved.md')) && !fs.existsSync(f.at('collection/books/demo')), `682: the rerun did not archive the local Book: ${f.said(finished.ran)}`);
+    check(/^shared\/demo\r?$/m.test(fs.readFileSync(f.at('.claude/seats/first/.open-books'), 'utf8')), "682: the rerun did not swap this seat's Desk entry");
+
+    // 3. A third run finds it done and leaves the Desk.
+    const done = promote();
+    check(done.ran.exit === 0 && String(done.result['desk'] ?? '').includes('already holds shared/demo') && done.result['archive'] === 'already archived', `682: a third run did not find it done: ${f.said(done.ran)}`);
+  } catch (error) {
+    failures.push(`section 682 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(682) && prerequisite(682, () => !isCompiled(), 'requires the source stand-in')) await section682();
+// --- 683. THE DESKS A PROMOTE LEAVES (kickoffs/s193 row 4; PLAN-many-libraries.md item 13). After `shared promote demo` by
+// seat first, with a second seat holding `books/demo`: the second seat's overview names the move, quotes `_moved.md`, gives
+// `shared/demo` and the one command that opens it and the one that closes the old entry; the promoting seat's overview
+// lists the second seat as still holding `books/demo`; no Desk file but the promoting seat's changed; and the close
+// command it gives, run by the second seat, closes the old entry.
+async function section683(): Promise<void> {
+  const f = await undoFixture('s193-desks');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-683');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '683: the connection was not set up');
+    const second = f.w.startAgent();
+    f.w.seatMade('second', 'beta', second, '683: the second seat was not made');
+    equal(f.w.as(second, ['desk', 'open', 'book', 'demo', '--location', 'collection', '--seat', 'second', '--workspace', f.lib]).exit, 0, '683: the second seat could not open demo');
+    const seatsFolder = f.at('.claude/seats');
+    const deskFiles = () => new Map(fs.readdirSync(seatsFolder).filter((name) => fs.existsSync(path.join(seatsFolder, name, '.open-books'))).map((name) => [name, fs.readFileSync(path.join(seatsFolder, name, '.open-books')).toString('base64')]));
+    const before = deskFiles();
+
+    const promoted = f.gated(['shared', 'promote', 'demo', '--seat', 'first']);
+    check(promoted.ran.exit === 0 && promoted.result['verdict'] === 'written', `683: the promote failed: ${f.said(promoted.ran)}`);
+    const moved = fs.readFileSync(f.at('collection/archive/demo/wiki/_moved.md'), 'utf8').split(/\r?\n/).find((line) => line.startsWith('moved to')) ?? '';
+    const after = deskFiles();
+    for (const [seat, bytes] of before) if (seat !== 'first') equal(after.get(seat), bytes, `683: the promote changed seat ${seat}'s Desk file`);
+    check(after.get('first') !== before.get('first'), "683: the promoting seat's Desk file was not changed");
+
+    // 1. The second seat's overview names the move, quotes _moved.md, and gives both commands.
+    const overview = (agent: number, seat: string) => f.json(f.w.as(agent, ['desk', '--seat', seat, '--workspace', f.lib, '--json']));
+    const secondView = overview(second, 'second');
+    const entry = ((secondView['open_books'] ?? []) as Record<string, any>[]).find((book) => book['root'] === 'books/demo');
+    same(entry?.['moved'], { says: moved, shared: 'shared/demo', open: 'deskpost basic-memory open demo', close: 'deskpost desk close book demo --location collection' },
+      `683: the second seat's overview does not name the move and both commands: ${JSON.stringify(entry ?? null)}`);
+    check(moved.startsWith('moved to the shared collection as `shared/demo`'), `683: the quoted line is not _moved.md's: ${moved}`);
+
+    // 2. The promoting seat's overview lists the second seat as still holding books/demo.
+    const firstAgent = Number((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
+    const firstView = overview(firstAgent, 'first');
+    const still = ((firstView['moved_books_still_open'] ?? []) as Record<string, any>[]).find((row) => row['book'] === 'books/demo');
+    check(still !== undefined && JSON.stringify(still['seats']) === JSON.stringify(['second']) && still['shared'] === 'shared/demo',
+      `683: the promoting seat's overview does not list the second seat as still holding books/demo: ${JSON.stringify(firstView['moved_books_still_open'] ?? null)}`);
+    for (const [seat, bytes] of after) equal(deskFiles().get(seat), bytes, `683: reading the overviews changed seat ${seat}'s Desk file`);
+
+    // 3. The close command given, run by the second seat, closes the old entry.
+    const closed = f.w.as(second, [...String(entry?.['moved']?.['close'] ?? '').split(' ').slice(1), '--seat', 'second', '--workspace', f.lib]);
+    check(closed.exit === 0 && !/^books\/demo\r?$/m.test(fs.readFileSync(path.join(seatsFolder, 'second', '.open-books'), 'utf8')), `683: the given close command did not close the old entry: ${f.said(closed)}`);
+    check(overview(firstAgent, 'first')['moved_books_still_open'] === undefined, '683: a closed old entry is still listed');
+  } catch (error) {
+    failures.push(`section 683 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(683) && prerequisite(683, () => !isCompiled(), 'requires the source stand-in')) await section683();
+
+// --- 684. Connected local rebuild makes shared manifests, names unread pages, preserves local success offline.
+async function section684(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c118' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'm-'));
+  const workspace = path.join(folder, 'w');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  const servers: { stop(): void }[] = [];
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '684: init');
+    const local = path.join(workspace, 'collection/books/own/wiki');
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, '_book.md'), '# Own\n');
+    const alone = cli(['collection', 'rebuild', '--json']);
+    equal(alone.exit, 0, '684: unconnected local rebuild');
+    check(!('shared' in JSON.parse(alone.stdout)), '684: no connection must keep the old result');
+    const storage = path.join(folder, 'server');
+    for (const [book, page] of [['books/one', 'nested/found'], ['books/two', 'gone'], ['archive/old', 'past']]) {
+      const wiki = path.join(storage, book!, 'wiki');
+      fs.mkdirSync(path.dirname(path.join(wiki, page + '.md')), { recursive: true });
+      fs.writeFileSync(path.join(wiki, '_book.md'), '---\npermalink: ' + book + '/wiki/_book\n---\n# ' + book + '\n\n## Purpose\n\nShared subject.\n');
+      fs.writeFileSync(path.join(wiki, page + '.md'), '---\npermalink: ' + book + '/wiki/' + page + '\n---\n# Needle\n');
+    }
+    const server = await startFakeBasicMemory(storage, ['--vanish', 'gone', '--call-log']);
+    servers.push(server);
+    equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '684: connect');
+    const ran = cli(['collection', 'rebuild', '--json']);
+    equal(ran.exit, 0, '684: connected rebuild: ' + ran.stderr);
+    const result = JSON.parse(ran.stdout);
+    equal(result.shared?.committed, 3, '684: three shared Books rebuilt: ' + JSON.stringify(result.shared));
+    check(JSON.stringify(result.shared?.pages_withheld).includes('gone.md'), '684: unread page named');
+    const store = await import('../src/manifeststore.ts');
+    for (const [collection, slug] of [['shared', 'one'], ['shared', 'two'], ['shared-archive', 'old']]) {
+      const manifest = store.getStoredBookManifest(workspace, slug!, collection!);
+      equal(manifest.status, 'ok', '684: manifest ' + collection + '/' + slug);
+    }
+    const one = JSON.stringify(store.getStoredBookManifest(workspace, 'one', 'shared'));
+    check(one.includes('nested/found') && one.includes('Shared subject.'), '684: nested page and Purpose metadata');
+    check(!JSON.stringify(store.getStoredBookManifest(workspace, 'two', 'shared')).includes('gone'), '684: unread page excluded');
+    const rosterFile = path.join(workspace, 'internal/book-manifests/shared/_roster.json');
+    const roster = fs.readFileSync(rosterFile, 'utf8');
+    equal(JSON.parse(roster).books.map((b: { slug: string }) => b.slug).join(), 'one,two', '684: active roster');
+    check(fs.existsSync(path.join(workspace, 'internal/book-manifests/shared-archive/_roster.json')), '684: archive roster');
+    const markerFile = path.join(workspace, '.library/workspace.json');
+    const ws = await import('../src/workspace.ts');
+    const marker = ws.readMarker(workspace)!;
+    ((marker['connections'] as Record<string, any>)['basic_memory'] as Record<string, unknown>)['url'] = 'http://127.0.0.1:9/mcp';
+    fs.writeFileSync(markerFile, JSON.stringify(marker));
+    const dead = cli(['collection', 'rebuild', '--json']);
+    equal(dead.exit, 0, '684: unreachable connection keeps exit zero');
+    const offline = JSON.parse(dead.stdout);
+    check(offline.committed >= 1 && offline.shared?.status === 'not reached' && offline.shared?.reason.includes('MCP initialize failed'), '684: local result and server error preserved');
+    equal(fs.readFileSync(rosterFile, 'utf8'), roster, '684: offline roster unchanged');
+    ((marker['connections'] as Record<string, any>)['basic_memory'] as Record<string, unknown>)['url'] = server.url;
+    ((marker['connections'] as Record<string, any>)['basic_memory'] as Record<string, unknown>)['collection_name'] = '';
+    fs.writeFileSync(markerFile, JSON.stringify(marker));
+    const captureRoot = path.join(storage, 'books/one/wiki/_book.md');
+    fs.appendFileSync(captureRoot, '\n- **Kind:** capture\n');
+    // Remove only this fixture's obsolete archived Book and the second Book's root to exercise retirement and omission.
+    fs.rmSync(path.join(storage, 'archive/old'), { recursive: true, force: true });
+    fs.rmSync(path.join(storage, 'books/two/wiki/_book.md'));
+    const changed = JSON.parse(cli(['collection', 'rebuild', '--json']).stdout);
+    check(JSON.stringify(changed.shared?.books_unavailable).includes('shared/two'), '684: unread root named');
+    check(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).books.some((b: { slug: string; unavailable?: string }) => b.slug === 'two' && b.unavailable), '684: unread root stays marked unavailable');
+    equal(store.getStoredBookManifest(workspace, 'old', 'shared-archive').status, 'missing', '684: absent archived store retired');
+    const capture = JSON.stringify(store.getStoredBookManifest(workspace, 'one', 'shared'));
+    check(capture.includes('capture') && !capture.includes('nested/found') && !capture.includes('Needle'), '684: capture metadata contains no page names or headings');
+    const calls = fs.readFileSync(path.join(storage, '.calls.log'), 'utf8');
+    check(!/"tool":"bm_(write|edit|delete|move)"/.test(calls), '684: server read only');
+    check(calls.split('\n').filter(Boolean).map(line => JSON.parse(line)).some(row => row.tool === 'bm_read' && row.project_by === 'id'), '684: a connection without a name still reads in its pinned collection');
+  } catch (error) { failures.push('section 684 stopped early: ' + (error as Error).message); }
+  finally { for (const server of servers) server.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(684) && prerequisite(684, () => !isCompiled(), 'requires the source stand-in')) await section684();
+
+// --- 685. Discovery names shared coverage and its local repair before and after a rebuild.
+async function section685(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c118' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'd-'));
+  const workspace = path.join(folder, 'w');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  let server: { stop(): void } | null = null;
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '685: init');
+    const storage = path.join(folder, 'server');
+    const wiki = path.join(storage, 'books/demo/wiki');
+    fs.mkdirSync(path.join(wiki, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '---\npermalink: books/demo/wiki/_book\n---\n# Demo\n\n## Purpose\n\nShared coverage.\n');
+    fs.writeFileSync(path.join(wiki, 'nested/guide.md'), '---\npermalink: books/demo/wiki/nested/guide\n---\n# Distinctive Needle\n');
+    const started = await startFakeBasicMemory(storage);
+    server = started;
+    equal(cli(['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '685: connect');
+    const discovery: typeof import('../src/discovery.ts') = await import(KERNEL_COMMAND[1]?.endsWith('cli.ts') ? (await import('node:url')).pathToFileURL(path.join(path.dirname(KERNEL_COMMAND[1]), 'discovery.ts')).href : '../src/discovery.ts');
+    const find = () => discovery.findBookPages({ workspace, query: 'Distinctive Needle', deskStateDirectory: path.join(folder, 'desk') });
+    const before = find();
+    check(before.shared_books_note.includes('deskpost collection rebuild') && !before.shared_books_covered, '685: before rebuild command named');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, '685: rebuild');
+    const after = find();
+    check(after.results.some(hit => hit.book_root === 'shared/demo' && hit.page === 'nested/guide'), '685: shared nested page found');
+    check(after.shared_books_covered && after.shared_books_note.includes('as of') && after.shared_books_note.includes('deskpost collection rebuild'), '685: dated coverage and refresh command');
+    check(after.shared_archive_roster_as_of.length > 0, '685: empty archive has a dated roster');
+  } catch (error) { failures.push('section 685 stopped early: ' + (error as Error).message); }
+  finally { server?.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(685) && prerequisite(685, () => !isCompiled(), 'requires the source stand-in')) await section685();
+
+// --- 686. Shared nested lines and Shelf lines coexist; the reader awaits the search and filters closed Books.
+async function section686(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c118' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'f-'));
+  const workspace = path.join(folder, 'w');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: String(process.pid), LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  let server: { stop(): void } | null = null;
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '686: init');
+    equal(cli(['hub', 'new', 'alpha', '--title', 'Alpha']).exit, 0, '686: Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'alpha', '--no-launch']).exit, 0, '686: seat');
+    const desk = path.join(workspace, '.claude/seats/first');
+    const storage = path.join(folder, 'server');
+    const wiki = path.join(storage, 'books/demo/wiki');
+    fs.mkdirSync(path.join(wiki, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(wiki, '_book.md'), '---\npermalink: books/demo/wiki/_book\n---\n# Shared Demo\n');
+    fs.writeFileSync(path.join(wiki, 'nested/guide.md'), '---\npermalink: books/demo/wiki/nested/guide\n---\n# Shared guide\n\nThe distinctive needle is here.\n');
+    const started = await startFakeBasicMemory(storage, ['--call-log']);
+    server = started;
+    equal(cli(['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '686: connect');
+    equal(cli(['shelf', 'new', 'local', '--title', 'Local', '--summary', 'Local guide']).exit, 0, '686: Shelf Book');
+    fs.writeFileSync(path.join(workspace, 'shelf/local/wiki/guide.md'), '# Local guide\n\nAnother distinctive needle.\n');
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/local\nshared/demo\n');
+    const full: typeof import('../src/fulltext.ts') = await import(KERNEL_COMMAND[1]?.endsWith('cli.ts') ? (await import('node:url')).pathToFileURL(path.join(path.dirname(KERNEL_COMMAND[1]), 'fulltext.ts')).href : '../src/fulltext.ts');
+    const options = { workspace, query: 'distinctive needle', deskStateDirectory: desk };
+    const found = await full.findOpenBookLines(options);
+    check(found.results.some(hit => hit.book_root === 'shared/demo' && hit.page === 'nested/guide' && hit.line === 6), '686: shared nested line and canonical path');
+    check(found.results.some(hit => hit.book_root === 'shelf/local' && hit.page === 'guide'), '686: Shelf line beside shared line');
+    equal(found.books_out_of_scope.length, 0, '686: shared searched, not out of scope');
+    const front = cli(['mcp', 'call', 'search_open_books', '--query', 'distinctive needle', '--seat', 'first']);
+    check(front.exit === 0 && front.stdout.includes('shared/demo') && front.stdout.includes('nested/guide:6'), '686: front door awaited search: ' + front.stderr + front.stdout.slice(0, 500));
+    const only = await full.findOpenBookLines({ ...options, place: 'shared' });
+    check(only.results.length === 1 && only.results[0]?.book_root === 'shared/demo', '686: place shared');
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/local\n');
+    const closed = await full.findOpenBookLines(options);
+    check(closed.shared_books_open === 0 && closed.results.every(hit => hit.book_root === 'shelf/local'), '686: closed shared Book excluded');
+    const log = fs.readFileSync(path.join(storage, '.calls.log'), 'utf8');
+    check(!/"tool":"bm_(write|edit|delete|move)"/.test(log), '686: search read only');
+  } catch (error) { failures.push('section 686 stopped early: ' + (error as Error).message); }
+  finally { server?.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(686) && prerequisite(686, () => !isCompiled(), 'requires the source stand-in')) await section686();
+
+// --- 687. Missing pages, malformed Book listing, shared budgets and a Book closed in flight are explicit.
+async function section687(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c118' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'b-'));
+  const workspace = path.join(folder, 'w');
+  const desk = path.join(folder, 'desk');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  const servers: { stop(): void }[] = [];
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '687: init');
+    fs.mkdirSync(desk, { recursive: true });
+    const open = path.join(desk, '.open-books');
+    fs.writeFileSync(open, 'shared/one\nshared/two\n');
+    const storage = path.join(folder, 'server');
+    for (const book of ['one', 'two']) {
+      const wiki = path.join(storage, 'books', book, 'wiki');
+      fs.mkdirSync(wiki, { recursive: true });
+      for (const page of ['_book', 'found', 'gone', 'large']) {
+        const body = page === 'large' ? 'x'.repeat(2097153) : '# Needle ' + page + '\n';
+        fs.writeFileSync(path.join(wiki, page + '.md'), '---\npermalink: books/' + book + '/wiki/' + page + '\n---\n' + body);
+      }
+    }
+    const stand = async (extra: string[]) => {
+      const started = await startFakeBasicMemory(storage, extra);
+      servers.push(started);
+      equal(cli(['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '687: connect');
+      return started;
+    };
+    const full: typeof import('../src/fulltext.ts') = await import(KERNEL_COMMAND[1]?.endsWith('cli.ts') ? (await import('node:url')).pathToFileURL(path.join(path.dirname(KERNEL_COMMAND[1]), 'fulltext.ts')).href : '../src/fulltext.ts');
+    const options = { workspace, query: 'needle', deskStateDirectory: desk };
+    await stand(['--vanish', 'gone']);
+    const missing = await full.findOpenBookLines(options);
+    check(missing.pages_withheld.some(row => row['page'] === 'gone'), '687: missing page named');
+    check(missing.pages_withheld.some(row => row['page'] === 'large' && String(row['reason']).includes('per-page cap')), '687: oversized page named');
+    check(missing.results.some(hit => hit.book_root === 'shared/two'), '687: other Book still searched');
+    await stand(['--malformed-list', 'no-nodes:1']);
+    const malformed = await full.findOpenBookLines(options);
+    check(malformed.books_unavailable.some(row => row['book_root'] === 'shared/one' && String(row['reason']).includes('listing') && String(row['repair']).includes('connection')), '687: malformed listing named with repair');
+    check(malformed.results.some(hit => hit.book_root === 'shared/two'), '687: other Book survives malformed listing');
+    const limited = await full.findOpenBookLines({ ...options, limits: { maxFilesScanned: 1 } });
+    check(limited.match_count_is_floor && limited.budget_note.includes('1-page') && limited.pages_scanned <= 1, '687: shared file budget sets floor and note');
+    const clock = await full.findOpenBookLines({ ...options, limits: { wallClockSeconds: 0 } });
+    check(clock.match_count_is_floor && clock.budget_note.includes('time budget') && clock.pages_scanned === 0, '687: clock budget stops before reading');
+    check(full.formatFullTextResult(clock).includes('No matching line was returned from the pages searched.'), '687: incomplete empty search makes no claim of absence');
+    // A real multi-page stand-in listing: simulate the clock becoming spent after its first response.
+    // The second page must never be requested; the partial listing yields no invented coverage.
+    const pagedWiki = path.join(storage, 'books/paged/wiki');
+    fs.mkdirSync(pagedWiki, { recursive: true });
+    for (let i = 0; i < 101; i++) {
+      fs.writeFileSync(path.join(pagedWiki, `p${i}.md`), `---\npermalink: books/paged/wiki/p${i}\n---\n# Page\n`);
+    }
+    const bm = await import('../src/basicmemory.ts');
+    const walk = await import('../src/sharedmanifests.ts');
+    const endpoint = servers[servers.length - 1] as { stop(): void; url: string };
+    const session = new bm.McpSession(endpoint.url, 'selftest-687-paged-budget');
+    await session.initialize();
+    const call = session.callTool.bind(session);
+    let listingCalls = 0;
+    let stopped = false;
+    session.callTool = async (name, args) => {
+      const response = await call(name, args);
+      if (name === 'bm_list') { listingCalls++; stopped = true; }
+      return response;
+    };
+    const pages = [];
+    for await (const page of walk.sharedPages(session, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', 'books/paged/wiki', () => stopped)) pages.push(page);
+    equal(listingCalls, 1, '687: spent budget stops between listing pages');
+    equal(pages.length, 0, '687: incomplete listing supplies no pages');
+    // Local and shared pages draw from the same counter, rather than receiving a fresh allowance per Book.
+    const local = path.join(workspace, 'collection/books/own/wiki');
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, '_book.md'), '# Own needle\n');
+    fs.writeFileSync(open, 'books/own\nshared/two\n');
+    const together = await full.findOpenBookLines({ ...options, limits: { maxFilesScanned: 1 } });
+    check(together.match_count_is_floor && together.pages_scanned === 1 && together.results.every(hit => hit.book_root === 'books/own'), '687: local and shared share the file budget');
+    fs.writeFileSync(open, 'shared/two\n');
+    // The first awaited connection yields before any page can be returned, so closing now exercises the final Desk read.
+    const pending = full.findOpenBookLines(options);
+    fs.writeFileSync(open, '');
+    const closed = await pending;
+    check(closed.results.length === 0 && closed.pages_withheld.length === 0 && closed.books_searched === 0 && closed.books_closed_during_query.some(row => row['book_root'] === 'shared/two'), '687: in-flight close discards lines and withheld pages');
+  } catch (error) { failures.push('section 687 stopped early: ' + (error as Error).message); }
+  finally { for (const server of servers) server.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(687) && prerequisite(687, () => !isCompiled(), 'requires the source stand-in')) await section687();
+
+// --- 688. A page unread at rebuild leaves explicit partial Discovery coverage, active and archived.
+async function section688(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c119' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'pages-'));
+  const workspace = path.join(folder, 'w');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  let server: { stop(): void } | null = null;
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '688: init');
+    const storage = path.join(folder, 'server');
+    for (const place of ['books', 'archive']) {
+      const wiki = path.join(storage, place, 'demo/wiki');
+      fs.mkdirSync(wiki, { recursive: true });
+      for (const [page, title] of [['_book', 'Demo'], ['gone', 'Unique missing heading'], ['kept', 'Retained heading']]) {
+        fs.writeFileSync(path.join(wiki, page + '.md'), `---\npermalink: ${place}/demo/wiki/${page}\n---\n# ${title}\n`);
+      }
+    }
+    const started = await startFakeBasicMemory(storage, ['--vanish', 'gone']);
+    server = started;
+    equal(cli(['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '688: connect');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, '688: rebuild');
+    const discovery = await import('../src/discovery.ts');
+    const options = { workspace, query: 'Unique missing heading', deskStateDirectory: path.join(folder, 'desk') };
+    const found = discovery.findBookPages(options);
+    check(found.shared_books_note.includes('PARTIAL') && !found.shared_books_note.includes('all '), '688: active partial, never all searched');
+    check(found.archive_note.includes('PARTIAL') && !found.archive_note.includes('shared archive: all'), '688: archive partial');
+    equal(found.books_partly_read?.length, 2, '688: both partly read Books named');
+    check(found.books_partly_read?.every(row => row.book === 'demo' && row.pages_withheld_count === 1) === true, '688: missing pages counted');
+    const roster = JSON.parse(fs.readFileSync(path.join(workspace, 'internal/book-manifests/shared/_roster.json'), 'utf8'));
+    check(roster.books[0].pages_withheld[0].page.endsWith('/gone.md') && roster.books[0].pages_withheld[0].reason, '688: roster retains page and reason');
+    equal(found.result_count, 0, '688: unread heading never invented');
+    const text = discovery.formatDiscoveryResult(found);
+    check(text.includes('Books partly read') && text.includes('1 page(s) withheld') && text.includes('PARTIAL'), '688: text names missing coverage');
+    equal(discovery.findBookPages({ ...options, query: 'Retained heading' }).result_count, 2, '688: retained pages still searched');
+    // Restoring readable pages clears the partial field and preserves the successful answer shape.
+    server.stop();
+    const complete = await startFakeBasicMemory(storage);
+    server = complete;
+    equal(cli(['basic-memory', 'setup', '--url', complete.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '688: reconnect');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, '688: complete rebuild');
+    const restored = discovery.findBookPages(options);
+    check(!('books_partly_read' in restored) && restored.shared_books_note.includes('all 1 Book(s) searched.'), '688: complete answer unchanged');
+    // A closed capture Book may disclose a count, never individual note paths, through partial coverage.
+    for (const place of ['books', 'archive']) fs.appendFileSync(path.join(storage, place, 'demo/wiki/_book.md'), '\n- **Kind:** capture\n');
+    server.stop();
+    const captureServer = await startFakeBasicMemory(storage, ['--vanish', 'gone']);
+    server = captureServer;
+    equal(cli(['basic-memory', 'setup', '--url', captureServer.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '688: reconnect capture');
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, '688: capture rebuild');
+    const captureStore = (await import('../src/manifeststore.ts')).getStoredBookManifest(workspace, 'demo', 'shared');
+    equal(captureStore.manifest?.['kind'], 'capture', '688: fixture is a capture Book');
+    const capture = discovery.findBookPages(options);
+    check(capture.books_partly_read?.length === 2 && capture.books_partly_read.every(row => row.pages_withheld_count === 1), '688: closed capture still reports partial counts');
+    check(!JSON.stringify(capture).includes('gone.md') && !discovery.formatDiscoveryResult(capture).includes('gone.md'), '688: closed capture partial metadata reveals no note filename');
+  } catch (error) { failures.push('section 688 stopped early: ' + (error as Error).message); }
+  finally { server?.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(688) && prerequisite(688, () => !isCompiled(), 'requires the source stand-in')) await section688();
+
+// --- 689. Failed Books stay in both rosters and override an older usable manifest.
+async function section689(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c119' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'books-'));
+  const workspace = path.join(folder, 'w');
+  const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+  let server: { stop(): void } | null = null;
+  try {
+    equal(runCli(['init', workspace, '--registry-root', env.LIBRARY_WORKSPACES], { cwd: folder, env }).exit, 0, '689: init');
+    const storage = path.join(folder, 'server');
+    for (const place of ['books', 'archive']) for (const book of ['bad', 'good']) {
+      const wiki = path.join(storage, place, book, 'wiki');
+      fs.mkdirSync(wiki, { recursive: true });
+      fs.writeFileSync(path.join(wiki, '_book.md'), `---\npermalink: ${place}/${book}/wiki/_book\n---\n# Needle ${book}\n`);
+    }
+    const connect = async (extra: string[]) => {
+      const started = await startFakeBasicMemory(storage, extra);
+      server = started;
+      equal(cli(['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '689: connect');
+    };
+    await connect([]);
+    equal(cli(['collection', 'rebuild', '--json']).exit, 0, '689: seed old stores');
+    const store = await import('../src/manifeststore.ts');
+    const prior = JSON.stringify(store.getStoredBookManifest(workspace, 'bad', 'shared'));
+    server!.stop();
+    await connect(['--vanish', 'bad/wiki/_book']);
+    const discovery = await import('../src/discovery.ts');
+    for (const alone of [false, true]) {
+      if (alone) {
+        // Only this fixture's good Books are removed, to prove failure in an otherwise empty roster.
+        for (const place of ['books', 'archive']) fs.rmSync(path.join(storage, place, 'good'), { recursive: true, force: true });
+      }
+      equal(cli(['collection', 'rebuild', '--json']).exit, 0, '689: failed rebuild');
+      const result = discovery.findBookPages({ workspace, query: 'Needle', deskStateDirectory: path.join(folder, 'desk') });
+      check(result.shared_books_note.includes('PARTIAL') && !result.shared_books_note.includes('all '), '689: active partial, alone=' + alone);
+      check(!result.archive_note.includes('shared archive: all'), '689: archive never all searched');
+      equal(result.books_unavailable.filter(row => row.book === 'bad' && row.status === 'unread-at-rebuild' && row.repair.includes('rebuild')).length, 2, '689: failed Books named');
+      equal(result.shared_books_total, alone ? 1 : 2, '689: full active roster');
+      equal(result.shared_archive_books_total, alone ? 1 : 2, '689: full archive roster');
+      equal(result.shared_books_searched, alone ? 0 : 1, '689: only readable active Books searched');
+      equal(result.shared_archive_books_searched, alone ? 0 : 1, '689: only readable archive Books searched');
+      check(result.results.every(hit => hit.book !== 'bad'), '689: old store never used as current');
+    }
+    equal(JSON.stringify(store.getStoredBookManifest(workspace, 'bad', 'shared')), prior, '689: old store retained unchanged');
+  } catch (error) { failures.push('section 689 stopped early: ' + (error as Error).message); }
+  finally { (server as { stop(): void } | null)?.stop(); fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(689) && prerequisite(689, () => !isCompiled(), 'requires the source stand-in')) await section689();
+
+// --- 690. Unchanged check-item explains both states in preflight and apply, naming its item.
+async function section690(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c119-check-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '690: init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '690: Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '690: seat');
+    fs.writeFileSync(path.join(lib, '.claude/seats/first/.open-projects'), 'projects/work\n');
+    const content = path.join(root, 'content.md');
+    fs.writeFileSync(content, '- [x] Distinctive matched item\n');
+    equal(cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', content]).exit, 0, '690: seed');
+    const edit = ['hub', 'edit', 'work', '--mode', 'check-item', '--section', 'Next', '--match-text', 'Distinctive matched item'];
+    for (const uncheck of [false, true]) {
+      if (uncheck) equal(cli([...edit, '--uncheck']).exit, 0, '690: untick');
+      for (const preview of [true, false]) {
+        const ran = cli([...edit, ...(uncheck ? ['--uncheck'] : []), ...(preview ? ['--preflight'] : [])]);
+        equal(ran.exit, 0, '690: unchanged answer');
+        const value = JSON.parse(ran.stdout);
+        check(value.unchanged && value.unchanged_reason?.includes(uncheck ? 'already unticked' : 'already ticked') && value.unchanged_reason?.includes('Distinctive matched item'), '690: reason and matched item on ' + (preview ? 'preflight' : 'apply'));
+      }
+    }
+    const changed = JSON.parse(cli([...edit, '--preflight']).stdout);
+    check(!changed.unchanged && !('unchanged_reason' in changed), '690: changed answer adds no reason key');
+  } catch (error) { failures.push('section 690 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(690)) await section690();
+
+// --- 691. Now replacements validate the actual preserved marker and still refuse real breaches.
+async function section691(): Promise<void> {
+  const hub = await import('../src/hubedit.ts');
+  const body = '# Work\n\n## Now\n\n- [ ] Original task\n  continued detail\n\n## Next\n\n- [ ] Later\n';
+  const replaced = hub.newProjectBody(body, 'ReplaceItem', 'Now', 'Replacement task\n  new detail', 'Original task', false);
+  check(replaced.includes('- [ ] Replacement task\n  new detail') && !replaced.includes('Original task'), '691: marker-less replacement keeps checkbox');
+  const implicit = hub.newProjectBody(body, 'ReplaceItem', '', 'Replacement task', 'Original task', false);
+  check(implicit.includes('- [ ] Replacement task'), '691: implicit Now target also accepted');
+  let refused = false;
+  try { hub.newProjectBody(body, 'ReplaceItem', 'Now', '- Bare entry', 'Original task', false); }
+  catch (error) { refused = String(error).includes('status marker'); }
+  check(refused, '691: explicit status breach refused');
+  refused = false;
+  try { hub.newProjectBody(body, 'ReplaceItem', 'Now', 'Replacement\n## Escape', 'Original task', false); }
+  catch (error) { refused = String(error).includes('heading'); }
+  check(refused, '691: escaping Now heading refused');
+}
+if (selected(691)) await section691();
+
+// --- 692. Train mutations name only the changed item and retain JSON, read, page and car output.
+async function section692(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c119' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'train-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'planner', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '692: init');
+    const train = (args: string[]) => runCli(['train', ...args, '--workspace', lib], { cwd: root, env });
+    equal(train(['add', 'other', '--title', 'Unrelated title', '--place', 'bucket:1']).exit, 0, '692: seed other item');
+    const added = train(['add', 'target', '--title', 'Distinctive target title', '--place', 'lane:fixes']);
+    check(added.exit === 0 && added.stdout.includes('Added target') && added.stdout.includes('Distinctive target title') && added.stdout.includes('absent -> lane:fixes'), '692: add names item and new place');
+    const moved = train(['move', 'target', '--place', 'running']);
+    check(moved.exit === 0 && moved.stdout.includes('Moved target') && moved.stdout.includes('Distinctive target title') && moved.stdout.includes('lane:fixes -> running'), '692: move names old and new place');
+    const closed = train(['close', 'target', '--done', '--note', 'Verified in c119']);
+    check(closed.exit === 0 && closed.stdout.includes('Closed target') && closed.stdout.includes('Distinctive target title') && closed.stdout.includes('open -> done') && closed.stdout.includes('note: Verified in c119'), '692: close names title, status and note');
+    for (const ran of [added, moved, closed]) check(ran.stdout.trim().split('\n').length === 1 && !ran.stdout.includes('Unrelated title') && !ran.stdout.includes('Changed '), '692: one change line only');
+    const read = train([]), page = train(['page']), car = train(['car', 'car:test', '--opened']);
+    check(read.stdout.includes('Unrelated title') && read.stdout.includes('Changed '), '692: normal read unchanged');
+    check(page.stdout.includes('## bucket:1') && page.stdout.includes('Changed '), '692: page unchanged');
+    check(car.exit === 0 && car.stdout.includes('Unrelated title') && car.stdout.includes('Changed '), '692: car output unchanged');
+    const json = train(['move', 'other', '--place', 'running', '--json']);
+    const disk = JSON.parse(fs.readFileSync(path.join(lib, 'internal/train/register.json'), 'utf8'));
+    equal(JSON.stringify(JSON.parse(json.stdout)), JSON.stringify(disk), '692: JSON remains exactly the register');
+  } catch (error) { failures.push('section 692 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(692)) await section692();
+
+// --- 693. Pending inventory can list one capture Book, matching the Desk count and combining seat filters.
+async function section693(): Promise<void> {
+  const w = await seatClaimWorkspace('c119-inventory', { pin: false });
+  try {
+    const ws = w.workspace;
+    equal(w.as(process.pid, ['hub', 'new', 'work', '--title', 'Work', '--workspace', ws]).exit, 0, '693: Hub');
+    const agent = w.startAgent();
+    w.seatMade('first', 'work', agent, '693: seat');
+    fs.writeFileSync(path.join(ws, '.claude/seats/first/.open-books'), 'shelf/reports\nshelf/letters\nshelf/holding\n');
+    const cli = (args: string[]) => w.as(agent, [...args, '--workspace', ws, '--json']);
+    for (const [book, title] of [['reports', 'Pending Report'], ['reports', 'Completed Report'], ['letters', 'Pending Letter'], ['holding', 'Pending Holding']]) {
+      const ran = cli(['capture', book!, '--title', title!, '--body', 'Fixture content', ...(book === 'letters' ? ['--for', 'first'] : [])]);
+      equal(ran.exit, 0, '693: capture ' + title);
+    }
+    const actions = path.join(ws, 'review.json');
+    fs.writeFileSync(actions, JSON.stringify([{ kind: 'review', source: 'holding', source_slug: 'reports', source_match: 'Completed Report' }]));
+    equal(cli(['triage', 'batch', '--actions-path', actions]).exit, 0, '693: close completed fixture');
+    const all = JSON.parse(cli(['triage', 'inventory', '--pending']).stdout);
+    const desk = JSON.parse(cli(['desk', '--seat', 'first']).stdout);
+    for (const book of ['reports', 'letters', 'holding']) {
+      const ran = cli(['triage', 'inventory', '--pending', '--book', book]);
+      equal(ran.exit, 0, '693: filter ' + book + ': ' + ran.stderr);
+      if (ran.exit !== 0) continue;
+      const value = JSON.parse(ran.stdout);
+      check(value.holding_notes.length === 1 && value.holding_notes.every((note: { book: string; review: string }) => note.book === book && note.review !== 'done'), '693: only pending notes from ' + book);
+      check(value.holding_notes_listed.includes(book) && value.pages.length === 0, '693: filter named and Notebook omitted');
+      equal(value.holding_pending_count, all.holding_pending_count, '693: counts remain whole');
+      if (book === 'reports') equal(value.holding_notes.length, desk.capture_books.find((entry: { slug: string }) => entry.slug === 'reports').pending_count, '693: Reports list equals Desk count');
+    }
+    const together = cli(['triage', 'inventory', '--pending', '--book', 'letters', '--for-seat', 'first']);
+    check(together.exit === 0 && JSON.parse(together.stdout).holding_notes.length === 1, '693: Book and recipient filters combine');
+    for (const args of [['--book', 'reports'], ['--pending', '--book', 'unknown']]) {
+      const bad = cli(['triage', 'inventory', ...args]);
+      check(bad.exit !== 0 && (bad.stdout + bad.stderr).includes('--book') && !bad.stdout.includes('holding_notes'), '693: invalid filter refused');
+      if (args.includes('unknown')) check(['reports', 'letters', 'holding'].every(name => (bad.stdout + bad.stderr).includes(name)), '693: allowed Books named');
+    }
+  } catch (error) { failures.push('section 693 stopped early: ' + (error as Error).message); }
+  finally { w.dispose(); }
+}
+if (selected(693)) await section693();
+
+// --- 694. Batch help states the optional yes accurately, while a review-only batch still applies ungated.
+async function section694(): Promise<void> {
+  const help = runCli(['triage', 'batch', '--help']);
+  check(help.exit === 0 && help.stdout.includes('[--preflight | [--user-confirmed] --plan-id <id>]'), '694: optional confirmation in usage');
+  check(help.stdout.includes('only review actions') && help.stdout.includes('none with other_seat') && help.stdout.includes('needs no yes'), '694: exact review-only rule explained');
+  const w = await seatClaimWorkspace('c119-review', { pin: false });
+  try {
+    const ws = w.workspace;
+    equal(w.as(process.pid, ['hub', 'new', 'work', '--title', 'Work', '--workspace', ws]).exit, 0, '694: Hub');
+    const agent = w.startAgent();
+    w.seatMade('first', 'work', agent, '694: seat');
+    fs.writeFileSync(path.join(ws, '.claude/seats/first/.open-books'), 'shelf/reports\n');
+    const cli = (args: string[]) => w.as(agent, [...args, '--workspace', ws, '--json']);
+    equal(cli(['capture', 'reports', '--title', 'Review only', '--body', 'Fixture']).exit, 0, '694: capture');
+    const actions = path.join(ws, 'actions.json');
+    fs.writeFileSync(actions, JSON.stringify([{ kind: 'review', source: 'holding', source_slug: 'reports', source_match: 'Review only' }]));
+    const before = cli(['triage', 'batch', '--actions-path', actions, '--preflight']);
+    equal(before.exit, 0, '694: preflight');
+    const plan = JSON.parse(before.stdout);
+    equal(plan.confirmation_required, false, '694: existing preflight needs no yes');
+    equal(cli(['triage', 'batch', '--actions-path', actions, '--plan-id', plan.plan_id]).exit, 0, '694: applies without confirmation');
+    equal(JSON.parse(cli(['triage', 'inventory', '--pending', '--book', 'reports']).stdout).holding_notes.length, 0, '694: review actually closed');
+  } catch (error) { failures.push('section 694 stopped early: ' + (error as Error).message); }
+  finally { w.dispose(); }
+}
+if (selected(694)) await section694();
+
+// --- 695. The oversize warning offers the Decisions route only when that section is largest.
+async function section695(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c119' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'decisions-'));
+  try {
+    const lib = path.join(root, 'lib');
+    const env = { LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg') };
+    const cli = (args: string[]) => runCli([...args, '--workspace', lib], { cwd: root, env });
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, '695: init');
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, '695: Hub');
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, '695: seat');
+    fs.writeFileSync(path.join(lib, '.claude/seats/first/.open-projects'), 'projects/work\n');
+    const page = path.join(lib, 'collection/projects/work/_project.md');
+    const content = path.join(root, 'addition.md');
+    fs.writeFileSync(content, '- [ ] Later item\n');
+    for (const largest of ['Decisions', 'Now']) {
+      const large = 'Details kept word for word. '.repeat(1800);
+      fs.writeFileSync(page, '# Work\n\n## Purpose\n\nWork.\n\n## Now\n\n- [ ] Current ' + (largest === 'Now' ? large : 'task') + '\n\n## Next\n\n- [ ] Later\n\n## Decisions\n\n- A settled decision. ' + (largest === 'Decisions' ? large : 'Short record.') + '\n');
+      const ran = cli(['hub', 'edit', 'work', '--mode', 'append-section', '--section', 'Next', '--content-path', content, '--preflight']);
+      equal(ran.exit, 0, '695: preflight for ' + largest + ': ' + ran.stderr);
+      if (largest === 'Decisions') {
+        check(['whole entries from ## Decisions', 'word for word', 'dated notes/', 'new-page', 'one grouped pointer line', 'replace-section'].every(text => ran.stderr.includes(text)), '695: Decisions route reaches the warning');
+      } else {
+        check(ran.stderr.includes('Move history to a dated notes/ page, connections to the companion connections page') && !ran.stderr.includes('whole entries from ## Decisions'), '695: ordinary advice unchanged for a different largest section');
+      }
+    }
+  } catch (error) { failures.push('section 695 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(695)) await section695();
+
+// --- 700. PROMOTE NEVER CLAIMS A PAGE IT DID NOT MAKE (kickoffs/s194 row 1; library-auditor's M1 on s193). Another writer's
+// page sits at `books/demo/wiki/guide/start.md`; a promote that reads it absent (`--vanish`) records its create and is
+// refused `ALREADY_EXISTS`, leaving that record behind. The rerun refuses the page as not made by this command, naming the
+// record that tried, and the other writer's text stays byte for byte. A promote stopped right after its own create is
+// finished by a rerun, the page owned because it holds what this Library's record wrote.
+async function section700(): Promise<void> {
+  const f = await undoFixture('s194-owned');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books', 'demo', 'wiki', 'guide'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const foreign = path.join(storage, 'books', 'demo', 'wiki', 'guide', 'start.md');
+    const FOREIGN = '# Getting Started\n\nAnother Library wrote this page.\n';
+    fs.writeFileSync(foreign, FOREIGN);
+    let live: { stop(): void } | null = null;
+    const serve = async (extra: string[] = []) => {
+      live?.stop();
+      const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+      servers.push(server);
+      live = server;
+      equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '700: the connection was not set up');
+      return server;
+    };
+    const first = await serve(['--vanish', 'guide/start']);
+    const session = new bm.McpSession(first.url, 'selftest-700');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: first.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', first.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '700: the connection was not set up');
+    const promote = ['shared', 'promote', 'demo', '--seat', 'first'];
+    const startRecords = () => {
+      const folder = path.join(storage, '_deskpost', 'changes', 'demo');
+      return (fs.existsSync(folder) ? fs.readdirSync(folder) : []).filter((name) => /^\d.*\.md$/.test(name) && !/\.(base|body)\.md$/.test(name))
+        .filter((name) => fs.readFileSync(path.join(folder, name), 'utf8').includes('page: books/demo/wiki/guide/start.md')).map((name) => name.slice(0, -3)).sort();
+    };
+
+    // 1. The page read as absent: the create is refused ALREADY_EXISTS, its record left behind, the other text untouched.
+    const attempted = f.gated(promote);
+    check(attempted.ran.exit !== 0 && attempted.ran.stderr.includes('books/demo/wiki/guide/start.md was written by someone else since it was read (ALREADY_EXISTS)'),
+      `700: the create over the unseen page was not refused ALREADY_EXISTS: ${f.said(attempted.ran)}`);
+    const tried = startRecords();
+    check(tried.length === 1 && fs.readFileSync(foreign, 'utf8') === FOREIGN, `700: the refused create did not leave exactly its record and the other text: ${tried.join()}`);
+
+    // 2. The rerun refuses the page as not this command's, naming the record that tried; nothing is written over it.
+    await serve();
+    const rerun = f.cli([...promote, '--preflight', '--json']);
+    check(rerun.exit !== 0 && rerun.stderr.includes('books/demo/wiki/guide/start.md exists, and no deskpost shared promote from this Library made it.')
+      && rerun.stderr.includes(`This Library's change record ${tried[0]} tried to make it, and the page does not hold what that record wrote. Nothing was written.`),
+      `700: the rerun did not refuse another writer's page, naming the record that tried: ${f.said(rerun)}`);
+    const planId = String(f.json(rerun)['plan_id'] ?? '');
+    if (planId) f.cli([...promote, '--user-confirmed', '--plan-id', planId, '--json']);
+    check(fs.readFileSync(foreign, 'utf8') === FOREIGN, `700: another writer's page was replaced: ${fs.readFileSync(foreign, 'utf8')}`);
+    check(fs.existsSync(f.at('collection/books/demo/wiki/_book.md')), '700: the local Book was archived over a refused page');
+
+    // 3. That page gone (Eric removed it), a promote stopped right after its own create (the Catalog's first record piece,
+    // the fourth bm_write, is lost) is finished by a rerun.
+    fs.rmSync(foreign, { force: true });
+    await serve(['--outcome-unknown', 'bm_write:4:lost']);
+    const stopped = f.gated(promote);
+    check(stopped.ran.exit !== 0 && fs.existsSync(foreign) && fs.existsSync(f.at('collection/books/demo/wiki/_book.md')) && !fs.readFileSync(path.join(storage, 'books', 'README.md'), 'utf8').includes('books/demo/'),
+      `700: the promote was not stopped after its own create: ${f.said(stopped.ran)}`);
+    await serve();
+    const finished = f.gated(promote);
+    const records = ((finished.result['records'] ?? []) as Record<string, unknown>[]).map((row) => String(row['page']));
+    check(finished.ran.exit === 0 && !records.includes('books/demo/wiki/guide/start.md') && fs.existsSync(f.at('collection/archive/demo/wiki/_moved.md')),
+      `700: the rerun did not take its own landed page as made and finish: ${f.said(finished.ran)}`);
+    check(fs.readFileSync(foreign, 'utf8').includes('The first text.'), '700: the promoted page does not hold the local text');
+  } catch (error) {
+    failures.push(`section 700 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(700) && prerequisite(700, () => !isCompiled(), 'requires the source stand-in')) await section700();
+// --- 701. THE SHARED COPY READ BACK UNDER THE ARCHIVE LOCKS (kickoffs/s194 row 2; library-auditor's M2 on s193). A promote
+// copies `demo` and then waits on `collection-archive.lock`; a copied shared page is removed during that wait. Once the
+// lock is free, the shared copy is read back and the archive refused, naming the missing page, with the local Book still
+// active; the rerun copies that page again and archives.
+async function section701(): Promise<void> {
+  const f = await undoFixture('s194-readback');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-701');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '701: the connection was not set up');
+    const preview = f.json(f.cli(['shared', 'promote', 'demo', '--seat', 'first', '--preflight', '--json']));
+    const sharedPage = path.join(storage, 'books', 'demo', 'wiki', 'guide', 'start.md');
+
+    // 1. The copy lands while the archive lock is held; a copied page is removed during the wait; the archive is refused.
+    // undoFixture keeps its agent's pid to itself; the seat's binding names it (section 681's pattern).
+    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const lock = f.at('internal/book-locks/collection-archive.lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
+    const waiting = runCliAsync(['shared', 'promote', 'demo', '--seat', 'first', '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? ''), '--json', '--workspace', f.lib],
+      { cwd: f.w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: firstAgent, AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' } });
+    const catalogHasDemo = () => fs.readFileSync(path.join(storage, 'books', 'README.md'), 'utf8').includes('[[books/demo/wiki/_book|');
+    for (let waited = 0; waited < 150 && !catalogHasDemo(); waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    check(catalogHasDemo() && fs.existsSync(sharedPage), '701: the copy did not reach the Catalog line while the archive lock was held');
+    fs.rmSync(sharedPage, { force: true });
+    fs.rmSync(lock, { force: true });
+    const refused = await waiting;
+    check(refused.exit !== 0 && refused.stderr.includes('The shared copy is incomplete, so the local Book was not archived: books/demo/wiki/guide/start.md is missing from shared/demo.')
+      && refused.stderr.includes('run deskpost shared promote demo again to copy it again and archive it. Nothing was moved.'), `701: a shared page removed during the wait was not named: ${f.said(refused)}`);
+    check(fs.existsSync(f.at('collection/books/demo/wiki/_book.md')) && !fs.existsSync(f.at('collection/archive/demo')), '701: the local Book was archived over an incomplete shared copy');
+
+    // 2. The rerun copies the missing page again and archives.
+    const finished = f.gated(['shared', 'promote', 'demo', '--seat', 'first']);
+    const records = ((finished.result['records'] ?? []) as Record<string, unknown>[]).map((row) => String(row['page']));
+    equal(records.join(), 'books/demo/wiki/guide/start.md', `701: the rerun did not copy only the missing page: ${f.said(finished.ran)}`);
+    check(finished.ran.exit === 0 && fs.existsSync(sharedPage) && fs.existsSync(f.at('collection/archive/demo/wiki/_moved.md')) && !fs.existsSync(f.at('collection/books/demo')),
+      `701: the rerun did not copy the page and archive: ${f.said(finished.ran)}`);
+  } catch (error) {
+    failures.push(`section 701 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(701) && prerequisite(701, () => !isCompiled(), 'requires the source stand-in')) await section701();
+// --- 702. AN ARCHIVE STOPPED BETWEEN THE MOVE AND _moved.md, FINISHED (kickoffs/s194 row 3; library-auditor's S1 on s193).
+// Two `books/demo/wiki/_book` lines in the local Books catalog stop the archive after the rename and before `_moved.md`;
+// promote's intent record stays. With the archived Book changed, the rerun is refused as no Book; with it as moved and the
+// catalog fixed, the rerun writes nothing shared, finishes the catalogs, `_moved.md` and the Discovery manifest, removes
+// the intent and swaps this seat's Desk entry.
+async function section702(): Promise<void> {
+  const f = await undoFixture('s194-finish');
+  const servers: { stop(): void }[] = [];
+  try {
+    const bm = await import('../src/basicmemory.ts');
+    const storage = path.join(f.w.root, 'server');
+    fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+    const server = await startFakeBasicMemory(storage, ['--call-log']);
+    servers.push(server);
+    const session = new bm.McpSession(server.url, 'selftest-702');
+    await session.initialize();
+    const statePath = f.at('internal/postbox/state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, '702: the connection was not set up');
+    const log = path.join(storage, '.calls.log');
+    const writes = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes('"tool":"bm_write"')).length;
+    const promote = () => f.gated(['shared', 'promote', 'demo', '--seat', 'first']);
+    const intent = f.at('internal/shared-promote/demo.json');
+    const archived = (relative: string) => f.at(`collection/archive/demo/${relative}`);
+
+    // 1. Stopped after the rename: two lines of this Book in the local catalog refuse before _moved.md.
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Open a Book\n\n- [[books/demo/wiki/_book|Demo]] — One line.\n- [[books/demo/wiki/_book|Demo]] — Two lines.\n');
+    const stopped = promote();
+    check(stopped.ran.exit !== 0 && stopped.ran.stderr.includes('more than one matching entry') && !fs.existsSync(f.at('collection/books/demo')) && fs.existsSync(archived('wiki/_book.md'))
+      && !fs.existsSync(archived('wiki/_moved.md')) && fs.existsSync(intent), `702: the archive was not stopped between the move and _moved.md: ${f.said(stopped.ran)}`);
+
+    // 2. The archived Book changed: no intent matches it, and it is refused as no Book.
+    const page = archived('wiki/guide/start.md');
+    const pageBytes = fs.readFileSync(page);
+    fs.writeFileSync(page, '# Getting Started\n\nChanged in the archive.\n');
+    const changed = f.cli(['shared', 'promote', 'demo', '--seat', 'first', '--preflight', '--json']);
+    check(changed.exit !== 0 && changed.stderr.includes("This Library's collection has no Book demo at collection/books/demo"), `702: an archived Book its intent does not match was not refused: ${f.said(changed)}`);
+    fs.writeFileSync(page, pageBytes);
+
+    // 3. The catalog fixed, the rerun finishes: no shared write, both catalogs, _moved.md, the manifest, the intent gone, the Desk.
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Open a Book\n\n- [[books/demo/wiki/_book|Demo]] — One line.\n');
+    fs.rmSync(log, { force: true });
+    const finished = promote();
+    check(finished.ran.exit === 0 && ((finished.result['records'] ?? []) as unknown[]).length === 0 && writes() === 0, `702: the rerun did not finish without a shared write (${writes()} bm_write): ${f.said(finished.ran)}`);
+    check(/moved to the shared collection as `shared\/demo`/.test(fs.existsSync(archived('wiki/_moved.md')) ? fs.readFileSync(archived('wiki/_moved.md'), 'utf8') : '') && !fs.existsSync(intent),
+      `702: the rerun did not write _moved.md and remove the intent: ${f.said(finished.ran)}`);
+    check(!fs.readFileSync(f.at('collection/books/README.md'), 'utf8').includes('books/demo/') && (fs.readFileSync(f.at('collection/archive/README.md'), 'utf8').match(/\[\[archive\/demo\/wiki\/_book\|/g) ?? []).length === 1,
+      '702: the catalogs were not finished (the Books line gone, one archive entry)');
+    check(/^shared\/demo\r?$/m.test(fs.readFileSync(f.at('.claude/seats/first/.open-books'), 'utf8')), "702: the rerun did not swap this seat's Desk entry");
+    // The Discovery manifest: the archived identity committed (no dirty marker), the active identity's store retired.
+    const store = (collection: string) => f.at(`internal/book-manifests/${collection}/demo`);
+    check(fs.existsSync(path.join(store('collection-archive'), 'current.json')) && !fs.existsSync(path.join(store('collection-archive'), 'dirty.json')) && !fs.existsSync(store('collection')),
+      `702: the Discovery manifest step was not finished: ${String(finished.result['archive'] ? JSON.stringify(finished.result['archive']) : '')}`);
+    const done = promote();
+    check(done.ran.exit === 0 && done.result['archive'] === 'already archived', `702: a third run did not find it done: ${f.said(done.ran)}`);
+  } catch (error) {
+    failures.push(`section 702 stopped early: ${(error as Error).message}`);
+  } finally {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  }
+}
+if (selected(702) && prerequisite(702, () => !isCompiled(), 'requires the source stand-in')) await section702();
+// --- 703. SECTIONS A KICKOFF LEAVES PINNED (kickoffs/s194 spare S1, `kickoff-check-pinned-sections`). s192's case: OWNS PATHS
+// names `kernel/src/undo.ts` and STAY OUT OF keeps "every self-test section but 672 to 677", so the source tool warns, listing
+// 665 among the sections outside that range that claim the file; once OWNS names them, nothing is warned. A warning only:
+// the problems are the same with or without the claims, and a verdict given no claims (the installed check) warns of nothing.
+async function section703(): Promise<void> {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'selftest-703-'));
+  try {
+    const kc = await import('../src/kickoffcheck.ts');
+    const covers = (JSON.parse(fs.readFileSync(path.join(PROGRAM_ROOT, 'kernel', 'test', 'section-covers.json'), 'utf8')) as { sections: Record<string, string[]> }).sections;
+    const kickoff = (owns: string) => ['OWNS: ' + owns, '', 'OWNS PATHS:', '- `kernel/src/undo.ts`', '', 'STAY OUT OF: every self-test section but 672 to 677 and the ones OWNS names.', ''].join('\n');
+    const plain = kickoff('new self-test sections 672 to 677.');
+    const warned = kc.pinnedSectionWarnings(plain, covers);
+    const listed = /sections ([\d, ]+) claim it/.exec(warned[0] ?? '')?.[1]?.split(', ').map(Number) ?? [];
+    check(warned.length === 1 && warned[0]!.startsWith('OWNS PATHS names kernel/src/undo.ts, and sections ') && listed.includes(665) && listed.every((n) => n < 672 || n > 677),
+      `703: s192's case did not warn, listing 665: ${JSON.stringify(warned)}`);
+    same(kc.pinnedSectionWarnings(kickoff(`new self-test sections 672 to 677; existing sections ${listed.join(', ')}.`), covers), [], '703: a Kickoff whose OWNS names the sections still warned');
+    same(kc.pinnedSectionWarnings(plain.replace('every self-test section but 672 to 677', 'the self-test sections of others'), covers), [], '703: a STAY OUT OF without the recognised form warned');
+    const without = kc.kickoffVerdict(plain, { adrFiles: [] });
+    const withCovers = kc.kickoffVerdict(plain, { adrFiles: [], covers });
+    same(withCovers.problems, without.problems, '703: the claims changed the verdict');
+    check(withCovers.warnings.includes(warned[0]!) && !without.warnings.some((line) => line.includes('claim it in kernel/test/section-covers.json')), '703: the warning is not given by the claims alone');
+    const file = path.join(folder, 's192-case.md');
+    fs.writeFileSync(file, plain);
+    const tool = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools', 'kickoff-check.mts'), file], { encoding: 'utf8', timeout: 120000, windowsHide: true });
+    check((tool.stdout ?? '').includes(`kickoff-check: warning: ${warned[0]}`), `703: the source tool did not print the warning: ${(tool.stdout ?? '') + (tool.stderr ?? '')}`.slice(0, 700));
+  } catch (error) {
+    failures.push(`section 703 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+}
+if (selected(703) && prerequisite(703, () => !isCompiled(), 'requires the source tool')) await section703();
+// --- 704. A MOVED BOOK IN THE HOOK'S CONTEXT (kickoffs/s194 spare S2). A collection Book `shared promote` moved (archived with
+// `_moved.md`) is labelled "moved to shared/<slug>", as the Desk overview names it; an archived Book without `_moved.md` and an
+// active Book keep today's labels.
+async function section704(): Promise<void> {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'selftest-704-'));
+  try {
+    const { bookRootLabel } = await import('../src/deskcontext.ts');
+    const wiki = (place: string, slug: string) => {
+      const full = path.join(folder, 'collection', place, slug, 'wiki');
+      fs.mkdirSync(full, { recursive: true });
+      fs.writeFileSync(path.join(full, '_book.md'), `# ${slug}\n`);
+      return full;
+    };
+    fs.writeFileSync(path.join(wiki('archive', 'moved'), '_moved.md'), '# Moved\n\nmoved to the shared collection as `shared/moved`, 2026-11-06, by Home\n');
+    wiki('archive', 'gone');
+    wiki('books', 'live');
+    equal(bookRootLabel('books/moved', true, folder), 'moved (collection, moved to shared/moved)', '704: a moved Book is not labelled as moved');
+    equal(bookRootLabel('books/gone', true, folder), 'gone (collection, archived since opened)', "704: an archived Book lost today's label");
+    equal(bookRootLabel('books/live', true, folder), 'live (collection)', "704: an active Book lost today's label");
+  } catch (error) {
+    failures.push(`section 704 stopped early: ${(error as Error).message}`);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+}
+if (selected(704)) await section704();
+
+/** Sections 705 to 709 (kickoffs/s195): undoFixture on a stand-in with a Postbox cache, its connection set up, a Book Catalog. */
+async function upkeepFixture(label: string, n: number) {
+  const f = await undoFixture(label);
+  const bm = await import('../src/basicmemory.ts');
+  const storage = path.join(f.w.root, 'server');
+  fs.mkdirSync(path.join(storage, 'books'), { recursive: true });
+  fs.writeFileSync(path.join(storage, 'books', 'README.md'), '# Books\n\n## Open a Book\n');
+  const servers: { stop(): void }[] = [];
+  let live: { stop(): void } | null = null;
+  const statePath = f.at('internal/postbox/state.json');
+  const serve = async (extra: string[] = []) => {
+    live?.stop();
+    const server = await startFakeBasicMemory(storage, ['--call-log', ...extra]);
+    servers.push(server);
+    live = server;
+    if (!fs.existsSync(statePath)) {
+      const session = new bm.McpSession(server.url, `selftest-${n}`);
+      await session.initialize();
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      fs.writeFileSync(statePath, JSON.stringify({ schema: 1, url: server.url, project_name: 'deskpost', project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb', library_card: 'Home', server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }, null, 2) + '\n');
+    }
+    equal(f.cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--shared-writes', 'on', '--json']).exit, 0, `${n}: the connection was not set up`);
+    return server;
+  };
+  await serve();
+  const note = path.join(storage, '_deskpost', 'upkeep', 'demo.md');
+  const seatId = (seat: string) => String(((JSON.parse(fs.readFileSync(f.at('.claude/seats/_registry.json'), 'utf8').replace(/^﻿/, '')) as { seats: Record<string, unknown>[] }).seats.find((row) => row['seat'] === seat) ?? {})['seat_id'] ?? '');
+  /** `shared new-book <slug>` by seat first; the id of the record that made its `_book.md`. */
+  const newBook = (slug: string) => {
+    const made = f.gated(['shared', 'new-book', slug, '--title', 'Demo', '--summary', 'A demo Book.', '--seat', 'first']);
+    check(made.ran.exit === 0, `${n}: shared new-book ${slug} failed: ${f.said(made.ran)}`);
+    return String(((made.result['records'] ?? []) as Record<string, unknown>[]).find((row) => row['page'] === `books/${slug}/wiki/_book.md`)?.['record_id'] ?? '');
+  };
+  const block = (library: string, ids: string, any: boolean, names: string, record: string) =>
+    [`## library ${library}`, '- card: Office', `- seat_ids: ${ids}`, `- any_seat: ${any}`, `- names: ${names}`, `- book_record: ${record}`, '- time: 2026-11-01T00:00:00.000Z', ''].join('\n');
+  const writeNote = (...blocks: string[]) => {
+    fs.mkdirSync(path.dirname(note), { recursive: true });
+    // With the frontmatter the stand-in writes (its permalink as `permalinkFor` makes it), as another Library's write leaves it.
+    fs.writeFileSync(note, '---\ntitle: demo\ntype: note\npermalink: -deskpost/upkeep/demo\ntags: []\n---\n\n# Upkeep grants for demo\n\n' + blocks.join('\n'));
+  };
+  const dispose = () => {
+    for (const server of servers) server.stop();
+    f.w.dispose();
+  };
+  return { f, storage, serve, note, seatId, newBook, block, writeNote, dispose, OTHER: 'cccccccc-3333-4ccc-8ccc-cccccccccccc', HOME: 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb' };
+}
+
+// --- 705. AN UPKEEP GRANT (kickoffs/s195 row 1; PLAN-many-libraries.md item 16). `shared upkeep demo --seats first,second`
+// on a Book `shared new-book` made, beside another Library's block: previewed and applied, the block holds both `seat_id`s,
+// the Library id and the making record; the other block is kept byte for byte; `--off` removes only this Library's block
+// with `--plan-id` alone; the last `--off` deletes the note; and the refusals: a seat not live here, a seat with no
+// `seat_id`, a Book with no making record, a slug with no Book.
+async function section705(): Promise<void> {
+  const u = await upkeepFixture('s195-grant', 705);
+  const { f } = u;
+  try {
+    const second = f.w.startAgent();
+    f.w.seatMade('second', 'beta', second, '705: the second seat was not made');
+    const making = u.newBook('demo');
+    const foreign = u.block(u.OTHER, 'ffffffffffffffffffffffffffffffff', false, 'first', making);
+    u.writeNote(foreign);
+    const upkeep = (tail: string[]) => f.cli(['shared', 'upkeep', 'demo', ...tail, '--seat', 'first', '--json']);
+    const blockOf = (text: string, library: string) => {
+      const at = text.indexOf(`## library ${library}`);
+      if (at < 0) return null;
+      const next = text.indexOf('\n## library ', at + 1);
+      return text.slice(at, next < 0 ? undefined : next + 1);
+    };
+    const copy = f.at('internal/shared-upkeep/demo.json');
+
+    // 1. The grant, previewed then applied.
+    const preview = upkeep(['--seats', 'first,second', '--preflight']);
+    const planned = f.json(preview);
+    check(preview.exit === 0 && planned['confirmation_required'] === true && planned['book_record'] === making
+      && JSON.stringify(planned['seats']) === JSON.stringify([{ seat: 'first', seat_id: u.seatId('first') }, { seat: 'second', seat_id: u.seatId('second') }]),
+      `705: the grant was not previewed with both seats and the making record: ${f.said(preview)}`);
+    const applied = upkeep(['--seats', 'first,second', '--user-confirmed', '--plan-id', String(planned['plan_id'] ?? '')]);
+    check(applied.exit === 0 && f.json(applied)['verdict'] === 'written', `705: the grant was not applied: ${f.said(applied)}`);
+    const text = fs.readFileSync(u.note, 'utf8');
+    const ours = blockOf(text, u.HOME) ?? '';
+    check(ours.includes(`- seat_ids: ${u.seatId('first')},${u.seatId('second')}\n`) && ours.includes('- any_seat: false\n') && ours.includes('- names: first,second\n')
+      && ours.includes(`- book_record: ${making}\n`) && ours.includes('- card: Home\n') && /- time: \d{4}-\d\d-\d\dT[\d:.]+Z/.test(ours) && making !== '',
+      `705: this Library's block does not hold both seat_ids, the Library id and the making record: ${ours}`);
+    equal(blockOf(text, u.OTHER)?.trimEnd(), foreign.trimEnd(), "705: another Library's block was not kept byte for byte");
+    check(text.indexOf(`## library ${u.OTHER}`) < text.indexOf(`## library ${u.HOME}`), '705: the blocks are not in the order written');
+    const local = fs.existsSync(copy) ? JSON.parse(fs.readFileSync(copy, 'utf8')) as Record<string, unknown> : {};
+    check(JSON.stringify(local['seat_ids']) === JSON.stringify([u.seatId('first'), u.seatId('second')]) && local['book_record'] === making, `705: the local copy is not this Library's block: ${JSON.stringify(local)}`);
+    check(upkeep(['--seats', 'first,second', '--preflight']).stdout.includes('"status":  "unchanged"'), '705: a grant already as asked was not unchanged');
+
+    // 2. The refusals, each writing nothing.
+    const before = fs.readFileSync(u.note, 'utf8');
+    const nobody = upkeep(['--seats', 'nobody', '--preflight']);
+    check(nobody.exit !== 0 && nobody.stderr.includes('nobody is not a live seat of this Library'), `705: a seat not live here was not refused: ${f.said(nobody)}`);
+    const registry = f.at('.claude/seats/_registry.json');
+    const registryText = fs.readFileSync(registry, 'utf8');
+    fs.writeFileSync(registry, registryText.replace(`"seat_id":  "${u.seatId('second')}"`, '"seat_id":  ""').replace(`"seat_id": "${u.seatId('second')}"`, '"seat_id": ""'));
+    const noId = upkeep(['--seats', 'second', '--preflight']);
+    fs.writeFileSync(registry, registryText);
+    check(noId.exit !== 0 && noId.stderr.includes('The seat second has no seat_id in this Library\'s registry, so a grant could not name it'), `705: a seat with no seat_id was not refused: ${f.said(noId)}`);
+    fs.mkdirSync(path.join(u.storage, 'books', 'old', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(u.storage, 'books', 'old', 'wiki', '_book.md'), '# Old\n');
+    const old = f.cli(['shared', 'upkeep', 'old', '--seats', 'first', '--seat', 'first', '--preflight', '--json']);
+    check(old.exit !== 0 && old.stderr.includes("shared/old has no record of being made by deskpost shared new-book or promote (a Book made before 1.6.0's writers), and 1.6.0 has no route to grant it"),
+      `705: a Book with no making record was not refused: ${f.said(old)}`);
+    const ghost = f.cli(['shared', 'upkeep', 'ghost', '--seats', 'first', '--seat', 'first', '--preflight', '--json']);
+    check(ghost.exit !== 0 && ghost.stderr.includes('has no Book at books/ghost (its folder lists no _book.md)'), `705: a slug with no Book was not refused: ${f.said(ghost)}`);
+    equal(fs.readFileSync(u.note, 'utf8'), before, '705: a refused grant changed the note');
+
+    // 3. --off with --plan-id alone removes only this Library's block.
+    const offPreview = upkeep(['--off', '--preflight']);
+    check(offPreview.exit === 0 && f.json(offPreview)['confirmation_required'] === false, `705: --off was not previewed without a yes: ${f.said(offPreview)}`);
+    const off = upkeep(['--off', '--plan-id', String(f.json(offPreview)['plan_id'] ?? '')]);
+    const after = fs.existsSync(u.note) ? fs.readFileSync(u.note, 'utf8') : '';
+    check(off.exit === 0 && blockOf(after, u.HOME) === null && blockOf(after, u.OTHER)?.trimEnd() === foreign.trimEnd() && !fs.existsSync(copy),
+      `705: --off did not remove only this Library's block and its local copy: ${f.said(off)} ${after}`);
+
+    // 4. The last block: a grant created on a note that is gone, then --off deletes the note.
+    fs.rmSync(u.note, { force: true });
+    const alone = f.gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']);
+    check(alone.ran.exit === 0 && fs.existsSync(u.note), `705: a grant on no note was not created: ${f.said(alone.ran)}`);
+    const lastPreview = f.json(upkeep(['--off', '--preflight']));
+    const last = upkeep(['--off', '--plan-id', String(lastPreview['plan_id'] ?? '')]);
+    check(last.exit === 0 && !fs.existsSync(u.note), `705: the last --off did not delete the note: ${f.said(last)}`);
+  } catch (error) {
+    failures.push(`section 705 stopped early: ${(error as Error).message}`);
+  } finally {
+    u.dispose();
+  }
+}
+if (selected(705) && prerequisite(705, () => !isCompiled(), 'requires the source stand-in')) await section705();
+// --- 706. A GRANTED SEAT WRITES WITHOUT A YES (kickoffs/s195 row 2; PLAN-many-libraries.md item 16). Seat first, granted
+// upkeep of `demo`, applies add-page, replace-page, a `--from-change` restore, catalog-line and sources with `--plan-id`
+// alone, each previewed `confirmation_required: false` naming first and each written with its record and restore line;
+// `plain`, with no grant, stays gated; remove-page and `sources --remove` stay gated for the granted seat; and a grant
+// turned off between the preview and the apply refuses the apply, which the reader's yes then applies.
+async function section706(): Promise<void> {
+  const u = await upkeepFixture('s195-ungated', 706);
+  const { f } = u;
+  try {
+    u.newBook('demo');
+    u.newBook('plain');
+    const granted = f.gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']);
+    check(granted.ran.exit === 0, `706: the grant was not applied: ${f.said(granted.ran)}`);
+    /** A write as a granted seat runs it: the preview, then its plan id alone. */
+    const ungated = (args: string[]) => {
+      const preview = f.json(f.cli([...args, '--seat', 'first', '--preflight', '--json']));
+      const ran = f.cli([...args, '--seat', 'first', '--plan-id', String(preview['plan_id'] ?? ''), '--json']);
+      return { preview, ran, result: f.json(ran) };
+    };
+    const wrote = (label: string, w: ReturnType<typeof ungated>) => check(w.preview['confirmation_required'] === false && JSON.stringify(w.preview['maintained_by']) === '["first"]'
+      && w.ran.exit === 0 && w.result['verdict'] === 'written' && /^\d{8}T\d{6}Z-/.test(String(w.result['record_id'] ?? '')) && typeof w.result['restore'] === 'string',
+      `706: ${label} was not written without a yes: ${JSON.stringify(w.preview).slice(0, 300)} ${f.said(w.ran)}`);
+    const page = path.join(u.storage, 'books', 'demo', 'wiki', 'guide.md');
+
+    // 1. Each writer, and a restore, with --plan-id alone.
+    wrote('add-page', ungated(['shared', 'add-page', 'demo', 'guide', '--content-path', f.file('g1.md', '# Guide\n\nFirst.\n')]));
+    const replaced = ungated(['shared', 'replace-page', 'demo', 'guide', '--content-path', f.file('g2.md', '# Guide\n\nSecond.\n')]);
+    wrote('replace-page', replaced);
+    wrote('a --from-change restore', ungated(['shared', 'replace-page', 'demo', 'guide', '--from-change', String(replaced.result['record_id'] ?? ''), '--base']));
+    check(fs.readFileSync(page, 'utf8').includes('First.'), '706: the restore did not put the first text back');
+    wrote('catalog-line', ungated(['shared', 'catalog-line', 'demo', '--title', 'Demo', '--summary', 'Kept up to date.']));
+    const list = '# Source list\n\n```json\n' + JSON.stringify({ schema: 1, pin: null, sources: [{ id: 'one', address: 'https://example.org/one', kind: 'web', feeds: ['guide'], compiled_sha256: null, compiled_utc: null, note: null }] }, null, 2) + '\n```\n';
+    const sources = ungated(['shared', 'sources', 'demo', '--content-path', f.file('sources.md', list)]);
+    wrote('sources', sources);
+
+    // 2. A Book with no grant stays gated.
+    const plain = ungated(['shared', 'add-page', 'plain', 'guide', '--content-path', f.file('p.md', '# Plain\n\nText.\n')]);
+    check(plain.preview['confirmation_required'] === true && plain.preview['maintained_by'] === undefined && plain.ran.exit !== 0
+      && plain.ran.stderr.includes("no upkeep grant from this Library names seat first for shared/plain, so this write needs the reader's yes")
+      && !fs.existsSync(path.join(u.storage, 'books', 'plain', 'wiki', 'guide.md')), `706: a Book with no grant was written without a yes: ${f.said(plain.ran)}`);
+
+    // 3. Removals stay gated for the granted seat.
+    const removal = ungated(['shared', 'remove-page', 'demo', 'guide']);
+    check(removal.preview['confirmation_required'] === true && removal.ran.exit !== 0 && removal.ran.stderr.includes('library shared remove-page takes --preflight, or --user-confirmed --plan-id <id> after it') && fs.existsSync(page),
+      `706: remove-page was applied without a yes: ${f.said(removal.ran)}`);
+    const unsourced = ungated(['shared', 'sources', 'demo', '--from-change', String(sources.result['record_id'] ?? ''), '--remove']);
+    check(unsourced.preview['confirmation_required'] === true && unsourced.ran.exit !== 0 && unsourced.ran.stderr.includes('library shared sources takes --preflight, or --user-confirmed --plan-id <id> after it')
+      && fs.existsSync(path.join(u.storage, 'books', 'demo', '_sources.md')), `706: sources --remove was applied without a yes: ${f.said(unsourced.ran)}`);
+
+    // 4. The grant turned off between the preview and the apply: the apply reads it again and refuses; the yes applies.
+    const later = ['shared', 'add-page', 'demo', 'later', '--content-path', f.file('later.md', '# Later\n\nText.\n'), '--seat', 'first'];
+    const before = f.json(f.cli([...later, '--preflight', '--json']));
+    check(before['confirmation_required'] === false, '706: the granted preview asked for a yes');
+    const off = f.json(f.cli(['shared', 'upkeep', 'demo', '--off', '--seat', 'first', '--preflight', '--json']));
+    equal(f.cli(['shared', 'upkeep', 'demo', '--off', '--seat', 'first', '--plan-id', String(off['plan_id'] ?? ''), '--json']).exit, 0, '706: the grant could not be turned off');
+    const late = f.cli([...later, '--plan-id', String(before['plan_id'] ?? ''), '--json']);
+    check(late.exit !== 0 && late.stderr.includes("no upkeep grant from this Library names seat first for shared/demo, so this write needs the reader's yes")
+      && !fs.existsSync(path.join(u.storage, 'books', 'demo', 'wiki', 'later.md')), `706: an apply after --off was written without a yes: ${f.said(late)}`);
+    equal(f.cli([...later, '--user-confirmed', '--plan-id', String(before['plan_id'] ?? ''), '--json']).exit, 0, "706: the reader's yes did not apply the same plan");
+  } catch (error) {
+    failures.push(`section 706 stopped early: ${(error as Error).message}`);
+  } finally {
+    u.dispose();
+  }
+}
+if (selected(706) && prerequisite(706, () => !isCompiled(), 'requires the source stand-in')) await section706();
+// --- 707. A GRANT FOLLOWS THE SEAT'S IDENTITY (kickoffs/s195 row 2; PLAN-many-libraries.md item 16). A grant to first
+// holds after first is renamed; it is lost when that seat is retired, and the seat recreated under the same name (a new
+// seat_id, its own claim) is gated; another Library's block naming this seat's name and seat_id does not match; an
+// `--any-seat` block matches a live seat of its own Library only; a block whose book_record is not the creation of this
+// Book's `_book.md` is gated.
+async function section707(): Promise<void> {
+  const u = await upkeepFixture('s195-identity', 707);
+  const { f } = u;
+  try {
+    const making = u.newBook('demo');
+    const changes = path.join(u.storage, '_deskpost', 'changes', 'demo');
+    const indexRecord = fs.readdirSync(changes).filter((name) => /^\d.*\.md$/.test(name) && !/\.(base|body)\.md$/.test(name))
+      .find((name) => fs.readFileSync(path.join(changes, name), 'utf8').includes('page: books/demo/wiki/_index.md'))?.slice(0, -3) ?? '';
+    let n = 0;
+    /** Whether a seat's add-page preview is ungated: true, false, or null when the preview failed. */
+    const ungated = (seat: string, agent: number): boolean | null => {
+      n += 1;
+      const ran = f.cli(['shared', 'add-page', 'demo', `p${n}`, '--content-path', f.file(`p${n}.md`, `# P${n}\n\nText.\n`), '--seat', seat, '--preflight', '--json'], { CLAUDE_PID: String(agent) });
+      return ran.exit === 0 ? f.json(ran)['confirmation_required'] === false : null;
+    };
+    const agentOf = (seat: string) => Number((JSON.parse(fs.readFileSync(f.at(`.claude/seats/${seat}/binding.json`), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
+    const planned = (args: string[]) => {
+      const preview = f.w.as(process.pid, [...args, '--preflight', '--workspace', f.lib, '--json']);
+      try {
+        return String((JSON.parse(preview.stdout) as Record<string, unknown>)['plan_id'] ?? '');
+      } catch {
+        return '';
+      }
+    };
+    const firstAgent = agentOf('first');
+    const firstId = u.seatId('first');
+    check(f.gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']).ran.exit === 0, '707: the grant was not applied');
+    equal(ungated('first', firstAgent), true, '707: the granted seat was gated');
+
+    // 1. Renamed: the seat_id stays, and so does the grant.
+    process.kill(firstAgent);
+    check(f.w.untilFree('first'), '707: the first seat was not freed for its rename');
+    const renamed = f.w.as(process.pid, ['seat', 'rename', 'first', 'renamed', '--user-confirmed', '--plan-id', planned(['seat', 'rename', 'first', 'renamed']), '--workspace', f.lib, '--json']);
+    check(renamed.exit === 0 && u.seatId('renamed') === firstId, `707: the seat was not renamed keeping its seat_id: ${f.said(renamed)}`);
+    const second = f.w.startAgent();
+    equal(f.w.as(second, ['seat', 'enter', 'renamed', '--agent-pid', String(second), '--workspace', f.lib, '--deadline-seconds', '10', '--json']).exit, 0, '707: the renamed seat could not be entered');
+    equal(ungated('renamed', second), true, '707: a renamed seat lost its grant');
+
+    // 2. Retired, and a seat recreated under the same name: a new seat_id, its own claim, gated.
+    process.kill(second);
+    check(f.w.untilFree('renamed'), '707: the renamed seat was not freed for its retirement');
+    equal(f.w.as(process.pid, ['seat', 'retire', 'renamed', '--plan-id', planned(['seat', 'retire', 'renamed']), '--workspace', f.lib, '--json']).exit, 0, '707: the seat was not retired');
+    const third = f.w.startAgent();
+    f.w.seatMade('renamed', 'alpha', third, '707: the seat was not recreated under its old name');
+    check(u.seatId('renamed') !== '' && u.seatId('renamed') !== firstId, '707: the recreated seat kept the retired seat_id');
+    equal(ungated('renamed', third), false, "707: a seat recreated under a retired seat's name inherited its grant");
+    const liveId = u.seatId('renamed');
+
+    // 3. Another Library's block naming this seat's name and seat_id does not match.
+    u.writeNote(u.block(u.OTHER, liveId, false, 'renamed', making));
+    equal(ungated('renamed', third), false, "707: another Library's block matched this Library's seat");
+
+    // 4. --any-seat matches a live seat of its own Library only.
+    u.writeNote(u.block(u.OTHER, '', true, 'any seat', making));
+    equal(ungated('renamed', third), false, "707: another Library's any-seat block matched this Library's seat");
+    u.writeNote(u.block(u.HOME, '', true, 'any seat', making));
+    equal(ungated('renamed', third), true, "707: this Library's any-seat block did not match its live seat");
+
+    // 5. A block whose book_record is not this Book's making record is gated; the making record ungates it.
+    check(indexRecord !== '', '707: the _index.md record was not found');
+    u.writeNote(u.block(u.HOME, liveId, false, 'renamed', indexRecord));
+    equal(ungated('renamed', third), false, "707: a block naming a record that did not make the Book's _book.md ungated it");
+    u.writeNote(u.block(u.HOME, liveId, false, 'renamed', making));
+    equal(ungated('renamed', third), true, '707: a block naming the making record did not ungate it');
+  } catch (error) {
+    failures.push(`section 707 stopped early: ${(error as Error).message}`);
+  } finally {
+    u.dispose();
+  }
+}
+if (selected(707) && prerequisite(707, () => !isCompiled(), 'requires the source stand-in')) await section707();
+// --- 708. THE DESK SAYS WHO MAINTAINS A BOOK (kickoffs/s195 row 3; PLAN-many-libraries.md item 16). Seat first holds
+// `shared/demo` open: before any grant its Desk entry has no `maintained_by`; after first grants seat second upkeep, it
+// names second; after second is renamed helper, it names helper; after helper is retired, "helper (retired)"; after
+// `--off`, the field is gone and the entry is as it was before the grant.
+async function section708(): Promise<void> {
+  const u = await upkeepFixture('s195-desk', 708);
+  const { f } = u;
+  try {
+    const secondAgent = f.w.startAgent();
+    f.w.seatMade('second', 'beta', secondAgent, '708: the second seat was not made');
+    u.newBook('demo');
+    const books = f.at('.claude/seats/first/.open-books');
+    const held = fs.existsSync(books) ? fs.readFileSync(books, 'utf8') : '';
+    fs.writeFileSync(books, held + (held === '' || held.endsWith('\n') ? '' : '\n') + 'shared/demo\n');
+    const firstAgent = Number((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
+    const entry = () => {
+      const desk = f.w.as(firstAgent, ['desk', '--seat', 'first', '--workspace', f.lib, '--json']);
+      try {
+        return ((JSON.parse(desk.stdout) as Record<string, unknown>)['open_books'] as Record<string, unknown>[]).find((book) => book['root'] === 'shared/demo') ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const planned = (args: string[]) => {
+      try {
+        return String((JSON.parse(f.w.as(process.pid, [...args, '--preflight', '--workspace', f.lib, '--json']).stdout) as Record<string, unknown>)['plan_id'] ?? '');
+      } catch {
+        return '';
+      }
+    };
+    const before = entry();
+    check(before !== null && !('maintained_by' in before), `708: the open shared Book had maintained_by before any grant: ${JSON.stringify(before)}`);
+
+    // 1. After the grant: the granted seat's name.
+    check(f.gated(['shared', 'upkeep', 'demo', '--seats', 'second', '--seat', 'first']).ran.exit === 0, '708: the grant was not applied');
+    same(entry()?.['maintained_by'], ['second'], '708: the Desk does not name the granted seat');
+
+    // 2. Renamed: the current name.
+    process.kill(secondAgent);
+    check(f.w.untilFree('second'), '708: the second seat was not freed for its rename');
+    equal(f.w.as(process.pid, ['seat', 'rename', 'second', 'helper', '--user-confirmed', '--plan-id', planned(['seat', 'rename', 'second', 'helper']), '--workspace', f.lib, '--json']).exit, 0, '708: the seat was not renamed');
+    same(entry()?.['maintained_by'], ['helper'], '708: the Desk does not give the renamed seat its current name');
+
+    // 3. Retired: named as retired.
+    equal(f.w.as(process.pid, ['seat', 'retire', 'helper', '--plan-id', planned(['seat', 'retire', 'helper']), '--workspace', f.lib, '--json']).exit, 0, '708: the seat was not retired');
+    same(entry()?.['maintained_by'], ['helper (retired)'], '708: the Desk does not name a retired seat as retired');
+
+    // 4. Turned off: no field, the entry as before.
+    const off = f.json(f.cli(['shared', 'upkeep', 'demo', '--off', '--seat', 'first', '--preflight', '--json']));
+    equal(f.cli(['shared', 'upkeep', 'demo', '--off', '--seat', 'first', '--plan-id', String(off['plan_id'] ?? ''), '--json']).exit, 0, '708: the grant was not turned off');
+    same(entry(), before, '708: the Desk entry after --off is not as it was before the grant');
+  } catch (error) {
+    failures.push(`section 708 stopped early: ${(error as Error).message}`);
+  } finally {
+    u.dispose();
+  }
+}
+if (selected(708) && prerequisite(708, () => !isCompiled(), 'requires the source stand-in')) await section708();
+// --- 709. A FINISHED PROMOTE'S RERUN TELLS THE TRUTH (kickoffs/s195 row 4; deskpost-lead's review of s194, findings 1 and
+// 4). The copy path: a copied page given another writer's text while promote waits on `collection-archive.lock` is refused
+// as changed, the local Book still active. The finishing path (stopped after the rename by two local catalog lines): a
+// changed page, then a missing `_index.md` and `_sources.md`, each refused naming `collection/archive/demo`, the page and
+// its route (promote's own record with --body, the archived source list); each route applied, the rerun finishes. A
+// rerun against another collection is refused.
+async function section709(): Promise<void> {
+  const u = await upkeepFixture('s195-finish', 709);
+  const { f } = u;
+  try {
+    // A source list as the writers render it (`renderSourceList`), as a local Book's `_sources.md` holds it.
+    const { renderSourceList } = await import('../src/booksources.ts');
+    const list = renderSourceList({ schema: 1, pin: null, sources: [{ id: 'one', address: 'https://example.org/one', kind: 'web', feeds: ['guide/start'], compiled_sha256: null, compiled_utc: null, note: null }] } as unknown as Parameters<typeof renderSourceList>[0]);
+    fs.writeFileSync(f.at('collection/books/demo/_sources.md'), list);
+    const sharedPage = path.join(u.storage, 'books', 'demo', 'wiki', 'guide', 'start.md');
+    const promote = ['shared', 'promote', 'demo', '--seat', 'first'];
+    const intent = f.at('internal/shared-promote/demo.json');
+
+    // 1. The copy path: a copied page changed during the wait on the archive lock is refused as changed.
+    const preview = f.json(f.cli([...promote, '--preflight', '--json']));
+    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const lock = f.at('internal/book-locks/collection-archive.lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
+    const waiting = runCliAsync([...promote, '--user-confirmed', '--plan-id', String(preview['plan_id'] ?? ''), '--json', '--workspace', f.lib],
+      { cwd: f.w.root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: firstAgent, AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' } });
+    const catalogHasDemo = () => fs.readFileSync(path.join(u.storage, 'books', 'README.md'), 'utf8').includes('[[books/demo/wiki/_book|');
+    for (let waited = 0; waited < 150 && !catalogHasDemo(); waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    check(catalogHasDemo() && fs.existsSync(sharedPage), '709: the copy did not reach the Catalog line while the archive lock was held');
+    const copied = fs.readFileSync(sharedPage, 'utf8');
+    fs.writeFileSync(sharedPage, copied.replace('The first text.', 'Another writer.'));
+    fs.rmSync(lock, { force: true });
+    const refused = await waiting;
+    check(refused.exit !== 0 && refused.stderr.includes("The shared copy changed after it was copied, so the local Book was not archived: books/demo/wiki/guide/start.md now holds another writer's text.")
+      && fs.existsSync(f.at('collection/books/demo/wiki/_book.md')), `709: the copy path did not refuse a changed page: ${f.said(refused)}`);
+    fs.writeFileSync(sharedPage, copied);
+
+    // 2. Stopped after the rename: two lines of this Book in the local catalog.
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Open a Book\n\n- [[books/demo/wiki/_book|Demo]] — One line.\n- [[books/demo/wiki/_book|Demo]] — Two lines.\n');
+    const stopped = f.gated(promote);
+    check(stopped.ran.exit !== 0 && !fs.existsSync(f.at('collection/books/demo')) && fs.existsSync(f.at('collection/archive/demo/wiki/_book.md')) && fs.existsSync(intent),
+      `709: the promote was not stopped after the rename: ${f.said(stopped.ran)}`);
+    // Spare S1: promote's stop names its own rerun, not the archive route's "inspect ... before retrying".
+    check(stopped.ran.stderr.includes("The Book was moved to 'collection/archive/demo'; run deskpost shared promote demo again to finish it.") && !stopped.ran.stderr.includes('inspect the archive'),
+      `709: promote's stop after the rename does not name its rerun: ${f.said(stopped.ran)}`);
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Open a Book\n\n- [[books/demo/wiki/_book|Demo]] — One line.\n');
+
+    // 3. The finishing path, a changed page: the archived location and promote's own record as the route.
+    fs.writeFileSync(sharedPage, copied.replace('The first text.', 'Another writer.'));
+    const changed = f.gated(promote).ran;
+    const route = /deskpost shared replace-page demo guide\/start --from-change (\S+) --body --preflight/.exec(changed.stderr)?.[1] ?? '';
+    check(changed.exit !== 0 && changed.stderr.includes("so the archive was not finished: books/demo/wiki/guide/start.md holds another writer's text.")
+      && changed.stderr.includes('The local Book is already archived at collection/archive/demo, so promote cannot copy it again.') && route !== ''
+      && changed.stderr.includes('then run deskpost shared promote demo again. Nothing was moved.'), `709: the finishing path did not name the changed page and its route: ${f.said(changed)}`);
+    const routeRecord = path.join(u.storage, '_deskpost', 'changes', 'demo', `${route}.md`);
+    check(fs.existsSync(routeRecord) && fs.readFileSync(routeRecord, 'utf8').includes('made_by: promote'), "709: the route is not promote's own record");
+    equal(f.gated(['shared', 'replace-page', 'demo', 'guide/start', '--from-change', route, '--body', '--seat', 'first']).ran.exit, 0, "709: the changed page's route did not apply");
+    check(fs.readFileSync(sharedPage, 'utf8').includes('The first text.'), "709: the route did not put promote's text back");
+
+    // 4. Missing pages: _index.md (no writer names it: Eric's, from promote's record) and _sources.md (the archived list).
+    const indexFile = path.join(u.storage, 'books', 'demo', 'wiki', '_index.md');
+    const indexBytes = fs.readFileSync(indexFile);
+    fs.rmSync(indexFile);
+    fs.rmSync(path.join(u.storage, 'books', 'demo', '_sources.md'));
+    const missing = f.gated(promote).ran;
+    const indexRecord = /ask Eric to put books\/demo\/wiki\/_index\.md back on the server as promote's change record (\S+) holds it/.exec(missing.stderr)?.[1] ?? '';
+    check(missing.exit !== 0 && missing.stderr.includes('books/demo/_sources.md is missing; books/demo/wiki/_index.md is missing.') && /^\d{8}T\d{6}Z-/.test(indexRecord)
+      && missing.stderr.includes('deskpost shared sources demo --content-path collection/archive/demo/_sources.md --preflight') && missing.stderr.includes('promote cannot copy them again'),
+      `709: the finishing path did not name the missing pages and their routes: ${f.said(missing)}`);
+    fs.writeFileSync(indexFile, indexBytes); // Eric's restore on the server.
+    const sourced = f.gated(['shared', 'sources', 'demo', '--content-path', 'collection/archive/demo/_sources.md', '--seat', 'first']).ran;
+    equal(sourced.exit, 0, `709: _sources.md's route did not apply: ${f.said(sourced)}`);
+
+    // 5. Another collection: refused before anything.
+    const intentBytes = fs.readFileSync(intent);
+    fs.writeFileSync(intent, intentBytes.toString('utf8').replace('"collection_id": "', '"collection_id": "x'));
+    const other = f.cli([...promote, '--preflight', '--json']);
+    check(other.exit !== 0 && other.stderr.includes('collection/archive/demo was promoted to the shared collection x') && other.stderr.includes('so it was not finished here. Nothing was moved.'),
+      `709: a rerun against another collection was not refused: ${f.said(other)}`);
+    fs.writeFileSync(intent, intentBytes);
+
+    // 6. With every page back, the rerun finishes.
+    const finished = f.gated(promote);
+    check(finished.ran.exit === 0 && fs.existsSync(f.at('collection/archive/demo/wiki/_moved.md')) && !fs.existsSync(intent), `709: the rerun did not finish once the pages were back: ${f.said(finished.ran)}`);
+
+    // 7. Spare S1: `shared archive`'s own stop after the move keeps the archive route's words.
+    const otherWiki = f.at('collection/books/other/wiki');
+    fs.mkdirSync(otherWiki, { recursive: true });
+    fs.writeFileSync(path.join(otherWiki, '_book.md'), '# Other\n\n## Purpose\n\nAnother Book.\n');
+    fs.writeFileSync(path.join(otherWiki, '_index.md'), '# Other - Reader Map\n\n- [[books/other/wiki/_book|Book metadata and limits]]\n');
+    equal(f.cli(['collection', 'rebuild', '--json']).exit, 0, '709: the collection manifests were not rebuilt');
+    fs.writeFileSync(f.at('collection/books/README.md'), '# Books\n\n## Open a Book\n\n- [[books/other/wiki/_book|Other]] — One line.\n- [[books/other/wiki/_book|Other]] — Two lines.\n');
+    const archived = f.gated(['shared', 'archive', 'other', '--kind', 'book']).ran;
+    check(archived.exit !== 0 && archived.stderr.includes("The Book was moved to 'collection/archive/other'; inspect the archive and both catalogs before retrying."),
+      `709: shared archive's own stop changed: ${f.said(archived)}`);
+  } catch (error) {
+    failures.push(`section 709 stopped early: ${(error as Error).message}`);
+  } finally {
+    u.dispose();
+  }
+}
+if (selected(709) && prerequisite(709, () => !isCompiled(), 'requires the source stand-in')) await section709();
+// --- 710. Discovery upkeep names current local seats, foreign grants, and Books without hits.
+async function section710(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c120' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'upkeep-'));
+  let server: { stop(): void } | null = null;
+  try {
+    const storage = path.join(root, 'server');
+    fs.mkdirSync(storage, { recursive: true });
+    const started = await startFakeBasicMemory(storage, ['--call-log']); server = started;
+    const t = await twoPostboxLibraries(root, started.url);
+    equal(t.cli(t.home.lib, ['basic-memory', 'setup', '--url', started.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '710: connect');
+    for (const slug of ['demo', 'quiet', 'plain']) {
+      const wiki = path.join(storage, 'books', slug, 'wiki'); fs.mkdirSync(wiki, { recursive: true });
+      fs.writeFileSync(path.join(wiki, '_book.md'), `---\npermalink: books/${slug}/wiki/_book\n---\n# ${slug}\n\n## Purpose\n\n${slug === 'quiet' ? 'Silence' : 'Needle'}\n`);
+    }
+    const { readSeatIdentityView, idsOf } = await import('../src/seatincarnation.ts');
+    const ids = idsOf(readSeatIdentityView(path.join(t.home.lib, '.claude')));
+    const block = (id: string, card: string, seatIds: string, any: boolean, names: string) => `## library ${id}\n- card: ${card}   \n- seat_ids: ${seatIds}   \n- any_seat: ${any}\n- names: ${names}\n- book_record: record-1\n- time: 2026-11-06T22:00:00Z\n`;
+    const note = `---\npermalink: _deskpost/upkeep/demo\n---\n# Upkeep grants for demo\n\n${block(t.home.id, 'Home Office', `${ids.get('asker')},${ids.get('aide')}`, false, 'asker,aide')}\n${block(t.far.id, 'Far Office', '', true, 'any seat')}`;
+    const upkeep = path.join(storage, '_deskpost/upkeep'); fs.mkdirSync(upkeep, { recursive: true });
+    fs.writeFileSync(path.join(upkeep, 'demo.md'), note);
+    fs.writeFileSync(path.join(upkeep, 'quiet.md'), note.replaceAll('upkeep/demo', 'upkeep/quiet').replace('grants for demo', 'grants for quiet'));
+    const preview = t.json(t.cli(t.home.lib, ['seat', 'rename', 'aide', 'helper', '--preflight', '--json']));
+    equal(t.cli(t.home.lib, ['seat', 'rename', 'aide', 'helper', '--user-confirmed', '--plan-id', String(preview['plan_id']), '--json']).exit, 0, '710: rename after grant');
+    equal(t.cli(t.home.lib, ['collection', 'rebuild', '--json']).exit, 0, '710: rebuild');
+    const rosterFile = path.join(t.home.lib, 'internal/book-manifests/shared/_roster.json');
+    const roster = JSON.parse(fs.readFileSync(rosterFile, 'utf8'));
+    same(roster.books.find((b: any) => b.slug === 'demo').maintained_by, [
+      { library_id: t.home.id, card: 'Home Office', any_seat: false, names: ['asker', 'helper'] },
+      { library_id: t.far.id, card: 'Far Office', any_seat: true, names: ['any seat'] },
+    ], '710: names and grant order');
+    same(Object.keys(roster.books.find((b: any) => b.slug === 'plain')), ['slug'], '710: no note preserves the old entry');
+    const discovery = await import('../src/discovery.ts');
+    const find = () => discovery.findBookPages({ workspace: t.home.lib, query: 'Needle', deskStateDirectory: path.join(root, 'desk') });
+    const result = find(); const text = discovery.formatDiscoveryResult(result);
+    check(text.includes(' -- maintained by asker, helper (Home Office); any seat of Far Office'), '710: header names current maintainers');
+    check(result.books_maintained?.length === 2 && !result.results.some(hit => hit.book === 'quiet') && !text.includes('quiet ['), '710: a grant with no hit is JSON only');
+    // A foreign named block keeps its as-written names; a retired local id is named honestly.
+    fs.writeFileSync(path.join(upkeep, 'demo.md'), `---\npermalink: _deskpost/upkeep/demo\n---\n# Upkeep grants for demo\n\n${block(t.home.id, 'Home Office', '11111111111111111111111111111111', false, 'old')}\n${block(t.far.id, 'Far Office', '22222222222222222222222222222222', false, 'as-written')}`);
+    equal(t.cli(t.home.lib, ['collection', 'rebuild', '--json']).exit, 0, '710: rebuild retired and foreign names');
+    check(discovery.formatDiscoveryResult(find()).includes('retired seat (Home Office); as-written (Far Office)'), '710: retired and foreign names');
+    check(!/"tool":"bm_(write|edit|delete|move)"/.test(fs.readFileSync(path.join(storage, '.calls.log'), 'utf8').split('\n').filter(line => line.includes('books/') || line.includes('upkeep/')).join('\n')), '710: grant reader writes nothing shared');
+  } catch (error) { failures.push('section 710 stopped early: ' + (error as Error).message); }
+  finally { server?.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(710) && prerequisite(710, () => !isCompiled(), 'requires the source stand-in')) await section710();
+
+// --- 711. Unreadable upkeep notes and listing faults remain unknown, never unmaintained.
+async function section711(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c120' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'unread-'));
+  const servers: { stop(): void }[] = [];
+  try {
+    const discovery = await import('../src/discovery.ts');
+    for (const mode of ['vanished', 'malformed', 'listing']) {
+      const folder = path.join(root, mode), workspace = path.join(folder, 'w'), storage = path.join(folder, 'server');
+      const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(folder, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+      fs.mkdirSync(folder, { recursive: true });
+      const cli = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: folder, env });
+      equal(runCli(['init', workspace], { cwd: folder, env }).exit, 0, '711: init ' + mode);
+      for (const slug of ['demo', 'other']) {
+        const wiki = path.join(storage, 'books', slug, 'wiki'); fs.mkdirSync(wiki, { recursive: true });
+        fs.writeFileSync(path.join(wiki, '_book.md'), `---\npermalink: books/${slug}/wiki/_book\n---\n# Needle ${slug}\n`);
+      }
+      const upkeep = path.join(storage, '_deskpost/upkeep'); fs.mkdirSync(upkeep, { recursive: true });
+      fs.writeFileSync(path.join(upkeep, 'demo.md'), '---\npermalink: _deskpost/upkeep/demo\n---\n# Upkeep grants for demo\n\n## library broken\n- card: incomplete\n');
+      const server = await startFakeBasicMemory(storage, mode === 'vanished' ? ['--vanish', 'upkeep/demo'] : mode === 'listing' ? ['--malformed-list', 'no-nodes:3'] : []); servers.push(server);
+      equal(cli(['basic-memory', 'setup', '--url', server.url, '--collection', 'stand-in-collection', '--json']).exit, 0, '711: connect');
+      const rebuilt = cli(['collection', 'rebuild', '--json']); equal(rebuilt.exit, 0, '711: rebuild');
+      const result = discovery.findBookPages({ workspace, query: 'Needle', deskStateDirectory: path.join(folder, 'desk') });
+      const text = discovery.formatDiscoveryResult(result);
+      if (mode === 'listing') {
+        check(!!result.upkeep_unreadable && text.split('Who maintains shared Books could not be read').length === 2, '711: listing failure named once');
+        check(!result.books_maintained, '711: roster-wide unknown is not per-Book grants');
+      } else {
+        check(result.books_maintained?.[0]?.maintained_unreadable !== undefined && text.includes('who maintains it could not be read'), '711: unread note named ' + mode);
+        check(!text.includes('incomplete') && !text.includes('upkeep/demo'), '711: raw note and error hidden');
+      }
+      check(!text.includes('not maintained'), '711: unknown never called unmaintained');
+      check(!!JSON.parse(rebuilt.stdout).shared.upkeep_unreadable, '711: rebuild retains raw upkeep errors');
+    }
+  } catch (error) { failures.push('section 711 stopped early: ' + (error as Error).message); }
+  finally { for (const server of servers) server.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(711) && prerequisite(711, () => !isCompiled(), 'requires the source stand-in')) await section711();
+
+// --- 712. Closed shared capture Books expose reason classes, never stored note paths; open Books retain detail.
+async function section712(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c120' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'reason-'));
+  try {
+    const discovery = await import('../src/discovery.ts');
+    const workspace = path.join(root, 'w'), desk = path.join(root, 'desk');
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: path.join(root, 'reg'), AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+    equal(runCli(['init', workspace], { cwd: root, env }).exit, 0, '712: init');
+    const roster = path.join(workspace, 'internal/book-manifests/shared/_roster.json'); fs.mkdirSync(path.dirname(roster), { recursive: true });
+    fs.mkdirSync(desk, { recursive: true });
+    const secret = 'books/cap/wiki/notes/2026-01-01-secret.md';
+    const raw = `Listing 'books/cap/wiki/notes' returned an identifier outside that folder: '${secret}'.`;
+    for (const withClass of [true, false]) {
+      fs.writeFileSync(roster, JSON.stringify({ schema: 1, generated_utc: '2026-11-06T22:00:00Z', books: [{ slug: 'cap', unavailable: raw, ...(withClass ? { unavailable_class: 'listing failed' } : {}) }] }));
+      fs.writeFileSync(path.join(desk, '.open-books'), '');
+      const closed = discovery.findBookPages({ workspace, query: 'secret', deskStateDirectory: desk });
+      const row = closed.books_unavailable.find(book => book.book_root === 'shared/cap');
+      equal(row?.reason, withClass ? 'listing failed' : 'server error', '712: fixed class and legacy fallback');
+      check(row?.status === 'unread-at-rebuild' && !row.book_open, '712: slug, status, closed');
+      check(!JSON.stringify(closed).includes(secret) && !discovery.formatDiscoveryResult(closed).includes(secret), '712: closed path hidden from JSON and text');
+      fs.writeFileSync(path.join(desk, '.open-books'), 'shared/cap\n');
+      const open = discovery.findBookPages({ workspace, query: 'secret', deskStateDirectory: desk });
+      equal(open.books_unavailable.find(book => book.book_root === 'shared/cap')?.reason, raw, '712: open Book keeps raw reason');
+      check(discovery.formatDiscoveryResult(open).includes(secret), '712: open text retains detail');
+    }
+    const { sharedFailureClass } = await import('../src/sharedmanifests.ts');
+    equal(sharedFailureClass(raw), 'listing failed', '712: map listing failures');
+    equal(sharedFailureClass('books/cap/wiki/_book.md could not be read'), '_book.md would not read', '712: map root reads');
+    equal(sharedFailureClass('a lock is held'), "the Book's lock was held", '712: map locks');
+    equal(sharedFailureClass('server leaked arbitrary text'), 'server error', '712: unmatched server errors');
+  } catch (error) { failures.push('section 712 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(712) && prerequisite(712, () => !isCompiled(), 'requires source Discovery')) await section712();
+
+// --- 713. A passing section near its deadline warns in runner and gate summaries, without failing.
+async function section713(): Promise<void> {
+  const parent = process.platform === 'win32' ? 'C:/dev/scratch/deskpost/c120' : os.tmpdir();
+  fs.mkdirSync(parent, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(parent, 'warning-'));
+  try {
+    const runner = await import('./run-parallel.ts');
+    const helper = (runner as unknown as { sectionLimitWarning?: (result: { section: number; verdict: string; seconds: number }, limit: number) => string }).sectionLimitWarning;
+    check(typeof helper === 'function', '713: the gate summary helper is exported');
+    if (helper) {
+      equal(helper({ section: 4, verdict: 'PASS', seconds: 7.1 }, 10000), 'section 4 took 7.1 s of its 10 s limit', '713: direct gate case');
+      equal(helper({ section: 4, verdict: 'PASS', seconds: 7 }, 10000), '', '713: exactly 70 percent does not warn');
+      equal(helper({ section: 4, verdict: 'FAIL', seconds: 9 }, 10000), '', '713: failures do not warn');
+      equal(helper({ section: 4, verdict: 'SKIP', seconds: 9 }, 10000), '', '713: skips do not warn');
+    }
+    const suite = path.join(folder, 'suite.mjs');
+    fs.writeFileSync(suite, [
+      'const SECTIONS = new Set((process.env.LIBRARY_SELFTEST_SECTIONS ?? "").split(",").filter(Boolean).map(Number));',
+      'const selected = (n) => SECTIONS.size === 0 || SECTIONS.has(n);',
+      'let checks = 0;',
+      'if (selected(4)) { await new Promise(resolve => setTimeout(resolve, 15500)); checks += 1; }',
+      'if (selected(5)) { checks += 1; }',
+      'process.stdout.write(`kernel self-test passed (${checks} checks).\\n`);',
+    ].join('\n'));
+    const ran = spawnSync(process.execPath, [path.join(HERE, 'run-parallel.ts'), '--suite', suite, '--workers', '2', '--section-timeout', '20000'], {
+      encoding: 'utf8', env: { ...process.env, LIBRARY_SELFTEST_SECTIONS: '' }, timeout: 120000, windowsHide: true,
+    });
+    equal(ran.status, 0, '713: the warning never fails the run: ' + ran.stderr);
+    check(/^section 4 took [\d.]+ s of its 20 s limit$/m.test(ran.stdout ?? ''), '713: slow passing section warns');
+    check(!/^section 5 took /m.test(ran.stdout ?? '') && /^section 5: PASS/m.test(ran.stdout ?? ''), '713: fast passing section is silent');
+    // Exercise the real private commit-summary caller with the actual runner's output at its child-process boundary.
+    const gate = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/gate.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const begin = gate.indexOf('async function selftestSections(');
+    const end = gate.indexOf('\n/**', begin);
+    check(begin >= 0 && end > begin, '713: the commit-summary caller can be isolated');
+    const probe = path.join(folder, 'commit-summary.mts');
+    fs.writeFileSync(probe, [
+      "import path from 'node:path';",
+      'const RUNNER_LIMIT = 2700000;',
+      'const readPlatformSkips = () => new Map();',
+      'const lastLines = (text, count) => text.trim().split(/\\r?\\n/).slice(-count).join(" | ");',
+      `const runChild = async () => (${JSON.stringify({ status: 0, output: ran.stdout ?? '', seconds: 0 })});`,
+      gate.slice(begin, end),
+      'await selftestSections("fixture", "commit", { all: false, sections: [4, 5] });',
+    ].join('\n'));
+    const forwarded = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+    const warning = (ran.stdout ?? '').split(/\r?\n/).find(line => /^section 4 took /.test(line));
+    check(forwarded.status === 0 && !!warning && (forwarded.stderr ?? '').includes(warning), '713: the commit gate forwards the runner warning to diagnostics: ' + (forwarded.stderr ?? ''));
+
+  } catch (error) { failures.push('section 713 stopped early: ' + (error as Error).message); }
+  finally { fs.rmSync(folder, { recursive: true, force: true }); }
+}
+if (selected(713) && prerequisite(713, () => !isCompiled(), 'requires source runner')) await section713();
+
+// --- 714. A revised Kickoff using the original evidence folder warns but keeps the same verdict.
+async function section714(): Promise<void> {
+  const kc = await import('../src/kickoffcheck.ts');
+  const text = (revision: number, folder: string, id = 'c120') => `# ${id} kickoff: Evidence\n\nRevision: **r${revision}**.\n\nEvidence: ${folder}\n`;
+  const checkCase = (body: string, expected: boolean, label: string) => {
+    const verdict = kc.kickoffVerdict(body, { adrFiles: [] });
+    equal(verdict.warnings.some(line => line.includes('evidence folder')), expected, '714: ' + label);
+    return verdict;
+  };
+  const old = checkCase(text(2, 'D:/dev/scratch/deskpost/c120/'), true, 'r2 using original folder');
+  const own = checkCase(text(2, 'D:/dev/scratch/deskpost/c120-r2/'), false, 'r2 using its own folder');
+  same(old.problems, own.problems, '714: a warning cannot refuse a Kickoff');
+  checkCase(text(1, 'D:/dev/scratch/deskpost/c120/'), false, 'r1 using original folder');
+  checkCase(text(3, 'D:/dev/scratch/deskpost/s195/', 's195'), true, 'another revised unit');
+  checkCase(text(2, 'D:/dev/scratch/deskpost/c120-other/'), false, 'different folder');
+  checkCase(text(2, 'C:/dev/scratch/deskpost/c120/'), false, 'only the named path form');
+}
+if (selected(714)) await section714();
+
+// --- 715. Duplicate upkeep blocks grant nothing; revocation removes them all; Catalog removal keeps the yes.
+async function section715(): Promise<void> {
+  const u = await upkeepFixture('c121-grants', 715);
+  const { f } = u;
+  try {
+    const making = u.newBook('demo');
+    const own = u.block(u.HOME, u.seatId('first'), false, 'first', making);
+    const foreign = u.block(u.OTHER, 'ffffffffffffffffffffffffffffffff', false, 'elsewhere', making);
+    const another = u.block('dddddddd-4444-4ddd-8ddd-dddddddddddd', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', false, 'another', making);
+    u.writeNote(own, own, another + foreign);
+    const kept = another + foreign;
+    const before = fs.readFileSync(u.note, 'utf8');
+    const page = ['shared', 'add-page', 'demo', 'guide', '--content-path', f.file('guide.md', '# Guide\n'), '--seat', 'first'];
+    const preview = f.json(f.cli([...page, '--preflight', '--json']));
+    equal(preview['confirmation_required'], true, '715: duplicate blocks authorize no write');
+    check(f.cli([...page, '--plan-id', String(preview['plan_id']), '--json']).exit !== 0, '715: duplicate grant apply refused');
+    const grant = f.cli(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first', '--preflight', '--json']);
+    check(grant.exit !== 0 && grant.stderr.includes('Invalid upkeep note _deskpost/upkeep/demo.md: duplicate Library blocks'), '715: duplicate grant note is named and refused');
+    equal(fs.readFileSync(u.note, 'utf8'), before, '715: refused grant wrote nothing');
+    const offArgs = ['shared', 'upkeep', 'demo', '--off', '--seat', 'first'];
+    const offPreview = f.json(f.cli([...offArgs, '--preflight', '--json']));
+    const off = f.cli([...offArgs, '--plan-id', String(offPreview['plan_id']), '--json']);
+    const after = fs.readFileSync(u.note, 'utf8');
+    check(off.exit === 0 && f.json(off)['blocks_removed'] === 2 && !after.includes(`## library ${u.HOME}`), '715: off removes both blocks and says how many');
+    equal(after.slice(after.indexOf('## library dddddddd-4444-4ddd-8ddd-dddddddddddd')), kept, '715: adjacent other Library blocks byte for byte, including separators');
+    check(f.gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']).ran.exit === 0, '715: valid grant restored');
+    const folder = path.join(u.storage, '_deskpost', 'changes', 'demo');
+    const catalogRecord = fs.readdirSync(folder).filter(name => /^\d.*\.md$/.test(name) && !/\.(base|body)\.md$/.test(name))
+      .find(name => fs.readFileSync(path.join(folder, name), 'utf8').includes('target: catalog'))?.slice(0, -3) ?? '';
+    check(catalogRecord !== '', '715: found the base-absent Catalog record');
+    const remove = ['shared', 'catalog-line', 'demo', '--from-change', catalogRecord, '--base', '--seat', 'first'];
+    const removal = f.json(f.cli([...remove, '--preflight', '--json']));
+    check(removal['confirmation_required'] === true && String(removal['confirmation_reason']).includes("Removing this Book's Catalog line"), '715: Catalog removal previews why confirmation is required');
+    check(f.cli([...remove, '--plan-id', String(removal['plan_id']), '--json']).exit !== 0, '715: Catalog removal without yes refused');
+    const catalog = path.join(u.storage, 'books', 'README.md');
+    check(fs.readFileSync(catalog, 'utf8').includes('books/demo/wiki/_book'), '715: refused Catalog removal keeps line');
+    equal(f.cli([...remove, '--user-confirmed', '--plan-id', String(removal['plan_id']), '--json']).exit, 0, '715: same removal applies with yes');
+    check(!fs.readFileSync(catalog, 'utf8').includes('books/demo/wiki/_book'), '715: approved removal removed line');
+  } catch (error) { failures.push('section 715 stopped early: ' + (error as Error).message); }
+  finally { u.dispose(); }
+}
+if (selected(715) && prerequisite(715, () => !isCompiled(), 'requires the source stand-in')) await section715();
+
+// --- 716. A landed unknown grant repairs the Desk copy on rerun; Discovery distinguishes listing, page and lock failures.
+async function section716(): Promise<void> {
+  const u = await upkeepFixture('c121-copy', 716);
+  const { f } = u;
+  try {
+    u.newBook('demo');
+    const books = f.at('.claude/seats/first/.open-books');
+    fs.appendFileSync(books, '\nshared/demo\n');
+    const deskEntry = () => ((f.json(f.cli(['desk', '--seat', 'first', '--json']))['open_books'] ?? []) as Record<string, unknown>[]).find(book => book['root'] === 'shared/demo');
+    await u.serve(['--outcome-unknown', 'bm_write:1', '--hide-listed', 'upkeep/demo:1']);
+    const grant = ['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first'];
+    const unknown = f.gated(grant);
+    const copy = f.at('internal/shared-upkeep/demo.json');
+    check(unknown.ran.exit !== 0 && unknown.ran.stderr.includes('unsettled') && fs.existsSync(u.note) && !fs.existsSync(copy), '716: grant landed unknown without local copy: ' + f.said(unknown.ran));
+    check(!deskEntry()?.['maintained_by'], '716: Desk lacks maintainer before repair');
+    await u.serve();
+    const log = path.join(u.storage, '.calls.log');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(line => line.includes('"tool":"bm_write"')).length;
+    const count = writes();
+    const before = fs.readFileSync(u.note, 'utf8');
+    const preview = f.json(f.cli([...grant, '--preflight', '--json']));
+    check(preview['local_copy'] === 'missing' && String(preview['next']).includes('deskpost shared upkeep demo --seats first'), '716: preview names missing copy and refresh command');
+    check(!fs.existsSync(copy), '716: preview writes no local copy');
+    const repaired = f.cli([...grant, '--user-confirmed', '--plan-id', String(preview['plan_id']), '--json']);
+    check(repaired.exit === 0 && f.json(repaired)['local_copy'] === 'refreshed', '716: rerun refreshes copy');
+    same(deskEntry()?.['maintained_by'], ['first'], '716: Desk names maintainer after repair');
+    const local = JSON.parse(fs.readFileSync(copy, 'utf8')) as Record<string, unknown>;
+    equal(local['time'], /^- time: (.+)$/m.exec(before)?.[1], '716: copy uses grant time');
+    const current = f.json(f.cli([...grant, '--preflight', '--json']));
+    equal(current['local_copy'], 'current', '716: current copy recognized');
+    const valid = fs.readFileSync(copy, 'utf8');
+    fs.writeFileSync(copy, '{}\n');
+    const stale = f.json(f.cli([...grant, '--preflight', '--json']));
+    equal(stale['local_copy'], 'stale', '716: stale copy named');
+    equal(fs.readFileSync(copy, 'utf8'), '{}\n', '716: stale preview writes nothing');
+    equal(f.cli([...grant, '--user-confirmed', '--plan-id', String(stale['plan_id']), '--json']).exit, 0, '716: stale repair');
+    equal(fs.readFileSync(copy, 'utf8'), valid, '716: stale copy repaired exactly');
+    equal(writes(), count, '716: repairs make no server writes');
+    equal(fs.readFileSync(u.note, 'utf8'), before, '716: server grant unchanged');
+    const { sharedFailureClass } = await import('../src/sharedmanifests.ts');
+    equal(sharedFailureClass('books/demo/wiki could not be read: server refused'), 'listing failed', '716: folder listing');
+    equal(sharedFailureClass('could not be read: the listing\'s answer'), 'listing failed', '716: listing answer');
+    equal(sharedFailureClass('books/demo/wiki/blocked.md could not be read: server refused'), 'page would not read', '716: blocked page is no lock');
+    equal(sharedFailureClass('books/demo/wiki/locked.md could not be read: server refused'), 'page would not read', '716: locked page name is no held lock');
+    equal(sharedFailureClass('Another operation holds the lock for books/demo. Wait for it to finish.'), "the Book's lock was held", '716: actual held lock');
+  } catch (error) { failures.push('section 716 stopped early: ' + (error as Error).message); }
+  finally { u.dispose(); }
+}
+if (selected(716) && prerequisite(716, () => !isCompiled(), 'requires the source stand-in')) await section716();
+
+// --- 717. Promote resumes a stop after its marker and before the manifest (c121 row 3, form A).
+async function section717(): Promise<void> {
+  const u = await upkeepFixture('c121-marker', 717);
+  const { f } = u;
+  try {
+    const promote = ['shared', 'promote', 'demo', '--seat', 'first'];
+    const archived = f.at('collection/archive/demo');
+    const marker = path.join(archived, 'wiki/_moved.md');
+    const intent = f.at('internal/shared-promote/demo.json');
+    const store = f.at('internal/book-manifests/collection-archive/demo');
+    // A file in the generations directory slot stops the real manifest commit after writeMoved runs.
+    // The fixture removes only this planted obstruction before resuming the real promote command.
+    const obstruction = path.join(store, 'generations');
+    fs.mkdirSync(store, { recursive: true });
+    fs.writeFileSync(obstruction, '717 manifest fault\n');
+    const stopped = f.gated(promote);
+    check(stopped.ran.exit !== 0 && stopped.ran.stderr.includes('dirty until rebuilt') && fs.existsSync(intent) && fs.existsSync(marker),
+      '717: real promote stopped after marker retains recovery intent and reports unfinished manifest');
+    check(!fs.existsSync(path.join(store, 'current.json')) && fs.existsSync(path.join(store, 'dirty.json')),
+      '717: manifest transition remains unfinished at the boundary');
+    fs.rmSync(obstruction);
+    const log = path.join(u.storage, '.calls.log');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(line => line.includes('"tool":"bm_write"')).length;
+    const count = writes();
+    const resumed = f.gated(promote);
+    check(resumed.ran.exit === 0 && JSON.stringify(resumed.result['archive']).includes('"finished":true'), '717: rerun truthfully reports finished archive');
+    check(fs.existsSync(marker) && !fs.existsSync(intent) && !fs.existsSync(path.join(store, 'dirty.json')) && !fs.existsSync(f.at('internal/book-manifests/collection/demo')),
+      '717: resumed enterBookMutation re-creates then retires active store, leaving committed archive and marker');
+    equal(writes(), count, '717: completion makes no server write');
+    const before = fs.readFileSync(path.join(store, 'current.json'), 'utf8');
+    const done = f.gated(promote);
+    check(done.ran.exit === 0 && done.result['archive'] === 'already archived', '717: finished promote remains unchanged');
+    equal(fs.readFileSync(path.join(store, 'current.json'), 'utf8'), before, '717: finished rerun does not rebuild metadata');
+  } catch (error) { failures.push('section 717 stopped early: ' + (error as Error).message); }
+  finally { u.dispose(); }
+}
+if (selected(717) && prerequisite(717, () => !isCompiled(), 'requires the source stand-in')) await section717();
+
+// --- 718. Unknown Hub and shared actions list exactly their verb tables, alphabetically.
+async function section718(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'selftest-718-'));
+  try {
+    const { VERBS } = await import('../src/verbs.ts');
+    const { runHubVerb, runSharedVerb } = await import('../src/collection.ts');
+    for (const [verb, run] of [['hub', runHubVerb], ['shared', runSharedVerb]] as const) {
+      const result = await run(['bogus'], root);
+      const expected = [...VERBS[verb]!.actions!].sort().join(', ');
+      equal(result.refusal, `library ${verb} has no action 'bogus'. It has: ${expected}.`, '718: ' + verb + ' complete sorted actions');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+if (selected(718) && prerequisite(718, () => !isCompiled(), 'requires source verb dispatch')) await section718();
 
 // --- the verdict ----------------------------------------------------------------------------------------
 

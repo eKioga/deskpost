@@ -91,10 +91,17 @@ function main(args: string[]): number {
   if (!fs.existsSync(file)) throw Error(`${branch}: no record; run node tools/owns.mts start --kickoff <file> --sha256 <hash>`);
   const record = readRecord(file, branch), merged = mergedPaths();
   const refused = stagedPaths().flatMap(p => {
+    if (record.patterns.length === 1 && record.patterns[0] === 'none') return [JSON.stringify(p) + ': this Kickoff owns no tracked file (OWNS PATHS: none)'];
     if (merged.has(p)) return [];
     if (!record.patterns.some(pattern => ownsPatternMatches(pattern, p))) return [JSON.stringify(p) + ': not in OWNS PATHS'];
-    const sensitive = SENSITIVE_PATHS.some(pattern => { pattern.lastIndex = 0; const matches = pattern.test(p); pattern.lastIndex = 0; return matches; });
-    return sensitive && !record.patterns.includes(p) ? [JSON.stringify(p) + ': sensitive: must be named by itself in OWNS PATHS, which needs the Second read line'] : [];
+    const sensitive = SENSITIVE_PATHS.flatMap((pattern, index) => { pattern.lastIndex = 0; const matches = pattern.test(p); pattern.lastIndex = 0; return matches ? [index] : []; });
+    if (!sensitive.length || record.patterns.includes(p)) return [];
+    if (sensitive.length === 1 && sensitive[0] === 2 && p.split('/').slice(0, -1).includes('fixtures') &&
+        record.patterns.some(pattern => pattern.includes('*') && pattern.split('/').includes('fixtures') && ownsPatternMatches(pattern, p))) {
+      process.stdout.write('sensitive fixture accepted: ' + p + '\n');
+      return [];
+    }
+    return [JSON.stringify(p) + ': sensitive: must be named by itself in OWNS PATHS, which needs the Second read line'];
   });
   if (!refused.length) return 0;
   process.stderr.write(refused.slice(0, 10).join('\n') + '\npark the row and say which file and why in the handback; never edit a file outside OWNS (RULE 3(f)). Nothing was committed.\n');

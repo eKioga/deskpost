@@ -105,7 +105,7 @@ export function judgeKickoff(text: string, workspace: string, rules: { placehold
     }
   }
   const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : kickoffNameResolver(workspace) });
-  return { problems: [...verdict.problems, ...problems], warnings: [...warnings, ...verdict.warnings] };
+  return { ...verdict, problems: [...verdict.problems, ...problems], warnings: [...warnings, ...verdict.warnings] };
 }
 
 /** A test hook, named in the self-test that uses it. */

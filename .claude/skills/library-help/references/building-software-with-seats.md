@@ -12,7 +12,7 @@ OUT OF, its CHARTER, its stop rule and the handback it owes. Read it before star
 one approval bound to the page and its content hash. When that unit ends, the builder hands
 back and stops. A letter or a list of ideas never starts the next unit.
 
-**Assign three roles.** Your planner keeps the backlog and writes Kickoffs. Your builder
+**Assign three roles.** Your orchestrator keeps the backlog and writes Kickoffs. Your builder
 implements one unit on its own branch and never merges as a builder. Your integrator combines
 finished units, checks the result and makes only the push you authorized. Name one integrator
 at a time, even when the same seat builds and integrates. With one seat you can assign these
@@ -21,7 +21,7 @@ roles at different times.
 **Decide within the approval and record the choice.** An open question inside the CHARTER is
 for the builder to decide and explain in its handback. Anything outside it parks with a
 reason. The builder neither waits for routine choices nor widens the work. Deskpost's
-[Decide and record](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/dev-session-loop.md#work)
+[Decide and record](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/dev-session-loop.md#work)
 is a worked example.
 
 **Have a second reader inspect sensitive changes.** Before a release or any credential step,
@@ -36,14 +36,14 @@ seat's sandbox and approval flags for your environment.
 ## When you use two builders
 
 Give each builder its own working tree and unit branch. Put the files and newly allocated
-identifiers in OWNS before work starts. Shared files wait their turn unless the planner
+identifiers in OWNS before work starts. Shared files wait their turn unless the orchestrator
 explicitly gives each unit separate additions. A builder parks a row that needs a file it
 does not own.
 
 Build integration on `int/<kickoff>` from a pinned remote base. Merge the finished tips in
 the recorded order, check the combined tree and verify the remote base again before a
-fast-forward push. Resolve only independent additions with distinct planner-allocated
-identifiers, kept whole in ascending order. Abort any other conflict and charter a
+fast-forward push. Resolve only independent additions with distinct identifiers allocated by the
+orchestrator, kept whole in ascending order. Abort any other conflict and charter a
 reconciliation. `git merge-tree --write-tree` diagnoses current tips; it writes Git objects
 but no refs or index, and cannot predict edits still to come.
 
@@ -53,8 +53,8 @@ Usage is advice about where to put work. If you have Orca, its `orca account lis
 reports weekly use, reset times and update times; check that its account matches the seat.
 An old, missing, refused or expired reading is unknown. Without Orca, say unknown; a Codex
 session log can fill only Codex's reading. Deskpost's
-[usage rule](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/dev-loop-orchestrator.md#assigning-work-by-usage)
-keeps its thresholds in one place. You can override the planner's advice.
+[usage rule](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/dev-loop-orchestrator.md#assigning-work-by-usage)
+keeps its thresholds in one place. You can override the orchestrator's advice.
 
 ## When you use fixtures
 
@@ -74,7 +74,7 @@ fallback.
 Deskpost 1.4.4 adds `--no-daemon` on every Codex launch so separate seats do not borrow a
 shared daemon's identity. Its tested simultaneous-seat resume used `exec resume` only;
 interactive (TUI) resume is unproved. `codex queue` waking is also unverified: paste the
-handback line into the planner's session yourself.
+handback line into the orchestrator's session yourself.
 
 Choose an assistant with `deskpost seat settings <seat> --assistant codex`. Preview flags
 with `deskpost seat settings <seat> --flags codex --preflight -- <flags>`, then approve that
@@ -90,9 +90,9 @@ upgrade rehearsal as the fallback; a source-fixture observation does not certify
 
 Every sensitive second read goes to library-auditor by letter, whichever harness wrote the
 change. Library-auditor audits every commit before a release (Decision, 2026-10-27). See the
-[second-reader rule](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/dev-loop-orchestrator.md#the-second-reader).
+[second-reader rule](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/dev-loop-orchestrator.md#the-second-reader).
 The following Claude Code reviewer profile is an optional proven profile: a fresh Claude
-session can read Codex-authored work from a staging folder containing clean review files. As planner, write
+session can read Codex-authored work from a staging folder containing clean review files. As orchestrator, write
 `claude-settings.json` with `{"permissions":{"allow":["Read","Grep","Glob"]}}` and
 `empty-mcp.json` with `{"mcpServers":{}}` in your fixture folder. Run this profile in the
 staging directory through subprocess argv, keeping the empty setting-source argument:
@@ -120,7 +120,7 @@ stopped a step, whether it came from the product or the harness, and what remain
 Choose gates that catch the unit's defects. Deskpost uses targeted test sections while
 working, the pre-commit hook on each clean staged cut, and a full gate before a chartered
 private push. Record each commit and its hook result together. Its
-[development loop](https://github.com/eKioga/deskpost/blob/v1.5.4/docs/dev-session-loop.md)
+[development loop](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/dev-session-loop.md)
 shows the full procedure; you need only the extras your project uses, but an adopted extra
 brings its safeguards with it.
 
@@ -129,7 +129,7 @@ brings its safeguards with it.
 ```markdown
 # Build <unit>: <outcome>
 
-author_seat: <planner>; revision: r1; roles: builder <seat>, integrator <seat or none>
+author_seat: <orchestrator>; revision: r1; roles: builder <seat>, integrator <seat or none>
 
 WHY NOW: <why now; usage advice if used>
 SIZE: <time budget and gate minutes; stop rule: the time or evidence boundary, then hand back what is done>
@@ -146,7 +146,7 @@ anything outside it
 STANDING ANSWERS: <numbered choices the builder may decide>
 OPEN: a fresh session; read the page, verify the base, show title/author/revision/hash/charter, take one yes
 CLOSE: handback with each row against its "Done when", checks, decisions, stalls, a "Needs you" list and the
-next recommendation; write its letter to the planner, supply the reader's paste line, then **Stop.**
+next recommendation; write its letter to the orchestrator, supply the reader's paste line, then **Stop.**
 ```
 
 Deskpost's own Kickoffs start from `docs/kickoff-template.md`, and `tools/kickoff-check.mts` checks a filled one

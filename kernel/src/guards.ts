@@ -1009,6 +1009,11 @@ const BASIC_MEMORY_READERS = [
   'mcp__basic-memory__recent_activity',
 ];
 const BASIC_MEMORY_WRITERS = ['mcp__basic-memory__write_note', 'mcp__basic-memory__edit_note'];
+/** Basic Memory 1.0's twelve tools (kickoffs/s178-r2 row 8): never called directly by a seat, whatever its arguments. */
+const BASIC_MEMORY_1_0_TOOLS = ['bm_read', 'bm_write', 'bm_edit', 'bm_move', 'bm_delete', 'bm_list', 'bm_find', 'bm_search', 'bm_context', 'bm_project', 'bm_schema', 'bm_man']
+  .map((name) => BASIC_MEMORY_PREFIX + name);
+const BASIC_MEMORY_1_0_DENIAL =
+  "Seats do not call Basic Memory directly on 1.0: read open Books through the validated reader (read_open_book_page), and shared writes go through deskpost's own commands.";
 const IDEMPOTENT_EDIT_OPERATIONS = ['replace_section', 'find_replace'];
 const PROJECT_ROOT_PATTERN = /^(projects|archive\/projects)\/[a-z0-9][a-z0-9-]*$/;
 const PIN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -1137,6 +1142,8 @@ function basicMemoryReadGuard(options: GuardOptions, stdinText: string, deny: (r
   const judgedName = toolName.startsWith(CODEX_BASIC_MEMORY_PREFIX)
     ? BASIC_MEMORY_PREFIX + toolName.substring(CODEX_BASIC_MEMORY_PREFIX.length)
     : toolName;
+  // 1.0'S TOOLS ARE DENIED BY NAME, before the pin and routing checks, so the sentence says why (kickoffs/s178-r2 row 8).
+  if (BASIC_MEMORY_1_0_TOOLS.includes(judgedName)) deny(BASIC_MEMORY_1_0_DENIAL);
   const toolInput = strictProperty(call, 'tool_input');
   if (asText(strictProperty(toolInput, 'project_id')) !== state.pin) deny('Virtual Desk requires the pinned project_id.');
   if (hasProperty(toolInput, 'project')) {

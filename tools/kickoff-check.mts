@@ -42,13 +42,23 @@ async function main(argv: string[]): Promise<number> {
     try { train = { record: JSON.parse(fs.readFileSync(argv[2], 'utf8')) }; }
     catch (error) { unreadable = `cannot read train register '${argv[2]}': ${(error as Error).message}`; }
   }
-  const verdict = kc.kickoffVerdict(text, { adrFiles, train });
+  // Only this source tool passes the section claims (kickoffs/s194 spare S1): the installed check's verdict is unchanged.
+  let covers: Record<string, string[]> | undefined;
+  try {
+    covers = (JSON.parse(fs.readFileSync(path.join(adrFolder, '..', '..', 'kernel', 'test', 'section-covers.json'), 'utf8')) as { sections?: Record<string, string[]> }).sections;
+  } catch {
+    covers = undefined;
+  }
+  const verdict = kc.kickoffVerdict(text, { adrFiles, train, covers });
   if (unreadable !== null) verdict.problems.push(unreadable);
   const { readSlots } = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'test', 'gate-lock.ts')).href) as typeof import('../kernel/test/gate-lock.ts');
   const slots = readSlots(line => process.stderr.write(line + '\n'));
   if (slots) {
-    const header = text.indexOf('as committed at');
-    const base = header < 0 ? undefined : /^as committed at\s*`([a-f0-9]{40})`/.exec(text.slice(header))?.[1];
+    // The header is the lines before the first required heading (TRAIN:); a body quoting the phrase is not a base (s186).
+    const lines = text.split(/\r?\n/);
+    const head = lines.slice(0, Math.max(0, lines.findIndex(line => line.startsWith('TRAIN:')))).join('\n');
+    const at = head.indexOf('as committed at');
+    const base = at < 0 ? undefined : /^as committed at\s*`([a-f0-9]{40})`/.exec(head.slice(at))?.[1];
     if (!base) verdict.problems.push(`BASE: recorded U2 ${slots.u2Tip}; the header after "as committed at" must name the base in full (40 lowercase hex characters).`);
     else {
       const { spawnSync } = await import('node:child_process');

@@ -24,11 +24,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeAtomicText } from './fsx.ts';
 import { parseArguments } from './argv.ts';
-import { argumentTable } from './verbs.ts';
+import { argumentTable, VERBS } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { McpSession, noteBody, readExactOrNull, refuseUnportedWriter, resolveCollectionId, resolveMcpUrl, writeExact } from './basicmemory.ts';
+import { McpSession, noteBody, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl, writeExact } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubEdit } from './hubedit.ts';
 import { hubTidy } from './hubtidy.ts';
@@ -40,6 +40,8 @@ import { localSharedArchive } from './localarchive.ts';
 import { localSharedListEntry } from './locallistentry.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
+import { runSharedAction, SHARED_ACTIONS } from './sharedwrite.ts';
+import type { SharedAction } from './sharedwrite.ts';
 
 /** `--purpose` has no file form: a longer Purpose goes in afterwards through the Hub edit's file route (S70 row 2). */
 const PURPOSE_REMEDY =
@@ -234,7 +236,7 @@ async function hubNewShared(
 
   const session = new McpSession(url, 'library-project-hub');
   await session.initialize();
-  refuseUnportedWriter(session, process.argv[process.argv.indexOf('hub') + 1] === 'copy-pages' ? 'hub copy-pages' : 'hub new');
+  refuseRetiredWriter(session, process.argv[process.argv.indexOf('hub') + 1] === 'copy-pages' ? 'hub copy-pages' : 'hub new');
   const existingRoot = await readExactOrNull(session, projectId, rootPath);
   let catalog = await readExactOrNull(session, projectId, ACTIVE_CATALOG.join('/'));
   const existingConnections = await readExactOrNull(session, projectId, connectionsPath);
@@ -448,14 +450,14 @@ export async function runHubVerb(argv: string[], workspace: string): Promise<Hub
           ),
         };
       default:
-        refuse(`library hub has no action '${action}'. It has: new, edit, archive, copy-pages, rename, tidy.`);
+        refuse(`library hub has no action '${action}'. It has: ${[...VERBS.hub!.actions!].sort().join(', ')}.`);
     }
   } catch (error) {
     return { refusal: (error as Error).message, value: null };
   }
 }
 
-/** `library shared <archive|list-entry>`: the collection's own Catalog, in Basic Memory or a local Library's files. */
+/** `library shared <action>`: the collection's own Catalog (`archive`, `list-entry`), and a local Library's shared-Book writers and readers. */
 export async function runSharedVerb(argv: string[], workspace: string): Promise<HubResult> {
   const action = argv[0] ?? '';
   try {
@@ -465,13 +467,18 @@ export async function runSharedVerb(argv: string[], workspace: string): Promise<
     if (local && action === 'archive') return { refusal: null, value: localSharedArchive(argv.slice(1), workspace) };
     // AND LISTS ITS OWN COLLECTION'S BOOKS (S118; 2nd-b-vault-dev's Report): a Book's one line in `collection/books/README.md`.
     if (local && action === 'list-entry') return { refusal: null, value: localSharedListEntry(argv.slice(1), workspace) };
+    // A LOCAL LIBRARY WRITES AND READS A SHARED BOOK over its connection (kickoffs/s191, s192; PLAN-many-libraries.md Stage 2).
+    if ((SHARED_ACTIONS as string[]).includes(action)) {
+      if (!local) refuse(`library shared ${action} acts on a shared Book from a local Library over its Basic Memory connection; this workspace is not a local Library. Nothing was written.`);
+      return { refusal: null, value: await runSharedAction(action as SharedAction, argv.slice(1), workspace) };
+    }
     switch (action) {
       case 'archive':
         return { refusal: null, value: await sharedArchive(argv.slice(1), workspace) };
       case 'list-entry':
         return { refusal: null, value: await sharedListEntry(argv.slice(1), workspace) };
       default:
-        refuse(`library shared has no action '${action}'. It has: archive, list-entry.`);
+        refuse(`library shared has no action '${action}'. It has: ${[...VERBS.shared!.actions!].sort().join(', ')}.`);
     }
   } catch (error) {
     return { refusal: (error as Error).message, value: null };

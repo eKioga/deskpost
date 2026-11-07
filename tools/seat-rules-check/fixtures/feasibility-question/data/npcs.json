@@ -1,0 +1,7 @@
+[
+  {
+    "id": "baker",
+    "name": "The baker",
+    "script": "scripts/greet.lua"
+  }
+]

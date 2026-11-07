@@ -248,6 +248,8 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
     const slot = /^slot:(\d+):/.exec(inherited)?.[1];
     const holder = await readHolder(slot ? address + '-' + slot : address).catch((error: unknown) => { throw new LockError(`inherited gate lock could not be validated: ${String(error)}`); });
     if (holder.token !== inherited) throw new LockError('inherited gate lock token does not match its holder');
+    // A one-slot holder's token cannot carry a push or release: those tiers need the door and every slot (s186).
+    if (slot && (tier === 'push' || tier === 'release')) throw new LockError(`a ${tier} gate cannot inherit this gate lock: its holder (${holder.seat}'s ${holder.tier} gate) holds one slot, and a ${tier} needs every slot`);
     return { inherited: true, wait: null, release: async () => {} };
   }
   const holder: Holder = { seat: process.env['LIBRARY_SEAT'] || 'unseated', tier, pid: process.pid,
