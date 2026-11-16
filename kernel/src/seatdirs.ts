@@ -146,10 +146,12 @@ export const LETTERS_FIRST_PROMPT =
  * a launch carries one. A value of the reader's own option counts too, so the rule errs toward adding nothing; the
  * Desk's letters line still reaches that seat.
  */
-export function lettersPromptArguments(assistant: Assistant | null, lettersWaiting: number, passthrough: string[]): string[] {
+export const LETTERS_GO_FIRST_PROMPT = LETTERS_FIRST_PROMPT + " A letter that carries the reader's go, for work inside this seat's role, is started this turn.";
+
+export function lettersPromptArguments(assistant: Assistant | null, lettersWaiting: number, passthrough: string[], withGo = false): string[] {
   if (assistant === null || lettersWaiting <= 0) return [];
   if (passthrough.some((arg) => !arg.startsWith('-'))) return [];
-  return [LETTERS_FIRST_PROMPT];
+  return [withGo ? LETTERS_GO_FIRST_PROMPT : LETTERS_FIRST_PROMPT];
 }
 
 export function launchLine(stateDirectory: string, seat: string, dirs: string[]): string {

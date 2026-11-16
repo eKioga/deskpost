@@ -22,6 +22,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hubHistory } from './hubhistory.ts';
+import { hubRefusalJson } from './hubedit.ts';
 import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
 import { runCheckpointVerb } from './checkpointverb.ts';
@@ -51,7 +52,7 @@ import { runMcpVerb } from './reader.ts';
 import { runHookVerb } from './guards.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { forgetLibrary, NO_WORKSPACE_REFUSAL, requireWorkspace, resolveWorkspace } from './workspace.ts';
-import { changeTrain, readTrain, trainText } from './train.ts';
+import { changeTrain, readTrain, trainText, trainLanePage, checkTrain } from './train.ts';
 import { checkArguments, parseArguments, quoteWarnings } from './argv.ts';
 import { takeContentPathNote } from './contentpath.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
@@ -160,7 +161,8 @@ async function main(argv: string[]): Promise<number> {
     // holding in its hand.
     refuse(
       `deskpost has no command '${verb}'. It has: ${Object.keys(VERBS).sort().join(', ')}. ` +
-        'Run `deskpost help` for what each one does.',
+        'Run `deskpost help` for what each one does.' +
+        (verb === 'ring' ? '\nTo ring a seat, send its message name a SendMessage after a letter; deskpost capture letters names it.' : ''),
     );
   }
 
@@ -451,7 +453,10 @@ async function main(argv: string[]): Promise<number> {
       }
       const result =
         verb === 'hub' ? await runHubVerb(rest, workspace) : verb === 'shared' ? await runSharedVerb(rest, workspace) : await runPublishVerb(rest, workspace);
-      if (result.refusal !== null) refuse(result.refusal);
+      if (result.refusal !== null) {
+        if (verb === 'hub' && (action === 'edit' || action === 'tidy')) process.stdout.write(JSON.stringify(hubRefusalJson(action, result.refusal)) + '\n');
+        refuse(result.refusal);
+      }
       emit(result.value!, true);
       return 0;
     }
@@ -687,10 +692,32 @@ async function main(argv: string[]): Promise<number> {
       const parsed = parseArguments(tail, table);
       try {
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+        if (action === 'show') {
+          const id = parsed.positional[0] ?? '';
+          const item = readTrain(workspace)?.items.find(item => item.id === id);
+          if (!item) throw new Error(`Unknown train item '${id}'.`);
+          const fields = Object.entries(item).map(([key, value]) => `${key === 'first_asked' ? 'First asked' : key === 'id' ? 'Identifier' : key[0]!.toUpperCase() + key.slice(1)}: ${value}`);
+          let history = '';
+          try { history = fs.readFileSync(path.join(workspace, 'internal', 'train', 'history.jsonl'), 'utf8'); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          const lines = history.split(/\r?\n/).filter((line, index) => {
+            if (!line.trim()) return false;
+            try { return JSON.parse(line).id === id; }
+            catch { throw new Error(`internal/train/history.jsonl, line ${index + 1} is not valid history JSON.`); }
+          });
+          emit(item as PsJsonValue, parsed.flags.has('json'), fields.concat('History:', ...lines).join('\n'));
+          return 0;
+        }
+        if (action === 'check') {
+          const result = checkTrain(workspace);
+          emit(result as PsJsonValue, parsed.flags.has('json'), result.findings.map(f => f.message).concat(result.count ? `${result.count} finding${result.count === 1 ? '' : 's'}` : 'no findings (0)').join('\n'));
+          return result.count ? 1 : 0;
+        }
         let changeSummary = '';
         const record = action === '' || action === 'page' ? readTrain(workspace)
           : changeTrain(workspace, action, parsed.positional[0] ?? '', parsed.options, parsed.flags, new Date(), summary => { changeSummary = summary; });
-        emit(record as PsJsonValue, parsed.flags.has('json'), changeSummary || trainText(record, action === 'page'));
+        const text = changeSummary || trainText(record, action === 'page', parsed.options.get('by'));
+        emit((parsed.options.get('by') === 'lane' ? trainLanePage(record) : record) as PsJsonValue, parsed.flags.has('json'), text);
       } catch (error) {
         refuse((error as Error).message);
       }

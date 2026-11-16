@@ -30,7 +30,7 @@ import * as path from 'node:path';
 import { captureVerb, lettersCloseVerb } from './capture.ts';
 import { readSeatRegistry } from './desk.ts';
 import { writeAtomicText } from './fsx.ts';
-import { hubEdit } from './hubedit.ts';
+import { fencedLineMask, hubEdit } from './hubedit.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { buildEnvelope, KICKOFF_ID, parseEnvelope } from './kickoffenvelope.ts';
 import { keptBody, readOutbox, resolveRemoteSeat, sendAfterCapture } from './postbox.ts';
@@ -183,14 +183,18 @@ function complete(workspace: string, record: ReceiveRecord, name: StageName, pro
   fault(name);
 }
 
-/** The lines of a Hub's `## Next`, or null when its `_project.md` text has none. */
+/**
+ * The lines of a Hub's `## Next`, or null when its `_project.md` text has none. Fenced code is neither a heading nor a
+ * pointer (kickoffs/s198 row 1): its lines are left out.
+ */
 function nextLines(text: string): string[] | null {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const start = lines.findIndex((line) => /^##[ \t]+Next[ \t]*$/.test(line));
+  const fenced = fencedLineMask(lines);
+  const start = lines.findIndex((line, index) => !fenced[index] && /^##[ \t]+Next[ \t]*$/.test(line));
   if (start < 0) return null;
-  let end = lines.findIndex((line, index) => index > start && /^##[ \t]/.test(line));
+  let end = lines.findIndex((line, index) => index > start && !fenced[index] && /^##[ \t]/.test(line));
   if (end < 0) end = lines.length;
-  return lines.slice(start + 1, end);
+  return lines.slice(start + 1, end).filter((_, offset) => !fenced[start + 1 + offset]);
 }
 
 /** The `## Next` lines that name the Kickoff's link, ticked or not. */
@@ -291,6 +295,17 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
   const done = (name: StageName): boolean => record.stages.find((row) => row.name === name)!.state === 'done';
   const pageMatches = (): boolean => fs.existsSync(pageFile) && pageComparisonSha256(fs.readFileSync(pageFile, 'utf8')) === envelope.sha256;
   const stagesRun: string[] = [];
+  const judge = (lines: string[]): 'absent' | 'present' => {
+    if (lines.length === 0) return 'absent';
+    if (lines.length > 1) refuse(`## Next on projects/${hub}/_project names ${link} ${lines.length} times: ${lines.join(' | ')}. Nothing was written.`);
+    if (unticked(lines[0]!) !== pointer) refuse(`## Next on projects/${hub}/_project already names ${link} with other text: ${lines[0]}. It was not changed.`);
+    return 'present';
+  };
+  const pointerArgs = [`projects/${hub}`, '--mode', 'append-section', '--section', 'Next', '--content', pointer];
+
+  // THE POINTER'S REFUSALS BEFORE THE PAGE (kickoffs/s198 row 1): a pointer the stage would refuse (the same link with
+  // other text, or another unticked Run line under the one-pointer rule) leaves no Kickoff page and no stage done.
+  if (!done('pointer') && judge(pointerLines(workspace, hub, link)) === 'absent') await hubEdit([...pointerArgs, '--preflight'], workspace);
 
   if (!done('page')) {
     if (fs.existsSync(pageFile)) {
@@ -306,16 +321,10 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
   }
 
   if (!done('pointer')) {
-    const judge = (lines: string[]): 'absent' | 'present' => {
-      if (lines.length === 0) return 'absent';
-      if (lines.length > 1) refuse(`## Next on projects/${hub}/_project names ${link} ${lines.length} times: ${lines.join(' | ')}. Nothing was written.`);
-      if (unticked(lines[0]!) !== pointer) refuse(`## Next on projects/${hub}/_project already names ${link} with other text: ${lines[0]}. It was not changed.`);
-      return 'present';
-    };
     if (judge(pointerLines(workspace, hub, link)) === 'absent') {
       // THE CHECK AND THE APPEND BOUND TOGETHER: the preflight's plan id is over the page this check reads, and the apply
       // refuses a page that changed after it, so no other writer's pointer slips in between.
-      const args = [`projects/${hub}`, '--mode', 'append-section', '--section', 'Next', '--content', pointer];
+      const args = pointerArgs;
       const preview = await hubEdit([...args, '--preflight'], workspace);
       const pageNow = fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8');
       if (pageComparisonSha256(pageNow) !== preview['current_sha256']) refuse(`projects/${hub}/_project changed while the pointer was being planned. Run deskpost kickoff receive ${letter} again.`);

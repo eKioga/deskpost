@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { ownsPaths, ownsPatternMatches, SENSITIVE_PATHS } from '../kernel/src/kickoffcheck.ts';
 
-const KICKOFF_BRANCH = /^(codex|int|dev)\/[cs]\d+(-r\d+)?$/;
+const KICKOFF_BRANCH = /^(codex|int|dev)\/[csw]\d+(-r\d+)?$/;
 const BUILDER_BRANCH = /^(codex|int|dev)\//;
 const oneLine = (message: string) => message.replace(/[\r\n]+/g, ' ');
 function git(...args: string[]): string {
@@ -63,7 +63,7 @@ function main(args: string[]): number {
   if (args[0] !== 'start' && args[0] !== 'check' || args[0] === 'check' && args.length !== 1) throw Error('usage: node tools/owns.mts start --kickoff <file> --sha256 <64 hex> | check');
   const branch = branchName();
   if (args[0] === 'check' && !KICKOFF_BRANCH.test(branch)) {
-    if (BUILDER_BRANCH.test(branch)) throw Error(`${branch} is a builder branch but not a unit id (codex, int or dev, then c or s and a number, then -rN for a revision); rename it before committing. Nothing was committed.`);
+    if (BUILDER_BRANCH.test(branch)) throw Error(`${branch} is a builder branch but not a unit id (codex, int or dev, then c, s or w and a number, then -rN for a revision); rename it before committing. Nothing was committed.`);
     return 0;
   }
   if (!KICKOFF_BRANCH.test(branch)) throw Error('start requires a Kickoff branch (codex, int or dev with a unit id)');
@@ -75,10 +75,15 @@ function main(args: string[]): number {
     if (hash !== args[4]!.toLowerCase()) throw Error('SHA-256 mismatch for ' + args[2]);
     const text = bytes.toString('utf8'), parsed = ownsPaths(text);
     if (parsed.problems.length) throw Error(parsed.problems.join('; '));
+    const title = text.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').split(/\r?\n/)[0]!;
+    const unit = /^#\s+([csw]\d+)(?:-r\d+)?\s+kickoff\b/i.exec(title)?.[1]?.toLowerCase();
+    if (!unit) throw Error(`Kickoff title gives no unit id: ${title}; write # w19-r2 kickoff: ... with this branch's unit id`);
+    const branchUnit = branch.split('/')[1]!.replace(/-r\d+$/, '');
+    if (unit && unit !== branchUnit) throw Error(`branch ${branch} belongs to ${branchUnit}, but the Kickoff title names ${unit}; start on that unit's branch`);
     let previous: Ownership | null = null;
     try { fs.statSync(file); previous = readRecord(file, branch); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    const record: Ownership = { schema: 1, branch, kickoff_title: text.split(/\r?\n/)[0]!, kickoff_sha256: hash, patterns: parsed.patterns, written_utc: new Date().toISOString(), replaced_sha256: previous?.kickoff_sha256 ?? null };
+    const record: Ownership = { schema: 1, branch, kickoff_title: title, kickoff_sha256: hash, patterns: parsed.patterns, written_utc: new Date().toISOString(), replaced_sha256: previous?.kickoff_sha256 ?? null };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temp = file + '.' + randomUUID() + '.tmp';
     try { fs.writeFileSync(temp, JSON.stringify(record, null, 2) + '\n', { flag: 'wx' }); fs.renameSync(temp, file); }

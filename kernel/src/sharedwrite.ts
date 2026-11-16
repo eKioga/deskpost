@@ -64,8 +64,9 @@ import { strayControlRefusal } from './controlchars.ts';
 import { programRoot } from './programroot.ts';
 import { writeAtomicText } from './fsx.ts';
 import { psConvertToJson } from './psjson.ts';
-import { ownedLines, placeOwnedEntry, withoutLine } from './localcatalog.ts';
+import { ownedLines, placeOwnedEntry, withoutLine, splitLocalFrontmatter } from './localcatalog.ts';
 import { renderSourceList, SOURCE_LIST_FILE, sourceListBlock, validateSourceList } from './booksources.ts';
+import { unfilledPlaceholderRefusal } from './collectionpage.ts';
 
 class SharedWriteRefusal extends Error {}
 
@@ -73,8 +74,14 @@ function refuse(message: string): never {
   throw new SharedWriteRefusal(message);
 }
 
-export type SharedAction = 'add-page' | 'replace-page' | 'remove-page' | 'catalog-line' | 'sources' | 'new-book' | 'promote' | 'upkeep' | 'reconcile' | 'changes';
-export const SHARED_ACTIONS: SharedAction[] = ['add-page', 'replace-page', 'remove-page', 'catalog-line', 'sources', 'new-book', 'promote', 'upkeep', 'reconcile', 'changes'];
+export type SharedAction = 'add-page' | 'replace-page' | 'remove-page' | 'catalog-line' | 'sources' | 'new-book' | 'promote' | 'upkeep' | 'reconcile' | 'changes' | 'init';
+export const SHARED_ACTIONS: SharedAction[] = ['add-page', 'replace-page', 'remove-page', 'catalog-line', 'sources', 'new-book', 'promote', 'upkeep', 'reconcile', 'changes', 'init'];
+export const SHARED_CATALOGS = [
+  { page: 'books/README.md', body: '# Books\n\nThe Books in this shared collection.\n\n## Open a Book\n' },
+  { page: 'archive/README.md', body: '# Archive\n\nShared Books no longer in use stay readable here.\n\n## Archived Books\n' },
+  { page: 'projects/README.md', body: '# Active Projects\n\nProject Hubs in this shared collection.\n\n## Projects\n' },
+  { page: 'archive/projects/README.md', body: '# Archived Projects\n\nProject Hubs retired from this shared collection. An archived Hub stays searchable.\n\n## Projects\n' },
+] as const;
 /** The commands whose records make a Book (r12 point 8): history, never a restore source. */
 type MadeBy = '' | 'new-book' | 'promote';
 type Target = 'page' | 'catalog' | 'sources';
@@ -126,7 +133,7 @@ const bodyOf = (listed: string): string => noteBody({ file_path: '', title: '', 
 
 /** `bmwrite.ts`'s text equality: the listed text without the server's frontmatter, against the proposed text. */
 function sameText(listed: string, proposed: string): boolean {
-  return bodyOf(listed).replace(/\r\n/g, '\n').trim() === proposed.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').replace(/\r\n/g, '\n').trim();
+  return splitLocalFrontmatter(listed).body.replace(/\r\n/g, '\n').trim() === splitLocalFrontmatter(proposed).body.replace(/\r\n/g, '\n').trim();
 }
 
 /** Two texts, or two absences, equal as reconcile compares them: CRLF folded and trimmed. */
@@ -305,6 +312,7 @@ async function listedRead(context: Context, notePath: string): Promise<{ text: s
 }
 
 function unsettled(context: Context, what: string, reason: string, recordId: string): never {
+  if (!recordId) refuse(`The write of Catalog ${what} is unsettled: ${reason}. Run deskpost shared init --preflight to see whether it landed.`);
   refuse(
     `The write of ${what} is unsettled: ${reason}. Its change record is ${recordId}; run deskpost shared reconcile ${context.slug} ` +
       'to see whether it landed. It was not sent again.',
@@ -567,6 +575,7 @@ function conflictRefusal(notePath: string, outcome: { recordId: string; code: st
 
 interface Plan {
   change: Change;
+  second?: { change: Change; reapply: (text: string) => string };
   operation: string;
   scope: string;
   /** The Catalog's retry (item 5): this Book's line re-applied to the Catalog as it now reads. */
@@ -650,15 +659,43 @@ async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: 
       if (action === 'add-page' && current !== null) {
         refuse(`${notePath} already exists. Replace it with deskpost shared replace-page ${slug} ${early.page} --content-path <file> --preflight. Nothing was written.`);
       }
+      if (action === 'replace-page') {
+        const frontmatter = splitLocalFrontmatter(proposed);
+        if (frontmatter.fields !== null) {
+          const record = await readExactOrNull(context.session, context.project, notePath, { stopped: 'nothing was written' });
+          const currentText = record?.content ?? '', existing = splitLocalFrontmatter(currentText);
+          const block = proposed.slice(0, proposed.length - frontmatter.body.length);
+          const currentBlock = currentText.slice(0, currentText.length - existing.body.length);
+          if (existing.fields === null || block.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n') !== currentBlock.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')) {
+            refuse(`shared replace-page is body-only: a leading frontmatter block must equal ${notePath}'s current frontmatter as returned by the reader. Nothing was written.`);
+          }
+          proposed = frontmatter.body.replace(/^[\r\n]+/, '');
+        }
+      }
     }
     const operation = proposed === null ? 'Remove a page of a shared Book' : current === null ? 'Add a page to a shared Book' : 'Replace a page of a shared Book';
     const how = proposed === null
       ? 'removes the page only while it is still the text shown here'
       : current === null ? 'creates the page only if it is still absent' : 'replaces the page only while it is still the text shown here';
+    let second: Plan['second'];
+    if (action === 'add-page' || action === 'remove-page') {
+      const mapPath = `books/${slug}/wiki/_index.md`;
+      const map = (await listedFiles(context, `books/${slug}/wiki`)).has(mapPath) ? await readNow(context, mapPath) : null;
+      const target = `books/${slug}/wiki/${early.page}`;
+      const reapply = (text: string) => {
+        const entries = ownedLines(text, [target]);
+        if (action === 'add-page') return entries.length ? text : `${text.replace(/\s+$/, '')}\n\n- [[${target}|${early.page}]]\n`;
+        for (const entry of [...entries].sort((a, b) => b.index - a.index)) text = withoutLine(text, entry.index);
+        return text;
+      };
+      const next = map === null ? null : reapply(map);
+      if (next !== map) second = { change: { target: 'page', notePath: mapPath, current: map, recordBase: map, proposed: next }, reapply };
+    }
     return {
       change: { target: 'page', notePath, current, recordBase: current, proposed },
+      ...(second === undefined ? {} : { second }),
       operation,
-      scope: `Records the change first under _deskpost/changes/${slug}/ (the page's current text, the new text, and who wrote it), then ${how}, and confirms it by listing. Nothing else is changed.`,
+      scope: `Records the change first under _deskpost/changes/${slug}/ (the page's current text, the new text, and who wrote it), then ${how}, and confirms it by listing.${second ? ' Then records and writes the reader-map change shown here, retrying once on a revision conflict.' : ' Nothing else is changed.'}${action === 'add-page' ? ` The page title is its file name; title: ${path.posix.basename(early.page)}.` : ''}`,
     };
   }
 
@@ -693,7 +730,7 @@ async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: 
 
   // catalog-line
   const catalog = await readNow(context, CATALOG);
-  if (catalog === null) refuse(`The Book Catalog ${CATALOG} is missing; it will not be created implicitly. Nothing was written.`);
+  if (catalog === null) refuse(`The Book Catalog ${CATALOG} is missing; it will not be created implicitly. Create the shared collection's Catalogs first: deskpost shared init --preflight. Nothing was written.`);
   const from = fromChangeSide(parsed, action, ['base'], usage);
   let reapply: (text: string) => string;
   if (from !== null) {
@@ -755,6 +792,15 @@ function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: s
   if (contentPath && parsed.options.has('from-change')) refuse(`library shared ${action} takes --content-path or --from-change, not both: ${usage}.`);
   if (!contentPath) return { slug, page, contentText: null };
   let contentText = readContentFile(workspace, contentPath);
+  if (action === 'add-page' || action === 'replace-page') {
+    const placeholder = unfilledPlaceholderRefusal(contentText, `shared ${action}`);
+    if (placeholder !== null) refuse(placeholder);
+  }
+  if (action === 'add-page') {
+    const title = splitLocalFrontmatter(contentText).fields?.get('title');
+    const fileTitle = path.posix.basename(page);
+    if (title !== undefined && title !== fileTitle) refuse(`shared add-page uses the file name as the page title: '${fileTitle}', but the content's title is '${title}'. Use the same title or body-only content. Nothing was sent.`);
+  }
   if (action === 'sources') {
     // CHECKED WHOLE BEFORE CONNECTING (item 2, r11): the list's shape. Whether each fed page exists is the Book's to say.
     const block = sourceListBlock(contentText);
@@ -773,6 +819,7 @@ function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: s
 }
 
 const USAGE: Record<SharedAction, string> = {
+  init: 'library shared init (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]',
   'add-page': 'library shared add-page <slug> <page> --content-path <file> (--preflight | [--user-confirmed] --plan-id <id>)',
   'replace-page': 'library shared replace-page <slug> <page> (--content-path <file> | --from-change <record-id> (--base | --body)) (--preflight | [--user-confirmed] --plan-id <id>)',
   'remove-page': 'library shared remove-page <slug> <page> [--from-change <record-id>] (--preflight | --user-confirmed --plan-id <id>)',
@@ -784,6 +831,45 @@ const USAGE: Record<SharedAction, string> = {
   reconcile: 'library shared reconcile <slug>',
   changes: 'library shared changes [<slug>] [--since <date>]',
 };
+
+/** Explicitly initialize a new shared collection; existing Catalogs are never changed. No Book means no change record. */
+async function runInit(parsed: ParsedArguments, workspace: string, connection: Connection): Promise<Record<string, PsJsonValue>> {
+  if (parsed.flags.has('preflight') === parsed.flags.has('user-confirmed')) refuse(`library shared init takes --preflight, or --user-confirmed --plan-id <id> after it: ${USAGE.init}.`);
+  const { context, collection } = await connect(connection, parsed, workspace, '', true);
+  const catalogs: Record<string, PsJsonValue>[] = [];
+  for (const { page, body } of SHARED_CATALOGS) {
+    const current = await listedRead(context, page);
+    catalogs.push(current === null
+      ? { page, state: 'absent', proposed_sha256: sha256(body), does: 'create with the shared text' }
+      : { page, state: 'present', checksum: current.checksum, does: 'kept as it is' });
+  }
+  const missing = catalogs.some((catalog) => catalog['state'] === 'absent');
+  const next = 'The shared collection is ready for deskpost shared promote and deskpost shared new-book.';
+  const preview = {
+    schema: 1, operation: "Create the shared collection's Catalogs", collection, catalogs,
+    confirmation_required: missing, shared_library_write: missing,
+    scope: 'Creates only missing Catalogs, never overwrites, and writes no change record. A wrong Catalog is removed by hand on the server by Eric.',
+  };
+  if (!missing) return { ...preview, next };
+  const planId = 'shared-init-' + sha256(JSON.stringify([connection.collection_id, catalogs.map((catalog) => [catalog['page'], catalog['state'], catalog['checksum'] ?? catalog['proposed_sha256']])]));
+  if (parsed.flags.has('preflight')) return { ...preview, plan_id: planId };
+  if (parsed.options.get('plan-id') !== planId) refuse("Nothing was written: the plan_id given is not this preview's. A Catalog may have been created or changed since the preview; rerun --preflight and pass its exact plan_id.");
+  const created: string[] = [];
+  for (const catalog of catalogs) {
+    if (catalog['state'] === 'present') { catalog['state'] = 'kept'; continue; }
+    const { page, body } = SHARED_CATALOGS.find((note) => note.page === catalog['page'])!;
+    const verdict = await createNote(context.session, context.project, page, body);
+    if (verdict.form === 'unknown') unsettled(context, page, verdict.reason, '');
+    if (verdict.form === 'refused') refuse(`The Catalog ${page} was refused ${verdict.code}: ${verdict.message}. This run already created: ${created.join(', ') || 'none'}. Nothing was overwritten; run deskpost shared init --preflight again.`);
+    const listed = await confirmCreated(context, page, body, '');
+    if (!sameText(listed.text, body)) unsettled(context, page, 'its listed text differs from the shared text', '');
+    created.push(page);
+    catalog['state'] = 'created';
+    catalog['checksum'] = listed.checksum;
+    delete catalog['proposed_sha256'];
+  }
+  return { ...preview, catalogs, confirmation_required: false, next };
+}
 
 type Planned =
   | { form: 'written'; written: Change; outcome: Extract<Outcome, { form: 'written' }>; retriedAfter: string | null }
@@ -799,14 +885,14 @@ async function writePlanned(opened: Opened, workspace: string, plan: Plan, madeB
     // An `unknown` never comes here.
     if (plan.reapply === undefined || outcome.code !== 'REVISION_CONFLICT') conflictRefusal(plan.change.notePath, outcome);
     retriedAfter = outcome.recordId;
-    const reread = await readNow(context, CATALOG);
-    if (reread === null) refuse(`The Book Catalog ${CATALOG} went missing after a conflict; the change record ${outcome.recordId} stays. Nothing more was written.`);
+    const reread = await readNow(context, plan.change.notePath);
+    if (reread === null) refuse(`${plan.change.notePath === CATALOG ? 'The Book Catalog' : 'The note'} ${plan.change.notePath} went missing after a conflict; the change record ${outcome.recordId} stays. Nothing more was written.`);
     const proposed = plan.reapply(reread);
     if (proposed === reread) return { form: 'unchanged', recordId: outcome.recordId };
-    written = catalogChange(reread, proposed, context.slug);
+    written = plan.change.notePath === CATALOG ? catalogChange(reread, proposed, context.slug) : { ...plan.change, current: reread, recordBase: reread, proposed };
     outcome = await writeChange(opened, workspace, written, madeBy);
     if (outcome.form === 'conflict') {
-      refuse(`${CATALOG} was written by someone else twice while this Book's line was written (${outcome.code}), so nothing was overwritten; its current checksum is ${outcome.now}. ` +
+      refuse(`${plan.change.notePath} was written by someone else twice while this Book's line was written (${outcome.code}), so nothing was overwritten; its current checksum is ${outcome.now}. ` +
         `The change records ${retriedAfter} and ${outcome.recordId} stay. Preview it again.`);
     }
   }
@@ -827,7 +913,8 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
   const { change } = plan;
   const baseDigest = change.current === null ? 'absent' : sha256(change.current);
   const bodyDigest = change.proposed === null ? 'absent' : sha256(change.proposed);
-  const planId = 'shared-write-' + sha256([context.project, slug, action, change.notePath, baseDigest, bodyDigest].join('|'));
+  const map = plan.second?.change;
+  const planId = 'shared-write-' + sha256([context.project, slug, action, change.notePath, baseDigest, bodyDigest, ...(map ? [map.notePath, sha256(map.current!), sha256(map.proposed!)] : [])].join('|'));
   // UPKEEP (item 16, second and third bullets): a seat this Library granted writes without a yes. The grant is read fresh
   // for every preview and every apply without --user-confirmed, since the plan_id does not bind it; an apply with the
   // reader's yes needs no grant and reads none.
@@ -852,6 +939,7 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     ...(grant === null ? {} : { maintained_by: grant.names }),
     shared_library_write: true,
     scope: plan.scope,
+    ...(map ? { reader_map: { page: map.notePath, current_sha256: sha256(map.current!), proposed_sha256: sha256(map.proposed!), diff: unifiedDiff(map.current!, map.proposed!, DIFF_LINES) } } : {}),
   };
   if (baseDigest === bodyDigest) {
     return { ...preview, status: 'unchanged', next: `${change.notePath} already holds this text; nothing was written.` };
@@ -870,6 +958,7 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
       next: `${CATALOG} changed while it was written, and it now holds this Book's line as asked; nothing more was written. The first change record ${done.recordId} stays.` };
   }
   const { written, outcome, retriedAfter } = done;
+  const mapDone = plan.second ? await writePlanned(opened, workspace, { ...plan, ...plan.second, second: undefined }) : null;
   const restore = restoreLine(written.target, slug, written.notePath, written.recordBase === null, outcome.recordId);
   return {
     schema: 1,
@@ -879,6 +968,7 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     page: change.notePath,
     verdict: 'written',
     record_id: outcome.recordId,
+    ...(mapDone === null ? {} : { map_record_id: mapDone.form === 'written' ? mapDone.outcome.recordId : mapDone.recordId }),
     record: outcome.recordPath,
     ...(retriedAfter === null ? {} : { retried_after: retriedAfter }),
     checksum: outcome.checksum,
@@ -909,7 +999,7 @@ interface BookStep {
 }
 
 /** A page's text without its own frontmatter, as the server's readback compares it (`sameText`). */
-const withoutFrontmatter = (value: string) => value.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+const withoutFrontmatter = (value: string) => splitLocalFrontmatter(value).body;
 
 const oneLine = (value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 160);
 
@@ -986,7 +1076,7 @@ function bookPreview(opened: Opened, operation: string, steps: BookStep[], catal
   const { context } = opened;
   const binding = [
     ...steps.map((step) => `${step.notePath}|${digestOf(step.current)}|${digestOf(step.proposed)}|${step.skip}`),
-    `${CATALOG}|${digestOf(catalog.plan.change.current)}|${digestOf(catalog.plan.change.proposed)}|${catalog.skip}`,
+    `${CATALOG}|${digestOf(ownedLineOf(catalog.plan.change.current, context.slug))}|${digestOf(ownedLineOf(catalog.plan.change.proposed, context.slug))}|${catalog.skip}`,
     ...extra,
   ];
   const rows: PsJsonValue[] = [
@@ -1215,6 +1305,10 @@ async function runPromote(parsed: ParsedArguments, workspace: string, connection
   // A surviving intent takes precedence over the marker until the archive manifest commits.
   const intent = !fs.existsSync(activeFull) && fs.existsSync(archivedWiki) ? promoteIntent(workspace, slug) : null;
   const archived = intent === null && !fs.existsSync(path.join(activeFull, 'wiki', '_book.md')) && fs.existsSync(path.join(archivedWiki, '_moved.md'));
+  // The slot is in the way only of an active Book's archive half (kickoffs/s197 row 2).
+  if (intent === null && !archived && fs.existsSync(path.join(activeFull, 'wiki', '_book.md')) && fs.existsSync(path.dirname(archivedWiki))) {
+    refuse(`collection/archive/${slug} is taken, so this Book could not be archived after the copy; nothing was written.`);
+  }
   if (!archived && intent === null && !fs.existsSync(path.join(activeFull, 'wiki', '_book.md'))) {
     if (fs.existsSync(path.join(workspace, 'shelf', slug, 'wiki'))) {
       refuse(`${slug} is a Shelf Book, and promote takes a Book of this Library's collection: publish it there first (deskpost publish ${slug} --title <t> --summary <s> --preflight), then promote it. Nothing was written.`);
@@ -1295,7 +1389,7 @@ async function runPromote(parsed: ParsedArguments, workspace: string, connection
   const words = localCatalogWords(workspace, slug, read('wiki/_book.md'));
   if (/[\x00-\x1f\x7f]/.test(words.title + words.summary)) refuse('The Catalog title or summary holds control characters or DEL. Nothing was written.');
   const catalogText = await readNow(opened.context, CATALOG);
-  if (catalogText === null) refuse(`The Book Catalog ${CATALOG} is missing; it will not be created implicitly. Nothing was written.`);
+  if (catalogText === null) refuse(`The Book Catalog ${CATALOG} is missing; it will not be created implicitly. Create the shared collection's Catalogs first: deskpost shared init --preflight. Nothing was written.`);
   const entry = `- [[${catalogTarget(slug)}|${words.title}]] — ${words.summary}`;
   const named = COLLECTIONS.find((name) => `## ${name}` === words.heading);
   const reapply = (text: string) => {
@@ -1697,6 +1791,7 @@ export async function runSharedAction(action: SharedAction, argv: string[], work
   const parsed = parseArguments(argv, argumentTable('shared', action));
   const connection = optedIn(action, workspace);
   try {
+    if (action === 'init') return await runInit(parsed, workspace, connection);
     if (action === 'reconcile') return await runReconcile(parsed, workspace, connection);
     if (action === 'changes') return await runChanges(parsed, workspace, connection);
     if (action === 'new-book') return await runNewBook(parsed, workspace, connection);

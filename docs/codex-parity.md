@@ -33,7 +33,7 @@ The `node_repl` server and computer-use plugins that serve `cua_repl` are disabl
 
 | Behavior | Claude Code form | Codex form | Status |
 | --- | --- | --- | --- |
-| Find the current seat and open Desk | `UserPromptSubmit` Desk context plus `deskpost desk` | Same Desk command and project `UserPromptSubmit` hook | Same after the reader's seat binding was repaired; first-prompt delivery remains a real-session check. |
+| Find the current seat and open Desk, including the letters-wait notice | `UserPromptSubmit` Desk context plus `deskpost desk` | Same Desk command and project `UserPromptSubmit` hook | Delivery unproved: c131-r3's two-turn probe on Codex 0.167.0 completed both turns, but its rollout contains no `LETTERS_WAIT_LINE` or separate Desk hook context. The producer envelope and registrations pass sections 764 and 765; this does not prove Codex loaded or delivered them. |
 | Refuse a closed shared Book or Project read | Basic Memory guard and validated reader | Basic Memory guard for `mcp__basic_memory__*`; validated reader | Same through the validated reader. Direct Basic Memory access depends on a trusted hook and is part of step 4c. |
 | Refuse a closed Shelf Book shell read | `PreToolUse` shell guard | `PreToolUse` matcher for `Bash|exec` | Same for captured `Bash` calls; real-session denial was established before this draft. |
 | Refuse a closed Shelf Book edit | `Read|Grep|Glob|Write|Edit` guard | `apply_patch` guard | Close: the captured patch path is covered; other Codex file surfaces require inventory and captures. |
@@ -47,6 +47,18 @@ The `node_repl` server and computer-use plugins that serve `cua_repl` are disabl
 | Move decided Hub items to a history page | `deskpost hub tidy` (and the `/tidy` command, after the mod half ships) | The same `deskpost hub tidy` | Same verb; no Codex `$tidy` prompt yet. |
 
 Sources: the open `deskpost-desk` Project pages `notes/2026-10-10-codex-parity-plan` and its review log (read through the validated reader); `.codex/hooks.template.json`; `.codex-plugin/hooks.json`; `.claude/settings.json`; `kernel/src/hookregistry.ts`, `hookclear.ts`, `hooksearchhit.ts`, `hookseatstart.ts`, and `doctor.ts`; ADR-0047; and this session's live tool catalog. The initial reader failure is recorded at Report Inbox page `2026-10-11-validated-reader-has-no-seat-in-codex-launcher-session`; the subsequent successful plan read supersedes that session condition.
+
+The c131-r3 probe used the c131 fixture with an invocation-only project-trust override and hook-trust bypass;
+it changed no saved trust. The control and pending-letter turn both exited zero in session
+`01a1bedc-8f98-7481-959a-3d23180974bd`. Its rollout is `rollout-2026-11-08T21-51-28-01a1bedc-8f98-7481-959a-3d23180974bd.jsonl`;
+the attempt and full evidence paths are recorded in the Codex Builder Hub at `notes/2026-11-08-c131-r3-a1`.
+The protected hashes matched, with zero live files modified during the snapshot window and zero probe hits.
+Inherited server startup errors despite the fixture's disabled-server configuration suggest a project-loading gap;
+whether the prompt hook ran or its output was dropped is unknown. No production fix is claimed.
+Hook-trust answer for real seats, carried from c131's installed doctor on Codex 0.167.0 and Orca 1.4.254:
+this seat's 13 current hooks were reviewed; that proves eligibility, not execution or trust in other seats.
+The [official Codex hook contract](https://learn.chatgpt.com/docs/hooks) places prompt context in
+`hookSpecificOutput.additionalContext`; the producer checks pin that contract without claiming model-input delivery.
 
 ## The Desk pane (deskpost dashboard --watch)
 

@@ -32,6 +32,8 @@
  */
 
 import * as fs from 'node:fs';
+import { checkLetterGo, letterGo } from './lettergo.ts';
+import { readMarker } from './workspace.ts';
 import { assertShelfBookOpen } from './triage.ts';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
@@ -348,11 +350,11 @@ function supersededNote(book: ShelfBook, page: string, seat: SeatIncarnation): S
  * THE LETTER `--answers`, `--routes` OR `letters close` NAMES (kickoffs/s98 rows 1 and 2; PLAN-seats-team.md session 3
  * items 1 and 2; kickoffs/s108 ruling 2): it
  * exists, its frontmatter is whole, it is addressed to this seat by the recipient predicate, and it is pending or
- * (for an answer) unchanged since this seat closed it, with no closing link. Checked before and under the lock.
+ * (for an answer) already closed by any route. Checked before and under the lock.
  * A letter answered or routed in between is
  * refused, never closed twice. Mutation is strict where display is tolerant: a malformed letter is refused here.
  */
-function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes' | 'letters close'): ShelfNoteRow {
+function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, flag: '--answers' | '--routes' | 'letters close', allowOwnClose = false): ShelfNoteRow {
   const act = flag === '--answers' ? 'answer' : flag === '--routes' ? 'route' : 'close';
   // `letters close` WRITES NO NOTE (kickoffs/s108 ruling 2), so its refusals say nothing was closed.
   const nothing = flag === 'letters close' ? 'Nothing was closed.' : 'Nothing was captured.';
@@ -374,15 +376,20 @@ function closableLetter(book: ShelfBook, page: string, seat: SeatIncarnation, fl
     );
   }
   if (note.review === 'done') {
+    if (flag === '--answers') return note;
     // Only letters close records this incarnation and the exact closed text; a triage close has no such proof.
     const text = readUtf8(note.fullPath).replace(/\r\n/g, '\n');
     const head = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(text)?.[1] ?? '';
     const ids = [...head.matchAll(/^closed_by_seat_id:[ \t]*([^\n]*)$/gm)].map(match => match[1]!.trim());
     const hashes = [...head.matchAll(/^closed_read_hash:[ \t]*([^\n]*)$/gm)].map(match => match[1]!.trim());
-    const ownClose = flag === '--answers' && /^[0-9a-f]{32}$/.test(seat.seatId) &&
+    const ownClose = /^[0-9a-f]{32}$/.test(seat.seatId) &&
       ids.length === 1 && ids[0] === seat.seatId && hashes.length === 1 &&
       hashes[0] === sha256OfText(setNoteField(text, 'closed_read_hash', null));
-    if (!ownClose) refuse(`${page} is already closed (review: done), so ${flag} refuses it. ${nothing}`);
+    if (!ownClose || (flag === 'letters close' && !allowOwnClose)) {
+      const reason = ownClose ? 'closed meanwhile by this seat' : ids.length === 0 || hashes.length === 0 ? 'no proof of this seat closing it (including a triage close)'
+        : ids.length === 1 && ids[0] !== seat.seatId ? 'closed by another seat' : 'changed text or invalid close proof';
+      refuse(`${page} is already closed (review: done), so ${flag} refuses it. Reason: ${reason}. ${nothing}`);
+    }
   }
   if (note.answeredBy || note.routedTo) {
     refuse(`${page} was reopened and still carries ${note.answeredBy ? 'answered_by' : 'routed_to'}: reopen is for triage, not for a second ${act}; write a new letter. ${nothing}`);
@@ -681,6 +688,7 @@ export function captureVerb(
     }
     const slug = parsed.positional[0] ?? 'holding';
     if (parsed.flags.has('local') && slug !== 'reports') refuse('--local keeps a Report here and is accepted only by capture reports. Nothing was captured.');
+    if (given('go') && filing !== null) refuse('--go cannot be filed from the Postbox. Send without --go, or ask the reader in this conversation. Nothing was captured.');
     const title = (parsed.options.get('title') ?? '').trim();
     // --title IS NEEDED ONLY WHEN THE BODY HAS NO H1 (S67, game-admin's Report): the H1 names the note either way.
 
@@ -690,6 +698,7 @@ export function captureVerb(
         `Shelf Book '${slug}' is not capture-enabled. Only a Book whose catalog entry carries '- **Kind:** capture' accepts notes.`,
       );
     }
+    if (given('go') && (!book.takesLetters || !['for', 'for-department', 'answers', 'routes'].some(given))) refuse('--go needs a letters Book and a recipient. Send without --go, or ask the reader in this conversation. Nothing was captured.');
     if (!fs.existsSync(book.wikiPath)) refuse(`Capture Book '${slug}' has no pages directory at shelf/${slug}/wiki.`);
 
     const { body, source } = filing !== null ? { body: filing.body, source: 'postbox' } : resolveBody(workspace, parsed.options.get('content-path'), parsed.options.get('body'), 'note');
@@ -835,7 +844,7 @@ export function captureVerb(
 
     // AN ANSWER (kickoffs/s98 row 1; PLAN-seats-team.md session 3 item 1): `--answers notes/<page>` writes a reply to the
     // letter's first asker and closes the letter `answered_by` the reply, as `--supersedes` closes and links. The Book is
-    // open on this seat's Desk, this seat is the letter's recipient, it is pending or this seat's unchanged close with no link, and its asker is
+    // open on this seat's Desk, this seat is the letter's recipient, it is pending without a link or already closed, and its asker is
     // the same incarnation the registry names now; the reply is stamped with that validated id.
     const answers = (parsed.options.get('answers') ?? '').trim().replace(/\\/g, '/').replace(/\.md$/i, '');
     let asker: SeatIncarnation | null = null;
@@ -903,6 +912,8 @@ export function captureVerb(
     // A LETTER TO ANOTHER LIBRARY (kickoffs/s123 row 2): its Library resolved through the Postbox now, before the lock,
     // and the seat's id from that Library's entry; nothing about it is looked up in this Library's registry.
     if (library) remote = resolveRemoteSeat(workspace, library, forSeat);
+    if (given('go') && remote !== null) refuse('--go cannot cross Libraries. Send without --go, or ask the reader in this conversation. Nothing was captured.');
+    const go = given('go') ? checkLetterGo(stateDirectory(workspace), fromSeat, fromSeatSource, parsed.options.get('go') ?? '', new Date(capturedAt)) : null;
     const forSeatId = filing !== null ? filing.forSeatId : asker !== null ? asker.seatId : remote !== null ? remote.seat_id : letter ? seatIds.get(forSeat) ?? '' : '';
     // THE RENAME BARRIER (kickoffs/s109 ruling 8): a letter to a seat being renamed, by either name, waits for the rename.
     if (letter && remote === null) assertNoSeatRename(workspace, forSeat);
@@ -999,6 +1010,7 @@ export function captureVerb(
       ...(fromSeatSource ? { from_seat_source: fromSeatSource } : {}),
       seat_source: seatSource,
       ...(forSeat ? { for_seat: forSeat } : {}),
+      ...(go ? { go } : {}),
       session_id: sessionId,
       ...(why ? { why } : whyMissingSaid ? { why_missing: true } : {}),
       ...(supersedes ? { supersedes } : {}),
@@ -1011,7 +1023,9 @@ export function captureVerb(
         (supersedes
           ? `It also closes ${supersedes} (review: done, reviewed:, superseded_by:), journalled with the new note. Nothing is removed.`
           : answers
-            ? `It also closes ${answers} (review: done, reviewed:, answered_by:), journalled with the new note. Nothing is removed.`
+            ? shelfNotes(book).find(row => row.page === answers)?.review === 'done'
+              ? `It links to ${answers}, which is already closed and is left unchanged; nothing is removed.`
+              : `It also closes ${answers} (review: done, reviewed:, answered_by:), journalled with the new note. Nothing is removed.`
             : routes
               ? `It also closes ${routes} (review: done, reviewed:, routed_to:), journalled with the new note. Nothing is removed.`
             : 'No existing page is read, changed, or removed.'),
@@ -1086,7 +1100,8 @@ export function captureVerb(
       if (modsCommit) frontmatter.push(`${filing !== null ? 'received_mods_commit' : 'mods_commit'}: ${modsCommit}`);
     }
     if (awaitingSender) frontmatter.push('awaiting_sender: true');
-    for (const [key, value] of [...(internal.extraFrontmatter ?? []), ...(filing?.fields ?? [])]) frontmatter.push(`${key}: ${value}`);
+    for (const [key, value] of [...(internal.extraFrontmatter ?? []), ...(filing?.fields ?? [])]) if (!key.startsWith('go_')) frontmatter.push(`${key}: ${value}`);
+    if (go) frontmatter.push(`go_words: ${parsed.options.get('go')}`, `go_typed: ${go.typed}`, 'go_check: transcript');
     frontmatter.push('---');
 
     // {now} AND {today} BECOME THE TIME OF THE WRITE (kickoffs/s121 row 6), in the body only, never its title or name.
@@ -1124,7 +1139,7 @@ export function captureVerb(
       // THE OLDER NOTE, AGAIN UNDER THE LOCK: it exists, and this seat may close it. Its prior bytes are journalled
       // with the new note's, so a failure restores both.
       const older = supersedes ? supersededNote(book, supersedes, self!) : null;
-      // THE LETTER AN ANSWER CLOSES, AGAIN UNDER THE LOCK: still pending, still unlinked, still this seat's.
+      // THE LETTER AN ANSWER LINKS, AGAIN UNDER THE LOCK: pending and unlinked, or closed, still this seat's.
       const answered = answers ? closableLetter(book, answers, self!, '--answers') : null;
       // THE LETTER A ROUTE CLOSES, AGAIN UNDER THE LOCK, with its hop count.
       const routedAgain = routes ? closableLetter(book, routes, self!, '--routes') : null;
@@ -1226,11 +1241,15 @@ export function captureVerb(
       }
       // ANSWERED BY THE REPLY: `review: done`, the stamp, and `answered_by:` (kickoffs/s98 row 1).
       if (answered) {
-        const text = readUtf8(answered.fullPath);
-        const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'answered_by', selected.page);
-        if (!/^review: done/m.test(closed)) refuse(`${answered.page} has no review field to close.`);
-        writeAtomicText(answered.fullPath, closed);
-        plan['answered'] = { page: answered.page, status: 'closed' };
+        if (answered.review === 'done') {
+          plan['answered'] = { page: answered.page, status: 'unchanged' };
+        } else {
+          const text = readUtf8(answered.fullPath);
+          const closed = setNoteField(setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp()), 'answered_by', selected.page);
+          if (!/^review: done/m.test(closed)) refuse(`${answered.page} has no review field to close.`);
+          writeAtomicText(answered.fullPath, closed);
+          plan['answered'] = { page: answered.page, status: 'closed' };
+        }
       }
       // ROUTED ON: `review: done`, the stamp, and `routed_to:` (kickoffs/s98 row 2).
       if (routedAgain) {
@@ -1330,6 +1349,13 @@ export function captureVerb(
                 : [null, 'not yet named'];
         plan['recipient_message_name'] = reach[0];
         if (reach[1] !== null) plan['recipient_message_name_reason'] = reach[1];
+        if (reach[1] !== 'codex') {
+          plan['ring_line'] = `From ${fromSeat || 'unseated'}: a letter for you, letters ${plan['page']}`;
+          plan['ring_to'] = reach[0];
+          if (process.env['DESKPOST_ASSISTANT'] === 'codex' && (reach[0] !== null || reach[1] === 'not yet named')) {
+            plan['relay_line'] = `Tell ${forSeat}: a letter for you, letters ${plan['page']}`;
+          }
+        }
       } catch {
         // a fact for the ring, and a capture never fails on it
       }
@@ -1352,6 +1378,17 @@ export function captureVerb(
         ? 'This Book is open at this seat; read the note with read_open_book_page when you are ready to review.'
         : `This Book is closed by default. Open it with deskpost desk open book ${slug} --location shelf when you are ready to review.`) +
       (why || !whyMissingSaid ? '' : WHY_MISSING_NEXT);
+    if (typeof plan['recipient_message_name'] === 'string') {
+      plan['next'] += `\nRing: SendMessage to "${plan['recipient_message_name']}", first line "${plan['ring_line']}"`;
+    } else if (plan['recipient_message_name'] === null) {
+      const reason = plan['recipient_message_name_reason'];
+      plan['next'] += reason === 'codex' ? '\nCodex seats read letters at their next step.'
+        : `\nRing unavailable: ${reason}.`;
+    }
+    if (typeof plan['relay_line'] === 'string') plan['next'] += `\nPut this line in your reply for Eric: "${plan['relay_line']}"`;
+    if (answers && (plan['answered'] as { status?: string } | undefined)?.status === 'unchanged') {
+      plan['next'] += `\n${answers} was already closed; this reply is linked to it and leaves it closed.`;
+    }
     return { refusal: null, value: plan };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };
@@ -1399,7 +1436,20 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
     const seat = seatState.seat!;
     assertShelfBookOpen(workspace, LETTERS_BOOK, 'closing one of its letters with deskpost letters close', seat);
     const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
-    closableLetter(book, page, self, 'letters close');
+    // A repeat close succeeds only before taking the lock, with the same incarnation/hash proof as an answer.
+    const prior = closableLetter(book, page, self, 'letters close', true);
+    if (prior.review === 'done') return { refusal: null, value: {
+      schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Close a letter', letter: page, seat,
+      status: 'already closed', review: 'done', shared_library_write: false,
+    } };
+
+    // Fault seam: simulate a valid concurrent own-close between the two checks.
+    if (process.env['LIBRARY_LETTERS_CLOSE_FAULT'] === 'own-close-between-checks') {
+      let closed = setNoteField(readUtf8(prior.fullPath).replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp());
+      closed = setNoteField(closed, 'closed_by_seat_id', self.seatId || null);
+      closed = setNoteField(closed, 'closed_read_hash', null);
+      writeAtomicText(prior.fullPath, setNoteField(closed, 'closed_read_hash', sha256OfText(closed.replace(/\r\n/g, '\n'))));
+    }
 
     const plan: Record<string, PsJsonValue> = {
       schema: LIBRARY_OUTPUT_SCHEMA,
@@ -1492,21 +1542,43 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
     const seat = seatState.seat!;
     assertShelfBookOpen(workspace, LETTERS_BOOK, 'listing its letters with deskpost letters list', seat);
     const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
-    const letters = openLettersFor(book, self)
-      .sort((left, right) => left.captured.localeCompare(right.captured) || left.page.localeCompare(right.page))
-      .map((row) => ({ page: row.page, from: row.fromSeat, captured: row.captured, title: row.title }));
+    const oldestFirst = (left: ShelfNoteRow, right: ShelfNoteRow) => left.captured.localeCompare(right.captured) || left.page.localeCompare(right.page);
+    const open = openLettersFor(book, self).sort(oldestFirst);
+    const reopened = shelfNotes(book).filter((row) => row.review === 'pending' && !row.malformed.length &&
+      isAddressedTo(row, self) && (row.answeredBy || row.routedTo)).sort(oldestFirst);
+    const reopenedRemedies = new Map<string, string>();
+    const letters = [...open.map(row => ({ row, reopened: false })), ...reopened.map(row => ({ row, reopened: true }))]
+      .map(({ row, reopened }) => {
+        const go = letterGo(readUtf8(row.fullPath), String(readMarker(workspace)?.['id'] ?? ''));
+        const asker = reopened ? routedOrigin(row) : null;
+        if (asker) reopenedRemedies.set(row.page, !asker.seat
+          ? 'answer with a new letter, or close it with triage'
+          : asker.libraryId && asker.libraryId !== readMarker(workspace)?.['id']
+            ? `the first asker is ${asker.seat} in another Library; answer with a new letter through the Postbox, or close it with triage`
+            : `answer with a new letter --for ${asker.seat}, or close it with triage`);
+        return { page: row.page, from: row.fromSeat, captured: row.captured, title: row.title, go: go !== null, go_typed: go?.typed ?? null,
+          read_route: { tool: 'read_open_book_page', book: LETTERS_BOOK, page: row.page },
+          ...(reopened ? { reopened: true, asker: asker?.seat || null } : {}) };
+      });
     const value: Record<string, PsJsonValue> = {
       schema: LIBRARY_OUTPUT_SCHEMA,
       operation: 'Letters for this seat',
       seat,
       book: book.bookRoot,
-      count: letters.length,
+      count: open.length,
+      ...(reopened.length ? { reopened_count: reopened.length } : {}),
       letters,
       shared_library_write: false,
     };
     const text = letters.length
-      ? [`${letters.length} open letter${letters.length === 1 ? '' : 's'} for seat '${seat}', oldest first:`,
-          ...letters.flatMap((letter) => [`  ${letter.captured}  from ${letter.from ?? 'no seat'}: ${letter.title}`, `    ${letter.page}`])].join('\n')
+      ? [`${open.length} open letter${open.length === 1 ? '' : 's'}${reopened.length ? `, ${reopened.length} reopened` : ''} for seat '${seat}', oldest first:`,
+          ...letters.flatMap((letter) => {
+            const card = [...open, ...reopened].find(row => row.page === letter.page)?.fromLibraryCard;
+            return [`  ${letter.captured}  from ${letter.from ?? 'no seat'}${card ? ` (${card})` : ''}: ${letter.title}${letter.reopened
+            ? `  [reopened: ${reopenedRemedies.get(letter.page)}]`
+            : letter.go ? "  [the reader's go is recorded]" : ''}`, `    ${letter.page}`,
+            `    Read with read_open_book_page: Book letters, page ${letter.page}.`];
+          })].join('\n')
       : `No open letters for seat '${seat}'.`;
     return { refusal: null, value, text };
   } catch (error) {

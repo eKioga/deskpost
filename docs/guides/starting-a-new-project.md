@@ -81,7 +81,8 @@ deskpost seat start fallout --project fallout-settlements
 ```
 
 That makes the seat, binds it to the Project, opens the Hub on its Desk, and starts your assistant
-there. Add `--command codex` for a Codex launch. To save Codex for later visits, type `deskpost`,
+there. Add `--command codex` for a Codex launch; from 1.6.1, a new seat also saves that assistant
+for later visits. To change an existing seat to Codex, type `deskpost`,
 choose this seat, then **Settings**, **Assistant**, and **Codex**. **Access** saves a named choice
 or your own typed settings after a preview. Every Codex launch gets `--no-daemon` automatically.
 
@@ -136,7 +137,7 @@ test under `## Decisions` on your Hub.
 Ask **"what's on my desk?"** whenever you want your bearings. You will get your seat, what is open
 on it, your Notebook's shape, and anything waiting on the Holding Shelf.
 
-A new seat opens its own Project Hub and nothing else. If you want a reference Book alongside it,
+A new seat opens its own Project Hub and its `letters` Book when the Shelf has one. If you want a reference Book alongside it,
 ask for it by name ("open the recipes Book") and it goes on your Desk too. A Book that is **closed is
 unavailable**, even when its files are on this machine. The Librarian will say so and offer to open
 it rather than reading around the edge.

@@ -548,8 +548,8 @@ async function setup(argv: string[], workspace: string): Promise<Record<string, 
   const cacheLock=enterPostboxStateLock(workspace);
   try {
     const current=readState(workspace);
-    const kept=current?.['library_id']===libraryId ? Object.fromEntries(['filed_conflicts','conflict_operations','left_inbox_copies'].filter(key=>key in current).map(key=>[key,current[key]])) : {};
-    writeState(workspace,{...state,...kept});
+    const kept=current?.['library_id']===libraryId ? Object.fromEntries(['filed_conflicts','conflict_operations','left_inbox_copies','setup_utc','check_history'].filter(key=>key in current).map(key=>[key,current[key]])) : {};
+    writeState(workspace,{...state, setup_utc: current?.['library_id'] === libraryId ? current['setup_utc'] ?? null : utcSeconds(), check_history: [], ...kept});
   } finally {exitBookLock(cacheLock);}
   return { ...plan.value, project_id: projectId, written: true, last_check: lastCheck, readback_matched: true };
 }
@@ -603,6 +603,15 @@ export const SESSION_CHECK_TIMEOUT_MS = 5000;
 export function newDeliveryId(senderId: string, now: Date = new Date()): string {
   const stamp = now.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/[-:]/g, '').toLowerCase();
   return `${senderId.toLowerCase()}-${stamp}-${randomBytes(4).toString('hex')}`;
+}
+
+/** Parse the timestamp at the right edge; a legacy or malformed id is still a valid delivery. */
+function deliveryWrittenUtc(id: string): string | null {
+  const match = /-(\d{4})(\d{2})(\d{2})t(\d{2})(\d{2})(\d{2})z-[0-9a-f]{8}$/.exec(id);
+  if (!match) return null;
+  const iso = match[1] + '-' + match[2] + '-' + match[3] + 'T' + match[4] + ':' + match[5] + ':' + match[6] + 'Z';
+  const time = Date.parse(iso);
+  return Number.isFinite(time) && new Date(time).toISOString() === iso.replace('Z', '.000Z') ? iso : null;
 }
 
 export function inboxFolder(recipientId: string): string {
@@ -741,6 +750,15 @@ function writeState(workspace: string, state: Record<string, unknown>): void {
 /** Merge `changes` into the cache, read fresh, so two verbs that each record one thing keep both. */
 function updateState(workspace: string, changes: Record<string, unknown>): void {
   mutateState(workspace,state=>({...state,...changes}));
+}
+
+/** Record a check together with its cache changes under the same state lock. Sends never call this. */
+function recordCheck(workspace: string, changes: Record<string, unknown>, filed: number, alreadyFiled: number, error: string | null, lateDeliveries: Record<string, unknown>[] = []): void {
+  const at = String(changes['last_check'] ?? utcSeconds());
+  mutateState(workspace, state => ({ ...state, ...changes, check_history: [
+    { at, filed, already_filed: alreadyFiled, error, ...(lateDeliveries.length ? { late_deliveries: lateDeliveries.slice(0, 20) } : {}) },
+    ...(Array.isArray(state['check_history']) ? state['check_history'] : []),
+  ].slice(0, 20) }));
 }
 
 /** Never write back a row list read before this lock: concurrent checks must keep each other's rows. */
@@ -1061,7 +1079,13 @@ async function send(argv: string[], workspace: string, recovered = false): Promi
   const recovery=!recovered?recover(workspace, 'postbox send', reportStageRunner(workspace)):null;
   const only = (parsed.options.get('only') ?? '').trim();
   const state = requireState(workspace);
-  const queued = readOutbox(workspace).filter((entry) => entry.state === 'unsent' && (!only || entry.delivery_id === only));
+  const outbox = readOutbox(workspace);
+  if (only && !outbox.some(entry => entry.delivery_id === only)) throw new Error(`unknown delivery id ${only}`);
+  const queued = outbox.filter((entry) => entry.state === 'unsent' && (!only || entry.delivery_id === only));
+  const already = outbox.filter(entry => only && entry.delivery_id === only && (entry.state === 'sent' || entry.state === 'refused'))
+    .map(entry => entry.state === 'refused'
+      ? {delivery_id:entry.delivery_id, state:'refused', detail:`already refused: ${entry.refusal}`}
+      : {delivery_id:entry.delivery_id, state:'sent', sent_utc:entry.sent_utc, detail:`already sent ${entry.sent_utc}`});
   const value = (letters: Record<string, PsJsonValue>[], reachable: boolean): Record<string, PsJsonValue> => {
     for (const record of readRecords(workspace)) {
       if (record.kind !== 'report-outcome' || (only && record.delivery_id !== only)) continue;
@@ -1078,7 +1102,8 @@ async function send(argv: string[], workspace: string, recovered = false): Promi
     ...(recovery?.controls_move_pending?{controls_move_pending:recovery.controls_move_pending}:{}),
     workspace,
     reachable,
-    letters: letters as unknown as PsJsonValue,
+    letters: [...already, ...letters] as unknown as PsJsonValue,
+    ...(!only && !queued.length ? {note:'nothing waiting to send'} : {}),
     sent: letters.filter((row) => row['state'] === 'sent').length,
     unsent: readOutbox(workspace).filter((entry) => entry.state === 'unsent').length,
     refused: readOutbox(workspace).filter((entry) => entry.state === 'refused').length,
@@ -1248,7 +1273,7 @@ function filingOf(workspace: string, relative: string, text: string, delivered: 
   let droppedKeys=0;
   for (const [key,value] of delivered) {
     const rule=DELIVERY_FIELDS[key];
-    if (rule && rule.kinds.includes(kind) && rule.shape.test(value)) fields.set(key,value);
+    if (!key.startsWith('go_') && rule && rule.kinds.includes(kind) && rule.shape.test(value)) fields.set(key,value);
     else if (!['title','type','permalink','created','modified'].includes(key)) droppedKeys++;
   }
   const book=fields.get('book') === 'reports' ? 'reports' : 'letters';
@@ -1492,6 +1517,7 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
   const session = await openPostbox(workspace, state, true);
   if (typeof session === 'string') {
     const since = recordUnreachable(workspace, session);
+    recordCheck(workspace, {}, 0, 0, session.substring(0, 300));
     return { ...value, reachable: false, unreachable_since: since, detail: session.substring(0, 300) };
   }
   const folder = inboxFolder(state.library_id);
@@ -1615,6 +1641,11 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
     if(!await fileAt(session,state.project_id,inboxPath(state.library_id,record.delivery_id)))recordPendingControlMove(workspace,record,new ControlMovePending('its server copy cannot be verified',true,true));
   }
   const lastCheck = utcSeconds();
+  const lateDeliveries = filed.flatMap(row => {
+    const written = deliveryWrittenUtc(String(row['delivery_id']));
+    return written && Date.parse(lastCheck) - Date.parse(written) > 86400000
+      ? [{ delivery_id: row['delivery_id']!, written_utc: written, filed_utc: lastCheck }] : [];
+  });
   // THE ENTRY'S SEATS, REFRESHED WHEN THEY CHANGED (kickoffs/s128 row 1): a seat added after setup can then be written
   // to from another Library. A refresh that fails never fails the check; the cache keeps its old seats, so the next
   // check tries again. The entry's `last_check` is written only with a refresh.
@@ -1622,11 +1653,13 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
   // AND WHEN ITS TRIAGING SEAT CHANGED (kickoffs/s143 row 2): named here and not yet in the entry, or no longer a live seat
   // here (its registry row gone or its id changed), when the line is dropped and this Library's own setting cleared.
   const { triager, dropped } = ownTriager(state, state.library_id, seats);
+  const markerCard = markerField(readMarker(workspace), 'card').trim();
+  const cardChanged = markerCard !== '' && markerCard !== state.library_card;
   let refreshed = false;
   let entryDetail: string | null = null;
-  if (!sameSeats(seats, state['seats']) || !sameTriager(triager, state['entry_reports_triaged_by'])) {
+  if (cardChanged || !sameSeats(seats, state['seats']) || !sameTriager(triager, state['entry_reports_triaged_by'])) {
     try {
-      await refreshEntry(session, state, seats, lastCheck, triager);
+      await refreshEntry(session, { ...state, library_card: cardChanged ? markerCard : state.library_card }, seats, lastCheck, triager);
       refreshed = true;
     } catch (error) {
       entryDetail = (error as Error).message.substring(0, 300);
@@ -1645,16 +1678,17 @@ async function check(argv: string[], workspace: string): Promise<Record<string, 
   const droppedLine = refreshed && dropped !== null
     ? `The triaging seat ${dropped.seat} (seat_id ${dropped.seat_id}) is no longer a live seat here, so this Library's Postbox entry no longer names a seat that triages Reports, and its own setting is cleared. Name another with deskpost reports triager <seat> --preflight.`
     : null;
-  updateState(workspace, {
+  recordCheck(workspace, {
     last_check: lastCheck, unreachable_since: null, unreachable_detail: null, controls_deferred:deferred, controls_refused:refused, last_check_counts: { filed: filed.length, already_filed: alreadyFiled, moved, left, skipped: skipped.length },
-    ...(refreshed ? { seats, entry_reports_triaged_by: triager } : {}),
+    ...(refreshed ? { seats, entry_reports_triaged_by: triager, ...(cardChanged ? { library_card: markerCard } : {}) } : {}),
     ...(droppedLine !== null ? { reports_triager: null } : {}),
-  });
+  }, filed.length, alreadyFiled, null, lateDeliveries);
   return {
-    ...value, last_check: lastCheck, controls_refused:refused, controls_refused_count:refused.length, controls:controls as unknown as PsJsonValue, deferred:deferred as unknown as PsJsonValue, deferred_count:deferred.length, control_conflict:controlConflict as unknown as PsJsonValue, control_conflict_count:controlConflict.length, not_handled:notHandled as unknown as PsJsonValue, not_handled_count:notHandled.length, filed: filed as unknown as PsJsonValue, already_filed: alreadyFiled, moved, left, skipped: skipped as unknown as PsJsonValue,
+    ...value, last_check: lastCheck, late_deliveries: lateDeliveries, controls_refused:refused, controls_refused_count:refused.length, controls:controls as unknown as PsJsonValue, deferred:deferred as unknown as PsJsonValue, deferred_count:deferred.length, control_conflict:controlConflict as unknown as PsJsonValue, control_conflict_count:controlConflict.length, not_handled:notHandled as unknown as PsJsonValue, not_handled_count:notHandled.length, filed: filed as unknown as PsJsonValue, already_filed: alreadyFiled, moved, left, skipped: skipped as unknown as PsJsonValue,
     filed_conflicts:conflicts as unknown as PsJsonValue,filed_conflicts_count:conflictRows(readState(workspace)).filter(row=>row.disposition===null).length,
     ...(conflicts.length?{filed_conflict_notice:conflicts.map(row=>`Delivery ${row.delivery_id} stays in the inbox because ${row.kind==='changed'?'its body differs from the filed body':row.kind==='moved-book'?'its Book or delivery kind differs from the filed delivery':'the filed delivery has no receipt'}; filed at ${row.filed_book}/${row.filed_page}.`)}:{}),
     entry_refreshed: refreshed, ...(entryDetail === null ? {} : { entry_detail: entryDetail }), ...(droppedLine === null ? {} : { reports_triager_dropped: droppedLine }),
+    ...(refreshed && cardChanged ? { card_changed: `card changed: ${state.library_card} to ${markerCard}; the Postbox entry now says ${markerCard}` } : {}),
     reports_triager: (readState(workspace)?.['reports_triager'] ?? null) as PsJsonValue, reports_triager_conflict: (readState(workspace)?.['reports_triager_conflict'] ?? null) as PsJsonValue,
     held: readOutbox(workspace).filter((entry) => entry.state === 'unsent' && entry.held).length, ...(discoveryDetail === null ? {} : { discovery_detail: discoveryDetail }),
   };
@@ -1694,8 +1728,12 @@ function status(workspace: string): Record<string, PsJsonValue> {
   if (state === null) {
     return { schema: 1, operation: 'Postbox status', workspace, set_up: false, note: 'This Library has no Postbox yet: deskpost postbox setup --url <mcp-url> --preflight.' };
   }
+  const outbox = readOutbox(workspace);
   return {
     schema: 1, operation: 'Postbox status', workspace, set_up: true, reports_triager: null, reports_triager_conflict: null, ...(state as Record<string, PsJsonValue>),
+    outbox_unsent: outbox.filter(entry => entry.state === 'unsent').length,
+    outbox_held: outbox.filter(entry => entry.state === 'unsent' && entry.held).length,
+    setup_utc: (state['setup_utc'] ?? null) as PsJsonValue, check_history: (Array.isArray(state['check_history']) ? state['check_history'] : []) as PsJsonValue,
     source: 'the cache from the last setup or check; status calls no server',
   };
 }
@@ -1897,7 +1935,7 @@ async function startConflictCopy(workspace: string, row: FiledConflictRow, filin
   if(filing.forSeatId)front.push(`for_seat_id: ${filing.forSeatId}`);
   if(filing.originSeat)front.push(`origin_seat: ${filing.originSeat}`);
   if(filing.originSeatId)front.push(`origin_seat_id: ${filing.originSeatId}`);
-  for(const [key,value] of filing.fields)front.push(`${key==='delivery_id'?'conflict_of_delivery_id':key}: ${value}`);
+  for(const [key,value] of filing.fields)if(!key.startsWith('go_'))front.push(`${key==='delivery_id'?'conflict_of_delivery_id':key}: ${value}`);
   front.push(`conflict_of: ${row.filed_page}`,'---');
   const text=renderCapturedPage(front,filing.body,title).text;
   const stray=strayControlRefusal(text,'The rendered conflict copy');

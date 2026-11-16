@@ -16,6 +16,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { openCollection } from './collection.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { psSortCompare } from './notebook.ts';
 import { cardProblem, departmentProblem, rawMetadata, roleProblem, type SeatRole } from './seatmeta.ts';
@@ -30,7 +31,7 @@ function refuse(message: string): never {
 }
 
 /** The five options that only a preview can set, as `seat start` spells them. */
-export const SEAT_START_OPTIONS = ['department', 'role', 'card', 'template', 'open-book', 'inbound'] as const;
+export const SEAT_START_OPTIONS = ['department', 'role', 'card', 'template', 'open-book', 'open-project', 'inbound'] as const;
 
 const BOOK_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const WRAPPED_PLAN_PREFIX = 'seat-start-';
@@ -59,8 +60,10 @@ export interface SeatStartOptions {
   card?: string | undefined;
   template?: string | undefined;
   openBooks?: string[] | undefined;
+  openProjects?: string[] | undefined;
   /** The new seat's inbound policy, `accept`, `hold`, `refuse` or `unset` (kickoffs/s108 ruling 6). */
   inbound?: string | undefined;
+  launch?: string;
   /** The program tree the templates are read from. */
   programRoot: string;
   /** The workspace whose Shelf holds the Books. */
@@ -81,6 +84,7 @@ export interface SeatStartPlan {
   /** `<name>@<version>`, as the registry's `template` field records it. */
   templateId: string | null;
   books: string[];
+  projects: string[];
   /** The inbound policy written for the new seat at creation, or null when none was given (kickoffs/s108 ruling 6). */
   inbound: string | null;
   /** The template's purpose with `{project}` filled, or null with no template. */
@@ -123,7 +127,8 @@ export function planSetsFields(plan: SeatStartPlan): boolean {
 export function seatStartPlan(rows: Record<string, PsJsonValue>[], seat: string, project: string, options: SeatStartOptions): SeatStartPlan {
   const given = (value: string | undefined): value is string => value !== undefined;
   const books = [...new Set(options.openBooks ?? [])].sort(psSortCompare);
-  const any = given(options.department) || given(options.role) || given(options.card) || given(options.template) || books.length > 0 || given(options.inbound);
+  const projects = [...new Set(options.openProjects ?? [])].sort(psSortCompare);
+  const any = given(options.department) || given(options.role) || given(options.card) || given(options.template) || books.length > 0 || projects.length > 0 || given(options.inbound);
   // THE INBOUND POLICY (kickoffs/s108 ruling 6), as `seat settings` takes it.
   const inbound = given(options.inbound) ? options.inbound.trim() : null;
   if (inbound !== null && !['accept', 'hold', 'refuse', 'unset'].includes(inbound)) {
@@ -178,6 +183,14 @@ export function seatStartPlan(rows: Record<string, PsJsonValue>[], seat: string,
     }
   }
 
+  if (projects.length) {
+    const active = openCollection(options.workspace).projectSlugs('active');
+    for (const slug of projects) {
+      if (!BOOK_SLUG.test(slug) || !active.includes(slug)) {
+        refuse(`--open-project '${slug}' is not in the Active Project catalog; run deskpost browse to find an active Project. ${NOTHING}`);
+      }
+    }
+  }
   const creationId = seatCreationPlanId(rows, seat, project);
   const card = given(options.card) ? options.card : null;
   const templateId = template !== null ? seatTemplateId(template) : null;
@@ -186,7 +199,7 @@ export function seatStartPlan(rows: Record<string, PsJsonValue>[], seat: string,
     crypto
       .createHash('sha256')
       // `inbound` ONLY WHEN GIVEN, so every plan id issued without it stays what it was.
-      .update(JSON.stringify({ creation: creationId, registry: options.registryDigest, template: templateId, department, role, card, books, ...(inbound !== null ? { inbound } : {}) }), 'utf8')
+      .update(JSON.stringify({ creation: creationId, registry: options.registryDigest, template: templateId, department, role, card, books, ...(projects.length ? { projects } : {}), ...(inbound !== null ? { inbound } : {}), ...(options.launch !== undefined ? { launch: options.launch } : {}) }), 'utf8')
       .digest('hex');
   return {
     creationId,
@@ -198,6 +211,7 @@ export function seatStartPlan(rows: Record<string, PsJsonValue>[], seat: string,
     template,
     templateId,
     books,
+    projects,
     inbound,
     purpose: template !== null ? fillSeatTemplate(template, project) : null,
     orchestrator,

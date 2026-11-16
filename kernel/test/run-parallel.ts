@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { childEnv } from './gate-env.ts';
 import { agentProcessIdentity } from '../src/procstart.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from './gate-lock.ts';
-import { LINUX_SKIP_PATH, applyPlatformSkips, parseLinuxSkip, platformRefusals, platformSkips } from '../../tools/section-select.mts';
+import { LINUX_SKIP_PATH, applyPlatformSkips, parseLinuxSkip, platformRefusals, platformSkips, suiteText } from '../../tools/section-select.mts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SERIAL_SECTIONS = [29, 31, 113];
@@ -335,7 +335,7 @@ export function sectionLimitWarning(result: Pick<Result, 'section' | 'verdict' |
 }
 export function verdict(section: number | 'whole', status: number | null, output: string): Pick<Result, 'verdict' | 'checks' | 'detail'> {
   const last = output.trim().split(/\r?\n/).at(-1) ?? '';
-  const firstError = output.split(/\r?\n/).find(line => /Error|error:/.test(line));
+  const firstError = output.split(/\r?\n/).find(line => /\b(?:[A-Za-z_$][\w$]*Error|Error|error)(?: \[[^\]\r\n]+\])?:/.test(line));
   const pass = /^kernel self-test passed \((\d+) checks\)(?: after waiting \d+(?:\.\d+)?s for .+'s .+ gate)?\.$/.exec(last);
   if (status === 0 && pass && Number(pass[1]) > 0) return { verdict: 'PASS', checks: Number(pass[1]), detail: '' };
   // A failing assertion can contain a multiline CLI response. Its canonical header carries the count;
@@ -354,7 +354,7 @@ function decodedCommand(command: string): string {
 export function sectionEnvironment(section: number | 'whole', folder: string): NodeJS.ProcessEnv {
   const env = childEnv();
   if (section !== 'whole') {
-    for (const key of ['TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']) {
+    for (const key of ['TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']) {
       const value = path.join(folder, key.toLowerCase()); fs.mkdirSync(value); env[key] = value;
     }
     env['LIBRARY_SELFTEST_SECTIONS'] = String(section);
@@ -506,7 +506,8 @@ export function rosterProblems(pool: readonly string[], reported: readonly strin
   return problems;
 }
 export async function run(options: Options, wait: GateWait | null = null): Promise<number> {
-  const policy = applyPlatformSkips(sectionNumbers(fs.readFileSync(options.suite, 'utf8')), suiteSkips(options));
+  // The suite's sections and its lane files' (kickoffs/s210 row 2): a fixture suite with no lanes folder is read alone.
+  const policy = applyPlatformSkips(sectionNumbers(suiteText(options.suite)), suiteSkips(options));
   if (policy.line) process.stdout.write(policy.line + '\n');
   const sections = policy.sections;
   if (!sections.length) throw new Error('suite has no sections');
@@ -541,12 +542,35 @@ export async function run(options: Options, wait: GateWait | null = null): Promi
   fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify({ seconds: (performance.now() - started) / 1000, total, cancelled: controller.signal.aborted, results: results.map(({ output: _output, ...r }) => r) }, null, 2));
   for (const line of lines) process.stdout.write(line + '\n');
   for (const result of results) { const warning = sectionLimitWarning(result, result.section === 'whole' ? options.wholeTimeout : options.sectionTimeout); if (warning) process.stdout.write(warning + '\n'); }
+  // Prune only old, real run directories in this temporary home; preserve recent and linked entries.
+  const runRetentionMs = 7 * 24 * 60 * 60 * 1000, runPruneLimit = 200, temporaryHome = os.tmpdir();
+  let removed = 0, pruneFailed = 0, firstPruneError = '';
+  try {
+    const old = fs.readdirSync(temporaryHome).flatMap(name => {
+      const candidate = path.join(temporaryHome, name);
+      if (!/^deskpost-gate-[A-Za-z0-9]{6}$/.test(name) || candidate === folder) return [];
+      try { const stat = fs.lstatSync(candidate); return stat.isDirectory() && stat.mtimeMs < Date.now() - runRetentionMs ? [{ candidate, mtime: stat.mtimeMs }] : []; }
+      catch { return []; } // A disappeared or unreadable entry is not a candidate.
+    }).sort((a, b) => a.mtime - b.mtime).slice(0, runPruneLimit);
+    for (const { candidate } of old) {
+      try { fs.rmSync(candidate, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); removed++; }
+      catch (error) { pruneFailed++; firstPruneError ||= (error as NodeJS.ErrnoException).code ?? (error as Error).message; }
+    }
+  } catch { /* A temporary home that cannot be listed must not change the run verdict. */ }
+  if (removed) process.stderr.write(`runner: removed ${removed} run folders older than 7 days from ${temporaryHome}\n`);
+  if (pruneFailed) process.stderr.write(`runner: warning: could not remove ${pruneFailed} old run folders (${firstPruneError}); kept\n`);
   // Checked before any section folder is removed, so a required section that SKIPs keeps its evidence.
   const required = options.requireSections.length ? requiredSectionsVerdict(lines.join('\n'), options.requireSections) : null;
   if (required) process.stdout.write(`${required.status.toUpperCase()} gate.required-sections: ${required.detail}\n`);
   const bad = failed.length || controller.signal.aborted;
   // Keep compact per-section evidence on success too; bulky child output is needed only on failure or request.
-  if (!bad && required?.status !== 'fail' && !options.keepLogs) for (const result of results) fs.rmSync(path.join(folder, String(result.section)), { recursive: true, force: true });
+  if (!bad && required?.status !== 'fail' && !options.keepLogs) for (const result of results) {
+    const sectionFolder = path.join(folder, String(result.section));
+    try { fs.rmSync(sectionFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+    catch (error) {
+      process.stderr.write(`runner: warning: could not remove ${sectionFolder} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); kept\n`);
+    }
+  }
   if (bad) process.stderr.write(`kernel self-test FAILED (${failed.length || 1} of ${total}): ${failed.map((r) => `section ${r.section}: ${flatten(r.detail)}`).join('; ') || 'cancelled'}; evidence: ${folder}\n`);
   else process.stdout.write(`kernel self-test passed (${total} checks)${wait ? ` after waiting ${wait.seconds.toFixed(1)}s for ${wait.seat}'s ${wait.tier} gate` : ''}.\n`);
   return bad || required?.status === 'fail' ? 1 : 0;
@@ -556,7 +580,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     const options = parseOptions(process.argv.slice(2));
     const say = (line: string) => process.stdout.write(line + '\n');
     // Before the lock and before any section: a required section that cannot pass here ends the run (kickoffs/s153 row 5).
-    const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(options.suite, 'utf8'), suiteSkips(options));
+    const refusals = requiredListRefusals(options.requireSections, suiteText(options.suite), suiteSkips(options));
     for (const line of refusals) process.stderr.write(`runner: ${line}\n`);
     // Printed on every required list, before the lock (kickoffs/s169 row 6): a list that all runs is shown too.
     if (options.requireSections.length) process.stderr.write(`runner: required sections this platform runs: ${options.requireSections.filter((s) => !refusals.some((r) => r.startsWith(`section ${s} `))).join(',') || 'none'}\n`);

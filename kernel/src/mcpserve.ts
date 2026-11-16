@@ -67,17 +67,42 @@ export function toolArgumentRefusal(tool: string, given: unknown): string | null
   const names = Object.keys(properties);
   for (const [key, value] of Object.entries(given as Record<string, unknown>)) {
     if (key.toLowerCase() === 'workspace') continue;
-    const known = names.find((candidate) => candidate.toLowerCase() === key.toLowerCase());
+    // `place` AND `location` ARE ONE ARGUMENT (kickoffs/s199-r2 item 5): a tool declares one of them, and the other is
+    // taken as it. Only the declared one is listed, since tools/list has a context budget (section 101).
+    const alias = PLACE_NAMES.includes(key.toLowerCase()) ? names.find((candidate) => PLACE_NAMES.includes(candidate)) : undefined;
+    const known = names.find((candidate) => candidate.toLowerCase() === key.toLowerCase()) ?? alias;
     if (known === undefined) {
       return `${name} takes ${names.length ? spoken(names, 'and') : 'no arguments'}; it does not take '${key}'. Nothing was read.`;
     }
-    // `place` REFUSES A VALUE IN ITS OWN WORDS (`parsePlaceArgument`), which say where an archived Book is read.
-    const allowed = known === 'place' ? undefined : properties[known]!.enum;
+    // A PAGE TOOL'S `place` REFUSES A VALUE IN ITS OWN WORDS (`parsePlaceArgument`), which say where an archived Book is
+    // read; its other name `location` with it (kickoffs/s199-r2 item 5). The catalog's `location`, either name, keeps its list.
+    const allowed = PLACE_NAMES.includes(known) && name !== 'read_book_catalog' ? undefined : properties[known]!.enum;
     if (allowed && value !== null && value !== undefined && !allowed.includes(String(value).toLowerCase())) {
-      return `${name} takes ${known} ${spoken(allowed, 'or')}; it does not take '${String(value)}'. Nothing was read.`;
+      return `${name} takes ${alias !== undefined && known !== key.toLowerCase() ? key.toLowerCase() : known} ${spoken(allowed, 'or')}; it does not take '${String(value)}'. Nothing was read.`;
     }
   }
+  // BOTH NAMES, ONE ANSWER (kickoffs/s199-r2 item 5): `place` and `location` are one argument, so both given must agree.
+  const place = placeArgument(given);
+  if (place.conflict) {
+    return `${name} takes place or location, two names for one argument; place '${place.conflict[0]}' and location '${place.conflict[1]}' disagree. Nothing was read.`;
+  }
   return null;
+}
+
+const PLACE_NAMES = ['place', 'location'];
+
+/**
+ * `place` OR `location`, whichever was given (kickoffs/s199-r2 item 5): the catalog said `location` and the page tools
+ * `place`, and each refused the other's word. Found case-insensitively; both given with different values is a conflict,
+ * which `toolArgumentRefusal` refuses before any read. The command line's adapter resolves its flags by the same rule.
+ */
+export function placeArgument(given: unknown): { found: boolean; value: unknown; conflict: [string, string] | null } {
+  const place = property(given, 'place');
+  const location = property(given, 'location');
+  if (place.found && location.found && String(place.value ?? '').toLowerCase() !== String(location.value ?? '').toLowerCase()) {
+    return { found: true, value: place.value, conflict: [String(place.value), String(location.value)] };
+  }
+  return place.found ? { found: true, value: place.value, conflict: null } : location.found ? { found: true, value: location.value, conflict: null } : { found: false, value: undefined, conflict: null };
 }
 
 /** `ConvertTo-AsciiJson`: every character above U+007F escaped, so no console code page can bend a response. */
@@ -294,7 +319,7 @@ export async function answerLine(line: string, binding: Binding, seat: string | 
             return asString(found.value);
           },
           optional(argument) {
-            const found = property(callArguments, argument);
+            const found = PLACE_NAMES.includes(argument) ? placeArgument(callArguments) : property(callArguments, argument);
             return found.found ? found.value : null;
           },
         };

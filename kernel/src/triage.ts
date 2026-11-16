@@ -425,44 +425,64 @@ export function convertToTriageAction(
   position: number | null = null,
 ): TriageAction {
   const kind = triageString(action, 'kind');
+  const fieldFaults: string[] = [];
   // A MISSING OR BLANK kind IS NAMED AS MISSING (kickoffs/s120 row 2), never as the unknown kind ''. A field this schema
   // does not read (a plan written with `action` for `kind`, say) gets the likely slip named.
   if (!kind.trim()) {
     const stray = Object.keys(action).some((field) => !(TRIAGE_ACTION_FIELDS as readonly string[]).includes(field));
-    refuse(`${position === null ? 'An action' : `Action ${position}`} has no kind field; use one of: ${EXECUTION_ORDER.join(', ')}.${stray ? ' Did you mean kind?' : ''}`);
+    fieldFaults.push(`${position === null ? 'An action' : `Action ${position}`} has no kind field; use one of: ${EXECUTION_ORDER.join(', ')}.${stray ? ' Did you mean kind?' : ''}`);
   }
   let sourceKind = triageString(action, 'source');
   if (!sourceKind.trim()) sourceKind = 'notebook';
-  assertKindReachable(kind, sourceKind);
+  for (const field of Object.keys(action)) {
+    if (!(TRIAGE_ACTION_FIELDS as readonly string[]).includes(field)) {
+      fieldFaults.push(`Unknown field '${field}'.${field === 'action' ? ' Use kind.' : field === 'page' ? ' Use source_page.' : ''}`);
+    }
+  }
+  if (kind.trim()) {
+    try { assertKindReachable(kind, sourceKind); } catch (error) { fieldFaults.push((error as Error).message); }
+  }
+  // All these faults are known from the action alone. Note-dependent faults stay after source resolution.
+  if (sourceKind === 'holding') {
+    const hasPage = !!triageString(action, 'source_page').trim(), hasMatch = !!triageString(action, 'source_match').trim();
+    if (hasPage && hasMatch) fieldFaults.push('Name the note with either source_page or source_match, not both.');
+    if (!hasPage && !hasMatch) fieldFaults.push('Name the note to triage with source_page (exact) or source_match.');
+  } else if (sourceKind === 'notebook' && EXECUTION_ORDER.includes(kind) && !triageString(action, 'source_path').trim()) {
+    fieldFaults.push('An action from the Notebook needs source_path.');
+  }
+  const required = kind === 'notebook' ? ['topic'] : ['shelf-book', 'collection-book'].includes(kind) ? ['slug', 'page_path'] : kind === 'book' ? ['slug', 'title', 'summary'] : kind === 'project' ? ['slug'] : [];
+  for (const field of required) if (!triageString(action, field as TriageActionField).trim()) fieldFaults.push(`A ${kind} action needs ${field}.`);
+  const includePages = (triageValue(action, 'include_pages') as string[] | null) ?? [];
+  if (includePages.length && (sourceKind === 'holding' || ['holding', 'shelf-book'].includes(kind))) {
+    fieldFaults.push(`Action kind '${kind}' from source '${sourceKind}' takes a single article and does not accept include_pages.`);
+  }
   // A HOLD NAMES ITS RECORD (kickoffs/s121 row 5), judged before the note is looked for, so a plan learns it first.
   let heldRecord = '';
   if (kind === 'hold') {
     heldRecord = triageString(action, 'record').trim().replace(/^\[\[(.*)\]\]$/, '$1').replace(/\|.*$/, '').trim();
-    if (!heldRecord) refuse('A hold action needs record: the page that says why the note is held, such as projects/<hub>/notes/<page>.');
-    if (!HELD_RECORD_SHAPE.test(heldRecord)) {
-      refuse(`A hold action's record must be a Library page path such as projects/<hub>/notes/<page>, with no space or '..'; got '${heldRecord}'.`);
+    if (!heldRecord) fieldFaults.push('A hold action needs record: the page that says why the note is held, such as projects/<hub>/notes/<page>.');
+    else if (!HELD_RECORD_SHAPE.test(heldRecord)) {
+      fieldFaults.push(`A hold action's record must be a Library page path such as projects/<hub>/notes/<page>, with no space or '..'; got '${heldRecord}'.`);
     }
   }
 
   // Rejected, not ignored. A batch that quietly dropped the flag would run a DIFFERENT operation
   // from the one the reader described, which is worse than refusing to run at all.
   if (triageTruthy(triageValue(action, 'replace_existing'))) {
-    refuse(
+    fieldFaults.push(
       `Action kind '${kind}' declares replace_existing. Triage is create-and-additive only, apart from discard, which ` +
         'binds what it destroys and needs its own approval: refreshing or overwriting an existing destination is a ' +
         'separate, separately approved operation.',
     );
   }
 
+  if (fieldFaults.length) refuse(fieldFaults.join(' '));
+
   let slug = triageString(action, 'slug');
   const title = triageString(action, 'title');
   const sourcePath = triageString(action, 'source_path');
   let sourceSlug = triageString(action, 'source_slug');
   if (sourceKind === 'holding' && !sourceSlug.trim()) sourceSlug = 'holding';
-  const includePages = (triageValue(action, 'include_pages') as string[] | null) ?? [];
-  if (includePages.length && (sourceKind === 'holding' || ['holding', 'shelf-book'].includes(kind))) {
-    refuse(`Action kind '${kind}' from source '${sourceKind}' takes a single article and does not accept include_pages.`);
-  }
 
   // THE SEAT RULE'S INPUTS (row 4): the kinds that close, reopen or delete a note, and the reader's named override.
   const otherSeat = triageString(action, 'other_seat').trim() || null;

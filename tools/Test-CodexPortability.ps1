@@ -59,6 +59,10 @@ function New-Fixture([string]$SourceRoot, [string]$FixtureRoot) {
     Copy-Item -LiteralPath (Join-Path $SourceRoot '.claude') -Destination (Join-Path $FixtureRoot '.claude') -Recurse
     New-Item -ItemType Directory -Path (Get-DeskStateDirectory -StateDirectory (Join-Path $FixtureRoot '.claude') -Seat 'fixture') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $SourceRoot 'tools') -Destination (Join-Path $FixtureRoot 'tools') -Recurse
+    # The checkout initializer imports the kernel's shared Codex turn-off rule.
+    New-Item -ItemType Directory -Path (Join-Path $FixtureRoot 'kernel') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $SourceRoot 'kernel/src') -Destination (Join-Path $FixtureRoot 'kernel/src') -Recurse
+    Copy-Item -LiteralPath (Join-Path $SourceRoot 'kernel/package.json') -Destination (Join-Path $FixtureRoot 'kernel/package.json')
     # STEP 20/S13: THE FIXTURE IS A WORKSPACE, AND IT NOW HAS TO SAY SO. A workspace anchor -- a
     # hook's own location standing in for the workspace it guards -- requires
     # `.library/workspace.json`, because an installed package is a copy of a checkout and carries
@@ -109,9 +113,13 @@ function Test-Fixture([string]$SourceRoot, [string]$FixtureRoot, [string]$Unrela
     # both disagreed with Codex, so the suite proved the bindings portable to a file Codex refused
     # to load. Reading through the correct shape here is what makes the assertion mean anything.
     $codexEvents = $hooks.hooks
-    $guardCommand = [string]$codexEvents.PreToolUse[0].hooks[0].command
-    $contextCommand = [string]$codexEvents.UserPromptSubmit[0].hooks[0].command
-    $shellBlock = @($codexEvents.PreToolUse | Where-Object { [string]$_.matcher -cmatch 'Bash' })
+    $guardBlock = @($codexEvents.PreToolUse | Where-Object { [string]$_.matcher -ceq '^mcp__basic_memory__.*$' })
+    Assert-True ($guardBlock.Count -eq 1) 'Generated Codex hooks do not register the Basic Memory matcher.'
+    $guardCommand = [string]$guardBlock[0].hooks[0].command
+    $contextBlock = @($codexEvents.UserPromptSubmit | Where-Object { [string]$_.hooks[0].command -cmatch 'Get-VirtualDeskContext\.ps1' })
+    Assert-True ($contextBlock.Count -eq 1) 'Generated Codex hooks do not register the Desk context hook.'
+    $contextCommand = [string]$contextBlock[0].hooks[0].command
+    $shellBlock = @($codexEvents.PreToolUse | Where-Object { [string]$_.matcher -cmatch 'Bash' -and [string]$_.hooks[0].command -cmatch 'Guard-ShellShelfRead\.ps1' })
     Assert-True ($shellBlock.Count -eq 1) 'Generated Codex hooks do not register a shell-tool matcher.'
     $shellCommand = [string]$shellBlock[0].hooks[0].command
     $guardPath = Get-FileCommandPath $guardCommand

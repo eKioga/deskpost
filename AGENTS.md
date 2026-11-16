@@ -89,8 +89,10 @@ reader-facing files · `docs/` durable guidance · `internal/` application-manag
 
 **In a Kickoff, a commit's pass mark is the pre-commit hook's own run, made from a clean tree** (the
 working tree equal to the index), with the commit SHA it ran for reported in the handback: see "The
-gates" in [The Dev Session Loop](docs/dev-session-loop.md). A chartered push's gate is
-`node tools/gate.ts --tier push` (about 13 minutes since S119; the same checks and verdicts as the serial run).
+gates" in [The Dev Session Loop](docs/dev-session-loop.md). A builder unit ends at "pull request open" with
+`node tools/land.mts --open int/<unit> --token-item "<item>"`; the queued lander checks and merges it. The push tier,
+`node tools/gate.ts --tier push` (about 13 minutes since S119; the same checks and verdicts as the serial run), is for
+release and cut units only.
 The full command below is that serial reference and the acceptance test outside a Kickoff, run from the
 checkout with the seat variables blank and the installed `bin` off PATH:
 
@@ -99,7 +101,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChec
 ```
 
 **From a seated session, run the gate by hand as `node tools/gate.ts --tier cut`** (or `--tier push`
-before a push). It blanks `LIBRARY_WORKSPACE`, `LIBRARY_SEAT` and `LIBRARY_SEAT_CLAIM` and drops the
+before a release or cut unit's push). It blanks `LIBRARY_WORKSPACE`, `LIBRARY_SEAT` and `LIBRARY_SEAT_CLAIM` and drops the
 installed shim from PATH for each child itself (`childEnv`, `kernel/test/gate-env.ts`). Never edit
 those variables or PATH yourself: auto mode refuses it, and run bare, `Invoke-LibraryChecks.ps1`
 attaches the seat's Library before it clears them.
@@ -149,8 +151,8 @@ where this workspace is `/mnt/d/Library` rather than `D:\Library`. If that is yo
 invoke `powershell.exe` explicitly with a path its own shell understands, and check that the drive
 is mounted before assuming the run failed for a more interesting reason. Do not translate the
 command into a POSIX equivalent: there is one gate, and a substitute for it is not evidence.
-On Linux the builder's commit and cut tiers are evidence for the Handback, and the integrator's
-Windows push tier is the pass mark.
+On Linux the builder's commit and cut tiers are evidence for the Handback, and for a builder unit the
+Linux check on its pull request is the pass mark.
 
 In Windows PowerShell 5.1, judge a native command by `$LASTEXITCODE` read immediately after it: stderr under `*>` can set the shell status to failure even when the command succeeds.
 

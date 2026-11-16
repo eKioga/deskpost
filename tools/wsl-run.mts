@@ -112,7 +112,9 @@ async function main(argv: string[]): Promise<number> {
     child.on('error', reject);
     child.on('close', (status) => resolve(status ?? 2));
   });
-  fs.appendFileSync(plan.log, logLine(plan, code));
+  const report = logLine(plan, code);
+  fs.appendFileSync(plan.log, report);
+  process.stderr.write(report);
   return code;
 }
 

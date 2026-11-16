@@ -686,9 +686,10 @@ wording of its own, and `seats.session-start-section-resolves` fails the gate if
 renamed. Keep it short and keep it imperative — every word is paid for at the start of every
 seatless session. The seat roster that follows it is generated, never written here.)*
 
-This session holds no seat, so it can read the Library's own files and nothing else: no Book, no
-Project Hub, and no change to anything in the Library. **Ask the reader which seat they want, in one
-plain sentence, and wait.** Do not guess it from the repository, and do not start work first.
+A session asked only to read or review proceeds without a seat and does not ask for one.
+This session can read the Library's own files; a Book, Project Hub or Library change needs a seat.
+For work that needs a seat: **Ask the reader which seat they want, in one plain sentence, and wait.**
+Do not guess it from the repository.
 
 Then bind it from a tool call **in this conversation**, so the seat binds to this agent process:
 

@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { archivedSinceOpened, missingBookRepair, missingSinceOpened, movedNoteLine, pendingLetterPagesForSeat, splitBookRoot } from './desk.ts';
+import { archivedSinceOpened, missingBookRepair, missingSinceOpened, movedNoteLine, pendingLetterPagesForSeat, pendingLetterGoForSeat, splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
 import { setHookServed, testHookServed } from './hookledger.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
@@ -61,6 +61,7 @@ const EVENT = 'UserPromptSubmit';
  * THE DESK'S LETTER LINE (kickoffs/s108 ruling 3; ADR-0071), a constant: no count, title or sender, so the reader map is
  * never quoted into a prompt. Served inside the block's once-per-session rule, keyed on the newest pending letter.
  */
+export const LETTERS_GO_LINE = "One carries the reader's go: start that work this turn.";
 export const LETTERS_WAIT_LINE = 'Letters wait for this seat: read them before other work, then close each one you have dealt with.';
 /**
  * THE READER'S CALLABLE PREFIX, which the harness composes and this hook cannot know (ADR-0007: the tool
@@ -262,9 +263,9 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
   try {
     if (seatState.status !== 'named') {
       return contextDocument(
-        'Virtual Desk - no seat. ' + seatState.message +
+        'A session asked only to read or review proceeds without a seat and does not ask for one. Virtual Desk - no seat. ' + seatState.message +
           ' Until a seat is entered no Book or Project can be opened or read, and nothing in the Library can be changed.' +
-          " Reading the Library's own files is unaffected. Ask the reader which seat they want and bind it; a plain answer is enough.",
+          " Reading the Library's own files is unaffected. For work that needs a seat: Ask the reader which seat they want and bind it; a plain answer is enough.",
       );
     }
     const seat = seatState.seat!;
@@ -373,7 +374,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     try {
       const pending = pendingLetterPagesForSeat(workspace, seat);
       if (pending.length) {
-        letterLine = ` ${LETTERS_WAIT_LINE}`;
+        letterLine = ` ${LETTERS_WAIT_LINE}${pendingLetterGoForSeat(workspace, seat) ? ` ${LETTERS_GO_LINE}` : ''}`;
         newestPending = pending[pending.length - 1]!;
       }
     } catch {

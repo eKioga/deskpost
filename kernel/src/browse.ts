@@ -188,6 +188,10 @@ export function browseData(workspace: string, listArchived: boolean): BrowseData
   }
   if (backend === 'local') {
     collection = collectionBookSlugs(workspace, 'active').map((slug) => collectionEntry(workspace, slug, 'collection', manifestCollectionFor('active')));
+    const localSlugs = new Set(collection.map(entry => entry.slug));
+    for (const slug of sharedRoster(workspace)?.slugs ?? []) {
+      if (!localSlugs.has(slug)) collection.push(collectionEntry(workspace, slug, 'shared', 'shared'));
+    }
     for (const slug of collectionBookSlugs(workspace, 'archive')) {
       const identity = collectionBookIdentity(workspace, 'archive', slug);
       archived.push({ ...projectEntry(slug, identity.title, 'archive'), kind: 'book', summary: identity.summary, open_line: `deskpost desk open book ${slug} --shelf archive` });

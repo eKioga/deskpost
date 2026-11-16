@@ -45,7 +45,7 @@ import {
   setDeskEntryForSeat,
 } from './seatdesk.ts';
 import { assertSeatRegistered, psSortCompare, readNotebookTopicOwners, seatIncarnationStatus } from './notebook.ts';
-import { letterTally, pendingCaptureNotes, pendingLetterPagesForSeat, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
+import { letterTally, pendingCaptureNotes, pendingLetterPagesForSeat, pendingLetterGoForSeat, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { isAddressedTo } from './shelfnote.ts';
 import { identityRowsOfRegistry, pastNameRefusal, seatIncarnation } from './seatincarnation.ts';
 import { openCollection } from './collection.ts';
@@ -97,6 +97,7 @@ import { inboundPolicyLabel, inboundSettingsArguments, inboundSettingsPath, read
 import { readPaneSetting, writePaneSetting, paneDecision } from './seatpane.ts';
 
 import { classifyCommand, emptyLaunchRecord, escapedArgv, planSeatLaunch, readSeatLaunch, seatLaunchPath, writeSeatLaunch } from './seatlaunch.ts';
+import { projectSlugArgument } from './hubslug.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
@@ -924,7 +925,7 @@ async function seatEnter(argv: string[]): Promise<Record<string, PsJsonValue>> {
       workspace,
       stateDirectory,
       seat,
-      project: parsed.options.get('project') ?? '',
+      project: projectSlugArgument(parsed.options.get('project') ?? ''),
       planId: parsed.options.get('plan-id') ?? '',
       preflight: parsed.flags.has('preflight'),
       agentPid,
@@ -1235,7 +1236,7 @@ function plannedStart(
   rows: Record<string, PsJsonValue>[],
   seat: string,
   project: string,
-  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; inbound?: string | undefined; recordAssistant?: Assistant | undefined },
+  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; openProjects?: string[]; inbound?: string | undefined; recordAssistant?: Assistant | undefined },
   registryFile: string,
   workspace: string,
 ): SeatStartPlan {
@@ -1252,7 +1253,7 @@ function plannedStart(
 /** What a plan's options set, as `seat start` reports it: the four fields, then the Books. */
 function planJson(plan: SeatStartPlan): Record<string, PsJsonValue> {
   // THE INBOUND POLICY THE PREVIEW NAMES (kickoffs/s108 ruling 6), only when one was given.
-  return { ...planFields(plan), open_books: plan.books, ...(plan.inbound !== null ? { inbound_policy: plan.inbound === 'unset' ? 'unset' : `seat file: ${plan.inbound}` } : {}) };
+  return { ...planFields(plan), open_books: plan.books, ...(plan.projects.length ? { open_projects: plan.projects } : {}), ...(plan.inbound !== null ? { inbound_policy: plan.inbound === 'unset' ? 'unset' : `seat file: ${plan.inbound}` } : {}) };
 }
 
 /**
@@ -1312,7 +1313,9 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   const resolved = resolveSeatName({ seat: name, stateDirectory });
   if (resolved.status !== 'named') refuse(resolved.message);
   const seat = resolved.seat!;
-  const project = parsed.options.get('project') ?? '';
+  // `projects/<slug>`, AS THE DESK PRINTS IT (kickoffs/s199-r2 item 4): the prefix dropped here, never in the check, so the
+  // registry records the bare slug.
+  const project = projectSlugArgument(parsed.options.get('project') ?? '');
   let command = parsed.options.get('command') ?? 'claude';
   const noLaunch = parsed.flags.has('no-launch');
   if (parsed.options.has('intent') && !['new', 'resume'].includes(parsed.options.get('intent')!)) refuse('--intent takes new or resume.');
@@ -1326,22 +1329,28 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     card: parsed.options.get('card'),
     template: parsed.options.get('template'),
     openBooks: parsed.lists.get('open-book') ?? [],
+    openProjects: parsed.lists.get('open-project') ?? [],
     // kickoffs/s108 ruling 6: a new seat's inbound policy, under the same preview and wrapped plan id.
     inbound: parsed.options.get('inbound'),
+    ...(noLaunch ? { launch: 'none' } : parsed.options.has('command') ? { launch: command } : {}),
     recordAssistant: parsed.options.get('record-assistant') as Assistant | undefined,
   };
   if (parsed.options.has('record-assistant') && !['claude', 'codex'].includes(startOptions.recordAssistant!)) refuse('--record-assistant takes claude or codex.');
+  const requestedAssistant = parsed.options.has('command') ? commandAssistant(command) : null;
+  if (requestedAssistant && startOptions.recordAssistant && requestedAssistant !== startOptions.recordAssistant) {
+    refuse(`--command names ${requestedAssistant}, but --record-assistant names ${startOptions.recordAssistant}; give the same assistant for both. Nothing was written.`);
+  }
   const withOptions = !!startOptions.recordAssistant || SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
   if (withOptions && !parsed.flags.has('preflight')) {
     if (!planId) {
       refuse(
-        'No seat was created: --department, --role, --card, --template and --open-book are set only through a preview. Run with ' +
+        'No seat was created: --department, --role, --card, --template, --open-book and --open-project are set only through a preview. Run with ' +
           '--preflight, show the reader what it reports, and rerun with its exact --plan-id after one clear yes.',
       );
     }
     if (!isWrappedPlanId(planId)) {
       refuse(
-        'No seat was created: with --department, --role, --card, --template or --open-book, only the plan_id seat start --preflight ' +
+        'No seat was created: with --department, --role, --card, --template, --open-book or --open-project, only the plan_id seat start --preflight ' +
           'issued for them applies, not the plain creation id. Rerun the preflight and pass its plan_id.',
       );
     }
@@ -1391,10 +1400,13 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   // THE FIRST PROMPT FOR A SEAT WITH LETTERS WAITING (kickoffs/s108 ruling 4), right after the name: a positional after
   // a variadic option such as `--add-dir` would be read as one more of its values. A reader fault adds no prompt.
   let lettersWaiting = 0;
+  let lettersWithGo = false;
   try {
     lettersWaiting = pendingLetterPagesForSeat(workspace, seat).length;
+    lettersWithGo = pendingLetterGoForSeat(workspace, seat);
   } catch {
     lettersWaiting = 0;
+    lettersWithGo = false;
   }
   const mintedId = sessionId || newConversationId();
   const replanLaunch = (row: { seat_id?: unknown } | null) => {
@@ -1406,7 +1418,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       fallback: parsed.options.get('fallback-assistant') === 'codex' ? 'codex' : 'claude',
       view: row ? seatConversationView(stateDirectory, seat, { transcriptRoot: parsed.options.get('transcript-root') }) : undefined,
       mintedId, dirs: recordedDirs.filter(dir => dir.exists).map(dir => dir.path),
-      inbound: inboundArgumentsFor(inbound), letters: lettersWaiting, passthrough });
+      inbound: inboundArgumentsFor(inbound), letters: lettersWaiting, lettersWithGo, passthrough });
     // Inbound encoding depends on the executable selected by the planner.
     command = preview.command; assistant = preview.assistant;
     if (!parsed.options.has('command') && record.state === 'valid' && record.record.assistant && findAssistant(record.record.assistant) === null) {
@@ -1423,14 +1435,14 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       fallback: parsed.options.get('fallback-assistant') === 'codex' ? 'codex' : 'claude',
       view: row ? seatConversationView(stateDirectory, seat, { transcriptRoot: parsed.options.get('transcript-root') }) : undefined,
       mintedId, dirs: recordedDirs.filter(dir => dir.exists).map(dir => dir.path),
-      inbound: inboundArguments, letters: lettersWaiting, passthrough });
+      inbound: inboundArguments, letters: lettersWaiting, lettersWithGo, passthrough });
     resumeId = final.resume; sessionId = final.sessionId;
     appliedDirs = assistant === null ? [] : recordedDirs.filter(dir => dir.exists).map(dir => dir.path);
     return { ...final, record };
   };
   let launchPlan = replanLaunch(readRegistryRows(path.join(seatsDirectory(stateDirectory), '_registry.json')).find(row => String(row['seat']) === seat) ?? null);
   let agentArguments = launchPlan.args;
-  let firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+  let firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough, lettersWithGo);
   let conversationId = resumeId || sessionId;
   const tabHandle = process.env['ORCA_TERMINAL_HANDLE'] ?? '';
   let conversationAction = launchPlan.action;
@@ -1465,7 +1477,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     // Always read the incarnation and the exact parsed record bytes under the registry lock.
     launchPlan = replanLaunch(existing);
     agentArguments = launchPlan.args;
-    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough, lettersWithGo);
     conversationId = resumeId || sessionId;
     conversationAction = launchPlan.action;
     if (existing === null) {
@@ -1494,8 +1506,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       }
       if (withOptions) {
         refuse(
-          `Seat '${seat}' already exists, so --department, --role, --card, --template and --open-book do not apply to it: its department, ` +
-            `role and card change with deskpost seat describe ${seat}, and a Book opens with deskpost desk open book <slug>. Nothing was changed.`,
+          `Seat '${seat}' already exists, so --department, --role, --card, --template, --open-book and --open-project do not apply to it: its department, ` +
+            `role and card change with deskpost seat describe ${seat}, and a Book or Project opens with deskpost desk open book|project <slug>. Nothing was changed.`,
         );
       }
       bound = String(existing['project']);
@@ -1576,6 +1588,9 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
         seatStartFault('book-open');
         setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'books', entry: `shelf/${slug}`, action: 'Add' });
       }
+      for (const slug of plan!.projects) {
+        setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'projects', entry: `projects/${slug}`, action: 'Add' });
+      }
       const created = utcRoundTrip();
       const seatId = newId();
       const fields = planFields(plan!);
@@ -1604,10 +1619,11 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       seatStartFault('registry-write');
       writeSeatRegistry(stateDirectory, [...rows, row]);
       rowWritten = true;
-      if (startOptions.recordAssistant) {
+      const savedAssistant = startOptions.recordAssistant ?? requestedAssistant;
+      if (savedAssistant) {
         try {
           seatStartFault('launch-record');
-          const launchRecord = emptyLaunchRecord(seatId); launchRecord.assistant = startOptions.recordAssistant;
+          const launchRecord = emptyLaunchRecord(seatId); launchRecord.assistant = savedAssistant;
           writeSeatLaunch(workspace, seat, launchRecord);
         } catch (error) {
           process.stderr.write('Seat ' + seat + ' was created without its assistant record: ' + (error as Error).message + '; use s<number> to finish it.\n');
@@ -1626,7 +1642,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     // on every entry route, including the conversation fields written below.
     launchPlan = replanLaunch(readRegistryRows(registryFile).find(row => String(row['seat']) === seat) ?? null);
     agentArguments = launchPlan.args;
-    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough);
+    firstPrompt = lettersPromptArguments(assistant, lettersWaiting, passthrough, lettersWithGo);
     conversationId = launchPlan.resume || launchPlan.sessionId;
     conversationAction = launchPlan.action;
     // THE CONVERSATION HISTORY, FOR THE ONE ENTRY ROUTE THAT WRITES NO BINDING (Start-LibrarySeat.ps1:508), inside the
@@ -1684,12 +1700,14 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       desk_directory: deskDirectory,
       desk_migrated: false,
       legacy_desk_retired: false,
-      claim_held: true,
+      claim_held: !noLaunch,
+      ...(noLaunch ? { claim_note: 'released when this command ended; nothing was launched' } : {}),
       environment: ['LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'LIBRARY_WORKSPACE', 'DESKPOST_ASSISTANT', 'DESKPOST_LAUNCHER_PID', 'PATH'],
       workspace,
       picked: false,
       assistant,
-      conversation: conversationId,
+      ...(existing !== null && requestedAssistant ? { launch_only: `launch only: ${requestedAssistant}; s<number> or seat start --record-assistant changes the seat's own` } : {}),
+      ...(noLaunch ? {} : { conversation: conversationId }),
       conversation_action: conversationAction,
       conversation_recorded: !noLaunch && conversationId !== '',
       command: command,
@@ -1841,7 +1859,16 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
   const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
   const stateDirectory = path.join(workspace, '.claude');
   const rows = readRegistryRows(path.join(seatsDirectory(stateDirectory), '_registry.json'));
-  const named = resolveSeatName({ seat: parsed.options.get('seat') ?? '', stateDirectory });
+  const positional = parsed.positional[0], option = parsed.options.get('seat');
+  if (positional === '' || option === '') refuse("seat status was given an empty seat name; give a seat's name, or leave it out to list every seat.");
+  if (positional && option && positional !== option) refuse(`seat status names different seats '${positional}' and '${option}'; use one name or give the same name with --seat.`);
+  const requested = positional ?? option;
+  const named = resolveSeatName({ seat: requested ?? '', stateDirectory });
+  const current = resolveSeatName({ stateDirectory });
+  if (requested !== undefined) {
+    if (named.status !== 'named') refuse(named.message);
+    assertSeatRegistered(stateDirectory, named.seat!);
+  }
   // ONE VALIDATED PROJECTION OVER THE WHOLE REGISTRY (1.3.8, kickoffs/s96 row 1): the raw rows above are a writer's.
   const projection = seatMetadata(rows);
   // AND THE REGISTRY'S HISTORY (kickoffs/s96 row 2): each row's last confirmed change, and its unconfirmed attempts,
@@ -1850,6 +1877,7 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
   const identity = { live: identityRowsOfRegistry(rows), retired: [] };
   const seats = rows
     .map((row) => String(row['seat']))
+    .filter(seat => requested === undefined || seat === named.seat)
     .sort(psSortCompare)
     .map((seat) => {
       const row = rows.find((candidate) => String(candidate['seat']) === seat)!;
@@ -1861,7 +1889,7 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
         claim: state.state,
         agent_pid: state.state === 'free' ? null : state.agentPid || null,
         last_seen_utc: activity && typeof activity['last_seen_utc'] === 'string' ? activity['last_seen_utc'] : null,
-        this_seat: named.status === 'named' && named.seat === seat,
+        this_seat: current.status === 'named' && current.seat === seat,
         // THE ADDRESS, ONLY WHILE HELD (1.2.6): the name its session answers to, null until it names itself.
         ...seatMessageAddress(stateDirectory, seat, state.state),
         // AND ITS INBOUND POLICY, ONLY WHILE HELD (1.3.1, ruling 3), worded as its own file's, never as the effective value.
@@ -1872,6 +1900,7 @@ function seatStatus(argv: string[]): Record<string, PsJsonValue> {
           const state = seatHistoryState(history, seat, String(row['seat_id'] ?? ''), identity);
           return { last_change: state.lastConfirmed as unknown as PsJsonValue, ...(state.unconfirmed ? { unconfirmed_attempts: state.unconfirmed } : {}) };
         })(),
+        ...(requested !== undefined ? { asked: true } : {}),
       } as Record<string, PsJsonValue>;
     });
   return {
@@ -2184,9 +2213,11 @@ export interface SeatStartChoices {
   card?: string | undefined;
   template?: string | undefined;
   openBooks: string[];
+  openProjects?: string[];
   /** The new seat's inbound policy (kickoffs/s108 ruling 6): the wizard's preview offers `accept` for Claude Code. */
   inbound?: string | undefined;
   recordAssistant?: Assistant | undefined;
+  launch?: string;
 }
 
 /** The `seat start` arguments that carry a wizard's choices, in one order. */
@@ -2197,8 +2228,10 @@ export function seatStartChoiceArguments(choices: SeatStartChoices): string[] {
     ...(choices.role !== undefined ? ['--role', choices.role] : []),
     ...(choices.card !== undefined ? ['--card', choices.card] : []),
     ...choices.openBooks.flatMap((slug) => ['--open-book', slug]),
+    ...(choices.openProjects ?? []).flatMap((slug) => ['--open-project', slug]),
     ...(choices.inbound !== undefined ? ['--inbound', choices.inbound] : []),
     ...(choices.recordAssistant ? ['--record-assistant', choices.recordAssistant] : []),
+    ...(choices.launch === 'none' ? ['--no-launch'] : choices.launch !== undefined ? ['--command', choices.launch] : []),
   ];
 }
 
@@ -2384,6 +2417,15 @@ export async function runSeatVerb(
         onRefusal(`library seat has no action '${action}'. It has: cards, describe, dirs, enter, rename, retire, settings, start, status.`);
     }
   } catch (error) {
-    onRefusal((error as Error).message);
+    let message = (error as Error).message;
+    // A shared reader may supply the refusal; this command supplies the step back to its seat directory.
+    if (/^There is no (?:live )?seat named /.test(message) && !/(?:deskpost|library) seat /.test(message)) {
+      message += ' Run deskpost seat cards --all to list the seats.';
+    } else if (/^seat status was given an empty seat name/.test(message)) {
+      message += ' Run deskpost seat status [<name>].';
+    } else if (action === 'start' && /does not exist yet, so it needs the Project it is for:/.test(message)) {
+      message += ' Run deskpost seat start <name> --project <project-slug>.';
+    }
+    onRefusal(message);
   }
 }

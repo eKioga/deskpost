@@ -50,6 +50,18 @@ interface CarryRow {
   action: CarryAction;
 }
 
+function carriedBytes(bytes: Buffer, name: string): Buffer {
+  const text = bytes.toString('utf8');
+  const lines = text.split(/(?<=\n)/);
+  if (lines[0]!.trim() !== '---') return bytes;
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (end < 0) return bytes;
+  const fields = lines.slice(1, end).filter(line => !/^\s*go_/.test(line));
+  const carried = [lines[0], ...fields, ...lines.slice(end)].join('');
+  if (/^\s*go_/m.test(carried)) refuse(`${name} still has go fields; nothing was carried.`);
+  return carried === text ? bytes : Buffer.from(carried, 'utf8');
+}
+
 function reviewOf(bytes: Buffer): string {
   return parseShelfNote('', '', bytes.toString('utf8')).review;
 }
@@ -81,7 +93,7 @@ function planCarry(workspace: string, old: string, slug: string) {
     let action: CarryAction;
     if (pendingOnly && review !== 'pending') action = 'not-pending';
     else if (!fs.existsSync(here)) action = 'carry';
-    else action = sha256OfBytes(fs.readFileSync(here)) === sha256 ? 'already-here' : 'conflict';
+    else action = sha256OfBytes(fs.readFileSync(here)) === sha256OfBytes(carriedBytes(bytes, name)) ? 'already-here' : 'conflict';
     rows.push({ name, sha256, review, action });
   }
   const planId = sha256OfText(rows.map((row) => `${row.name}\t${row.sha256}\t${row.action}`).join('\n'));
@@ -162,9 +174,9 @@ export function shelfCarryVerb(argv: string[], workspace: string): Record<string
       if (sha256OfBytes(bytes) !== row.sha256) refuse(`${row.name} changed in the old workspace while it was being carried.`);
       const target = path.join(book.notesPath, row.name);
       // `wx` is CreateNew, as capture writes a note: a name taken since the plan fails rather than overwrites.
-      fs.writeFileSync(target, bytes, { flag: 'wx' });
+      fs.writeFileSync(target, carriedBytes(bytes, row.name), { flag: 'wx' });
       written.push(row.name);
-      if (sha256OfBytes(fs.readFileSync(target)) !== row.sha256) refuse(`${row.name} did not read back byte for byte.`);
+      if (sha256OfBytes(fs.readFileSync(target)) !== sha256OfBytes(carriedBytes(bytes, row.name))) refuse(`${row.name} did not read back byte for byte.`);
     }
     const pendingCount = updateShelfNoteIndex(book).pendingCount;
     const manifest = completeBookMutation(mutation).summary;

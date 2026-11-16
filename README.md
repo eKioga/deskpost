@@ -204,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.6.0**, "One collection for the household": Libraries read and write shared Books on a Basic Memory server, with previewed, recorded changes, upkeep grants and a way back. Basic Memory and the vault stay optional. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.6.1**, "One collection for the household": Libraries read and write shared Books on a Basic Memory server, with previewed, recorded changes, upkeep grants and a way back, with fixes for moving Books into the shared collection. Basic Memory and the vault stay optional. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: builders working from Webtop**, reading and writing the shared collection, alongside the remaining work for builders to share the gate.

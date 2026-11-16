@@ -30,7 +30,7 @@ import { restoreBookJournal, writeBookJournal } from './journal.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { sha256OfBytes, sha256OfText } from './sha.ts';
 import { getShelfBook, readUtf8, type ShelfBook } from './shelfbook.ts';
-import { parseShelfNote, shelfNotes } from './shelfnote.ts';
+import { parseShelfNote, shelfNotes, type ShelfNoteRow } from './shelfnote.ts';
 import { reviewedMonths, updateShelfNoteIndex } from './capture.ts';
 import { assertShelfBookOpen } from './triage.ts';
 
@@ -70,19 +70,36 @@ function stampTime(reviewed: string): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
+/**
+ * WHETHER `shelf tidy` WOULD MOVE THIS NOTE NOW (kickoffs/s199-r2 item 1): `done`, with a readable `reviewed:` stamp
+ * older than `days`. `planTidy` selects by it and the Desk's `capture_tidy_due` counts by it, so the two never disagree.
+ * `unstamped` and `not-yet` are the two `done` notes it keeps, which the preview counts.
+ */
+export function tidyState(note: Pick<ShelfNoteRow, 'review' | 'reviewed'>, days: number, now: number): 'due' | 'open' | 'unstamped' | 'not-yet' {
+  if (note.review !== 'done') return 'open';
+  const time = note.reviewed === null ? null : stampTime(note.reviewed);
+  if (time === null) return 'unstamped';
+  return now - time <= days * DAY_MS ? 'not-yet' : 'due';
+}
+
+/** The predicate: `tidyState` is `due`. */
+export function tidyDue(note: Pick<ShelfNoteRow, 'review' | 'reviewed'>, days: number, now: number): boolean {
+  return tidyState(note, days, now) === 'due';
+}
+
 function planTidy(book: ShelfBook, days: number, now: number) {
   const moves: MoveRow[] = [];
   const conflicts: string[] = [];
   let unstamped = 0;
   let notYet = 0;
   for (const note of shelfNotes(book)) {
-    if (note.review !== 'done') continue;
-    const time = note.reviewed === null ? null : stampTime(note.reviewed);
-    if (time === null) {
+    const due = tidyState(note, days, now);
+    if (due === 'open') continue;
+    if (due === 'unstamped') {
       unstamped += 1;
       continue;
     }
-    if (now - time <= days * DAY_MS) {
+    if (due === 'not-yet') {
       notYet += 1;
       continue;
     }

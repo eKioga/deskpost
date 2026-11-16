@@ -37,7 +37,7 @@ import { releaseTuple } from './programroot.ts';
 import { homeDirectory, readMarker, resolveWorkspace } from './workspace.ts';
 import { readVaultConnection, type VaultConnection } from './vault.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock, listStaleRecoveryGuards } from './locks.ts';
-import { captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
+import { postboxLateDeliveriesRecent, captureBookRows, readSeatRegistry, readSeatRetirementRecords, seatRegistryConsistency } from './desk.ts';
 import { listOutstanding } from './intent.ts';
 import { readSeatIdentityView } from './seatincarnation.ts';
 import { METADATA_FIELDS, readSeatMetadata } from './seatmeta.ts';
@@ -1507,8 +1507,8 @@ function inboundOverview(workspace: string): string {
     }
     for (const row of registry) {
       const seatFile = readInboundSettings(stateDirectory, row.seat);
-      if (seatFile.state === 'valid') set.push(`seat '${row.seat}''s own file: "${seatFile.value}"`);
-      if (seatFile.state === 'invalid') set.push(`seat '${row.seat}''s own file: invalid, never passed`);
+      if (seatFile.state === 'valid') set.push(`seat '${row.seat}': "${seatFile.value}"`);
+      if (seatFile.state === 'invalid') set.push(`seat '${row.seat}': invalid, never passed`);
     }
   }
   const user = read(userSettingsPath());
@@ -1718,7 +1718,27 @@ function postboxReachable(workspace: string): string {
   const since = String(state['unreachable_since'] ?? '');
   if (since) return `WARN: the Postbox at ${String(state['url'] ?? '')} has not answered since ${since}: ${String(state['unreachable_detail'] ?? '')}`.trim();
   const last = String(state['last_check'] ?? '');
+  const checked = Date.parse(last);
+  if (last && !Number.isFinite(checked)) return 'WARN: the time of the last Postbox check is unknown: run deskpost postbox check';
+  if (checked > Date.now()) return `WARN: the last Postbox check at ${last} is in the future: run deskpost postbox check`;
+  if (last && Date.now() - checked > 86400000) return `WARN: the Postbox was last checked at ${last}, more than 24 hours ago: run deskpost postbox check`;
   return last ? `the Postbox answered at its last check, ${last}` : 'the Postbox has not been checked since setup';
+}
+
+/** A late delivery remains visible after the check that filed it has finished. */
+function postboxLate(workspace: string): string {
+  const { state } = postboxCache(workspace);
+  if (state === null) return 'SKIP: this Library has no Postbox';
+  // The Postbox keeps 20 checks of up to 20 late rows each (postbox.ts recordCheck), so name the checks looked at.
+  const recent = (Array.isArray(state['check_history']) ? state['check_history'] : []).filter(entry => {
+    const age = Date.now() - Date.parse(String(entry?.['at'] ?? ''));
+    return Number.isFinite(age) && age >= 0 && age <= 7 * 86400000;
+  });
+  const checks = `among the last ${recent.length} recorded check${recent.length === 1 ? '' : 's'}`;
+  const count = postboxLateDeliveriesRecent(state).length;
+  const atLeast = recent.some(entry => Array.isArray(entry?.['late_deliveries']) && entry['late_deliveries'].length >= 20) ? 'at least ' : '';
+  return count ? `WARN: ${atLeast}${count} late deliver${count === 1 ? 'y' : 'ies'} ${checks} (up to 7 days): deskpost postbox status`
+    : `no late deliveries ${checks}`;
 }
 
 /**
@@ -1956,6 +1976,7 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
     // AND THESE TWO (kickoffs/s123 row 4): the Postbox's outbox and whether it answered, from its cache. Skipped with none.
     workspace ? runCheck('postbox.outbox', () => postboxOutbox(workspace)) : { check: 'postbox.outbox', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.reachable', () => postboxReachable(workspace)) : { check: 'postbox.reachable', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
+    workspace ? runCheck('postbox.late', () => postboxLate(workspace)) : { check: 'postbox.late', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.server-tools', () => postboxServerTools(workspace)) : { check: 'postbox.server-tools', status: 'skipped', detail: 'no Library here, so no Postbox to check' },
     workspace ? runCheck('postbox.reports',()=>postboxReports(workspace)) : {check:'postbox.reports',status:'skipped',detail:'no Library here'},
     workspace ? runCheck('postbox.records',()=>postboxRecords(workspace)) : {check:'postbox.records',status:'skipped',detail:'no Library here'},

@@ -15,8 +15,12 @@ The orchestrator writes `kickoffs/sNN` on the build seat's Hub with `hub edit --
 lowercase. It then appends one pointer to that Hub's `## Next`:
 
 ```
-- [ ] Run sNN: [[projects/<hub>/kickoffs/sNN]]
+- [ ] Run sNN: [[projects/<hub>/kickoffs/sNN]] (r<n>, sha256 `<64 hex>`, base `<short>`, posted {now}; <one line>)
 ```
+
+The sha256 is the page's, computed as [the builder's page](dev-session-loop.md) says at OPEN step 2 (UTF-8 without a
+BOM, CRLF turned to LF): the `sha256` the validated reader reports for it. A pointer whose hash matches is Eric's
+standing yes (Decision 2026-11-08); a pointer without one makes the builder ask.
 
 Anything more the pointer says (a condition, `(supersedes ...)`) goes after the link, so the line still holds
 `Run sNN:` with its colon and the builder's `--match-text "Run <p><NN>:"` finds it (s128's pointer put a condition
@@ -69,8 +73,7 @@ own unit-specific text, never point to another Kickoff instead. Every numbered r
 ends with **Stop.** The handback answers every row against its criterion.
 
 Read your Hub's `## Next` pointer and the `## Now` resume item by `section`, never the whole `_project`.
-A Kickoff may add a `REVIEW OF <unit>:` after the header. Cross-office units carry OFFICE, EXPORT (private base and
-export root) and HANDBACK FOLDER under WHERE THINGS STAND; same-office units omit them.
+A Kickoff may add a `REVIEW OF <unit>:` after the header. Cross-office units name the receiving office, seat, clone path and token item under WHERE THINGS STAND.
 
 A row that runs a step against a published release names a route the orchestrator has run against that release, with the
 line it printed (Report, 2026-10-14). c17's row 3 piped input into 1.4.4's `menu --plain`, which answers only a terminal, and the release
@@ -156,6 +159,10 @@ estimate, and put its ids on `SPARE TRAIN:`; `kickoff-check --train` checks only
 open in `deskpost train --json` before posting and say so in the dry-run line. At every handback review, write
 `Context: <window> window, <tokens> at handback (<n>%), peak <n>%, compactions <n>` from the run's own session file,
 with the spares taken and skipped and the readings that decided them; close on the train only the spares taken.
+
+Each Kickoff names its lane in WHY NOW as `- **Lane:** <lane>`, from `docs/areas.json`, and its OWNS PATHS stay in that
+lane's areas or `shared` unless a `- **Cross-lane:**` line names the path and why (Two Builders rule 9). The source
+`node tools/kickoff-check.mts` reads `docs/areas.json` and refuses any other OWNS PATHS file another lane's area holds.
 
 ## The second reader
 
@@ -276,36 +283,24 @@ What S68 learned setting up `deskpost-desk` (stalls 1, 2, 4 and 5), in the order
 
 ## Kickoffs for another office
 
-Write the cross-office Kickoff under `kickoffs/<id>` on your own Hub (Decision, 2026-10-20).
-The receiving builder gets a local copy through a letter; it does not read your Hub.
+Write the Kickoff under `kickoffs/<id>` on your own Hub. The receiving builder gets a local copy
+through a letter; it does not read your Hub. A builder in any office follows the same loop.
 
-1. Have the chartered integrator export the private base with (Decision, 2026-10-20):
+1. Under WHERE THINGS STAND, name the receiving office and seat, the builder's clone path and
+   its own token item. Give out files and section numbers that do not overlap another open unit,
+   except for explicitly allocated, disjoint parts. Each unit branches `int/<id>` from `origin/master`.
+2. Send the complete Kickoff with:
 
-   `node tools/export-base.ts --base <sha> --to <folder> --for <id>` (from the release that carries s158).
+   `deskpost kickoff send kickoffs/<id> --library <card> --for <seat>`
 
-   Record the scanned export's private base and export root from the export receipt.
-2. Fill the template's OFFICE, EXPORT and HANDBACK FOLDER fields.
-   Name the receiving office and seat, the share folder and both full SHAs, and the immutable-generation folder.
-   Give out files and section numbers that do not overlap another open unit.
-3. Send the complete Kickoff with:
+   Record the envelope hash and letter receipt. The builder runs
+   `deskpost kickoff receive notes/<letter-page>` to write the page and Run pointer on its own Hub,
+   then takes its OPEN yes.
+3. The builder ends at "pull request open" and sends the full Handback home by letter, naming
+   the pull request, branch, base, commits, rows, local hook verdicts and named platform skips.
+4. Review the returned Handback and pull request like any other unit. The Linux check on the
+   pull request is the pass mark; local runs are evidence. The queued lander checks and merges it.
+   Arrange the second read where the unit requires one and charter any repair as a later unit.
 
-   `deskpost kickoff send kickoffs/<id> --library <card> --for <seat>` (from the release that carries s159).
-
-   Record the envelope hash and the letter receipt.
-   The receiving builder runs `deskpost kickoff receive notes/<letter-page>` (from the release that carries s159), then takes its own OPEN yes.
-4. Review the full Handback and its manifest from the returned letter.
-   Account for the Linux gate's named skips and each row's published generation.
-   A green Linux run is evidence; the Windows push tier remains the pass mark.
-5. Write `kickoffs/<id>-int` on the integrating builder's Hub, using the usual pointer and OPEN gate.
-   Name the private base, export root, original Kickoff envelope hash and exact Handback letter page.
-   Put these values in the apply row as arguments, copied from your reviewed records:
-
-   `node tools/apply-handback.ts <folder> --base <private-sha> --export-root <export-root-sha> --letter notes/<page> --onto int/<id>`
-
-   Start `int/<id>` at the named private base.
-   Require review of the applied commits and printed diff against OWNS, the Windows push tier and the usual remote-tip check before the one private push.
-   The manifest must come from the Handback letter in open Shelf letters, never from the share as authority (Decision, 2026-10-20).
-   A mismatch parks integration with its diagnostic (Decision, 2026-10-20); no inferred base or manifest replaces it.
-
-The builder's publication and reconstruction procedure is in [the builder's page](dev-session-loop.md#a-builder-in-another-office).
-The first live Webtop trial and the recreation proofs remain separate chartered units.
+The clone setup, attempt page, swap or restart and return-letter procedure are on
+[the builder's page](dev-session-loop.md#a-builder-in-another-office).

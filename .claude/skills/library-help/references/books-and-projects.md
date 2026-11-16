@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.6.1/docs/seats.md).
 
 ## Books
 
@@ -76,6 +76,7 @@ names unread, and names `library shelf rebuild <slug>` to write one.
 **Making a Book Shelf-only:** `shelf recall <slug>`, then `shared archive <slug> --kind book`. The recall copies the
 collection Book to the Shelf; the archive then retires the collection copy. The archive previews first, and applies
 only with `--user-confirmed --plan-id <id>`, the id its preflight issued; a Book changed since that preview is refused.
+A Book recalled to the Shelf whose collection copy was later archived goes home with `deskpost shared restore <slug>` (preview with `--preflight`, then apply on the reader's yes), followed by `deskpost publish refresh <slug>`.
 
 ### When two Books cover the same thing
 
@@ -105,7 +106,7 @@ rewrites only the manifest, and an edit to the entry does not mark the Book stal
 `--user-confirmed --plan-id <id>`. On a local Library it sets that Book's one line in `collection/books/README.md`,
 where it stands, or adds it when it is missing; no other line changes.
 
-**A maintained shared Book.** One yes lets named seats keep a shared Book up to date:
+**A maintained shared Book.** On a shared collection with no Catalogs, first run `deskpost shared init --preflight`, then apply its plan on the reader's yes before the first promote or new-book; it creates only missing Catalogs and keeps existing ones unchanged. One yes lets named seats keep a shared Book up to date:
 `deskpost shared upkeep <slug> --seats <seat>[,...] --preflight` (or `--any-seat` for every seat of this Library),
 then the same with `--user-confirmed --plan-id <id>`. A granted seat then runs `shared add-page`, `shared
 replace-page` (a `--from-change` restore included), `shared catalog-line` and `shared sources` on that Book with

@@ -37,7 +37,7 @@ deskpost seat start <seat> --project <project-slug>
 ```
 
 That line makes the seat the first time. After that, `deskpost seat start <seat>` is enough. Add
-`--command codex` to work in Codex instead of Claude Code for that launch. Or type just `deskpost`:
+`--command codex` to work in Codex instead of Claude Code for that launch; a new seat also saves that assistant for later visits. Or type just `deskpost`:
 the main menu uses arrows to move, Enter to choose, Esc to go back, and typing to search. Choose
 a seat, then continue its last conversation, start a new one, or open Settings. New seat asks for
 a name, installed assistant and access, then shows a ready screen; More choices offers department,
@@ -96,6 +96,19 @@ records the full workflow.
 ## One collection for the household
 
 From 1.6.0, shared Books support previewed, recorded writes, new Books, promotion from a local collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books) for the commands and the way back.
+
+## Shared moves and letters in 1.6.1
+
+A move into the shared collection finishes even when the original Book's reader map has no local links.
+Archived collection Books can be restored, and a shared Book's reader map follows page additions and removals;
+see [Writing shared Books](basic-memory.md#writing-shared-books).
+
+Answering a closed letter leaves it closed and adds a linked follow-up. Capturing a letter says how its
+recipient is reached, and a late delivery is remembered and shown. Hub edits and tidies give structured
+refusals; a new Hub page's receipt hash matches the reader's hash.
+
+For builders, Kickoff checks refuse push test runs and pushes to master, and read a train id in backticks.
+Pull requests go through a queued lander with a Linux check, and self-test sections live in one file per lane.
 
 ## Basic Memory 1.0 and checked Kickoffs
 

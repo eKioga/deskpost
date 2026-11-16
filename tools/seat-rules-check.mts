@@ -3,9 +3,9 @@
  *
  *   node tools/seat-rules-check.mts run --harness codex|claude|both --cases <ids|all> --repeats <n> --rules <file>
  *        --method <file> --out <results> [--codex-cli <p>] [--claude-cli <p>] [--codex-auth <p>] [--timeout <s>]
- *        [--cases-file <p>] [--fixtures <dir>]
+ *        [--cases-file <p>] [--fixtures <dir>] [--conditions rules|baseline|both]
  *   node tools/seat-rules-check.mts probe --harness codex|claude|both --rules <file> --method <file> --out <folder> [...]
- *   node tools/seat-rules-check.mts report <results>
+ *   node tools/seat-rules-check.mts report <results> [<after results>]
  *
  * Each session gets a fresh work folder holding its case's fixture files, the method at docs/start-a-project.md and
  * an instruction file (AGENTS.md for Codex, CLAUDE.md for Claude) holding one neutral line and, in the `rules`
@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { snapshotFolder, diffFolders, countQuestions, verdictWord, wordCount, type Files } from './seat-rules-check/count.mts';
+import { snapshotFolder, diffFolders, countQuestions, countToolCalls, countLetterCalls, verdictWord, wordCount, type Files, type LetterFixture } from './seat-rules-check/count.mts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TOOL_DIR = path.join(HERE, 'seat-rules-check');
@@ -93,26 +93,31 @@ function command(cli: string, args: string[]): { file: string; args: string[]; s
   return { file: cli, args, shell: false };
 }
 
-function killTree(pid: number | undefined): void {
-  if (!pid) return;
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+function killTree(pid: number | undefined): number {
+  if (!pid) return 128;
+  if (process.platform === 'win32') return spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).status ?? -1;
   else { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } }
+  return 0;
 }
 
-type Ran = { status: 'completed' | 'failed' | 'timeout'; stdout: string; stderr: string; exit: number | null };
+type Ran = { status: 'completed' | 'failed' | 'timeout'; stdout: string; stderr: string; killFailure: string; exit: number | null };
 
 function runProcess(cli: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; input: string; timeoutSeconds: number }): Promise<Ran> {
   const started = command(cli, args);
   return new Promise((resolve) => {
     const child = spawn(started.file, started.args, { cwd: options.cwd, env: options.env, shell: started.shell, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', timedOut = false, settled = false;
-    const timer = setTimeout(() => { timedOut = true; killTree(child.pid); }, options.timeoutSeconds * 1000);
+    let stdout = '', stderr = '', killFailure = '', timedOut = false, settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      const killed = killTree(child.pid);
+      if (killed !== 0 && killed !== 128) killFailure = 'kill failed: taskkill exit ' + killed;
+    }, options.timeoutSeconds * 1000);
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
     const finish = (exit: number | null, error?: Error) => {
       if (settled) return; settled = true; clearTimeout(timer);
       if (error) stderr += '\n' + error.message;
-      resolve({ status: timedOut ? 'timeout' : exit === 0 && !error ? 'completed' : 'failed', stdout, stderr, exit });
+      resolve({ status: timedOut ? 'timeout' : exit === 0 && !error ? 'completed' : 'failed', stdout, stderr, killFailure, exit });
     };
     child.on('error', (error) => finish(null, error));
     child.on('close', (exit) => finish(exit));
@@ -143,13 +148,20 @@ function makeCodexHome(authOption: string | undefined): string {
 
 // ---------------------------------------------------------------------------------------------- cases and the manifest
 
-type Criterion = { count: string; rules_better_when?: 'lower' | 'higher'; rules_not_worse_when?: 'not_higher' | 'not_lower' | 'within_25_percent' };
-type Case = { id: string; group: 'abiotic' | 'control'; prompt?: string; turns?: string[]; fixture: string; criteria: Criterion[]; needs_reader: boolean; limit_words?: number; canaries?: string[] };
+type Criterion = { count?: string; expect?: { count: string; equals: number }; rules_better_when?: 'lower' | 'higher'; rules_not_worse_when?: 'not_higher' | 'not_lower' | 'within_25_percent' };
+type Case = { id: string; group: 'abiotic' | 'control' | 'letters' | 'letters-ring'; prompt?: string; turns?: string[]; fixture: string; criteria: Criterion[]; harnesses?: Harness[]; criteria_by_harness?: Partial<Record<Harness, Criterion[]>>; needs_reader: boolean; limit_words?: number; canaries?: string[] };
+
+const criteriaFor = (c: Case, harness: Harness): Criterion[] => c.criteria_by_harness?.[harness] ?? c.criteria;
+
+const criterionCount = (criterion: Criterion): string => criterion.expect?.count ?? criterion.count ?? '';
 
 function readCases(file: string): Case[] {
   const cases = JSON.parse(fs.readFileSync(file, 'utf8')) as Case[];
   for (const c of cases) {
     if (!c.id || !c.fixture || !Array.isArray(c.criteria) || (!c.prompt && !c.turns)) throw new Error('case ' + JSON.stringify(c.id) + ' lacks id, fixture, criteria or a prompt');
+    if (c.group === 'letters' && (!c.criteria.length || c.criteria.some(criterion => !criterion.expect?.count || !Number.isFinite(criterion.expect.equals)))) throw new Error('letter case ' + c.id + ' needs nonempty expect criteria with a count and equals');
+    if (c.harnesses && (!c.harnesses.length || c.harnesses.some(h => h !== 'claude' && h !== 'codex'))) throw new Error('case ' + c.id + ' has invalid harnesses');
+    if (c.group === 'letters-ring' && (c.harnesses ?? ['codex', 'claude']).some(h => !criteriaFor(c, h).length || criteriaFor(c, h).some(x => !x.expect?.count || !Number.isFinite(x.expect.equals)))) throw new Error('ring case ' + c.id + ' needs expect criteria for each harness');
   }
   return cases;
 }
@@ -182,13 +194,14 @@ function cliVersion(cli: string, env: NodeJS.ProcessEnv): string | null {
 }
 
 /** Writes the manifest, or refuses when the results folder already holds one that differs. */
-function bindManifest(out: string, manifest: Manifest): void {
+function bindManifest(out: string, manifest: Record<string, Manifest[string] | number>): void {
   const file = path.join(out, 'manifest.json');
   if (fs.existsSync(file)) {
-    const old = JSON.parse(fs.readFileSync(file, 'utf8')) as Manifest;
-    const differs = Object.keys(manifest).filter((key) =>
+    const old = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof manifest;
+    const differs = Object.keys(manifest).filter((key) => key !== 'repeats').filter((key) =>
       BOUND.includes(key) ? old[key] !== manifest[key] : old[key] != null && manifest[key] != null && old[key] !== manifest[key]);
     if (differs.length) throw new UsageError('the results folder ' + out + ' holds a manifest that differs in ' + differs.join(', ') + '; use a new --out');
+    old['repeats'] = Math.max(Number(old['repeats']) || 0, Number(manifest['repeats']) || 0);
     for (const key of Object.keys(manifest)) if (old[key] == null && manifest[key] != null) old[key] = manifest[key]!;
     fs.writeFileSync(file, JSON.stringify(old, null, 2) + '\n');
   } else fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
@@ -196,7 +209,7 @@ function bindManifest(out: string, manifest: Manifest): void {
 
 // ---------------------------------------------------------------------------------------------- one session
 
-type Setup = { harness: Harness; condition: Condition; rules: string; method: string; cli: string; env: NodeJS.ProcessEnv; timeoutSeconds: number; authOption?: string };
+type Setup = { harness: Harness; condition: Condition; rules: string; method: string; cli: string; env: NodeJS.ProcessEnv; timeoutSeconds: number; authOption?: string; letters?: boolean };
 
 export function canaryFor(rules: string): string { return 'CANARY-' + sha256(rules).slice(0, 12).toUpperCase(); }
 
@@ -214,14 +227,14 @@ function copyTree(from: string, to: string, skipTopLevel: string[]): void {
   }
 }
 
-function sessionArgs(harness: Harness, work: string, configDir: string, resumeId: string | null, persist: boolean): string[] {
+function sessionArgs(harness: Harness, work: string, configDir: string, resumeId: string | null, persist: boolean, tools = CLAUDE_TOOLS): string[] {
   if (harness === 'codex') {
     const common = ['--json', ...(persist ? [] : ['--ephemeral']), '--skip-git-repo-check'];
     const policy = ['-c', 'approval_policy="never"', '-c', 'web_search="disabled"', '--disable', 'shell_tool', '--disable', 'unified_exec'];
     if (resumeId) return ['exec', 'resume', resumeId, ...common, ...policy, '-'];
     return ['exec', ...common, '-C', work, '--sandbox', 'workspace-write', ...policy, '-'];
   }
-  return ['-p', '--safe-mode', '--restricted', '--disable-slash-commands', '--setting-sources', '', '--tools', CLAUDE_TOOLS.join(','),
+  return ['-p', '--safe-mode', '--restricted', '--disable-slash-commands', '--setting-sources', '', '--tools', tools.join(','),
     '--strict-mcp-config', '--mcp-config', path.join(configDir, 'mcp.json'), '--settings', path.join(configDir, 'settings.json'),
     '--permission-mode', 'dontAsk', '--output-format', 'stream-json', '--verbose', ...(resumeId ? ['--resume', resumeId] : [])];
 }
@@ -263,7 +276,7 @@ async function runSession(setup: Setup, fixture: string, prompts: string[], extr
   const work = path.join(parent, 'work'), configDir = path.join(parent, 'config'), log = path.join(configDir, 'calls.jsonl');
   fs.mkdirSync(work); fs.mkdirSync(configDir);
   try {
-    copyTree(fixture, work, ['search-results.json']);
+    copyTree(fixture, work, ['search-results.json', 'letters-ring.json']);
     for (const [name, text] of Object.entries(extraFiles)) { fs.mkdirSync(path.dirname(path.join(work, name)), { recursive: true }); fs.writeFileSync(path.join(work, name), text); }
     fs.mkdirSync(path.join(work, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(work, METHOD_PATH), setup.method);
@@ -271,6 +284,8 @@ async function runSession(setup: Setup, fixture: string, prompts: string[], extr
     fs.writeFileSync(path.join(work, instruction), instructionText(setup.condition, setup.rules));
     const results = path.join(fixture, 'search-results.json');
     const serverArgs = [SERVER, '--root', work, '--log', log, ...(fs.existsSync(results) ? ['--results', results] : [])];
+    const offeredTools = setup.letters ? [...CLAUDE_TOOLS, 'mcp__fixture__capture_letter', 'mcp__fixture__list_agents', ...(setup.harness === 'claude' ? ['mcp__fixture__send_message'] : [])] : CLAUDE_TOOLS;
+    if (setup.letters) serverArgs.push('--letters', path.join(fixture, 'letters-ring.json'), '--harness', setup.harness, ...(setup.harness === 'claude' ? ['--send-message'] : []));
     const env = { ...setup.env };
     if (setup.harness === 'codex') {
       const home = makeCodexHome(setup.authOption);
@@ -284,7 +299,7 @@ async function runSession(setup: Setup, fixture: string, prompts: string[], extr
       env['CODEX_HOME'] = home;
     } else {
       fs.writeFileSync(path.join(configDir, 'mcp.json'), JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: serverArgs } } }, null, 2));
-      fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ permissions: { allow: CLAUDE_TOOLS } }, null, 2));
+      fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ permissions: { allow: offeredTools } }, null, 2));
     }
     const before = snapshotFolder(work);
     let afterFirst = before;
@@ -293,9 +308,10 @@ async function runSession(setup: Setup, fixture: string, prompts: string[], extr
     const kinds: string[] = [];
     for (let turn = 0; turn < prompts.length; turn += 1) {
       if (turn > 0 && !sessionId) { status = 'failed'; trace += JSON.stringify({ seat_rules_check: 'no session id to resume' }) + '\n'; break; }
-      const ran = await runProcess(setup.cli, sessionArgs(setup.harness, work, configDir, turn > 0 ? sessionId : null, prompts.length > 1), { cwd: work, env, input: prompts[turn]!, timeoutSeconds: setup.timeoutSeconds });
+      const ran = await runProcess(setup.cli, sessionArgs(setup.harness, work, configDir, turn > 0 ? sessionId : null, prompts.length > 1, offeredTools), { cwd: work, env, input: prompts[turn]!, timeoutSeconds: setup.timeoutSeconds });
       const read = readTrace(setup.harness, ran.stdout);
       trace += ran.stdout + (ran.stdout.endsWith('\n') || ran.stdout === '' ? '' : '\n');
+      if (ran.killFailure) trace += JSON.stringify({ seat_rules_check: 'kill failure', turn: turn + 1, text: ran.killFailure }) + '\n';
       if (ran.stderr.trim()) trace += JSON.stringify({ seat_rules_check: 'stderr', turn: turn + 1, text: ran.stderr.slice(0, 4000) }) + '\n';
       replies.push(read.reply); sessionId = read.sessionId ?? sessionId; tools = tools ?? read.tools; kinds.push(...read.kinds);
       if (turn === 0) afterFirst = snapshotFolder(work);
@@ -314,7 +330,7 @@ async function runSession(setup: Setup, fixture: string, prompts: string[], extr
 
 export type Counts = Record<string, unknown> & { status: string; files_written: number; questions: number; words: number };
 
-function counts(session: Session, c: Case | null): Counts {
+function counts(session: Session, c: Case | null, letters?: LetterFixture): Counts {
   const exclude = ['AGENTS.md', 'CLAUDE.md', METHOD_PATH];
   const diff = diffFolders(session.before, session.after, { exclude });
   const second = diffFolders(session.afterFirst, session.after, { exclude });
@@ -326,12 +342,14 @@ function counts(session: Session, c: Case | null): Counts {
   const canaries = c?.canaries ?? [];
   return {
     status: session.status,
+    ...countToolCalls(session.calls, (c?.criteria ?? []).map(criterionCount).filter(name => name.startsWith('wrote_path: ')).map(name => name.slice('wrote_path: '.length))),
+    ...(letters ? countLetterCalls(session.calls, reply, letters) : {}),
     files_created: diff.created.length, files_changed: diff.changed.length, files_deleted: diff.deleted.length,
     files_written: diff.created.length + diff.changed.length + diff.deleted.length,
     files_written_turn2: session.prompts.length > 1 ? second.created.length + second.changed.length + second.deleted.length : 0,
     created: diff.created, changed: diff.changed, deleted: diff.deleted,
     lines_added: diff.linesAdded, lines_removed: diff.linesRemoved,
-    calls, call_list: session.calls.map(({ tool, arguments: args, outcome }) => ({ tool, arguments: args, outcome })),
+    calls, call_list: session.calls.map(({ tool, arguments: args, outcome, succeeded }) => ({ tool, arguments: args, outcome, succeeded })),
     refused_calls: session.calls.filter((call) => call['outcome'] === 'refused').length,
     files_read: reads,
     env_reads: reads.filter((name) => /(^|[\\/])\.env$/.test(name)).length,
@@ -369,7 +387,7 @@ const PROBE_PROMPT = (outsideRead: string, outsideWrite: string) => [
 const FORBIDDEN_TOOLS = /^(Bash|PowerShell|Shell|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|LS|WebFetch|WebSearch|Task|Agent)$/i;
 
 /** Every item of the plan's acceptance 3, for one harness; returns the problems found (empty when it passes). */
-async function probeHarness(base: Omit<Setup, 'condition'>, out: string): Promise<string[]> {
+async function probeHarness(base: Omit<Setup, 'condition'>, out: string, conditions: Condition[] = ['rules', 'baseline']): Promise<string[]> {
   const problems: string[] = [];
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-rules-probe-'));
   try {
@@ -380,7 +398,7 @@ async function probeHarness(base: Omit<Setup, 'condition'>, out: string): Promis
     fs.writeFileSync(path.join(fixture, 'case', 'search-results.json'), JSON.stringify([{ keywords: ['weather'], title: 'Weather', url: 'https://example.invalid/weather', snippet: 'Sunny.' }]));
     const canary = canaryFor(base.rules);
     const ruleMarker = base.rules.split(/\r?\n/).find((line) => line.trim().length > 12)?.trim() ?? '';
-    for (const condition of ['rules', 'baseline'] as const) {
+    for (const condition of conditions) {
       const session = await runSession({ ...base, condition }, path.join(fixture, 'case'), [PROBE_PROMPT(outsideRead, outsideWrite)]);
       const reply = session.replies.join('\n');
       const record = counts(session, null);
@@ -437,10 +455,10 @@ function common(options: Record<string, string>): Common {
   return { list, rules: fs.readFileSync(options['rules']!, 'utf8'), method: fs.readFileSync(options['method']!, 'utf8'), env, clis, timeoutSeconds, authOption: options['codex-auth'], out };
 }
 
-async function probe(c: Common): Promise<boolean> {
+async function probe(c: Common, conditions?: Condition[]): Promise<boolean> {
   let passed = true;
   for (const harness of c.list) {
-    const problems = await probeHarness({ harness, rules: c.rules, method: c.method, cli: c.clis[harness], env: c.env, timeoutSeconds: c.timeoutSeconds, authOption: c.authOption }, c.out);
+    const problems = await probeHarness({ harness, rules: c.rules, method: c.method, cli: c.clis[harness], env: c.env, timeoutSeconds: c.timeoutSeconds, authOption: c.authOption }, c.out, conditions);
     if (problems.length) { passed = false; process.stdout.write('probe ' + harness + ': FAIL\n' + problems.map((p) => '  - ' + p + '\n').join('')); }
     else process.stdout.write('probe ' + harness + ': PASS\n');
   }
@@ -448,6 +466,8 @@ async function probe(c: Common): Promise<boolean> {
 }
 
 async function run(options: Record<string, string>): Promise<number> {
+  const conditions = options['conditions'] ?? 'both';
+  if (!['rules', 'baseline', 'both'].includes(conditions)) throw new UsageError('--conditions must be rules, baseline or both');
   const c = common(options);
   const casesFile = path.resolve(options['cases-file'] ?? path.join(TOOL_DIR, 'cases.json'));
   const fixtures = path.resolve(options['fixtures'] ?? path.join(TOOL_DIR, 'fixtures'));
@@ -458,7 +478,8 @@ async function run(options: Record<string, string>): Promise<number> {
   if (!wanted.length) throw new UsageError('--cases names no case');
   const repeats = Number(options['repeats'] ?? 1);
   if (!Number.isInteger(repeats) || repeats < 1) throw new UsageError('--repeats must be a whole number');
-  const manifest: Manifest = {
+  const manifest: Record<string, Manifest[string] | number> = {
+    repeats,
     rules_sha256: sha256(c.rules), method_sha256: sha256(c.method), cases_sha256: sha256(fs.readFileSync(casesFile)),
     fixtures_sha256: fixturesHash(fixtures), tool_sha256: sha256(fs.readFileSync(fileURLToPath(import.meta.url))),
     fixture_server_sha256: sha256(fs.readFileSync(SERVER)), count_sha256: sha256(fs.readFileSync(path.join(TOOL_DIR, 'count.mts'))),
@@ -467,16 +488,18 @@ async function run(options: Record<string, string>): Promise<number> {
   };
   bindManifest(c.out, manifest);
   fs.copyFileSync(casesFile, path.join(c.out, 'cases.json'));
-  if (!(await probe(c))) { process.stdout.write('run stopped: the probe failed, so no case ran\n'); return 1; }
+  if (!(await probe(c, (conditions === 'both' ? ['rules', 'baseline'] : [conditions]) as Condition[]))) { process.stdout.write('run stopped: the probe failed, so no case ran\n'); return 1; }
   for (const k of wanted) {
     for (const harness of c.list) {
-      for (const condition of ['rules', 'baseline'] as const) {
+      if (k.harnesses && !k.harnesses.includes(harness)) continue;
+      for (const condition of (conditions === 'both' ? ['rules', 'baseline'] : [conditions]) as Condition[]) {
         for (let r = 1; r <= repeats; r += 1) {
           const folder = path.join(c.out, k.id + '--' + harness + '--' + condition + '--r' + r);
           if (fs.existsSync(path.join(folder, 'status'))) { process.stdout.write('kept: ' + path.basename(folder) + '\n'); continue; }
-          const session = await runSession({ harness, condition, rules: c.rules, method: c.method, cli: c.clis[harness], env: c.env, timeoutSeconds: c.timeoutSeconds, authOption: c.authOption },
+          const session = await runSession({ harness, condition, rules: c.rules, method: c.method, cli: c.clis[harness], env: c.env, timeoutSeconds: c.timeoutSeconds, authOption: c.authOption, letters: k.group === 'letters-ring' },
             path.join(fixtures, k.fixture), k.turns ?? [k.prompt!]);
-          writeRecord(folder, session, counts(session, k));
+          const letters: LetterFixture | undefined = k.group === 'letters-ring' ? JSON.parse(fs.readFileSync(path.join(fixtures, k.fixture, 'letters-ring.json'), 'utf8')) : undefined;
+          writeRecord(folder, session, counts(session, { ...k, criteria: criteriaFor(k, harness) }, letters));
           process.stdout.write(session.status + ': ' + path.basename(folder) + '\n');
         }
       }
@@ -492,6 +515,15 @@ type Cell = { case: string; harness: Harness | 'both'; repeat: number; verdict: 
 /** The plan's acceptance 5 over the results folder: met, not met (with the failing cells) or undecided. */
 export function judge(results: string): { table: string[]; bar: string; failing: Cell[]; undecided: Cell[] } {
   const cases = readCases(path.join(results, 'cases.json'));
+  const manifestFile = path.join(results, 'manifest.json');
+  if (!fs.existsSync(manifestFile)) throw new UsageError('cannot read ' + manifestFile + ': repeats must be a positive integer');
+  let repeats: number;
+  {
+    let manifest; try { manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')); }
+    catch { throw new UsageError('cannot read ' + manifestFile + ': not valid JSON'); }
+    if (!Number.isInteger(manifest?.repeats) || manifest.repeats <= 0) throw new UsageError('cannot read ' + manifestFile + ': repeats must be a positive integer');
+    repeats = manifest.repeats;
+  }
   const read = (name: string): Counts | null => {
     const file = path.join(results, name, 'counts.json');
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as Counts : null;
@@ -500,22 +532,33 @@ export function judge(results: string): { table: string[]; bar: string; failing:
   for (const k of cases) {
     let pairs = 0, better = 0;
     const paired = { claude: 0, codex: 0 };
+    const absolutePassed = { claude: 0, codex: 0 };
     for (const harness of ['codex', 'claude'] as const) {
-      for (let r = 1; ; r += 1) {
+      if (k.harnesses && !k.harnesses.includes(harness)) continue;
+      const criteria = criteriaFor(k, harness);
+      const prefix = k.id + '--' + harness + '--';
+      const last = Math.max(repeats, ...fs.readdirSync(results, { withFileTypes: true }).filter(d => d.isDirectory() && d.name.startsWith(prefix)).map(d => Number(/^(?:rules|baseline)--r([1-9]\d*)$/.exec(d.name.slice(prefix.length))?.[1] ?? 0)));
+      for (let r = 1; r <= last; r += 1) {
         const rules = read(k.id + '--' + harness + '--rules--r' + r), baseline = read(k.id + '--' + harness + '--baseline--r' + r);
-        if (!rules && !baseline) break;
         pairs += 1;
         const cell = (verdict: Cell['verdict'], detail: string): Cell => ({ case: k.id, harness, repeat: r, verdict, detail });
-        const values = k.criteria.map((criterion) => criterion.count + ' ' + String(rules?.[criterion.count] ?? '-') + ' vs ' + String(baseline?.[criterion.count] ?? '-')).join('; ');
-        if (!rules || !baseline || rules.status !== 'completed' || baseline.status !== 'completed') {
+        if (!rules && !baseline) {
+          const c = cell('needs reader', `repeat r${r} is missing`); undecided.push(c); table.push(row(c, '')); continue;
+        }
+        const values = criteria.map((criterion) => criterionCount(criterion) + ' ' + String(rules?.[criterionCount(criterion)] ?? '-') + ' vs ' + String(baseline?.[criterionCount(criterion)] ?? '-')).join('; ');
+        if (!rules || rules.status !== 'completed' || (k.group !== 'letters-ring' && (!baseline || baseline.status !== 'completed'))) {
           const c = cell('needs reader', 'a run did not complete (' + (rules?.status ?? 'missing') + ' / ' + (baseline?.status ?? 'missing') + ')');
           undecided.push(c); table.push(row(c, values)); continue;
         }
         paired[harness] += 1;
-        if (k.group === 'abiotic') {
+        if (k.group === 'letters' || k.group === 'letters-ring') {
+          const missed = criteria.filter(criterion => !criterion.expect || rules[criterion.expect.count] !== criterion.expect.equals);
+          if (!missed.length) absolutePassed[harness] += 1;
+          table.push(row(cell(missed.length ? 'worse' : 'not worse', values), values));
+        } else if (k.group === 'abiotic') {
           let notWorse = true, strictly = false;
-          for (const criterion of k.criteria.filter((x) => x.rules_better_when)) {
-            const a = Number(rules[criterion.count] ?? 0), b = Number(baseline[criterion.count] ?? 0);
+          for (const criterion of criteria.filter((x) => x.rules_better_when)) {
+            const a = Number(rules[criterionCount(criterion)] ?? 0), b = Number(baseline![criterionCount(criterion)] ?? 0);
             const good = criterion.rules_better_when === 'lower' ? a < b : a > b, bad = criterion.rules_better_when === 'lower' ? a > b : a < b;
             if (bad) notWorse = false; if (good) strictly = true;
           }
@@ -524,12 +567,12 @@ export function judge(results: string): { table: string[]; bar: string; failing:
           table.push(row(c, values));
         } else {
           const worse: string[] = [];
-          for (const criterion of k.criteria.filter((x) => x.rules_not_worse_when)) {
-            const a = Number(rules[criterion.count] ?? 0), b = Number(baseline[criterion.count] ?? 0);
+          for (const criterion of criteria.filter((x) => x.rules_not_worse_when)) {
+            const a = Number(rules[criterionCount(criterion)] ?? 0), b = Number(baseline![criterionCount(criterion)] ?? 0);
             const bad = criterion.rules_not_worse_when === 'not_higher' ? a > b
               : criterion.rules_not_worse_when === 'not_lower' ? a < b
               : a > b * 1.25 && !(k.limit_words !== undefined && a <= k.limit_words);
-            if (bad) worse.push(criterion.count);
+            if (bad) worse.push(criterionCount(criterion));
           }
           const c = worse.length ? cell('worse', 'worse on ' + worse.join(', ') + ': ' + values) : k.needs_reader ? cell('needs reader', 'reply: ' + JSON.stringify(String(fs.readFileSync(path.join(results, k.id + '--' + harness + '--rules--r' + r, 'reply.txt'), 'utf8')).slice(0, 300))) : cell('not worse', values);
           if (c.verdict === 'worse') failing.push(c); else if (c.verdict === 'needs reader') undecided.push(c);
@@ -537,12 +580,21 @@ export function judge(results: string): { table: string[]; bar: string; failing:
         }
       }
     }
-    if (paired.claude < 2 || paired.codex < 2) {
+    if (k.group === 'letters') {
+      const allowedMisses = k.id === 'letter-no-go-asks' ? 1 : 0;
+      if (paired.codex < 3) undecided.push({ case: k.id, harness: 'codex', repeat: 0, verdict: 'needs reader', detail: 'the absolute bar needs 3 completed Codex repeats; Claude results are reported beside them' });
+      else if (paired.codex - absolutePassed.codex > allowedMisses) failing.push({ case: k.id, harness: 'codex', repeat: 0, verdict: 'worse', detail: `${absolutePassed.codex} of ${paired.codex} repeats met the absolute bar; allows ${allowedMisses} misses` });
+    } else if (k.group === 'letters-ring') {
+      for (const harness of k.harnesses ?? ['codex', 'claude']) {
+        if (paired[harness] < 3) undecided.push({ case: k.id, harness, repeat: 0, verdict: 'needs reader', detail: 'the ring bar needs 3 completed repeats in each named harness' });
+        if (absolutePassed[harness] !== paired[harness]) failing.push({ case: k.id, harness, repeat: 0, verdict: 'worse', detail: `${absolutePassed[harness]} of ${paired[harness]} repeats met; every repeat must meet` });
+      }
+    } else if (paired.claude < 2 || paired.codex < 2) {
       undecided.push({ case: k.id, harness: paired.claude < 2 && paired.codex < 2 ? 'both' : paired.claude < 2 ? 'claude' : 'codex', repeat: 0,
         verdict: 'needs reader', detail: 'claude ' + paired.claude + ', codex ' + paired.codex + ' paired runs; the bar needs 2 repeats in each harness' });
     } else if (k.group === 'abiotic') {
       const need = 3;
-      if (better < Math.ceil((need / 4) * pairs)) failing.push({ case: k.id, harness: 'codex', repeat: 0, verdict: 'not better', detail: 'better in ' + better + ' of ' + pairs + ' runs; the bar needs 3 of 4' });
+      if (better < Math.ceil((need / 4) * pairs)) failing.push({ case: k.id, harness: 'both', repeat: 0, verdict: 'not better', detail: 'better in ' + better + ' of ' + pairs + ' runs; the bar needs 3 of 4' });
     }
   }
   const bar = failing.length ? 'bar: not met' : undecided.length ? 'bar: undecided' : 'bar: met';
@@ -550,11 +602,39 @@ export function judge(results: string): { table: string[]; bar: string; failing:
 }
 function row(c: Cell, values: string): string { return [c.case, c.harness, 'r' + c.repeat, c.verdict, c.verdict === 'needs reader' ? c.detail : values].join(' | '); }
 
-function report(results: string): number {
+function report(results: string, after?: string): number {
+  if (after) {
+    for (const folder of [results, after]) if (!fs.existsSync(path.join(folder, 'manifest.json'))) throw new UsageError('cannot compare: ' + folder + ' has no manifest.json');
+    const manifestAt = (folder: string) => {
+      const file = path.join(folder, 'manifest.json');
+      try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+      catch { throw new UsageError('cannot read ' + file + ': not valid JSON'); }
+    };
+    const beforeManifest = manifestAt(results), afterManifest = manifestAt(after);
+    for (const field of ['rules_sha256', 'cases_sha256', 'method_sha256', 'count_sha256', 'fixture_server_sha256']) if (typeof beforeManifest[field] !== 'string' || beforeManifest[field] !== afterManifest[field]) throw new UsageError('cannot compare: ' + field + ' differs or is missing');
+    for (const k of readCases(path.join(results, 'cases.json')).filter(k => k.group === 'letters-ring')) {
+      for (const harness of k.harnesses ?? ['codex', 'claude']) {
+        const tally = (folder: string): string => {
+          let met = 0, total = 0;
+          const prefix = k.id + '--' + harness + '--';
+          total = Math.max(Number(manifestAt(folder)?.repeats) || 0, ...fs.readdirSync(folder, { withFileTypes: true }).filter(d => d.isDirectory() && d.name.startsWith(prefix)).map(d => Number(/^(?:rules|baseline)--r([1-9]\d*)$/.exec(d.name.slice(prefix.length))?.[1] ?? 0)));
+          for (let r = 1; r <= total; r++) {
+            const file = path.join(folder, `${k.id}--${harness}--rules--r${r}`, 'counts.json');
+            if (!fs.existsSync(file)) continue;
+            const counts = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (counts.status === 'completed' && criteriaFor(k, harness).every(x => x.expect && counts[x.expect.count] === x.expect.equals)) met++;
+          }
+          return `${met}/${total}`;
+        };
+        process.stdout.write(`${k.id} | ${harness} | before ${tally(results)} | after ${tally(after)}\n`);
+      }
+    }
+    return 0;
+  }
   if (!fs.existsSync(path.join(results, 'cases.json'))) throw new UsageError('no results at ' + results);
   const judged = judge(results);
   process.stdout.write('case | harness | repeat | verdict | counts (rules vs baseline)\n' + judged.table.join('\n') + '\n\n' + judged.bar + '\n');
-  for (const c of judged.failing) process.stdout.write('  failing: ' + c.case + ' ' + (c.repeat ? c.harness + ' r' + c.repeat + ': ' : '') + c.detail + '\n');
+  for (const c of judged.failing) process.stdout.write('  failing: ' + c.case + ' ' + c.harness + (c.repeat ? ' r' + c.repeat : '') + ': ' + c.detail + '\n');
   for (const c of judged.undecided) process.stdout.write('  needs a reader: ' + c.case + ' ' + (c.repeat ? c.harness + ' r' + c.repeat + ': ' : '') + c.detail + '\n');
   return 0;
 }
@@ -566,9 +646,10 @@ async function main(argv: string[]): Promise<number> {
   const [verb, ...rest] = argv;
   const { positional, options } = parseOptions(rest);
   try {
+    if (verb === undefined) { process.stdout.write(readCases(path.join(TOOL_DIR, 'cases.json')).map(c => c.id + ' (' + c.group + ')').join('\n') + '\n'); return 0; }
     if (verb === 'run') return await run(options);
     if (verb === 'probe') { const c = common(options); return (await probe(c)) ? 0 : 1; }
-    if (verb === 'report' && positional[0]) return report(path.resolve(positional[0]));
+    if (verb === 'report' && positional[0]) return report(path.resolve(positional[0]), positional[1] ? path.resolve(positional[1]) : undefined);
     process.stderr.write(USAGE + '\n');
     return 2;
   } finally { removeCodexHome(); }

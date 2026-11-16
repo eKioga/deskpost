@@ -39,10 +39,11 @@ try {
       refuse('Cannot read the proposed ref update. Invoke this guard through git push with valid object IDs.');
     const [, sha, ref, previous] = fields as [string, string, string, string];
     const deletion = /^0+$/.test(sha);
-    if ((ref.startsWith('refs/tags/') || deletion) && !release)
+    const integrationBranch = /^refs\/heads\/int\/.+$/.test(ref);
+    if ((ref.startsWith('refs/tags/') || (deletion && !integrationBranch)) && !release)
       refuse('A tag push or deletion needs a separately approved release. Set DESKPOST_RELEASE_PUSH=1 for that approved release push only.');
     // An approved deletion has no local commit whose ancestry could be checked.
-    if (!deletion && !/^0+$/.test(previous) && git('merge-base', '--is-ancestor', previous, sha).status !== 0)
+    if (!integrationBranch && !deletion && !/^0+$/.test(previous) && git('merge-base', '--is-ancestor', previous, sha).status !== 0)
       refuse('The remote base is not an ancestor of the proposed commit, or its ancestry cannot be read. Fetch and reconcile the moved base under a new charter; do not force the push.');
     if (ref === 'refs/heads/master') greenRecord(sha);
   }

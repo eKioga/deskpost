@@ -9,16 +9,19 @@
  *   (b) every section claiming a changed `kernel/src` file runs;
  *   (c) a changed file on the shared list (below) runs every section; added claim-map keys select their sections,
  *       while changed existing claims, removed keys or an unavailable earlier map run every section;
- *   (d) a changed `kernel/test/selftest.ts` maps each changed hunk to the section whose `if (selected(N))` block holds
- *       it, read from the file at the new revision. A hunk may span that section's function and run guard, in either
- *       order, with blank lines between; every nonblank line must belong to the same section. A hunk reaching imports,
- *       shared helpers, another section, the runner or the verdict runs every section.
+ *   (d) a changed `kernel/test/selftest.ts` maps each changed hunk to the sections whose `if (selected(N))` blocks hold
+ *       it, read from the file at the new revision. A hunk may span sections' functions and run guards, in either
+ *       order, with blank lines between; every nonblank line must belong to a section, and each section's lines select
+ *       it. A hunk reaching imports, shared helpers, the runner or the verdict runs every section, and so does a hunk
+ *       across two sections with any old side (only the new side is read, so a replaced line could be a helper); only
+ *       a pure addition (old count 0, or no `oldCount` at all) selects each section it touches.
  * The cut tier always runs every section, so a wrong claim costs at most one cut.
  *
  * THE LINUX SELECTION (kickoffs/s153 row 6), below, is the one platform policy every caller applies after these rules.
  */
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 
 export const CHECK_MAP_PATH = 'tools/check-map.json';
 class UnmappedPathError extends Error {
@@ -40,6 +43,188 @@ export function pathChecks(changed: readonly string[]): string[] {
 
 export const COVERS_PATH = 'kernel/test/section-covers.json';
 export const SELFTEST_PATH = 'kernel/test/selftest.ts';
+
+/**
+ * THE LANE FILES (PLAN-lane-test-files.md, Design 2, 3 and 5; kickoffs/s210 row 2). Each lane's new sections live in
+ * `kernel/test/lanes/<lane>.ts` and claim their files in `kernel/test/lanes/<lane>.covers.json`; `selftest.ts` runs them
+ * after its own, in this order (docs/areas.json `lanes`). Every reader of sections reads the SECTION SOURCES: the legacy
+ * file, then each lane file, in that order. A lane file absent from a tree (a fixture, an older commit) is no source.
+ */
+const FALLBACK_LANES: readonly string[] = ['seats-and-screens', 'books-and-memory', 'hubs-and-letters', 'notebook-and-install', 'guards-and-tooling'];
+function configuredLanes(areasText: string | null): readonly string[] {
+  if (areasText !== null) {
+    try {
+      const ranges = JSON.parse(areasText.replace(/^\uFEFF/, '')).section_ranges;
+      if (ranges && typeof ranges === 'object' && !Array.isArray(ranges))
+        return [...new Set([...Object.keys(ranges), ...FALLBACK_LANES])];
+    } catch { /* checkedLanes reports malformed areas files, including their path. */ }
+  }
+  return FALLBACK_LANES;
+}
+const areasUrl = new URL('../docs/areas.json', import.meta.url);
+export const LANES: readonly string[] = configuredLanes(fs.existsSync(areasUrl) ? fs.readFileSync(areasUrl, 'utf8') : null);
+export const LANES_FOLDER = 'kernel/test/lanes';
+export const laneTestPath = (lane: string): string => `${LANES_FOLDER}/${lane}.ts`;
+export const laneCoversPath = (lane: string): string => `${LANES_FOLDER}/${lane}.covers.json`;
+export const isLaneTestFile = (file: string): boolean => LANES.some(lane => file === laneTestPath(lane));
+export const isLaneCoversFile = (file: string): boolean => LANES.some(lane => file === laneCoversPath(lane));
+
+/** One file that holds sections, repository-relative, with its text. */
+export interface SectionSource { file: string; text: string }
+
+/** The section sources from a reader of repository-relative paths (null: no such file); the legacy file must exist. */
+export function sectionSources(read: (file: string) => string | null): SectionSource[] {
+  const legacy = read(SELFTEST_PATH);
+  if (legacy === null) throw new Error(`${SELFTEST_PATH} is missing`);
+  const areasText = read('docs/areas.json');
+  return checkedLanes([{ file: SELFTEST_PATH, text: legacy }, ...configuredLanes(areasText).flatMap(lane => {
+    const text = read(laneTestPath(lane));
+    return text === null ? [] : [{ file: laneTestPath(lane), text, lane }];
+  })], areasText, 'docs/areas.json');
+}
+
+/** The section sources of a suite on disk: the suite file, then each lane file in the `lanes` folder beside it. */
+export function suiteSources(suite: string): SectionSource[] {
+  const folder = suite.replace(/[\\/][^\\/]*$/, '');
+  const areas = `${folder}/../../docs/areas.json`;
+  const areasText = fs.existsSync(areas) ? fs.readFileSync(areas, 'utf8') : null;
+  return checkedLanes([{ file: suite, text: fs.readFileSync(suite, 'utf8') }, ...configuredLanes(areasText).flatMap(lane => {
+    const file = `${folder}/lanes/${lane}.ts`;
+    return fs.existsSync(file) ? [{ file, text: fs.readFileSync(file, 'utf8'), lane }] : [];
+  })], areasText, areas);
+}
+
+/**
+ * EVERY READER REFUSES A LANE FILE IT CANNOT READ (kickoffs/s210-r2 row 2): each lane file is held to `laneFormatProblems`
+ * and to its lane's `section_ranges` whenever docs/areas.json exists. One error names every problem, so no reader drops
+ * a section quietly; fixture suites without an areas file keep their format checks.
+ */
+function checkedLanes(sources: (SectionSource & { lane?: string })[], areasText: string | null, areasFile: string): SectionSource[] {
+  let ranges: Record<string, unknown> = {};
+  let grandfathered = new Set<number>();
+  if (areasText !== null) {
+    try {
+      const areas = JSON.parse(areasText.replace(/^﻿/, '')) as { section_ranges?: Record<string, unknown>; grandfathered_sections?: Record<string, number[]> };
+      ranges = areas.section_ranges ?? {};
+      grandfathered = new Set(Object.values(areas.grandfathered_sections ?? {}).flat().filter(Number.isInteger));
+    }
+    catch (error) { throw new Error(`${areasFile} cannot be read for the lane ranges: ${(error as Error).message}`); }
+  }
+  const problems = sources.flatMap(source => {
+    const dispatch = dispatchProblems(source.file, source.text);
+    if (source.lane === undefined) return [...dispatch, ...legacyNumberProblems(source.file, source.text, grandfathered)];
+    const range = ranges[source.lane];
+    const valid = Array.isArray(range) && range.length === 2 && range.every(Number.isSafeInteger)
+      && range[0] >= 1000 && range[1] <= 1999 && range[0] <= range[1];
+    const missing = areasText !== null && !valid
+      ? [`${source.file}: lane ${source.lane} needs a valid [first, last] range in ${areasFile} section_ranges`] : [];
+    return [...dispatch, ...missing, ...laneFormatProblems(source.file, source.text, valid ? range as [number, number] : undefined)];
+  });
+  const owners = new Map<number, string>();
+  for (const source of sources) {
+    const numbers = new Set([...source.text.matchAll(/^(?:if \(selected\(|(?:export\s+)?async function section)(\d+)/gm)].map(match => Number(match[1])));
+    for (const n of numbers) {
+      const previous = owners.get(n);
+      if (previous !== undefined && previous !== source.file) problems.push(`section ${n} occurs in two source files: ${previous} and ${source.file}`);
+      else owners.set(n, source.file);
+    }
+  }
+  if (problems.length) throw new Error(`lane files the section readers cannot read: ${problems.join('; ')}`);
+  return sources.map(({ file, text }) => ({ file, text }));
+}
+
+/** New tests belong to a lane; only explicitly grandfathered legacy numbers may exceed 820. */
+function legacyNumberProblems(file: string, text: string, grandfathered: ReadonlySet<number>): string[] {
+  return text.split(/\r?\n/).flatMap((line, index) => {
+    const n = Number(/^(?:if \(selected\(|(?:export\s+)?async function section)(\d+)/.exec(line)?.[1] ?? NaN);
+    return n >= 1000 || n > 820 && !grandfathered.has(n)
+      ? [`${file} line ${index + 1}: section ${n} is outside the frozen legacy numbers; new sections go in the lane's file and range`] : [];
+  });
+}
+
+/** Declarations must reach the runner's column-zero inventory through exactly one canonical dispatch. */
+const dispatchCache = new Map<string, string[]>();
+function dispatchProblems(file: string, text: string): string[] {
+  const cached = dispatchCache.get(text);
+  if (cached) return cached.map(problem => file + problem);
+  const lines = text.split(/\r?\n/), problems: string[] = [];
+  // Fixture programs inside strings are data: inspect statements in this source, not their text.
+  let ts: any;
+  try { ts = createRequire(import.meta.url)('../kernel/node_modules/typescript/lib/typescript.js'); }
+  catch { return [`${file}: cannot load kernel/node_modules/typescript; run npm ci in kernel/ before reading sections`]; }
+  const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const declarations: { n: string; line: number }[] = [];
+  const dispatches = new Map<string, number>();
+  const visit = (node: any): void => {
+    const line = tree.getLineAndCharacterOfPosition(node.getStart(tree)).line;
+    if (ts.isFunctionDeclaration(node)) {
+      const n = /^section(\d+)$/.exec(node.name?.text ?? '')?.[1];
+      if (n) declarations.push({n, line});
+    }
+    if (ts.isIfStatement(node)) {
+      if (/^selected\s*\(/.test(node.expression.getText(tree)) && !/^if \(selected\(\d/.test(lines[line] ?? ''))
+        problems.push(`${file} line ${line + 1}: write the dispatch as \`if (selected(N)) await sectionN();\``);
+      const n = /^if \(selected\((\d+)\)/.exec(lines[line] ?? '')?.[1];
+      if (n && new RegExp('^await section' + n + '\\(').test(node.thenStatement.getText(tree))) dispatches.set(n, (dispatches.get(n) ?? 0) + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  for (const {n, line} of declarations) {
+    const count = dispatches.get(n) ?? 0;
+    if (count !== 1) problems.push(`${file} line ${line + 1}: section ${n} has ${count} dispatch lines; write exactly one \`if (selected(${n})) await section${n}();\``);
+  }
+  dispatchCache.set(text, problems.map(problem => problem.slice(file.length)));
+  return problems;
+}
+
+/**
+ * A LANE FILE KEEPS THE PARSERS' FORMAT (PLAN-lane-test-files.md, Design 2): every reader anchors at column zero, so an
+ * indented section declaration or dispatch line is a section no reader sees, and an indented closing brace lets a
+ * section's range run on into the next. Given its lane's `[first, last]`, a section numbered outside it is refused too
+ * (kickoffs/s210-r2 row 2). Each problem names the file and line.
+ */
+export function laneFormatProblems(file: string, text: string, range?: readonly [number, number]): string[] {
+  const lines = text.split(/\r?\n/);
+  const problems: string[] = [];
+  if (range) {
+    const lane = /([^\\/]+)\.ts$/.exec(file)?.[1] ?? file;
+    const seen = new Set<number>();
+    lines.forEach((line, index) => {
+      const n = Number(/^(?:if \(selected\(|(?:export\s+)?async function section)(\d+)/.exec(line)?.[1] ?? NaN);
+      if (Number.isNaN(n) || seen.has(n)) return;
+      seen.add(n);
+      if (n < range[0] || n > range[1]) problems.push(`${file} line ${index + 1}: section ${n} is outside lane ${lane}'s range ${range[0]} to ${range[1]} in docs/areas.json`);
+    });
+  }
+  lines.forEach((line, index) => {
+    if (/^\s+(?:export\s+)?async function section\d+\(/.test(line)) problems.push(`${file} line ${index + 1}: an indented section declaration; it starts at column zero`);
+    if (/^\s+if \(selected\(\d+\)/.test(line)) problems.push(`${file} line ${index + 1}: an indented dispatch line; it starts at column zero`);
+    if (/^if \(selected\(\d+\)/.test(line) && /\{\s*$/.test(line)) problems.push(`${file} line ${index + 1}: a dispatch line opens a block; it is one line, \`if (selected(N)...) await sectionN();\``);
+  });
+  try {
+    for (const range of sectionRanges(text)) {
+      // From the line after the opening (the comment lines above it are part of the range) to the line before its end.
+      let open = range.start - 1;
+      while (open < range.end - 1 && !/^(?:async function section|if \(selected\()/.test(lines[open]!)) open += 1;
+      const inner = lines.slice(open + 1, range.end - 1).findIndex(line => /^(?:async function |export |if \(selected\()/.test(line));
+      if (inner >= 0) problems.push(`${file} line ${open + inner + 2}: section ${range.section} has no closing '}' at column zero before this line`);
+    }
+  } catch (error) {
+    problems.push(`${file}: ${(error as Error).message}`);
+  }
+  return problems;
+}
+
+/** The sources as one text, for the readers that match whole lines (`sectionNumbers`, `knownDeclaredSkips`, the CI plan). */
+export function joinedText(sources: readonly SectionSource[]): string {
+  return sources.map(source => source.text).join('\n');
+}
+
+/** A suite's sources on disk as one text. */
+export function suiteText(suite: string): string {
+  return joinedText(suiteSources(suite));
+}
 
 /** Files every section depends on: a change to one runs the whole self-test (rule c). */
 export const SHARED_FILES: ReadonlySet<string> = new Set([
@@ -93,17 +278,53 @@ export interface Covers {
   sections: Record<string, string[]>;
 }
 
-/** The claim map, checked for shape; a malformed map is an error, never an empty selection. */
-export function parseCovers(text: string): Covers {
+/** The claim map, checked for shape; a malformed map is an error, never an empty selection. `file` names it in errors. */
+export function parseCovers(text: string, file: string = COVERS_PATH): Covers {
   const parsed = JSON.parse(text.replace(/^﻿/, '')) as Partial<Covers>;
-  if (parsed.schema !== 1 || typeof parsed.sections !== 'object' || parsed.sections === null) throw new Error(`${COVERS_PATH} is not a schema-1 claim map`);
+  if (parsed.schema !== 1 || typeof parsed.sections !== 'object' || parsed.sections === null) throw new Error(`${file} is not a schema-1 claim map`);
   for (const [section, files] of Object.entries(parsed.sections)) {
-    if (!/^[1-9][0-9]*$/.test(section)) throw new Error(`${COVERS_PATH}: '${section}' is not a section number`);
-    if (!Array.isArray(files) || files.some((file) => typeof file !== 'string' || !/^kernel\/src\/[^/]+\.ts$/.test(file))) {
-      throw new Error(`${COVERS_PATH}: section ${section} must list kernel/src/<file>.ts paths`);
+    if (!/^[1-9][0-9]*$/.test(section)) throw new Error(`${file}: '${section}' is not a section number`);
+    if (!Array.isArray(files) || files.some((claim) => typeof claim !== 'string' || !/^kernel\/src\/[^/]+\.ts$/.test(claim))) {
+      throw new Error(`${file}: section ${section} must list kernel/src/<file>.ts paths`);
     }
   }
   return parsed as Covers;
+}
+
+/**
+ * THE ONE CLAIM MAP: `section-covers.json` and each lane's claim file, read as one (PLAN-lane-test-files.md, Design 3).
+ * A number claimed in two files is refused by name. Given the sources, a section a lane file holds may be claimed only
+ * in that lane's claim file, and a lane claim file may claim only its own lane file's sections.
+ */
+export function mergeCovers(parts: readonly { file: string; text: string }[], sources?: readonly SectionSource[]): Covers {
+  const home = new Map<number, string>();
+  for (const source of sources ?? []) for (const range of sectionRanges(source.text)) if (!home.has(range.section)) home.set(range.section, source.file);
+  const sections: Record<string, string[]> = {};
+  const claimedIn = new Map<string, string>();
+  for (const part of parts) {
+    const covers = parseCovers(part.text, part.file);
+    const lane = LANES.find(name => part.file === laneCoversPath(name));
+    for (const [section, files] of Object.entries(covers.sections)) {
+      const earlier = claimedIn.get(section);
+      if (earlier !== undefined) throw new Error(`section ${section} is claimed in two files: ${earlier} and ${part.file}`);
+      const held = home.get(Number(section));
+      if (sources && lane !== undefined && held !== laneTestPath(lane)) throw new Error(`${part.file} claims section ${section}, which ${held === undefined ? 'no section source holds' : `${held} holds`}: a lane claims only its own file's sections`);
+      if (sources && lane === undefined && held !== undefined && isLaneTestFile(held)) throw new Error(`${part.file} claims section ${section}, which ${held} holds: claim it in ${held.replace(/\.ts$/, '.covers.json')}`);
+      claimedIn.set(section, part.file);
+      sections[section] = files;
+    }
+  }
+  return { schema: 1, about: `merged from ${parts.map(part => part.file).join(', ')}`, sections };
+}
+
+/** The claim-map files from a reader of repository-relative paths (null: no such file); section-covers.json must exist. */
+export function coversFiles(read: (file: string) => string | null): { file: string; text: string }[] {
+  const legacy = read(COVERS_PATH);
+  if (legacy === null) throw new Error(`${COVERS_PATH} is missing`);
+  return [{ file: COVERS_PATH, text: legacy }, ...configuredLanes(read('docs/areas.json')).flatMap(lane => {
+    const text = read(laneCoversPath(lane));
+    return text === null ? [] : [{ file: laneCoversPath(lane), text }];
+  })];
 }
 
 /** Rule (a): the kernel/src files no section claims, sorted. */
@@ -112,17 +333,23 @@ export function unclaimedFiles(covers: Covers, kernelSrcFiles: readonly string[]
   return kernelSrcFiles.filter((file) => !claimed.has(file)).sort();
 }
 
-/** A hunk of the new revision, as `git diff -U0`'s `+start,count` gives it. */
+/** A hunk of the new revision, as `git diff -U0`'s `+start,count` gives it; `oldCount` is its `-a,b` side's count. */
 export interface Hunk {
   start: number;
   count: number;
+  oldCount?: number;
 }
 
-/** `@@ -a,b +c,d @@` headers of a `git diff -U0` of one file, as new-side hunks. */
+/**
+ * `@@ -a,b +c,d @@` headers of a `git diff -U0` of one file, as new-side hunks. `oldCount` is attached but not
+ * enumerable, so a hunk serializes as `{start, count}` as it always has (section 215 pins that form).
+ */
 export function parseHunks(diffText: string): Hunk[] {
   const hunks: Hunk[] = [];
-  for (const match of diffText.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-    hunks.push({ start: Number(match[1]), count: match[2] === undefined ? 1 : Number(match[2]) });
+  for (const match of diffText.matchAll(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const hunk: Hunk = { start: Number(match[2]), count: match[3] === undefined ? 1 : Number(match[3]) };
+    Object.defineProperty(hunk, 'oldCount', { value: match[1] === undefined ? 1 : Number(match[1]), enumerable: false });
+    hunks.push(hunk);
   }
   return hunks;
 }
@@ -132,6 +359,8 @@ export interface Selection {
   all: boolean;
   /** The sections chosen, sorted (empty when `all`, or when nothing a section covers changed). */
   sections: number[];
+  /** Own changed self-test text and new claim keys, retained even when all is true. */
+  ownSections?: number[];
   /** Why, one line each: `sections 12, 88: claim lifecycle.ts`. */
   reasons: string[];
 }
@@ -141,11 +370,19 @@ function listed(sections: Iterable<number>): string {
   return `${sorted.length === 1 ? 'section' : 'sections'} ${sorted.join(', ')}`;
 }
 
-/** Rules (b)-(d) over one commit's changed paths (repository-relative, forward slashes). */
-export function selectSections(input: { changed: readonly string[]; selftestHunks: readonly Hunk[]; selftestText: string; covers: Covers; previousCovers?: Covers }): Selection {
+/**
+ * Rules (b)-(d) over one commit's changed paths (repository-relative, forward slashes). `laneSources` are the lane files
+ * at the new revision, each with its own hunks (empty when unchanged): rule (d) and the name search read them after the
+ * legacy file, and `covers` and `previousCovers` are the merged claim maps (`mergeCovers`).
+ */
+export function selectSections(input: { changed: readonly string[]; selftestHunks: readonly Hunk[]; selftestText: string; covers: Covers; previousCovers?: Covers;
+  laneSources?: readonly (SectionSource & { hunks: readonly Hunk[] })[] }): Selection {
   const reasons: string[] = [];
   const chosen = new Set<number>();
+  const ownSections = new Set<number>();
   let all = false;
+  let claimsJudged = false;
+  const sources = [{ file: SELFTEST_PATH, text: input.selftestText, hunks: input.selftestHunks }, ...(input.laneSources ?? [])];
   const claimants = new Map<string, number[]>();
   for (const [section, files] of Object.entries(input.covers.sections)) {
     for (const file of files) claimants.set(file, [...(claimants.get(file) ?? []), Number(section)]);
@@ -159,24 +396,31 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
     const staticChecks = pathChecks([file]);
     if (staticChecks.length) reasons.push(`${file}: ${staticChecks.join(', ')}`);
     if (mapped.length && !staticChecks.length && mapped.every(row => Array.isArray(row.sections) && !row.sections.length)) reasons.push(`document gate: ${file}`);
-    if (file === COVERS_PATH) {
+    if (file === COVERS_PATH || isLaneCoversFile(file)) {
+      // The maps are merged, so one comparison judges every changed claim file at once.
+      if (claimsJudged) continue;
+      claimsJudged = true;
       const before = input.previousCovers?.sections;
       const after = input.covers.sections;
+      const added = Object.keys(after).filter(section => !before || !Object.hasOwn(before, section)).map(Number);
+      added.forEach(section => ownSections.add(section));
       if (!before || Object.entries(before).some(([section, claims]) =>
         !Object.hasOwn(after, section) || JSON.stringify([...claims].sort()) !== JSON.stringify([...after[section]!].sort()))) {
         all = true;
         reasons.push(`every section: existing claims in ${file} changed or the earlier map is unavailable`);
       } else {
-        const added = Object.keys(after).filter(section => !Object.hasOwn(before, section)).map(Number);
         added.forEach(section => chosen.add(section));
         if (added.length) reasons.push(`${listed(added)}: added claim-map keys`);
       }
     } else if (SHARED_FILES.has(file)) {
       all = true;
       reasons.push(`every section: ${file} is on the shared list`);
-    } else if (file.startsWith('kernel/test/') && file !== SELFTEST_PATH) {
+    } else if (file.startsWith('kernel/test/') && file !== SELFTEST_PATH && !isLaneTestFile(file)) {
       all = true;
       reasons.push(`every section: ${file} is a self-test helper`);
+    } else if (isLaneTestFile(file) && !sources.some((source) => source.file === file)) {
+      all = true;
+      reasons.push(`every section: ${file} changed and is not among the section sources read`);
     } else if (/^kernel\/src\/[^/]+\.ts$/.test(file)) {
       const sections = claimants.get(file) ?? [];
       if (sections.length === 0) {
@@ -189,10 +433,11 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
     } else if (file.startsWith('.githooks/') || file.startsWith('tools/') || mapped.some(row => row.sections === 'named')) {
       const name = file.slice(file.lastIndexOf('/') + 1);
       const named = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-      const lines = input.selftestText.split(/\r?\n/);
-      const sections = [...new Set(sectionRanges(input.selftestText)
-        .filter((range) => named.test(lines.slice(range.start - 1, range.end).join('\n')))
-        .map((range) => range.section))];
+      // Every source: a tool named by a legacy section and a lane section selects both (kickoffs/s210 row 2).
+      const sections = [...new Set(sources.flatMap((source) => {
+        const lines = source.text.split(/\r?\n/);
+        return sectionRanges(source.text).filter((range) => named.test(lines.slice(range.start - 1, range.end).join('\n'))).map((range) => range.section);
+      }))];
       if (sections.length === 0 || sections.length > 40) {
         all = true;
         reasons.push(sections.length === 0 ? `every section: no section names ${file}` : `every section: more than 40 sections name ${file}`);
@@ -203,12 +448,14 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
       throw new UnmappedPathError(file);
     }
   }
-  if (input.changed.includes(SELFTEST_PATH)) {
-    const ranges = sectionRanges(input.selftestText);
-    const lines = input.selftestText.split(/\r?\n/);
+  // Rule (d), for the legacy file and each lane file alike: a lane file's hunks map to that file's own sections.
+  for (const source of sources) {
+    if (!input.changed.includes(source.file)) continue;
+    const ranges = sectionRanges(source.text);
+    const lines = source.text.split(/\r?\n/);
     const blank = (line: number) => (lines[line - 1] ?? '').trim() === '';
     const inside = (line: number) => ranges.find((range) => line >= range.start && line <= range.end);
-    for (const hunk of input.selftestHunks) {
+    for (const hunk of source.hunks) {
       // Blank lines at either end of a hunk belong to no section and change nothing: a new section arrives with one.
       let first = Math.max(hunk.start, 1);
       let last = hunk.count === 0 ? first : hunk.start + hunk.count - 1;
@@ -216,23 +463,47 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         while (first <= last && blank(first)) first += 1;
         while (last >= first && blank(last)) last -= 1;
         if (first > last) {
-          reasons.push(`no section: ${SELFTEST_PATH} lines ${hunk.start}-${hunk.start + hunk.count - 1} are blank`);
+          reasons.push(`no section: ${source.file} lines ${hunk.start}-${hunk.start + hunk.count - 1} are blank`);
           continue;
         }
       }
-      const home = inside(first);
       const span = hunk.count === 0 ? `after line ${hunk.start}` : first === last ? `line ${first}` : `lines ${first}-${last}`;
-      if (home && lines.slice(first - 1, last).every((line, offset) =>
-        line.trim() === '' || ranges.some(range => range.section === home.section && first + offset >= range.start && first + offset <= range.end))) {
-        chosen.add(home.section);
-        reasons.push(`section ${home.section}: ${SELFTEST_PATH} ${span} is inside it`);
-      } else {
+      // Each nonblank line's section; the first line inside none runs every section and is named.
+      const touched = new Set<number>();
+      let stray: number | undefined;
+      // A PURE ADDITION CAN BE SPLIT ANOTHER WAY (kickoffs/s210 row 4): git may count the unchanged line just after the
+      // hunk as added and an equal line inside it as unchanged. The first section added to a lane file did that with
+      // `runLane`'s closing `}`: the hunk held runLane's `}` and the new section's `}` lay just past it. So in a pure
+      // addition, one line outside every section that equals the line just after the hunk is that line, unchanged, and
+      // the line after is the added one; the swap is taken only when that line is inside a section.
+      const after = hunk.start + hunk.count;
+      const swappable = hunk.count > 0 && (hunk.oldCount ?? 0) === 0 && inside(after) !== undefined ? lines[after - 1] : undefined;
+      let swapped = false;
+      for (let line = first; line <= last; line += 1) {
+        if (hunk.count > 0 && blank(line)) continue;
+        const home = inside(line);
+        if (home) { touched.add(home.section); ownSections.add(home.section); }
+        else if (!swapped && swappable !== undefined && lines[line - 1] === swappable) {
+          swapped = true;
+          const moved = inside(after)!;
+          touched.add(moved.section); ownSections.add(moved.section);
+        } else stray ??= line;
+      }
+      if (stray !== undefined) {
         all = true;
-        reasons.push(`every section: ${SELFTEST_PATH} ${span} is outside every section`);
+        reasons.push(`every section: ${source.file} line ${stray} is outside every section`);
+      } else if (touched.size > 1 && (hunk.oldCount ?? 0) > 0) {
+        // Only the new side is read, so any old line between two sections could have been a shared helper; only a
+        // pure addition (no `oldCount`, as hand-built hunks have, counts as one) selects each section it touches.
+        all = true;
+        reasons.push(`every section: ${source.file} ${span} replaces lines across ${listed(touched)}`);
+      } else {
+        touched.forEach(section => chosen.add(section));
+        reasons.push(`${listed(touched)}: ${source.file} ${span} ${touched.size === 1 ? 'is inside it' : 'are inside them'}`);
       }
     }
   }
-  return { all, sections: all ? [] : [...chosen].sort((a, b) => a - b), reasons };
+  return { all, sections: all ? [] : [...chosen].sort((a, b) => a - b), ownSections: [...ownSections].sort((a, b) => a - b), reasons };
 }
 
 /**
@@ -307,12 +578,15 @@ export function platformRefusals(required: readonly string[], skips: ReadonlyMap
 export function hookSections(git: (args: string[]) => string): Selection {
   try {
     const changed = git(['diff', '--name-only', '--no-renames', '--cached', 'HEAD']).split(/\r?\n/).filter(Boolean);
-    const covers = parseCovers(git(['show', `:${COVERS_PATH}`]));
-    const previousCovers = parseCovers(git(['show', `HEAD:${COVERS_PATH}`]));
-    const selftestText = git(['show', `:${SELFTEST_PATH}`]);
-    const selftestHunks = changed.includes(SELFTEST_PATH)
-      ? parseHunks(git(['diff', '-U0', '--no-renames', '--cached', 'HEAD', '--', SELFTEST_PATH])) : [];
-    const chosen = selectSections({ changed, covers, previousCovers, selftestText, selftestHunks });
+    // A lane file the tree does not hold (or a git that cannot show it) is no source: the legacy files still decide.
+    const optional = (spec: string) => { try { return git(['show', spec]); } catch { return null; } };
+    const at = (revision: string) => (file: string) => file === COVERS_PATH || file === SELFTEST_PATH ? git(['show', `${revision}:${file}`]) : optional(`${revision}:${file}`);
+    const sources = sectionSources(at(''));
+    const covers = mergeCovers(coversFiles(at('')), sources);
+    const previousCovers = mergeCovers(coversFiles(at('HEAD')));
+    const hunks = (file: string) => changed.includes(file) ? parseHunks(git(['diff', '-U0', '--no-renames', '--cached', 'HEAD', '--', file])) : [];
+    const chosen = selectSections({ changed, covers, previousCovers, selftestText: sources[0]!.text, selftestHunks: hunks(SELFTEST_PATH),
+      laneSources: sources.slice(1).map(source => ({ ...source, hunks: hunks(source.file) })) });
     return chosen.all ? chosen : { ...chosen, sections: [...new Set([...chosen.sections, 155])].sort((a, b) => a - b) };
   } catch (error) {
     if (error instanceof UnmappedPathError) throw error;

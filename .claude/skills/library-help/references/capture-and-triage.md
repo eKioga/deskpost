@@ -198,7 +198,8 @@ batch that filed a note skips that action as `already-filed` while its page stil
 
 `deskpost train` reads the ordered work list; `train page` renders it as Markdown. Use `train add` to
 name an item and its `--title` and `--place`, `train move` to change its place, and `train close` with
-`--done` or `--dropped` and a `--note` to record its outcome. Places are `foundation`, `running`,
+`--done` or `--dropped` and a `--note` to record its outcome. `train retitle <id> --title <t>` replaces a
+title that has gone stale, on an open or closed item, and changes nothing else. Places are `foundation`, `running`,
 `bucket:1`, `bucket:2`, `car:<name>` and `lane:<name>`; a mutation names the item it changed.
 
 ## Keeping the Holding Shelf small
@@ -300,7 +301,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.6.0/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.6.1/docs/cross-seat-reports.md).
 
 ## Reports across Libraries
 

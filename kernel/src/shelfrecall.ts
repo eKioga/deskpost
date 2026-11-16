@@ -127,9 +127,8 @@ function recallPlan(workspace: string, argv: string[]): RecallPlan {
   if (!fs.existsSync(wiki) || !fs.statSync(wiki).isDirectory()) {
     if (fs.existsSync(collectionBookWiki(workspace, 'archive', bookSlug))) {
       refuse(
-        `Book '${bookSlug}' is in the collection archive (collection/archive/${bookSlug}), and no verb restores an archived collection ` +
-          `Book, so there is no route to recall it. Move collection/archive/${bookSlug} back to collection/books/${bookSlug} by hand, ` +
-          'then run deskpost collection rebuild, and recall it from there. Nothing was written.',
+        `Book '${bookSlug}' is in the collection archive (collection/archive/${bookSlug}). Restore the archived Book with ` +
+          `deskpost shared restore ${bookSlug} --preflight, then recall it from there. Nothing was written.`,
       );
     }
     refuse(`No Book '${bookSlug}' is in this Library's collection (collection/books/${bookSlug}/wiki does not exist). Nothing was written.`);

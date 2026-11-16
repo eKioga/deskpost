@@ -22,15 +22,16 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock, type BookLock } from './locks.ts';
-import { sha256OfBytes, sha256OfText } from './sha.ts';
+import { pageComparisonSha256, sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { assertInsideRoot, lexists, renderPageBody } from './pagepath.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { resolveContentPath } from './contentpath.ts';
 import { programRoot } from './programroot.ts';
-import { kickoffVerdict } from './kickoffcheck.ts';
+import { kickoffVerdict, parseKickoffNumbering } from './kickoffcheck.ts';
 import { kickoffNameResolver } from './kickoffnames.ts';
+import { localDate } from './localdate.ts';
 
 class HubNewPageRefusal extends Error {}
 
@@ -89,8 +90,9 @@ export interface NewPageArguments {
  * `deskpost kickoff check` and `hub edit --mode new-page --page kickoffs/<id>` share. No register: the TRAIN rule is
  * skipped with a warning (standing answer 5); one that cannot be read is a problem, as the tool's `--train` says.
  */
-export function judgeKickoff(text: string, workspace: string, rules: { placeholders?: boolean; train?: boolean; names?: boolean } = {}): { problems: string[]; warnings: string[] } {
-  const adrFolder = path.join(programRoot(), 'docs', 'adr');
+export function judgeKickoff(text: string, workspace: string, rules: { placeholders?: boolean; train?: boolean; names?: boolean; programRoot?: string; postingPage?: string } = {}): { problems: string[]; warnings: string[] } {
+  const root = rules.programRoot ?? programRoot();
+  const adrFolder = path.join(root, 'docs', 'adr');
   if (!fs.existsSync(adrFolder)) return { problems: [`no docs/adr in the program root (${adrFolder}), so the ADRs a Kickoff names cannot be checked`], warnings: [] };
   const adrFiles = fs.readdirSync(adrFolder);
   const warnings: string[] = [];
@@ -104,7 +106,14 @@ export function judgeKickoff(text: string, workspace: string, rules: { placehold
       catch (error) { problems.push(`cannot read train register '${register}': ${(error as Error).message}`); }
     }
   }
-  const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : kickoffNameResolver(workspace) });
+  // A Kickoff that adds self-test sections is judged against the program's docs/areas.json (kickoffs/s210 row 3); the lane
+  // rule for OWNS PATHS stays the source tool's.
+  const areasFile = path.join(root, 'docs', 'areas.json');
+  let numbering: ReturnType<typeof parseKickoffNumbering>;
+  try { numbering = parseKickoffNumbering(fs.existsSync(areasFile) ? fs.readFileSync(areasFile, 'utf8') : null); }
+  catch (error) { numbering = { unreadable: `docs/areas.json cannot be read: ${(error as Error).message}` }; }
+  const resolveName = kickoffNameResolver(workspace);
+  const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : name => name === rules.postingPage ? { status: 'exists' } : resolveName(name), numbering });
   return { ...verdict, problems: [...verdict.problems, ...problems], warnings: [...warnings, ...verdict.warnings] };
 }
 
@@ -126,6 +135,11 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
   let page = options.page.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   if (/\.md$/i.test(page)) page = page.substring(0, page.length - 3);
   if (!page) refuse('--mode new-page needs --page, for example notes/2026-09-28-a-decision.');
+  // `{today}` IN THE NAME (kickoffs/s199-r2 item 3) is this write's local date, filled before the name check. The name,
+  // and so the plan id, is fixed at the preview: an apply after midnight names another page and is refused by its plan
+  // id, never renamed. Only `{today}`: a time or a session in a page name stays refused.
+  const pageAsGiven = page;
+  page = page.replace(/\{today\}/g, () => localDate());
   const segments = page.split('/');
   if (segments.length === 1 && RESERVED.includes(segments[0]!.toLowerCase())) {
     refuse(`'${segments[0]}' is a page hub new seeds and only the other modes edit; --mode new-page makes a page beside them.`);
@@ -190,14 +204,15 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
   // 1.5.2's four stops were Kickoffs posted unchecked, because only the orchestrator's memory ran the check.
   let kickoffWarnings: string[] | null = null;
   if (/^kickoffs\//.test(page)) {
-    const verdict = judgeKickoff(options.judgedText ?? raw, workspace, options.received ? { placeholders: false, train: false, names: false } : {});
+    const verdict = judgeKickoff(options.judgedText ?? raw, workspace, options.received ? { placeholders: false, train: false, names: false } : { postingPage: pagePath.replace(/\.md$/, '') });
     if (verdict.problems.length) {
       refuse(`${pagePath} is not a complete Kickoff (deskpost kickoff check <file> says the same):\n${verdict.problems.map((line) => `- ${line}`).join('\n')}\nNothing was written.`);
     }
     kickoffWarnings = verdict.warnings;
   }
   const rendered = renderPageBody(raw, options.title);
-  const proposedSha = sha256OfText(rendered.body);
+  // THE READER'S HASH (kickoffs/s203 row 1): a CRLF or BOM input's receipt equals the validated reader's sha256.
+  const proposedSha = pageComparisonSha256(rendered.body);
 
   // COPY EVIDENCE: a Notebook page carried whole, which triage reads as covered (plan 0.6).
   let evidence: { path: string; source: string; sha256: string } | null = null;
@@ -222,6 +237,8 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
     // is refused; without one the rerun form stands, since new-page never overwrites.
     plan_id: newPagePlanId(pagePath, proposedSha),
     ...(kickoffWarnings !== null ? { warnings: kickoffWarnings } : {}),
+    // THE NAME USED, beside the name given, when `{today}` filled it (kickoffs/s199-r2 item 3); after every older key.
+    ...(page !== pageAsGiven ? { page_name_given: pageAsGiven, page_name_used: page } : {}),
   };
   if (options.preflight) return plan;
   if (options.planId && options.planId !== plan['plan_id']) {
@@ -340,13 +357,13 @@ export function newPagePlanId(pagePath: string, proposedSha: string): string {
 }
 
 /**
- * WHERE A NEW PAGE IS LINKED FROM (kickoffs/s98 row K2; ADR-0013, `Next` holds open work): a `kickoffs/sNN` or `cNN` page's
- * line is the loop's pointer under `Next` (`c`, kickoffs/s174 row 3); any other page is linked from the item or paragraph
- * that cites it, in no named section.
+ * WHERE A NEW PAGE IS LINKED FROM (kickoffs/s98 row K2; ADR-0013, `Next` holds open work): a `kickoffs/sNN`, `cNN` or `wNN`
+ * page's line is the loop's pointer under `Next` (`c`, kickoffs/s174 row 3; `w`, kickoffs/s197 row 3); any other page is
+ * linked from the item or paragraph that cites it, in no named section.
  */
 function nextAdvice(slug: string, page: string): string {
   const read = `Read it with mcp__validated-book-reader__read_open_project_page (${slug}, ${page}).`;
-  if (/^kickoffs\/([sc][0-9a-z-]+)$/.test(page)) {
+  if (/^kickoffs\/([scw][0-9a-z-]+)$/.test(page)) {
     return (
       `${read} To point the build seat at it, write this line to a file and add it under Next with deskpost hub edit ${slug} ` +
       `--mode append-section --section Next --content-path <file>: ${nextLine(slug, page)}`
@@ -358,10 +375,10 @@ function nextAdvice(slug: string, page: string): string {
 /**
  * THE Next LINE FOR A NEW PAGE, ADVISED BY FILE (kickoffs/s94 row 5; the Report "Suspected: hub edit new-page's `next`
  * advice suggests an inline --content pointer line"): an inline value is cut at the shim's first line break, and the
- * dev session loop takes every Hub write from a file. A `kickoffs/sNN` page's line is the loop's pointer
+ * dev session loop takes every Hub write from a file. A `kickoffs/sNN`, `cNN` or `wNN` page's line is the loop's pointer
  * (`docs/dev-loop-orchestrator.md`, "The Kickoff"); any other page's is its link.
  */
 function nextLine(slug: string, page: string): string {
-  const kickoff = /^kickoffs\/([sc][0-9a-z-]+)$/.exec(page);
+  const kickoff = /^kickoffs\/([scw][0-9a-z-]+)$/.exec(page);
   return kickoff ? `- [ ] Run ${kickoff[1]}: [[projects/${slug}/${page}]]` : `- [[projects/${slug}/${page}]]`;
 }

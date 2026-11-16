@@ -11,6 +11,12 @@ export function childEnv(): NodeJS.ProcessEnv {
     .split(separator)
     .filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost')))
     .join(separator);
+  if (!env[key].split(separator).some(entry => entry && fs.existsSync(path.join(entry, process.platform === 'win32' ? 'node.exe' : 'node')))) {
+    const nodeDir = path.dirname(process.execPath);
+    if (!fs.existsSync(path.join(nodeDir, 'deskpost')) && !fs.existsSync(path.join(nodeDir, 'deskpost.cmd'))) {
+      env[key] = [env[key], nodeDir].filter(Boolean).join(separator);
+    }
+  }
   return env;
 }
 

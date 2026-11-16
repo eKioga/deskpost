@@ -56,7 +56,7 @@ import { judgeWriteResult, McpSession, readExactOrNull, refuseRetiredWriter, res
 import type { NoteRecord } from './basicmemory.ts';
 import { programRoot } from './programroot.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
-import { isLocalBackend } from './basicmemory.ts';
+import { isLocalBackend, markerConnection } from './basicmemory.ts';
 import { withBookLocks } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
@@ -383,9 +383,12 @@ function assertNotArchivedAway(workspace: string, bookSlug: string): void {
   const active = fs.existsSync(path.join(workspace, 'collection', 'books', bookSlug, 'wiki'));
   const archived = fs.existsSync(path.join(workspace, 'collection', 'archive', bookSlug, 'wiki'));
   if (!active && archived) {
+    if (fs.existsSync(path.join(workspace, 'collection', 'archive', bookSlug, 'wiki', '_moved.md'))) {
+      refuse(`Book '${bookSlug}' went to the shared collection; open it there. Nothing was written.`);
+    }
     refuse(
       `Book '${bookSlug}' is in this Library's collection archive (collection/archive/${bookSlug}) and not on its active shelf, so ` +
-        'publishing it would recreate it beside the archived copy. Restore it first, or publish under another --book-slug. Nothing was written.',
+        `publishing it would recreate it beside the archived copy. Restore it first (deskpost shared restore ${bookSlug} --preflight), or publish under another --book-slug. Nothing was written.`,
     );
   }
 }
@@ -1069,6 +1072,7 @@ function publishPlan(workspace: string, input: PublishInput): Record<string, PsJ
   if (local) {
     return {
       operation: 'Publish a Shelf Book to the Local collection, then delete the Shelf copy',
+      ...(markerConnection(workspace) ? { shared_route: `To put this Book in the connected shared collection, publish locally first, then use deskpost shared promote ${input.bookSlug}. To create a Book there directly, use deskpost shared new-book.` } : {}),
       shelf_book: `shelf/${input.shelfSlug}`,
       shared_book: `books/${input.bookSlug}`,
       destination: 'collection',

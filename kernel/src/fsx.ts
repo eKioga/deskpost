@@ -148,6 +148,9 @@ function writeStaged(file: string, write: (staging: string) => void, beforeRenam
 }
 
 export function writeAtomicText(file: string, text: string): void {
+  // Fixture fault: one absolute destination fails before staging; byte-based rollback stays available.
+  const fault = process.env['LIBRARY_WRITE_FAULT_PATH'] ?? '';
+  if (path.isAbsolute(fault) && path.resolve(file) === path.resolve(fault)) throw new Error(`LIBRARY_WRITE_FAULT_PATH: write to '${file}' made to fail`);
   writeStaged(file, (staging) => fs.writeFileSync(staging, text, { encoding: 'utf8' }));
 }
 

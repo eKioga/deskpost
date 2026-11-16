@@ -104,6 +104,10 @@ that decides where any given decision belongs.
 * [ADR-0088](adr/0088-a-changed-delivery-is-a-filed-conflict-kept-until-a-person-decides.md) - A changed delivery is a filed conflict, kept until a person decides: durable wire receipts, locked identity checks and cache mutations, and conflicts named by check, doctor and the Desk.
 * [ADR-0089](adr/0089-shared-books-are-written-by-any-library-with-conditional-writes-change-records-and-restore-as-the-guarantee.md) - Shared Books are written by any Library, with conditional writes, change records and restore as the guarantee: opted in per connection, on a proven tool-list fingerprint, each change recorded first and written only while the page is unchanged.
 * [ADR-0090](adr/0090-shared-book-upkeep-under-a-grant-is-ungated-because-every-change-is-conditional-recorded-first-and-restorable.md) - Shared-Book upkeep under a grant is ungated because every change is conditional, recorded first and restorable: one yes per Book names the seats by seat_id; removals, new Books and promotes keep the yes; amends ADR-0070 for shared/ Books only.
+* [ADR-0091](adr/0091-an-every-section-gate-takes-the-whole-machine.md) - Every-section commits and cuts take the push flag, door and every slot; selected-section commits keep one slot.
+* [ADR-0092](adr/0092-bounded-commit-hooks-share-three-gate-slots.md) - Bounded commit hooks take one slot and at most two workers; the machine has three slots.
+* [ADR-0093](adr/0093-a-letter-may-carry-the-readers-go-checked-against-the-senders-transcript.md) - A letter may carry the reader's go, checked against the sender's transcript; it removes a wait and opens no gate.
+* [ADR-0094](adr/0094-a-letters-ring-and-relay-lines-come-from-the-program-and-a-follow-up-answer-keeps-its-thread.md) - Ring and Codex relay lines come from capture; reopened letters show their remedy; a follow-up answer keeps its thread.
 
 ## Guides
 

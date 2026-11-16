@@ -40,6 +40,54 @@
     "embedding-service": "An embedding endpoint, which the harness PROVIDES (S41, the reader's ruling): tools/AcceptanceEmbeddingStandIn.mjs, started for the row and shared by both arms, whose vectors are integer word counts so no parser can bend them. Never a reader's own inference server; every row's TEI_* variables are set by the harness. Needs node, and no network."
   },
   "deltas": {
+    "kernel-capture-tidy-due": {
+      "reason": "00a2a337, s199 row 1: capture Books report capture_tidy_due. Pair only the observed new zero field against absence.",
+      "approved_by": "kickoffs/c157-r5 row 1 (traced to kickoffs/s199 row 1 by 00a2a337)",
+      "approved_on": "2026-11-08",
+      "applies_to": [
+        "workspace.resolves-by-walking-up-from-a-subdirectory",
+        "desk.overview-names-what-is-open-at-this-seat",
+        "desk.a-bare-slug-on-the-desk-is-a-shared-book"
+      ],
+      "match": {
+        "field_pattern": "^result\\.capture_books\\[[0-2]\\]\\.capture_tidy_due$",
+        "value_pattern": "^(<absent>|0)$"
+      }
+    },
+    "kernel-search-skips-generated-reader-map": {
+      "reason": "96104a36, c156: full-text search skips the generated reader map. Pair the recorded page counts only; all remaining text stays compared.",
+      "approved_by": "kickoffs/c157-r5 row 1 (traced to kickoffs/c156 by 96104a36)",
+      "approved_on": "2026-11-14",
+      "applies_to": [
+        "search.full-text-over-open-books-only"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.content\\[0\\]\\.text$",
+        "phrases": [
+          {
+            "kernel": "3 page(s)",
+            "powershell": "4 page(s)"
+          }
+        ]
+      }
+    },
+    "kernel-triage-names-missing-source": {
+      "reason": "0f7f2d2e, c129 row 2: triage names every field fault. Pair only the recorded added missing-source sentence; the remaining refusal stays compared.",
+      "approved_by": "kickoffs/c157-r5 row 1 (traced to kickoffs/c129 row 2 by 0f7f2d2e)",
+      "approved_on": "2026-11-08",
+      "applies_to": [
+        "triage.plan-refuses-replace-existing"
+      ],
+      "match": {
+        "field_pattern": "^stderr$",
+        "phrases": [
+          {
+            "kernel": "Name the note to triage with source_page (exact) or source_match. ",
+            "powershell": ""
+          }
+        ]
+      }
+    },
     "kernel-report-records-1-5-1-version": {
       "reason": "s136 a7589b78: the Report records its writing program version. Pair only the observed version line, together with the existing seat-source line pairing, then compare every remaining byte.",
       "approved_by": "kickoffs/c67 row 1; Eric's acceptance of 2026-10-25 for 1.5.1 (projects/deskpost-desk/notes/2026-10-25-1-5-1-compiled-matrix-twelve-accepted)",
@@ -55,7 +103,7 @@
             "powershell": ""
           },
           {
-            "kernel": "\ndeskpost_version: 1.6.0",
+            "kernel": "\ndeskpost_version: 1.6.1",
             "powershell": ""
           }
         ]
@@ -169,8 +217,8 @@
     },
     "kernel-doctor-carries-summary-counts-3": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7)",
-      "approved_on": "2026-10-31",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7); kickoffs/c157-r3 row 3 (1.6.1's measured counts)",
+      "approved_on": "2026-11-15",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -180,13 +228,13 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.skipped)$",
-        "value_pattern": "^(<absent>|0|4|5)$"
+        "value_pattern": "^(<absent>|0|4|5|6)$"
       }
     },
     "kernel-doctor-carries-summary-counts-4": {
       "reason": "s141 row 5, pushed 0c753f8; projects/deskpost-dev/notes/2026-10-19-s141-a1 Handback explicitly adds totals.program and totals.library to doctor JSON. Pair only these new fields against absence, with the exact count alternatives seen in these fixtures; existing check verdicts remain compared. The two trusted-Codex rows with unexpected temp files are not exempted.",
-      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd); kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7)",
-      "approved_on": "2026-10-31",
+      "approved_by": "kickoffs/c62-r2 r2 (kickoffs/c62 successor), row 3, standing answer 11(b); Eric's OPEN yes; kickoffs/s141 row 5; kickoffs/c80-r5 row 1c (1.5.2's thirtieth library check, locks.stale-recovery-guard, 5e495bd); kickoffs/c88 row 3 (1.5.3's thirty-first library check, postbox.server-tools, 9581fe7); kickoffs/c157-r3 row 3 (1.6.1's measured counts)",
+      "approved_on": "2026-11-15",
       "applies_to": [
         "workspace.init-leaves-a-workspace-its-checks-pass",
         "checks.reports-every-registered-check",
@@ -196,7 +244,7 @@
       ],
       "match": {
         "field_pattern": "^(result\\.totals\\.library\\.total)$",
-        "value_pattern": "^(<absent>|0|27|29|30|31)$"
+        "value_pattern": "^(<absent>|0|27|29|30|31|32)$"
       }
     },
     "kernel-doctor-carries-summary-counts-5": {
@@ -850,6 +898,28 @@
       "approved_on": "2026-10-18",
       "applies_to": ["triage.batch-preflight-binds-every-action", "triage.batch-confirmed-lands-every-action-and-journals-it", "triage.batch-holding-action-keeps-its-capture-date"],
       "match": { "field_pattern": "^result\\.(actions\\[\\d+\\]\\.plan|outcomes\\[\\d+\\]\\.result)\\.page$", "value_pattern": "^(<absent>|notes/\\d{4}-\\d{2}-\\d{2}-[a-z0-9-]+)$" }
+    }
+    ,
+    "kernel-seatless-context-lets-read-only-sessions-proceed": {
+      "reason": "8cf5a6de, c140 row 2: the seatless desk context first says a read-only session proceeds without a seat, and puts the seat question under \"For work that needs a seat:\". Pair only those two added phrases against absence; every other byte stays compared.",
+      "approved_by": "kickoffs/c157-r6 row 1 (traced to kickoffs/c140 row 2 by 8cf5a6de)",
+      "approved_on": "2026-11-09",
+      "applies_to": [
+        "guards.desk-context-with-no-seat-says-how-to-get-one"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.additionalContext$",
+        "phrases": [
+          {
+            "kernel": "A session asked only to read or review proceeds without a seat and does not ask for one. ",
+            "powershell": ""
+          },
+          {
+            "kernel": "For work that needs a seat: ",
+            "powershell": ""
+          }
+        ]
+      }
     }
   },
   "excluded_helpers": {

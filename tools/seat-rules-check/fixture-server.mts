@@ -7,11 +7,12 @@
  * list_files, read_file and write_file act inside --root only: a path is resolved through the real path of its
  * nearest existing parent, so `..`, an absolute path elsewhere and a link that leaves the root are all refused.
  * run_command and screen_action do nothing and answer "not available in this session"; search_public answers from
- * the case's offline results file. Every call is one JSON line in --log: { tool, arguments, outcome, at }, with
+ * the case's offline results file. Every call is one JSON line in --log: { tool, arguments, outcome, succeeded, at }, with
  * outcome ok, refused or stub. The first line records which Library or Deskpost variables reached this process.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import type { LetterFixture } from './count.mts';
 
 const STUB = 'not available in this session';
 const OUTSIDE = 'refused: the path is outside the case folder';
@@ -26,6 +27,10 @@ if (!rootOption || !logFile) {
   process.exit(2);
 }
 const root = fs.realpathSync(rootOption);
+const lettersFile = option('--letters');
+const letters: LetterFixture | null = lettersFile ? JSON.parse(fs.readFileSync(lettersFile, 'utf8')) : null;
+const sendMessage = !!letters && process.argv.includes('--send-message');
+let plainLetter = 0;
 
 function log(entry: Record<string, unknown>): void {
   fs.appendFileSync(logFile!, JSON.stringify({ ...entry, at: new Date().toISOString() }) + '\n');
@@ -72,6 +77,23 @@ function search(query: string): string {
 
 function callTool(name: string, args: Record<string, unknown>): Result {
   switch (name) {
+    case 'capture_letter': {
+      if (!letters) return { text: 'unknown tool: ' + name, outcome: 'refused', isError: true };
+      if (letters.expected_capture_for !== undefined && args['for'] !== letters.expected_capture_for) {
+        const refused: Result & { captured: boolean } = { text: 'refused: no seat ' + String(args['for']) + ' here', outcome: 'refused', isError: true, captured: false };
+        return refused;
+      }
+      const outputs = letters.outputs_by_harness?.[option('--harness') ?? ''] ?? letters.outputs;
+      const text = args['answers'] !== undefined ? outputs.answers : args['wants'] !== undefined ? outputs.wants : outputs.plain[plainLetter++];
+      let captured = false;
+      try { captured = JSON.parse(text ?? 'null')?.status === 'captured'; } catch { /* a recorded refusal can be plain text */ }
+      const result: Result & { captured: boolean } = text === undefined ? { text: 'no recorded letter remains', outcome: 'refused', isError: true, captured } : { text, outcome: 'ok', captured };
+      return result;
+    }
+    case 'list_agents':
+      return letters ? { text: JSON.stringify(letters.agents), outcome: 'ok' } : { text: 'unknown tool: ' + name, outcome: 'refused', isError: true };
+    case 'send_message':
+      return sendMessage ? { text: 'sent', outcome: 'ok' } : { text: 'unknown tool: ' + name, outcome: 'refused', isError: true };
     case 'list_files': {
       const folder = args['path'] === undefined ? root : inside(args['path']);
       if (folder === null) return { text: OUTSIDE, outcome: 'refused', isError: true };
@@ -112,6 +134,12 @@ const TOOLS = [
   { name: 'search_public', description: 'Search the public web.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
 ];
 
+if (letters) TOOLS.push(
+  { name: 'capture_letter', description: 'Capture a letter for a seat or reply to a letter page; returns the program output.', inputSchema: { type: 'object', properties: { for: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' }, wants: { type: 'string' }, answers: { type: 'string' } }, required: ['title', 'body'] } },
+  { name: 'list_agents', description: 'List running agents and their message names.', inputSchema: { type: 'object', properties: {} } },
+);
+if (sendMessage) TOOLS.push({ name: 'send_message', description: 'Send a message to a running agent.', inputSchema: { type: 'object', properties: { to: { type: 'string' }, message: { type: 'string' } }, required: ['to', 'message'] } });
+
 function answer(message: Record<string, unknown>): Record<string, unknown> | null {
   const id = message['id'];
   if (id === undefined || id === null) return null; // a notification, notifications/initialized among them
@@ -126,7 +154,7 @@ function answer(message: Record<string, unknown>): Record<string, unknown> | nul
     const args = (params['arguments'] ?? {}) as Record<string, unknown>;
     let result: Result;
     try { result = callTool(name, args); } catch (error) { result = { text: 'failed: ' + (error as Error).message, outcome: 'ok', isError: true }; }
-    log({ tool: name, arguments: args, outcome: result.outcome });
+    log({ tool: name, arguments: args, outcome: result.outcome, succeeded: !result.isError && result.outcome === 'ok', ...(name === 'capture_letter' ? { captured: (result as Result & { captured?: boolean }).captured === true } : {}) });
     return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: result.text }], ...(result.isError ? { isError: true } : {}) } };
   }
   return { jsonrpc: '2.0', id, error: { code: -32601, message: 'method not found: ' + method } };

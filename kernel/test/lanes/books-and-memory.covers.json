@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "about": "The kernel/src files each section of kernel/test/lanes/books-and-memory.ts covers, as kernel/test/section-covers.json says for selftest.ts (kickoffs/s210).",
+  "sections": {
+    "1200": [
+      "kernel/src/localarchive.ts",
+      "kernel/src/sharedwriters.ts",
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1201": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1202": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1203": [
+      "kernel/src/sharedwrite.ts",
+      "kernel/src/reader.ts"
+    ],
+    "1204": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1205": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1206": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1207": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1208": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1209": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1210": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1211": [
+      "kernel/src/sharedwriters.ts"
+    ],
+    "1212": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1213": [
+      "kernel/src/reader.ts"
+    ],
+    "1214": [
+      "kernel/src/reader.ts"
+    ],
+    "1216": [
+      "kernel/src/localarchive.ts"
+    ],
+    "1217": [
+      "kernel/src/publish.ts"
+    ],
+    "1218": [
+      "kernel/src/shelfcarry.ts"
+    ]
+  }
+}

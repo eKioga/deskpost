@@ -36,6 +36,7 @@ import { parseBookRoot, placeOfRoot, type BookPlace, type BookRootParts } from '
 import { isLocalBackend, markerConnection, McpSession, readListedContent, resolveMcpUrl, configuredCollectionId } from './basicmemory.ts';
 import { sharedPages } from './sharedmanifests.ts';
 import { collectionBookIdentity, collectionBookWiki } from './collectionbooks.ts';
+import { movedNoteLine } from './desk.ts';
 
 const FULL_TEXT_SCHEMA = 1;
 
@@ -88,7 +89,7 @@ function convertToCanonicalPagePath(wikiRoot: string, full: string): string {
 
 function bookPageFiles(wikiPath: string): string[] {
   if (!fs.existsSync(wikiPath)) return [];
-  return listFilesRecursive(wikiPath).filter((file) => file.toLowerCase().endsWith('.md'));
+  return listFilesRecursive(wikiPath).filter((file) => file.toLowerCase().endsWith('.md') && path.relative(wikiPath, file).toLowerCase() !== '_index.md');
 }
 
 /** Containment, and the reparse-point walk that makes it mean something. */
@@ -138,6 +139,8 @@ export interface FullTextResult {
   shared_books_open: number;
   books_searched: number;
   books_unavailable: Record<string, unknown>[];
+  books_partly_searched: Record<string, unknown>[];
+  books_not_reached: Record<string, unknown>[];
   books_out_of_scope: Record<string, unknown>[];
   books_closed_during_query: Record<string, unknown>[];
   capture_books: string[];
@@ -263,14 +266,15 @@ export async function findOpenBookLines(options: {
       continue;
     }
     if (!fs.existsSync(book.wikiPath)) {
+      const moved = openBook.form === 'books' ? movedNoteLine(root, slug) : null;
       unavailable.push({
         book: slug,
         book_root: openBook.root,
         book_title: book.title,
         collection: openBook.form === 'books' ? 'collection' : 'shelf',
         book_shelf: openBook.shelf,
-        reason: `This Book has no pages directory at ${openBook.form === 'books' ? `collection/${openBook.storeWiki}` : openBook.wikiRoot}.`,
-        repair: `restore the Book directory, or close it with deskpost desk close book ${slug}`,
+        reason: moved === null ? `This Book has no pages directory at ${openBook.form === 'books' ? `collection/${openBook.storeWiki}` : openBook.wikiRoot}.` : `This Book moved to shared/${slug}. ${moved}`,
+        repair: moved === null ? `restore the Book directory, or close it with deskpost desk close book ${slug}` : `open it there with deskpost basic-memory open ${slug}, and close the old entry with deskpost desk close book ${slug} --location collection`,
       });
       continue;
     }
@@ -317,8 +321,11 @@ export async function findOpenBookLines(options: {
     if (contributed && kind === 'capture') captureBooks.push(openBook.root);
   }
 
+  const partlySearched: Record<string, unknown>[] = [];
+  const reachedShared = new Set<string>();
   for (const openBook of sharedBooksOpen) {
     if (testSearchBudgetSpent(budget)) break;
+    reachedShared.add(openBook.root);
     order += 1;
     let title = openBook.slug;
     let kind = 'unknown';
@@ -331,13 +338,23 @@ export async function findOpenBookLines(options: {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(connection.collection_id)) throw new Error('The Basic Memory connection records no collection UUID; run deskpost basic-memory setup again.');
       const session = new McpSession(connection.url, 'deskpost-shared-fulltext');
       await session.initialize();
-      if (testSearchBudgetSpent(budget)) break;
+      if (testSearchBudgetSpent(budget)) {
+        partlySearched.push({ book: openBook.slug, book_root: openBook.root });
+        break;
+      }
       const project = { id: connection.collection_id, name: connection.collection_name || connection.collection_id };
       const wiki = openBook.storeWiki;
-      for await (const node of sharedPages(session, project.id, wiki, () => testSearchBudgetSpent(budget))) {
-        if (testSearchBudgetSpent(budget)) break;
+      let stopped = false;
+      // Keep the metadata walk clock-bounded; an exhausted page budget stops before the next content read.
+      // Finishing the iterator proves that no unread page remains, even at the exact page limit.
+      for await (const node of sharedPages(session, project.id, wiki, () => {
+        if ((Date.now() - budget.started) / 1000 < budget.wallClockSeconds) return false;
+        testSearchBudgetSpent(budget); stopped = true; return true;
+      })) {
         const file = String(node.file_path);
         const page = file.slice(wiki.length + 1, -3);
+        if (page === '_index') continue;
+        if (testSearchBudgetSpent(budget)) { stopped = true; break; }
         try {
           const text = await readListedContent(session, project, file, String(node.permalink ?? ''));
           if (text === null) throw new Error('The listed page was not found; it was not scanned.');
@@ -348,7 +365,7 @@ export async function findOpenBookLines(options: {
             kind = /^\s*-\s+\*\*Kind:\*\*\s+capture\s*$/m.test(text) ? 'capture' : 'curated';
           }
           // The in-flight read may have crossed the clock limit; scan no further lines after that.
-          if ((Date.now() - budget.started) / 1000 >= budget.wallClockSeconds) { testSearchBudgetSpent(budget); break; }
+          if ((Date.now() - budget.started) / 1000 >= budget.wallClockSeconds) { testSearchBudgetSpent(budget); stopped = true; break; }
           budget.filesScanned += 1;
           pagesScanned += 1;
           contributed = scanPage(openBook, title, kind, page, text) || contributed;
@@ -356,7 +373,8 @@ export async function findOpenBookLines(options: {
           withheld.push({ book: openBook.slug, book_root: openBook.root, page, reason: (error as Error).message });
         }
       }
-      searched.push(openBook.root);
+      if (stopped || budget.collectedMatchesHit) partlySearched.push({ book: openBook.slug, book_root: openBook.root });
+      else searched.push(openBook.root);
     } catch (error) {
       unavailable.push({ book: openBook.slug, book_root: openBook.root, collection: 'shared', book_shelf: openBook.shelf,
         reason: (error as Error).message, repair: `check the Basic Memory connection and retry, or close the Book with deskpost desk close book ${openBook.slug} --location shared` });
@@ -410,6 +428,8 @@ export async function findOpenBookLines(options: {
     shared_books_open: sharedBooksOpen.length,
     books_searched: searched.length,
     books_unavailable: unavailable.filter(entry => endRoots.includes(String(entry['book_root']))),
+    books_partly_searched: partlySearched.filter(entry => endRoots.includes(String(entry['book_root']))),
+    books_not_reached: sharedBooksOpen.filter(book => !reachedShared.has(book.root) && endRoots.includes(book.root)).map(book => ({ book: book.slug, book_root: book.root })),
     books_out_of_scope: [],
     books_closed_during_query: closedDuringQuery,
     capture_books: captureBooks,
@@ -445,6 +465,8 @@ export function formatFullTextResult(result: FullTextResult): string {
     lines.push(`Showing the first ${result.result_count} of ${total} matching lines; ask for more with a larger result cap.`);
   }
   if (result.budget_note.trim()) lines.push(result.budget_note);
+  if (result.books_partly_searched.length) lines.push(`Books partly searched: ${result.books_partly_searched.map(book => book['book']).join(', ')}.`);
+  if (result.books_not_reached.length) lines.push(`Books not reached: ${result.books_not_reached.map(book => book['book']).join(', ')}.`);
   if (result.books_unavailable.length) {
     lines.push('');
     lines.push('Books that are open but could NOT be read, so this answer is incomplete for them:');
@@ -479,6 +501,10 @@ export function formatFullTextResult(result: FullTextResult): string {
   if (!result.results.length) {
     lines.push(result.books_unavailable.length || result.pages_withheld.length || result.match_count_is_floor
       ? 'No matching line was returned from the pages searched.' : 'No page of the open Books carries that term.');
+    if (/\s/.test(result.query.trim()) && !result.books_unavailable.length && !result.pages_withheld.length && !result.books_partly_searched.length && !result.books_not_reached.length && !result.books_closed_during_query.length) {
+      const longest = result.query.trim().split(/\s+/).reduce((best, word) => (word.length > best.length ? word : best), '');
+      lines.push(`The phrase '${result.query}' was matched whole, as written. Try one word, such as '${longest}'.`);
+    }
   } else {
     // Grouped on the ROOT: `shelf/x` and `shelf/_archive/x` are two Books sharing one name, and a
     // slug key would print one heading over both.

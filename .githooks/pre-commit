@@ -18,6 +18,8 @@
 # program on PATH, where the install fixtures then refuse "already installed". So the three are blanked and every
 # PATH entry holding a deskpost shim is dropped, as tools/Test-BuiltRelease.ps1 does, for this run only.
 set -f
+DESKPOST_GITLEAKS=$(command -v gitleaks 2>/dev/null || true)
+export DESKPOST_GITLEAKS
 clean_path=""
 old_ifs=$IFS
 IFS=:
@@ -29,6 +31,15 @@ for entry in $PATH; do
 done
 IFS=$old_ifs
 set +f
+
+if ! PATH="$clean_path" command -v node >/dev/null 2>&1; then
+    if ! command -v node >/dev/null 2>&1; then echo "pre-commit: Node is not on PATH. Nothing was committed."; exit 1; fi
+    node_dir=$(LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= DESKPOST_LAUNCHER_PID= node -e 'process.stdout.write(require("path").dirname(process.execPath))')
+    command -v cygpath >/dev/null 2>&1 && [ -n "$node_dir" ] && node_dir=$(cygpath -u "$node_dir")
+    if [ -z "$node_dir" ]; then echo "pre-commit: Node did not report its own folder. Nothing was committed."; exit 1; fi
+    if [ -f "$node_dir/deskpost" ] || [ -f "$node_dir/deskpost.cmd" ]; then echo "pre-commit: Node's own folder $node_dir also holds a deskpost shim, so the gate cannot run Node without the machine's Deskpost; put a Node whose folder holds no deskpost on PATH. Nothing was committed."; exit 1; fi
+    clean_path="${clean_path:+$clean_path:}$node_dir"
+fi
 
 # No builder commits directly on the integration branch, even for documents.
 if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "master" ]; then

@@ -19,6 +19,7 @@
  */
 
 import * as fs from 'node:fs';
+import { goFor, letterGo } from './lettergo.ts';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { exitBookLock, enterSeatRegistryLock, listStaleRecoveryGuards, type BookLock } from './locks.ts';
@@ -58,6 +59,9 @@ import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 import { deskAuditFacts } from './audit.ts';
 import { hubPages } from './hubpages.ts';
+// A CYCLE, SAFE AT LOAD (kickoffs/s199-r2 item 1): shelftidy.ts reaches desk.ts through capture.ts, and neither uses the
+// other at module level, only inside functions.
+import { DEFAULT_TIDY_DAYS, tidyDue } from './shelftidy.ts';
 import { asksDeskLine } from './asks.ts';
 import { daysBetween, frontCar, localDate, readTrain } from './train.ts';
 
@@ -65,6 +69,17 @@ import { daysBetween, frontCar, localDate, readTrain } from './train.ts';
 const LIBRARY_OUTPUT_SCHEMA = 1;
 
 const PROJECT_ROOT_PATTERN = /^(projects|archive\/projects)\/[a-z0-9][a-z0-9-]*$/;
+
+/** Late rows from checks in the last seven days, shared by the Desk and doctor. No server call. */
+export function postboxLateDeliveriesRecent(state: Record<string, unknown>, now = Date.now()): PsJsonValue[] {
+  const history = Array.isArray(state['check_history']) ? state['check_history'] : [];
+  return history.flatMap(entry => {
+    if (!entry || typeof entry !== 'object') return [];
+    const age = now - Date.parse(String(entry['at'] ?? ''));
+    return Number.isFinite(age) && age >= 0 && age <= 7 * 86400000 && Array.isArray(entry['late_deliveries'])
+      ? entry['late_deliveries'] as PsJsonValue[] : [];
+  });
+}
 
 export interface DeskOptions {
   workspace: string;
@@ -109,8 +124,9 @@ export function movedNoteLine(workspace: string, slug: string): string | null {
 }
 
 /** What a Desk entry for a moved Book says: the move, the shared slug, and the one command to open it and to close the old entry. */
-function movedEntry(slug: string, says: string): Record<string, PsJsonValue> {
-  return { says, shared: `shared/${slug}`, open: `deskpost basic-memory open ${slug}`, close: `deskpost desk close book ${slug} --location collection` };
+function movedEntry(slug: string, says: string, seat?: string): Record<string, PsJsonValue> {
+  const target = seat === undefined ? '' : ` --seat ${seat}`;
+  return { says, shared: `shared/${slug}`, open: `deskpost basic-memory open ${slug}${target}`, close: `deskpost desk close book ${slug} --location collection${target}` };
 }
 
 /**
@@ -132,7 +148,7 @@ function movedBooksStillOpen(workspace: string, stateDirectory: string, localBac
         return false;
       }
     });
-    if (holding.length) rows.push({ book: `books/${slug}`, ...movedEntry(slug, says), seats: holding });
+    for (const seat of holding) rows.push({ book: `books/${slug}`, seat, ...movedEntry(slug, says, seat), seats: [seat] });
   }
   return rows;
 }
@@ -361,6 +377,9 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           ? { growing: true, growing_route: `library desk open book ${book.slug} --location shelf, then library triage batch`, pending_this_seat_may_close: state.mayClose }
           : { growing: false };
       })(),
+      // WHAT `shelf tidy` WOULD MOVE NOW (kickoffs/s199-r2 item 1), by its own rule over the notes read above; last, after
+      // every older key. A count only, open or closed: naming the notes still needs the Book open.
+      capture_tidy_due: notes.filter((note) => tidyDue(note, DEFAULT_TIDY_DAYS, Date.now())).length,
     };
   });
 
@@ -486,6 +505,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     // FROM OTHER LIBRARIES (kickoffs/s123 row 4; plan item 6): those of them filed from the Postbox, in the same count,
     // with each sending Library named by its card (its id where it gave none). After every older key, only when any.
     const foreign = mine.filter(({ note }) => isFromAnotherLibrary(note));
+    const withGo = mine.filter(({ note }) => letterGo(readUtf8(note.fullPath), String(overviewMarker?.['id'] ?? '')) !== null).length;
     return tally.count
       ? {
           count: tally.count,
@@ -498,6 +518,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
           ...(foreign.length
             ? { from_other_libraries: { count: foreign.length, libraries: [...new Set(foreign.map(({ note }) => note.fromLibraryCard || note.fromLibraryId || ''))].sort() } }
             : {}),
+          ...(withGo ? { with_go: withGo } : {}),
         }
       : { count: 0 };
   })();
@@ -531,6 +552,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         outcomes_received:pendingNotes.filter(({book,note})=>book.slug==='letters' && isFromAnotherLibrary(note) && isAddressedTo(note,self) && noteFrontmatter(readUtf8(note.fullPath)).has('closes_delivery_id')).length,
         ...((state['reports_triager'] as {library_id?:string}|null)?.library_id && (state['reports_triager'] as {library_id:string}).library_id !== state['library_id'] && reports.some(r=>!r.fields.has('delivery_id') && (!r.note.fromLibraryId || r.note.fromLibraryId === r.note.localLibraryId)) ? {send_pending_route:'deskpost reports send-pending --preflight'} : {}),
         last_check: (state['last_check'] as PsJsonValue | undefined) ?? null,
+        late_deliveries_recent: postboxLateDeliveriesRecent(state),
         unreachable_since: (state['unreachable_since'] as PsJsonValue | undefined) ?? null,
         waiting_to_send: outbox.filter((entry) => entry.state === 'unsent').length,
         could_not_send: outbox.filter((entry) => entry.state === 'refused').length,
@@ -554,7 +576,12 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // A LAUNCHER-HELD SEAT HAS NO BINDING (S85 row 4, ruling 5), so the binding rule said false of the very conversation
   // that ran this. There the recorded conversation is matched by session id against Claude Code's own
   // CLAUDE_CODE_SESSION_ID; a bound seat keeps the binding rule. The field keeps its name: the dashboard reads it.
-  const thisSessionId = (process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
+  // A CODEX SEAT (kickoffs/s199-r2 item 2): Codex sets no CLAUDE_CODE_SESSION_ID, but its CODEX_THREAD_ID is the id
+  // its hook reports and the launcher records (seen equal in a launcher-held Codex session, 2026-11-01), so it is read
+  // when the Claude variable is empty, and only for a conversation recorded as Codex's.
+  const claudeSessionId = (process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
+  const thisSessionId =
+    claudeSessionId !== '' ? claudeSessionId : String(thisActivity?.['assistant'] ?? '') === 'codex' ? (process.env['CODEX_THREAD_ID'] ?? '').trim() : '';
   thisSeat['is_this_conversation'] = launcherHeld
     ? thisSessionId !== '' && conversation.session_id === thisSessionId
     : thisClaim.thisAgent && conversation.conversation_source === 'binding';
@@ -852,6 +879,12 @@ export function pendingLetterPagesForSeat(workspace: string, seat: string): stri
   return pages
     .sort((left, right) => (left.captured < right.captured ? -1 : left.captured > right.captured ? 1 : byName(left.page, right.page)))
     .map((entry) => entry.page);
+}
+
+export function pendingLetterGoForSeat(workspace: string, seat: string): boolean {
+  const self = seatIncarnation(path.join(workspace, '.claude'), seat);
+  const libraryId = String(readMarker(workspace)?.['id'] ?? '');
+  return pendingCaptureNotes(workspace).some(({ book, note }) => book.takesLetters && isAddressedTo(note, self) && goFor(readUtf8(note.fullPath), libraryId, self) === 'recipient');
 }
 
 /** A pending note of a capture Book, beside its Book (kickoffs/s99 row 4). */

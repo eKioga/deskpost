@@ -701,6 +701,28 @@ Invoke-Check 'codex.project-access-config' {
                'moved leaves them behind: re-run tools/Initialize-CodexLibrary.ps1.')
     }
 
+    # Read the same enabled-table rule as init and the checkout renderer, never a PowerShell copy.
+    $turnOffCheck = @'
+const fs = require('node:fs');
+const path = require('node:path');
+const {pathToFileURL} = require('node:url');
+(async () => {
+  const {codexTurnedOn, codexUserConfig, readCodexConfigTables} = await import(pathToFileURL(path.join(process.argv[1], 'kernel/src/doctor.ts')).href);
+  const user = codexUserConfig();
+  if (user.state === 'unreadable') throw Error('Cannot read the user Codex config: ' + user.path);
+  const template = readCodexConfigTables(fs.readFileSync(process.argv[2], 'utf8').replace(/^enabled\s*=.*$/gm, ''));
+  const rendered = readCodexConfigTables(fs.readFileSync(process.argv[3], 'utf8'));
+  if (!template || !rendered) throw Error('Cannot read the checkout Codex tables.');
+  const on = user.tables ? codexTurnedOn(user.tables) : {servers: [], plugins: []};
+  const missing = [...on.servers.filter(e => !template.servers.some(t => t.name === e.name) && !rendered.servers.some(t => t.name === e.name && t.enabled === false)).map(e => 'server ' + e.name), ...on.plugins.filter(e => !rendered.plugins.some(t => t.name === e.name && t.enabled === false)).map(e => 'plugin ' + e.name)];
+  process.stdout.write(missing.join(', '));
+})().catch(error => {console.error(error.message); process.exitCode = 1;});
+'@
+    try {
+        $turnOffMissing = @(& node -e $turnOffCheck (Split-Path -Parent $PSScriptRoot) $configTemplatePath $configPath)
+        if ($LASTEXITCODE -ne 0) { return 'WARN: could not check inherited Codex servers and plugins; re-run tools/Initialize-CodexLibrary.ps1.' }
+        if ($turnOffMissing.Count) { return ('WARN: inherited Codex entries are still enabled: ' + ($turnOffMissing -join ' ') + '; re-run tools/Initialize-CodexLibrary.ps1.') }
+    } catch { return ('WARN: could not check inherited Codex servers and plugins; re-run tools/Initialize-CodexLibrary.ps1. ' + $_.Exception.Message) }
     'both MCP servers required; events nested under hooks; Desk guard, shell guard, patch guard and context hook registered, and every path they name resolves'
 }
 }

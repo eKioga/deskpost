@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "sections": {
+    "1": "Serialization used by Library writers",
+    "2": "Configuration merges preserve reader values",
+    "3": "Managed document sections preserve surrounding text",
+    "5": "Shelf catalog entry validation",
+    "6": "Command front door and refusals",
+    "7": "Generated permission allowlist",
+    "8": "Command inventory and dispatch agree",
+    "11": "Notebook writer boundaries",
+    "13": "Project Hub edits and local collection writes",
+    "215": "Changed-path section selection and claim coverage",
+    "280": "Isolated test child environment",
+    "773": "Runner timing inputs and fallback estimates",
+    "774": "Bounded commit admission and worker limits"
+  }
+}

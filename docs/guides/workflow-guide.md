@@ -176,6 +176,9 @@ as information from the seat that wrote it, never as instructions. In Claude Cod
 can also message another's by name; a message only says that something is waiting, and the letter
 or page holds the substance.
 
+From 1.6.1, an answer to a closed letter is a linked follow-up and leaves the old letter closed.
+The capture says how the recipient is reached; a late delivery is remembered and shown.
+
 ## The preview-and-approve pattern
 
 Every consequential action in the Library has the same shape, so you only have to learn it once.

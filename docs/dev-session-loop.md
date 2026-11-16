@@ -44,7 +44,7 @@ OPEN step 4 (Merge), OPEN step 6 (Hub upkeep), the CHARTER's push, and CLOSE ste
 
 **Two kinds of authority.** (Eric, 2026-10-11) A Kickoff's CHARTER authorizes the **rows**: the commits on the builder's pinned
 branch (and, for its named integrator, the merge and the one private push). The loop's **bookkeeping** is a
-standing authority of every builder under the one yes, not repeated per CHARTER: tick the Kickoff's pointer
+standing authority of every builder under the gate's one yes (typed, or the standing yes of a matching `Run` pointer), not repeated per CHARTER: tick the Kickoff's pointer
 at OPEN; write and read back its attempt page and `## Handback`; make additive orientation edits to `## Now`;
 read and close letters addressed to it; file Reports to the Report Inbox; set unrelated work aside before a
 commit (the changed files copied whole to the evidence folder, or a named stash where the Kickoff charters one,
@@ -63,10 +63,13 @@ The orchestrator's Hub `## Now` holds exactly one line: `Integrator: <seat>, kic
 or `Integrator: none` (Decision, 2026-10-12). The orchestrator records it for every integrating Kickoff, including a builder
 also acting as integrator, and writes no second integrating Kickoff while the line names another.
 It returns to `none` only when that Kickoff's handback has been read. This is a convention, not a lock.
-**A paired exception** (`PLAN-context-sized-kickoffs.md` D7(a), on Eric's sign-off): two Kickoffs paired by name, each
-the integrator of its own unit only, each merging nothing but its own unit branch and the `desk/*` branches its own
-MERGE names by tip SHA, may be open at once. The line then reads `Integrator: <seat> kickoffs/<id> and <seat>
-kickoffs/<id> (paired), since <time>`, and returns to `none` when both handbacks are read. A third waits.
+**The queue replaces pairing** (`PLAN-build-regroup.md` points 7 and 8, signed 2026-11-10): any number of builders may
+run at once, each the integrator of its own unit only, merging nothing but its own unit branch and the `desk/*`
+branches its own MERGE names by tip SHA, and each ends its unit at "pull request open". The queued lander
+(`tools/lander.mts`) checks and merges one pull request at a time, oldest first; no builder pairs with another and none
+waits for a third. The line then names each open integrating Kickoff (`Integrator: <seat> kickoffs/<id>, <seat>
+kickoffs/<id>, since <time>`) and returns to `none` when every one of their handbacks is read. kickoffs/s205, which built
+the lander, was the last unit to land the old way, through `land.mts` waiting mode.
 
 **`## Next` on a builder's Hub is the orchestrator's.** (Eric, 2026-10-11) It holds only the orchestrator's Kickoff pointers and the reader's own items. A
 builder's recommendations ("after this, closeout, then the HUD") go in its handback's draft scope and morning
@@ -105,7 +108,8 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
    the builder steps, and, in Codex, "The Codex build seat"). If the checkout's base lacks the loop-doc SHA
    the Kickoff names, it stops and says so. **A Kickoff starts in a fresh session:** (Report, 2026-10-13) if this session has already
    run a Kickoff, the builder stops and asks the reader to `/clear` first, so one unit's context is not re-read on
-   every call of the next (S118 ran in S117's session, 2026-10-12; Report of 2026-10-13).
+   every call of the next (S118 ran in S117's session, 2026-10-12; Report of 2026-10-13). This holds under Eric's
+   standing yes too: the hash replaces his typed yes, not the fresh session.
 
    A required read the builder cannot open **before the yes** is asked of the reader in the builder's own session ("page X is missing: continue without it?"), not handed back; **after the yes**, a missing page or reference parks only the step that needs it, and the run continues.
 
@@ -123,12 +127,17 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
    - several, or any it cannot classify: it lists them and starts nothing.
 
    A bare "proceed" or "continue" is neither a restart nor a new unit (Eric, 2026-10-11).
-2. **The gate.** (Decision, 2026-09-29) The builder reads the page once and computes the SHA-256 of its content. It shows the title,
+2. **The gate.** (Decision, 2026-09-29) The builder reads the page once and computes its SHA-256 over the page's UTF-8 text without a BOM and with CRLF turned to LF
+   (`pageComparisonSha256`, `kernel/src/sha.ts`): the `sha256` the validated reader reports beside the page. The reader
+   serves the text with the line endings it was saved with, so hash that form, not the served text. It shows the title,
    `author_seat`, revision, hash prefix and CHARTER, preflights any yes-gated setup steps the
    Kickoff names, and takes **one yes**. The yes covers exactly that path and that hash. The builder works
    from the snapshot it read, without re-reading the Kickoff for instructions; a different hash on a
    restart is a new gate. With no yes, nothing in the CHARTER happens.
-   Eric typing `Run <p><NN>` in this session is that yes (Eric, 2026-10-31): show the same lines, record the page hash and the yes time, and go on without asking again.
+   An unticked `Run <unit>` pointer that deskpost-lead posted on the builder's Hub with the page's sha256 is that yes when the hash matches the page (Decision 2026-11-08, Eric's standing yes): the builder records "Yes: Eric's standing yes (Decision 2026-11-08)" with the time and starts without asking for a yes. The session that handed back the previous unit has stopped (Close, step 7); the next Kickoff starts when Eric opens a fresh builder session or types `Run <unit>` in one. A hash that does not match is no yes: the builder shows the lines above and asks.
+   Eric typing `Run <p><NN>` in this session is also that yes (Eric, 2026-10-31): show the same lines, record the page hash and the yes time, and go on without asking again.
+   A unit parked only to wait for the other builder's unit resumes by itself once that unit is on `master` (Decision 2026-11-08).
+   Still only Eric's typed yes (Decision 2026-11-08): publishing or releasing, anything on his reserved list, anything outside the Kickoff's CHARTER, and writes Deskpost itself gates on his yes.
 3. **Record the attempt.** (Decision, 2026-09-29) `hub edit --mode new-page` makes `notes/<date>-sNN-a<k>` (`k` the next
    unused attempt number) with a `## Run` section: the Kickoff path and hash, the yes time, the
    seat, its `seat_id` from `.claude/seats/_registry.json`, the session id or "unrecorded", the
@@ -157,11 +166,12 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
    `- Binding agent_pid: <n> | null.` (from `deskpost seat status`) as extra lines; the lines above keep
    their form (Eric, 2026-10-11).
 
-   Once the unit's branch exists, copy its Kickoff page byte for byte from the Library's
-   `collection/projects/<build hub>/kickoffs/<id>.md` into the evidence folder, check that the copy's
-   SHA-256 equals the recorded `- Kickoff hash:`, and run
+   Once the unit's branch exists, copy its Kickoff page's text in the form the hash covers (UTF-8, no BOM, CRLF
+   turned to LF; see step 2) from the Library's `collection/projects/<build hub>/kickoffs/<id>.md` into the evidence
+   folder, check that the copy's SHA-256 equals the recorded `- Kickoff hash:`, and run
    `node tools/owns.mts start --kickoff <copy> --sha256 <hash>` in the checkout. Record its printed
-   record path on the attempt page. A revision on the same branch runs it again. On a Kickoff
+   record path on the attempt page. `owns.mts` hashes the copy's raw bytes, so a copy with CRLF line endings
+   fails with "SHA-256 mismatch" (w6-int, 2026-11-09). A revision on the same branch runs it again. On a Kickoff
    branch (`codex/`, `int/` or `dev/` and the unit's id), the commit hook refuses every commit until
    this has run, then any staged file outside OWNS PATHS and any sensitive file allowed only through
    a wildcard, except a settings- or secret-named file under a declared fixture folder: a covering
@@ -178,7 +188,8 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
    `git rev-parse HEAD^{tree}` against `git rev-parse <tip>^{tree}` and record its gate digest without
    another gate run. A clean non-fast-forward merge runs `commit-msg` (the identity scan),
    without a pre-commit hook. A hand-finished merge's commit runs pre-commit. Record the merge's
-   identity line in MERGE; the push tier judges the combined outgoing range.
+   identity line in MERGE; for a builder unit the queued lander's Linux check judges the pull request, and the push
+   tier judges the combined outgoing range only in a release or cut unit.
 
    **Integrating a builder's branch.** (Decision, 2026-10-12) The orchestrator reads the builder's handback and names its branch,
    base, tip and identity-scan line in the integrator's MERGE (plus the pre-commit line for a
@@ -189,6 +200,10 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
    on a section or key out of order or repeated, and ADR numbers are checked by hand. Every other
    conflict, including duplicate identifiers or a change to an existing function, policy or
    configuration, is aborted with `git merge --abort` and handed back for a reconciliation Kickoff.
+
+   **When `master` moved under a finished merge** (s196 spare S2), the integrator redoes the merge on the new `master`:
+   a fresh `int/<kickoff>` from it, the named tips merged again. It never uses `git rebase --rebase-merges` for this:
+   that skips the pre-commit hook, raises the merge's conflicts again and drops the fixes made in the merge.
 5. Reconcile the plan ledger with `git log` (Decision, 2026-09-29).
 6. **Hub upkeep (integrator), when the Kickoff charters it.** (Report, 2026-10-06) The gate already reads the installed version, so the integrator ticks the
    build Hub's `Now` items that the installed release meets (an item that closes "when X is released and
@@ -212,12 +227,12 @@ profile's `projects/<encoded workspace>/` folder, the last main-thread assistant
 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, window 1,000,000. Codex: the session's
 `rollout-<time>-<conversation id>.jsonl` under `~/.codex/sessions/<yyyy>/<mm>/<dd>/`, the last `token_count` event's
 `info.last_token_usage.input_tokens` over `info.model_context_window`. Only its own session's file, read only. Spare
-items come after every main row is committed and before the push tier: before spare S<n>, if the newest reading plus
+items come after every main row is committed and before `land.mts --open`: before spare S<n>, if the newest reading plus
 S<n>'s estimate plus 8 points is at most 55%, take it; otherwise take no more. The spares taken share one commit, the
 spare cut. A spare that fails its own sections is reverted whole (its files copied to the evidence folder with their
 SHA-256 first); a spare cut whose hook fails in one spare's files drops that spare and commits the rest once more; a
 second failure drops the spare cut. At any reading of 60% or more, or a compaction, start nothing new: commit what is
-green, run the push tier only if the main rows are committed, and close. A reading the builder cannot take means no
+green, run `land.mts --open` only if the main rows are committed, and close. A reading the builder cannot take means no
 further spare. Spares not taken stay open on the train and are named in the Handback.
 
 **The least code that works** (Decision, 2026-10-21, after Ponytail's ladder, `DietrichGebert/ponytail`, MIT). Before
@@ -269,8 +284,14 @@ instruction: the reader still decides whether to interrupt the builder.
 
 ### Close
 
-1. Run the gate and commit by the gate recipe ("The gates"), and push (integrator) if the CHARTER allows it
-   and the push gate holds (below) (Decision, 2026-09-29).
+1. Run the gate and commit by the gate recipe ("The gates").
+   `DESKPOST_SECRETS_DIR` must name the folder holding `deskpost_secrets.py`, and the Windows interpreter (`python`) must be on PATH; then
+   end the unit at "pull request open" with `node tools/land.mts --open int/<unit> --token-item "<1Password item title>"`, without the push tier: it runs
+   the `windows` sections on the head, pushes `int/<unit>`, opens or finds the pull request, comments the head and the
+   `windows` result, prints the pull request's number and returns. Put that number in the handback. The queued lander
+   checks and merges it; a red check comes back as the `lander: red` label and its comment, a fix item for a later
+   Kickoff (`PLAN-build-regroup.md` point 8). The Linux check and the `windows` sections `--open` runs are the evidence;
+   the push tier is for release and cut units only (Decision, 2026-09-29).
 2. **File the closeout Reports first, then list them in the `## Handback`** (Report, 2026-10-18), so the letter counts every one of them (s137
    filed five after its letter). Then `add-section` a `## Handback` on the attempt page, and read it back through the validated reader
    before reporting completion (Decision, 2026-09-29). It opens with two fixed lines, `Outcome: <pushed | published | parked |
@@ -292,11 +313,12 @@ instruction: the reader still decides whether to interrupt the builder.
    seats" says, if it is listed by name: the message names the letter and the attempt page and nothing else
    to act on, so it is the letter's **Ring** that CONTEXT.md makes mandatory for a recipient with a
    `message_name`. A Codex builder skips the message. Then the builder ends the reply with, in this order:
+   - first, what only Eric can do (a typed yes, a release, a step on his machine), or "Nothing for you to do",
+     and nothing else to do (Eric, 2026-11-09);
    - the handback summary;
    - the letters written (their pages), as the Kickoff template's CLOSE asks;
-   - one line for the reader to paste into the orchestrator's session, **said to be needed whether or not the
-     message went through** (Eric, 2026-09-30): the message only tells the orchestrator the Handback exists, and the orchestrator starts the Kickoff on the reader's
-     word, never on a message. The line names the Desk step as well as the task, because a Hub closed on the
+   - only when the message did not go through (always for a Codex builder, which cannot ring), one line for the
+     reader to paste into the orchestrator's session (Eric, 2026-11-09). The line names the Desk step as well as the task, because a Hub closed on the
      orchestrator's Desk makes it stop and ask, and the builder cannot open it there while the orchestrator has no live session:
 
    ```
@@ -304,8 +326,12 @@ instruction: the reader still decides whether to interrupt the builder.
    ```
 
    `<P>`/`<p>` is the Kickoff prefix: `S`/`s` for `deskpost-dev`, `C`/`c` for `deskpost-codex-dev`.
+
+   Every follow-up (reviews and second reads, the next unit, Reports to file, cleanups, ideas) goes only in
+   the handback letter's "Needs you" for deskpost-lead, which arranges it; the reply never lists one as open
+   or offers to do it (Eric, 2026-11-09).
 7. **Stop.** (Eric, 2026-10-11) The turn ends with the reply above. Nothing after it builds, and a later prompt is answered by
-   OPEN step 1's rules.
+   OPEN step 1's rules. A pointer posted meanwhile, standing yes or not, waits for a fresh session (Open, step 0).
 
 ### Running vs. interrupted
 
@@ -432,7 +458,7 @@ The 1.3.1 publish block was chased through a settings change that turned out not
 
 ## The CHARTER
 
-A Kickoff's CHARTER, **once the reader says yes at the gate**, is the reader's explicit request for
+A Kickoff's CHARTER, **once the gate has its yes** (the reader's typed yes, or Eric's standing yes on a matching `Run` pointer, Decision 2026-11-08), is the reader's explicit request for
 the commits and the private push it names (AGENTS.md item 2) (Decision, 2026-09-29). It is a section of a Kickoff, not a
 kind of Approval: every plan_id verb stays per action and bound to its content, and the yeses a
 session could not get up front are batched at close.
@@ -465,8 +491,10 @@ or route check means a Report and deskpost-dev prepares after its weekly usage r
 
 Commit and push selection is complete through `tools/check-map.json` and the kernel claim map.
 Added claim-map keys select their sections; changed existing claims or removed keys run every section.
-A self-test hunk spanning one section's function and run guard selects that section when every nonblank
-line belongs to it; reaching a shared helper or another section runs every section. Both maps come
+A self-test hunk spanning each section's function and run guard selects each section it touches when every nonblank
+line belongs to one; reaching a shared helper, or replacing any line across two sections (an old side that is not
+empty), runs every section, since a replaced line could have been a helper. Across sections only a pure addition
+selects each section it touches. Both maps come
 from the compared Git revisions (the index and HEAD for a staged commit).
 An unmapped changed path refuses the gate by name. Add a path pattern to `tools/check-map.json`
 with the self-test sections or existing named static checks that read it; keep a regression case
@@ -650,22 +678,18 @@ Gates on one PC still compete for CPU: budget a Kickoff beside another for the s
 In c30, a push run took about 24 minutes beside another, versus 16 minutes alone.
 
 Gates on one PC take turns by default. With two slots, two one-slot gates run at once and a push
-takes the whole machine for about 20 to 25 minutes (c93's push tier measured 23 min 10 s). A unit
-beside another sizes its waits by the other unit's planned push tiers, not its commits. A waiting
+takes the whole machine for about 20 to 25 minutes (c93's push tier measured 23 min 10 s). A builder
+unit runs no push tier; a release or cut unit beside another sizes its waits by the other's planned push tiers. A waiting
 seat records its wait and lets the holder finish; it never stops another seat's run (Eric,
 2026-10-29). Documents-only commits, including their section-119 document check, do not wait.
 [Decision, 2026-10-29; `PLAN-two-builders.md`, U3]
 
-**Two paired builders push in either order** (`PLAN-context-sized-kickoffs.md` D7, on Eric's sign-off). Both pages of a
+**Two paired builders land in either order** (`PLAN-context-sized-kickoffs.md` D7, on Eric's sign-off). Both pages of a
 pair name `kernel/test/selftest.ts` and `kernel/test/section-covers.json` as shared, appended at the end, with disjoint
-section numbers, and each names the other as its pair and every `desk/*` tip either merges. At the push, if
-`origin/master` moved and every commit in `<base>..origin/master` either names the pair or belongs to a branch the
-pair's MERGE names by tip SHA, and together they change none of this Kickoff's `OWNS PATHS` except by adding whole
-sections and keys to the two shared files or editing existing sections or keys in those files that the pair's Kickoff
-charters in OWNS (spares included), the builder rebases its branch onto `origin/master` once. Keep both sides, with
-added sections and keys in number order; a conflict inside one existing section is still RULE 2(b). Then it reruns its
-focused sections and the push tier on the rebased tip and pushes. Anything else is RULE 2(b): no push, hand back. A rebase's
-replayed commits run no pre-commit hook, so the push tier on the rebased tip is the check.
+section numbers, and each names the other as its pair and every `desk/*` tip either merges. Each builder ends its unit
+with `node tools/land.mts --open int/<unit> --token-item "<1Password item title>"` without the push tier and names the
+pull request's number in the handback; the queued lander updates the branch if `master` moved, checks it and merges it,
+so the builder rebases nothing.
 
 ## A third builder (written down, not built)
 
@@ -735,113 +759,66 @@ or the classifier). An extra is built as soon as a logged stall names it (Decisi
 
 ## A builder in another office
 
-A cross-office unit uses a local Hub in each office (Eric, 2026-10-20).
-Letters carry the Kickoff and the full Handback between them.
-The exchange share carries a scanned source export and immutable patch generations.
-The integration Kickoff and the Handback letter supply trusted values; the share supplies bytes to check (Eric, 2026-10-20).
+A builder in any office follows the same OPEN, Work and CLOSE above, in its own clone of
+`Kioga/deskpost-private`. Each office uses its own local Hub. Letters carry the Kickoff and the full
+Handback between offices; the queued lander checks and merges the builder's pull request.
 
 ### Receive and open
 
-1. Run `deskpost kickoff receive notes/<letter-page>` (from the release that carries s159) (Eric, 2026-10-20).
-   It writes the Kickoff to your own Hub, adds its one Run pointer and closes the letter after readback.
-2. Work in `/config/dev/<id>/` on Webtop, which persists across recreation (Eric, 2026-10-20).
-   Copy the exported repository there from the Kickoff's EXPORT folder.
-   Compare `.deskpost-export.json` with the Kickoff's private base and export root.
-   The manifest is a convenience to compare, never authority to choose either SHA.
-3. Follow OPEN and take the one yes over the received page's path and hash (Eric, 2026-10-20).
-   The builder branch starts at the export root, rather than the private base.
-   Keep the checkout and its Git history under `/config`.
-4. Commit each row through the Linux hook (Eric, 2026-10-20).
-   Run `node tools/gate.ts --tier commit` and `node tools/gate.ts --tier cut` as the Kickoff requires.
-   Record their verdicts, times and the named Linux skips in the Handback.
-   These Linux runs are evidence; the integrator's Windows push tier is the pass mark.
+1. Run `deskpost kickoff receive notes/<letter-page>`. It writes the Kickoff to your own Hub,
+   adds its one `Run <unit>` pointer and closes the letter after readback.
+2. Make the clone once, at the path the Kickoff names. Keep it and its Git history in persistent
+   storage (`/config/dev/deskpost/repo/` on workshop). Use the builder's own token item and account,
+   with both helper settings on the clone command so they live only in that clone's local config:
 
-### Publish each committed row
+   ```text
+   git clone -c "credential.https://<forge-host>.helper=" -c "credential.https://<forge-host>.helper=!python3 -I /config/dev/deskpost-secrets/git_credential.py --item '<item>' --username <account>" https://<forge-host>/Kioga/deskpost-private.git <clone-path>
+   ```
 
-Run the command below from the persistent checkout after each row's commit.
-Copy the export root and HANDBACK FOLDER from the Kickoff into its two arguments.
-On Webtop the latter is `/mnt/exchange/handbacks/<id>/`.
-Keep the folder's single builder as its only publisher (Eric, 2026-10-29).
+   Replace `<forge-host>` with the private forge host named for the office.
+   Immediately inside the new clone, run `git config core.hooksPath .githooks`.
+   The helper reads the credential in memory through the module; never store a token or set a global helper.
+   If the token cannot be read or Git asks for a password, stop and hand back parked, with the command's
+   output and the helper configuration, never a credential. There is no fallback credential route.
+3. Follow OPEN, including the page hash and one yes, the attempt page on your own Hub and ticking
+   its Run pointer. At every OPEN, run `git config core.hooksPath` and check that it prints
+   `.githooks`; if absent, run `git config core.hooksPath .githooks` and record that setup.
+   Check the clone is clean, fetch `origin` and branch `int/<unit>` from `origin/master` as the
+   Kickoff specifies. Install the locked dependencies with `npm ci` in `kernel/` and record OWNS PATHS
+   with `node tools/owns.mts start` against the byte copy and approved hash.
+4. Work the rows and commit each cut through the hook, with the working tree equal to the index.
+   Record the hook verdict, its commit SHA and named platform skips on the attempt page.
+   These local runs are evidence; the Linux check on the pull request is the pass mark.
 
-The command performs the publication procedure in this order:
+### Swap or restart
 
-1. Choose the next unused `gen-<n>` folder.
-2. Run `git format-patch --base=<export_root> --cover-letter <export_root>..HEAD -o <generation>/`.
-3. Hash the cover and ordered commit patches, then write `MANIFEST.json` last.
-4. Write `CURRENT.tmp` and rename that file over `CURRENT`, then read it back.
+This rule applies in every office, both to a swap between seats and to a restart after recreation
+or an interrupted session. The seat in use stops at a clean point with no gate running; a half-run
+gate is rerun, never counted. Append `## Stopped for swap` to its attempt page with
+`after row <n>; HEAD <sha>; next: <step>`. Eric closes that seat's terminal and confirms it is closed.
+
+In the continuing seat Eric types `Run <unit>`. That seat reads the approved Kickoff from the unit's
+home Hub, open on its Desk, runs the restart gate and takes its own yes. It writes a new attempt page
+`notes/<date>-<unit>-a<n+1>` on that Hub, with its own seat, seat id, session, yes and predecessor attempt
+in `## Run`. Inspect the clone's `git log origin/master..HEAD` to establish which rows committed;
+the Git history takes precedence over the stop line. Recheck the clean clone and hook setup before
+continuing the existing branch. No earlier attempt page is rewritten, and two seats never work on
+one unit at once. The Run pointer remains ticked from OPEN; a restart does not create a second unit.
+
+### Close
+
+Follow CLOSE above, ending at "pull request open". Set `DESKPOST_SECRETS_DIR` to the folder containing
+`deskpost_secrets.py`; the module uses `python3` on Linux (`python` on Windows). Run the Kickoff's
+`node tools/land.mts --open int/<unit> --token-item "<item>"` command and record every line and the
+pull request number. Do not run a push tier or wait for the queued lander to merge.
+
+Write and read back the attempt page's full `## Handback`, including the branch, base, commits,
+row results, hook verdicts, skips, pull request and Needs you. Send that Handback home by letter:
 
 ```text
-node --input-type=module - '<export_root>' '/mnt/exchange/handbacks/<id>' <<'NODE'
-import fs from 'node:fs';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-const [base, folder] = process.argv.slice(2);
-if (!/^[a-f0-9]{40}$/.test(base) || !path.isAbsolute(folder)) throw Error('use the Kickoff export root and absolute handback folder');
-const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
-fs.mkdirSync(folder, { recursive: true });
-let number = 1;
-while (fs.existsSync(path.join(folder, `gen-${number}`))) number++;
-const generation = `gen-${number}`;
-const target = path.join(folder, generation);
-fs.mkdirSync(target);
-git('format-patch', `--base=${base}`, '--cover-letter', `${base}..HEAD`, '-o', target);
-const names = fs.readdirSync(target).filter(name => name.endsWith('.patch')).sort();
-if (names.length < 2 || !names[0].startsWith('0000-')) throw Error('expected a cover and commit patches');
-const entry = name => ({ name, sha256: createHash('sha256').update(fs.readFileSync(path.join(target, name))).digest('hex') });
-const manifest = { generation, head: git('rev-parse', 'HEAD'), cover: entry(names[0]), patches: names.slice(1).map(entry) };
-if (process.env.HANDBACK_SOURCE) fs.copyFileSync(process.env.HANDBACK_SOURCE, path.join(target, 'HANDBACK.md'));
-fs.writeFileSync(path.join(target, 'MANIFEST.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
-fs.writeFileSync(path.join(folder, 'CURRENT.tmp'), generation + '\n');
-fs.renameSync(path.join(folder, 'CURRENT.tmp'), path.join(folder, 'CURRENT'));
-if (fs.readFileSync(path.join(folder, 'CURRENT'), 'utf8') !== generation + '\n') throw Error('CURRENT readback differs');
-console.log(JSON.stringify(manifest, null, 2));
-NODE
+deskpost capture letters --library <the Kickoff's home Library card> --for <author seat> --why for-seat --title "<unit> handback: <outcome> <head>" --content-path <handback-letter-file>
+deskpost postbox send
 ```
 
-The manifest has this shape, using the actual filenames Git produced:
-
-```json
-{
-  "generation": "gen-<n>",
-  "head": "<full builder HEAD SHA>",
-  "cover": { "name": "0000-cover-letter.patch", "sha256": "<SHA-256>" },
-  "patches": [{ "name": "0001-<subject>.patch", "sha256": "<SHA-256>" }]
-}
-```
-
-The cover is separate from the ordered commit patches.
-All names are plain filenames: no separator, `..`, link or entry outside the generation (Eric, 2026-10-20).
-A row counts as committed for the cross-office loop only after this publication succeeds.
-Each published generation stays unchanged.
-
-After an interruption, `git log <export_root>..HEAD` in the persistent checkout is the record of local commits (Eric, 2026-10-20).
-Read `CURRENT` once to find the last complete publication.
-Repeat the command above; it creates the next unused generation, including when an earlier one is incomplete.
-The resulting patch series contains exactly the local committed rows, with no duplicate row applied.
-
-
-### Close and integrate
-
-At CLOSE, make a final fresh generation of the full series (Eric, 2026-10-20).
-Set `export HANDBACK_SOURCE=/config/dev/<id>/HANDBACK.md` to the completed Handback file, then repeat the publication command.
-Write `HANDBACK.md` there before writing its manifest and switching `CURRENT`.
-Include the base, cover letter, ordered patches and hashes, gates, skipped sections, and new or binary files.
-This keeps published generations immutable, including the final one.
-
-Send the full Handback by letter (Eric, 2026-10-20):
-
-Use the return Library card named by the Kickoff's CLOSE.
-
-`deskpost capture letters --library <return-library-card> --for deskpost-lead --title "<id> handback: <outcome> <head>" --content-path <handback-letter-file>`
-
-Send a copy with `--for deskpost-dev`.
-The letter carries one `## Manifest` section with exactly one fenced `json` block containing the final manifest above.
-The orchestrator reviews the letter because it cannot read the other office's Hub.
-Its integration Kickoff names the private base, export root, original Kickoff envelope hash and exact Handback letter page.
-The integrator applies that letter's verified generation with (Eric, 2026-10-20):
-
-`node tools/apply-handback.ts <folder> --base <private-sha> --export-root <export-root-sha> --letter notes/<page> --onto int/<id>`
-
-The integrator checks the printed commits and diff against OWNS, runs the Windows push tier, then makes its chartered fast-forward push.
-An apply failure leaves Git's diagnostic state for review; follow the integration Kickoff's stop rule before retrying (Eric, 2026-10-29).
+The orchestrator reviews the full letter because it cannot read the other office's Hub.
+Record the delivery result, then stop.

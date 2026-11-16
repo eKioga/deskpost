@@ -36,7 +36,8 @@ export function dashboardColor(tty: boolean, env: { NO_COLOR?: string; COLORTERM
 
 export function dashboardWidth(width: number | undefined, columns?: number): number {
   const resolved = Number.isInteger(width) && width! >= 0 ? width! : Number.isInteger(columns) && columns! > 0 ? columns! : DEFAULT_DASHBOARD_WIDTH;
-  return Math.max(30, resolved);
+  const requested = resolved || 30;
+  return Number.isInteger(columns) && columns! > 0 ? Math.min(requested, columns!) : requested;
 }
 
 // W/F intervals from EastAsianWidth-18.0.0.txt; combining marks are handled first.
@@ -101,8 +102,21 @@ function join(items: Line[], gap: string): Line {
   return items.flatMap((item, index) => index ? [run(gap), ...item] : item);
 }
 
-/** Wrap only when an item itself exceeds the pane; never discard seat/count text. */
+/** Cut by terminal cells, preserving color roles and whole characters. */
+function clip(line: Line, width: number): Line {
+  const result: Line = [];
+  let used = 0;
+  for (const part of line) for (const char of part.text) {
+    used += dashboardCells(char);
+    if (used > width) return result;
+    result.push(run(char, part.role));
+  }
+  return result;
+}
+
+/** Narrow panes cut a logical line; wider panes wrap an item that exceeds the pane. */
 function wrap(line: Line, width: number): Line[] {
+  if (width < 30) return [clip(line, width)];
   const lines: Line[] = [];
   let current: Line = [];
   for (const part of line) {
@@ -269,6 +283,7 @@ function dashboardFrame(overview: ObjectValue, options: FrameOptions): Frame {
       : 'No front car';
     lines.push(...wrap([run(`Front car  ${open}; ${arrived} ${arrived === 1 ? 'car' : 'cars'} arrived in the last 7 days`, 'name')], width));
   }
+  if (width < 30) { lines = lines.map(line => clip(line, width)); clock = undefined; }
   if (Number.isInteger(options.rows) && options.rows! > 0) lines = lines.slice(0, options.rows);
   if (clock && clock.row > lines.length) clock = undefined;
   const keyLines = lines.map(plain);

@@ -21,7 +21,7 @@
  * as the runner's Test-Path answers it.
  *   - workspace.plans-declare-their-owner: ported.
  *   - context.always-on-budget: ported; runs when CLAUDE.md or AGENTS.md is staged.
- *   - docs.links-resolve, docs.adr-index-is-complete: ported.
+ *   - docs.links-resolve: ported, warning for missing private targets only in scanned exports; docs.adr-index-is-complete: ported.
  *   - skill.library-help-pointers-resolve: its third half (the reader guides, both ways), the one half a document
  *     can break; the first two read only `.claude/`.
  *   - workspace.no-foreign-install, reset.vocabulary-routes, retrieval.hit-is-a-location,
@@ -39,11 +39,28 @@
  * With --file, check only named working documents before staging or review. The same checks and summary run.
  * Usage: node tools/docs-gate.ts [--file <path>]... [--commit-message-file <file>]
  */
+import { childEnv } from '../kernel/test/gate-env.ts';
 import { contractDocuments } from './section-select.mts';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const TOOLS = path.dirname(fileURLToPath(import.meta.url));
+
+/** The public allowlist's three lists, read from its PowerShell source as scan.ts's productFiles reads them. */
+function allowlist(): (file: string) => boolean {
+  const oracle = fs.readFileSync(path.join(TOOLS, 'PublicTreeAllowlist.ps1'), 'utf8');
+  const list = (name: string) => {
+    const block = new RegExp('\\$script:' + name + ' = @\\(([\\s\\S]*?)\\n\\)').exec(oracle)?.[1];
+    if (!block) throw Error(`Cannot read canonical allowlist ${name}`);
+    return [...block.matchAll(/^\s*'((?:[^']|'')*)'\s*,?\s*(?:#.*)?$/gm)].map((match) => match[1]!.replaceAll("''", "'"));
+  };
+  const directories = list('PublicTreeIncludeDirectories'), files = list('PublicTreeIncludeFiles');
+  const deny = list('PublicTreeDenyPatterns').map((rule) => new RegExp(rule, 'i'));
+  return (file) => (files.includes(file) || directories.some((folder) => file.startsWith(`${folder}/`))) && !deny.some((rule) => rule.test(file));
+}
 
 const EXIT_PASS = 0;
 const EXIT_FAIL = 3;
@@ -281,19 +298,28 @@ function alwaysOnBudget(index: Index, root: string): Outcome {
 
 function linksResolve(index: Index): Outcome {
   const check = 'docs.links-resolve';
+  const roots = git(index.rootPath(), ['log', '--max-parents=0', '--format=%H %ae', 'HEAD']);
+  const commits = roots.stdout.toString('utf8').trim().split(/\r?\n/).filter(Boolean);
+  const binding = git(index.rootPath(), ['config', '--local', '--get', 'deskpost.exportRoot']);
+  const exported = roots.status === 0 && commits.length === 1 && binding.status === 0 &&
+    commits[0] === `${binding.stdout.toString('utf8').trim()} export@deskpost.invalid`;
+  const allowed = exported ? allowlist() : null;
   const files = index.subjects().filter((entry) => (entry.startsWith('docs/') || !entry.includes('/')) && entry.endsWith('.md'));
   index.load(files);
   const broken: string[] = [];
+  const privateLinks: string[] = [];
   for (const file of files) {
     for (const match of (index.text(file) ?? '').matchAll(LINK)) {
       const target = match[1]!;
       const resolved = resolveLink(file, target);
       if (resolved === null ? !fs.existsSync(path.resolve(path.dirname(file), target)) : !index.exists(resolved)) {
-        broken.push(`${path.posix.basename(file)} -> ${target}`);
+        const links = resolved !== null && allowed && !allowed(resolved) ? privateLinks : broken;
+        links.push(`${path.posix.basename(file)} -> ${target}`);
       }
     }
   }
   if (broken.length) return { check, status: 'fail', detail: `broken link(s): ${broken.join('; ')}` };
+  if (privateLinks.length) return { check, status: 'warn', detail: `${privateLinks.length} link(s) to private files a scanned export leaves out: ${privateLinks.join('; ')}` };
   return { check, status: 'pass', detail: `${files.length} files scanned, all links resolve` };
 }
 
@@ -429,7 +455,7 @@ function delegationRunsHooks(index: Index): Outcome {
 }
 
 /** Both scans share the TypeScript port; DeploymentScan.ps1 stays the parity oracle. */
-function scans(root: string, documents: string[], messageFile: string, env = process.env): Outcome[] {
+function scans(root: string, documents: string[], messageFile: string, env = childEnv()): Outcome[] {
   const ran = spawnSync(process.execPath, [path.join(root, 'tools/scan.ts'), '--identity', '--deployment', '--files', documents.join('\n'), ...(messageFile ? ['--commit-message-file', messageFile] : []), '--json'], {
     cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26,
   });
@@ -502,7 +528,10 @@ function main(argv: string[]): number {
   }
   const documents = changes.map((change) => change.paths[0]!);
   const started = Date.now();
-  process.stdout.write(`docs gate: ${documents.length} ${files.length ? 'working' : 'staged'} document(s), every one a document; running the document checks.\n`);
+  // With --file, name what is checked and each contract document left to the mapped checks (s196 row 2).
+  const listing = files.length ? ` (${documents.join(', ')})` : '';
+  process.stdout.write(`docs gate: ${documents.length} ${files.length ? 'working' : 'staged'} document(s)${listing}, every one a document; running the document checks.\n`);
+  for (const contract of requestedContracts) process.stdout.write(`${contract}: a contract document; the mapped checks cover it, not this gate.\n`);
 
   const index = new Index(root, files.length ? files : undefined);
   const outcomes: Outcome[] = [plansDeclareTheirOwner(index)];

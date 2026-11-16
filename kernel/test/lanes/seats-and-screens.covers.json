@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "about": "The kernel/src files each section of kernel/test/lanes/seats-and-screens.ts covers, as kernel/test/section-covers.json says for selftest.ts (kickoffs/s210).",
+  "sections": {
+    "1000": [],
+    "1001": [
+      "kernel/src/seat.ts"
+    ],
+    "1002": [
+      "kernel/src/seat.ts",
+      "kernel/src/seatstartplan.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1003": [
+      "kernel/src/seatcards.ts"
+    ],
+    "1004": [
+      "kernel/src/seatrename.ts"
+    ],
+    "1005": [
+      "kernel/src/postbox.ts",
+      "kernel/src/menu.ts"
+    ],
+    "1006": [],
+    "1007": [
+      "kernel/src/seat.ts",
+      "kernel/src/seatcards.ts",
+      "kernel/src/seatrename.ts",
+      "kernel/src/seatdesk.ts",
+      "kernel/src/seatdirs.ts",
+      "kernel/src/seatdescribe.ts",
+      "kernel/src/seatinbound.ts",
+      "kernel/src/seatlaunch.ts",
+      "kernel/src/notebook.ts"
+    ],
+    "1008": [
+      "kernel/src/dashboard.ts"
+    ],
+    "1009": []
+  }
+}

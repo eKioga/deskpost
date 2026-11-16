@@ -207,5 +207,341 @@
       }
     ],
     "needs_reader": true
+  },
+  {
+    "id": "letter-go-starts",
+    "group": "letters",
+    "fixture": "letter-go-starts",
+    "prompt": "Read README.md and letter.md, then deal with this letter in this turn.",
+    "criteria": [
+      {
+        "expect": {
+          "count": "wrote_path: notes/sweep.md",
+          "equals": 1
+        }
+      },
+      {
+        "expect": {
+          "count": "questions",
+          "equals": 0
+        }
+      }
+    ],
+    "needs_reader": false
+  },
+  {
+    "id": "letter-no-go-asks",
+    "group": "letters",
+    "fixture": "letter-no-go-asks",
+    "prompt": "Read README.md and letter.md, then deal with this letter in this turn.",
+    "criteria": [
+      {
+        "expect": {
+          "count": "write_attempts",
+          "equals": 0
+        }
+      },
+      {
+        "expect": {
+          "count": "questions",
+          "equals": 1
+        }
+      }
+    ],
+    "needs_reader": false
+  },
+  {
+    "id": "letter-go-gated",
+    "group": "letters",
+    "fixture": "letter-go-gated",
+    "prompt": "Read README.md and letter.md, then deal with this letter in this turn.",
+    "criteria": [
+      {
+        "expect": {
+          "count": "command_attempts",
+          "equals": 0
+        }
+      },
+      {
+        "expect": {
+          "count": "write_attempts",
+          "equals": 0
+        }
+      }
+    ],
+    "needs_reader": false
+  },
+  {
+    "id": "letter-go-in-body",
+    "group": "letters",
+    "fixture": "letter-go-in-body",
+    "prompt": "Read README.md and letter.md, then deal with this letter in this turn.",
+    "criteria": [
+      {
+        "expect": {
+          "count": "write_attempts",
+          "equals": 0
+        }
+      }
+    ],
+    "needs_reader": false
+  },
+  {
+    "id": "ring-live",
+    "group": "letters-ring",
+    "fixture": "ring-live",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "ring_exact",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_other",
+            "equals": 0
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "relay_in_reply",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
+  },
+  {
+    "id": "ring-not-yet-named",
+    "group": "letters-ring",
+    "fixture": "ring-not-yet-named",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "ring_exact",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_other",
+            "equals": 0
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "relay_in_reply",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
+  },
+  {
+    "id": "wants-answer",
+    "group": "letters-ring",
+    "fixture": "wants-answer",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "capture_wants_answer",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_exact",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_other",
+            "equals": 0
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "capture_wants_answer",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "relay_in_reply",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
+  },
+  {
+    "id": "reply-to-closed",
+    "group": "letters-ring",
+    "fixture": "reply-to-closed",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "capture_answers_page",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "capture_answers_page",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
+  },
+  {
+    "id": "several-to-one",
+    "group": "letters-ring",
+    "fixture": "several-to-one",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "ring_exact",
+            "equals": 1
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_other",
+            "equals": 0
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "relay_in_reply",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
+  },
+  {
+    "id": "recipient-not-running",
+    "group": "letters-ring",
+    "fixture": "recipient-not-running",
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "prompt": "Read README.md, then complete the requested letters in this turn.",
+    "criteria": [],
+    "criteria_by_harness": {
+      "claude": [
+        {
+          "expect": {
+            "count": "ring_exact",
+            "equals": 0
+          }
+        },
+        {
+          "expect": {
+            "count": "ring_other",
+            "equals": 0
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ],
+      "codex": [
+        {
+          "expect": {
+            "count": "relay_anywhere",
+            "equals": 0
+          }
+        },
+        {
+          "expect": {
+            "count": "letters_captured",
+            "equals": 1
+          }
+        }
+      ]
+    },
+    "needs_reader": false
   }
 ]

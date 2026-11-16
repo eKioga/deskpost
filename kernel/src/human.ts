@@ -190,7 +190,7 @@ export function seatStatusText(report: Record<string, unknown>): string {
       else if ('message_name' in row) parts.push('not yet named (it names itself on its second prompt)');
       if (row['inbound_policy'] !== undefined) parts.push(`inbound ${String(row['inbound_policy'])}`);
     }
-    lines.push(`  ${String(row['seat'] ?? '').padEnd(width)}  ${String(row['claim'] ?? '').padEnd(8)}  ${parts.join(', ')}${row['this_seat'] === true ? '  (this seat)' : ''}`);
+    lines.push(`  ${String(row['seat'] ?? '').padEnd(width)}  ${String(row['claim'] ?? '').padEnd(8)}  ${parts.join(', ')}${row['this_seat'] === true ? '  (this seat)' : ''}${row['asked'] === true ? '  (asked)' : ''}`);
     // ITS CARD ON A LINE OF ITS OWN: text the seat wrote about itself, validated as one line with no control character.
     if (typeof row['card'] === 'string') lines.push(`  ${''.padEnd(width)}  ${''.padEnd(8)}  card: ${row['card']}`);
   }

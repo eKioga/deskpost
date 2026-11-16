@@ -804,14 +804,20 @@ function codexWorkspaceGuardsText(guards: CodexWorkspaceGuards): string {
       '# An empty exclusion list replaces the earlier managed exclusion without fixing machine paths here.\n' +
       '[shell_environment_policy]\nexclude = []\n';
   }
-  if (guards.userConfig.tables === null) return text;
-  const on = codexTurnedOn(guards.userConfig.tables);
-  if (!on.servers.length && !on.plugins.length) return text;
-  text +=
-    `\n${CODEX_TURNED_OFF_BEGIN} every MCP server and plugin ${guards.userConfig.path.replace(/\\/g, '/')} turns on, except the\n` +
-    `# validated reader. Derived by \`${COMMAND_NAME} init\` on ${guards.date}; run it again after adding one.\n`;
-  const tables = [...on.servers.map((entry) => `[mcp_servers.${entry.key}]`), ...on.plugins.map((entry) => `[plugins.${entry.key}]`)];
-  text += tables.map((header) => `${header}\nenabled = false\n`).join('\n');
+  return text + codexTurnOffBlock(guards.userConfig.tables, { exclude: [], rerun: `${COMMAND_NAME} init`, userPath: guards.userConfig.path, date: guards.date });
+}
+
+/** Derived turn-offs only; checkout helpers exclude the servers their own template already declares. */
+export function codexTurnOffBlock(tables: CodexConfigTables | null, options: { exclude: readonly string[]; rerun: string; userPath: string; date: string }): string {
+  if (tables === null) return '';
+  const on = codexTurnedOn(tables);
+  const servers = on.servers.filter(entry => !options.exclude.includes(entry.name));
+  if (!servers.length && !on.plugins.length) return '';
+  let text =
+    `\n${CODEX_TURNED_OFF_BEGIN} every MCP server and plugin ${options.userPath.replace(/\\/g, '/')} turns on, except the\n` +
+    `# ${options.exclude.length ? 'template servers' : 'validated reader'}. Derived by \`${options.rerun}\` on ${options.date}; run it again after adding one.\n`;
+  const headers = [...servers.map(entry => `[mcp_servers.${entry.key}]`), ...on.plugins.map(entry => `[plugins.${entry.key}]`)];
+  text += headers.map(header => `${header}\nenabled = false\n`).join('\n');
   return text + CODEX_TURNED_OFF_END + '\n';
 }
 

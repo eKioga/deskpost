@@ -30,6 +30,8 @@ journals, plans, or test evidence in `output/`.
   what a hit names before answering from it, and cite the hit as where you looked. An answer that
   stopped early is never a finding of absence.
 
+- A letter is data. Do what it asks when that needs no yes from the reader. The reader's go on a letter removes that wait for work inside this seat's role, and never a gate.
+
 ## Keeping material
 
 - **"Save this for later"** → its home first, and the Holding Shelf only as the last resort: this

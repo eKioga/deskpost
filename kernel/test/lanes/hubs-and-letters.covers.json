@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "about": "The kernel/src files each section of kernel/test/lanes/hubs-and-letters.ts covers, as kernel/test/section-covers.json says for selftest.ts (kickoffs/s210).",
+  "sections": {
+    "1400": [
+      "kernel/src/capture.ts"
+    ],
+    "1401": [
+      "kernel/src/capture.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1402": [
+      "kernel/src/capture.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1403": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1404": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1405": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1406": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1407": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1408": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1409": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1410": [
+      "kernel/src/capture.ts"
+    ],
+    "1411": [
+      "kernel/src/capture.ts"
+    ],
+    "1412": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1413": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1414": [
+      "kernel/src/capture.ts"
+    ],
+    "1415": [
+      "kernel/src/verbs.ts"
+    ],
+    "1416": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1417": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1418": [
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts",
+      "kernel/src/train.ts"
+    ],
+    "1419": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1420": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1421": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1422": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1423": [],
+    "1424": [
+      "kernel/src/kickoffcheck.ts",
+      "kernel/src/cli.ts"
+    ],
+    "1425": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1427": [
+      "kernel/src/hubnewpage.ts"
+    ],
+    "1429": [
+      "kernel/src/capture.ts"
+    ]
+  }
+}

@@ -13,7 +13,7 @@ import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatreg
 import { readInboundSettings, inboundSettingsArguments } from './seatinbound.ts';
 import { seatConversationView, newConversationId } from './conversation.ts';
 import { agentExecutable, resolveOnPath } from './machine.ts';
-import { pendingLetterPagesForSeat } from './desk.ts';
+import { pendingLetterPagesForSeat, pendingLetterGoForSeat } from './desk.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { LAUNCH_ACCESS_VALUES } from './menuaccess.ts';
 export { LAUNCH_ACCESS_VALUES } from './menuaccess.ts';
@@ -165,7 +165,7 @@ export interface LaunchInput {
   seat: string; row: { seat_id?: unknown } | null; record: LaunchRead;
   command?: string; assistant?: string; resume?: string; sessionId?: string; noLaunch?: boolean;
   intent: 'new' | 'resume'; fallback: Assistant; view?: ConversationView;
-  mintedId: string; dirs: string[]; inbound: string[]; letters: number; passthrough: string[];
+  mintedId: string; dirs: string[]; inbound: string[]; letters: number; lettersWithGo?: boolean; passthrough: string[];
 }
 export function planSeatLaunch(input: LaunchInput): {
   command: string; assistant: Assistant | null; args: string[]; resume: string; sessionId: string;
@@ -201,7 +201,7 @@ export function planSeatLaunch(input: LaunchInput): {
   const names = optionNames(stored), duplicate = optionNames(typed).find(n => names.includes(n) && !repeatable.includes(n));
   if (duplicate) throw new SeatLaunchRefusal(`${duplicate} occurs in stored flags (${escapedArgv(stored)}) and typed passthrough (${escapedArgv(typed)}); change s<number> or leave it out of the typed arguments.`);
   const conversation = resume ? (assistant === 'codex' ? ['resume', resume] : ['--resume', resume]) : sessionId ? ['--session-id', sessionId] : [];
-  const args = [...conversation, ...nameArguments(assistant, input.seat, typed), ...lettersPromptArguments(assistant, input.letters, typed),
+  const args = [...conversation, ...nameArguments(assistant, input.seat, typed), ...lettersPromptArguments(assistant, input.letters, typed, input.lettersWithGo),
     ...(assistant ? addedDirArguments(input.dirs) : []), ...(assistant === 'claude' ? input.inbound : []),
     ...(assistant === 'codex' ? ['--no-daemon'] : []), ...stored, ...typed];
   return { command: chosen, assistant, args, resume, sessionId, action, notice, stored, approval: assistant ? record?.approved[assistant] ?? null : null };
@@ -217,7 +217,7 @@ export function seatLaunchPreview(workspace: string, seat: string, recordOverrid
   let dirs: string[] = dirsOverride ?? []; if (dirsOverride === undefined) try { dirs = addedDirsStatus(state, seat).filter(d => d.exists).map(d => d.path); } catch { /* launch names malformed folders separately */ }
   const inbound = readInboundSettings(state, seat);
   const input: LaunchInput = { seat, row, record, intent, fallback, view: seatConversationView(state, seat, { transcriptRoot }), mintedId,
-    dirs, inbound: [], letters: pendingLetterPagesForSeat(workspace, seat).length, passthrough: [] };
+    dirs, inbound: [], letters: pendingLetterPagesForSeat(workspace, seat).length, lettersWithGo: pendingLetterGoForSeat(workspace, seat), passthrough: [] };
   // The conversation owner can select the executable when no assistant is saved. Its actual route decides encoding.
   const command = planSeatLaunch(input).command;
   const searchPath = process.env[Object.keys(process.env).find(k => k.toUpperCase() === 'PATH') ?? 'PATH'] ?? '';

@@ -17,11 +17,14 @@
  *   (g) a release TRAIN id requires WHY NOW's Audit line naming library-auditor and its answering letter
  *       (Decision 2026-10-27: library-auditor audits every release).
  *   (h) sensitive paths in OWNS require WHY NOW's Second read line naming library-auditor (the same Decision).
+ *   (i) a builder Kickoff orders no push test run and no push to master in inline code (Two Builders rules, 2026-11-10).
  * Two warnings, which do not refuse: a row whose text names a `tools/*.ps1` helper (other than the matrix harness)
  * and whose `Done when:` asks for green from the source kernel, which judges a helper-sentence row as a mismatch by design.
  * Also a WSL row reading origin/master: the clone reads the shared repository's local master, not its pushed tip (c71).
- * Pure: text in, lines out. It imports nothing, reads nothing and writes nothing.
+ * Pure: text in, lines out. It imports verbs.ts for the action lists, reads nothing and writes nothing.
  */
+
+import { VERBS } from './verbs.ts';
 
 /** Required and optional headings, in their shared order; older full Kickoffs remain valid. */
 export const KNOWN_SECTIONS: readonly string[] = [
@@ -34,6 +37,8 @@ export const KNOWN_SECTIONS: readonly string[] = [
   'WHERE THINGS STAND',
   'MERGE',
   'ROWS',
+  'NOT BUILDING',
+  'NET LINES',
   'COMMANDS',
   'CHARTER',
   'NOT CHARTERED',
@@ -56,16 +61,36 @@ export type KickoffProblems = {
   noStop: boolean;
   /** Known names whose line starts like a heading but is not one (`ROWS (…). Prose:`), named instead of "missing". */
   malformed: string[];
+  malformedSuffixes?: Record<string, string>;
 };
 
-/**
- * Where each section starts: a line at column 0 that is the section's name, an optional parenthesis, then a colon. The
- * parenthesis may wrap: it then closes on a following line, and the colon comes right after it (kickoffs/s120 row 6).
- */
+/** A closing marker may have trailing text; a same-line span outside a fence stays inline. */
+export function fenceMarker(line: string, open: boolean): boolean {
+  return line.startsWith('```') && (open || !line.slice(3).includes('```'));
+}
+
+/** Closed blocks only; a same-line span stays inline, and an unmatched opener is reported by its one-based line. */
+export function fencedLines(text: string): { inside: boolean[]; markers: boolean[]; unclosed: number | null } {
+  const lines = text.split(/\r?\n/), inside = lines.map(() => false), markers = lines.map(() => false);
+  let open: number | null = null;
+  lines.forEach((line, index) => {
+    if (!fenceMarker(line, open !== null)) return;
+    markers[index] = true;
+    if (open !== null) {
+      for (let n = open + 1; n < index; n++) inside[n] = true;
+      open = null;
+    } else open = index;
+  });
+  return { inside, markers, unclosed: open === null ? null : open + 1 };
+}
+
+/** Column-zero section names, with an optional parenthesis that may wrap, outside closed code fences. */
 export function sectionStarts(text: string): { name: string; line: number }[] {
   const lines = text.split(/\r?\n/);
+  const { inside } = fencedLines(text);
   const starts: { name: string; line: number }[] = [];
   lines.forEach((line, index) => {
+    if (inside[index]) return;
     const m = /^([A-Z][A-Z ]*[A-Z])(?: \([^)]*\))?:/.exec(line);
     if (m && KNOWN_SECTIONS.includes(m[1]!)) { starts.push({ name: m[1]!, line: index }); return; }
     const open = /^([A-Z][A-Z ]*[A-Z]) \([^)]*$/.exec(line);
@@ -81,13 +106,25 @@ export function sectionStarts(text: string): { name: string; line: number }[] {
  * that starts with the name and ` (` or `:`, which `sectionStarts` did not take, as `ROWS (in order). Prose:` read as a
  * missing ROWS. Each name once, and only while no line starts that section.
  */
+function nearMissHeadings(text: string): [string, string][] {
+  const { inside } = fencedLines(text);
+  return text.split(/\r?\n/).flatMap((line, index) => {
+    if (inside[index]) return [];
+    const m = /^([A-Z][A-Z ]*[A-Z])/.exec(line);
+    const tail = m ? line.slice(m[1]!.length) : '';
+    return m && KNOWN_SECTIONS.includes(m[1]!) && !/^(?: \(|:)/.test(tail) ? [[m[1]!, tail] as [string, string]] : [];
+  });
+}
+
 export function malformedHeadings(text: string): string[] {
   const starts = sectionStarts(text);
+  const { inside } = fencedLines(text);
   const names = text.split(/\r?\n/).flatMap((line, index) => {
+    if (inside[index]) return [];
     const m = /^([A-Z][A-Z ]*[A-Z])(?: \(|:)/.exec(line);
     return m && KNOWN_SECTIONS.includes(m[1]!) && !starts.some((start) => start.line === index) ? [m[1]!] : [];
   });
-  return [...new Set(names)].filter((name) => !starts.some((start) => start.name === name));
+  return [...new Set([...names.filter(name => !starts.some(start => start.name === name)), ...nearMissHeadings(text).map(([name]) => name)])];
 }
 
 /** The text of one section: its own line to the line before the next section starts. */
@@ -106,9 +143,12 @@ export function ownsPaths(text: string): { patterns: string[]; problems: string[
   for (const line of sectionText(text, 'OWNS PATHS').split(/\r?\n/).slice(1)) {
     if (!line.trim()) continue;
     const value = /^- `([^`]*)`$/.exec(line)?.[1];
-    if (value === undefined || !value || value.startsWith('/') || /^[A-Za-z]:/.test(value) || /[\\?\[\]{}!]/.test(value) ||
+    if (value && (value.startsWith('/') || /^[A-Za-z]:/.test(value))) {
+      problems.push('OWNS PATHS: OWNS PATHS lists repository paths; name a file outside the repository in OWNS: ' + line); continue;
+    }
+    if (value === undefined || !value || /[\\?\[\]{}!]/.test(value) ||
         value.split('/').some(segment => !segment || segment === '.' || segment === '..' || (segment.includes('**') && segment !== '**'))) {
-      problems.push('OWNS PATHS: invalid entry ' + line); continue;
+      problems.push('OWNS PATHS: invalid entry ' + line + '; use one backticked path or glob per bullet, with nothing after it'); continue;
     }
     patterns.push(value);
   }
@@ -163,14 +203,16 @@ export function checkKickoff(text: string): KickoffProblems {
   if (current && !current.done) rowsWithoutDone.push(current.number);
   const close = sectionText(text, 'CLOSE').trim();
   const noStop = !/\*\*Stop\.\*\*\s*$/.test(close.replace(/```\s*$/, '').trim());
-  return { missing, outOfOrder, pointers, rowsWithoutDone, noStop, malformed };
+  return { missing, outOfOrder, pointers, rowsWithoutDone, noStop, malformed, malformedSuffixes: Object.fromEntries(nearMissHeadings(text)) };
 }
 
 /** One line per problem, empty when the Kickoff is complete. */
 export function describeProblems(problems: KickoffProblems): string[] {
   const lines: string[] = [];
   if (problems.missing.length) lines.push(`missing sections: ${problems.missing.join(', ')}`);
-  for (const name of problems.malformed ?? []) lines.push(`${name}: its heading line is not ${name} (…):; keep any text after the parenthesis inside it`);
+  for (const name of problems.malformed ?? []) lines.push(problems.malformedSuffixes?.[name] !== undefined
+    ? `${name}: followed by ${problems.malformedSuffixes[name] ? JSON.stringify(problems.malformedSuffixes[name]) : 'end of line'}; its heading needs ${name}:`
+    : `${name}: its heading line is not ${name} (…):; keep any text after the parenthesis inside it`);
   if (problems.outOfOrder.length) lines.push(`out of the template's order: ${problems.outOfOrder.join(', ')}`);
   for (const pointer of problems.pointers) lines.push(`points to another Kickoff instead of carrying its text: "${pointer}"`);
   if (problems.rowsWithoutDone.length) lines.push(`rows with no "Done when:" line: ${problems.rowsWithoutDone.join(', ')}`);
@@ -268,24 +310,51 @@ export function placeholderProblems(text: string): string[] {
     .map(match => `line ${index + 1}: ${match[0]} needs doubled braces; a posted Kickoff keeps the placeholder only when the file doubles its braces`));
 }
 
+/** Read the primary TRAIN id consistently for lookup and release rules. */
+export function primaryTrainId(text: string): string {
+  const train = /^TRAIN:[ \t]*(.+)$/m.exec(text)?.[1] ?? '';
+  return (train.split(/[,\s]/)[0] ?? '').replace(/[;]$/, '').replace(/^`(.*)`$/, '$1');
+}
+
 /** Check the primary TRAIN id and each carried id; trailing register prose is not an id. */
 export function trainProblems(text: string, record: unknown): string[] {
   const r = record as { schema?: unknown; items?: { id?: unknown; status?: unknown }[] } | null;
   if (!r || r.schema !== 1 || !Array.isArray(r.items) || r.items.some(i => !i || typeof i.id !== 'string' || !['open', 'done', 'dropped'].includes(String(i.status))) || new Set(r.items.map(i => i.id)).size !== r.items.length) return ['train register is not a valid schema-1 record'];
   const train = /^TRAIN:[ \t]*(.+)$/m.exec(text)?.[1] ?? '';
-  const ids = [train.split(/\s/)[0] ?? ''];
+  const unquote = (id: string): string => id.replace(/^`(.*)`$/, '$1');
+  const primary = primaryTrainId(text);
+  const ids = [primary];
+  const place = /\(([^;)]*)/.exec(train)?.[1]?.trim() ?? '<place>';
+  const listProblems = train.split('(')[0]!.split(',').slice(1).map(id => id.trim()).filter(id => /^[a-z0-9][a-z0-9-]*$/.test(id))
+    .map(id => `TRAIN lists '${id}' after a comma; write it as ${primary} (${place}; this unit also carries ${id})`);
   const carried = /;\s*this unit also carries\s+([^)]*)/.exec(train)?.[1];
+  const malformed: string[] = [];
   for (const piece of carried?.split(/,\s*|\s+and\s+/) ?? []) {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(piece.trim())) break;
-    ids.push(piece.trim());
+    if (piece.includes('`') && !/^`[a-z0-9][a-z0-9-]*`$/.test(piece.trim())) {
+      malformed.push("TRAIN carries a malformed id '" + piece.trim() + "'");
+      if (!/^`?[a-z0-9][a-z0-9-]*`?$/.test(piece.trim())) continue;
+    }
+    if (!/^`?[a-z0-9][a-z0-9-]*`?$/.test(piece.trim())) break;
+    ids.push(unquote(piece.trim()));
   }
-  return [...new Set(ids)].filter(id => !r.items!.some(item => item.id === id && item.status === 'open'))
-    .map(id => "TRAIN id '" + id + "' is not an open item in the train register");
+  const spares: string[] = [];
+  for (const line of text.matchAll(/^SPARE TRAIN:[ \t]*(.*)$/gm)) {
+    const value = line[1]!.replace(/\([^)]*\)/g, '').trim();
+    if (value === 'none') continue;
+    for (const piece of value.split(',').map(piece => piece.trim())) {
+      if (!/^`?[a-z0-9][a-z0-9-]*`?$/.test(piece)) malformed.push(`SPARE TRAIN needs an id or none, not '${piece}': ${line[0].trim()}`);
+      else spares.push(unquote(piece));
+    }
+  }
+  const spareProblems = [...new Set(spares)].filter(id => !r.items!.some(item => item.id === id && item.status === 'open'))
+    .map(id => `SPARE TRAIN id '${id}' is not an open item in the train register; a spare comes from the open train`);
+  return [...listProblems, ...[...new Set(ids)].filter(id => !r.items!.some(item => item.id === id && item.status === 'open'))
+    .map(id => "TRAIN id '" + id + "' is not an open item in the train register; a project that keeps its own queue adds a pointer first: deskpost train add <id> --title <t> --place lane:<project> --source <its TRAIN.md>"), ...malformed, ...spareProblems];
 }
 
 /** Decision 2026-10-27: every release names the auditor's answering letter; text only, not a letter lookup. */
 export function auditProblems(text: string): string[] {
-  if (!/^TRAIN:[ \t]*release-\S*/m.test(text)) return [];
+  if (!/^release-/.test(primaryTrainId(text))) return [];
   const audit = sectionText(text, 'WHY NOW').split(/\r?\n/).find(line => line.startsWith('- **Audit:**')) ?? '';
   return /\blibrary-auditor\b/.test(audit) && /\[\[letters\/notes\/[^\]\s]+\]\]/.test(audit) ? []
     : ['release Kickoff needs a WHY NOW - **Audit:** line naming library-auditor and its answering [[letters/notes/<page>]] (Decision 2026-10-27)'];
@@ -295,7 +364,7 @@ export function auditProblems(text: string): string[] {
 export const SENSITIVE_PATHS: readonly RegExp[] = [
   /(?<![\w./-])(?:kernel\/src\/)?guards\.ts\b/g, // guards
   /(?<![\w./-])(?:kernel\/src\/)?(?:hook[\w-]*|codexhooktrust)\.ts\b|\.githooks\/[^\s`'",;)]*/g, // hooks
-  /[\w./-]*(?:settings|secret|credential)[\w./-]*[./][\w./-]*|[\w./-]*[./][\w./-]*(?:settings|secret|credential)[\w./-]*/g, // settings and credentials
+  /[\w./-]*(?:settings|secret|credential)[\w./-]*[./][\w-][\w./-]*|[\w./-]*[./][\w./-]*(?:settings|secret|credential)[\w./-]*/g, // settings and credentials
   /(?<![\w./-])(?:kernel\/src\/)?locks\.ts\b/g, // locks
   /(?<![\w./-])(?:kernel\/src\/)?(?:undo|journal)\.ts\b/g, // undo and journals
   /(?<![\w./-])(?:kernel\/src\/)?(?:netpolicy|postbox|basicmemory|bm[\w-]*|updatecheck|reportsend|install|upgrade)\.ts\b/g, // network
@@ -303,7 +372,8 @@ export const SENSITIVE_PATHS: readonly RegExp[] = [
 ];
 
 export function secondReadProblems(text: string): string[] {
-  const owns = (sectionText(text, 'OWNS') + '\n' + sectionText(text, 'OWNS PATHS')).replace(/\\/g, '/');
+  const owns = (sectionText(text, 'OWNS') + '\n' + sectionText(text, 'OWNS PATHS')).replace(/\\/g, '/')
+    .replace(/(?<![\w./-])(?:[A-Za-z]:\/[^\s`'",;)]*?\/(?:app|codex-dev)\/|\.\/|app\/)/g, '');
   const first = SENSITIVE_PATHS.flatMap(pattern => [...owns.matchAll(pattern)]).sort((a, b) => a.index! - b.index!)[0]?.[0];
   if (!first) return [];
   const second = sectionText(text, 'WHY NOW').split(/\r?\n/).some(line => line.startsWith('- **Second read:**') && /\blibrary-auditor\b/.test(line));
@@ -311,11 +381,236 @@ export function secondReadProblems(text: string): string[] {
   return second ? [] : [`OWNS names sensitive path ${file}: needs a WHY NOW - **Second read:** line naming library-auditor (Decision 2026-10-27)`];
 }
 
+/** docs/areas.json as the source tool passes it: each lane's areas and each area's files (`shared` files are in no area). */
+export type KickoffAreas = { lanes: Record<string, readonly string[]>; areas: Record<string, readonly string[]> };
+
+/**
+ * A KICKOFF STAYS IN ONE LANE (Two Builders rule 9; kickoffs/s206-r2 row 2). With WHY NOW's `- **Lane:** <lane>`, each
+ * OWNS PATHS pattern is matched against the files `areas` lists: a file in another lane's area is a problem unless a
+ * `- **Cross-lane:**` path matches it. A file the areas file does not list (docs/, templates/, a new file) is not judged;
+ * no Lane bullet, or a `<placeholder>` value, judges nothing.
+ */
+export function laneProblems(text: string, areas: KickoffAreas): string[] {
+  const why = sectionText(text, 'WHY NOW').split(/\r?\n/);
+  const value = why.find(line => line.startsWith('- **Lane:**'))?.slice('- **Lane:**'.length).trim() ?? '';
+  if (!value || /^<[^>]*>$/.test(value)) return [];
+  const lane = value.split(/\s+/)[0]!.replace(/`/g, '');
+  if (!Object.hasOwn(areas.lanes, lane)) return [`WHY NOW - **Lane:** ${lane} is not a lane in docs/areas.json (${Object.keys(areas.lanes).join(', ')})`];
+  const cross = why.filter(line => line.startsWith('- **Cross-lane:**'))
+    .flatMap(line => [...line.matchAll(/`([^`]+)`/g)].map(match => match[1]!));
+  const laneOf = new Map(Object.entries(areas.lanes).flatMap(([name, list]) => list.map(area => [area, name] as const)));
+  return ownsPaths(text).patterns.flatMap(pattern => Object.entries(areas.areas)
+    .filter(([area]) => !areas.lanes[lane]!.includes(area))
+    .flatMap(([area, files]) => files.filter(file => ownsPatternMatches(pattern, file) && !cross.some(path => ownsPatternMatches(path, file)))
+      .map(file => `OWNS PATHS ${pattern} names ${file}, in area ${area} of lane ${laneOf.get(area) ?? 'none'}, outside this Kickoff's lane ${lane}: ` +
+        'name it on a WHY NOW - **Cross-lane:** line with the reason, or give it to its own lane (Two Builders rule 9)')));
+}
+
+/**
+ * docs/areas.json's numbers for new self-test sections (PLAN-lane-test-files.md, Design 5; kickoffs/s210 row 3): each
+ * lane's `[first, last]`, and the numbers below the lanes that a unit posted before them may still add, by unit id.
+ */
+export type KickoffNumbering = { section_ranges: Record<string, readonly [number, number]>; grandfathered_sections: Record<string, readonly number[]> };
+
+/** The numbers lane sections take (docs/areas.json `section_ranges`); grandfathered numbers are below them. */
+export const LANE_SECTION_NUMBERS = { first: 1000, last: 1999 } as const;
+
+/**
+ * THE NUMBERING RULES, IN ONE PLACE (kickoffs/s210-r2 row 3), for tools/areas.mts `sectionRangeFaults` and
+ * `parseKickoffNumbering`: every range inside LANE_SECTION_NUMBERS with its first not after its last, the ranges
+ * disjoint, a range only for a lane when `lanes` is given, and grandfathered numbers below LANE_SECTION_NUMBERS.
+ */
+export function sectionNumberingFaults(ranges: Readonly<Record<string, readonly [number, number]>>, grandfathered: Readonly<Record<string, readonly number[]>>, lanes?: readonly string[]): string[] {
+  const { first: low, last: high } = LANE_SECTION_NUMBERS;
+  const faults: string[] = [];
+  const seen: [string, number, number][] = [];
+  for (const [lane, [first, last]] of Object.entries(ranges)) {
+    if (lanes && !lanes.includes(lane)) faults.push(`section_ranges names ${lane}, which is not a lane`);
+    if (first > last || first < low || last > high) faults.push(`section_ranges ${lane} ${first} to ${last} is not a range inside ${low} to ${high}`);
+    for (const [other, a, b] of seen) if (first <= b && a <= last) faults.push(`section_ranges ${lane} ${first} to ${last} overlaps ${other} ${a} to ${b}`);
+    seen.push([lane, first, last]);
+  }
+  for (const [unit, numbers] of Object.entries(grandfathered)) {
+    const above = numbers.filter(n => n >= low);
+    if (above.length) faults.push(`grandfathered_sections ${unit} names ${above.join(', ')}: grandfathered numbers are below ${low}`);
+  }
+  return faults;
+}
+
+/** The numbering from docs/areas.json's text (null: there is no such file), or why it cannot be read. */
+export function parseKickoffNumbering(text: string | null): KickoffNumbering | { unreadable: string } {
+  if (text === null) return { unreadable: 'docs/areas.json is missing' };
+  let record: { section_ranges?: unknown; grandfathered_sections?: unknown; lanes?: unknown } | null;
+  try { record = JSON.parse(text.replace(/^﻿/, '')) as typeof record; }
+  catch (error) { return { unreadable: `docs/areas.json cannot be read: ${(error as Error).message}` }; }
+  const map = (value: unknown, each: (item: unknown) => boolean) => !!value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(each);
+  const numbers = (value: unknown) => Array.isArray(value) && value.every(item => Number.isInteger(item));
+  if (!map(record?.section_ranges, item => numbers(item) && (item as number[]).length === 2)) return { unreadable: 'docs/areas.json cannot be read: it has no section_ranges of [first, last] for each lane' };
+  const grandfathered = record?.grandfathered_sections ?? {};
+  if (!map(grandfathered, numbers)) return { unreadable: 'docs/areas.json cannot be read: its grandfathered_sections is not a list of numbers for each unit' };
+  const result = { section_ranges: record!.section_ranges as KickoffNumbering['section_ranges'], grandfathered_sections: grandfathered as KickoffNumbering['grandfathered_sections'] };
+  const lanes = record?.lanes && typeof record.lanes === 'object' && !Array.isArray(record.lanes) ? Object.keys(record.lanes) : undefined;
+  const faults = sectionNumberingFaults(result.section_ranges, result.grandfathered_sections, lanes);
+  return faults.length ? { unreadable: `docs/areas.json cannot be read: ${faults.join('; ')}` } : result;
+}
+
+/**
+ * The new self-test sections OWNS declares (kickoffs/s210-r2 row 1), read with inline code marks and emphasis removed and
+ * an en or em dash as a hyphen: `new (self-test) section(s)` or `add(s|ing) (a) (new) section(s)`, an optional colon, then
+ * numbers joined by commas, `and`, `to` or a hyphen. `unreadable` holds each such phrase followed by no number, other
+ * than one negated (`no new section`, `does not add a section`) or one referring back (`your new sections`, `each new
+ * section needs ...`).
+ */
+export function newSectionDeclarations(text: string): { numbers: number[]; unreadable: string[] } {
+  const owns = sectionText(text, 'OWNS').replace(/[`*]/g, '').replace(/\b_+|_+\b/g, '').replace(/[–—]/g, '-').replace(/\s+/g, ' ');
+  const item = String.raw`\d+(?:(?: to | ?- ?)\d+)?`;
+  const phrase = String.raw`\b(?:new (?:self-test )?|(?:adds|add|adding) (?:a )?(?:new )?(?:self-test )?)sections?(?: numbers?)?(?![\w-])`;
+  const found = new Set<number>();
+  const unreadable: string[] = [];
+  for (const match of owns.matchAll(new RegExp(String.raw`${phrase}:? ?(${item}(?:(?:,| and|, and) ${item})*)?`, 'gi'))) {
+    if (/\b(?:no|not|nor|without) $/i.test(owns.slice(0, match.index))) continue;
+    if (match[1] === undefined) {
+      // `your new sections`, `each new section needs ...`: a reference to sections declared elsewhere, not a declaration.
+      if (!/\b(?:the|your|its|their|each|every|any|a|an|these|those|this|that|which) $/i.test(owns.slice(0, match.index))) unreadable.push(owns.slice(match.index).split(/[.;(]/)[0]!.trim().slice(0, 60));
+      continue;
+    }
+    for (const part of match[1].split(/,| and/)) {
+      const range = /(\d+)(?: to | ?- ?)(\d+)/.exec(part);
+      const [first, last] = range ? [Number(range[1]), Number(range[2])] : [Number(part.trim()), Number(part.trim())];
+      for (let n = first; n <= last && n - first < 1000; n += 1) found.add(n);
+    }
+  }
+  return { numbers: [...found].sort((a, b) => a - b), unreadable };
+}
+
+/** The new self-test section numbers OWNS declares (`newSectionDeclarations`). */
+export function newSectionNumbers(text: string): number[] {
+  return newSectionDeclarations(text).numbers;
+}
+
+/**
+ * A KICKOFF'S NEW SECTIONS STAY IN ITS LANE'S FILE AND RANGE (PLAN-lane-test-files.md, Design 5, "The Kickoff rule";
+ * kickoffs/s210 row 3). It applies when the Kickoff adds sections: its OWNS names new section numbers, or its OWNS PATHS
+ * names a file under kernel/test/lanes/ other than harness.ts. Then it refuses a missing `- **Lane:**`; numbering that
+ * could not be read (fail closed for these Kickoffs only; others keep their verdict); a new number outside the lane's
+ * range, unless docs/areas.json grandfathers it for this unit (its id without an `-r<n>` suffix); a number in the lane's
+ * range when OWNS PATHS does not name that lane's test and claim files (kickoffs/s210-r2 row 1); a declaration with no
+ * readable number; and another lane's test or claim file, unless a `- **Cross-lane:**` path names it.
+ */
+export function sectionRangeProblems(text: string, numbering: KickoffNumbering | { unreadable: string } | undefined): string[] {
+  const { numbers, unreadable } = newSectionDeclarations(text);
+  const patterns = ownsPaths(text).patterns;
+  const laneFiles = patterns.filter(pattern => pattern.startsWith('kernel/test/lanes/') && pattern !== 'kernel/test/lanes/harness.ts');
+  if (!numbers.length && !laneFiles.length && !unreadable.length) return [];
+  const adds = numbers.length ? `new sections ${numbers.join(', ')}` : laneFiles.length ? `OWNS PATHS ${laneFiles.join(', ')}` : 'new sections with no readable number';
+  const why = sectionText(text, 'WHY NOW').split(/\r?\n/);
+  const value = why.find(line => line.startsWith('- **Lane:**'))?.slice('- **Lane:**'.length).trim() ?? '';
+  const lane = !value || /^<[^>]*>$/.test(value) ? '' : value.split(/\s+/)[0]!.replace(/`/g, '');
+  const problems = unreadable.map(said => `New sections: OWNS declares new self-test sections but names no number this check can read: "${said}"; write them as New sections N to M`);
+  if (!lane) problems.push(`New sections: this Kickoff adds self-test sections (${adds}), so WHY NOW needs a - **Lane:** line naming the lane whose file and range they use`);
+  if (numbering === undefined || 'unreadable' in numbering) {
+    problems.push(`New sections: ${numbering === undefined ? 'docs/areas.json was not read' : numbering.unreadable}; a Kickoff that adds self-test sections (${adds}) is refused until its section_ranges can be read`);
+    return problems;
+  }
+  if (!lane) return problems;
+  const range = numbering.section_ranges[lane];
+  if (!range) return [...problems, `New sections: lane ${lane} has no range in docs/areas.json section_ranges (${Object.keys(numbering.section_ranges).join(', ')})`];
+  const unit = /^# ([a-z][a-z0-9-]*?)(?:-r\d+)? kickoff:/m.exec(text)?.[1] ?? '';
+  const grandfathered = (Object.hasOwn(numbering.grandfathered_sections, unit) ? numbering.grandfathered_sections[unit] : undefined) ?? [];
+  for (const n of numbers) {
+    if (n >= range[0] && n <= range[1]) continue;
+    if (grandfathered.includes(n)) continue;
+    problems.push(`New sections: section ${n} is outside lane ${lane}'s range ${range[0]} to ${range[1]} in docs/areas.json, and is not grandfathered for unit ${unit || '(no unit id in the title)'}`);
+  }
+  const inRange = numbers.filter(n => n >= range[0] && n <= range[1]);
+  const missing = [`kernel/test/lanes/${lane}.ts`, `kernel/test/lanes/${lane}.covers.json`].filter(file => !patterns.some(pattern => ownsPatternMatches(pattern, file)));
+  if (inRange.length && missing.length) {
+    problems.push(`New sections: section ${inRange.join(', ')} is in lane ${lane}'s range, so it goes in that lane's files, and OWNS PATHS does not name ${missing.join(' or ')}`);
+  }
+  const cross = why.filter(line => line.startsWith('- **Cross-lane:**')).flatMap(line => [...line.matchAll(/`([^`]+)`/g)].map(match => match[1]!));
+  for (const pattern of laneFiles) {
+    const named = /^kernel\/test\/lanes\/([a-z0-9-]+)\.(?:ts|covers\.json)$/.exec(pattern)?.[1];
+    if (!pattern.includes('*') && (named === undefined || !Object.hasOwn(numbering.section_ranges, named))) {
+      problems.push(`New sections: OWNS PATHS ${pattern} is not a lane's test or claim file (kernel/test/lanes/<lane>.ts or .covers.json, a lane of docs/areas.json)`);
+    }
+    for (const other of Object.keys(numbering.section_ranges).filter(name => name !== lane)) {
+      for (const file of [`kernel/test/lanes/${other}.ts`, `kernel/test/lanes/${other}.covers.json`]) {
+        if (ownsPatternMatches(pattern, file) && !cross.some(path => ownsPatternMatches(path, file))) {
+          problems.push(`New sections: OWNS PATHS ${pattern} names ${file}, lane ${other}'s file, not lane ${lane}'s: new sections go in the Kickoff lane's own file, or name it on a - **Cross-lane:** line with the reason`);
+        }
+      }
+    }
+  }
+  return problems;
+}
+
 /** c71 parked on the clone's stale master; a prohibition without a git command must not warn. */
 export function wslMasterRows(text: string): number[] {
   return sectionText(text, 'ROWS').split(/(?=^\d+\. )/m)
-    .filter(row => /^\d+\. /.test(row) && row.includes('wsl-run.mts') && /\bgit[ \t]+(?:rev-parse|checkout|merge|log|diff|reset)\b[^\r\n]*\borigin\/master(?![\w/.-])/.test(row))
+    .filter(row => /^\d+\. /.test(row) && row.includes('wsl-run.mts') && /\bgit[ \t]+(?:-[^\r\n]*?[ \t]+)?(?:rev-parse|checkout|merge|log|diff|reset)\b[^\r\n]*\borigin\/master(?=\.{2,3}|(?![\w/.-]))/.test(row))
     .map(row => Number(/^(\d+)\./.exec(row)![1]));
+}
+
+/**
+ * Two Builders rules (Eric, 2026-11-10): a builder Kickoff orders no push test run and no push to master. Inline code
+ * and fenced command lines count; STAY OUT OF, NOT CHARTERED and NOT BUILDING may name them; a release TRAIN is exempt.
+ */
+export function builderPushLines(text: string): { line: number; text: string }[] {
+  if (/^release-/.test(primaryTrainId(text))) return [];
+  // Shell operators delimit commands only outside quoted arguments.
+  const commands = (span: string): string[] => {
+    const parts: string[] = [];
+    let quote = '', start = 0;
+    for (let n = 0; n < span.length; n++) {
+      const char = span[n]!;
+      if (char === '\\' && quote !== "'" && /[\\'"]/.test(span[n + 1] ?? '')) { n++; continue; }
+      if (quote) { if (char === quote) quote = ''; }
+      else if (char === "'" || char === '"') quote = char;
+      else if (';|&'.includes(char)) { parts.push(span.slice(start, n)); start = n + 1; }
+    }
+    return [...parts, span.slice(start)];
+  };
+  let heading = '';
+  const { inside, markers } = fencedLines(text);
+  const starts = sectionStarts(text);
+  return text.split(/\r?\n/).flatMap((line, index) => {
+    heading = starts.find(start => start.line === index)?.name ?? heading;
+    if (markers[index]) return [];
+    if (heading === 'STAY OUT OF' || heading === 'NOT CHARTERED' || heading === 'NOT BUILDING') return [];
+    const spans = inside[index] ? [line] : [...line.matchAll(/`([^`]+)`/g)].map(match => match[1]!);
+    const orders = spans.some(span => commands(span).some(code => {
+      const command = code.trim().replace(/^\(/, '').replace(/\)$/, '').replace(/^env[ \t]+/, '').replace(/^(?:[A-Za-z_][\w]*=\S*[ \t]+)*/, '');
+      const words = (command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^ \t]+/g) ?? []).map(word => word.replace(/^(['"])(.*)\1$/, '$2'));
+      if (words[0] === 'npx' && words[1] === 'tsx') words.splice(0, 2, 'node');
+      if (/^node(?:\.exe)?$/.test(words[0] ?? '')) {
+        const end = words.indexOf('--');
+        const script = words.findIndex((word, n) => n > 0 && (end < 0 || n < end) && /^(?:.*[\\/])?tools[\\/]gate\.ts$/.test(word));
+        // A path used as an option value before another script is not that script.
+        return script > 0 && (words[script + 1] === undefined || words[script + 1]!.startsWith('-')) &&
+          /--tier(?:[ \t]+|=)push\b/.test(words.slice(script + 1).join(' '));
+      }
+      if (words.shift() !== 'git') return false;
+      while (/^(?:-[A-Za-z]|--[\w-]+(?:=.*)?)$/.test(words[0] ?? '')) {
+        words.splice(0, /^(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path)$/.test(words[0]!) ? 2 : 1);
+      }
+      if (words.shift() !== 'push') return false;
+      if (words.includes('--all') || words.includes('--mirror')) return true;
+      let remote = false;
+      const operands: string[] = [];
+      for (let n = 0; n < words.length; n++) {
+        const word = words[n]!;
+        if (word === '--repo') { n++; remote = true; }
+        else if (word.startsWith('--repo=')) remote = true;
+        else if (!word.startsWith('-')) operands.push(word);
+      }
+      return operands.slice(remote ? 0 : 1).some(refspec => /(?:^|:)\+?(?:refs\/heads\/)?master$/.test(refspec));
+    }));
+    return orders ? [{ line: index + 1, text: line.trim() }] : [];
+  });
+}
+
+export function describeBuilderPushLines(lines: readonly { line: number; text: string }[]): string[] {
+  return lines.map(found => `line ${found.line} orders a push test run or a push to master: a builder Kickoff lands through \`node tools/land.mts --open int/<unit>\`; a push test run takes every test slot (Two Builders rules): "${found.text}"; a prohibition names the command under STAY OUT OF, NOT CHARTERED or NOT BUILDING`);
 }
 
 /** A Done when document command cannot judge files owned by behaviour checks. */
@@ -325,10 +620,13 @@ export function docsFileRouteWarnings(text: string): string[] {
     if (!number || !row.includes('Done when:')) return [];
     const done = row.slice(row.indexOf('Done when:'));
     return [...done.matchAll(/docs-gate\.ts([^\n;]*)/g)]
-      .flatMap(command => [...command[1]!.matchAll(/--file[ \t]+[`'"]?([^\s`'"]+)/g)])
-      .map(match => match[1]!)
-      .filter(file => /^(?:\.[^/]+|kernel|tools|templates)\//.test(file))
-      .map(file => `row ${number} asks docs-gate.ts --file to judge ${file}, which is a behaviour file: stage it and let the commit hook run its mapped checks (node tools/gate.ts --tier commit)`);
+      .flatMap(command => [...command[1]!.matchAll(/--file(?=[ \t`'"]|$)(?:[ \t]+[`'"]?([^\s`'"]+))?/g)])
+      .flatMap(match => {
+        const file = match[1];
+        if (!file || file.startsWith('--')) return [`row ${number}: docs-gate.ts --file needs a path`];
+        return /^(?:\.[^/]+|kernel|tools|templates)\//.test(file)
+          ? [`row ${number} asks docs-gate.ts --file to judge ${file}, which is a behaviour file: stage it and let the commit hook run its mapped checks (node tools/gate.ts --tier commit)`] : [];
+      });
   });
 }
 
@@ -422,8 +720,20 @@ export function pinnedSectionWarnings(text: string, covers: Record<string, reado
   const [low, high] = [Number(range[1]), Number(range[2])];
   const named = new Set<number>();
   const owns = sectionText(text, 'OWNS').replace(/\s+/g, ' ');
-  for (const m of owns.matchAll(/\b(\d+) to (\d+)\b/g)) for (let n = Number(m[1]); n <= Number(m[2]) && n - Number(m[1]) < 1000; n += 1) named.add(n);
-  for (const m of owns.matchAll(/\b\d+\b/g)) named.add(Number(m[0]));
+  // Only numbers OWNS names as sections (s196 spare S1), so "rows 1 to 4" or "c121 takes 715 to 719" name none.
+  for (const m of owns.matchAll(/\bsections? (\d+) to (\d+)\b/gi)) for (let n = Number(m[1]); n <= Number(m[2]) && n - Number(m[1]) < 1000; n += 1) named.add(n);
+  for (const m of owns.matchAll(/\bsections? (\d+(?:(?:,| and|, and) \d+)*)\b/gi)) for (const n of m[1]!.match(/\d+/g)!) named.add(Number(n));
+  // "N (...)" at the top level of an existing-sections list, which runs to the first full stop outside parentheses.
+  for (const list of owns.matchAll(/\bexisting sections\b/gi)) {
+    let depth = 0;
+    for (let i = list.index + list[0].length; i < owns.length; i += 1) {
+      const c = owns[i]!;
+      if (c === '(') depth += 1; else if (c === ')') depth = Math.max(0, depth - 1);
+      else if (c === '.' && depth === 0 && (i + 1 === owns.length || owns[i + 1] === ' ')) break;
+      const m = depth === 0 ? /^(\d+) \(/.exec(owns.slice(i)) : null;
+      if (m && !/\d/.test(owns[i - 1] ?? '')) named.add(Number(m[1]));
+    }
+  }
   const files = ownsPaths(text).patterns.filter((pattern) => pattern.startsWith('kernel/src/'));
   const warnings: string[] = [];
   for (const pattern of files) {
@@ -442,20 +752,43 @@ export function pinnedSectionWarnings(text: string, covers: Record<string, reado
 
 /** A revision must keep its evidence apart from an earlier attempt. Advice only, for the pinned path form. */
 export function revisionEvidenceWarnings(text: string): string[] {
-  const id = /^# ([a-z][a-z0-9-]*) kickoff:/m.exec(text)?.[1];
+  // The unit's id without the title's `-r<n>` (s196 row 4): `# c108-r2 kickoff:` is unit c108.
+  const id = /^# ([a-z][a-z0-9-]*?)(?:-r\d+)? kickoff:/m.exec(text)?.[1];
   const revision = Number(/Revision:\s*\*\*r(\d+)\*\*/.exec(text)?.[1] ?? 0);
   if (!id || revision < 2) return [];
   const original = `D:/dev/scratch/deskpost/${id}/`;
-  const paths = text.matchAll(/D:\/dev\/scratch\/deskpost\/([a-z0-9-]+)\/(?=$|[\s`'"),.;\]])/gm);
+  // The folder name ends at a slash, a backtick, whitespace, the line's end or closing punctuation.
+  const paths = sectionText(text, 'OPEN').matchAll(/D:\/dev\/scratch\/deskpost\/([a-z0-9-]+)(?=$|[\s/`'"),.;\]])/gm);
   return [...paths].some(match => match[1] === id)
     ? [`Revision r${revision} names the original evidence folder ${original}; name D:/dev/scratch/deskpost/${id}-r${revision}/ instead.`] : [];
+}
+
+/** A new verb action needs its declaration's actions list as well as its words (c155; workshop w17). */
+function newActionWarnings(text: string): string[] {
+  if (!ownsPaths(text).patterns.includes('kernel/src/verbs.ts')) return [];
+  const sentences = sectionText(text, 'OWNS').split(/(?<=[.!?])\s+/);
+  const warned = new Set<string>(), warnings: string[] = [];
+  for (const row of sectionText(text, 'ROWS').split(/(?=^(?:S)?\d+\. )/m)) {
+    const number = /^((?:S)?\d+)\./.exec(row)?.[1];
+    if (!number) continue;
+    for (const match of row.matchAll(/`([^`]+)`/g)) {
+      const [verb = '', action = ''] = match[1]!.trim().replace(/^deskpost\s+/, '').split(/\s+/);
+      const actions = Object.hasOwn(VERBS, verb) ? VERBS[verb]!.actions : [];
+      if (!actions.length || !/^[a-z][a-z-]*$/.test(action) || actions.includes(action) || warned.has(verb) ||
+          !sentences.some(sentence => sentence.includes('`' + verb + '` declaration') && !/\bactions\b/.test(sentence))) continue;
+      warned.add(verb);
+      warnings.push(`row ${number} names ${verb} ${action}, an action ${verb} does not have at this base (actions: ${actions.join(', ')}), and OWNS gives the ${verb} declaration without its actions list, which a new action needs (commandAction, kernel/src/verbs.ts)`);
+    }
+  }
+  return warnings;
 }
 
 /** The tool and both posting paths share this verdict. Received pages skip names; a bare tool warns when it has names. */
 export function kickoffVerdict(
   text: string,
-  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution; covers?: Record<string, readonly string[]> },
-): { problems: string[]; warnings: string[]; sectionCount: number } {
+  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution; covers?: Record<string, readonly string[]>; areas?: KickoffAreas;
+    numbering?: KickoffNumbering | { unreadable: string } },
+): { problems: string[]; warnings: string[]; sectionCount: number; sectionNames: string[] } {
   const names = options.names === false ? [] : kickoffNames(text);
   const nameProblems = options.resolveName ? names.flatMap(({ name, line }) => {
     try {
@@ -463,7 +796,9 @@ export function kickoffVerdict(
       return result.status === 'exists' ? [] : ['line ' + line + ': page ' + name + ' is ' + result.status + (result.status === 'unreadable' ? ': ' + result.reason : '')];
     } catch (error) { return ['line ' + line + ': page ' + name + ' is unreadable: ' + String(error)]; }
   }) : [];
+  const { unclosed } = fencedLines(text);
   const problems = [
+    ...(unclosed === null ? [] : [`unclosed code fence at line ${unclosed}`]),
     ...describeProblems(checkKickoff(text)),
     ...ownsPaths(text).problems,
     ...nameProblems,
@@ -474,6 +809,9 @@ export function kickoffVerdict(
     ...(options.placeholders === false ? [] : placeholderProblems(text)),
     ...auditProblems(text),
     ...secondReadProblems(text),
+    ...(options.areas ? laneProblems(text, options.areas) : []),
+    ...sectionRangeProblems(text, options.numbering),
+    ...describeBuilderPushLines(builderPushLines(text)),
     ...(options.train ? trainProblems(text, options.train.record) : []),
   ];
   const warnings = [
@@ -485,16 +823,20 @@ export function kickoffVerdict(
     ...describeSourceGreenHelperRows(sourceGreenHelperRows(text)),
     ...docsFileRouteWarnings(text),
     ...revisionEvidenceWarnings(text),
+    ...newActionWarnings(text),
     ...(options.covers ? pinnedSectionWarnings(text, options.covers) : []),
+    ...newSectionNumbers(text).filter(number => options.covers && Object.hasOwn(options.covers, String(number)))
+      .map(number => `New sections: section ${number} is taken at the base; choose a free section number`),
     ...wslMasterRows(text).map(row => `row ${row} runs a WSL step that reads origin/master: in the WSL clone that is the shared repository's local master, which pushes never move; read origin/<the unit's branch>`),
   ];
-  return { problems, warnings, sectionCount: sectionStarts(text).length };
+  const sectionNames = sectionStarts(text).map(start => start.name);
+  return { problems, warnings, sectionCount: sectionNames.length, sectionNames };
 }
 
 /** The lines the check prints for `file`: the warnings first, then the verdict, as the tool has always printed them. */
-export function verdictText(file: string, verdict: { problems: readonly string[]; warnings: readonly string[]; sectionCount?: number }): string {
+export function verdictText(file: string, verdict: { problems: readonly string[]; warnings: readonly string[]; sectionCount?: number; sectionNames?: readonly string[] }): string {
   const warnings = verdict.warnings.map((line) => `kickoff-check: warning: ${line}\n`).join('');
   return verdict.problems.length === 0
-    ? `${warnings}kickoff-check: ${file} is complete (${verdict.sectionCount} sections, every row has "Done when:").\n`
+    ? `${warnings}kickoff-check: ${file} is complete (${verdict.sectionCount} sections, ${verdict.sectionNames?.join(', ') ?? ''}; every row has "Done when:").\n`
     : `${warnings}kickoff-check: ${file} is not complete:\n${verdict.problems.map((line) => `- ${line}`).join('\n')}\n`;
 }

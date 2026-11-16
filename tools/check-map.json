@@ -10,6 +10,8 @@
     {"pattern": "^docs/adr/0013-a-hub-section-holds-only-what-the-project-can-close\\.md$", "sections": [], "checks": ["hub.sections-name-their-destinations"], "contract": "hub.sections-name-their-destinations reads it"},
     {"pattern": "^docs/supported-operation-matrix\\.md$", "sections": [], "checks": ["acceptance.matrix-doc-matches-rows"], "contract": "acceptance.matrix-doc-matches-rows renders it from the matrix"},
     {"pattern": "^docs/kickoff-template\\.md$", "sections": [240], "checks": [], "contract": "self-test section 240 reads its fenced block and runs tools/kickoff-check.mts on it"},
+    {"pattern": "^docs/areas\\.json$", "sections": [820], "checks": [], "contract": "self-test section 820 checks tools/areas.mts, which reads it"},
+    {"pattern": "^tools/areas\\.mts$", "sections": [820], "checks": [], "contract": "self-test section 820 runs it on fixture repositories"},
     {"pattern": "^docs/guides/.*\\.md$", "sections": [198], "checks": []},
     {"pattern": "^(?:docs/.*|[^/]+)\\.md$", "sections": [], "checks": []},
     {"pattern": "^\\.claude/settings(?:\\.local)?\\.json$", "sections": [], "checks": ["settings.parse", "settings.hooks-registered"]},
@@ -25,6 +27,7 @@
     {"pattern": "^(?:install\\.(?:sh|ps1)|library(?:\\.(?:cmd|ps1))?)$", "sections": "named", "checks": []},
     {"pattern": "^\\.(?:gitattributes|gitignore)$", "sections": [155], "checks": []},
     {"pattern": "^LICENSE$", "sections": [119], "checks": []},
+    {"pattern": "^\\.forgejo/", "sections": [767], "checks": [], "contract": "section 767 reads the CI workflow"},
     {"pattern": "^\\.claude/(?:hooks|adapters)/", "sections": "named", "checks": ["library-hooks.boundary-suite"]},
     {"pattern": "^docs/(?:librarian-operation-playbooks|model-division-of-labor)\\.md$", "sections": [], "checks": ["codex.delegation-runs-hooks"]}
   ]

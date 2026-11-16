@@ -8,12 +8,13 @@ const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'staged-secrets-'));
 let code = 1;
 try {
   const report = path.join(folder, 'report.json');
-  const ran = spawnSync('gitleaks', ['git', '--staged', '--no-banner', '--no-color', '--redact', '--report-format', 'json', '--report-path', report], { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  const scanner = process.env.DESKPOST_GITLEAKS && fs.existsSync(process.env.DESKPOST_GITLEAKS) && fs.statSync(process.env.DESKPOST_GITLEAKS).isFile() ? process.env.DESKPOST_GITLEAKS : 'gitleaks';
+  const ran = spawnSync(scanner, ['git', '--staged', '--no-banner', '--no-color', '--redact', '--report-format', 'json', '--report-path', report], { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
   if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') {
-    console.log('staged secrets: WARN gitleaks is not installed, so nothing scanned the staged blobs');
+    console.log(`staged secrets: WARN gitleaks is not installed, so nothing scanned the staged blobs; hook looked at ${process.env.DESKPOST_GITLEAKS || 'gitleaks on PATH'}`);
     code = 0;
   } else if (!ran.error && ran.status === 0) {
-    const version = spawnSync('gitleaks', ['version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    const version = spawnSync(scanner, ['version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
     console.log(`staged secrets: no leaks found (gitleaks ${/^\d+\.\d+\.\d+/.exec(version.stdout ?? '')?.[0] ?? 'unknown'})`);
     code = 0;
   } else if (!ran.error && ran.status === 1 && fs.existsSync(report)) {

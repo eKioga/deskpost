@@ -573,6 +573,36 @@ function applyRename(plan: RenamePlan, approved: string): Record<string, PsJsonV
   return renamedResult(plan.stateDirectory, journal!, maps, 'renamed');
 }
 
+/** Remaining prose mentions are advice, never input to the rename's writes. Do not follow symlinks. */
+function oldNameMentions(workspace: string, name: string): { count: number; paths: string[]; unreadable: string[] } {
+  const paths: string[] = [], unreadable: string[] = [];
+  const word = new RegExp(`(^|[^a-zA-Z0-9_-])${name}($|[^a-zA-Z0-9_-])`);
+  const relative = (file: string) => path.relative(workspace, file).split(path.sep).join('/');
+  const walk = (directory: string, skills = false) => {
+    if (!fs.existsSync(directory)) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+    catch (error) { unreadable.push(`${relative(directory)}: ${(error as Error).message}`); return; }
+    for (const entry of entries) {
+      if (entry.name === 'sources' || /^log(?:\.md)?$/i.test(entry.name)) continue;
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(file, skills);
+      else if (entry.isFile() && (skills || entry.name.endsWith('.md'))) {
+        try { if (word.test(fs.readFileSync(file, 'utf8'))) paths.push(relative(file)); }
+        catch (error) { unreadable.push(`${relative(file)}: ${(error as Error).message}`); }
+      }
+    }
+  };
+  const shelf = path.join(workspace, 'shelf');
+  if (fs.existsSync(shelf)) for (const book of fs.readdirSync(shelf, { withFileTypes: true })) {
+    if (book.isDirectory()) walk(path.join(shelf, book.name, 'wiki'));
+  }
+  walk(path.join(workspace, 'collection', 'projects'));
+  for (const folder of ['.claude', '.agents']) walk(path.join(workspace, folder, 'skills'), true);
+  paths.sort(); unreadable.sort();
+  return { count: paths.length, paths: paths.slice(0, 50), unreadable };
+}
+
 function renamedResult(stateDirectory: string, journal: RenameJournal, maps: { done: string[]; left: { slug: string; reason: string }[] }, status: string): Record<string, PsJsonValue> {
   return {
     schema: 1,
@@ -585,6 +615,7 @@ function renamedResult(stateDirectory: string, journal: RenameJournal, maps: { d
     attempt: journal.attempt,
     letters_maps_regenerated: maps.done,
     letters_maps_left: maps.left as unknown as PsJsonValue,
+    old_name_mentions: oldNameMentions(path.dirname(stateDirectory), journal.old),
     ...(maps.left.length ? { resume: `deskpost seat rename --resume ${journal.new}` } : {}),
     next: nextLines(stateDirectory, journal.old, journal.new),
     project_unchanged: true,

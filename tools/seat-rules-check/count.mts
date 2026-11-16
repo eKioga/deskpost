@@ -109,6 +109,55 @@ export function verdictWord(reply: string): string | null {
   return match ? match[1]!.toLowerCase() : null;
 }
 
+/** Absolute call-log counts include refused writes and instruction files; only successful exact paths count as written. */
+export function countToolCalls(calls: Record<string, unknown>[], paths: string[] = []): Record<string, number> {
+  const result: Record<string, number> = {
+    write_attempts: calls.filter(call => call['tool'] === 'write_file').length,
+    command_attempts: calls.filter(call => call['tool'] === 'run_command').length,
+  };
+  for (const target of paths) result['wrote_path: ' + target] = calls.some(call => call['tool'] === 'write_file' && call['succeeded'] === true && (call['arguments'] as Record<string, unknown> | undefined)?.['path'] === target) ? 1 : 0;
+  return result;
+}
+
 export function wordCount(reply: string): number {
   return reply.split(/\s+/).filter((word) => word !== '').length;
+}
+
+/** Recorded output stays text, including refusals; expectations are separate eval data. */
+export type LetterFixture = {
+  agents: Record<string, unknown>[];
+  expected_ring_target: string;
+  expected_capture_for?: string;
+  ring_line: string;
+  combined_ring_line?: string;
+  relay_line: string;
+  answered_page: string;
+  outputs: { plain: string[]; wants: string; answers: string };
+  outputs_by_harness?: Record<string, { plain: string[]; wants: string; answers: string }>;
+};
+
+export function countLetterCalls(calls: Record<string, unknown>[], reply: string, fixture: LetterFixture): Record<string, number> {
+  const messages = calls.filter(c => c['tool'] === 'send_message');
+  const captures = calls.filter(c => c['tool'] === 'capture_letter');
+  const exact = messages.filter(c => {
+    const args = (c['arguments'] ?? {}) as Record<string, unknown>;
+    const line = String(args['message'] ?? '').split(/\r?\n/)[0];
+    return c['succeeded'] === true && args['to'] === fixture.expected_ring_target && !!line && (line === fixture.ring_line || line === fixture.combined_ring_line);
+  }).length;
+  return {
+    ring_exact: exact, ring_other: messages.length - exact,
+    relay_in_reply: fixture.relay_line ? reply.split(/\r?\n/).filter(line => {
+      let text = line.trim().replace(/^(?:>\s*)+/, '').replace(/^(?:[-*+][ \t]+|\d+[.)][ \t]+)/, '').trim();
+      while ((text.startsWith('**') && text.endsWith('**')) || (text.startsWith('`') && text.endsWith('`'))) {
+        const width = text.startsWith('**') ? 2 : 1;
+        text = text.slice(width, -width).trim();
+      }
+      return text === fixture.relay_line;
+    }).length : 0,
+    relay_anywhere: fixture.relay_line ? reply.split(/\r?\n/).filter(line => line.includes(fixture.relay_line)).length : 0,
+    letters_captured: captures.filter(c => c['succeeded'] === true && c['captured'] === true).length,
+    capture_attempts: captures.length,
+    capture_wants_answer: captures.filter(c => c['succeeded'] === true && c['captured'] === true && (c['arguments'] as Record<string, unknown>)?.['wants'] === 'answer').length,
+    capture_answers_page: captures.filter(c => c['succeeded'] === true && c['captured'] === true && !!fixture.answered_page && (c['arguments'] as Record<string, unknown>)?.['answers'] === fixture.answered_page).length,
+  };
 }

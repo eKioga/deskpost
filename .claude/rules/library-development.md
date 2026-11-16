@@ -31,9 +31,10 @@ costs nothing in an ordinary session where the reader is using the Library rathe
 Conditions of the next change rather than records of a past one. Moved here from the `library-dev`
 Hub's `Now` section on 2026-09-03: a Hub holds orientation and open items, and this is neither.
 
-- **Every new script in `tools/` needs a row in `tools/_helpers.json`, whatever its role.** An
-  undeclared one is a hard `[ FAIL ]` on `helpers.manifest-matches-allowlist`, in both directions: a
-  declared name missing from disk fails too. Write the row in the same pass as the file.
+- **Every new PowerShell helper (`.ps1`) in `tools/` needs a row in `tools/_helpers.json`.**
+  TypeScript and Python tools need no row. An undeclared PowerShell helper is a hard `[ FAIL ]` on
+  `helpers.manifest-matches-allowlist`, as is a declared name missing from disk. Write the row in
+  the same pass as the file.
 - The **allowlist** is the separate half, and only a **public** helper raises it. The reader adds the
   one-line entry to `.claude/settings.json`, which the Librarian is refused — that refusal is the
   guard working, and it only warns, because prompt friction is not worth blocking a commit on an edit

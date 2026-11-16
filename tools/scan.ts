@@ -74,7 +74,8 @@ function terms(file: string): string[] | null {
   return values.length ? values : null;
 }
 export function gitleaks(root: string): { ran: boolean; clean: boolean; detail: string } {
-  const ran = spawnSync('gitleaks', ['git', '--staged', '--no-banner', '--redact'], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 24 });
+  const scanner = process.env.DESKPOST_GITLEAKS && fs.existsSync(process.env.DESKPOST_GITLEAKS) && fs.statSync(process.env.DESKPOST_GITLEAKS).isFile() ? process.env.DESKPOST_GITLEAKS : 'gitleaks';
+  const ran = spawnSync(scanner, ['git', '--staged', '--no-banner', '--redact'], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 24 });
   if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { ran: false, clean: false, detail: 'gitleaks is not installed, so nothing scanned the staged blobs on this machine' };
   if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
   if (ran.status === 0) return { ran: true, clean: true, detail: 'gitleaks found nothing in the staged blobs' };
@@ -89,7 +90,8 @@ export function secretsScan(root: string): Scan {
     const hits: Hit[] = [];
     for (const [where, args] of [['files', ['detect', '--no-git', '--source', root]], ['staged blobs', ['git', '--staged']]] as const) {
       const report = path.join(reports, `${where.replace(' ', '-')}.json`);
-      const ran = spawnSync('gitleaks', [...args, '--no-banner', '--redact', '--report-format', 'json', '--report-path', report], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 24 });
+      const scanner = process.env.DESKPOST_GITLEAKS && fs.existsSync(process.env.DESKPOST_GITLEAKS) && fs.statSync(process.env.DESKPOST_GITLEAKS).isFile() ? process.env.DESKPOST_GITLEAKS : 'gitleaks';
+      const ran = spawnSync(scanner, [...args, '--no-banner', '--redact', '--report-format', 'json', '--report-path', report], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 24 });
       if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { status: 'fail', hits: [], detail: `gitleaks is not installed, so nothing scanned ${root} for secrets. Install it; this scan never falls back to another.` };
       if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
       const found = (fs.existsSync(report) ? JSON.parse(fs.readFileSync(report, 'utf8') || '[]') : []) as { File: string; StartLine: number; RuleID: string }[];
@@ -177,7 +179,9 @@ export function deploymentScan(root: string, requested?: string[]): Scan {
     for (const value of deny) { const at = occurrences(text, value)[0]; if (at !== undefined) hits.push({ file, line: lineAt(text, at), kind: 'configured', match: value }); }
     hits.push(...structuralHits(text, file));
   }
-  return { status: hits.length ? 'fail' : 'pass', hits, detail: hits.length ? `${hits.length} deployment default(s) in product files: ${sorted(hits.map(hit => `${hit.file}:${hit.line} [${hit.kind}] ${hit.match}`)).join('; ')}. These ship. Move the value into generated state and resolve it through tools/LibraryDeployment.ps1.` : `${files.length} staged product document(s) clean against ${deny.length} configured value(s) from ${denyRoot} and the structural detectors` };
+  const missing = ['.library-mcp-url', '.library-project', '.library-shared-root'].map(name => path.join(denyRoot, '.claude', name)).filter(file => !fs.existsSync(file));
+  const uncovered = deny.length ? '' : `; configured-value part not run: zero configured values; missing configuration files: ${missing.join(', ') || 'none (existing configuration files provided no values)'}`;
+  return { status: hits.length ? 'fail' : 'pass', hits, detail: (hits.length ? `${hits.length} deployment default(s) in product files: ${sorted(hits.map(hit => `${hit.file}:${hit.line} [${hit.kind}] ${hit.match}`)).join('; ')}. These ship. Move the value into generated state and resolve it through tools/LibraryDeployment.ps1.` : `${files.length} staged product document(s) clean against ${deny.length} configured value(s) from ${denyRoot} and the structural detectors`) + uncovered };
 }
 function main(args: string[]): number {
   let identity = false, deployment = false, secrets = false, json = false, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), message = '', termRoot: string | undefined, files: string[] | undefined;

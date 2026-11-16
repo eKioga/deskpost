@@ -36,7 +36,7 @@ import { hubArchive, sharedArchive, sharedListEntry } from './sharedwriters.ts';
 import { runPublish } from './publish.ts';
 import { hubCopyPages } from './hubcopy.ts';
 import { hubRename } from './hubrename.ts';
-import { localSharedArchive } from './localarchive.ts';
+import { localSharedArchive, localSharedRestore } from './localarchive.ts';
 import { localSharedListEntry } from './locallistentry.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
@@ -465,6 +465,7 @@ export async function runSharedVerb(argv: string[], workspace: string): Promise<
     const local = marker !== null && String(marker['backend'] ?? '') === 'local';
     // A LOCAL LIBRARY ARCHIVES ITS OWN COLLECTION'S BOOKS (PLAN-basic-memory.md step 1): the same verb, a file writer.
     if (local && action === 'archive') return { refusal: null, value: localSharedArchive(argv.slice(1), workspace) };
+    if (local && action === 'restore') return { refusal: null, value: localSharedRestore(argv.slice(1), workspace) };
     // AND LISTS ITS OWN COLLECTION'S BOOKS (S118; 2nd-b-vault-dev's Report): a Book's one line in `collection/books/README.md`.
     if (local && action === 'list-entry') return { refusal: null, value: localSharedListEntry(argv.slice(1), workspace) };
     // A LOCAL LIBRARY WRITES AND READS A SHARED BOOK over its connection (kickoffs/s191, s192; PLAN-many-libraries.md Stage 2).
@@ -473,6 +474,8 @@ export async function runSharedVerb(argv: string[], workspace: string): Promise<
       return { refusal: null, value: await runSharedAction(action as SharedAction, argv.slice(1), workspace) };
     }
     switch (action) {
+      case 'restore':
+        refuse("library shared restore moves a Book within this Library's own collection; this workspace is not a local Library. Nothing was moved.");
       case 'archive':
         return { refusal: null, value: await sharedArchive(argv.slice(1), workspace) };
       case 'list-entry':

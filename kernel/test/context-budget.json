@@ -3,8 +3,8 @@
   "budgets": {
     "desk-context.first-prompt": 390,
     "desk-context.three-unchanged-prompts": 390,
-    "workspace.CLAUDE.md": 3440,
-    "workspace.AGENTS.md": 3440,
+    "workspace.CLAUDE.md": 3770,
+    "workspace.AGENTS.md": 3770,
     "reader.initialize": 165,
     "reader.tools-list": 5590,
     "search-hit": 262,

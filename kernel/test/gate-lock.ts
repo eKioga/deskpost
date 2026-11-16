@@ -193,19 +193,47 @@ async function currentHolders(previous: Holder | null, self: Holder): Promise<Ho
   }
   return holders;
 }
-async function liveWaiters(folder: string): Promise<Waiter[]> {
-  const {processTable,startIdentity} = await import('./run-parallel.ts');
-  const rows = process.platform === 'win32' ? await processTable() : [];
-  const live: Waiter[] = [];
-  for (const name of fs.readdirSync(folder)) {
+/** A missing row proves death only in an answered table collected after registration. */
+export function deadRegistration(entry: Pick<Waiter, 'pid' | 'processStart'>, platform: string,
+  rows: readonly {pid: number; start?: string}[], identity: string | null | undefined, ownPid: number): boolean {
+  if (!entry.processStart || entry.processStart.startsWith('unreadable:')) return false;
+  if (platform === 'win32') {
+    if (!rows.some(row => row.pid === ownPid)) return false;
+    const row = rows.find(row => row.pid === entry.pid);
+    return !row || !!row.start && row.start !== entry.processStart;
+  }
+  return identity === null || !!identity && identity !== entry.processStart;
+}
+interface WaiterReads {
+  readFolder: (folder: string) => string[];
+  processTable: typeof import('./run-parallel.ts').processTable;
+  startIdentity: typeof import('./run-parallel.ts').startIdentity;
+  platform: string;
+}
+export async function liveWaiters(folder: string, sweep = true, reads?: WaiterReads): Promise<Waiter[]> {
+  const {processTable,startIdentity} = reads ?? await import('./run-parallel.ts');
+  const platform = reads?.platform ?? process.platform;
+  const entries: {name: string; entry: Waiter}[] = [];
+  for (const name of (reads?.readFolder ?? fs.readdirSync)(folder)) {
     if (!name.endsWith('.json')) continue;
     try {
       const entry = JSON.parse(fs.readFileSync(path.join(folder,name),'utf8')) as Waiter;
       if (typeof entry.id !== 'string' || typeof entry.seat !== 'string' || typeof entry.tier !== 'string'
         || !Number.isSafeInteger(entry.pid) || entry.pid < 1 || typeof entry.processStart !== 'string' || typeof entry.arrived !== 'string' || !Number.isFinite(Date.parse(entry.arrived))) continue;
-      const start = process.platform === 'win32' ? rows.find(row => row.pid === entry.pid)?.start : await startIdentity(entry.pid);
-      if (start && start === entry.processStart) live.push({id:entry.id,seat:entry.seat,tier:entry.tier,pid:entry.pid,processStart:entry.processStart,arrived:entry.arrived});
-    } catch { /* A partial or crashed registration is not proof of a live waiter; never delete it by guess. */ }
+      const {id, seat, tier, pid, processStart, arrived} = entry;
+      entries.push({name, entry: {id, seat, tier, pid, processStart, arrived}});
+    } catch { /* Partial registrations are not proof of death. */ }
+  }
+  const rows = platform === 'win32' ? await processTable() : [];
+  const live: Waiter[] = [];
+  for (const {name, entry} of entries) {
+    let identity: string | null | undefined;
+    try { if (platform !== 'win32') identity = await startIdentity(entry.pid); } catch { /* Unreadable is undecidable. */ }
+    if (!deadRegistration(entry, platform, rows, identity, process.pid)) live.push(entry);
+    else if (sweep) {
+      try { fs.unlinkSync(path.join(folder, name)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
   }
   return live.sort((a,b) => a.arrived.localeCompare(b.arrived) || a.id.localeCompare(b.id));
 }
@@ -236,7 +264,9 @@ async function writeWait(holder: Holder, wait: GateWait, slotsAsked: number, que
   finally { if (lease) await lease.release().catch(error => say(`warning: gate waits file release: ${String(error)}`)); }
 }
 
-export async function acquireGateLock(tier: string, noWait = false, say = (line: string) => process.stdout.write(line + '\n')): Promise<GateLock> {
+export async function acquireGateLock(tier: string, noWait = false, say = (line: string) => process.stdout.write(line + '\n'), options: {exclusive?: boolean} = {}): Promise<GateLock> {
+  const exclusive = options.exclusive === true || tier === 'cut' || tier === 'push' || tier === 'release';
+  const everySectionCommit = options.exclusive === true && (tier === 'commit' || tier === 'commit comparison');
   const inherited = process.env['DESKPOST_GATE_LOCK'];
   const enabled = process.env['DESKPOST_GATE_SERIAL'] !== '0' && !(inherited === 'off' && !process.env['DESKPOST_GATE_LOCK_NAME']);
   if (!enabled && (!inherited || inherited === 'off')) {
@@ -248,13 +278,13 @@ export async function acquireGateLock(tier: string, noWait = false, say = (line:
     const slot = /^slot:(\d+):/.exec(inherited)?.[1];
     const holder = await readHolder(slot ? address + '-' + slot : address).catch((error: unknown) => { throw new LockError(`inherited gate lock could not be validated: ${String(error)}`); });
     if (holder.token !== inherited) throw new LockError('inherited gate lock token does not match its holder');
-    // A one-slot holder's token cannot carry a push or release: those tiers need the door and every slot (s186).
-    if (slot && (tier === 'push' || tier === 'release')) throw new LockError(`a ${tier} gate cannot inherit this gate lock: its holder (${holder.seat}'s ${holder.tier} gate) holds one slot, and a ${tier} needs every slot`);
+    // Exclusive requests need the door and every slot; a one-slot token cannot carry them.
+    const request = everySectionCommit ? 'an every-section commit' : `a ${tier}`;
+    if (slot && exclusive) throw new LockError(`${request} gate cannot inherit this gate lock: its holder (${holder.seat}'s ${holder.tier} gate) holds one slot, and ${request} needs every slot`);
     return { inherited: true, wait: null, release: async () => {} };
   }
-  const holder: Holder = { seat: process.env['LIBRARY_SEAT'] || 'unseated', tier, pid: process.pid,
+  const holder: Holder = { seat: process.env['LIBRARY_SEAT'] || 'unseated', tier: everySectionCommit ? `${tier} (every section)` : tier, pid: process.pid,
     processStart: await holderIdentity(), start: new Date().toISOString(), token: randomBytes(24).toString('hex') };
-  const exclusive = tier === 'push' || tier === 'release';
   const token = holder.token;
   let flag: PipeLease | null = null, door: PipeLease | null = null;
   const slots: PipeLease[] = [];
@@ -419,11 +449,23 @@ export async function setSlots(args: string[], say = (line: string) => process.s
   } finally { await lock.release(); }
 }
 
+/** Read the queue without acquiring a slot or sweeping any registration. */
+export async function gateStatus(say = (line: string) => process.stdout.write(line + '\n')): Promise<number> {
+  const config = readSlots(say), folder = gateDirectory();
+  const self: Holder = { seat: '', tier: '', pid: process.pid, processStart: '', start: '', token: '' };
+  const holders = await currentHolders(await contender(lockAddress()), self);
+  const waiters = folder && fs.existsSync(path.join(folder, 'waiters')) ? await liveWaiters(path.join(folder, 'waiters'), false) : [];
+  say(`gate slots: ${config?.slots ?? 'legacy'}`);
+  say('gate holders: ' + JSON.stringify(holders.map(holder => ({ ...publicHolder(holder), slots: config ? (holder.token.startsWith('slot:') ? 1 : config.slots) : 'legacy', since: holder.start }))));
+  say('gate waiters: ' + JSON.stringify(waiters));
+  return 0;
+}
+
 if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL((await import('node:path')).resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
   const separator = args.indexOf('--');
   const tier = separator === 2 && args[0] === '--tier' ? args[1] : undefined;
-  (args[0] === '--set-slots' ? setSlots(args.slice(1)) : tier && args[separator + 1]
+  (args.length === 1 && args[0] === '--status' ? gateStatus() : args[0] === '--set-slots' ? setSlots(args.slice(1)) : tier && args[separator + 1]
     ? holdAndRun(tier, args[separator + 1]!, args.slice(separator + 2))
     : Promise.reject(new LockError('usage: node gate-lock.ts --tier <name> -- <command> [args]')))
     .then(code => { process.exitCode = code; }, (error: unknown) => {

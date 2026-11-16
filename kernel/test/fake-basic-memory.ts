@@ -424,6 +424,19 @@ function externalIdOf(permalink: string): string {
  * `{moved: false, error}` and nothing changes (the safer reading).
  */
 function moveNote(root: string, args: Record<string, unknown>): unknown {
+  if (args['is_directory'] === true) {
+    const from = String(args['identifier'] ?? '').replace(/^\/+|\/+$/g, '');
+    const to = String(args['destination_path'] ?? '').replace(/^\/+|\/+$/g, '');
+    const source = path.resolve(root, from), target = path.resolve(root, to);
+    const inside = (file: string) => { const relative = path.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); };
+    if (!inside(source) || !inside(target)) return text({ moved: false, error: 'Directory path is outside the fixture collection' });
+    if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) return text({ moved: false, error: `Directory not found: ${from}` });
+    if (fs.existsSync(target)) return text({ moved: false, error: `Destination already exists: ${to}` });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.renameSync(source, target);
+    fs.appendFileSync(path.join(folder!, '.writes.log'), `${String(args['project_id'])}|move ${from} -> ${to}\n`);
+    return text({ moved: true });
+  }
   const from = resolveNote(root, String(args['identifier'] ?? ''));
   if (from === null) return text({ moved: false, error: `Note not found: ${String(args['identifier'] ?? '')}` });
   const folderName = String(args['destination_folder'] ?? '').replace(/^\/+|\/+$/g, '');

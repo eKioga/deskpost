@@ -287,7 +287,6 @@ function Assert-ReaderMap([string]$IndexPath) {
     if ($null -eq $index) { throw "Archive reader map '$IndexPath' is missing." }
     $pattern = '\[\[(' + [regex]::Escape($archiveDirectory + '/wiki/') + '[^\]|]+)'
     $targets = @([regex]::Matches([string]$index.content, $pattern) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-    if ($targets.Count -eq 0) { throw 'Archive reader map contains no archive-local links.' }
     foreach ($target in $targets) {
         $record = Read-ExactOrNull "$target.md"
         if ($null -eq $record) { throw "Archive reader map links to a missing page: $target.md" }

@@ -65,12 +65,13 @@ export function pageWord(page: string): string {
 /** The pointer pattern, for this Hub: group 1 the history page's name, group 2 its number. */
 function pointerPattern(slug: string): RegExp {
   return new RegExp(
-    `^Tidied \\d{4}-\\d{2}-\\d{2}: \\d+ items? moved word for word to \\[\\[projects/${slug}/notes/(\\d{4}-\\d{2}-\\d{2}-[a-z0-9-]+-history-tidy-(\\d+))\\]\\] \\(tidy \\2\\); that page links the one before it\\.$`,
+    `^Tidied \\d{4}-\\d{2}-\\d{2}(?: from ## [^\\r\\n]+)?: \\d+ items? moved word for word to \\[\\[projects/${slug}/notes/(\\d{4}-\\d{2}-\\d{2}-[a-z0-9-]+-history-tidy-(\\d+))\\]\\] \\(tidy \\2\\); that page links the one before it\\.(?: Points still open from them are on that page, under "## Still open from them"\\.)?$`,
   );
 }
 
-export function pointerLine(date: string, count: number, slug: string, notesName: string, number: number): string {
-  return `Tidied ${date}: ${count} ${count === 1 ? 'item' : 'items'} moved word for word to [[projects/${slug}/notes/${notesName}]] (tidy ${number}); that page links the one before it.`;
+export function pointerLine(date: string, count: number, slug: string, notesName: string, number: number, section: string | null, hasNote: boolean): string {
+  return `Tidied ${date} from ## ${section ?? '(page)'}: ${count} ${count === 1 ? 'item' : 'items'} moved word for word to [[projects/${slug}/notes/${notesName}]] (tidy ${number}); that page links the one before it.` +
+    (hasNote ? ' Points still open from them are on that page, under "## Still open from them".' : '');
 }
 
 /** The history pages one level under `notes/`: the highest number, and the page that holds it. */
@@ -228,6 +229,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     operation: 'Tidy a Project Hub page',
     project_slug: options.slug,
     page_path: pagePath,
+    page_file: `collection/${pagePath}`,
   };
   if (ticked.length === 0 && movedSections.length === 0) {
     return {
@@ -271,8 +273,11 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     for (let i = section.start; i < section.end; i++) removed.add(i);
     // ITS POINTER STANDS WHERE IT STOOD: at the end of the nearest region above it that stays.
     const host = [...regions].reverse().find((region) => region.end <= section.start && !sectionStarts.has(region.start));
-    if (host) touch(host, 1, host.end);
-    else touch({ heading: -1, start: 0, end: 0, name: null }, 1, 0);
+    shortened.set(section.start, {
+      region: { ...(host ?? { heading: -1, start: 0, end: 0 }), name: section.name },
+      count: 1,
+      at: host?.end ?? 0,
+    });
   }
 
   // THE KERNEL'S OWN POINTER, ONE PER SECTION: a standalone unfenced paragraph of the exact form whose link names a
@@ -301,16 +306,17 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
   // THE PROPOSED PAGE: kept lines in order, each new pointer where its region's first moved block (or old pointer)
   // stood, a blank line either side, and no run of blank lines a removal made.
   const pointers: string[] = [];
-  const insertAt = new Map<number, string>();
+  const insertAt = new Map<number, string[]>();
   for (const entry of shortened.values()) {
-    const line = pointerLine(date, entry.count, options.slug, notesName, number);
+    const line = pointerLine(date, entry.count, options.slug, notesName, number, entry.region.name, options.note !== null);
     pointers.push(line);
-    insertAt.set(entry.at, line);
+    insertAt.set(entry.at, [...(insertAt.get(entry.at) ?? []), line]);
   }
   const out: { text: string; orig: number | null }[] = [];
   for (let i = 0; i <= lines.length; i++) {
-    const pointer = insertAt.get(i);
-    if (pointer !== undefined) out.push({ text: '', orig: null }, { text: pointer, orig: null }, { text: '', orig: null });
+    for (const pointer of insertAt.get(i) ?? []) {
+      out.push({ text: '', orig: null }, { text: pointer, orig: null }, { text: '', orig: null });
+    }
     if (i < lines.length && !removed.has(i)) out.push({ text: lines[i]!, orig: i });
   }
   let proposedLines = collapseMadeBlanks(out);
@@ -373,6 +379,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     ...base,
     plan_id: planId,
     notes_page_path: notesPath,
+    notes_page_file: `collection/${notesPath}`,
     tidy_number: number,
     previous_history_page: previousLink,
     moved: ticked.map((item) => ({ section: item.section, label: entryLabel(item.line), size_bytes: lines.slice(item.start, item.end + 1).reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0) })),
@@ -472,7 +479,8 @@ export async function hubTidy(argv: string[], workspace: string): Promise<Record
   if ((parsed.options.get('plan-id') ?? '').trim() !== plan.planId) {
     refuse(
       'hub tidy is not yet performed: rerun the current preflight and pass its exact plan_id as --plan-id. A different plan_id means the page, ' +
-        `the history page's number or the page before it changed since the preview; the page reads ${String(plan.result['current_sha256'])} now. Nothing was written.`,
+        `the history page's number or the page before it changed since the preview; the page reads ${String(plan.result['current_sha256'])} now. Nothing was written. ` +
+        `The note (${notePath ? `--note-path '${notePath}'` : 'no --note-path'}) is part of the plan too.`,
     );
   }
   // TEST HOOKS, named in self-test section 276: what another writer could do between the plan and the lock.
@@ -509,7 +517,9 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
       timestamp_utc: now.toISOString(),
       project_slug: plan.slug,
       page_path: plan.pagePath,
+      page_file: `collection/${plan.pagePath}`,
       notes_page_path: plan.notesPath,
+      notes_page_file: `collection/${plan.notesPath}`,
       notes_page_previous_state: 'absent',
       approved_plan_id: plan.planId,
       previous_sha256: String(plan.result['current_sha256']),
@@ -635,7 +645,9 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
     operation: 'Tidy a Project Hub page',
     project_slug: plan.slug,
     page_path: plan.pagePath,
+    page_file: `collection/${plan.pagePath}`,
     notes_page_path: plan.notesPath,
+    notes_page_file: `collection/${plan.notesPath}`,
     tidy_number: plan.number,
     plan_id: plan.planId,
     written: true,

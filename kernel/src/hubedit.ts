@@ -42,6 +42,14 @@ import { seatConversationRecord } from './desk.ts';
 
 class HubEditRefusal extends Error {}
 
+export function hubRefusalJson(action: string, message: string): Record<string, PsJsonValue> {
+  // Fixed openings: '<mode> is not yet performed: rerun the current preflight',
+  // '<mode> was given a --plan-id that is not this edit\'s', and 'hub tidy is not yet performed: rerun the current preflight'.
+  const stale = /^(?:remove-section|replace-section|replace-body|replace-item|hub tidy) is not yet performed: rerun the current preflight/.test(message) ||
+    /^(?:add-section|append-section|check-item) was given a --plan-id that is not this edit's/.test(message);
+  return { schema: 1, status: 'refused', verb: `hub ${action}`, reason: stale ? 'stale-plan' : 'refused', message };
+}
+
 function refuse(message: string): never {
   throw new HubEditRefusal(message);
 }
@@ -65,8 +73,8 @@ export function pageLimitBytes(pagePath: string): number {
   return PAGE_SIZE_LIMITS[pageKind(pagePath)];
 }
 
-const SECTION_SIZE_THRESHOLD = 12000;
-const ENTRY_SIZE_THRESHOLD = 1200;
+export const SECTION_SIZE_THRESHOLD = 12000;
+export const ENTRY_SIZE_THRESHOLD = 1200;
 
 export const EDIT_MODES = ['AddSection', 'AppendSection', 'RemoveSection', 'ReplaceSection', 'ReplaceBody', 'CheckItem', 'ReplaceItem'] as const;
 export type EditMode = (typeof EDIT_MODES)[number];
@@ -168,11 +176,19 @@ export function sectionSpan(lines: string[], section: string): Span | null {
   return { start, end };
 }
 
-/** The lines under every level-two `## Next` heading of a body, together; unlike sectionSpan it never refuses a repeat. */
+/**
+ * The lines under every level-two `## Next` heading of a body, together; unlike sectionSpan it never refuses a repeat.
+ * Lines inside fenced code are left out (kickoffs/s198 row 1): a `Run` line shown in a fence is an example, not a pointer.
+ */
 function nextSectionLines(body: string): string[] {
   const lines = toLines(body);
+  const fenced = fencedLineMask(lines);
   const all = headings(lines);
-  return all.flatMap((heading, at) => (heading.level === 2 && heading.text === 'Next' ? lines.slice(heading.index + 1, all[at + 1]?.index ?? lines.length) : []));
+  return all.flatMap((heading, at) => {
+    if (heading.level !== 2 || heading.text !== 'Next') return [];
+    const end = all[at + 1]?.index ?? lines.length;
+    return lines.slice(heading.index + 1, end).filter((_, offset) => !fenced[heading.index + 1 + offset]);
+  });
 }
 
 export function sectionText(lines: string[], span: Span | null): string {
@@ -323,8 +339,15 @@ function setCheckboxState(line: string, checked: boolean): string {
 
 /** Keep the matched item's prefix unless the replacement supplies its own list marker. */
 function replacementItemLines(line: string, addition: string[]): string[] {
-  if (!addition.length || isListLine(addition[0]!)) return addition;
-  const prefix = /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+(?:\[[ xX]\][ \t]*)?/.exec(line)?.[0];
+  if (!addition.length) return addition;
+  if (isListLine(addition[0]!)) {
+    const indent = /^[ \t]/.test(addition[0]!) ? '' : /^[ \t]*/.exec(line)![0];
+    return addition.map((part) => part === '' ? '' : indent + part);
+  }
+  // A LEADING `[ ]` OR `[x]` IN THE CONTENT IS ITS OWN CHECKBOX (kickoffs/s199-r2 item 6): it replaces the kept one, so
+  // `[x] New` over `- [ ] Old` writes `- [x] New`, never `- [ ] [x] New`. Only the marker is kept then.
+  const ownBox = /^\[[ xX]\](?:[ \t]|$)/.test(addition[0]!);
+  const prefix = (ownBox ? /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+/ : /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+(?:\[[ xX]\][ \t]*)?/).exec(line)?.[0];
   return prefix === undefined ? addition : [prefix + addition[0]!, ...addition.slice(1)];
 }
 
@@ -547,7 +570,7 @@ export function pageSizeStatus(body: string, pagePath: string, previousBody: str
   return { size_after_bytes: size, size_before_bytes: utf8Length(previousBody), kind, threshold_bytes: limit, oversized, exempt, warn: oversized && !exempt };
 }
 
-function sectionSizes(body: string): { section: string; size_bytes: number }[] {
+export function sectionSizes(body: string): { section: string; size_bytes: number }[] {
   const lines = toLines(body);
   const level2 = headings(lines).filter((heading) => heading.level === 2);
   return level2.map((heading, i) => {
@@ -593,7 +616,7 @@ export function entryLabel(line: string): string {
   return text.substring(0, cut).trimEnd() + '...';
 }
 
-function entrySizes(body: string): { section: string; key: string; label: string; size_bytes: number }[] {
+export function entrySizes(body: string): { section: string; key: string; label: string; size_bytes: number }[] {
   const lines = toLines(body);
   const level2 = headings(lines).filter((heading) => heading.level === 2);
   const sizes: { section: string; key: string; label: string; size_bytes: number }[] = [];
@@ -1019,6 +1042,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     operation: 'Edit Project Hub',
     project_slug: slug,
     page_path: pagePath,
+    page_file: shared ? null : `collection/${pagePath}`,
     mode,
     section: nullable(section),
     match_text: ITEM_MODES.includes(mode) ? matchText : null,
@@ -1064,7 +1088,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
   if (plan['unchanged']) {
     // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5), beside `written`, which stays.
-    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, mode, unchanged: true, ...(plan['unchanged_reason'] ? { unchanged_reason: plan['unchanged_reason'] } : {}), written: false, status: 'unchanged', journal: null, shared_library_write: false };
+    return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, page_file: shared ? null : `collection/${pagePath}`, mode, unchanged: true, ...(plan['unchanged_reason'] ? { unchanged_reason: plan['unchanged_reason'] } : {}), written: false, status: 'unchanged', journal: null, shared_library_write: false };
   }
   if (isReplacing) {
     if (!parsed.flags.has('user-confirmed')) refuse(`${cliMode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
@@ -1120,6 +1144,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
       project_id: store.projectId,
       project_slug: slug,
       page_path: pagePath,
+      page_file: shared ? null : `collection/${pagePath}`,
       mode,
       section: nullable(section),
       match_text: ITEM_MODES.includes(mode) ? matchText : null,
@@ -1191,6 +1216,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     operation: 'Edit Project Hub',
     project_slug: slug,
     page_path: pagePath,
+    page_file: shared ? null : `collection/${pagePath}`,
     mode,
     section: nullable(section),
     match_text: ITEM_MODES.includes(mode) ? matchText : null,

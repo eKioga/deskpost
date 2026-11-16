@@ -233,7 +233,14 @@ synced folder.
 
 Ask the Librarian to correct an open shared Book, make a new shared Book, or move a Book from this Library's collection to the shared one. It previews the exact change first. Each correction to an existing page records its old text before changing it, uses a conditional write, and can be restored from its record. New Book and promote records keep their history; removing a whole shared Book or reusing its name is done on the server by hand for now. A page changed since the preview is refused and needs a new preview.
 
-From 1.6.0, the commands are `deskpost shared add-page`, `deskpost shared replace-page`, `deskpost shared remove-page`, `deskpost shared catalog-line`, `deskpost shared sources`, `deskpost shared changes` and `deskpost shared reconcile`. `deskpost shared new-book` makes a Book; `deskpost shared promote` copies a Book from this Library's collection and archives the original, with a note saying where it went. No original is deleted.
+From 1.6.1, a shared collection with no Catalogs (a new Basic Memory project, or the Postbox's own) starts with `deskpost shared init --preflight`. Check the named collection and missing Catalogs, then, on your yes, apply with `deskpost shared init --user-confirmed --plan-id <id>` before its first promote or new-book. It creates only the missing Catalogs and never changes an existing one.
+
+From 1.6.0, the commands are `deskpost shared add-page`, `deskpost shared replace-page`, `deskpost shared remove-page`, `deskpost shared catalog-line`, `deskpost shared sources`, `deskpost shared changes` and `deskpost shared reconcile`. `deskpost shared new-book` makes a Book; `deskpost shared promote` copies a Book from this Library's collection and archives the original, with a note saying where it went. No original is deleted. From 1.6.1, the archive finishes even when the original reader map has no local links,
+and page additions and removals keep the shared Book's reader map current.
+
+To bring back an archived Book of this Library's own collection, preview
+`deskpost shared restore <book> --preflight`, then approve it with
+`deskpost shared restore <book> --user-confirmed --plan-id <id>`. It never overwrites a Book.
 
 One previewed yes to `deskpost shared upkeep <book> --seats <seat>` lets named seats keep that Book current without another yes for each write. Removing a page, source list or Catalog line, making or promoting a Book, and granting upkeep still need your yes. Turn upkeep off with `deskpost shared upkeep <book> --off --preflight`, then apply its plan. Books made before the recorded shared writers have no making record and cannot be granted upkeep.
 

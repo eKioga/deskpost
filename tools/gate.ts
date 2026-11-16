@@ -36,6 +36,7 @@
  * selftest.ts at <sha>), which is how S113 replayed S103's commits; every check still runs on this working tree.
  */
 import { pathChecks } from './section-select.mts';
+import { estimateSeconds, parseTimes } from './section-times.mts';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -45,8 +46,15 @@ import { fileURLToPath } from 'node:url';
 import { repositoryNeutralEnv } from '../kernel/src/gitenv.ts';
 import { childEnv, withHookSeat } from '../kernel/test/gate-env.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from '../kernel/test/gate-lock.ts';
-import { SERIAL_SECTIONS, fastRoster, parseOptions, readPlatformSkips, requiredListRefusals, requiredSectionsVerdict, rosterProblems, sectionLimitWarning, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
-import { COVERS_PATH, SELFTEST_PATH, applyPlatformSkips, parseCovers, parseHunks, platformRefusals, selectSections, unclaimedFiles, type Selection } from './section-select.mts';
+import { SERIAL_SECTIONS, fastRoster, parseOptions, requiredListRefusals, requiredSectionsVerdict, rosterProblems, sectionLimitWarning, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
+import { COVERS_PATH, SELFTEST_PATH, LINUX_SKIP_PATH, applyPlatformSkips, coversFiles, mergeCovers, parseLinuxSkip, platformSkips, parseHunks, platformRefusals, sectionSources, selectSections, suiteText, unclaimedFiles, type Selection } from './section-select.mts';
+
+/** Skip numbers belong to the checked suite; fixture section 4 is not the real section 4. */
+export function readRootPlatformSkips(root: string, platform: string = process.platform): Map<number, string> {
+  const file = path.join(root, LINUX_SKIP_PATH);
+  return fs.existsSync(file) ? platformSkips(platform, parseLinuxSkip(fs.readFileSync(file, 'utf8'))) : new Map();
+}
+const readPlatformSkips = readRootPlatformSkips;
 
 const EXIT_PASS = 0;
 const EXIT_FAIL = 1;
@@ -56,6 +64,9 @@ type Tier = 'commit' | 'cut' | 'push' | 'release';
 const TIERS: readonly Tier[] = ['commit', 'cut', 'push', 'release'];
 /** Seconds; null is "measured" (no budget yet). The cut's 17 minutes is S103's -Fast gate, measured each run. */
 const BUDGETS: Record<Tier, number | null> = { commit: 120, cut: 17 * 60, push: null, release: null };
+/** Work budget only; the reporting budget above remains unchanged. */
+export const COMMIT_SELECTION_BUDGET_SECONDS = 180;
+export const COMMIT_MAX_WORKERS = 2;
 
 type Status = 'pass' | 'warn' | 'fail' | 'skip';
 interface Outcome {
@@ -101,7 +112,7 @@ function requiredOutcome(logText: string, required: string[], tier: Tier): Outco
   return { check: 'gate.required-sections', tier, status, seconds: null, caught: 'c14: a required section 149 skipped under two green gates', detail };
 }
 
-function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string | null; noWait: boolean; requireSections: string[]; sectionsLog: string | null; compare: OldGate | null } {
+function parseArgs(argv: string[], platform: string = process.platform): { tier: Tier; json: boolean; commit: string | null; noWait: boolean; requireSections: string[]; sectionsLog: string | null; compare: OldGate | null } {
   let tier: Tier | null = null;
   let json = false;
   let commit: string | null = null;
@@ -136,17 +147,34 @@ function parseArgs(argv: string[]): { tier: Tier; json: boolean; commit: string 
   }
   if (tier === null) throw new GateError(`name a tier. ${USAGE}`);
   if (requireSections.length && tier !== 'push' && tier !== 'release') {
-    const refusals = platformRefusals(requireSections, readPlatformSkips());
+    // This argument refusal must work even without Git on PATH.
+    let root = process.cwd();
+    while (!fs.existsSync(path.join(root, '.git')) && path.dirname(root) !== root) root = path.dirname(root);
+    const refusals = platformRefusals(requireSections, readRootPlatformSkips(root, platform));
     throw new GateError(refusals.length ? refusals.join('; ') : `--require-sections reads the sections.log only the push and release tiers write. ${USAGE}`);
   }
   return { tier, json, commit, noWait, requireSections, sectionsLog, compare };
 }
 
-function git(root: string, args: string[]): string {
-  const ran = spawnSync('git', args, { cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8', maxBuffer: 1 << 30, timeout: GIT_LIMIT, windowsHide: true });
+function git(root: string, args: string[], extraEnv: Record<string, string> = {}): string {
+  const ran = spawnSync('git', args, { cwd: root, env: { ...repositoryNeutralEnv(), ...extraEnv }, encoding: 'utf8', maxBuffer: 1 << 30, timeout: GIT_LIMIT, windowsHide: true });
   if (ran.error) throw new GateError(`git ${args.join(' ')} did not finish within ${GIT_LIMIT / 1000}s: ${ran.error.message}`);
   if (ran.status !== 0) throw new GateError(`git ${args.join(' ')} failed: ${`${ran.stderr ?? ''}`.trim()}`);
   return ran.stdout ?? '';
+}
+
+/** Advisory only: a moved or unreachable remote never changes a gate's verdict. */
+export function masterMoved(root: string, selectedSha: string, lsRemote = (root: string) => git(root, ['ls-remote', 'origin', 'refs/heads/master'], { GIT_TERMINAL_PROMPT: '0' })): { line: string; master_moved?: { old: string; new: string } } | null {
+  try {
+    const remote = lsRemote(root).trim().split(/\s+/)[0] ?? '';
+    if (!/^[a-f0-9]{40,64}$/.test(remote)) throw new Error('origin/master returned no SHA');
+    return remote === selectedSha ? null : {
+      line: `origin/master moved during the gate: ${selectedSha} -> ${remote}; fetch and rebase before pushing`,
+      master_moved: { old: selectedSha, new: remote },
+    };
+  } catch (error) {
+    return { line: `could not check whether origin/master moved during the gate: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 /** Run a child to its end or its limit, keeping its output; awaited, so a later lock can keep answering while it runs.
@@ -160,11 +188,13 @@ function runChild(command: string, args: string[], root: string, limit: number, 
     let output = '';
     let finished = false;
     let cancelling = false;
-    const finish = (status: number | null, detail = '') => {
+    const finish = async (status: number | null, detail = '') => {
       if (finished) return; finished = true;
       clearTimeout(timer);
       process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel);
       child.stdout.destroy(); child.stderr.destroy(); child.unref();
+      // The program exits explicitly: drain its identity helper before it can orphan a process in root.
+      await identity;
       resolve({ status, output: output + detail, seconds: (Date.now() - started) / 1000 });
     };
     const end = async (why: string, cancelled: boolean) => {
@@ -206,9 +236,24 @@ function kernelSrcFiles(root: string): string[] {
   return fs.readdirSync(path.join(root, 'kernel', 'src')).filter((file) => file.endsWith('.ts')).map((file) => `kernel/src/${file}`);
 }
 
+/** A file of the working tree, or null when it is not there. */
+function treeFile(root: string, file: string): string | null {
+  const full = path.join(root, file);
+  return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+}
+
+/** A file at a revision (`''` is the index), or null when the revision does not hold it; any other git failure throws. */
+function revisionFile(root: string, revision: string, file: string): string | null {
+  const spec = `${revision}:${file}`;
+  const present = spawnSync('git', ['cat-file', '-e', spec], { cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8', timeout: GIT_LIMIT, windowsHide: true });
+  if (present.error) throw new GateError(`git cat-file -e ${spec} did not finish within ${GIT_LIMIT / 1000}s: ${present.error.message}`);
+  return present.status === 0 ? git(root, ['show', spec]) : null;
+}
+
 function coverage(root: string, tier: Tier): Outcome {
   const started = Date.now();
-  const covers = parseCovers(fs.readFileSync(path.join(root, COVERS_PATH), 'utf8'));
+  // section-covers.json and each lane's claim file, as one map (kickoffs/s210 row 2).
+  const covers = mergeCovers(coversFiles(file => treeFile(root, file)), sectionSources(file => treeFile(root, file)));
   const missing = unclaimedFiles(covers, kernelSrcFiles(root));
   const base = { check: 'selftest.claims-cover-kernel', tier, seconds: (Date.now() - started) / 1000, caught: 'none found (new in S113)' };
   if (missing.length) return { ...base, status: 'fail', detail: `no self-test section claims ${missing.join(', ')}: add each to a section in ${COVERS_PATH}` };
@@ -231,34 +276,67 @@ async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent
 }
 
 /** What the commit (or --commit <sha>) changed, and the selection rules over it. */
-export function selection(root: string, commit: string | null, outgoing = false): { selection: Selection; changed: string[] } {
-  const range = outgoing ? ['origin/master', 'HEAD'] : commit === null ? ['--cached', 'HEAD'] : [`${commit}^`, commit];
+export function selection(root: string, commit: string | null, outgoing = false): { selection: Selection; changed: string[]; selectedSha: string | null } {
+  const selectedSha = outgoing ? git(root, ['rev-parse', 'origin/master']).trim() : null;
+  const range = outgoing ? [selectedSha!, 'HEAD'] : commit === null ? ['--cached', 'HEAD'] : [`${commit}^`, commit];
   const current = outgoing ? 'HEAD' : commit === null ? '' : commit;
-  const previous = outgoing ? 'origin/master' : commit === null ? 'HEAD' : `${commit}^`;
-  const covers = parseCovers(git(root, ['show', `${current}:${COVERS_PATH}`]));
-  const previousCovers = parseCovers(git(root, ['show', `${previous}:${COVERS_PATH}`]));
+  const previous = outgoing ? selectedSha! : commit === null ? 'HEAD' : `${commit}^`;
   const changed = git(root, ['diff', '--name-only', '--no-renames', ...range]).split(/\r?\n/).filter(Boolean);
-  const hunks = changed.includes(SELFTEST_PATH) ? parseHunks(git(root, ['diff', '-U0', '--no-renames', ...range, '--', SELFTEST_PATH])) : [];
-  const text = changed.includes(SELFTEST_PATH) ? git(root, ['show', outgoing ? `HEAD:${SELFTEST_PATH}` : commit === null ? `:${SELFTEST_PATH}` : `${commit}:${SELFTEST_PATH}`])
-    : fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8');
-  return { selection: selectSections({ changed, selftestHunks: hunks, selftestText: text, covers, previousCovers }), changed };
+  // The legacy file and each lane file (kickoffs/s210 row 2): a changed one is read at the selected revision, any other
+  // from the working tree, and each changed one brings its own hunks for rule (d).
+  const sources = sectionSources(file => changed.includes(file) ? revisionFile(root, current, file) : treeFile(root, file));
+  const covers = mergeCovers(coversFiles(file => revisionFile(root, current, file)), sources);
+  const previousCovers = mergeCovers(coversFiles(file => revisionFile(root, previous, file)));
+  const hunks = (file: string) => changed.includes(file) ? parseHunks(git(root, ['diff', '-U0', '--no-renames', ...range, '--', file])) : [];
+  return { selection: selectSections({ changed, selftestHunks: hunks(SELFTEST_PATH), selftestText: sources[0]!.text, covers, previousCovers,
+    laneSources: sources.slice(1).map(source => ({ ...source, hunks: hunks(source.file) })) }), changed, selectedSha };
 }
 
-async function selftestSections(root: string, tier: Tier, chosen: Selection): Promise<Outcome> {
+async function selftestSections(root: string, tier: Tier, chosen: Selection, workers?: number, platform: string = process.platform, note: (line: string) => void = line => { process.stdout.write(line + '\n'); }): Promise<{ outcome: Outcome; sections: number[] }> {
   const check = 'kernel.selftest (selected sections)';
   const caught = 'every defect the kernel self-test catches, for the sections a commit touches';
-  if (!chosen.all && chosen.sections.length === 0) return { check, tier, status: 'skip', seconds: 0, caught, detail: 'no change selects a section' };
+  if (!chosen.all && chosen.sections.length === 0) return { outcome: { check, tier, status: 'skip', seconds: 0, caught, detail: 'no change selects a section' }, sections: [] };
   // The platform's skips leave the selection (kickoffs/s153 row 6); on Windows nothing changes.
-  const skips = readPlatformSkips();
-  const policy = skips.size ? applyPlatformSkips(chosen.all ? sectionNumbers(fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8'), '') : chosen.sections, skips) : null;
-  if (policy?.line) process.stdout.write(`     ${policy.line}\n`);
-  if (policy && policy.sections.length === 0) return { check, tier, status: 'skip', seconds: 0, caught, detail: `every selected section is skipped here: ${policy.line}` };
-  const env: Record<string, string> = policy ? { LIBRARY_SELFTEST_SECTIONS: policy.sections.join(',') } : chosen.all ? {} : { LIBRARY_SELFTEST_SECTIONS: chosen.sections.join(',') };
-  const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'run-parallel.ts')], path.join(root, 'kernel'), RUNNER_LIMIT, { LIBRARY_SELFTEST_SECTIONS: '', ...env });
+  const skips = readPlatformSkips(root, platform);
+  const policy = skips.size ? applyPlatformSkips(chosen.all ? sectionNumbers(suiteText(path.join(root, SELFTEST_PATH)), '') : chosen.sections, skips) : null;
+  if (policy?.line) note(`     ${policy.line}`);
+  if (policy && policy.sections.length === 0) return { outcome: { check, tier, status: 'skip', seconds: 0, caught, detail: `every selected section is skipped here: ${policy.line}` }, sections: [] };
+  const env = { LIBRARY_SELFTEST_SECTIONS: policy ? policy.sections.join(',') : chosen.all ? '' : chosen.sections.join(',') };
+  const ran = await runChild(process.execPath, [path.join(root, 'kernel', 'test', 'run-parallel.ts'), ...(workers === undefined ? [] : ['--workers', String(workers)])], path.join(root, 'kernel'), RUNNER_LIMIT, env);
   for (const line of ran.output.split(/\r?\n/)) if (/^section (?:\d+|whole) took [\d.]+ s of its [\d.]+ s limit$/.test(line)) process.stderr.write(line + '\n');
   const what = chosen.all ? 'every section' : `sections ${chosen.sections.join(', ')}`;
-  if (ran.status === 0) return { check, tier, status: 'pass', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 1)}` };
-  return { check, tier, status: 'fail', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 3).slice(0, 1200)}` };
+  const outcome: Outcome = ran.status === 0 ? { check, tier, status: 'pass', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 1)}` }
+    : { check, tier, status: 'fail', seconds: ran.seconds, caught, detail: `${what}: ${lastLines(ran.output, 3).slice(0, 1200)}` };
+  return { outcome, sections: policy?.sections ?? (chosen.all ? sectionNumbers(suiteText(path.join(root, SELFTEST_PATH)), '') : chosen.sections) };
+}
+
+/** Keep the changed text in an expensive commit; the runners retain its full selection. */
+export function boundedCommitSelection(root: string, chosen: Selection, workers: number): { selection: Selection; deferred: number; line: string | null } {
+  const inventory = sectionNumbers(suiteText(path.join(root, SELFTEST_PATH)), '');
+  const selected = chosen.all ? inventory : chosen.sections;
+  const file = path.join(root, 'kernel/test/section-times.json');
+  const times = parseTimes(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{"schema":1,"from":[],"sections":{}}');
+  const measured = selected.every(section => Object.hasOwn(times.sections, section));
+  const fits = estimateSeconds(selected, times, workers) <= COMMIT_SELECTION_BUDGET_SECONDS;
+  // Zero or one section cannot exceed any valid, nonempty smoke set.
+  if (fits && (measured || selected.length <= 1)) return { selection: chosen, deferred: 0, line: null };
+  const smoke = JSON.parse(fs.readFileSync(path.join(root, 'kernel/test/smoke-sections.json'), 'utf8')) as {schema:number;sections:Record<string,string>};
+  if (!smoke || smoke.schema !== 1 || !smoke.sections || Array.isArray(smoke.sections) || typeof smoke.sections !== 'object'
+    || !Object.keys(smoke.sections).length || Object.entries(smoke.sections).some(([key, why]) => !/^[1-9]\d*$/.test(key) || typeof why !== 'string' || !why.trim() || !inventory.includes(Number(key)))) throw new GateError('invalid smoke-sections.json');
+  // Without complete measurements, only selections no larger than smoke may use the estimate.
+  if (!measured && fits && selected.length <= Object.keys(smoke.sections).length) return { selection: chosen, deferred: 0, line: null };
+  const sections = Object.keys(smoke.sections).map(Number);
+  const own = [...new Set(chosen.ownSections ?? [])];
+  if (own.some(section => !inventory.includes(section))) throw new GateError('bounded commit names a missing changed section');
+  own.sort((a,b) => (times.sections[a] ?? Infinity) - (times.sections[b] ?? Infinity) || a-b);
+  for (const section of own) {
+    if (sections.includes(section)) continue;
+    if (!own.some(value => sections.includes(value)) || estimateSeconds([...sections, section], times, workers) <= COMMIT_SELECTION_BUDGET_SECONDS) sections.push(section);
+  }
+  sections.sort((a,b) => a-b);
+  const deferredOwn = own.filter(section => !sections.includes(section)).sort((a,b) => a-b);
+  const left = selected.filter(section => !sections.includes(section)).length;
+  return { selection: {...chosen, all:false, sections}, deferred:left, line:`commit check: ran ${sections.length} sections; left ${left} to the runners${deferredOwn.length ? '; deferred changed sections: ' + deferredOwn.join(', ') : ''}` };
 }
 
 /**
@@ -350,12 +428,12 @@ async function suiteChild(root: string, name: string, folder: string, signal: Ab
  * -Only verdict. The pool's suite list is read where gate.fast-roster-matches-suites reads it and must equal the roster
  * the static run reports, and that check (in the static run) proves the roster equals every else-arm registration.
  */
-async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = [], chosen?: Selection): Promise<void> {
-  const options = parseOptions([]);
+async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (line: string) => void, requireSections: string[] = [], chosen?: Selection, platform: string = process.platform): Promise<number[]> {
+  const options = parseOptions(['--suite', path.join(root, SELFTEST_PATH)]);
   const selftest = path.join(root, 'kernel', 'test', 'selftest.ts');
-  const all = sectionNumbers(fs.readFileSync(selftest, 'utf8'), '');
+  const all = sectionNumbers(suiteText(selftest), '');
   const selected = !chosen || chosen.all ? all : chosen.sections;
-  const policy = applyPlatformSkips([...new Set([...selected, ...requireSections.map(Number)])].sort((a,b) => a-b), readPlatformSkips());
+  const policy = applyPlatformSkips([...new Set([...selected, ...requireSections.map(Number)])].sort((a,b) => a-b), readRootPlatformSkips(root, platform));
   if (policy.line) note(`     ${policy.line}`);
   const sections = policy.sections;
   const suites = chosen ? [] : fastRoster(fs.readFileSync(path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), 'utf8'));
@@ -403,7 +481,7 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
     ? { check: 'kernel.selftest', tier: 'push', status: 'fail', seconds: null, caught: RUNNER_CAUGHT, detail: `kernel self-test FAILED (${failedSections.length || 1} of ${total}): ${[...failedSections.map((r) => `section ${r.section}: ${flatten(r.detail)}`), ...missingSections.map((n) => `section ${n}: not run`)].join('; ').slice(0, 1200) || 'cancelled'}` }
     : { check: 'kernel.selftest', tier: 'push', status: 'pass', seconds: null, caught: RUNNER_CAUGHT, detail: `kernel self-test passed (${total} checks). ${results.length} sections pooled` };
 
-  if (chosen) { say(selftestOutcome); return; }
+  if (chosen) { say(selftestOutcome); return results.map(result => Number(result.section)); }
 
   const suiteOutcomes = new Map(done.flatMap((item) => (item.kind === 'suite' ? [[item.outcome.check, item.outcome] as const] : [])));
   const staticDone = done.find((item) => item.kind === 'static') as Extract<Done, { kind: 'static' }> | undefined;
@@ -428,6 +506,7 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
   note(`     the pool ran the ${suites.length} suites the -Fast roster reports`);
   const bad = failedSections.length > 0 || [...suiteOutcomes.values()].some((outcome) => outcome.status === 'fail');
   if (!bad) for (const entry of fs.readdirSync(folder)) if (!entry.endsWith('.log')) fs.rmSync(path.join(folder, entry), { recursive: true, force: true });
+  return results.map(result => Number(result.section));
 }
 
 function releaseOnly(): Outcome[] {
@@ -519,10 +598,25 @@ export async function settingsChecks(root: string, changed: string[]): Promise<O
   return outcomes;
 }
 
-async function runTier(argv: string[], tierWait: GateWait | null = null): Promise<number> {
-  const options = parseArgs(argv);
+/** Sample only for the record; no admission or verdict depends on free memory. */
+export function memorySampler(read = () => os.freemem(), now = () => new Date().toISOString()) {
+  let free_min_mb = Math.floor(read() / 1048576), free_min_at = now();
+  return {
+    sample: () => { const value = Math.floor(read() / 1048576); if (value < free_min_mb) { free_min_mb = value; free_min_at = now(); } return value; },
+    minimum: () => ({ free_min_mb, free_min_at }),
+  };
+}
+
+async function runTier(argv: string[], tierWait: GateWait | null = null, platform: string = process.platform): Promise<number> {
+  const options = parseArgs(argv, platform);
   const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
   const started = Date.now();
+  // Free memory at the start and end of the run, in whole megabytes (s196 row 3); nothing reads it yet.
+  const megabytes = (bytes: number) => Math.floor(bytes / 1048576);
+  const memory = memorySampler();
+  const freeStart = memory.minimum().free_min_mb;
+  const memoryTimer = setInterval(() => memory.sample(), 1000);
+  try {
   const head = git(root, ['rev-parse', 'HEAD']).trim();
   const clean = git(root, ['status', '--porcelain']).trim() === '';
   const outcomes: Outcome[] = [];
@@ -540,6 +634,7 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   if (!pooled) for (const outcome of await typecheck(root, 'commit')) say(outcome);
   say({ ...coverage(root, 'commit'), diagnostic: pooled });
   const chosen = selection(root, options.commit, options.tier === 'push');
+  let executed: Selection | null = null, deferred = 0, workerCount: number | null = null;
   const documents = chosen.changed.filter(file => /\.md$/.test(file) && !/^(?:kernel|tools|templates|\.)/.test(file) && fs.existsSync(path.join(root, file)));
   say({ ...(await docsGate(root, 'commit', powerShellPresent(), documents)), diagnostic: pooled });
   if (!options.json) {
@@ -550,19 +645,33 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
   if (options.tier === 'commit' || options.tier === 'push') {
     for (const outcome of await scanChecks(root)) say(outcome);
     for (const outcome of await settingsChecks(root, chosen.changed)) say(outcome);
-    // Wait outside the child's run limit; its inherited hold also covers opt-in whole-suite comparisons.
-    const lockSay = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
-    const selectionLock = options.tier === 'commit' && (chosen.selection.all || chosen.selection.sections.length > 0) ? await withHookSeat(() => acquireGateLock(options.compare ? 'commit comparison' : 'commit', options.noWait, lockSay)) : null;
-    const notice = selectionLock && gateLockOffNotice(selectionLock);
-    if (notice) lockSay(notice);
-    try {
-      if (options.tier === 'push') await pushChecks(root, say, lockSay, options.requireSections, chosen.selection);
-      else say(await selftestSections(root, 'commit', chosen.selection));
-    } finally { await selectionLock?.release(); }
-    if (selectionLock?.wait) tierWait = selectionLock.wait;
+    const earlyFailures = outcomes.filter(outcome => outcome.status === 'fail' && !outcome.diagnostic);
+    if (!options.compare && earlyFailures.length) {
+      say({ check: options.tier === 'push' ? 'kernel.selftest' : 'kernel.selftest (selected sections)', tier: options.tier,
+        status: 'skip', seconds: 0, detail: `not run: ${earlyFailures.map(outcome => outcome.check).join(', ')} failed first`,
+        caught: 'failed early checks must stop the tier before its self-test' });
+    } else {
+      // Wait outside the child's run limit; its inherited hold also covers opt-in whole-suite comparisons.
+      const lockSay = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
+      const workers = options.tier === 'commit' && !options.compare ? Math.min(COMMIT_MAX_WORKERS, parseOptions([]).workers) : undefined;
+      const bounded = workers === undefined ? {selection:chosen.selection,deferred:0,line:null} : boundedCommitSelection(root, chosen.selection, workers);
+      const selectionLock = options.tier === 'commit' && (chosen.selection.all || chosen.selection.sections.length > 0) ? await withHookSeat(() => acquireGateLock(options.compare ? 'commit comparison' : 'commit', options.noWait, lockSay, {exclusive: Boolean(options.compare) && chosen.selection.all})) : null;
+      const notice = selectionLock && gateLockOffNotice(selectionLock);
+      if (notice) lockSay(notice);
+      try {
+        deferred = bounded.deferred; workerCount = workers ?? parseOptions([]).workers;
+        if (options.tier === 'push') executed = { ...chosen.selection, all: false, sections: await pushChecks(root, say, lockSay, options.requireSections, chosen.selection, platform) };
+        else {
+          const ran = await selftestSections(root, 'commit', bounded.selection, workers, platform, lockSay);
+          say(ran.outcome); executed = { ...bounded.selection, all: false, sections: ran.sections };
+          if (bounded.line) lockSay(bounded.line);
+        }
+      } finally { await selectionLock?.release(); }
+      if (selectionLock?.wait) tierWait = selectionLock.wait;
+    }
   }
   else if (pooled) {
-    await pushChecks(root, say, (line) => (options.json ? process.stderr : process.stdout).write(line + '\n'), options.requireSections);
+    await pushChecks(root, say, (line) => (options.json ? process.stderr : process.stdout).write(line + '\n'), options.requireSections, undefined, platform);
     if (options.tier === 'release') releaseOnly().forEach(say);
   } else if ('route' in route && route.route === 'node') {
     if (!options.json) process.stdout.write(`     ${options.tier} tier: no powershell.exe here; the scans, then every section through kernel/test/run-parallel.ts\n`);
@@ -574,12 +683,18 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
     if (options.tier === 'release') releaseOnly().forEach(say);
   }
 
+  const movement = options.tier === 'push' ? masterMoved(root, chosen.selectedSha!) : null;
+  if (movement) (options.json ? process.stderr : process.stdout).write(movement.line + '\n');
   const total = (Date.now() - started) / 1000;
   const budget = BUDGETS[options.tier];
   const failed = outcomes.filter((outcome) => outcome.status === 'fail' && !outcome.diagnostic).length;
   const overBudget = budget !== null && total > budget;
   const exit = failed ? EXIT_FAIL : EXIT_PASS;
-  const report = { schema: 1, tier: options.tier, commit: options.commit, head, clean, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, selection: { ...chosen.selection, changed: chosen.changed }, checks: outcomes };
+  const recordedSelection = { requested: { ...chosen.selection, changed: chosen.changed }, executed,
+    ...(executed === null ? {} : { executed_basis: 'planned sections after skips and required additions; a failed run may stop before completing this list' }),
+    deferred, workers: workerCount };
+  const freeEnd = memory.sample();
+  const report = { schema: 1, tier: options.tier, commit: options.commit, head, clean, budget_seconds: budget, total_seconds: Math.round(total * 10) / 10, over_budget: overBudget, exit, memory: { total_mb: megabytes(os.totalmem()), free_start_mb: freeStart, free_end_mb: freeEnd, ...memory.minimum() }, selection: recordedSelection, checks: outcomes, ...(movement?.master_moved ? { master_moved: movement.master_moved } : {}) };
   if (options.json) {
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } else {
@@ -590,8 +705,9 @@ async function runTier(argv: string[], tierWait: GateWait | null = null): Promis
     if (overBudget) process.stdout.write(`WARN: the ${options.tier} tier took ${clock(total)}, over its ${clock(budget!)} budget. Over budget is a warning, never a failure.\n`);
   }
   keepRecord(root, report, tierWait, options.json);
-  if (options.compare) { compareGates(root, options.compare, outcomes, total, exit, { ...chosen.selection, changed: chosen.changed }, undefined, options.json); return EXIT_PASS; }
+  if (options.compare) { compareGates(root, options.compare, outcomes, total, exit, { ...chosen.selection, changed: chosen.changed, ...recordedSelection }, undefined, options.json); return EXIT_PASS; }
   return exit;
+  } finally { clearInterval(memoryTimer); }
 }
 
 /** EVERY GATE RUN KEEPS ITS RECORD (kickoffs/s136 row 2; PLAN-develops-itself.md criterion 8): the object `--json` prints,
@@ -612,8 +728,9 @@ function keepRecord(root: string, report: { tier: string }, wait: GateWait | nul
   }
 }
 
-async function main(argv: string[]): Promise<number> {
-  const options = parseArgs(argv);
+// Platform is an in-process test seam only, never a flag or environment override.
+export async function main(argv: string[], platform: string = process.platform): Promise<number> {
+  const options = parseArgs(argv, platform);
   if (options.sectionsLog !== null) {
     const outcome = requiredOutcome(fs.readFileSync(options.sectionsLog, 'utf8'), options.requireSections, 'push');
     process.stdout.write(`${outcome.status.toUpperCase()} ${outcome.check}: ${outcome.detail}\n`);
@@ -623,7 +740,7 @@ async function main(argv: string[]): Promise<number> {
   // first push tier ran 19m 43s to fail only on sections it skips by declaration. Exit 2, the gate's own failure.
   if (options.requireSections.length) {
     const root = path.resolve(git(process.cwd(), ['rev-parse', '--show-toplevel']).trim());
-    const refusals = requiredListRefusals(options.requireSections, fs.readFileSync(path.join(root, SELFTEST_PATH), 'utf8'));
+    const refusals = requiredListRefusals(options.requireSections, suiteText(path.join(root, SELFTEST_PATH)), readRootPlatformSkips(root, platform));
     // Printed on every required list, not on a refusal only (kickoffs/s169 row 6): a list that all runs is shown too.
     process.stderr.write(`required sections this platform runs: ${options.requireSections.filter((s) => !refusals.some((r) => r.startsWith(`section ${s} `))).join(',') || 'none'}\n`);
     if (refusals.length) throw new GateError(refusals.join('; '));
@@ -631,11 +748,11 @@ async function main(argv: string[]): Promise<number> {
   const route = tierRoute(options.tier, powerShellPresent());
   if ('refusal' in route) throw new GateError(route.refusal);
   const say = (line: string) => (options.json ? process.stderr : process.stdout).write(line + '\n');
-  const lock = options.tier === 'commit' ? null : await acquireGateLock(options.tier, options.noWait, say);
+  const lock = options.tier === 'commit' ? null : await acquireGateLock(options.tier, options.noWait, say, {exclusive: options.tier === 'cut'});
   const notice = lock && gateLockOffNotice(lock);
   if (notice) say(notice);
   const started=Date.now();
-  try { return await runTier(argv, lock?.wait ?? null); }
+  try { return await runTier(argv, lock?.wait ?? null, platform); }
   catch (error) {
     if (!options.compare) throw error;
     const root=path.resolve(git(process.cwd(),['rev-parse','--show-toplevel']).trim());

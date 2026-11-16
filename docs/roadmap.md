@@ -29,7 +29,7 @@ The next milestones are listed below.
 
 ## Next
 
-**1.6.0 is released:** Libraries can read and write shared Books. Next comes the foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
+**1.6.1 is released:** Libraries can read and write shared Books. Next comes the foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -388,7 +388,19 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
-### 1.6.0: One collection for the household (released 2026-11-06)
+### 1.6.1: Shared Books that finish their moves, and letters that answer (released 2026-11-15)
+
+- A Book moved into the shared collection finishes its archive even when its reader map has no local links, and an archived collection Book can be restored.
+- A shared Book's reader map stays in step with its pages as they are added and removed.
+- Letters: an answer to a closed letter is a linked follow-up that leaves it closed; `capture letters` says how the recipient is reached; a late delivery is remembered and shown.
+- Hub edits and tidies refuse with a structured answer, and a new Hub page's receipt hash is the hash the reader shows.
+- `deskpost kickoff check` refuses a builder Kickoff that orders a push test run or a push to `master`, and reads a backticked train id.
+- A new seat keeps the assistant its command names.
+- For builders: pull requests land through a queued lander with a Linux check, and self-test sections live in one file per lane.
+
+### 1.6.0: One collection for the household (released 2026-11-07)
+
+Shipped as public commit dffcc6c9b75adb2493a2fdd1a17217b71a46294c, from 52caa76.
 
 - Shared Books you can write: a Library adds and corrects the pages, the Catalog line and the source list of a Book in the shared collection on your Basic Memory server, each change previewed and written on your yes.
 - Nothing is lost: every change records the text it replaces before the page is written, and is written only while the page is still the text you saw; `deskpost shared changes` lists a Book's changes, and an earlier text can be put back.

@@ -17,7 +17,21 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { readMarker } from './workspace.ts';
-import { itemBlocks, pageKind, pageLimitBytes, removeFrontmatter, sectionSpan, sizeExempt, toLines, topLevelEntries, utf8Length } from './hubedit.ts';
+import {
+  ENTRY_SIZE_THRESHOLD,
+  entrySizes,
+  itemBlocks,
+  pageKind,
+  pageLimitBytes,
+  removeFrontmatter,
+  SECTION_SIZE_THRESHOLD,
+  sectionSizes,
+  sectionSpan,
+  sizeExempt,
+  toLines,
+  topLevelEntries,
+  utf8Length,
+} from './hubedit.ts';
 
 // The table and the kind rule live beside `pageSizeStatus` in hubedit.ts, so the two never import each other.
 export { pageKind, pageLimitBytes } from './hubedit.ts';
@@ -75,7 +89,8 @@ export function hubPageNames(hubRoot: string): string[] {
 
 /**
  * The Desk's `hub_pages` (kickoffs/s125 row 2): for each `projects/<slug>` open at this seat, every non-exempt page's
- * `{ hub, page, kind, size_bytes, limit_bytes, over }`, and for `_project` its `ticked_now` and `ticked_next`. Null on a
+ * `{ hub, page, kind, size_bytes, limit_bytes, over }`, and for `_project` its `ticked_now`, `ticked_next`, `sections_over`
+ * and `entries_over`. Null on a
  * shared backend. A page that cannot be read or counted is reported with what could be measured, never refused.
  */
 export function hubPages(workspace: string, openProjects: string[]): PsJsonValue {
@@ -104,7 +119,7 @@ export function hubPages(workspace: string, openProjects: string[]): PsJsonValue
       }
       const size = utf8Length(body);
       const limit = pageLimitBytes(page);
-      const row: Record<string, PsJsonValue> = { hub: slug, page, kind: pageKind(page), size_bytes: size, limit_bytes: limit, over: size > limit };
+      const row: Record<string, PsJsonValue> = { hub: slug, page, kind: pageKind(page), size_bytes: size, limit_bytes: limit, over: size > limit && !page.startsWith('kickoffs/') };
       if (page === '_project') {
         try {
           const ticked = tickedEntries(body);
@@ -113,6 +128,19 @@ export function hubPages(workspace: string, openProjects: string[]): PsJsonValue
         } catch {
           row['ticked_now'] = null;
           row['ticked_next'] = null;
+        }
+        // ONE TIDY LIST (kickoffs/s199-r2 item 1): the sections and entries `hub edit` warns of only when an edit grows
+        // them, measured by its own functions against its own limits, so the Desk names every one on every call.
+        try {
+          row['sections_over'] = sectionSizes(body)
+            .filter((item) => item.size_bytes > SECTION_SIZE_THRESHOLD)
+            .map((item) => ({ section: item.section, size_bytes: item.size_bytes, limit_bytes: SECTION_SIZE_THRESHOLD }));
+          row['entries_over'] = entrySizes(body)
+            .filter((item) => item.size_bytes > ENTRY_SIZE_THRESHOLD)
+            .map((item) => ({ section: item.section, label: item.label, size_bytes: item.size_bytes, limit_bytes: ENTRY_SIZE_THRESHOLD }));
+        } catch {
+          row['sections_over'] = null;
+          row['entries_over'] = null;
         }
       }
       rows.push(row);

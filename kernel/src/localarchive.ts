@@ -22,7 +22,9 @@ import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { enterBookLock, exitBookLock, withBookLocks, type BookLock } from './locks.ts';
+import { enterBookLock, enterSeatRegistryLock, exitBookLock, withBookLocks, type BookLock } from './locks.ts';
+import { seatsHoldingEntry } from './seatdesk.ts';
+import { collectionPageManifest, driftRefusal, hasDrift, readRecallRecord, recallDrift, recallRecordDirectory } from './recallrecord.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
@@ -64,14 +66,14 @@ function firstHeading(text: string): string | null {
  * three Basic Memory writes for itself (`title`, `type`, `permalink`), as `Rewrite-PublisherOwnedLinks` leaves them.
  */
 export function relinked(text: string, slug: string): string {
-  const pattern = new RegExp(`books/${escapeRegExp(slug)}(?=/|\\||\\]|\\s|$)`, 'g');
+  const pattern = new RegExp(`(^|[\\s\\[|"'=(:])books/${escapeRegExp(slug)}(?=/|\\||\\]|\\s|$)`, 'gm');
   const match = /^(﻿?---\r?\n)([\s\S]*?)(\r?\n---[ \t]*(?:\r?\n|$))/.exec(text);
-  if (!match) return text.replace(pattern, `archive/${slug}`);
+  if (!match) return text.replace(pattern, `$1archive/${slug}`);
   const frontmatter = match[2]!
     .split(/\r?\n/)
-    .map((line) => (/^(title|type|permalink):/i.test(line) ? line : line.replace(pattern, `archive/${slug}`)))
+    .map((line) => (/^(title|type|permalink):/i.test(line) ? line : line.replace(pattern, `$1archive/${slug}`)))
     .join('\n');
-  return match[1]! + frontmatter + match[3]! + text.substring(match[0].length).replace(pattern, `archive/${slug}`);
+  return match[1]! + frontmatter + match[3]! + text.substring(match[0].length).replace(pattern, `$1archive/${slug}`);
 }
 
 /**
@@ -214,6 +216,121 @@ export async function finishCollectionBookArchiveAsync(
 
 const archiveLockRoots = (slug: string) => [`books/${slug}`, `archive/${slug}`, 'collection/books', 'collection/archive'];
 
+/** A restore approval binds every archived file, independently of an archive approval. */
+function restorePlanId(workspace: string, slug: string): string {
+  const root = path.join(workspace, 'collection', 'archive', slug);
+  const files = listFilesRecursive(root).map(file => `${path.relative(root, file).split(path.sep).join('/')}|${sha256OfBytes(fs.readFileSync(file))}`).sort();
+  return 'shared-restore-' + sha256OfText([slug, `archive/${slug}`, ...files].join('\n'));
+}
+
+/** The inverse of relinked, with both path boundaries: shared/archive and shelf/_archive stay untouched. */
+function restoredLinks(text: string, slug: string): string {
+  const pattern = new RegExp(`(^|[\\s\\[|"'=(:])archive/${escapeRegExp(slug)}(?=/|\\||\\]|\\s|$)`, 'gm');
+  const rewrite = (value: string) => value.replace(pattern, `$1books/${slug}`);
+  const match = /^(﻿?---\r?\n)([\s\S]*?)(\r?\n---[ \t]*(?:\r?\n|$))/.exec(text);
+  if (!match) return rewrite(text);
+  return match[1]! + match[2]!.split(/\r?\n/).map(line => /^(title|type|permalink):/i.test(line) ? line : rewrite(line)).join('\n') + match[3]! + rewrite(text.substring(match[0].length));
+}
+
+export function localSharedRestore(argv: string[], workspace: string): Record<string, PsJsonValue> {
+  const parsed = parseArguments(argv, argumentTable('shared', 'restore'));
+  const slug = parsed.positional[0] ?? '';
+  if (!SLUG.test(slug)) refuse('BookSlug must use lowercase letters, digits, and single hyphens.');
+  const collection = path.join(workspace, 'collection');
+  const from = `archive/${slug}`, to = `books/${slug}`;
+  const source = path.join(collection, from), target = path.join(collection, to);
+  const wiki = path.join(source, 'wiki');
+  const catalogFile = path.join(collection, 'archive', 'README.md');
+  // Called in the preview, then again with the registry and all four Book roots locked.
+  const inspect = () => {
+    if (!fs.existsSync(path.join(wiki, '_book.md'))) refuse(`Archived Book '${slug}' is incomplete or missing; nothing was moved.`);
+    if (fs.existsSync(target)) refuse(`collection/${to} is taken. Nothing was moved.`);
+    if (fs.existsSync(path.join(workspace, 'internal', 'shared-promote', `${slug}.json`))) refuse(`A promote of '${slug}' stopped mid-archive; rerun deskpost shared promote ${slug} to finish it. Nothing was moved.`);
+    if (fs.existsSync(path.join(wiki, '_moved.md'))) refuse(`Book '${slug}' went to the shared collection; open it there. Nothing was moved.`);
+    const seats = seatsHoldingEntry(workspace, path.join(workspace, '.claude'), 'books', from);
+    if (seats.length) refuse(`Seats ${seats.join(', ')} hold ${from} open; close it there first. Nothing was moved.`);
+    const unread: string[] = [], matches: { shelf: string; file: string; record: NonNullable<ReturnType<typeof readRecallRecord>> }[] = [];
+    const directory = recallRecordDirectory(workspace);
+    if (fs.existsSync(directory)) for (const name of fs.readdirSync(directory).filter(name => name.endsWith('.json')).sort()) {
+      const shelf = name.slice(0, -5);
+      let record;
+      try { record = readRecallRecord(workspace, shelf); } catch { unread.push(`internal/shelf-recalls/${name}`); continue; }
+      if (record?.book_slug !== slug) continue;
+      matches.push({ shelf, file: name, record });
+    }
+    if (matches.length > 1) refuse(`Two recall records name '${slug}': ${matches.map(row => row.file).join(', ')}. Nothing was moved.`);
+    if (matches.length) {
+      const match = matches[0]!;
+      const drift = recallDrift(match.record, collectionPageManifest(wiki));
+      if (hasDrift(drift)) refuse(driftRefusal(slug, match.shelf, drift).replace(`collection/books/${slug}`, `collection/archive/${slug}`));
+    }
+    const catalog = readCatalogOrTemplate(catalogFile, LOCAL_ARCHIVE_CATALOG_TEXT).text;
+    const owned = ownedLines(catalog, [`${from}/wiki/_book`]);
+    if (owned.length > 1) refuse('The archive Catalog has more than one matching entry. Nothing was moved.');
+    // THE READER MAP, PROVED BEFORE THE MOVE (kickoffs/s197 row 1): each linked page checked at its archived place.
+    const indexFile = path.join(wiki, '_index.md');
+    if (!fs.existsSync(indexFile)) refuse(`Archived Book '${slug}' has no reader map (_index.md); nothing was moved.`);
+    const mapLinks = [...restoredLinks(readUtf8(indexFile), slug).matchAll(new RegExp(`\\[\\[(${escapeRegExp(to)}/wiki/[^\\]|]+)`, 'g'))].map(match => match[1]!);
+    // The destination is resolved first, so a link that climbs out and back (`books/demo/wiki/../../../archive/...`) is
+    // judged where it lands after the move, as the after-move check judges it (kickoffs/s198 row 1; library-auditor S2).
+    for (const link of new Set(mapLinks)) {
+      const relative = path.relative(path.join(collection, to, 'wiki'), path.resolve(collection, `${link}.md`));
+      const archived = path.join(wiki, relative);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.existsSync(archived)) refuse(`Restored reader map links outside its pages or to a missing page: ${link}.md; nothing was moved.`);
+    }
+    return { seats, catalog, owned, recall: matches.length ? `matches ${matches[0]!.shelf}` : 'none', unread };
+  };
+  const previewLock = enterSeatRegistryLock(workspace, 20);
+  let preview;
+  try { preview = inspect(); } finally { exitBookLock(previewLock); }
+  const plan: Record<string, PsJsonValue> = {
+    schema: 1, operation: 'Restore Book', book_slug: slug, book_title: firstHeading(readUtf8(path.join(wiki, '_book.md'))) ?? slug,
+    from, to, recall: preview.recall, ...(preview.unread.length ? { recall_unread: preview.unread } : {}),
+    archive_catalog_line_removed: preview.owned.length === 1, confirmation_required: true, shared_library_write: false,
+    plan_id: restorePlanId(workspace, slug),
+  };
+  if (parsed.flags.has('preflight')) return plan;
+  if (!parsed.flags.has('user-confirmed')) refuse('Restoring requires the preview and --user-confirmed --plan-id <id>. Nothing was moved.');
+  const approved = parsed.options.get('plan-id') ?? '';
+  const stale = () => refuse('The Book was not restored: rerun the current preflight and pass its exact plan_id. Nothing was moved.');
+  if (!approved || approved !== plan['plan_id']) stale();
+  const registry = enterSeatRegistryLock(workspace, 20);
+  try {
+    return withBookLocks(workspace, archiveLockRoots(slug), 20, locks => {
+      const current = inspect();
+      if (current.seats.join(',') !== preview.seats.join(',') || restorePlanId(workspace, slug) !== approved) stale();
+      let mutation: BookMutation | null = null;
+      let moved = false;
+      try {
+        mutation = enterBookMutation({ workspace, slug, bookRoot: from, collection: 'collection-archive', lock: locks.find(lock => lock.bookRoot === from)!, reason: `Restore ${from}` });
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.renameSync(source, target);
+        moved = true;
+        for (const name of ['_book.md', '_index.md']) {
+          const file = path.join(target, 'wiki', name);
+          const before = readUtf8(file), after = restoredLinks(before, slug);
+          if (after !== before) writeAtomicText(file, after);
+        }
+        const targets = [...readUtf8(path.join(target, 'wiki', '_index.md')).matchAll(new RegExp(`\\[\\[(${escapeRegExp(to)}/wiki/[^\\]|]+)`, 'g'))].map(match => match[1]!);
+        for (const link of new Set(targets)) {
+          const full = path.resolve(collection, `${link}.md`);
+          const relative = path.relative(path.join(target, 'wiki'), full);
+          if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(full)) refuse(`Restored reader map links outside its pages or to a missing page: ${link}.md`);
+        }
+        if (current.owned.length) writeCatalog(catalogFile, withoutLine(current.catalog, current.owned[0]!.index));
+        const manifest = completeBookRenameMutation({ mutation, newSlug: slug, newBookRoot: to, newLock: locks.find(lock => lock.bookRoot === to)!, newCollection: 'collection', manifest: newBookManifestForCollectionBook(workspace, 'active', slug) });
+        if (manifest.status !== 'committed') refuse(manifest.summary);
+        mutation = null;
+        return { ...plan, restored: true, discovery_manifest: manifest.summary,
+          next: `Restore writes no Books Catalog line. Run deskpost publish refresh ${slug} --preflight for a recalled Book, or deskpost shared list-entry ${slug} --preflight to write its line.` };
+      } catch (error) {
+        if (mutation !== null && !moved) undoBookMutation(mutation);
+        refuse(`Book restoration stopped. ${moved ? `The Book was moved to 'collection/${to}'; inspect it and the archive Catalog before retrying.` : 'The archived Book was left in place.'} ${(error as Error).message}`);
+      }
+    });
+  } finally { exitBookLock(registry); }
+}
+
 /**
  * THE PLAN, AGAIN, UNDER THE LOCKS: nothing can change the Book between this check and the move. A Book archived
  * between the preflight and the locks is said as one, as before the plan (kickoffs/s112 ruling 3a). Returns its title.
@@ -262,7 +379,6 @@ function archiveUnderLocks(workspace: string, slug: string, locks: BookLock[], b
       }
       // The reader map proved: every archive-local link reaches a page at its archived path.
       const targets = [...readUtf8(archivedIndex).matchAll(new RegExp(`\\[\\[(${escapeRegExp(archiveDirectory)}/wiki/[^\\]|]+)`, 'g'))].map((m) => m[1]!);
-      if (targets.length === 0) refuse('Archive reader map contains no archive-local links.');
       for (const target of new Set(targets)) {
         if (!fs.existsSync(path.join(collection, ...`${target}.md`.split('/')))) refuse(`Archive reader map links to a missing page: ${target}.md`);
       }

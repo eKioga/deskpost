@@ -888,7 +888,7 @@ async function preview(
   let acceptRings = true;
   for (;;) {
     const hubExists = projects.includes(plan.slug);
-    const choices: SeatStartChoices = { ...plan.choices, recordAssistant: state.assistant ?? undefined, inbound: state.assistant === 'claude' && acceptRings ? 'accept' : undefined };
+    const choices: SeatStartChoices = { ...plan.choices, launch: state.assistant ?? 'none', recordAssistant: state.assistant ?? undefined, inbound: state.assistant === 'claude' && acceptRings ? 'accept' : undefined };
     const verdict = newSeatVerdict(workspace, plan.seat, plan.slug, hubExists ? projects : [...projects, plan.slug], false, choices);
     if (!verdict.creatable) {
       talk.say(verdict.reason);
@@ -961,7 +961,7 @@ async function preview(
     touchRegistryForSelfTest(workspace);
     if (state.assistant === null) {
       try {
-        await startSeat([...args, '--workspace', workspace, '--no-launch']);
+        await startSeat([...args, '--workspace', workspace]);
         talk.say(`Seat '${plan.seat}' is ready. ${NO_ASSISTANT}`);
         return 0;
       } catch (error) {
@@ -975,7 +975,7 @@ async function preview(
     }
     try {
       const conversation = state.assistant === 'claude' ? ['--session-id', newConversationId()] : [];
-      const outcome = await startSeat([...args, ...conversation, '--workspace', workspace, '--command', state.assistant], { human: true });
+      const outcome = await startSeat([...args, ...conversation, '--workspace', workspace], { human: true });
       return outcome.exitCode;
     } catch (error) {
       if (error instanceof SeatPlanChanged) {
@@ -1223,7 +1223,7 @@ export async function showMeAround(state: MenuState): Promise<number | null> {
       return null;
     }
   }
-  const verdict = seatRow ? null : newSeatVerdict(workspace, HELP_SEAT, HELP_SEAT, hubExists ? projects : [...projects, HELP_SEAT], false, { openBooks: [], recordAssistant: state.assistant });
+  const verdict = seatRow ? null : newSeatVerdict(workspace, HELP_SEAT, HELP_SEAT, hubExists ? projects : [...projects, HELP_SEAT], false, { openBooks: [], recordAssistant: state.assistant, launch: state.assistant });
   if (verdict !== null && !verdict.creatable) {
     talk.say(`${verdict.reason} Nothing was created.`);
     return null;
@@ -1707,14 +1707,14 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
     }
     try {
       const projects = activeProjects(state.workspace), hubExists = projects.includes(projectName);
-      const approvedChoices = { ...choices, recordAssistant: assistant!, ...(assistant === 'claude' && acceptRings ? { inbound: 'accept' } : {}) };
+      const approvedChoices = { ...choices, launch: 'none', recordAssistant: assistant!, ...(assistant === 'claude' && acceptRings ? { inbound: 'accept' } : {}) };
       const planned = newSeatVerdict(state.workspace, name, projectName, hubExists ? projects : [...projects, projectName], false, approvedChoices);
       if (!planned.creatable) { error = planned.reason; continue; }
       if (!hubExists) {
         const made = await runHubVerb(['new', projectName, '--title', projectName, ...(planned.plan!.purpose ? ['--purpose', planned.plan!.purpose] : []), '--workspace', state.workspace], state.workspace);
         if (made.refusal) { error = made.refusal; continue; }
       }
-      await startSeat([name, '--project', projectName, '--workspace', state.workspace, '--plan-id', planned.plan_id, ...seatStartChoiceArguments(approvedChoices), '--no-launch']);
+      await startSeat([name, '--project', projectName, '--workspace', state.workspace, '--plan-id', planned.plan_id, ...seatStartChoiceArguments(approvedChoices)]);
       // The ready choice approves these exact access flags. The existing writer binds them to the newly created incarnation.
       const setting = { workspace: state.workspace, seat: name, flags: assistant!, args: args!, preflight: true, planId: '', fallbackAssistant: assistant! };
       const access = seatSettingsResult(setting);
@@ -2004,7 +2004,10 @@ function libraryCardAction(parsed: ReturnType<typeof parseArguments>): { refusal
       return { refusal: `The card was written to ${markerPath(root)} and did not read back as written. Check the marker.`, value: null };
     }
   }
-  return { refusal: null, value: { ...plan, written: current !== proposed } as PsJsonValue, humanText: `This Library's card is '${proposed}' (id ${id}).` };
+  const next = fs.existsSync(path.join(root, 'internal', 'postbox', 'state.json'))
+    ? 'Run deskpost postbox check to update this Library\'s Postbox entry.' : null;
+  return { refusal: null, value: { ...plan, written: current !== proposed, ...(next ? { next } : {}) } as PsJsonValue,
+    humanText: `This Library's card is '${proposed}' (id ${id}).${next ? '\n' + next : ''}` };
 }
 
 

@@ -134,6 +134,27 @@ $config = Replace-ExactToken $config '"__BASIC_MEMORY_ENABLED__"' $basicMemoryOn
 $config = Replace-ExactToken $config '"__BASIC_MEMORY_REQUIRED__"' $basicMemoryOn
 if ($config -cmatch '__[A-Z0-9_]+__') { throw 'The rendered Codex config still contains a template token.' }
 
+# Reuse init's rule; only the template's own servers are exempt in a checkout.
+$turnOffCode = @'
+const fs = require('node:fs');
+const {pathToFileURL} = require('node:url');
+const path = require('node:path');
+(async () => {
+  const root = process.argv[1];
+  const {codexTurnOffBlock} = await import(pathToFileURL(path.join(root, 'kernel/src/init.ts')).href);
+  const {codexUserConfig, readCodexConfigTables} = await import(pathToFileURL(path.join(root, 'kernel/src/doctor.ts')).href);
+  const {localDate} = await import(pathToFileURL(path.join(root, 'kernel/src/localdate.ts')).href);
+  const template = readCodexConfigTables(fs.readFileSync(path.join(root, '.codex/config.template.toml'), 'utf8').replace(/^enabled\s*=.*$/gm, ''));
+  if (!template) throw Error('Cannot read the Codex template tables.');
+  const user = codexUserConfig();
+  if (user.state === 'unreadable') throw Error('Cannot read the user Codex config: ' + user.path);
+  process.stdout.write(codexTurnOffBlock(user.tables, {exclude: template.servers.map(e => e.name), rerun: 'tools/Initialize-CodexLibrary.ps1', userPath: user.path, date: localDate()}));
+})().catch(error => {console.error(error.message); process.exitCode = 1;});
+'@
+$turnOffLines = @(& node -e $turnOffCode $libraryRoot)
+if ($LASTEXITCODE -ne 0) { throw 'Could not derive Codex turn-offs from kernel/src/init.ts; no bindings were written.' }
+if ($turnOffLines.Count) { $config += ($turnOffLines -join "`n") + "`n" }
+
 # ONE RENDERER FOR ONE DOCUMENT, from 2026-09-22. `library init` writes this same hooks file into a
 # reader's workspace now (ADR-0036, extended to Codex), and the only thing that differs between the
 # two copies is nothing at all: both point at THIS program's hook directory. Two renderers for one

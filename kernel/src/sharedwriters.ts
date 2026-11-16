@@ -520,7 +520,6 @@ async function assertReaderMap(session: McpSession, projectId: string, indexPath
   for (const candidate of found.sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }))) {
     if (!targets.some((kept) => kept.toLowerCase() === candidate.toLowerCase())) targets.push(candidate);
   }
-  if (targets.length === 0) refuse('Archive reader map contains no archive-local links.');
   for (const target of targets) {
     if ((await readExactOrNull(session, projectId, `${target}.md`, words)) === null) refuse(`Archive reader map links to a missing page: ${target}.md`);
   }

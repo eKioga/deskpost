@@ -500,6 +500,13 @@ _Avoid_: retired, deleted, cold storage
 The main menu's `l`, a seatless listing of what the Library holds, metadata only.
 _Avoid_: search, catalog seat
 
+**Go** (the reader's go on a letter):
+The reader's words, found in the sending seat's typed Claude Code messages from the last 24 hours
+and recorded by capture. It removes the recipient's wait for work inside its role, Project and the
+letter's ask; it opens no gate. It applies only to the addressed seat incarnation in this Library.
+Codex may receive one; cross-Library letters and Codex senders cannot carry one.
+_Avoid_: Approval, permission, authorization
+
 ## Working with material
 
 **Save point**:

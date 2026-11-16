@@ -21,7 +21,7 @@
 
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
-import { pendingLetterCounts, readSeatRegistry } from './desk.ts';
+import { pendingLetterCounts, readSeatRegistry, readSeatRetirementRecords } from './desk.ts';
 import { resolveSeatName } from './seatdesk.ts';
 import { getSeatClaimState } from './seatclaim.ts';
 import { seatMessageAddress } from './conversation.ts';
@@ -53,7 +53,7 @@ export function seatReach(row: Record<string, unknown>): Reach {
 /** The words `seat cards` says for a reach. */
 export function reachWords(row: Record<string, unknown>): string {
   const reach = typeof row['reach'] === 'string' ? (row['reach'] as Reach) : seatReach(row);
-  if (reach === 'ring') return `ring ${String(row['message_name'])}`;
+  if (reach === 'ring') return `ring: SendMessage to ${String(row['message_name'])}`;
   if (reach === 'not yet named') return 'letter now, ring once named';
   return reach === 'codex' ? 'letter only (Codex)' : 'letter only (closed)';
 }
@@ -110,6 +110,7 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
       ...(department.orchestrator === null ? { orchestrator_note: 'none yet' } : {}),
       destination: { kind: destination.kind, seat: destination.seat },
       seats: shown.map(entry),
+      hidden: department.seats.length - shown.length - (mine && !shown.includes(seat!) ? 1 : 0),
     };
   });
   // A SEAT WITH NO DEPARTMENT SEES THE OTHER SEATS WITH NONE (kickoffs/s106 row 7b): they are the seats it would write to
@@ -120,6 +121,9 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
       : view === 'no-department'
         ? names.filter((name) => name !== seat && meta(name).department === null).map(entry)
         : [];
+  const retired = options.all ? readSeatRetirementRecords(options.workspace) : null;
+  const historyFaults = registry.filter(row => row.namesProblem !== null)
+    .map(row => `.claude/seats/_registry.json: ${row.seat}: ${row.namesProblem}`);
   return {
     schema: 1,
     operation: 'Seat cards',
@@ -135,7 +139,14 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
       : {}),
     departments: departments as unknown as PsJsonValue,
     ...(view === 'all' || view === 'no-department' ? { without_department: withoutDepartment as unknown as PsJsonValue } : {}),
+    ...(view === 'orchestrator' || view === 'performer' ? { without_department_count: names.filter(name => name !== seat && meta(name).department === null).length } : {}),
     ...(projection.problems.length ? { read_as_absent: projection.problems.length, read_as_absent_note: 'Some seats carry a value read as absent; deskpost doctor names each.' } : {}),
+    ...(retired ? {
+      renamed: registry.flatMap(row => row.names.filter(span => span.name !== row.seat)
+        .map(span => ({ old: span.name, current: row.seat, renamed_utc: span.to_utc }))),
+      retired: retired.records.map(row => ({ seat: row.seat, retired_utc: row.retired_utc })),
+      history_unreadable: [...historyFaults, ...retired.faults],
+    } : {}),
     shared_library_write: false,
   };
 }
@@ -166,6 +177,7 @@ export function seatCardsText(report: Record<string, unknown>): string {
   for (const department of departments) {
     const destination = (department['destination'] ?? {}) as Record<string, unknown>;
     lines.push(`${String(department['department'])}${destination['kind'] === 'only-seat' ? ` (only seat: ${String(destination['seat'])})` : department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
+    if (Number(department['hidden']) > 0) lines.push(`  ${Number(department['hidden'])} seat(s) not shown; deskpost seat cards --all lists them`);
     for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width));
   }
   // THE `all` VIEW PRINTS NO EMPTY GROUP (kickoffs/s146 row 4): "No department" only when a seat lacks one.
@@ -174,6 +186,14 @@ export function seatCardsText(report: Record<string, unknown>): string {
     if (!without.length) lines.push('  (none)');
     for (const row of without) lines.push(...entryLine(row, width));
   }
+  if (Number(report['without_department_count']) > 0) lines.push(`No department: ${Number(report['without_department_count'])} seat(s); deskpost seat cards --all lists them`);
   if (!departments.length && report['view'] !== 'all') lines.push('No department has an orchestrator yet.');
+  if (Array.isArray(report['renamed'])) {
+    lines.push('Renamed');
+    for (const row of report['renamed'] as Record<string, unknown>[]) lines.push(`  ${row['old']} -> ${row['current']} (${row['renamed_utc']})`);
+    lines.push('Retired');
+    for (const row of report['retired'] as Record<string, unknown>[]) lines.push(`  ${row['seat']} (${row['retired_utc']})`);
+    for (const fault of report['history_unreadable'] as string[]) lines.push(`  Unreadable: ${fault}`);
+  }
   return lines.join('\n');
 }
