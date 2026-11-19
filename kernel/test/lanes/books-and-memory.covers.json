@@ -58,6 +58,99 @@
     ],
     "1218": [
       "kernel/src/shelfcarry.ts"
+    ],
+    "1219": [
+      "kernel/src/sharedwrite.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1220": [
+      "kernel/src/sharedwrite.ts",
+      "kernel/src/verbs.ts",
+      "kernel/src/reader.ts"
+    ],
+    "1221": [
+      "kernel/src/fulltext.ts",
+      "kernel/src/reader.ts",
+      "kernel/src/mcpserve.ts"
+    ],
+    "1222": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1223": [
+      "kernel/src/sharedwrite.ts",
+      "kernel/src/hubedit.ts"
+    ],
+    "1224": [
+      "kernel/src/reader.ts",
+      "kernel/src/mcpserve.ts"
+    ],
+    "1225": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1226": [
+      "kernel/src/reader.ts"
+    ],
+    "1227": [
+      "kernel/src/reader.ts",
+      "kernel/src/mcpserve.ts"
+    ],
+    "1229": [
+      "kernel/src/discovery.ts"
+    ],
+    "1230": [
+      "kernel/src/fulltext.ts"
+    ],
+    "1234": [
+      "kernel/src/reader.ts"
+    ],
+    "1233": [
+      "kernel/src/reader.ts"
+    ],
+    "1232": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1231": [
+      "kernel/src/reader.ts",
+      "kernel/src/mcpserve.ts"
+    ],
+    "1235": [
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1236": [
+      "kernel/src/sharedwrite.ts",
+      "kernel/src/reader.ts"
+    ],
+    "1237": [
+      "kernel/src/discovery.ts"
+    ],
+    "1238": [
+      "kernel/src/sharedmanifests.ts"
+    ],
+    "1239": [
+      "kernel/src/basicmemory.ts"
+    ],
+    "1240": [
+      "kernel/src/mcpserve.ts"
+    ],
+    "1241": [
+      "kernel/src/collection.ts"
+    ],
+    "1243": [
+      "kernel/src/sharedwriters.ts"
+    ],
+    "1244": [
+      "kernel/src/sharedmanifests.ts"
+    ],
+    "1245": [
+      "kernel/src/remedy.ts"
+    ],
+    "1246": [
+      "kernel/src/remedy.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/train.ts"
+    ],
+    "1247": [
+      "kernel/src/remedy.ts"
     ]
   }
 }

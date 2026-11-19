@@ -64,6 +64,57 @@ export type KickoffProblems = {
   malformedSuffixes?: Record<string, string>;
 };
 
+/**
+ * THE CHAIN LINE (PLAN-hub-redesign.md A1-01; kickoffs/s213 row 9): an optional header line, before the first section,
+ * that reads exactly `CHAIN: yes`. Absent means no. Any other `CHAIN:` line in the header is malformed, and so is a second
+ * `CHAIN` line, even a second `CHAIN: yes` (kickoffs/s213-r2 row 6): every header line is read, never only the first.
+ */
+export function chainHeader(text: string): 'yes' | 'absent' | { malformed: string; line: number; repeated?: true } {
+  const lines = text.split(/\r?\n/);
+  const { inside } = fencedLines(text);
+  const first = sectionStarts(text)[0]?.line ?? lines.length;
+  let seen = false;
+  for (let index = 0; index < first; index++) {
+    if (inside[index] || !/^CHAIN\b/.test(lines[index]!)) continue;
+    if (lines[index] !== 'CHAIN: yes') return { malformed: lines[index]!, line: index + 1 };
+    if (seen) return { malformed: lines[index]!, line: index + 1, repeated: true };
+    seen = true;
+  }
+  return seen ? 'yes' : 'absent';
+}
+
+export function chainProblems(text: string): string[] {
+  const chain = chainHeader(text);
+  if (typeof chain !== 'object') return [];
+  return [chain.repeated
+    ? `line ${chain.line}: "${chain.malformed}" is a second CHAIN line: the header holds one CHAIN: yes line, or none (absent means no)`
+    : `line ${chain.line}: "${chain.malformed}" is not a chain line: write exactly CHAIN: yes in the header to chain this Kickoff after the one before it, or leave the line out (absent means no)`];
+}
+
+/** The ids of a `## Next`'s unticked Run pointers, in page order (fenced lines already left out by the caller). */
+export function pendingRunIds(nextLines: readonly string[]): string[] {
+  return nextLines.map((line) => /^\s*- \[ \] Run ([A-Za-z0-9._-]+):/.exec(line)?.[1]).filter((id): id is string => id !== undefined);
+}
+
+/**
+ * IS THIS THE KICKOFF TO OPEN? (PLAN-hub-redesign.md A1-04; kickoffs/s213 row 7): a builder Hub queues up to three Run
+ * pointers, run in page order, so a builder's OPEN passes only the first. Pure: the caller reads the seat Hub's `## Next`
+ * (`kickoff.ts` `seatHubNext`) and passes its lines.
+ */
+export function openVerdict(nextLines: readonly string[], hub: string, id: string): { ok: boolean; first: string | null; pending: string[]; message: string } {
+  const pending = pendingRunIds(nextLines);
+  const first = pending[0] ?? null;
+  if (first === null) {
+    return { ok: false, first, pending, message: `projects/${hub} has no pending Run pointer in ## Next, so no Kickoff is ready to open. Wait for the next pointer to be posted.` };
+  }
+  if (first.toLowerCase() === id.trim().toLowerCase()) {
+    const rest = pending.length - 1;
+    return { ok: true, first, pending, message: `Run ${first} is the first pending Run pointer on projects/${hub}: open it.${rest > 0 ? ` ${rest} more queued behind it.` : ''}` };
+  }
+  const where = pending.some((one) => one.toLowerCase() === id.trim().toLowerCase()) ? `is queued at place ${pending.findIndex((one) => one.toLowerCase() === id.trim().toLowerCase()) + 1}` : 'is not pending';
+  return { ok: false, first, pending, message: `Run ${id.trim()} ${where} on projects/${hub}, and the first is Run ${first}. Open Run ${first} first; the queue runs in page order.` };
+}
+
 /** A closing marker may have trailing text; a same-line span outside a fence stays inline. */
 export function fenceMarker(line: string, open: boolean): boolean {
   return line.startsWith('```') && (open || !line.slice(3).includes('```'));
@@ -175,7 +226,7 @@ export function ownsPatternMatches(pattern: string, path: string): boolean {
 }
 
 function pointsToKickoff(line: string): boolean {
-  const plain = line.replace(/`/g, '');
+  const plain = line.replace(/`/g, '').replace(/projects\/[a-z0-9-]+ page (kickoffs\/)/gi, '$1');
   const sections = KNOWN_SECTIONS.join('|');
   return /\bas kickoffs\/[a-z]*\d+[a-z0-9-]*'s\b/i.test(plain) || /\bread there\b/i.test(plain) ||
     new RegExp('\\bas\\s+kickoffs/[a-z0-9-]+\\s+(?:(?:row|rule|standing answer)\\s+\\d+\\s+says\\b|(?:' + sections + ')\\b)', 'i').test(plain);
@@ -192,7 +243,9 @@ export function checkKickoff(text: string): KickoffProblems {
   const rows = sectionText(text, 'ROWS').split(/\r?\n/);
   const rowsWithoutDone: number[] = [];
   let current: { number: number; done: boolean } | null = null;
-  for (const line of rows) {
+  const rowFences = fencedLines(rows.join('\n'));
+  for (const [index, line] of rows.entries()) {
+    if (rowFences.inside[index] || rowFences.markers[index]) continue;
     const m = /^(\d+)\. /.exec(line);
     if (m) {
       if (current && !current.done) rowsWithoutDone.push(current.number);
@@ -255,7 +308,7 @@ export function missingRequiredSections(text: string): number[] {
 export function commaRowLines(text: string): { line: number; text: string }[] {
   return text.split(/\r?\n/).flatMap((line, index) => {
     const bad = [...line.matchAll(/-Row[ \t]+(['"]?)(<[^>]*>[^\s`]*|[^\s`]+)/g)].some(m =>
-      m[2]!.includes(',') || (/^</.test(m[2]!) && /\b(?:rows|two|three|four|five|six|seven|eight|nine|ten|[2-9]\d*|1\d+)\b/i.test(m[2]!)));
+      m[2]!.includes(',') || (/^</.test(m[2]!) && /(?<![\w-])(?:rows|two|three|four|five|six|seven|eight|nine|ten|[2-9]\d*|1\d+)(?![\w-])/i.test(m[2]!)));
     return bad ? [{ line: index + 1, text: line.trim() }] : [];
   });
 }
@@ -304,9 +357,28 @@ export function templateBlock(templateDoc: string): string {
   return m ? m[1]! : '';
 }
 
+/** The only posting-time token that new-page may fill. */
+export function postedHeader(text: string): { line: number; column: number } | null {
+  const lines = text.split(/\r?\n/);
+  const title = lines.findIndex(line => line.startsWith('# '));
+  const line = title < 0 ? -1 : lines.findIndex((line, index) => index > title && line.trim() !== '');
+  if (line < 0) return null;
+  const marker = /\bwritten[ \t]+\{posted\}(?!\})/.exec(lines[line]!);
+  return marker ? { line, column: marker.index + marker[0].indexOf('{') } : null;
+}
+
 /** Posted Kickoffs escape write-time placeholders so the writer preserves their literal spelling. */
 export function placeholderProblems(text: string): string[] {
-  return text.split(/\r?\n/).flatMap((line, index) => [...line.matchAll(/(?<!\{)\{(now|today|session)\}(?!\})/g)]
+  const lines = text.split(/\r?\n/), title = lines.findIndex(line => line.startsWith('# '));
+  const header = title < 0 ? -1 : lines.findIndex((line, index) => index > title && line.trim() !== '');
+  const posted = postedHeader(text);
+  let postingTime = false;
+  return lines.flatMap((line, index) => [...line.matchAll(/(?<!\{)\{(now|today|session|posted)\}(?!\})/g)]
+    .filter(match => {
+      if (match[1] === 'posted') return posted?.line !== index || posted.column !== match.index || postingTime;
+      if (index !== header || match[1] !== 'now' || postingTime || posted) return true;
+      postingTime = true; return false;
+    })
     .map(match => `line ${index + 1}: ${match[0]} needs doubled braces; a posted Kickoff keeps the placeholder only when the file doubles its braces`));
 }
 
@@ -325,11 +397,12 @@ export function trainProblems(text: string, record: unknown): string[] {
   const primary = primaryTrainId(text);
   const ids = [primary];
   const place = /\(([^;)]*)/.exec(train)?.[1]?.trim() ?? '<place>';
-  const listProblems = train.split('(')[0]!.split(',').slice(1).map(id => id.trim()).filter(id => /^[a-z0-9][a-z0-9-]*$/.test(id))
-    .map(id => `TRAIN lists '${id}' after a comma; write it as ${primary} (${place}; this unit also carries ${id})`);
+  const commaIds = train.split('(')[0]!.split(',').slice(1).map(id => unquote(id.trim().replace(/\.$/, ''))).filter(id => /^[a-z0-9][a-z0-9-]*$/.test(id));
+  const listProblems = commaIds.length ? [`TRAIN lists ${commaIds.map(id => `'${id}'`).join(', ')} after a comma; write it as ${primary} (${place}; this unit also carries ${commaIds.join(', ')})`] : [];
   const carried = /;\s*this unit also carries\s+([^)]*)/.exec(train)?.[1];
   const malformed: string[] = [];
-  for (const piece of carried?.split(/,\s*|\s+and\s+/) ?? []) {
+  for (const part of carried?.split(/,\s*|\s+and\s+|\.\s+(?=`)/) ?? []) {
+    const piece = part.trim().replace(/^and\s+/, '').replace(/\.$/, '');
     if (piece.includes('`') && !/^`[a-z0-9][a-z0-9-]*`$/.test(piece.trim())) {
       malformed.push("TRAIN carries a malformed id '" + piece.trim() + "'");
       if (!/^`?[a-z0-9][a-z0-9-]*`?$/.test(piece.trim())) continue;
@@ -461,13 +534,13 @@ export function parseKickoffNumbering(text: string | null): KickoffNumbering | {
  * than one negated (`no new section`, `does not add a section`) or one referring back (`your new sections`, `each new
  * section needs ...`).
  */
-export function newSectionDeclarations(text: string): { numbers: number[]; unreadable: string[] } {
-  const owns = sectionText(text, 'OWNS').replace(/[`*]/g, '').replace(/\b_+|_+\b/g, '').replace(/[–—]/g, '-').replace(/\s+/g, ' ');
+export function newSectionDeclarations(text: string, section = 'OWNS'): { numbers: number[]; unreadable: string[] } {
+  const owns = sectionText(text, section).replace(/[`*]/g, '').replace(/\b_+|_+\b/g, '').replace(/[–—]/g, '-').replace(/\s+/g, ' ');
   const item = String.raw`\d+(?:(?: to | ?- ?)\d+)?`;
   const phrase = String.raw`\b(?:new (?:self-test )?|(?:adds|add|adding) (?:a )?(?:new )?(?:self-test )?)sections?(?: numbers?)?(?![\w-])`;
   const found = new Set<number>();
   const unreadable: string[] = [];
-  for (const match of owns.matchAll(new RegExp(String.raw`${phrase}:? ?(${item}(?:(?:,| and|, and) ${item})*)?`, 'gi'))) {
+  for (const match of owns.matchAll(new RegExp(String.raw`${phrase}:? ?(${item}(?:(?:,\s*(?:and )?| and )${item})*)?`, 'gi'))) {
     if (/\b(?:no|not|nor|without) $/i.test(owns.slice(0, match.index))) continue;
     if (match[1] === undefined) {
       // `your new sections`, `each new section needs ...`: a reference to sections declared elsewhere, not a declaration.
@@ -551,6 +624,23 @@ export function wslMasterRows(text: string): number[] {
     .map(row => Number(/^(\d+)\./.exec(row)![1]));
 }
 
+// Value-taking options from Node 24.22.3 --help; section 1442 checks the running Node.
+export const NODE_VALUE_OPTIONS = new Set([
+  '--allow-fs-read', '--allow-fs-write', '--build-snapshot-config', '--conditions', '--cpu-prof-dir', '--cpu-prof-interval',
+  '--cpu-prof-name', '--debug-port', '--diagnostic-dir', '--disable-proto', '--disable-warning', '--dns-result-order', '--env-file',
+  '--env-file-if-exists', '--eval', '--experimental-config-file', '--experimental-default-config-file', '--experimental-loader', '--experimental-package-map',
+  '--experimental-sea-config', '--experimental-test-isolation', '--experimental-test-tag-filter', '--heap-prof-dir', '--heap-prof-interval', '--heap-prof-name',
+  '--heapsnapshot-near-heap-limit', '--heapsnapshot-signal', '--icu-data-dir', '--import', '--input-type', '--inspect-port', '--inspect-publish-uid',
+  '--loader', '--localstorage-file', '--max-http-header-size', '--max-old-space-size-percentage', '--network-family-autoselection-attempt-timeout', '--openssl-config',
+  '--redirect-warnings', '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--require',
+  '--run', '--secure-heap', '--secure-heap-min', '--snapshot-blob', '--test-concurrency', '--test-coverage-branches',
+  '--test-coverage-exclude', '--test-coverage-functions', '--test-coverage-include', '--test-coverage-lines', '--test-global-setup', '--test-isolation',
+  '--test-name-pattern', '--test-random-seed', '--test-reporter', '--test-reporter-destination', '--test-rerun-failures', '--test-shard',
+  '--test-skip-pattern', '--test-timeout', '--title', '--tls-cipher-list', '--tls-keylog', '--trace-event-categories',
+  '--trace-event-file-pattern', '--trace-require-module', '--unhandled-rejections', '--use-largepages', '--v8-pool-size', '--watch-kill-signal',
+  '--watch-path', '-C', '-e', '-r',
+]);
+
 /**
  * Two Builders rules (Eric, 2026-11-10): a builder Kickoff orders no push test run and no push to master. Inline code
  * and fenced command lines count; STAY OUT OF, NOT CHARTERED and NOT BUILDING may name them; a release TRAIN is exempt.
@@ -580,14 +670,23 @@ export function builderPushLines(text: string): { line: number; text: string }[]
     const spans = inside[index] ? [line] : [...line.matchAll(/`([^`]+)`/g)].map(match => match[1]!);
     const orders = spans.some(span => commands(span).some(code => {
       const command = code.trim().replace(/^\(/, '').replace(/\)$/, '').replace(/^env[ \t]+/, '').replace(/^(?:[A-Za-z_][\w]*=\S*[ \t]+)*/, '');
-      const words = (command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^ \t]+/g) ?? []).map(word => word.replace(/^(['"])(.*)\1$/, '$2'));
+      const words = (command.match(/(?:[^\s'"]+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? []).map(word =>
+        word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_match, double, single) => single ?? double.replace(/\\(["\\])/g, '$1')));
       if (words[0] === 'npx' && words[1] === 'tsx') words.splice(0, 2, 'node');
       if (/^node(?:\.exe)?$/.test(words[0] ?? '')) {
-        const end = words.indexOf('--');
-        const script = words.findIndex((word, n) => n > 0 && (end < 0 || n < end) && /^(?:.*[\\/])?tools[\\/]gate\.ts$/.test(word));
-        // A path used as an option value before another script is not that script.
-        return script > 0 && (words[script + 1] === undefined || words[script + 1]!.startsWith('-')) &&
-          /--tier(?:[ \t]+|=)push\b/.test(words.slice(script + 1).join(' '));
+        let script = 1, uncertain = false;
+        while (script < words.length) {
+          const word = words[script]!;
+          if (word === '--') { script++; break; }
+          if (word === '-' || /^(?:--eval|--print|--run)(?:=|$)/.test(word) || /^(?:-e|-p|-pe)$/.test(word)) return false;
+          if (NODE_VALUE_OPTIONS.has(word)) { script += 2; continue; }
+          if (!word.startsWith('-')) break;
+          if (word.startsWith('--') && !word.includes('=')) uncertain = true;
+          script++;
+        }
+        return words.slice(script, script + (uncertain ? 2 : 1)).some((word, offset) =>
+          /^(?:.*[\\/])?tools[\\/]gate\.ts$/.test(word) &&
+          /--tier(?:[ \t]+|=)push\b/.test(words.slice(script + offset + 1).join(' ')));
       }
       if (words.shift() !== 'git') return false;
       while (/^(?:-[A-Za-z]|--[\w-]+(?:=.*)?)$/.test(words[0] ?? '')) {
@@ -634,7 +733,7 @@ export function docsFileRouteWarnings(text: string): string[] {
 export function kickoffNames(text: string): { name: string; line: number }[] {
   return text.split(/\r?\n/).flatMap((line, index) => {
     const names = [...line.matchAll(/\[\[((?:projects\/[^/\]\s]+\/[^\]|]+)|(?:[^\]\s|]+\/notes\/[^\]|]+))(?:\|[^\]]*)?\]\]/g)].map(m => m[1]!);
-    for (const phrase of line.matchAll(/`(projects\/[a-z0-9-]+)` pages? ((?:`[^`]+`(?:\s*,\s*(?:and\s+)?|\s+and\s+)?)+)/g)) {
+    for (const phrase of line.matchAll(/`(projects\/[a-z0-9-]+)` pages? ((?:`(?!projects\/)[^`]+`(?:\s*,\s*(?:and\s+)?|\s+and\s+)?)+)/g)) {
       for (const page of phrase[2]!.matchAll(/`([^`]+)`/g)) names.push(`${phrase[1]}/${page[1]}`);
     }
     return [...new Set(names)].filter(name => !/<[^>]+>/.test(name.slice(name.startsWith('projects/') ? name.indexOf('/', 9) + 1 : name.indexOf('/notes/') + 7)))
@@ -722,7 +821,7 @@ export function pinnedSectionWarnings(text: string, covers: Record<string, reado
   const owns = sectionText(text, 'OWNS').replace(/\s+/g, ' ');
   // Only numbers OWNS names as sections (s196 spare S1), so "rows 1 to 4" or "c121 takes 715 to 719" name none.
   for (const m of owns.matchAll(/\bsections? (\d+) to (\d+)\b/gi)) for (let n = Number(m[1]); n <= Number(m[2]) && n - Number(m[1]) < 1000; n += 1) named.add(n);
-  for (const m of owns.matchAll(/\bsections? (\d+(?:(?:,| and|, and) \d+)*)\b/gi)) for (const n of m[1]!.match(/\d+/g)!) named.add(Number(n));
+  for (const m of owns.matchAll(/\bsections? (\d+(?:(?:,\s*(?:and )?| and )\d+)*)\b/gi)) for (const n of m[1]!.match(/\d+/g)!) named.add(Number(n));
   // "N (...)" at the top level of an existing-sections list, which runs to the first full stop outside parentheses.
   for (const list of owns.matchAll(/\bexisting sections\b/gi)) {
     let depth = 0;
@@ -758,7 +857,7 @@ export function revisionEvidenceWarnings(text: string): string[] {
   if (!id || revision < 2) return [];
   const original = `D:/dev/scratch/deskpost/${id}/`;
   // The folder name ends at a slash, a backtick, whitespace, the line's end or closing punctuation.
-  const paths = sectionText(text, 'OPEN').matchAll(/D:\/dev\/scratch\/deskpost\/([a-z0-9-]+)(?=$|[\s/`'"),.;\]])/gm);
+  const paths = sectionText(text, 'OPEN').matchAll(/D:\/dev\/scratch\/deskpost\/([a-z0-9-]+)(?=$|[\s/`'"),.;:\]])/gm);
   return [...paths].some(match => match[1] === id)
     ? [`Revision r${revision} names the original evidence folder ${original}; name D:/dev/scratch/deskpost/${id}-r${revision}/ instead.`] : [];
 }
@@ -783,11 +882,23 @@ function newActionWarnings(text: string): string[] {
   return warnings;
 }
 
+function baseRunSectionWarnings(text: string): string[] {
+  const rowZero = sectionText(text, 'ROWS').split(/(?=^(?:[AB])?\d+\. )/m).filter(row => /^(?:[AB])?0\. /.test(row));
+  const base = [sectionText(text, 'OPEN'), ...rowZero].join('\n');
+  const used = new Set<number>();
+  for (const run of base.matchAll(/\bLIBRARY_SELFTEST_SECTIONS\s*=\s*['"]?([0-9]+(?:\s*,\s*[0-9]+)*)/g)) {
+    for (const number of run[1]!.split(',')) used.add(Number(number));
+  }
+  const added = new Set([...newSectionNumbers(text), ...newSectionDeclarations(text, 'RULES').numbers]);
+  return [...added].filter(number => used.has(number))
+    .map(number => `New sections: section ${number} appears in a base run before this unit adds it.`);
+}
+
 /** The tool and both posting paths share this verdict. Received pages skip names; a bare tool warns when it has names. */
 export function kickoffVerdict(
   text: string,
-  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution; covers?: Record<string, readonly string[]>; areas?: KickoffAreas;
-    numbering?: KickoffNumbering | { unreadable: string } },
+  options: { adrFiles: readonly string[]; train?: { record: unknown }; placeholders?: boolean; postedHint?: boolean; names?: boolean; missingAdrs?: 'refuse' | 'warn'; resolveName?: (name: string) => NameResolution; covers?: Record<string, readonly string[]>; areas?: KickoffAreas;
+    numbering?: KickoffNumbering | { unreadable: string }; newPathMapped?: (file: string) => boolean },
 ): { problems: string[]; warnings: string[]; sectionCount: number; sectionNames: string[] } {
   const names = options.names === false ? [] : kickoffNames(text);
   const nameProblems = options.resolveName ? names.flatMap(({ name, line }) => {
@@ -806,12 +917,13 @@ export function kickoffVerdict(
     ...describeMissingAdrs(missingAdrs(text, options.adrFiles).filter(adr => options.missingAdrs !== 'warn' || adr.startsWith('new ')), options.adrFiles),
     ...describeMissingRequiredSections(missingRequiredSections(text)),
     ...describeCommaRows(commaRowLines(text)),
-    ...(options.placeholders === false ? [] : placeholderProblems(text)),
+    ...(options.placeholders === false ? [] : placeholderProblems(text).map(problem => problem + (options.postedHint ? ' (a posted page: run kickoff check --posted)' : ''))),
     ...auditProblems(text),
     ...secondReadProblems(text),
     ...(options.areas ? laneProblems(text, options.areas) : []),
     ...sectionRangeProblems(text, options.numbering),
     ...describeBuilderPushLines(builderPushLines(text)),
+    ...chainProblems(text),
     ...(options.train ? trainProblems(text, options.train.record) : []),
   ];
   const warnings = [
@@ -819,12 +931,16 @@ export function kickoffVerdict(
       `OWNS PATHS ${pattern} covers a fixtures folder: sensitive-named fixtures under it are accepted; the handback names each one`),
     ...(options.missingAdrs === 'warn' ? missingAdrs(text, options.adrFiles).filter(adr => !adr.startsWith('new ')).map(adr =>
       `names ${adr}, which this installed release does not have (its docs/adr/ ends at ADR-${String(highestAdr(options.adrFiles)).padStart(4, '0')}); the source check, node tools/kickoff-check.mts in the build checkout, decides`) : []),
-    ...(names.length && !options.resolveName ? ['names not checked: no Library'] : []),
+    ...(names.length && !options.resolveName ? ['names not checked: no Library; run deskpost kickoff check <file> in a Library to check them'] : []),
     ...describeSourceGreenHelperRows(sourceGreenHelperRows(text)),
     ...docsFileRouteWarnings(text),
     ...revisionEvidenceWarnings(text),
     ...newActionWarnings(text),
+    ...baseRunSectionWarnings(text),
     ...(options.covers ? pinnedSectionWarnings(text, options.covers) : []),
+    ...(options.newPathMapped && !ownsPaths(text).patterns.includes('tools/check-map.json')
+      ? ownsPaths(text).patterns.filter(file => file !== 'none' && !/^<[^<>]+>$/.test(file) && !file.includes('*') && !/^(?:kernel|tools|\.githooks)\//.test(file) && !options.newPathMapped!(file))
+        .map(file => `OWNS PATHS: unmapped new path ${file}; own tools/check-map.json and add its covering checks`) : []),
     ...newSectionNumbers(text).filter(number => options.covers && Object.hasOwn(options.covers, String(number)))
       .map(number => `New sections: section ${number} is taken at the base; choose a free section number`),
     ...wslMasterRows(text).map(row => `row ${row} runs a WSL step that reads origin/master: in the WSL clone that is the shared repository's local master, which pushes never move; read origin/<the unit's branch>`),

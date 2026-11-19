@@ -289,12 +289,16 @@ export function triageInventory(
     };
   };
 
+  // Hidden rows still contribute copy counters. Only a proved copy needs the current hash for those counters.
+  const hasComparableCopy = (relative: string): boolean =>
+    coverage.get(relative)?.some(entry => entry.quality === 'complete') ?? false;
+
   // --- Source one: the Notebook, whose topics a Reset quarantines --------------------------------
   const pages = (notebookPresent ? listFilesRecursive(notebookRoot).filter((file) => file.toLowerCase().endsWith('.md')) : []).map(
     (file) => {
       const relative = notebookRelative + '/' + file.substring(notebookRoot.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
-      const hash = utf8Hash(file);
-      const references = pageReferences(root, file, tracked);
+      const hash = !options.pendingOnly || hasComparableCopy(relative) ? utf8Hash(file) : '';
+      const references = options.pendingOnly ? [] : pageReferences(root, file, tracked);
       const records = resolveCopyRecords(relative, hash);
       return {
         path: relative,
@@ -352,7 +356,9 @@ export function triageInventory(
     shelfNotes(book).map((note) => {
       const relative = `${book.bookRoot}/wiki/${note.page}.md`;
       if (options.forSeat && isAddressedTo(note, options.forSeat)) addressed.add(relative);
-      const hash = utf8Hash(note.fullPath);
+      const hidden = options.pendingOnly && (note.review === 'done'
+        || (options.forSeat && !addressed.has(relative)) || (options.book && book.slug !== options.book));
+      const hash = !hidden || hasComparableCopy(relative) ? utf8Hash(note.fullPath) : '';
       const records = resolveCopyRecords(relative, hash);
       return {
         path: relative,

@@ -690,7 +690,7 @@ export async function readExactOrNull(
   }
   const record = bm ? structuredRecord(response) : field(field(result, 'structuredContent'), 'result');
   if (record === undefined || record === null || !text(field(record, 'file_path')).trim()) return null;
-  if (text(field(record, 'file_path')) !== relative && !options.allowRedirect) refuse(`Read '${relative}' returned '${text(field(record, 'file_path'))}'; ${stopped}.`);
+  if (text(field(record, 'file_path')) !== relative && !options.allowRedirect) refuse(`Read '${relative}' returned '${text(field(record, 'file_path'))}'; ${stopped}. The requested page was not found; that returned path is a near match.`);
   return {
     file_path: text(field(record, 'file_path')),
     title: text(field(record, 'title')),

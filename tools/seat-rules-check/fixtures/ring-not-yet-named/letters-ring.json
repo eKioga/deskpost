@@ -6,6 +6,7 @@
       "status": "idle"
     }
   ],
+  "expected_capture_for": "recipient",
   "expected_ring_target": "recipient-peer",
   "ring_line": "From writer: a letter for you, letters notes/2026-11-13-recorded-eval-letter-7",
   "relay_line": "Tell recipient: a letter for you, letters notes/2026-11-13-recorded-eval-letter-8",

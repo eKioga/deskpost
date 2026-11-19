@@ -29,10 +29,18 @@ before the colon, and the Kickoff's match text found nothing) (Report, 2026-10-1
 `deskpost-dev`'s Kickoffs are `sNN`; `deskpost-codex-dev`'s are `cNN` on its own Hub, by the same rules. A unit reaches a
 builder **only** as a Kickoff (Eric, 2026-10-11): not by letter, message or a list on its Hub.
 
+**A builder Hub queues up to three Kickoffs** (`PLAN-hub-redesign.md` amendment A1, 2026-11-17). On a dev Hub (one
+with `## Repo`), `## Next` holds up to three pending Run pointers; `hub edit` refuses a fourth, and every other Hub
+keeps one. Page order is run order: the builder opens only the first (`deskpost kickoff check --open <id>`), and
+needs-you shows the first and counts the rest. **Chaining:** write `CHAIN: yes` in a Kickoff's header only for a Kickoff
+on another branch from the one before it whose rows wait on no review, and only when the one before it says it too.
+Then a builder whose `deskpost kickoff next` answers start runs it in the same session (the builder's page, Close).
+
 **A Kickoff is write-once by rule, not by construction.** (Decision, 2026-09-29) `new-page` refuses to overwrite, but other
 modes can still edit a page, so no seat edits a `kickoffs/` page after creating it. A revision is a
-new page, `kickoffs/sNN-r2`. When the orchestrator writes one, it ticks the old pointer and appends the new one,
-whose text says `(supersedes kickoffs/sNN)`. At most one pointer stays unticked. A revision names its own evidence
+new page, `kickoffs/sNN-r2`. When the orchestrator writes one, it replaces the old pointer where it stands
+(`hub edit --mode replace-item --match-text "Run sNN:"`), so the revision keeps its place in the queue, and the new
+pointer's text says `(supersedes kickoffs/sNN)`; a second pending pointer for one unit is refused. A revision names its own evidence
 folder, `D:/dev/scratch/deskpost/<id>-r<n>/`; its OPEN accepts a unit branch at `<base>` with no commit of its own.
 Before posting a revision, the orchestrator reads the builder's checkout (branch, commits past base and evidence
 folder) and puts what it found in the dry-run line.
@@ -150,15 +158,12 @@ row 4 on the candidate.
 
 ### Sizing by context, and spare items
 
-(Decision, 2026-11-03; `PLAN-context-sized-kickoffs.md`.) Size a Kickoff's main rows at about 35-40% of the builder's
-context window, against measured runs, by what the builder reads and runs. Then add two to four spare items from the
-front of the train, in train order, skipping any that need a decision or a yes not already given, change a file a main
-row changes or one another open Kickoff owns (except a pair's shared append files), need a live server, or would cost
-more than about 6%. Write each like a row, list its files in OWNS PATHS, give it its own section numbers and a context
-estimate, and put its ids on `SPARE TRAIN:`; `kickoff-check --train` checks only `TRAIN:`, so check each spare id is
-open in `deskpost train --json` before posting and say so in the dry-run line. At every handback review, write
-`Context: <window> window, <tokens> at handback (<n>%), peak <n>%, compactions <n>` from the run's own session file,
-with the spares taken and skipped and the readings that decided them; close on the train only the spares taken.
+(Decision, 2026-11-17.) Include the work needed to achieve the Kickoff's goal. Keep any spare
+items explicitly chartered and scoped, with their files in OWNS PATHS and their ids in SPARE TRAIN.
+Record `Context: <window> window, <tokens> at handback (<n>%), peak <n>%, compactions <n>`
+from the builder's own session file when those figures are available. Use the readings as evidence
+when planning later Kickoffs. A builder works through the chartered rows and hands back early
+when a concrete blocker prevents further progress.
 
 Each Kickoff names its lane in WHY NOW as `- **Lane:** <lane>`, from `docs/areas.json`, and its OWNS PATHS stay in that
 lane's areas or `shared` unless a `- **Cross-lane:**` line names the path and why (Two Builders rule 9). The source
@@ -208,15 +213,16 @@ Codex failed k1e-r2 (Eric, 2026-10-12), so this profile is proven for a Claude r
 second reads do not depend on it: they go to library-auditor by letter, whichever harness wrote the
 change, and library-auditor audits every commit before a release (Decision, 2026-10-27).
 
-**The mirror source.** (Decision, 2026-09-29) The chartered push is safe only because `Kioga/library` is not the mirror
-job's `SOURCE_REPO`. Its value is a secret on the `Kioga/deskpost-ops` repository and cannot be read
-back, and the workflow's files name only `${{ secrets.SOURCE_REPO }}`.
+**The mirror source.** (Decision, 2026-09-29) The chartered push is safe only because `Kioga/deskpost-private` is not the mirror
+job's `SOURCE_REPO`. The private repository was renamed on 2026-11-09; the old name redirects.
+The secret is on the `Kioga/deskpost-ops` repository and cannot be read back. The workflow's files name only `${{ secrets.SOURCE_REPO }}`.
 
-**Confirmed 2026-09-29 (S68): `SOURCE_REPO` is `Kioga/deskpost`, not `Kioga/library`.** The private
+**Confirmed 2026-09-29 (S68): `SOURCE_REPO` is `Kioga/deskpost`, not the private source repository
+now named `Kioga/deskpost-private`.** The private
 record of the S9 deployment (2026-09-20) holds the one API call that ever set it, with that value.
 Releases reach `Kioga/deskpost` as their own pushes from a release checkout, and the mirror publishes
 those: after the v1.2.3 release, the public side carried `Kioga/deskpost`'s `main`, not
-`Kioga/library`'s `master`. A push to `origin` therefore publishes nothing, and a push to
+`Kioga/deskpost-private`'s `master`. A push to `origin` therefore publishes nothing, and a push to
 `Kioga/deskpost` publishes when the mirror job next runs: the release session starts it right after
 the publish push, and its daily run catches a missed start. If the secret's timestamp on
 `Kioga/deskpost-ops` (Settings, Actions, Secrets) ever reads later than 2026-09-20, it was changed
@@ -259,9 +265,9 @@ Missing, refused, older than about 15 minutes, or
 already past `resetsAt` means unknown (Decision, 2026-10-12); a Codex session log can fill only Codex's figure.
 Without Orca every reading is unknown unless that Codex fallback is available.
 
-Until the gate-lock goal is met, Codex Builder takes the builds, and Claude Builder takes only work that
-does not hold the gate lock (Decision, 2026-10-27). For what that leaves open: with both known, give work
-either harness can do to the seat with more of its week left, weighing how far off each reset is
+Every builder builds: the Claude Builder, the Codex Builder and a builder in another office. Each
+Kickoff stays in one lane (Two Builders rule 9, approved by Eric, 2026-11-10). With both meters known,
+give work any of them can do to the seat with more of its week left, weighing how far off each reset is
 (Decision, 2026-10-12). The percentages are different subscriptions, not equal amounts of work.
 A seat past about 90% gets no new unit, even one only it can do, unless Eric overrides (Decision, 2026-10-11). With an
 unknown reading the orchestrator judges and says so. This is advisory, not automatic dispatch.

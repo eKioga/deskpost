@@ -97,6 +97,14 @@ records the full workflow.
 
 From 1.6.0, shared Books support previewed, recorded writes, new Books, promotion from a local collection and upkeep grants for named seats. Removals keep your yes. See [Writing shared Books](basic-memory.md#writing-shared-books) for the commands and the way back.
 
+## Hubs that show their state in 1.7.0
+
+Ask "what is open on this project?" for the Hub's live state: `deskpost hub status <slug>` checks the records named in Now and Next and says when a source is unavailable. A return briefing includes that view. Hub readers agree on comments, so text hidden in a comment is not treated as current work.
+
+When an item is finished, ask the Librarian to close it. `deskpost hub edit <slug> --mode close-item --match-text "<unique text>"` moves the whole item word for word into history and leaves a pointer; it does not discard the record. Builder Hubs can queue up to three Kickoffs in order. `deskpost kickoff next` continues only when the finished unit, closeout, matching approval and context checks allow it; a queue never approves a new action by itself.
+
+Program output keeps your wording and punctuation as typed. `deskpost library move` is turned off in this release because a known fault can rewrite unrelated paths; wait for a later release.
+
 ## Shared moves and letters in 1.6.1
 
 A move into the shared collection finishes even when the original Book's reader map has no local links.

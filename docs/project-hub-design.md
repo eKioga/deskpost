@@ -193,6 +193,7 @@ The helper takes a `-Mode` and edits one page of one open active Hub:
 | `AddSection` | appends a new level-two section | applies directly |
 | `AppendSection` | adds text at the end of an existing section | applies directly |
 | `CheckItem` | ticks or unticks one checklist item | applies directly |
+| `CloseItem` (`close-item`) | moves one top-level item of the root's `## Now` or `## Next`, ticked, word for word to the newest tidy-history page, and keeps one `Closed items:` pointer per section | applies directly (local Hubs only) |
 | `ReplaceItem` | replaces one list item or line | preflight `plan_id` + `-UserConfirmed` |
 | `ReplaceSection` | replaces one section's body, keeping its heading | preflight `plan_id` + `-UserConfirmed` |
 | `ReplaceBody` | replaces the whole page body | preflight `plan_id` + `-UserConfirmed` |
@@ -221,6 +222,16 @@ Four further boundaries make the direct route safe:
 4. Section boundaries are found with a fence-aware scan, so a `#` or `##` line inside a fenced code
    block is content rather than a heading. This is the same class of defect the migration tools hit
    by scanning links without skipping fences.
+
+Every reader of a Hub page reads it one way (`shownText` in `kernel/src/hubedit.ts`). A line inside a
+fenced block or an HTML comment is content, never a heading, an item or a Run pointer. A comment
+that opens at the start of a line hides everything up to its `-->`. A comment opened after text on
+its line hides only when it closes before the next blank line, as a Markdown viewer shows it
+(CommonMark); otherwise its `<!--` is plain text. `hub edit`, `hub status`, `kickoff next`,
+`kickoff check --open` and `kickoff receive` all read `## Next` this one way (`nextShownLines`), and
+`hub tidy` and `close-item` read the items they move and the `Closed items:` pointer this way too.
+One reader does not yet: the train register's Hub-item reader (`kernel/src/train.ts`) still skips
+only fenced lines, so an item inside a comment still counts there.
 
 Section matching is exact and case-sensitive, a duplicated section name is refused rather than
 guessed at, and an edit that would produce the current text reports `unchanged` and writes nothing.
@@ -319,7 +330,7 @@ Notebook search.
 Suggestions are read-only and do not require, create, or alter Virtual Desk state. They never open
 a Project or its connected Books. The Librarian presents the result and lets the reader choose what
 to open. The reader validates every catalog and Project-root response against its exact canonical
-path and stops rather than silently scanning a partial catalog of more than 25 active Projects.
+path, and ranks the whole active catalog whatever its length (section 1521 proves 26 Projects).
 
 If a Book and a Project share a slug, their separate roots remain safe but the Librarian asks
 which one the user means.
@@ -380,7 +391,7 @@ existing Hubs are not migrated.
 
 ## Decisions
 
-- **<date> -- <what was decided>.** <where its record lives>
+<!-- - **<date> -- <what was decided>.** <where its record lives> -->
 ```
 
 `## Repo` binds the Hub to a **working tree** — live, external, belonging to the project rather than
@@ -451,10 +462,20 @@ This rule is the whole reason the section is safe to add. A decision does not cl
 does, so a `Decisions` section without it accumulates forever and reproduces exactly the append-only
 growth the `Now` seed exists to prevent — the defect being fixed, wearing different clothes.
 
-Like the `Now` seed, this is carried by seed wording rather than enforcement. `Assert-NowStructure`
+Like the `Now` seed, this was carried by seed wording rather than enforcement until 2026-11-17. `Assert-NowStructure`
 inspects only column-zero list entries, and a new whole-collection invariant is the shape of change
 that has previously bricked a surface until legacy data was migrated. What is gated is only what the
 template produces, never any Hub's content.
+
+**On a dev Hub the root now holds pointers, and the program checks it** (`PLAN-hub-redesign.md`; ADR-0026, accepted
+with its amendment; kickoffs/s213). On a Hub with `## Repo`, `hub edit` refuses an added or replaced top-level item of
+`## Now` or `## Next` over 600 bytes or naming no record (a train id in backticks, a `[[projects/...]]` or
+`[[books/...]]` link, a `kickoffs/` id, a letter or Report path, or a `PLAN-*.md`), and an added `## Decisions` entry
+over 400 bytes or with no link. Only new text is judged, so no Hub breaks on upgrade, and other Hubs keep today's
+shape. What is done leaves with `hub edit --mode close-item`, which moves the item word for word, ticked, to the newest
+tidy-history page and keeps one `Closed items:` pointer per section. `deskpost hub status <slug>` shows each pointer's
+live state from the program's records, so nobody re-reads the page to find a stale item. A builder Hub's `## Next`
+holds a queue of up to three pending Run pointers, run in page order.
 
 ## Deliberate exclusions
 

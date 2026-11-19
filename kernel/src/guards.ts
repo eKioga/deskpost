@@ -379,8 +379,10 @@ export function collectionRootForPath(relative: string): CollectionPlacement {
 }
 
 /** A pattern's reach into the collection: a root it names, `span` when a wildcard stands where a root would, or none. */
-export function collectionPatternPlacement(pattern: string): CollectionPlacement {
+export function collectionPatternPlacement(pattern: string): CollectionPlacement | { kind: 'roots'; roots: string[] } {
   const normalised = trimStartDotsAndSlashes(collectionPath(pattern));
+  const brace = /^(collection\/(?:books|projects))\/\{([a-z0-9][a-z0-9-]*(?:,[a-z0-9][a-z0-9-]*)+)\}(?:\/[^{}]*)?$/i.exec(normalised);
+  if (brace && !normalised.split('/').includes('..')) return { kind: 'roots', roots: brace[2]!.toLowerCase().split(',').map(slug => `${brace[1]!.slice('collection/'.length).toLowerCase()}/${slug}`) };
   const placed = collectionRootForPath(normalised);
   if (placed.kind === 'root') return placed;
   if (/^collection(?:\/|$)/i.test(normalised) && /[*?[{]/.test(normalised)) return { kind: 'span' };
@@ -417,22 +419,28 @@ function collectionOpenCommand(root: string): string {
 
 const COLLECTION_SPAN_DENIAL =
   'spans collection Books or Project Hubs, some of which may be closed. Narrow it to one open root, or open the one you need ' +
-  'with deskpost desk open book <slug> --location collection, or deskpost desk open project <slug>.';
+  'with deskpost desk open book <slug> --location collection, or deskpost desk open project <slug>. ' +
+  'To see what the collection holds, run deskpost browse; text meant for a file goes through the file tool.';
 
-function closedCollectionDenial(root: string, openRoots: string[], options: { readerToolPrefix?: string | undefined }): string | null {
+function closedCollectionDenial(root: string, openRoots: string[], options: { readerToolPrefix?: string | undefined; workspace: string }): string | null {
   if (openRoots.includes(root)) return null;
   const archived = root.startsWith('archive/');
   const slug = root.substring(root.lastIndexOf('/') + 1);
   const project = root.includes('projects/');
   const kind = project ? (archived ? 'Archived Project Hub' : 'Project Hub') : archived ? 'Archived collection Book' : 'Collection Book';
+  if (!fs.existsSync(path.join(options.workspace, 'collection', root)) || !fs.statSync(path.join(options.workspace, 'collection', root)).isDirectory())
+    return `No ${project ? 'Project Hub' : 'collection Book'} named '${slug}' is in this Library; deskpost browse lists what it holds.`;
   const tool = project ? projectReaderTool(options) : readerTool(options);
   return `${kind} '${slug}' is closed. Open it with ${collectionOpenCommand(root)}, then read its pages with ${tool}.`;
 }
 
-function closedBookDenial(root: string, openRoots: string[], tool: string): string | null {
+function closedBookDenial(root: string, openRoots: string[], tool: string, workspace: string): string | null {
   if (openRoots.includes(root)) return null;
   const parts = splitBookRoot(root);
   const kind = parts.shelf === 'archive' ? 'Archived Shelf Book' : 'Shelf Book';
+  const folder = path.join(workspace, parts.root);
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory())
+    return `No Shelf Book named '${parts.slug}' is in this Library; deskpost browse lists what it holds.`;
   return `${kind} '${parts.slug}' is closed. Open it with ${shelfOpenCommand(root)}, then read its pages with ${tool}.`;
 }
 
@@ -649,9 +657,9 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
   }
   for (const pattern of patterns) {
     const reach = collectionPatternPlacement(pattern);
-    if (reach.kind === 'span') deny(`That pattern ${COLLECTION_SPAN_DENIAL}`);
-    if (reach.kind === 'root') {
-      const closed = closedCollectionDenial(reach.root, collectionRoots(), context);
+    if (reach.kind === 'span') deny(`That pattern ${COLLECTION_SPAN_DENIAL}${/[{}]/.test(pattern) ? ' A brace like that cannot be judged; name one root per call.' : ''}`);
+    for (const root of reach.kind === 'roots' ? reach.roots : reach.kind === 'root' ? [reach.root] : []) {
+      const closed = closedCollectionDenial(root, collectionRoots(), context);
       if (closed) deny(closed);
     }
     if (!/^shelf\//i.test(trimStartDotsAndSlashes(pattern.replace(/\\/g, '/')))) continue;
@@ -678,7 +686,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
         if (!denial && workspace) {
           const judged = shelfTargetRoot(reading, workspace);
           denial = judged.denial;
-          if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
+          if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool, workspace);
           if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, named, collectionRoots, context);
           if (!denial) denial = internalWriteDenial({ target: reading, workspace, toolName });
           if (!denial) denial = computerUseSettingDenial({ target: reading, workspace, toolName });
@@ -701,7 +709,7 @@ function shelfReadGuard(context: GuardContext, deny: (reason: string) => never):
 
   const judged = shelfTargetRoot(target, workspace);
   let denial = judged.denial;
-  if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool);
+  if (!denial && judged.root) denial = closedBookDenial(judged.root, openRoots(), context.readerTool, workspace);
   if (!denial && judged.relative) denial = collectionTargetDenial(judged.relative, target, collectionRoots, context);
   if (!denial) denial = internalWriteDenial({ target, workspace, toolName });
   if (!denial) denial = computerUseSettingDenial({ target, workspace, toolName });
@@ -818,7 +826,7 @@ export function shelfTokens(command: string): { token: string; text: string }[] 
 /** Every `collection/<something>` the command names, as `shelfTokens` finds the Shelf's (S70 row 1). A bare `collection/` lists only the three containers. */
 export function collectionTokens(command: string): { token: string; text: string }[] {
   if (!command || !command.trim()) return [];
-  const stripped = removeHeredocBodies(command);
+  const stripped = removeSearchExclusions(removeHeredocBodies(command));
   const normalised = convertToPathSeparators(stripped);
   const seen = new Set<string>();
   const hits: { token: string; text: string }[] = [];
@@ -839,7 +847,8 @@ export function collectionTokens(command: string): { token: string; text: string
 const PATTERN_REMEDY =
   'If that text is a search pattern rather than a path, use the Grep tool: its path must be one open root, a glob does ' +
   'not narrow that path, and its pattern is never judged. To search another repository or a commit for such a text, ' +
-  'put the pattern in a file and pass it with git grep -f <file> or rg -f <file>.';
+  'put the pattern in a file and pass it with git grep -f <file> or rg -f <file>. Text meant for a file is written with the file tool and passed by path, not given in a here-string or echo. ' +
+  'For literal text, use the file tool and pass the file through the command’s --title-path, --content-path or --note-path option where available. A quoted argument still goes through this guard.';
 
 function formatMatchedText(text: string): string {
   if (text.length > 120) return `'${text.substring(0, 117)}...'`;
@@ -861,45 +870,81 @@ function formatMatchedText(text: string): string {
 const SHELL_WRITE_VERB = /(?:^|[\s;&|(`"'])(?:tee|cp|mv|mkdir|touch|rsync|install|copy|xcopy|robocopy|move|ren|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item)(?=[\s;&|)]|$)/i;
 
 function shellNotebookWriteDenial(command: string, workspace: string, seat: string | undefined, stateDirectory: string): string | null {
-  // Compose literal words in shell quote state; computed commands remain outside this best-effort fence.
-  const literals = removeHeredocBodies(command).replace(/<<heredoc-body-elided/g, ' ').replace(
-    /(?:\$'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|'[^']*'|\\[\s\S]|[^\s\\"';&|<>])+/g,
-    raw => {
-      let preserved = '', unquotedEscape = false;
-      const word = raw.replace(/\$'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|'([^']*)'|\\([\s\S])|[^\\"'$]+|\$/g,
-        (piece, ansi: string | undefined, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
-          const decoded = ansi !== undefined ? ansi.replace(
-            /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{4})|([0-7]{1,3})|([\\'"abefnrtv]))/g,
-            (_escape, hex: string, unicode: string, octal: string, simple: string) => {
-              if (hex || unicode || octal) return String.fromCharCode(parseInt(hex || unicode || octal, octal ? 8 : 16));
-              return ({a:'\x07',b:'\b',e:'\x1b',f:'\f',n:'\n',r:'\r',t:'\t',v:'\v'} as Record<string,string>)[simple] ?? simple;
-            },
-          ) : double !== undefined ? double.replace(/\\([$`"\\])/g, '$1') : single ?? escaped ?? piece;
-          unquotedEscape ||= escaped !== undefined;
-          preserved += escaped === undefined ? decoded : '\\' + escaped;
-          return decoded;
-        },
-      );
-      // Keep original unquoted backslashes for paths: any colon/slash, or a non-verb with unquoted escapes.
-      return /[:/]/.test(raw) || (unquotedEscape && !SHELL_WRITE_VERB.test(word)) ? preserved : word;
-    },
-  );
-  const text = convertToPathSeparators(literals.replace(/\\\.(?=[\\/])/g, '')).text.replace(/\/\.(?=\/)/g, '').replace(/([^/\s.])\.+(?=\/)/g, '$1');
   const token = /^["']?(.*?)["']?$/;
   const notebookRelative = (raw: string): string | null => {
-    const bare = token.exec(raw)![1]!.replace(/^\.\//, '');
+    const bare = token.exec(raw)![1]!.replace(/^--?[A-Za-z][A-Za-z-]*[=:]/, '').replace(/^\.\//, '');
     const placed = workspaceRelative(dotnetIsPathRooted(bare) ? bare : joinPath(workspace, bare), workspace);
     if (placed.kind !== 'inside') return null;
     const relative = (placed.relative ?? '').replace(/\\/g, '/');
     return /^(?:notebook|internal)\//i.test(relative) ? relative : null;
   };
   const targets = new Set<string>();
-  for (const match of text.matchAll(/(?:^|[^0-9&>])(?:[0-9]?&?>{1,2}\|?|[0-9]?>&)\s*([^\s|;&<>]+)/g)) {
-    const relative = notebookRelative(match[1]!);
-    if (relative) targets.add(relative);
-  }
-  if (SHELL_WRITE_VERB.test(text)) {
-    for (const match of text.matchAll(/(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[^\s"'|;&<>]*(?:notebook|internal)\/[^\s"'|;&<>]*/gi)) {
+  // Split before decoding so separators inside literal words cannot make another statement.
+  const interpolatingHereString = /@"\r?\n/.test(command);
+  const visible = removeHeredocBodies(command).replace(/<<heredoc-body-elided/g, ' ');
+  const statements = interpolatingHereString ? [visible] : visible.match(/(?:\$'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|'[^']*'|[0-9]?>&|[0-9]?&?>{1,2}\|?|\\[\s\S]|[^;&|\r\n"'])+/g) ?? [];
+  for (const statement of statements) {
+    // Compose literal words in shell quote state; computed commands remain outside this best-effort fence.
+    const arguments_: string[] = [];
+    const literals = statement.replace(
+      /(?:\$'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|'[^']*'|\\[\s\S]|[^\s\\"';&|<>])+/g,
+      (raw, offset: number) => {
+        let preserved = '', unquotedEscape = false;
+        const word = raw.replace(/\$'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|'([^']*)'|\\([\s\S])|[^\\"'$]+|\$/g,
+          (piece, ansi: string | undefined, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
+            const decoded = ansi !== undefined ? ansi.replace(
+              /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{4})|([0-7]{1,3})|([\\'"abefnrtv]))/g,
+              (_escape, hex: string, unicode: string, octal: string, simple: string) => {
+                if (hex || unicode || octal) return String.fromCharCode(parseInt(hex || unicode || octal, octal ? 8 : 16));
+                return ({a:'\x07',b:'\b',e:'\x1b',f:'\f',n:'\n',r:'\r',t:'\t',v:'\v'} as Record<string,string>)[simple] ?? simple;
+              },
+            ) : double !== undefined ? double.replace(/\\([$`"\\])/g, '$1') : single ?? escaped ?? piece;
+            unquotedEscape ||= escaped !== undefined;
+            preserved += escaped === undefined ? decoded : '\\' + escaped;
+            return decoded;
+          },
+        );
+        // Keep original unquoted backslashes for paths: any colon/slash, or a non-verb with unquoted escapes.
+        const literal = /[:/]/.test(raw) || (unquotedEscape && !SHELL_WRITE_VERB.test(word)) ? preserved : word;
+        if (!/[<>]&?\s*$/.test(statement.slice(0, offset)) && !(/^\d+$/.test(raw) && /^\s*[<>]/.test(statement.slice(offset + raw.length)))) arguments_.push(literal);
+        return literal;
+      },
+    );
+    const text = convertToPathSeparators(literals.replace(/\\\.(?=[\\/])/g, '')).text.replace(/\/\.(?=\/)/g, '').replace(/([^/\s.])\.+(?=\/)/g, '$1');
+    for (const match of text.matchAll(/(?:^|[^0-9&>])(?:[0-9]?&?>{1,2}\|?|[0-9]?>&)\s*([^\s|;&<>]+)/g)) {
+      const relative = notebookRelative(match[1]!);
+      if (relative) targets.add(relative);
+    }
+    const args = arguments_;
+    if (!SHELL_WRITE_VERB.test(text)) continue;
+    let written = text;
+    let destination: string | undefined;
+    const operands: string[] = [];
+    let recognised = true;
+    if (/^(?:cp|install|copy|xcopy|Copy-Item)$/i.test(args[0] ?? '')) {
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i]!;
+        if (/^Copy-Item$/i.test(args[0]!)) {
+          if (/^-(?:Recurse|Force)$/i.test(arg)) continue;
+          if (/^-(?:Path|LiteralPath|Destination)$/i.test(arg)) {
+            const value = args[++i];
+            if (!value || value.startsWith('-')) { recognised = false; break; }
+            if (/^-Destination$/i.test(arg)) {
+              if (destination !== undefined) { recognised = false; break; }
+              destination = value;
+            } else operands.push(value);
+            continue;
+          }
+        } else if (/^(?:cp|install)$/i.test(args[0]!)) {
+          if (/^-[rRfpavni]+$/.test(arg) || /^--(?:recursive|force|preserve|verbose|no-clobber|archive)$/.test(arg)) continue;
+        } else if (/^\/[a-z][a-z0-9-]*(?::.*)?$/i.test(arg)) continue;
+        if (arg.startsWith('-')) { recognised = false; break; }
+        operands.push(arg);
+      }
+      if (recognised && (destination !== undefined ? operands.length === 1 : operands.length === 2)) written = destination ?? operands[1]!;
+      written = convertToPathSeparators(written.replace(/\\\.(?=[\\/])/g, '')).text.replace(/\/\.(?=\/)/g, '').replace(/([^/\s.])\.+(?=\/)/g, '$1');
+    }
+    for (const match of written.matchAll(/(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?[^\s"'|;&<>]*(?:notebook|internal)\/[^\s"'|;&<>]*/gi)) {
       const relative = notebookRelative(match[0]);
       if (relative) targets.add(relative);
     }
@@ -913,10 +958,10 @@ function shellNotebookWriteDenial(command: string, workspace: string, seat: stri
 }
 
 /** `Guard-ShellShelfRead.ps1`: a shell command, judged on its literal text. */
-function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => never): void {
+function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => never): string {
   const { workspace, stateDirectory, seat, call } = context;
-  const command = hookCommandText(field(call, 'tool_input'));
-  if (!command.trim()) return;
+  let command = hookCommandText(field(call, 'tool_input'));
+  if (!command.trim()) return '';
 
   // A POSIX command names another workspace by a `/`-rooted token, which a letter, digit or one of
   // `_.~$-` before it makes part of a word (`sed s/a/b/`, `$HOME/x`, `~/x`) rather than a path (S42).
@@ -925,7 +970,21 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
     const cross = crossWorkspaceDenial(rooted[0], workspace);
     if (cross) deny(`This command names '${rooted[0]}'. ${cross}`);
   }
-  if (!workspace) return;
+  if (!workspace) return '';
+
+  // Only a single leading, literal folder change can establish another base. Ambiguous commands keep the guard.
+  const statements = command.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\[\s\S]|[^;&|\r\n"'])+/g) ?? [];
+  const leading = /^\s*(?:cd|pushd|Set-Location)\s+(?:-LiteralPath\s+|-Path\s+)?("[^"$`]*"|'[^']*'|[^\s"'$`]+)\s*$/i.exec(statements[0] ?? '');
+  const destination = leading?.[1]?.replace(/^['"]|['"]$/g, '');
+  if (destination && isRootedForm(destination) && workspaceRelative(destination, workspace).kind === 'outside' &&
+      (command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, '').match(/&&|\|\||[;|&\r\n]/g) ?? []).every(separator => separator === '&&') &&
+      !statements.slice(1).some(statement => /(?:^|[\s"'])(?:cd|pushd|Set-Location)(?=[\s"']|$)/i.test(statement)) && !/\$\(|`|[<>]\(/.test(command)) {
+    // Keep rooted tokens visible; only relative Library-shaped words now belong to the outside folder.
+    command = command.replace(/"[^"\r\n]*"|'[^'\r\n]*'|[^\s"';&|<>]+/g, word => {
+      const bare = word.replace(/^['"]|['"]$/g, '');
+      return !isRootedForm(bare) && /^(?:\.\/)?(?:shelf|collection|notebook|internal)[\\/]/i.test(bare) ? 'outside-relative-path' : word;
+    });
+  }
 
   const notebookDenial = shellNotebookWriteDenial(command, workspace, seat, stateDirectory);
   if (notebookDenial) deny(notebookDenial);
@@ -943,8 +1002,7 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
   }
 
   const hits = shelfTokens(command);
-  if (hits.length === 0) return;
-  const roots = openShelfRoots(seatDeskDirectory(stateDirectory, seat));
+  const roots = hits.length ? openShelfRoots(seatDeskDirectory(stateDirectory, seat)) : [];
   for (const hit of hits) {
     if (isShelfBrowseSurface(hit.token)) continue;
     const target = shelfPatternTarget(hit.token, roots);
@@ -956,13 +1014,37 @@ function shellShelfReadGuard(context: GuardContext, deny: (reason: string) => ne
           `deskpost desk open book <slug> --location shelf. ${PATTERN_REMEDY}`,
       );
     }
-    const parts = splitBookRoot(target);
-    const kind = parts.shelf === 'archive' ? 'Archived Shelf Book' : 'Shelf Book';
-    deny(
-      `${kind} '${parts.slug}' is closed, and a shell command cannot read around that. This command names it as ${quoted}. ` +
-        `Open it with ${shelfOpenCommand(target)}, then read its pages with ${context.readerTool}. ${PATTERN_REMEDY}`,
-    );
+    const closed = closedBookDenial(target, roots, context.readerTool, workspace);
+    if (closed) deny(`${closed} A shell command cannot read around that. This command names it as ${quoted}. ${PATTERN_REMEDY}`);
   }
+
+  const readers = new Set<string>();
+  for (const statement of removeHeredocBodies(command).match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\[\s\S]|[^;&|\r\n"'])+/g) ?? []) {
+    const args = statement.match(/"[^"\r\n]*"|'[^'\r\n]*'|(?:<<<|<<-?|<>|<&|>>|>&|[<>])|[^\s"'<>]+/g) ?? [];
+    const verb = args.shift() ?? '';
+    if (!/^(?:cat|Get-Content|type|head|tail|less|more|sed)$/i.test(verb)) continue;
+    const operands: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (/^[<>]/.test(arg)) i++;
+      else if (!arg.startsWith('-')) operands.push(arg);
+    }
+    if (/^sed$/i.test(verb)) operands.shift(); // The first operand is the script or the value of -e/-f.
+    for (const file of operands) {
+      for (const {token} of collectionTokens(file)) {
+        const placed = collectionRootForPath(token);
+        if (placed.kind === 'root' && token.length > ('collection/' + placed.root).length && collectionRoots?.includes(placed.root))
+          readers.add(placed.desk === 'projects' ? projectReaderTool(context) : context.readerTool);
+      }
+      for (const {token} of shelfTokens(file)) {
+        const root = shelfRootForPath(token);
+        if (root && token.length > root.length && roots.includes(root)) readers.add(context.readerTool);
+      }
+    }
+  }
+  return readers.size ? JSON.stringify({hookSpecificOutput: {
+    hookEventName: 'PreToolUse', additionalContext: 'Use ' + [...readers].join(' or ') + ' to read the open Desk page.',
+  }}) : '';
 }
 
 // --- the Basic Memory guard (Guard-BasicMemoryRead.ps1) ---------------------------------------------
@@ -1336,7 +1418,7 @@ export function runGuard(action: string, options: GuardOptions, stdinText: strin
       if (!isReaderPrefix(prefix)) deny(`Virtual Desk failed closed: ${readerPrefixFault(prefix)}`);
       const context = guardContext(options, stdinText, deny);
       if (action === 'shelf-read') shelfReadGuard(context, deny);
-      else if (action === 'shell-shelf-read') shellShelfReadGuard(context, deny);
+      else if (action === 'shell-shelf-read') decision = shellShelfReadGuard(context, deny);
       else throw new Error(`library hook has no guard '${action}'. It has: ${HOOK_ACTIONS.join(', ')}.`);
     }
   } catch (error) {

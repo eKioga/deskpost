@@ -40,6 +40,210 @@
     "embedding-service": "An embedding endpoint, which the harness PROVIDES (S41, the reader's ruling): tools/AcceptanceEmbeddingStandIn.mjs, started for the row and shared by both arms, whose vectors are integer word counts so no parser can bend them. Never a reader's own inference server; every row's TEI_* variables are set by the harness. Needs node, and no network."
   },
   "deltas": {
+    "kernel-reader-explains-place-alias": {
+      "reason": "37792c28, c161-r3 row 7, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161-r3 row 7 (37792c28), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[0\\]\\.description$",
+        "phrases": [
+          {
+            "kernel": "place is where the Book is; location is the same argument. ",
+            "powershell": ""
+          }
+        ]
+      }
+    },
+    "kernel-reader-hash-only-type": {
+      "reason": "4f9cf068, c161 row 8, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 8 (4f9cf068), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[(1|4)\\]\\.inputSchema\\.properties\\.hash_only\\.type$",
+        "value_pattern": "^(<absent>|boolean)$"
+      }
+    },
+    "kernel-reader-hash-only-description": {
+      "reason": "4f9cf068, c161 row 8, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 8 (4f9cf068), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[(1|4)\\]\\.inputSchema\\.properties\\.hash_only\\.description$",
+        "value_pattern": "^(<absent>|Return only the page hash, line count and first heading\\.)$"
+      }
+    },
+    "kernel-reader-book-filter-type": {
+      "reason": "e196233b, c161 row 2, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 2 (e196233b), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.inputSchema\\.properties\\.books\\.type$",
+        "value_pattern": "^(<absent>|array)$"
+      }
+    },
+    "kernel-reader-book-filter-item-type": {
+      "reason": "e196233b, c161 row 2, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 2 (e196233b), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.inputSchema\\.properties\\.books\\.items\\.type$",
+        "value_pattern": "^(<absent>|string)$"
+      }
+    },
+    "kernel-reader-book-filter-description": {
+      "reason": "e196233b, c161 row 2, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 2 (e196233b), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.inputSchema\\.properties\\.books\\.description$",
+        "value_pattern": "^(<absent>|Search only these open Books, by slug; a slug not open is refused\\.)$"
+      }
+    },
+    "kernel-reader-project-place-value": {
+      "reason": "f6766768, c161 row 12, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 12 (f6766768), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.inputSchema\\.properties\\.place\\.enum\\[3\\]$",
+        "value_pattern": "^(<absent>|project)$"
+      }
+    },
+    "kernel-reader-project-place-description": {
+      "reason": "f6766768, c161 row 12, landed through pull request 54: pair only the observed reader tools/list field; the remaining schema and descriptions stay compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to c161 row 12 (f6766768), pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.tools\\[6\\]\\.inputSchema\\.properties\\.place\\.description$",
+        "phrases": [
+          {
+            "kernel": "Search open Books in shelf, collection or shared; project searches open Project Hubs.",
+            "powershell": "Search only the open Books in this place: shelf, collection or shared."
+          }
+        ]
+      }
+    },
+    "kernel-shell-denial-order-and-file-advice": {
+      "reason": "af9471a3 w22-r2 reuses the closed-Book denial before shell advice; af9471a3 and f9c06037 add file-tool and literal-option advice. Pair the reordered prefix and exact added advice together with s146 existing pattern-file pair; all remaining text stays compared. Source platform differences remain unapproved as before.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to af9471a3 w22-r2; f9c06037 w27-r2 row 3; pull requests 45, 56",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "guards.shell-read-of-a-closed-book-is-denied",
+        "guards.a-shell-glob-cannot-read-around-the-guard",
+        "guards.a-shell-denial-names-the-reader-codex-offers"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.permissionDecisionReason$",
+        "phrases": [
+          {
+            "kernel": "Shelf Book 'holding' is closed. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated-book-reader__read_open_book_page. A shell command cannot read around that. This command names it as 'shelf/holding/wiki/_index.md'. ",
+            "powershell": "Shelf Book 'holding' is closed, and a shell command cannot read around that. This command names it as 'shelf/holding/wiki/_index.md'. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated-book-reader__read_open_book_page. "
+          },
+          {
+            "kernel": "Shelf Book 'holding' is closed. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated-book-reader__read_open_book_page. A shell command cannot read around that. This command names it as 'shelf*/holding/wiki/_index.md'. ",
+            "powershell": "Shelf Book 'holding' is closed, and a shell command cannot read around that. This command names it as 'shelf*/holding/wiki/_index.md'. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated-book-reader__read_open_book_page. "
+          },
+          {
+            "kernel": "Shelf Book 'holding' is closed. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated_book_reader__read_open_book_page. A shell command cannot read around that. This command names it as 'shelf/holding/wiki/_index.md'. ",
+            "powershell": "Shelf Book 'holding' is closed, and a shell command cannot read around that. This command names it as 'shelf/holding/wiki/_index.md'. Open it with deskpost desk open book holding --location shelf, then read its pages with mcp__validated_book_reader__read_open_book_page. "
+          },
+          {
+            "kernel": " Text meant for a file is written with the file tool and passed by path, not given in a here-string or echo. For literal text, use the file tool and pass the file through the command’s --title-path, --content-path or --note-path option where available. A quoted argument still goes through this guard.",
+            "powershell": ""
+          },
+          {
+            "kernel": " To search another repository or a commit for such a text, put the pattern in a file and pass it with git grep -f <file> or rg -f <file>.",
+            "powershell": ""
+          }
+        ]
+      }
+    },
+    "kernel-shell-open-page-advice": {
+      "reason": "20711e09 w26 row 4 adds advisory context when allowing an open-page shell read; 9e7a6866 keeps operands after redirection. The hook still allows the read. Only this exact observed field is paired.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to 20711e09 w26 row 4; 9e7a6866 w27-r2 row 2; pull requests 56",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "guards.shell-read-of-an-open-book-is-allowed"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.additionalContext$",
+        "value_pattern": "^(<absent>|Use mcp__validated-book-reader__read_open_book_page to read the open Desk page\\.)$"
+      }
+    },
+    "kernel-shell-open-page-event": {
+      "reason": "20711e09 w26 row 4 adds advisory context when allowing an open-page shell read; 9e7a6866 keeps operands after redirection. The hook still allows the read. Only this exact observed field is paired.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to 20711e09 w26 row 4; 9e7a6866 w27-r2 row 2; pull requests 56",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "guards.shell-read-of-an-open-book-is-allowed"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.hookEventName$",
+        "value_pattern": "^(<absent>|PreToolUse)$"
+      }
+    },
+    "kernel-shell-open-page-stdout": {
+      "reason": "20711e09 w26 row 4 adds advisory context when allowing an open-page shell read; 9e7a6866 keeps operands after redirection. The hook still allows the read. Only this exact observed field is paired.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to 20711e09 w26 row 4; 9e7a6866 w27-r2 row 2; pull requests 56",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "guards.shell-read-of-an-open-book-is-allowed"
+      ],
+      "match": {
+        "field_pattern": "^stdout$",
+        "value_pattern": "^(<absent>|)$"
+      }
+    },
+    "kernel-desk-context-reader-arguments": {
+      "reason": "944d9ccc w21-r2 and 257e9444 w21-r3 name reader arguments and the Hub root in the Desk context. Pair only the exact capability phrases; every open item, seat and other sentence remains compared.",
+      "approved_by": "kickoffs/c165-r2 r2 row 4; traced to 944d9ccc w21-r2; 257e9444 w21-r3; pull requests 44",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "guards.desk-context-names-what-is-open-at-this-seat",
+        "guards.desk-context-labels-every-kind-of-open-book",
+        "guards.desk-context-names-the-reader-codex-offers"
+      ],
+      "match": {
+        "field_pattern": "^result\\.hookSpecificOutput\\.additionalContext$",
+        "phrases": [
+          {
+            "kernel": "read_open_book_page(slug, page) for open Books",
+            "powershell": "read_open_book_page for an open Book"
+          },
+          {
+            "kernel": "read_open_project_page(slug, page; root _project) for open Hubs",
+            "powershell": "read_open_project_page for an open Project Hub"
+          },
+          {
+            "kernel": "Books: curated (shelf), retired (collection, archived), gone (shelf, archived). Missing: basic-memory (collection): restore the Book directory, or close it with deskpost desk close book basic-memory.",
+            "powershell": "Books: curated (shelf), basic-memory (shared), retired (archived), gone (shelf, archived)."
+          }
+        ]
+      }
+    },
     "kernel-capture-tidy-due": {
       "reason": "00a2a337, s199 row 1: capture Books report capture_tidy_due. Pair only the observed new zero field against absence.",
       "approved_by": "kickoffs/c157-r5 row 1 (traced to kickoffs/s199 row 1 by 00a2a337)",
@@ -103,7 +307,7 @@
             "powershell": ""
           },
           {
-            "kernel": "\ndeskpost_version: 1.6.1",
+            "kernel": "\ndeskpost_version: 1.7.0",
             "powershell": ""
           }
         ]
@@ -654,9 +858,9 @@
       }
     },
     "kernel-shared-fulltext-description": {
-      "reason": "c118 row 3 (1.6.0, PLAN-many-libraries.md item 12): the kernel searches open shared Books through the connection under the same budgets as local pages. The PowerShell adapter retains its earlier local-only description. Only the exact search_open_books description is paired; the remaining tools/list fields are compared.",
-      "approved_by": "kickoffs/c118 r1, row 3, Eric Run c118",
-      "approved_on": "2026-11-06",
+      "reason": "c118 row 3 (1.6.0, PLAN-many-libraries.md item 12): the kernel searches open shared Books through the connection under the same budgets as local pages. The PowerShell adapter retains its earlier local-only description. Only the exact search_open_books description is paired; the remaining tools/list fields are compared. 1.7.0: 37792c28 c161-r3 row 7, pull request 54, adds the place-alias prefix; pair it with the existing exact shared-search description.",
+      "approved_by": "kickoffs/c118 r1, row 3, Eric Run c118; kickoffs/c165-r2 r2 row 4 (37792c28; pull request 54)",
+      "approved_on": "2026-11-18",
       "applies_to": [
         "reader.serve-lists-its-tools"
       ],
@@ -664,23 +868,40 @@
         "field_pattern": "^result\\.result\\.tools\\[6\\]\\.description$",
         "phrases": [
           {
-            "kernel": "Search the FULL TEXT of Shelf, Local collection and shared Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. Open shared Books are searched over the Basic Memory connection, within the same budgets as local pages. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.",
+            "kernel": "place is where the Book is; location is the same argument. Search the FULL TEXT of Shelf, Local collection and shared Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. Open shared Books are searched over the Basic Memory connection, within the same budgets as local pages. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page.",
             "powershell": "Search the FULL TEXT of Shelf Books that are OPEN on the Desk, returning matching lines with the exact page path and line number that feed read_open_book_page. Closed Books are never searched -- use discover_book_pages for those. An open SHARED Book is named in the answer as out of scope rather than searched, because its pages arrive one network read at a time. Every answer reports what it could not read, what it skipped, and any cap that bound it. A matched line says the term occurs on that page; it is not a reading of the page."
           }
         ]
       }
     },
     "kernel-advice-says-what-the-program-lacks": {
-      "reason": "S85 row 1 (b8d717d, 1.3.3, standing answer 5): where no shipped command exists, the kernel says what the program lacks (no command that builds shared-collection manifests; a topic overlap's resolution recorded by hand) where the PowerShell oracle names Update-SharedBookManifests.ps1 and Set-TopicOverlap. The oracle is not edited (ruling 5). Only those sentences are paired, verbatim; the rest of Discovery's answer and of the stub's next line is compared.",
-      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5)",
-      "approved_on": "2026-10-04",
-      "applies_to": ["discovery.finds-pages-in-closed-books", "discovery.never-returns-closed-book-content", "shelf.page-stub-marks-a-page-as-pending"],
+      "reason": "S85 row 1 (b8d717d, 1.3.3, standing answer 5): where no shipped command exists, the kernel says what the program lacks (no command that builds shared-collection manifests; a topic overlap's resolution recorded by hand) where the PowerShell oracle names Update-SharedBookManifests.ps1 and Set-TopicOverlap. The oracle is not edited (ruling 5). Only those sentences are paired, verbatim; the rest of Discovery's answer and of the stub's next line is compared. 1.7.0: b02880c2 c161 row 10, pull request 54, names the fixture capture roots not searched. Pair only that exact added line together with the existing advice pairs.",
+      "approved_by": "the S86 kickoff (kickoffs/s86, ruling 5); kickoffs/c165-r2 r2 row 4 (b02880c2; pull request 54)",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "discovery.finds-pages-in-closed-books",
+        "discovery.never-returns-closed-book-content",
+        "shelf.page-stub-marks-a-page-as-pending"
+      ],
       "match": {
         "field_pattern": "^result\\.(next|result\\.content\\[0\\]\\.text)$",
         "phrases": [
-          { "kernel": "is NOT covered by this answer -- this program has no command that builds shared-collection manifests.", "powershell": "is NOT covered by this answer -- run tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests." },
-          { "kernel": "covers the local Shelf only -- this program has no command that builds shared-collection manifests.", "powershell": "covers the local Shelf only -- run tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope." },
-          { "kernel": "If this page was part of a topic overlap, record its resolution by hand: this program has no writer for that record yet.", "powershell": "Record the resolution with Set-TopicOverlap (a helper in the Deskpost source checkout; this installed program does not ship it) if this page was part of a topic overlap." }
+          {
+            "kernel": "is NOT covered by this answer -- this program has no command that builds shared-collection manifests.",
+            "powershell": "is NOT covered by this answer -- run tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests."
+          },
+          {
+            "kernel": "covers the local Shelf only -- this program has no command that builds shared-collection manifests.",
+            "powershell": "covers the local Shelf only -- run tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope."
+          },
+          {
+            "kernel": "If this page was part of a topic overlap, record its resolution by hand: this program has no writer for that record yet.",
+            "powershell": "Record the resolution with Set-TopicOverlap (a helper in the Deskpost source checkout; this installed program does not ship it) if this page was part of a topic overlap."
+          },
+          {
+            "kernel": "\nCapture notes were not searched: shelf/holding, shelf/letters, shelf/reports. Open the Book and use search_open_books, or use deskpost triage inventory.",
+            "powershell": ""
+          }
         ]
       }
     },
@@ -748,11 +969,33 @@
       "match": { "field_pattern": "^result\\.title_source$", "phrases": [ { "kernel": "--title", "powershell": "-Title" } ] }
     },
     "kernel-discovery-says-a-phrase-was-matched-whole": {
-      "reason": "S92 row 0 (4b2bd45, 1.3.6, small fix 5): when a phrase of several words finds nothing, Discovery's answer adds one line saying the phrase was matched whole and suggesting its longest word, a line the PowerShell oracle does not have. The oracle is not edited. Only that line, with the newline before it, is paired against nothing, verbatim; the rest of the answer is compared. It repeats kernel-advice-says-what-the-program-lacks's two manifest sentence pairs, verbatim, because a field is approved by one delta at a time and this row's answer carries both differences.",
-      "approved_by": "the S93 kickoff (kickoffs/s93, ruling 10)",
-      "approved_on": "2026-10-05",
-      "applies_to": ["discovery.never-returns-closed-book-content"],
-      "match": { "field_pattern": "^result\\.result\\.content\\[0\\]\\.text$", "phrases": [ { "kernel": "\nThe phrase 'kept note' was matched whole, as written. Try one word, such as 'kept'.", "powershell": "" }, { "kernel": "is NOT covered by this answer -- this program has no command that builds shared-collection manifests.", "powershell": "is NOT covered by this answer -- run tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests." }, { "kernel": "covers the local Shelf only -- this program has no command that builds shared-collection manifests.", "powershell": "covers the local Shelf only -- run tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope." } ] }
+      "reason": "S92 row 0 (4b2bd45, 1.3.6, small fix 5): when a phrase of several words finds nothing, Discovery's answer adds one line saying the phrase was matched whole and suggesting its longest word, a line the PowerShell oracle does not have. The oracle is not edited. Only that line, with the newline before it, is paired against nothing, verbatim; the rest of the answer is compared. It repeats kernel-advice-says-what-the-program-lacks's two manifest sentence pairs, verbatim, because a field is approved by one delta at a time and this row's answer carries both differences. b02880c2, c161 row 10, pull request 54 adds the capture-note coverage sentence. Repeat that exact phrase pair here too because the comparator approves a whole field through one delta at a time; all three existing pairs and every other byte stay compared.",
+      "approved_by": "the S93 kickoff (kickoffs/s93, ruling 10); kickoffs/c165-r3 row 4, traced to b02880c2, c161 row 10, pull request 54",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "discovery.never-returns-closed-book-content"
+      ],
+      "match": {
+        "field_pattern": "^result\\.result\\.content\\[0\\]\\.text$",
+        "phrases": [
+          {
+            "kernel": "\nThe phrase 'kept note' was matched whole, as written. Try one word, such as 'kept'.",
+            "powershell": ""
+          },
+          {
+            "kernel": "is NOT covered by this answer -- this program has no command that builds shared-collection manifests.",
+            "powershell": "is NOT covered by this answer -- run tools/Update-SharedBookManifests.ps1 -IncludeArchive to generate its Discovery manifests."
+          },
+          {
+            "kernel": "covers the local Shelf only -- this program has no command that builds shared-collection manifests.",
+            "powershell": "covers the local Shelf only -- run tools/Update-SharedBookManifests.ps1 to bring the shared collection into scope."
+          },
+          {
+            "kernel": "\nCapture notes were not searched: shelf/holding, shelf/letters, shelf/reports. Open the Book and use search_open_books, or use deskpost triage inventory.",
+            "powershell": ""
+          }
+        ]
+      }
     },
     "kernel-triage-inventory-names-each-notes-seats": {
       "reason": "S94 row 4 (ad28a5c, 1.3.7): triage inventory's holding_notes entries carry from_seat and for_seat (null when the note names none), and the result says which list it gives, holding_notes_listed (all, or pending with --pending). The PowerShell oracle's inventory has none of the three. The oracle is not edited. Only those three keys, and only absent against null, a seat or the list's name, are paired; every other field of the inventory is compared.",
@@ -783,14 +1026,23 @@
       "match": { "field_pattern": "^result\\.result\\.content\\[1\\]\\.(type|text)$", "value_pattern": "^(<absent>|text|sha256: <sha256>)$" }
     },
     "kernel-page-readers-describe-sha256-and-section": {
-      "reason": "1.4.0 (S102 row 1, R1-R2): mcp serve's tools/list names the page readers' sha256 item and the optional section argument in one short sentence, kept short because tools/list is always-on context (kernel/test/context-budget.json). The PowerShell adapter's descriptions end before it. The oracle is not edited. The sentence is paired verbatim, then the descriptions compare equal.",
-      "approved_by": "the S102 kickoff (kickoffs/s102, ruling 7)",
-      "approved_on": "2026-10-07",
-      "applies_to": ["reader.serve-lists-its-tools"],
+      "reason": "1.4.0 (S102 row 1, R1-R2): mcp serve's tools/list names the page readers' sha256 item and the optional section argument in one short sentence, kept short because tools/list is always-on context (kernel/test/context-budget.json). The PowerShell adapter's descriptions end before it. The oracle is not edited. The sentence is paired verbatim, then the descriptions compare equal. 1.7.0: 3c0dc6a3 c161-r2 row 4 labels whole-page hashes; 37792c28 c161-r3 row 7 prefixes the Book reader place alias, both landed through pull request 54. Pair both exact additions together.",
+      "approved_by": "the S102 kickoff (kickoffs/s102, ruling 7); kickoffs/c165-r2 r2 row 4 (3c0dc6a3, 37792c28; pull request 54)",
+      "approved_on": "2026-11-18",
+      "applies_to": [
+        "reader.serve-lists-its-tools"
+      ],
       "match": {
         "field_pattern": "^result\\.result\\.tools\\[(1|4)\\]\\.description$",
         "phrases": [
-          { "kernel": " A second item gives its sha256; section reads one ## section.", "powershell": "" }
+          {
+            "kernel": " A second item gives its sha256; section reads one ## section and labels the hash of the whole page.",
+            "powershell": ""
+          },
+          {
+            "kernel": "place is where the Book is; location is the same argument. ",
+            "powershell": ""
+          }
         ]
       }
     },

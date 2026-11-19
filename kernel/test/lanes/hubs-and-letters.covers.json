@@ -83,11 +83,318 @@
     "1425": [
       "kernel/src/kickoffcheck.ts"
     ],
+    "1426": [
+      "kernel/src/kickoffcheck.ts"
+    ],
     "1427": [
       "kernel/src/hubnewpage.ts"
     ],
+    "1428": [
+      "kernel/src/capture.ts"
+    ],
     "1429": [
       "kernel/src/capture.ts"
+    ],
+    "1430": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1431": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1432": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1433": [
+      "kernel/src/kickoffcheck.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1434": [
+      "kernel/src/deskcontext.ts"
+    ],
+    "1435": [
+      "kernel/src/asks.ts"
+    ],
+    "1436": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1437": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1438": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1439": [
+      "kernel/src/kickoffcheck.ts",
+      "kernel/src/hubnewpage.ts",
+      "kernel/src/cli.ts"
+    ],
+    "1440": [
+      "kernel/src/postbox.ts"
+    ],
+    "1441": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1442": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1443": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1444": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1445": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1446": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1447": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1448": [
+      "kernel/src/lettergo.ts"
+    ],
+    "1449": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1450": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1451": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1452": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1453": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1454": [
+      "kernel/src/hubcopy.ts",
+      "kernel/src/hubtidy.ts"
+    ],
+    "1455": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1456": [
+      "kernel/src/train.ts"
+    ],
+    "1457": [
+      "kernel/src/train.ts"
+    ],
+    "1458": [
+      "kernel/src/train.ts"
+    ],
+    "1459": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1462": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1463": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1464": [
+      "kernel/src/asks.ts"
+    ],
+    "1467": [
+      "kernel/src/capture.ts"
+    ],
+    "1468": [
+      "kernel/src/capture.ts",
+      "kernel/src/hubedit.ts"
+    ],
+    "1469": [
+      "kernel/src/postbox.ts"
+    ],
+    "1470": [
+      "kernel/src/postbox.ts"
+    ],
+    "1471": [
+      "kernel/src/capture.ts"
+    ],
+    "1472": [
+      "kernel/src/triage.ts"
+    ],
+    "1473": [
+      "kernel/src/triageinventory.ts"
+    ],
+    "1474": [
+      "kernel/src/capture.ts"
+    ],
+    "1475": [
+      "kernel/src/capture.ts"
+    ],
+    "1476": [
+      "kernel/src/capture.ts"
+    ],
+    "1478": [
+      "kernel/src/verbs.ts"
+    ],
+    "1500": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1501": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1502": [
+      "kernel/src/kickoff.ts",
+      "kernel/src/hubedit.ts"
+    ],
+    "1503": [
+      "kernel/src/needsyou.ts"
+    ],
+    "1504": [
+      "kernel/src/kickoff.ts",
+      "kernel/src/notebooklinks.ts"
+    ],
+    "1505": [
+      "kernel/src/kickoffcheck.ts",
+      "kernel/src/kickoff.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1506": [
+      "kernel/src/kickoff.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1507": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1508": [],
+    "1509": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/kickoff.ts",
+      "kernel/src/kickoffcheck.ts",
+      "kernel/src/needsyou.ts"
+    ],
+    "1510": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/hubtidy.ts"
+    ],
+    "1511": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1512": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1513": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1514": [
+      "kernel/src/verbs.ts",
+      "kernel/src/hubedit.ts",
+      "kernel/src/hubtidy.ts"
+    ],
+    "1515": [
+      "kernel/src/hubstatus.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1516": [
+      "kernel/src/hubstatus.ts"
+    ],
+    "1517": [
+      "kernel/src/hubstatus.ts",
+      "kernel/src/train.ts"
+    ],
+    "1518": [
+      "kernel/src/hubstatus.ts"
+    ],
+    "1519": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1520": [
+      "kernel/src/reader.ts",
+      "kernel/src/hubstatus.ts"
+    ],
+    "1521": [
+      "kernel/src/reader.ts"
+    ],
+    "1522": [
+      "kernel/src/collection.ts"
+    ],
+    "1523": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1524": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1525": [
+      "kernel/src/hubtidy.ts"
+    ],
+    "1526": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1527": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1528": [
+      "kernel/src/kickoffcheck.ts"
+    ],
+    "1529": [
+      "kernel/src/needsyou.ts"
+    ],
+    "1530": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1531": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1532": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1533": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1534": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1535": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1536": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1537": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1538": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/kickoff.ts"
+    ],
+    "1539": [
+      "kernel/src/collection.ts"
+    ],
+    "1540": [
+      "kernel/src/hubedit.ts",
+      "kernel/src/hubstatus.ts",
+      "kernel/src/hubtidy.ts",
+      "kernel/src/kickoff.ts"
+    ],
+    "1541": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1542": [
+      "kernel/src/kickoff.ts"
+    ],
+    "1543": [
+      "kernel/src/collection.ts"
+    ],
+    "1544": [
+      "kernel/src/kickoff.ts",
+      "kernel/src/checkpoint.ts"
+    ],
+    "1545": [
+      "kernel/src/hubedit.ts"
+    ],
+    "1546": [
+      "kernel/src/hubtidy.ts"
     ]
   }
 }

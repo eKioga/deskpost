@@ -109,6 +109,9 @@ Each run:
    the maintainer can see exactly what was caught. That issue is private and may name anything.
 8. **Publishes a sanitised attestation**, and nothing else, to the public side.
 
+The GitHub release body should carry the matching version section from `docs/roadmap.md`.
+The job currently publishes a fixed message about the scanned tag and checksums.
+
 ## The attestation, and why the failure case says so little
 
 For a **passed** snapshot: the ref names, the object SHAs, the policy version, and `pass`. Ref names

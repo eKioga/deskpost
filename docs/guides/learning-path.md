@@ -137,6 +137,8 @@ Inbox.
 
 ## When you are ready to do real work
 
+Ask for your Project Hub's live status and check which records it actually read. Ask to close one completed item into history, then confirm the wording was preserved. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170) for this release's Hub changes and builder queues.
+
 - [Starting a New Project](starting-a-new-project.md): the Hub, the seat, and the first compile,
   in the order they have to happen.
 - [Library Workflow Guide](workflow-guide.md): the same behaviour drawn as pictures.

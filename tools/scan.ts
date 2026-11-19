@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { resolveWorkspace } from '../kernel/src/workspace.ts';
 import { repositoryNeutralEnv } from '../kernel/src/gitenv.ts';
+import { deploymentDenylist, identityHits, lineAt, occurrences } from '../kernel/src/identityterms.ts';
+
+export { deploymentDenylist, identityHits };
 
 export interface Hit { file?: string; source?: string; line: number; kind: string; match: string }
 export interface Scan { status: 'pass' | 'warn' | 'fail'; detail: string; hits: Hit[]; gitleaks?: { ran: boolean; clean: boolean; detail: string } }
@@ -45,36 +48,29 @@ function decode(bytes: Buffer): string {
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { return bytes.toString('latin1'); }
 }
-const lineAt = (text: string, at: number) => 1 + (text.slice(0, at).match(/\n/g) ?? []).length;
-function occurrences(text: string, term: string): number[] {
-  // Case folding per character preserves UTF-16 positions (a full Unicode lower-case can grow).
-  const fold = (s: string) => s.replace(/[\s\S]/g, ch => { const upper = ch.toUpperCase(); return upper.length === 1 ? upper : ch; });
-  const source = fold(text), needle = fold(term), found: number[] = [];
-  if (!needle) return found;
-  for (let start = 0; start <= source.length;) {
-    const at = source.indexOf(needle, start); if (at < 0) break;
-    found.push(at); start = at + 1;
-  }
-  return found;
-}
-export function identityHits(sources: { source: string; text: string }[], deny: string[], allow: string[]): Hit[] {
-  const hits: Hit[] = [];
-  for (const entry of sources) {
-    const spans = allow.filter(t => t.trim()).flatMap(term => occurrences(entry.text, term).map(start => ({ start, end: start + term.length })));
-    for (const term of deny.filter(t => t.trim())) for (const at of occurrences(entry.text, term)) {
-      if (!spans.some(span => span.start <= at && span.end >= at + term.length)) hits.push({ source: entry.source, line: lineAt(entry.text, at), kind: 'identity', match: term });
-    }
-  }
-  return hits;
-}
 function terms(file: string): string[] | null {
   if (!fs.existsSync(file)) return null;
   const values = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.split('#')[0]!.trim()).filter(Boolean);
   // The oracle's empty PowerShell array unrolls to null: keep its actual verdict.
   return values.length ? values : null;
 }
+/** A hook can keep the path across PATH filtering, but it must name a scanner file. */
+export function gitleaksCommand(): string {
+  const supplied = process.env.DESKPOST_GITLEAKS;
+  if (supplied) {
+    const name = path.basename(supplied);
+    if (name === 'gitleaks' || name === 'gitleaks.exe') {
+      const file = path.resolve(supplied);
+      try {
+        if (fs.statSync(file).isFile()) return file;
+      } catch { /* Refused below, with the supplied path. */ }
+    }
+    console.error(`ignored DESKPOST_GITLEAKS ${JSON.stringify(supplied)}: expected an existing file named gitleaks or gitleaks.exe`);
+  }
+  return 'gitleaks';
+}
 export function gitleaks(root: string): { ran: boolean; clean: boolean; detail: string } {
-  const scanner = process.env.DESKPOST_GITLEAKS && fs.existsSync(process.env.DESKPOST_GITLEAKS) && fs.statSync(process.env.DESKPOST_GITLEAKS).isFile() ? process.env.DESKPOST_GITLEAKS : 'gitleaks';
+  const scanner = gitleaksCommand();
   const ran = spawnSync(scanner, ['git', '--staged', '--no-banner', '--redact'], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 24 });
   if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { ran: false, clean: false, detail: 'gitleaks is not installed, so nothing scanned the staged blobs on this machine' };
   if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
@@ -88,9 +84,9 @@ export function secretsScan(root: string): Scan {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-secrets-'));
   try {
     const hits: Hit[] = [];
+    const scanner = gitleaksCommand();
     for (const [where, args] of [['files', ['detect', '--no-git', '--source', root]], ['staged blobs', ['git', '--staged']]] as const) {
       const report = path.join(reports, `${where.replace(' ', '-')}.json`);
-      const scanner = process.env.DESKPOST_GITLEAKS && fs.existsSync(process.env.DESKPOST_GITLEAKS) && fs.statSync(process.env.DESKPOST_GITLEAKS).isFile() ? process.env.DESKPOST_GITLEAKS : 'gitleaks';
       const ran = spawnSync(scanner, [...args, '--no-banner', '--redact', '--report-format', 'json', '--report-path', report], { cwd: root, env: scanGitEnv(root), windowsHide: true, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 24 });
       if (ran.error && 'code' in ran.error && ran.error.code === 'ENOENT') return { status: 'fail', hits: [], detail: `gitleaks is not installed, so nothing scanned ${root} for secrets. Install it; this scan never falls back to another.` };
       if (ran.error) throw Error(`gitleaks could not run: ${ran.error.message}`);
@@ -108,9 +104,10 @@ export function identityScan(root: string, messageFile = '', termRoot = path.joi
   const deny = terms(denyPath), allow = terms(allowPath) ?? [];
   const base = git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], true).length ? 'HEAD' : '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
   // A named list is read whole from the index (kickoffs/s180 row 2(b)): a file identical to HEAD is still scanned.
-  const files = (requested ?? decode(git(root, ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', base])).split('\0')).filter(file => file && product(file));
+  const staged = (requested ?? decode(git(root, ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', base])).split('\0')).filter(Boolean);
+  const files = staged.filter(product), omitted = staged.filter(file => !product(file));
   const sources = files.flatMap(source => { const bytes = git(root, ['cat-file', 'blob', `:${source}`]); return bytes.includes(0) ? [] : [{ source, text: decode(bytes) }]; });
-  const scope = `${sources.length} staged blob(s)${messageFile ? ' and the commit message' : ''}`;
+  const scope = `${sources.length} staged blob(s)${messageFile ? ' and the commit message' : ''}; ${omitted.length} staged file(s) left out as not product files${omitted.length ? ': ' + omitted.slice(0, 5).join(', ') + (omitted.length > 5 ? ', ...' : '') : ''}`;
   if (messageFile) {
     if (!fs.existsSync(messageFile)) return { status: 'fail', detail: `The commit message file ${messageFile} does not exist, so the message was never scanned.`, hits: [] };
     sources.push({ source: '<commit message>', text: decode(fs.readFileSync(messageFile)) });
@@ -118,10 +115,10 @@ export function identityScan(root: string, messageFile = '', termRoot = path.joi
   if (!deny) {
     if (process.env['LIBRARY_IDENTITY_SCAN']?.trim().toLowerCase() !== 'contributor') return { status: 'fail', hits: [], detail: `No identity denylist at ${denyPath}, so nothing scanned ${scope}. Create it -- one term per line, a '#' starts a comment -- carrying this machine's hostnames, addresses, share paths, usernames and private email, and put the approved attribution in ${allowPath}. On a machine that is not the maintainer's, set LIBRARY_IDENTITY_SCAN=contributor instead, which downgrades this to a warning and reaches for gitleaks.` };
     const leaks = gitleaks(root);
-    return { status: leaks.ran && !leaks.clean ? 'fail' : 'warn', hits: [], gitleaks: leaks, detail: leaks.ran && !leaks.clean ? `${leaks.detail}. Contributor mode has no denylist to fall back on, so this finding stands.` : `contributor mode, no denylist at ${denyPath}; ${leaks.detail}. ${scope} went unscanned against any maintainer list; the server-side gate is what covers this boundary.` };
+    return { status: leaks.ran && !leaks.clean ? 'fail' : 'warn', hits: [], gitleaks: leaks, detail: leaks.ran && !leaks.clean ? `${scope}; ${leaks.detail}. Contributor mode has no denylist to fall back on, so this finding stands.` : `contributor mode, no denylist at ${denyPath}; ${leaks.detail}. ${scope} went unscanned against any maintainer list; the server-side gate is what covers this boundary.` };
   }
   const hits = identityHits(sources, deny, allow);
-  return hits.length ? { status: 'fail', hits, detail: `${hits.length} identity hit(s) in the blobs this commit would publish: ${sorted(hits.map(hit => `${hit.source}:${hit.line} [${hit.match}]`)).join('; ')}. Remove the value or generalise it; if it is approved attribution, add it to ${allowPath}.` } : { status: 'pass', hits, detail: `${scope} clean against ${deny.length} denylisted term(s) and ${allow.length} approved attribution(s)` };
+  return hits.length ? { status: 'fail', hits, detail: `${scope}; ${hits.length} identity hit(s) in the blobs this commit would publish: ${sorted(hits.map(hit => `${hit.source}:${hit.line} [${hit.match}]`)).join('; ')}. Remove the value or generalise it; if it is approved attribution, add it to ${allowPath}.` } : { status: 'pass', hits, detail: `${scope} clean against ${deny.length} denylisted term(s) and ${allow.length} approved attribution(s)` };
 }
 const allowedHost = (host: string) => [/^localhost$/i, /^127\.0\.0\.1$/, /^\[::1\]$/, /\.invalid$/i, /\.example$/i, /\.example\.(com|net|org)$/i, /^192\.0\.2\.\d{1,3}$/, /^198\.51\.100\.\d{1,3}$/, /^203\.0\.113\.\d{1,3}$/].some(rule => rule.test(host));
 export function structuralHits(text: string, file: string): Hit[] {
@@ -157,14 +154,6 @@ export function productFiles(root: string): string[] {
   list('PublicTreeIncludeDirectories').forEach(walk);
   list('PublicTreeIncludeFiles').forEach(walk);
   return sorted([...tracked, ...exportable]).filter(product);
-}
-export function deploymentDenylist(root: string): string[] {
-  const values: string[] = [];
-  for (const name of ['.library-mcp-url', '.library-project', '.library-shared-root']) {
-    let value = ''; try { value = fs.readFileSync(path.join(root, '.claude', name), 'utf8').replace(/^\uFEFF/, '').trim(); } catch { continue; }
-    if (!value) continue;
-    values.push(value); const host = /^https?:\/\/([^/:\s]+)/.exec(value)?.[1]; if (host) values.push(host);
-  } return sorted(values);
 }
 export function deploymentScan(root: string, requested?: string[]): Scan {
   const resolved = resolveWorkspace({ startDirectory: process.cwd() });

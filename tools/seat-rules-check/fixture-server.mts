@@ -79,7 +79,7 @@ function callTool(name: string, args: Record<string, unknown>): Result {
   switch (name) {
     case 'capture_letter': {
       if (!letters) return { text: 'unknown tool: ' + name, outcome: 'refused', isError: true };
-      if (letters.expected_capture_for !== undefined && args['for'] !== letters.expected_capture_for) {
+      if (args['for'] !== undefined && letters.expected_capture_for !== undefined && args['for'] !== letters.expected_capture_for) {
         const refused: Result & { captured: boolean } = { text: 'refused: no seat ' + String(args['for']) + ' here', outcome: 'refused', isError: true, captured: false };
         return refused;
       }

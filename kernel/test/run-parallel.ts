@@ -334,9 +334,13 @@ export function sectionLimitWarning(result: Pick<Result, 'section' | 'verdict' |
     ? 'section ' + result.section + ' took ' + result.seconds.toFixed(1) + ' s of its ' + limit / 1000 + ' s limit' : '';
 }
 export function verdict(section: number | 'whole', status: number | null, output: string): Pick<Result, 'verdict' | 'checks' | 'detail'> {
-  const last = output.trim().split(/\r?\n/).at(-1) ?? '';
+  const lines = output.trim().split(/\r?\n/);
+  const last = lines.at(-1) ?? '';
   const firstError = output.split(/\r?\n/).find(line => /\b(?:[A-Za-z_$][\w$]*Error|Error|error)(?: \[[^\]\r\n]+\])?:/.test(line));
-  const pass = /^kernel self-test passed \((\d+) checks\)(?: after waiting \d+(?:\.\d+)?s for .+'s .+ gate)?\.$/.exec(last);
+  const nodeWarning = /^(?:\(node:\d+\) [A-Za-z]*Warning: .*|\(Use \x60node --trace-warnings \.\.\.\x60 .+\))$/;
+  let end = lines.length - 1;
+  while (end >= 0 && nodeWarning.test(lines[end]!)) end--;
+  const pass = /^kernel self-test passed \((\d+) checks\)(?: after waiting \d+(?:\.\d+)?s for .+'s .+ gate)?\.$/.exec(lines[end] ?? '');
   if (status === 0 && pass && Number(pass[1]) > 0) return { verdict: 'PASS', checks: Number(pass[1]), detail: '' };
   // A failing assertion can contain a multiline CLI response. Its canonical header carries the count;
   // the final physical line can be ordinary fixture text, never a zero-check inference.

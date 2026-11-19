@@ -66,7 +66,7 @@ export function computerUseGuard(stdinText: string, options: ComputerUseOptions)
     // Only an explicit off or unset immediately after its separator permits the occurrence.
     if (/computer-use\.json/i.test(command) || [...command.matchAll(/--computer-use/gi)].some(match =>
       !/^(?:[=:]|\s+)(?:off|unset)(?=[\s;&|)]|$)/.test(command.slice(match.index! + match[0].length))))
-      return denyDocument("Only Eric turns computer use on, in his own terminal: deskpost seat settings <seat> --computer-use on. A seat may turn it off (off or unset).");
+      return denyDocument("Only Eric turns computer use on, in his own terminal: deskpost seat settings <seat> --computer-use on. A seat may turn it off (off or unset). If this is only text bound for a file, write it with the file editor and pass the file by path.");
     if (stateDirectory && seat.seat && readComputerUseSetting(stateDirectory, seat.seat) === 'on') return '';
     if (/^mcp__computer-use__|^mcp__remote-devices__computer/.test(call.tool_name)) return denyDocument(reason);
     if (/(?:^|[^\w.-])orca(?:\.exe|\.cmd)?\s+(?:-\S+\s+)*computer\b/i.test(command) ||

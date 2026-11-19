@@ -192,7 +192,7 @@ export function fillText(
     '   - `waits for Eric: <what needs his yes>`: for a gated edit you could not make. Never write "updated" with a note that it still waits.',
     '   - A Hub that belongs to another seat is never written: answer `nothing new` and say where the work went instead.',
     seatHub
-      ? `3. **Your own Hub** (\`${seatHub}\`): update \`## Now\` and \`## Next\` so a fresh session can resume from the Hub alone.`
+      ? `3. **Your own Hub** (\`${seatHub}\`): close what is done (\`hub edit --mode close-item\`) and add pointers only to \`## Now\` and \`## Next\`, so a fresh session can resume from the Hub alone.`
       : '3. This seat\'s Hub is not open, so Now and Next cannot be updated. Say where the next session should resume from.',
     '4. **End with a fenced block**, one reports line, then one line per open Book and Hub:',
     '```closeout',
@@ -258,7 +258,7 @@ export function saveText(
         ]
       : []),
     ...(seatHub
-      ? [`Update this seat's Hub (${seatHub}) Now and Next so a fresh session could resume from it alone. If nothing changed since ${since}, skip it and answer "nothing new" with that reason.`]
+      ? [`In this seat's Hub (${seatHub}), close what is done (hub edit --mode close-item) and add pointers only to Now and Next, so a fresh session could resume from it alone. If nothing changed since ${since}, skip it and answer "nothing new" with that reason.`]
       : seat
         ? [`This seat's Hub (${seat}) is not open, so Now and Next cannot be saved.`]
         : []),

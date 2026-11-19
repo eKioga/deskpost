@@ -13,31 +13,33 @@ import { readSeatIdentityView, idsOf } from './seatincarnation.ts';
 
 export type SharedMaintainer = { library_id: string; card: string; any_seat: boolean; names: string[] };
 export const SHARED_FAILURE_CLASSES = ['listing failed', 'page would not read', '_book.md would not read', "the Book's lock was held", 'invalid upkeep note', 'server error'] as const;
-export function sharedFailureClass(message: string): string {
-  if (/invalid upkeep note/i.test(message)) return 'invalid upkeep note';
-  if (/_book\.md.*could not be read/i.test(message)) return '_book.md would not read';
-  if (/\block\b.*\bheld\b|\bholds the lock\b/i.test(message)) return "the Book's lock was held";
-  if (/listing|bm_list|list_directory|^(?:.*(?<!\.md) )?could not be read:/i.test(message)) return 'listing failed';
-  if (/not.found|could not be read|bm_read/i.test(message)) return 'page would not read';
-  return 'server error';
+export class SharedReadFailure extends Error {
+  readonly failureClass: typeof SHARED_FAILURE_CLASSES[number];
+  constructor(failureClass: typeof SHARED_FAILURE_CLASSES[number], message: string) {
+    super(message);
+    this.failureClass = failureClass;
+  }
+}
+export function sharedFailureClass(error: unknown): string {
+  return error instanceof SharedReadFailure ? error.failureClass : 'server error';
 }
 
 /** Upkeep notes carry display metadata only. Reject an incomplete block rather than imply no grant. */
 function upkeepGrants(text: string, slug: string, ownId: string, namesById: Map<string, string>): SharedMaintainer[] {
   const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\s*\r?\n/, '').trim();
   const blocks = body.split(/^## library /m);
-  if (blocks.shift()?.trim() !== `# Upkeep grants for ${slug}` || !blocks.length) throw new Error('Invalid upkeep note.');
+  if (blocks.shift()?.trim() !== `# Upkeep grants for ${slug}` || !blocks.length) throw new SharedReadFailure('invalid upkeep note', 'Invalid upkeep note.');
   const seen = new Set<string>();
   return blocks.map(block => {
     const match = /^([^\r\n]+)\r?\n- card:[ \t]*(\S[^\r\n]*?)\s*\r?\n- seat_ids:[ \t]*([^\r\n]*?)\s*\r?\n- any_seat:[ \t]*(true|false)\s*\r?\n- names:[ \t]*(\S[^\r\n]*?)\s*\r?\n- book_record:[ \t]*(\S+)\s*\r?\n- time:[ \t]*(\S+)\s*$/.exec(block);
-    if (!match) throw new Error('Invalid upkeep note.');
+    if (!match) throw new SharedReadFailure('invalid upkeep note', 'Invalid upkeep note.');
     const [, rawId, card, seats, any, names, record, time] = match;
     const id = rawId!.trim();
     const seatIds = seats!.trim() ? seats!.split(',').map(value => value.trim()) : [];
     const displayNames = names!.split(',').map(value => value.trim());
     if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) || seen.has(id) ||
       (any === 'true' ? seatIds.length !== 0 || names!.trim() !== 'any seat' : !seatIds.length || seatIds.some(value => !/^[0-9a-f]{32}$/.test(value))) ||
-      displayNames.some(value => !value) || !record || !/^\d{4}-\d\d-\d\dT.*Z$/.test(time!) || !Number.isFinite(Date.parse(time!))) throw new Error('Invalid upkeep note.');
+      displayNames.some(value => !value) || !record || !/^\d{4}-\d\d-\d\dT.*Z$/.test(time!) || !Number.isFinite(Date.parse(time!))) throw new SharedReadFailure('invalid upkeep note', 'Invalid upkeep note.');
     seen.add(id);
     return { library_id: id, card: card!.trim(), any_seat: any === 'true',
       names: any === 'true' ? ['any seat'] : id === ownId ? seatIds.map(value => namesById.get(value) ?? 'retired seat') : displayNames };
@@ -51,15 +53,25 @@ type Node = { type: string; file_path?: string; directory_path?: string; name?: 
 
 /** List one level and validate that every returned identifier stays directly inside the requested folder. */
 export async function sharedFolder(session: McpSession, project: string, folder: string): Promise<Node[]> {
-  const nodes = await listFolderNodes(session, project, folder, folder, `${folder} exceeds the listing cap.`) as Node[];
+  let nodes: Node[];
+  try { nodes = await listFolderNodes(session, project, folder, folder, `${folder} exceeds the listing cap.`) as Node[]; }
+  catch (error) {
+    if (error instanceof SharedWalkStopped) throw error;
+    throw new SharedReadFailure('listing failed', (error as Error).message);
+  }
   for (const node of nodes) {
     const identifier = node.type === 'directory' ? String(node.directory_path ?? '').replace(/^\//, '') : String(node.file_path ?? '');
     const relative = identifier.startsWith(`${folder}/`) ? identifier.slice(folder.length + 1) : '';
     if (!relative || relative === '.' || relative === '..' || /[\\/\x00-\x1f]/.test(relative)) {
-      throw new Error(`Listing '${folder}' returned an identifier outside that folder: '${identifier}'.`);
+      throw new SharedReadFailure('listing failed', `Listing '${folder}' returned an identifier outside that folder: '${identifier}'.`);
     }
   }
   return nodes;
+}
+
+export async function sharedPage(session: McpSession, project: { id: string; name: string }, file: string, permalink: string): Promise<string | null> {
+  try { return await readListedContent(session, project, file, permalink); }
+  catch (error) { throw new SharedReadFailure('page would not read', (error as Error).message); }
 }
 
 /** The same paged walk feeds manifests and full-text search; files retain their listed read identifiers. */
@@ -115,16 +127,16 @@ export async function rebuildSharedManifests(workspace: string): Promise<Record<
       const slug = String(note.file_path ?? '').slice('_deskpost/upkeep/'.length, -3);
       if (note.type === 'directory' || !String(note.file_path).endsWith('.md') || !active.some(node => node.type === 'directory' && String(node.directory_path).replace(/^\//, '') === `books/${slug}`)) continue;
       try {
-        const text = await readListedContent(session, project, String(note.file_path), String(note.permalink ?? ''));
-        if (text === null) throw new Error('The listed page could not be read (not found).');
+        const text = await sharedPage(session, project, String(note.file_path), String(note.permalink ?? ''));
+        if (text === null) throw new SharedReadFailure('page would not read', 'The listed page could not be read (not found).');
         grants.set(slug, { maintained_by: upkeepGrants(text, slug, ownId, namesById) });
       } catch (error) {
-        grants.set(slug, { maintained_unreadable: sharedFailureClass((error as Error).message) });
+        grants.set(slug, { maintained_unreadable: sharedFailureClass(error) });
         upkeepErrors.push({ book: `shared/${slug}`, reason: (error as Error).message });
       }
     }
   } catch (error) {
-    upkeepUnreadable = sharedFailureClass((error as Error).message);
+    upkeepUnreadable = sharedFailureClass(error);
     upkeepErrors.push({ reason: (error as Error).message });
   }
   for (const [folder, collection, nodes] of [['books', 'shared', active], ['archive', 'shared-archive', archive]] as const) {
@@ -137,15 +149,19 @@ export async function rebuildSharedManifests(workspace: string): Promise<Record<
       const root = `${collection}/${slug}`;
       let lock: ReturnType<typeof enterBookLock> | null = null;
       try {
-        lock = enterBookLock(workspace, root);
+        try { lock = enterBookLock(workspace, root); }
+        catch (error) {
+          const message = (error as Error).message;
+          throw new SharedReadFailure(/\block\b.*\bheld\b|\bholds the lock\b/i.test(message) ? "the Book's lock was held" : 'server error', message);
+        }
         const wiki = `${folder}/${slug}/wiki`;
         const pages: ManifestPage[] = [];
         const pagesWithheld: { page: string; reason: string }[] = [];
         for await (const node of sharedPages(session, project.id, wiki)) {
           const file = String(node.file_path);
           try {
-            const text = await readListedContent(session, project, file, String(node.permalink ?? ''));
-            if (text === null) throw new Error('The listed page could not be read (not found).');
+            const text = await sharedPage(session, project, file, String(node.permalink ?? ''));
+            if (text === null) throw new SharedReadFailure('page would not read', 'The listed page could not be read (not found).');
             pages.push({ path: file.slice(wiki.length + 1, -3), text, bytes: Buffer.from(text, 'utf8') });
           } catch (error) {
             const missing = { page: file, reason: (error as Error).message };
@@ -154,7 +170,7 @@ export async function rebuildSharedManifests(workspace: string): Promise<Record<
           }
         }
         const book = pages.find(page => page.path === '_book');
-        if (!book) throw new Error(`${wiki}/_book.md could not be read; Book stays in the roster, marked unavailable.`);
+        if (!book) throw new SharedReadFailure('_book.md would not read', `${wiki}/_book.md could not be read; Book stays in the roster, marked unavailable.`);
         const title = getMarkdownHeadings(book.text).find(heading => heading.level === 1)?.text ?? slug;
         const summary = /^## Purpose[ \t]*\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(book.text)?.[1]?.trim() ?? '';
         const isCapture = /^\s*-\s+\*\*Kind:\*\*\s+capture\s*$/m.test(book.text);
@@ -164,7 +180,7 @@ export async function rebuildSharedManifests(workspace: string): Promise<Record<
         books.push({ book_root: root, status: 'committed', pages: pages.length });
       } catch (error) {
         entry.unavailable = (error as Error).message;
-        entry.unavailable_class = sharedFailureClass(entry.unavailable);
+        entry.unavailable_class = sharedFailureClass(error);
         unavailable.push({ book: root, reason: entry.unavailable });
       }
       finally { exitBookLock(lock); }

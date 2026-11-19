@@ -1,6 +1,6 @@
 # Deskpost
 
-**Status: 1.6, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
+**Status: 1.7, for Windows and Linux.** See [Prerequisites](#prerequisites) before you install.
 
 Deskpost is a reading room for working with an AI assistant. You keep source material on one shelf
 and your own distilled understanding on another, and nothing crosses between them by accident. The
@@ -204,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.6.1**, "One collection for the household": Libraries read and write shared Books on a Basic Memory server, with previewed, recorded changes, upkeep grants and a way back, with fixes for moving Books into the shared collection. Basic Memory and the vault stay optional. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.7.0**, "Hubs that show their state": see a Project Hub's live status, close completed items into history, queue builder Kickoffs and return to a briefing with the current state. Reader text keeps the spelling you typed. `library move` is turned off until a later release. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: builders working from Webtop**, reading and writing the shared collection, alongside the remaining work for builders to share the gate.

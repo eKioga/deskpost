@@ -121,6 +121,7 @@ function assertProjectTargetSafe(target: string, slug: string): void {
   const prefix = `projects/${slug}/`;
   if (!target.startsWith(prefix)) refuse(`Destination '${target}' is not under ${prefix}; a Project copy writes nowhere else.`);
   const relative = target.substring(prefix.length);
+  if (/^kickoffs\//i.test(relative)) refuse('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.');
   if (isBlank(relative)) refuse(`Destination '${target}' names no page below ${prefix}.`);
   if (/(?:^|\/)\.\.?(?:\/|$)/.test(relative)) refuse(`Destination '${target}' walks out of ${prefix} through a relative segment.`);
   if (!relative.includes('/') && RESERVED_ROOT_PAGES.includes(path.posix.parse(relative).name.toLowerCase())) {
@@ -153,6 +154,10 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   const nextActions = repeated(argv, 'next-action');
   const includePages = repeated(argv, 'include-page');
   const atProjectRoot = parsed.flags.has('at-project-root');
+  const destinationDirectory = (parsed.options.get('destination-directory') ?? '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (/^kickoffs(?:\/|$)/i.test(destinationDirectory)) {
+    refuse('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.');
+  }
 
   const marker = readMarker(workspace);
   if (marker !== null && String(marker['backend'] ?? '') === 'local') {
@@ -172,7 +177,7 @@ export async function hubCopyPages(argv: string[], workspace: string, hubPlanAct
   let destination = '';
   if (parsed.options.has('destination-directory')) {
     if (atProjectRoot) refuse('DestinationDirectory and AtProjectRoot both name the destination; pass one, not both.');
-    destination = parsed.options.get('destination-directory')!.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    destination = destinationDirectory;
     if (isBlank(destination)) refuse('DestinationDirectory must name at least one directory below projects/<slug>/.');
     for (const segment of destination.split('/')) {
       if (!SLUG.test(segment)) refuse(`DestinationDirectory segment '${segment}' must use lowercase letters, digits, and single hyphens.`);

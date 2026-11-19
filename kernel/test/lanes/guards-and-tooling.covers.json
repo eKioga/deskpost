@@ -8,7 +8,10 @@
     "1803": [],
     "1804": [],
     "1805": [],
-    "1806": ["kernel/src/hubnewpage.ts", "kernel/src/kickoffcheck.ts"],
+    "1806": [
+      "kernel/src/hubnewpage.ts",
+      "kernel/src/kickoffcheck.ts"
+    ],
     "1807": [],
     "1808": [],
     "1809": [],
@@ -35,6 +38,56 @@
     "1835": [],
     "1836": [],
     "1837": [],
-    "1838": []
+    "1838": [],
+    "1839": [
+      "kernel/src/guards.ts"
+    ],
+    "1840": [
+      "kernel/src/guards.ts"
+    ],
+    "1841": [
+      "kernel/src/guards.ts"
+    ],
+    "1842": [
+      "kernel/src/guards.ts",
+      "kernel/src/computeruse.ts"
+    ],
+    "1843": [
+      "kernel/src/guards.ts"
+    ],
+    "1844": [
+      "kernel/src/guards.ts"
+    ],
+    "1845": [],
+    "1846": [],
+    "1847": [],
+    "1848": [],
+    "1849": [],
+    "1850": [],
+    "1851": [],
+    "1852": [],
+    "1853": [],
+    "1854": [],
+    "1855": ["kernel/src/guards.ts"],
+    "1856": [],
+    "1857": [],
+    "1858": [],
+    "1859": ["kernel/src/locks.ts"],
+    "1860": [],
+    "1861": [],
+    "1862": [],
+    "1863": [],
+    "1864": [],
+    "1865": [],
+    "1866": [],
+    "1867": [],
+    "1868": ["kernel/src/identityterms.ts"],
+    "1869": [],
+    "1871": ["kernel/src/remedy.ts"],
+    "1872": [],
+    "1873": [],
+    "1874": [],
+    "1892": [],
+    "1893": []
   }
 }

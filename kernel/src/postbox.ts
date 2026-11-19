@@ -752,13 +752,32 @@ function updateState(workspace: string, changes: Record<string, unknown>): void 
   mutateState(workspace,state=>({...state,...changes}));
 }
 
+const LATE_DELIVERY_LIMIT = 20;
+
+function retainedLateDeliveries(state: Record<string, unknown>): Record<string, unknown>[] {
+  const rows = (value: unknown): Record<string, unknown>[] => Array.isArray(value)
+    ? value.filter(row => row && typeof row === 'object' && typeof row.delivery_id === 'string') : [];
+  if (Array.isArray(state['late_deliveries'])) return rows(state['late_deliveries']).slice(0, LATE_DELIVERY_LIMIT);
+  const history: unknown[] = Array.isArray(state['check_history']) ? state['check_history'] : [];
+  return history.flatMap(check => rows(field(check, 'late_deliveries'))).slice(0, LATE_DELIVERY_LIMIT);
+}
+
 /** Record a check together with its cache changes under the same state lock. Sends never call this. */
 function recordCheck(workspace: string, changes: Record<string, unknown>, filed: number, alreadyFiled: number, error: string | null, lateDeliveries: Record<string, unknown>[] = []): void {
   const at = String(changes['last_check'] ?? utcSeconds());
-  mutateState(workspace, state => ({ ...state, ...changes, check_history: [
+  mutateState(workspace, state => {
+    const combined = [...lateDeliveries, ...retainedLateDeliveries(state)];
+    const unique = new Set<unknown>();
+    const retained = combined.filter(row => {
+      if (unique.has(row['delivery_id'])) return false;
+      unique.add(row['delivery_id']);
+      return true;
+    });
+    return { ...state, ...changes, late_deliveries: retained.slice(0, LATE_DELIVERY_LIMIT), check_history: [
     { at, filed, already_filed: alreadyFiled, error, ...(lateDeliveries.length ? { late_deliveries: lateDeliveries.slice(0, 20) } : {}) },
     ...(Array.isArray(state['check_history']) ? state['check_history'] : []),
-  ].slice(0, 20) }));
+    ].slice(0, 20) };
+  });
 }
 
 /** Never write back a row list read before this lock: concurrent checks must keep each other's rows. */
@@ -1729,8 +1748,15 @@ function status(workspace: string): Record<string, PsJsonValue> {
     return { schema: 1, operation: 'Postbox status', workspace, set_up: false, note: 'This Library has no Postbox yet: deskpost postbox setup --url <mcp-url> --preflight.' };
   }
   const outbox = readOutbox(workspace);
+  const pin = state['reports_triager'] as Record<string, PsJsonValue> | null;
+  const card = (state['entries_seen'] as { library_id: string; library_card: string }[] | undefined)
+    ?.find(entry => entry.library_id === pin?.['library_id'])?.library_card
+    ?? (pin?.['library_id'] === state['library_id'] ? String(state['library_card'] ?? '') || null : null);
   return {
-    schema: 1, operation: 'Postbox status', workspace, set_up: true, reports_triager: null, reports_triager_conflict: null, ...(state as Record<string, PsJsonValue>),
+    schema: 1, operation: 'Postbox status', workspace, set_up: true, reports_triager_conflict: null, ...(state as Record<string, PsJsonValue>),
+    reports_triager: pin ? { ...pin, library_card: card } : null,
+    reports_triager_card: card,
+    late_deliveries: retainedLateDeliveries(state) as PsJsonValue,
     outbox_unsent: outbox.filter(entry => entry.state === 'unsent').length,
     outbox_held: outbox.filter(entry => entry.state === 'unsent' && entry.held).length,
     setup_utc: (state['setup_utc'] ?? null) as PsJsonValue, check_history: (Array.isArray(state['check_history']) ? state['check_history'] : []) as PsJsonValue,

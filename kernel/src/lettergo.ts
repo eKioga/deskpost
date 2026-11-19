@@ -55,7 +55,9 @@ export function checkLetterGo(stateDirectory: string, seat: string, source: stri
     const haystack = normalise(typedText), needle = normalise(words);
     const match = [...haystack.matchAll(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gu'))].some(hit => {
       const start = hit.index!, end = start + needle.length;
-      return (start === 0 || !/[\p{L}\p{N}_]/u.test(haystack[start - 1]!)) && (end === haystack.length || !/[\p{L}\p{N}_]/u.test(haystack[end]!));
+      const before = [...haystack.slice(Math.max(0, start - 2), start)].at(-1) ?? '';
+      const after = String.fromCodePoint(haystack.codePointAt(end) ?? 0);
+      return !/[\p{L}\p{N}_]/u.test(before) && !/[\p{L}\p{N}_]/u.test(after);
     });
     if (time <= now.getTime() && time >= now.getTime() - GO_MAX_AGE_HOURS * 3600000 && match) newest = Math.max(newest, time);
   }

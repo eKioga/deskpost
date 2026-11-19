@@ -144,27 +144,51 @@ function installedHelper(helper: string, rest: string): string {
   return `${helper}${rest}${NOT_SHIPPED}`;
 }
 
+/** Mark reader words until the plain-text output applies its host wording. */
+export function readerText(value: string): string {
+  return '\uE000' + value.replace(/[\uE000\uE001]/g, '') + '\uE001';
+}
+
 /**
  * One sentence as this host should say it. Pure, and the identity for the oracle's own host. `_root` is kept for the
  * callers that pass the program root: since S83 an unported helper is named without a path, so it is not read.
  */
 export function hostRemedies(text: string, flavor: RemedyHost = HOST, _root: string | null = null): string {
-  if (flavor === 'win32') return text;
-  let out = text;
-  if (out.includes('.ps1')) {
-    out = out.replace(new RegExp(String.raw`tools/([A-Za-z-]+)\.ps1(${PARAMETERS})`, 'g'), (whole: string, helper: string, rest: string) => {
-      const rewrite = REWRITES.find((entry) => entry.helper === helper);
-      const replaced = rewrite ? rewrite.to(rest) : null;
-      if (replaced !== null) return replaced;
-      return flavor === 'win32-compiled' ? installedHelper(helper, rest) : whole + POWERSHELL_ONLY;
-    });
+  const rewrite = (plain: string): string => {
+    const helpers = plain.replace(new RegExp(String.raw`tools/([A-Za-z-]+)\.ps1(${PARAMETERS})`, 'g'),
+      (whole: string, helper: string, rest: string) => {
+        const entry = REWRITES.find((item) => item.helper === helper);
+        const replaced = entry ? entry.to(rest) : null;
+        if (replaced !== null) return replaced;
+        return flavor === 'win32-compiled' ? installedHelper(helper, rest) : whole + POWERSHELL_ONLY;
+      });
+    return helpers.replace(/\bpass -WorkspacePath\b/g, 'pass --workspace').replace(/\bpass -Seat\b/g, 'pass --seat')
+      .replace(LIBRARY_COMMAND, `$1${COMMAND_NAME}`);
+  };
+  const rewriteUnmarked = (plain: string): string => {
+    if (flavor === 'win32') return plain;
+    const jsonContent = /(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[\da-fA-F]{4}))*/y;
+    let out = '', end = 0;
+    for (let start = plain.indexOf('"'); start !== -1; start = plain.indexOf('"', start + 1)) {
+      jsonContent.lastIndex = start + 1;
+      jsonContent.exec(plain);
+      const close = jsonContent.lastIndex;
+      if (plain[close] !== '"') continue;
+      // An empty prior value in a quoted transition has its own opener, even after a stray quote.
+      if (close > start + 1 && plain.startsWith('"" -> "', close)) continue;
+      out += rewrite(plain.slice(end, start)) + plain.slice(start, close + 1);
+      end = close + 1;
+      start = close;
+    }
+    return out + rewrite(plain.slice(end));
+  };
+  let out = '', end = 0;
+  for (const mark of text.matchAll(/\uE000([^\uE001]*)(?:\uE001|$)|\uE001/g)) {
+    out += rewriteUnmarked(text.slice(end, mark.index));
+    if (mark[1] !== undefined) out += mark[1].replace(/\uE000/g, '');
+    end = mark.index + mark[0].length;
   }
-  // The resolvers' own refusals name the PowerShell parameters; the kernel's are `--workspace` and `--seat`.
-  out = out.replace(/\bpass -WorkspacePath\b/g, 'pass --workspace').replace(/\bpass -Seat\b/g, 'pass --seat');
-  // THE COMMAND A READER TYPES IS `deskpost` (ADR-0055). The sentences, and the rewrites above, say `library <verb>`,
-  // the oracle's word and a quiet alias through 1.x; where a remedy leaves an installed kernel it says the product's
-  // name. Only a verb this kernel has is renamed, so a path (`bin/library`) or prose is never touched.
-  return out.replace(LIBRARY_COMMAND, `$1${COMMAND_NAME}`);
+  return out + rewriteUnmarked(text.slice(end));
 }
 
 /** `library` as a command: not inside a path or a word, and followed by one of the kernel's verbs. */

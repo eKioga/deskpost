@@ -42,7 +42,7 @@ import { isLocalBackend } from './basicmemory.ts';
 import { deskEntriesForSeat, deskFilePath, resolveSeatName } from './seatdesk.ts';
 import { notebookScope } from './notebooklayout.ts';
 import { triageInventory } from './triageinventory.ts';
-import { triageActions, triageBatch } from './triagebatch.ts';
+import { batchNeedsYes, triageActions, triageBatch } from './triagebatch.ts';
 import { convertToBookPagePath } from './pagepath.ts';
 import { localDate } from './localdate.ts';
 
@@ -938,7 +938,7 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
           capture_date: captureDate,
           action_count: resolved.length,
           actions: resolved as unknown as PsJsonValue,
-          confirmation_required: false,
+          confirmation_required: batchNeedsYes(requested),
           shared_library_write: false,
           scope:
             'Every action was resolved against the material on disk and checked for reachability, collisions and ' +

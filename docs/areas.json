@@ -21,6 +21,7 @@
   },
   "areas": {
     "seats": [
+      "kernel/src/librarymove.ts",
       "kernel/src/conversation.ts",
       "kernel/src/processverb.ts",
       "kernel/src/procstart.ts",
@@ -224,6 +225,7 @@
       "kernel/src/deskcontext.ts",
       "kernel/src/hubcopy.ts",
       "kernel/src/hubedit.ts",
+      "kernel/src/hubstatus.ts",
       "kernel/src/hubhistory.ts",
       "kernel/src/hubnewpage.ts",
       "kernel/src/hubpages.ts",
@@ -334,6 +336,7 @@
       "tools/Test-LibraryHooks.ps1"
     ],
     "tooling": [
+      "kernel/src/identityterms.ts",
       "kernel/src/releaseaudit.ts",
       "kernel/src/releasefiles.ts",
       "kernel/test/gate-env.ts",
@@ -372,14 +375,13 @@
       "tools/_helpers.json",
       "tools/acceptance-matrix.json",
       "tools/acceptance-verdicts.json",
-      "tools/apply-handback.ts",
       "tools/areas.mts",
       "tools/check-map.json",
       "tools/ci-manifest.mts",
       "tools/ci-reap.py",
       "tools/ci/Dockerfile",
+      "tools/commit-subject.mts",
       "tools/docs-gate.ts",
-      "tools/export-base.ts",
       "tools/gate-ledger.mts",
       "tools/gate.ts",
       "tools/kickoff-check.mts",

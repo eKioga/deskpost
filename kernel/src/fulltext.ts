@@ -162,6 +162,8 @@ export async function findOpenBookLines(options: {
   deskStateDirectory: string;
   /** Only the open Books in this place (PLAN-basic-memory.md step 1, Fable #5). Absent, every open Book. */
   place?: BookPlace | null;
+  /** Only these open Books, by slug (kickoffs/s211-r2 spare S1). Absent, every open Book. */
+  books?: string[] | null;
   /** Internal callers may tighten the production scan limits, never widen them. */
   limits?: { wallClockSeconds?: number; maxFilesScanned?: number };
 }): Promise<FullTextResult> {
@@ -183,7 +185,14 @@ export async function findOpenBookLines(options: {
   const parsedRoots = openBookRoots(options.deskStateDirectory)
     .map((entry) => splitBookRoot(entry))
     .filter((entry): entry is ParsedRoot => entry !== null)
-    .filter((entry) => !place || placeOfRoot(entry, localBackend) === place);
+    .filter((entry) => !place || placeOfRoot(entry, localBackend) === place)
+    .filter((entry) => !options.books || options.books.includes(entry.slug));
+  // ONLY THE NAMED OPEN BOOKS (kickoffs/s211-r2 spare S1): a slug not open on this Desk is refused before any read.
+  if (options.books) {
+    const open = [...new Set(openBookRoots(options.deskStateDirectory).map((entry) => splitBookRoot(entry)?.slug).filter((slug): slug is string => !!slug))].sort();
+    const closed = options.books.filter((slug) => !open.includes(slug));
+    if (closed.length) throw new Error(`search_open_books searches open Books only, and ${closed.map((slug) => `'${slug}'`).join(', ')} is not open on this Desk. Open: ${open.length ? open.join(', ') : 'none'}. Nothing was searched.`);
+  }
   const shelfBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'shelf').sort(byRoot);
   const collectionBooksOpen = parsedRoots.filter((entry) => placeOfRoot(entry, localBackend) === 'collection').sort(byRoot);
   const sharedBooksOpen = parsedRoots.filter(entry => placeOfRoot(entry, localBackend) === 'shared').sort(byRoot);
@@ -225,7 +234,10 @@ export async function findOpenBookLines(options: {
     return contributed;
   };
 
+  const partlySearched: Record<string, unknown>[] = [];
+  const notReachedLocal: Record<string, unknown>[] = [];
   for (const openBook of [...shelfBooksOpen, ...collectionBooksOpen]) {
+    if (testSearchBudgetSpent(budget)) { notReachedLocal.push({ book: openBook.slug, book_root: openBook.root }); continue; }
     const slug = openBook.slug;
     const isArchived = openBook.shelf === 'archive';
     order += 1;
@@ -280,12 +292,12 @@ export async function findOpenBookLines(options: {
     }
 
     const kind = book.isCapture ? 'capture' : 'curated';
-    searched.push(openBook.root);
     const wikiRoot = path.resolve(book.wikiPath);
     let contributed = false;
+    let stopped = false;
 
     for (const file of bookPageFiles(book.wikiPath)) {
-      if (testSearchBudgetSpent(budget)) break;
+      if (testSearchBudgetSpent(budget)) { stopped = true; break; }
 
       // Containment, applied to every page BEFORE it is opened: a junction inside a Book's wiki
       // would otherwise let this read another Book, because every file below it still reports a
@@ -318,10 +330,11 @@ export async function findOpenBookLines(options: {
       contributed = scanPage(openBook, book.title, kind, page, text) || contributed;
     }
 
+    if (stopped || budget.collectedMatchesHit || budget.wallClockHit || budget.filesScannedHit) partlySearched.push({ book: openBook.slug, book_root: openBook.root });
+    else searched.push(openBook.root);
     if (contributed && kind === 'capture') captureBooks.push(openBook.root);
   }
 
-  const partlySearched: Record<string, unknown>[] = [];
   const reachedShared = new Set<string>();
   for (const openBook of sharedBooksOpen) {
     if (testSearchBudgetSpent(budget)) break;
@@ -429,7 +442,7 @@ export async function findOpenBookLines(options: {
     books_searched: searched.length,
     books_unavailable: unavailable.filter(entry => endRoots.includes(String(entry['book_root']))),
     books_partly_searched: partlySearched.filter(entry => endRoots.includes(String(entry['book_root']))),
-    books_not_reached: sharedBooksOpen.filter(book => !reachedShared.has(book.root) && endRoots.includes(book.root)).map(book => ({ book: book.slug, book_root: book.root })),
+    books_not_reached: [...notReachedLocal.filter(book => endRoots.includes(String(book['book_root']))), ...sharedBooksOpen.filter(book => !reachedShared.has(book.root) && endRoots.includes(book.root)).map(book => ({ book: book.slug, book_root: book.root }))],
     books_out_of_scope: [],
     books_closed_during_query: closedDuringQuery,
     capture_books: captureBooks,

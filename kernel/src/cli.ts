@@ -29,9 +29,9 @@ import { runCheckpointVerb } from './checkpointverb.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
 import { captureVerb, lettersCloseVerb, lettersListVerb, reportsListVerb, reportsVerb, runBookVerb } from './capture.ts';
-import { kickoffReceive, kickoffSend } from './kickoff.ts';
+import { kickoffNext, kickoffReceive, kickoffSend, seatHubNext } from './kickoff.ts';
 import { judgeKickoff } from './hubnewpage.ts';
-import { verdictText } from './kickoffcheck.ts';
+import { openVerdict, verdictText } from './kickoffcheck.ts';
 import { reportsTriagerVerb, runPostboxVerb } from './postbox.ts';
 import { auditVerb } from './audit.ts';
 import { runRawSearch } from './rawsearch.ts';
@@ -57,7 +57,7 @@ import { checkArguments, parseArguments, quoteWarnings } from './argv.ts';
 import { takeContentPathNote } from './contentpath.ts';
 import { programRoot, releaseTuple } from './programroot.ts';
 import { argumentTable, commandAction, globalTable, notPortedRefusal, usageText, verbInventory, verbUsageText, VERBS } from './verbs.ts';
-import { hostRemedies, hostRemedyFields, REMEDY_HOST } from './remedy.ts';
+import { hostRemedies, hostRemedyFields, readerText, REMEDY_HOST } from './remedy.ts';
 import { runBasicMemoryVerb } from './bmconnection.ts';
 import { BASIC_MEMORY_ACTIONS } from './bmactions.ts';
 import { doctorText, initText } from './human.ts';
@@ -451,6 +451,17 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         } catch (error) { refuse((error as Error).message); }
       }
+      // A HUB'S LIVE STATE, READ NOW (kickoffs/s213 row 17; PLAN-hub-redesign.md section 2): read only.
+      if (verb === 'hub' && action === 'status') {
+        const { hubStatus, hubStatusText } = await import('./hubstatus.ts');
+        const slug = (parsed.positional[0] ?? '').trim().replace(/^projects\//, '');
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) refuse('hub status needs one Hub slug, such as deskpost-dev.');
+        try {
+          const status = hubStatus(workspace, slug, parsed.options.get('seat'));
+          emit(status as unknown as PsJsonValue, parsed.flags.has('json'), hubStatusText(status));
+          return 0;
+        } catch (error) { refuse((error as Error).message); }
+      }
       const result =
         verb === 'hub' ? await runHubVerb(rest, workspace) : verb === 'shared' ? await runSharedVerb(rest, workspace) : await runPublishVerb(rest, workspace);
       if (result.refusal !== null) {
@@ -503,7 +514,7 @@ async function main(argv: string[]): Promise<number> {
 
     // A KICKOFF BETWEEN OFFICES (kickoffs/s159 rows 2 and 3): `send` and `receive`, read from the words after it.
     case 'kickoff': {
-      if (action !== 'check' && action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: check, receive, send.`);
+      if (action !== 'check' && action !== 'next' && action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: check, next, receive, send.`);
       const parsed = parseArguments(tail, table);
       let workspace: string;
       try {
@@ -514,6 +525,25 @@ async function main(argv: string[]): Promise<number> {
       // THE CHECK hub edit RUNS AT POSTING, ON A FILE (kickoffs/s174 row 2): the tool's lines and exits, and it writes nothing.
       if (action === 'check') {
         const file = parsed.positional[0] ?? '';
+        // THE FIRST POINTER IS THE ONE TO OPEN (kickoffs/s213 row 7; PLAN-hub-redesign.md A1-04): this seat's Hub queue,
+        // read; exit 0 for the first pending Run pointer, 1 naming the first otherwise.
+        const openId = parsed.options.get('open');
+        if (openId !== undefined) {
+          if (file || !openId.trim()) {
+            process.stderr.write(`usage: ${VERBS.kickoff!.usage.split('; ')[1]}\n`);
+            return 2;
+          }
+          let verdict: ReturnType<typeof openVerdict> & { hub: string };
+          try {
+            const { hub, lines } = seatHubNext(workspace, 'check --open');
+            verdict = { ...openVerdict(lines, hub, openId), hub };
+          } catch (error) {
+            refuse((error as Error).message);
+          }
+          if (parsed.flags.has('json')) emit({ id: openId.trim(), hub: `projects/${verdict.hub}`, ok: verdict.ok, first: verdict.first, pending: verdict.pending, message: verdict.message }, true);
+          else writeStdout(verdict.message + '\n');
+          return verdict.ok ? 0 : 1;
+        }
         if (!file) {
           process.stderr.write(`usage: ${VERBS.kickoff!.usage.split('; ')[0]}\n`);
           return 2;
@@ -527,7 +557,7 @@ async function main(argv: string[]): Promise<number> {
         }
         let verdict: { problems: string[]; warnings: string[] };
         try {
-          verdict = judgeKickoff(text, workspace);
+          verdict = judgeKickoff(text, workspace, { placeholders: !parsed.flags.has('posted'), postedHint: true });
         } catch (error) {
           process.stderr.write(`kickoff-check: ${(error as Error).message}\n`);
           return 2;
@@ -535,6 +565,20 @@ async function main(argv: string[]): Promise<number> {
         if (parsed.flags.has('json')) emit({ file, complete: verdict.problems.length === 0, problems: verdict.problems, warnings: verdict.warnings }, true);
         else writeStdout(verdictText(file, verdict));
         return verdict.problems.length === 0 ? 0 : 1;
+      }
+      // DOES THE BUILDER CHAIN ON (kickoffs/s213 row 8; PLAN-hub-redesign.md A1-01 to A1-05): read only, start or stop.
+      if (action === 'next') {
+        const context = parsed.options.get('context');
+        if (context === undefined || !context.trim()) {
+          process.stderr.write(`usage: ${VERBS.kickoff!.usage.split('; ')[2]}\n`);
+          return 2;
+        }
+        try {
+          emit(kickoffNext({ context, compacted: parsed.flags.has('compacted') }, workspace), true);
+        } catch (error) {
+          refuse((error as Error).message);
+        }
+        return 0;
       }
       try {
         const result = action === 'send'
@@ -696,7 +740,7 @@ async function main(argv: string[]): Promise<number> {
           const id = parsed.positional[0] ?? '';
           const item = readTrain(workspace)?.items.find(item => item.id === id);
           if (!item) throw new Error(`Unknown train item '${id}'.`);
-          const fields = Object.entries(item).map(([key, value]) => `${key === 'first_asked' ? 'First asked' : key === 'id' ? 'Identifier' : key[0]!.toUpperCase() + key.slice(1)}: ${value}`);
+          const fields = Object.entries(item).map(([key, value]) => `${key === 'first_asked' ? 'First asked' : key === 'id' ? 'Identifier' : key[0]!.toUpperCase() + key.slice(1)}: ${readerText(value)}`);
           let history = '';
           try { history = fs.readFileSync(path.join(workspace, 'internal', 'train', 'history.jsonl'), 'utf8'); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -705,7 +749,7 @@ async function main(argv: string[]): Promise<number> {
             try { return JSON.parse(line).id === id; }
             catch { throw new Error(`internal/train/history.jsonl, line ${index + 1} is not valid history JSON.`); }
           });
-          emit(item as PsJsonValue, parsed.flags.has('json'), fields.concat('History:', ...lines).join('\n'));
+          emit(item as PsJsonValue, parsed.flags.has('json'), fields.concat('History:', ...lines.map(readerText)).join('\n'));
           return 0;
         }
         if (action === 'check') {
@@ -797,6 +841,22 @@ async function main(argv: string[]): Promise<number> {
 
     // WHICH LIBRARY BARE `deskpost` OPENS (step 5a): the list, and `default <folder>`.
     case 'library': {
+      if (rest[0] === 'move') {
+        if (process.env['DESKPOST_LIBRARY_MOVE'] !== '1') {
+          const message = 'deskpost library move is turned off in this release because a known fault can rewrite unrelated paths; it returns in a later release, and nothing was changed.';
+          if (rest.includes('--json')) emit({ refusal: message }, true);
+          refuse(message);
+        }
+        const { moveLibrary } = await import('./librarymove.ts');
+        const parsed = parseArguments(rest, table);
+        const preview = moveLibrary({ destination: parsed.positional[1],
+          workspace: parsed.options.get('workspace'), registryRoot: parsed.options.get('registry-root'),
+          preflight: parsed.flags.has('preflight'), userConfirmed: parsed.flags.has('user-confirmed'),
+          planId: parsed.options.get('plan-id'), resume: parsed.options.get('resume'), rollback: parsed.options.get('rollback') });
+        if (preview.refusal !== null) refuse(preview.refusal);
+        emit(preview.value!, rest.includes('--json'), preview.humanText);
+        return 0;
+      }
       // FORGET (kickoffs/s146 row 1) is the registry's own writer, so it lives beside the registry, not the menu.
       if (rest[0] === 'forget') {
         const parsed = parseArguments(rest, table);

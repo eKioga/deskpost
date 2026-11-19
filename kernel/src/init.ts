@@ -1080,6 +1080,20 @@ export function registerWorkspace(workspace: string, id: string, root?: string, 
   return { path: file, action };
 }
 
+/** Replace exactly the previewed identity, keeping all fields the registry already carries. */
+export function relocateWorkspace(root: string | undefined, from: { path: string; id: string }, to: string): void {
+  const file = registryPath(root);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { workspaces: Record<string, unknown>[] };
+  const key = (value: unknown) => process.platform === 'win32' ? path.resolve(String(value)).toLowerCase() : path.resolve(String(value));
+  if (raw.workspaces.some(row => key(row['path']) === key(to))) throw new Error(`${to} is already registered; run deskpost library forget ${to} first, or choose another destination`);
+  const matches = raw.workspaces.filter(row => key(row['path']) === key(from.path));
+  if (matches.length !== 1 || matches[0]!['path'] !== from.path || matches[0]!['id'] !== from.id) throw new Error(`the registry row for ${from.path} changed since the preview; run the preview again`);
+  matches[0]!['path'] = to;
+  writeAtomicText(file, JSON.stringify(raw, null, 2) + '\n');
+  const after = readRegistry(root);
+  if (after.some(row => key(row.root) === key(from.path)) || !after.some(row => key(row.root) === key(to) && row.id === from.id)) throw new Error(`the registry relocation did not verify; restore ${file} from the move journal before continuing`);
+}
+
 // --- the run -----------------------------------------------------------------------------------------
 
 /**

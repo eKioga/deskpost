@@ -52,6 +52,43 @@ if (selected(1835) && prerequisite(1835, () => !isCompiled(), 'requires source d
 if (selected(1836) && prerequisite(1836, () => !isCompiled(), 'requires real git append')) await section1836();
 if (selected(1837) && prerequisite(1837, () => !isCompiled(), 'requires conservative section selection')) await section1837();
 if (selected(1838) && prerequisite(1838, () => !isCompiled(), 'requires configurable lane readers')) await section1838();
+if (selected(1839)) await section1839();
+if (selected(1840)) await section1840();
+if (selected(1841)) await section1841();
+if (selected(1842)) await section1842();
+if (selected(1843)) await section1843();
+if (selected(1844)) await section1844();
+if (selected(1845) && prerequisite(1845, () => !isCompiled(), 'requires source tools')) await section1845();
+if (selected(1846) && prerequisite(1846, () => !isCompiled(), 'requires source tools')) await section1846();
+if (selected(1847) && prerequisite(1847, () => !isCompiled(), 'requires source tools')) await section1847();
+if (selected(1848) && prerequisite(1848, () => !isCompiled(), 'requires source tools')) await section1848();
+if (selected(1849) && prerequisite(1849, () => !isCompiled(), 'requires source tools')) await section1849();
+if (selected(1850) && prerequisite(1850, () => !isCompiled(), 'requires source tools')) await section1850();
+if (selected(1851) && prerequisite(1851, () => !isCompiled(), 'requires source landing tool')) await section1851();
+if (selected(1852) && prerequisite(1852, () => !isCompiled(), 'requires source tools')) await section1852();
+if (selected(1853) && prerequisite(1853, () => !isCompiled(), 'requires source tools')) await section1853();
+if (selected(1854) && prerequisite(1854, () => !isCompiled(), 'requires source tools')) await section1854();
+if (selected(1855)) await section1855();
+if (selected(1856) && prerequisite(1856, () => !isCompiled(), 'requires source tools')) await section1856();
+if (selected(1857) && prerequisite(1857, () => !isCompiled(), 'requires source docs gate')) await section1857();
+if (selected(1858) && prerequisite(1858, () => !isCompiled() && process.platform !== 'win32', 'requires the source WSL tool and Bash')) await section1858();
+if (selected(1859)) await section1859();
+if (selected(1860)) await section1860();
+if (selected(1861) && prerequisite(1861, () => !isCompiled(), 'requires source tools')) await section1861();
+if (selected(1862) && prerequisite(1862, () => !isCompiled(), 'requires source tools')) await section1862();
+if (selected(1863) && prerequisite(1863, () => !isCompiled(), 'requires source tools')) await section1863();
+if (selected(1864) && prerequisite(1864, () => !isCompiled(), 'requires source tools')) await section1864();
+if (selected(1865) && prerequisite(1865, () => !isCompiled(), 'requires source tools')) await section1865();
+if (selected(1866) && prerequisite(1866, () => !isCompiled(), 'requires source tools')) await section1866();
+if (selected(1867) && prerequisite(1867, () => !isCompiled(), 'requires source tools')) await section1867();
+if (selected(1868) && prerequisite(1868, () => !isCompiled(), 'requires source tools')) await section1868();
+if (selected(1869) && prerequisite(1869, () => !isCompiled(), 'requires source tools')) await section1869();
+if (selected(1871) && prerequisite(1871, () => !isCompiled(), 'requires source tools')) await section1871();
+if (selected(1872) && prerequisite(1872, () => !isCompiled(), 'requires source tools')) await section1872();
+if (selected(1873) && prerequisite(1873, () => !isCompiled(), 'requires source tools')) await section1873();
+if (selected(1874) && prerequisite(1874, () => !isCompiled(), 'requires source landing tool')) await section1874();
+if (selected(1892)) await section1892();
+if (selected(1893) && prerequisite(1893, () => process.platform === 'linux' && !isCompiled(), 'requires Linux and the source reaper')) await section1893();
 }
 
 // --- 1800. A lane section runs inside the real suite: its failing check fails the suite, a lane-only selection counts its
@@ -235,7 +272,7 @@ async function section1802(): Promise<void> {
     check(!chosen.all && chosen.sections.join(',') === '1000', `1802: a lane's first section selects only itself, though git counts runLane's closing brace as added: ${JSON.stringify(chosen)}`);
     // The staged hook selection reads the same lane file from the index (it adds the type check's 155).
     edit(16, "  check(true, 'two, staged');")(); run('add', '-A');
-    const hooked = select.hookSections((args: string[]) => run(...args));
+    const hooked = select.stagedSelection((args: string[]) => run(...args));
     run('reset', '-q', '--hard', 'HEAD');
     check(!hooked.all && hooked.sections.join(',') === '155,1811', `1802: the hook's index selection maps the lane hunk the same way: ${JSON.stringify(hooked)}`);
   } catch (error) { failures.push(`section 1802 stopped early: ${(error as Error).message}`); }
@@ -1162,10 +1199,13 @@ async function section1835(): Promise<void> {
     }
     // Use a fresh module instance so its first read really is cold in this worker.
     const cold = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href + '?1835');
-    const start = performance.now(); cold.suiteText(path.join(PROGRAM_ROOT, cold.SELFTEST_PATH)); const first = performance.now() - start;
-    const again = performance.now(); cold.suiteText(path.join(PROGRAM_ROOT, cold.SELFTEST_PATH)); const second = performance.now() - again;
-    check(second < first, '1835: repeated suite read is faster with cached syntax: ' + first + 'ms then ' + second + 'ms');
-    console.log('1835: suite read cold ' + first.toFixed(1) + 'ms, cached ' + second.toFixed(1) + 'ms');
+    const suite = path.join(PROGRAM_ROOT, cold.SELFTEST_PATH);
+    const before = cold.dispatchParseCount;
+    cold.suiteText(suite);
+    const after = cold.dispatchParseCount;
+    check(after > before, '1835: the first suite read parses source');
+    cold.suiteText(suite);
+    equal(cold.dispatchParseCount, after, '1835: the repeated suite read adds no parses');
   } finally { fs.rmSync(root, {recursive:true, force:true}); }
 }
 
@@ -1268,4 +1308,1188 @@ async function section1831(): Promise<void> {
       check(wrong.status === 1 && wrong.stderr.includes('c999'), '1831: another unit still refuses: ' + wrong.stderr);
     }
   } finally { fs.rmSync(root, {recursive:true, force:true}); }
+}
+
+// --- 1839. w22 row 1: guard boundary regression.
+async function section1839(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    for (const [target, kind, slug] of [
+      ['shelf/missing/wiki/p.md', 'Shelf Book', 'missing'],
+      ['collection/books/missing/wiki/p.md', 'collection Book', 'missing'],
+      ['collection/projects/missing/_project.md', 'Project Hub', 'missing'],
+      ['collection/books/README', 'collection Book', 'readme'],
+    ]) for (const answer of [read(target!), shell(`cat ${target}`)]) denied(answer, [`No ${kind} named '${slug}' is in this Library`, 'deskpost browse'], '1839: missing root');
+    for (const target of ['shelf/closed/wiki/p.md', 'collection/books/closed/wiki/p.md', 'collection/projects/closed/_project.md']) for (const answer of [read(target), shell(`cat ${target}`)]) denied(answer, ['is closed'], '1839: real closed root');
+    for (const target of ['shelf/open/wiki/p.md', 'collection/books/open/wiki/p.md', 'collection/projects/one/_project.md']) {
+      allowed(read(target), '1839: open root through Read');
+      const output = JSON.parse(shell(`cat ${target}`) || '{}').hookSpecificOutput;
+      const reader = target.startsWith('collection/projects/') ? 'read_open_project_page' : 'read_open_book_page';
+      check(output?.hookEventName === 'PreToolUse' && output?.permissionDecision === undefined &&
+        output?.additionalContext?.includes(reader), '1839: open root through shell advises ' + reader);
+    }
+    denied(shell('cat shelf/missing/wiki/p.md'), ['file tool', 'pass', 'path'], '1839: text remedy');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1840. w22 row 2: guard boundary regression.
+async function section1840(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    const outside = path.join(root, 'scratch'); fs.mkdirSync(outside);
+    for (const verb of ['cd', 'pushd', 'Set-Location']) {
+      allowed(shell(`${verb} "${outside}" && cat collection/projects/closed/_project.md`), '1840: relative read outside');
+      allowed(shell(`${verb} "${outside}" && echo hi > notebook/topic/page.md`), '1840: relative write outside');
+      allowed(shell(`${verb} "${outside}" && cat shelf/closed/wiki/p.md`), '1840: Shelf read outside');
+      allowed(shell(`${verb} "${outside}" && echo hi > internal/y`), '1840: internal write outside');
+    }
+    for (const command of [
+      `cd "${lib}" && cat collection/projects/closed/_project.md`,
+      `cd "${lib}" && echo hi > notebook/topic/page.md`,
+      `cd "${outside}" && cd "${lib}" && cat collection/projects/closed/_project.md`,
+      `cd "${outside}" && "cd" "${lib}" && cat collection/projects/closed/_project.md`,
+      `cd "${outside}" && cd "${lib}" && echo hi > notebook/topic/page.md`,
+      `cd "${outside}" && cat "${path.join(lib, 'collection/projects/closed/_project.md')}"`,
+      `cd "${outside}" && echo hi > "${path.join(lib, 'internal/y')}"`,
+      `cd "${path.join(root, 'absent')}" || Set-Content internal/w22-witness x`,
+      `cd "${path.join(root, 'absent')}" || cat collection/projects/closed/_project.md`,
+      ...[';', '|', '&', '\n'].map(separator => `cd "${outside}" ${separator} cat collection/projects/closed/_project.md`),
+    ]) denied(shell(command), [], '1840: still guarded');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1841. w22 row 3: guard boundary regression.
+async function section1841(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    const outside = path.join(root, 'copy.json');
+    allowed(shell(`mkdir -p "${path.join(root, 'scratch/x')}"; grep -c train internal/notebook-layout.json`), '1841: read after independent write');
+    for (const verb of ['cp', 'copy', 'xcopy', 'robocopy', 'Copy-Item', 'install']) {
+      if (verb === 'robocopy') denied(shell(`${verb} internal/notebook-layout.json "${outside}"`), [], '1841: unrecognised robocopy source');
+      else allowed(shell(`${verb} internal/notebook-layout.json "${outside}"`), '1841: copy source ' + verb);
+      denied(shell(`${verb} "${outside}" internal/y`), ['internal/y'], '1841: copy destination ' + verb);
+    }
+    allowed(shell(`Copy-Item -Path internal/notebook-layout.json -Destination "${outside}"`), '1841: named outside destination');
+    allowed(shell(`cp -r internal/notebook-layout.json "${outside}"`), '1841: recursive outside destination');
+    allowed(shell(`xcopy /Y internal\\notebook-layout.json "${outside}"`), '1841: switch outside destination');
+    for (const command of [
+      'cp -t internal/y source.txt', 'install -t internal/y source.txt',
+      'cp --target-directory=internal/y source.txt', 'robocopy source internal/y witness.txt',
+      'Copy-Item -Destination:internal/y -Path source.txt', 'Copy-Item source.txt -Dest internal/y',
+      'pwsh -NoProfile -Command "Set-Content internal/y x"', 'cmd /d /c copy source.txt internal/y',
+      'command cp source.txt internal/y',
+    ]) {
+      denied(shell(command), ['internal/y'], '1841: uncertain copy or wrapper retains protection');
+      allowed(shell(command.replace('internal/y', outside)), '1841: outside target inverse');
+    }
+    for (const command of [
+      `mv internal/x "${outside}"`, 'echo x > internal/y', 'mkdir x && touch internal/y',
+      'Copy-Item -Path a -Destination internal/y', 'cp a notebook/other/topic/page.md',
+      'mkdir x || touch internal/y', 'printf x | tee internal/y', 'mkdir x\ntouch internal/y',
+      'touch "internal/file with spaces"', 'cp a internal/y 2>log', 'cp a internal/./y',
+      'xcopy a internal/y /E', 'copy a internal/y /Y', 'robocopy a internal/y /R:1',
+    ]) denied(shell(command), [], '1841: still a write');
+    denied(shell(`echo 'mkdir; cp internal/x' && cat internal/notebook-layout.json`), [], '1841: quoted write retains protection');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1842. w22 row 4: guard boundary regression.
+async function section1842(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    for (const command of ['ls collection/projects/', "cat <<EOF\ncollection/projects/\nEOF"]) denied(shell(command), ['deskpost browse', 'file tool'], '1842: span remedy');
+    const text = hook('computer-use', 'Bash', { command: "printf '%s' '--computer-use on' > note.md" });
+    denied(text, ['file editor', 'pass the file by path'], '1842: computer-use text remedy');
+    allowed(hook('computer-use', 'Bash', { command: 'deskpost seat settings first --computer-use off' }), '1842: explicit off');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1843. w22 row 5: guard boundary regression.
+async function section1843(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    allowed(shell("rg -n word -g '!collection/books/closed/**' ."), '1843: collection exclusion');
+    for (const command of ["rg -g 'collection/books/closed/**' word .", "cat -g '!collection/books/closed/**'", "rg -g '!collection/books/closed/$(cat x)' word ."]) denied(shell(command), [], '1843: real or computed read');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1844. w22 row 6: guard boundary regression.
+async function section1844(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w22-guard-')));
+  try {
+    const temp = path.join(root, 'temp'); fs.mkdirSync(temp);
+    const env = { LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', TEMP: temp, TMP: temp, TMPDIR: temp };
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], { cwd: root, env }).exit, 0, 'w22: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first'); fs.mkdirSync(desk, { recursive: true });
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/open\nbooks/open\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/one\nprojects/two\n');
+    for (const folder of ['shelf/open', 'shelf/closed', 'collection/books/open', 'collection/books/closed', 'collection/projects/one', 'collection/projects/two', 'collection/projects/closed']) fs.mkdirSync(path.join(lib, folder), { recursive: true });
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) => runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], { cwd: lib, env, input: JSON.stringify({ tool_name, tool_input }) }).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', { command });
+    const read = (file_path: string) => hook('shelf-read', 'Read', { file_path });
+    const glob = (pattern: string) => hook('shelf-read', 'Glob', { pattern });
+    const denied = (answer: string, words: string[], label: string) => check(answer.includes('"permissionDecision":"deny"') && words.every(word => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
+    const allowed = (answer: string, label: string) => equal(answer.trim(), '', label);
+    allowed(glob('collection/projects/{one,two}/kickoffs/*.md'), '1844: two open Hubs');
+    allowed(glob('collection/projects/{one,two}/notes/*.md'), '1844: notes in open Hubs');
+    for (const pattern of ['collection/projects/{one,two}/../closed/_project.md', 'collection/projects/{one,two}/..'])
+      denied(glob(pattern), ['spans collection'], '1844: parent escapes brace roots');
+    allowed(glob('collection/projects/one/{a,b}.md'), '1844: choices inside one open root stay allowed');
+    denied(glob('collection/projects/{one,closed}/kickoffs/*.md'), ["Project Hub 'closed' is closed"], '1844: closed choice');
+    fs.writeFileSync(path.join(desk, '.open-books'), 'books/open\nbooks/second\n');
+    fs.mkdirSync(path.join(lib, 'collection/books/second'), { recursive: true });
+    allowed(glob('collection/books/{open,second}/wiki/*.md'), '1844: two open Books');
+    denied(glob('collection/books/{open,closed}/wiki/*.md'), ["Collection Book 'closed' is closed"], '1844: closed Book choice');
+    for (const pattern of ['collection/projects/{one,{two,closed}}/p.md', 'collection/projects/{one,tw*}/p.md', 'collection/projects/{one,two}/{a,b}.md']) denied(glob(pattern), ['spans collection', 'one root per call'], '1844: complex brace');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1845. w25 regression.
+async function section1845(): Promise<void> {
+  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const chosen = select.selectSections({changed:['tools/acceptance-matrix.json'], selftestText:'', selftestHunks:[], covers:{schema:1,about:'fixture',sections:{}}});
+  check(!chosen.all, '1845: matrix must not select every kernel section');
+  same(chosen.sections, [], '1845: no kernel section reads the matrix; PowerShell acceptance checks read it');
+  same(select.pathChecks(['tools/acceptance-matrix.json']), ['acceptance.harness-selftest','acceptance.kernel-verbs-exist','acceptance.matrix-covers-every-public-helper','acceptance.matrix-doc-matches-rows','acceptance.matrix-shape'], '1845: actual matrix readers');
+}
+
+// --- 1846. w25 regression.
+async function section1846(): Promise<void> {
+  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  for (const opening of ['/**', '/*']) {
+    const text = '// lead\n'+opening+'\n * comment\n */\nasync function section7() {\n}\n';
+    const run = (start: number) => select.selectSections({changed:[select.SELFTEST_PATH], selftestText:text, selftestHunks:[{start,count:1}],covers:{schema:1,about:'fixture',sections:{}}});
+    check(!run(3).all, '1846: attached block belongs to section'); same(run(3).sections,[7],'1846: only section seven');
+    equal(select.sectionRanges(text)[0].start,1,'1846: line comments above block included');
+  }
+  const detached = '/**\n * detached\n */\nconst shared = true;\nasync function section7() {\n}\n';
+  check(select.selectSections({changed:[select.SELFTEST_PATH],selftestText:detached,selftestHunks:[{start:2,count:1}],covers:{schema:1,about:'fixture',sections:{}}}).all,'1846: detached block is shared');
+}
+
+// --- 1847. w25 regression.
+async function section1847(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const result = spawnSync('git',['ls-files','-z'],{cwd:PROGRAM_ROOT,env:repositoryNeutralEnv(),encoding:'utf8'});
+  equal(result.status,0,'1847: tracked inventory read');
+  const covers = select.mergeCovers(select.coversFiles((file: string) => fs.existsSync(path.join(PROGRAM_ROOT,file)) ? fs.readFileSync(path.join(PROGRAM_ROOT,file),'utf8') : null));
+  same(select.unmappedPaths(result.stdout.split('\0').filter(Boolean),covers),[],'1847: every tool/test path has a mapping or whole-suite reason');
+  same(select.unmappedPaths(['tools/new-unmapped.mts','tools/acceptance-matrix.json'],covers),['tools/new-unmapped.mts'],'1847: new unmapped tool named, mapped matrix omitted');
+}
+
+// --- 1848. w25 regression.
+async function section1848(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const covers = select.mergeCovers(select.coversFiles((file: string) => fs.existsSync(path.join(PROGRAM_ROOT,file)) ? fs.readFileSync(path.join(PROGRAM_ROOT,file),'utf8') : null));
+  const wanted = [82,92,118,120,215,631];
+  same(covers.wholeTreeSections,wanted,'1848: source-tree readers listed once');
+  const choose = (file: string) => select.selectSections({changed:[file],selftestText:'',selftestHunks:[],covers});
+  const known = choose('kernel/src/psjson.ts');
+  check(known.all || wanted.every(n => known.sections.includes(n)),'1848: every whole-tree reader selected for a mapped source');
+  const unknown = choose('kernel/src/fixture-unmapped.ts');
+  check(unknown.all && unknown.reasons.some((r: string) => r.includes('whole source tree')),'1848: unmapped source keeps full fallback and whole-tree reason');
+}
+
+// --- 1849. w25 regression.
+async function section1849(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {spawnSync} = await import('node:child_process');
+  const {childEnv} = await import('../gate-env.ts');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/section-select.mts')).href);
+  const maps = [select.COVERS_PATH,select.laneCoversPath('guards-and-tooling'),select.laneCoversPath('books-and-memory')];
+  for (const pair of [[maps[0],maps[1]],[maps[1],maps[2]]]) {
+    let refusal = ''; try { select.mergeCovers(pair.map(file => ({file,text:JSON.stringify({schema:1,sections:{'7':[]}})}))); } catch(e) {refusal=String(e);}
+    check(refusal.includes('section 7') && pair.every(file => refusal.includes(file)), '1849: duplicate covers names both files');
+  }
+  const normalizeSeparators = (value: string) => value.replaceAll('\\', '/');
+  const namesBoth = (message: string, ...files: string[]) =>
+    files.every(file => normalizeSeparators(message).includes(normalizeSeparators(file)));
+  const windowsRoot = 'C:\\x';
+  check(namesBoth('C:\\x\\selftest.ts and C:\\x/lanes/guards-and-tooling.ts',
+    path.win32.join(windowsRoot, 'selftest.ts'), path.win32.join(windowsRoot, 'lanes', 'guards-and-tooling.ts')),
+  '1849: mixed Windows path separators still name both files');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(),'w25-duplicates-'));
+  try {
+    fs.mkdirSync(path.join(root,'lanes'));
+    const suite = path.join(root,'selftest.ts'), lane = path.join(root,'lanes/guards-and-tooling.ts');
+    for (const declaration of [true,false]) {
+      fs.writeFileSync(suite, declaration ? 'async function section7() {\n}\nif (selected(7)) await section7();\n' : 'if (selected(7)) {\n}\n');
+      fs.writeFileSync(lane,'async function section7() {\n}\nif (selected(7)) await section7();\n');
+      const ran = spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'kernel/test/run-parallel.ts'),'--suite',suite],{cwd:root,env:childEnv(),encoding:'utf8',timeout:30000});
+      const out=ran.stdout+ran.stderr;
+      check(ran.status !== 0 && namesBoth(out, suite, lane) && out.includes('section 7'),'1849: runner refuses duplicate source before execution: '+out);
+    }
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+}
+
+// --- 1850. w25 regression.
+async function section1850(): Promise<void> {
+  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const lander = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/lander.mts')).href);
+  check(typeof lander.readAllRuns === 'function','1850: shared run reader exported');
+  if (typeof lander.readAllRuns !== 'function') return;
+  const rows = Array.from({length:50},(_,i) => ({id:i+1})); let calls=0;
+  const read = async () => {calls++; if(calls>2) throw Error('fixture page bound'); return {total_count:50,workflow_runs:rows};};
+  equal((await lander.readAllRuns(read)).length,50,'1850: full last page retained');equal(calls,1,'1850: total stops a full last page');
+  calls=0; let refusal='';
+  try {await lander.readAllRuns(async () => {calls++; return {total_count:100,workflow_runs:calls===1?rows:[...rows].reverse()};});}catch(e){refusal=String(e);}
+  check(refusal.includes('repeated') && calls===2,'1850: repeated page refused before another request');
+  for (const [total, received] of [[2, 1], [2, 0], [1, 2]]) {
+    let message = '';
+    try {
+      await lander.readAllRuns(async () => ({total_count: total, workflow_runs: rows.slice(0, received)}));
+    } catch (error) { message = String(error); }
+    check(message.includes(`received ${received}, expected ${total}`),
+      `1850: received ${received} of ${total} runs is refused with both counts`);
+  }
+  equal(lander.LANDER_VERSION,'1.1.4','1850: fix version');
+}
+
+// --- 1851. Opening a pull request requires the repository's commit hooks.
+async function section1851(): Promise<void> {
+  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {land} = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/land.mts')).href);
+  for (const setting of ['', '.githooks']) {
+    const messages: string[] = [];
+    const commands: string[] = [];
+    const status = await land('int/fixture', {
+      cwd: PROGRAM_ROOT, open: true, tokenItem: 'fixture', env: {DESKPOST_SECRETS_DIR: 'fixture'},
+      say: (line: string) => messages.push(line),
+      runner: async (command: string, args: string[], cwd: string) => {
+        if (command !== 'git') throw Error('fixture reached credential reader');
+        commands.push(args.join(' '));
+        equal(cwd, PROGRAM_ROOT, '1851: hook configuration is read in the repository');
+        if (args.join(' ') === 'config core.hooksPath') {
+          if (!setting) throw Error('git config exited 1');
+          return setting;
+        }
+        throw Error('unexpected fixture command');
+      },
+    });
+    equal(status, 1, '1851: fixture never opens a pull request');
+    same(commands, ['config core.hooksPath'], '1851: read the hook configuration before push');
+    check(messages.some(line => line.includes(setting ? 'fixture reached credential reader' : 'git config core.hooksPath .githooks')),
+      '1851: configured clone continues, unconfigured clone gets the remedy: ' + messages.join(' '));
+  }
+}
+
+// --- 1852. w25 regression.
+async function section1852(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/gate.ts')).href);
+  check(typeof gate.lineEndingProblems === 'function','1852: staged line-ending check exists');
+  if (typeof gate.lineEndingProblems !== 'function') return;
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'w25-lines-'));
+  try {
+    const git=(...args: string[]) => {const r=spawnSync('git',args,{cwd:root,env:repositoryNeutralEnv(),encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);};
+    git('init','-q');git('config','core.autocrlf','false');
+    fs.writeFileSync(path.join(root,'lf.ts'),'one\ntwo\n');fs.writeFileSync(path.join(root,'crlf.ts'),'one\r\ntwo\r\n');
+    for(let i=0;i<8;i++)fs.writeFileSync(path.join(root,`safe${i}.md`),'safe\n');
+    git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','-c','core.hooksPath=.git/no-hooks','commit','-qm','base');
+    fs.writeFileSync(path.join(root,'lf.ts'),'one\r\ntwo\r\n');
+    fs.writeFileSync(path.join(root,'lone.json'),'one\ntwo\rthree\n');
+    fs.writeFileSync(path.join(root,'crlf.ts'),'changed\r\n');
+    fs.writeFileSync(path.join(root,'new.ts'),'new\r\n');fs.writeFileSync(path.join(root,'binary.ts'),Buffer.from([0,13,1]));
+    for(let i=0;i<5;i++)fs.appendFileSync(path.join(root,`safe${i}.md`),'next\n');
+    git('add','.');fs.writeFileSync(path.join(root,'lone.json'),'working tree hides staged CR\n');
+    const started=performance.now();const problems=gate.lineEndingProblems(root);const elapsed=performance.now()-started;
+    check(problems.some((p: string)=>p.includes('lf.ts:1') && p.includes('CRLF')),'1852: LF changed to CRLF refused');
+    check(problems.some((p: string)=>p.includes('lone.json:2') && p.includes('lone')),'1852: staged lone CR names line');
+    equal(problems.length,2,'1852: existing CRLF, new CRLF, binary and LF changes allowed');
+    check(elapsed<2000,'1852: ten staged files checked under two seconds: '+elapsed);console.log('1852 ten-file milliseconds: '+elapsed.toFixed(1));
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+
+// --- 1853. w25 regression.
+async function section1853(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const scan = await import(pathToFileURL(path.join(PROGRAM_ROOT,'tools/scan.ts')).href);
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'w25-scope-'));
+  try {
+    const git=(...args: string[]) => {const r=spawnSync('git',args,{cwd:root,env:repositoryNeutralEnv(),encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);};
+    git('init','-q');fs.writeFileSync(path.join(root,'PLAN-x.md'),'plan\n');fs.writeFileSync(path.join(root,'PLAN-y.md'),'plan\n');git('add','.');
+    const terms=path.join(root,'terms');fs.mkdirSync(terms);fs.writeFileSync(path.join(terms,'identity-denylist.txt'),'scope-fixture-private\n');
+    const result=scan.identityScan(root,'',terms);
+    check(result.status==='pass','1853: plan-only commit clean');
+    check(result.detail.includes('0 staged blob(s); 2 staged file(s) left out as not product files: PLAN-x.md, PLAN-y.md'),'1853: scope names both omitted plan files: '+result.detail);
+    fs.writeFileSync(path.join(root,'product.txt'),'scope-fixture-private\n');git('add','product.txt');
+    const refused=scan.identityScan(root,'',terms);
+    check(refused.status==='fail' && refused.detail.includes('2 staged file(s) left out as not product files: PLAN-x.md, PLAN-y.md'),'1853: failed scan also names omissions');
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+
+// --- 1854. w25 regression.
+async function section1854(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {childEnv} = await import('../gate-env.ts');
+  const expected='kernel self-test FAILED (1 of 0): LIBRARY_SELFTEST_SECTIONS selected no checks: 999999\n';
+  for(let i=0;i<3;i++) {
+    const ran=spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'kernel/test/selftest.ts')],{cwd:PROGRAM_ROOT,env:{...childEnv(),LIBRARY_SELFTEST_SECTIONS:'999999'},encoding:'utf8',timeout:30000});
+    equal(ran.status,1,'1854: deliberately red self-test exits one, run '+i);
+    check(ran.stderr.endsWith(expected),'1854: full failure line drained, run '+i+': '+ran.stderr);
+  }
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'w25-drain-'));
+  try {
+    const suite=path.join(root,'selftest.ts');
+    fs.writeFileSync(suite, 'const selected=()=>true;\nif (selected(1)) {\nprocess.stderr.write("kernel self-test FAILED (1 of 1): drain fixture\\n");\nprocess.exitCode=1;\n}\n');
+    const ran=spawnSync(process.execPath,[path.join(PROGRAM_ROOT,'kernel/test/run-parallel.ts'),'--suite',suite],{cwd:root,env:{...childEnv(),LIBRARY_SELFTEST_SECTIONS:'1',HOME:root,USERPROFILE:root,APPDATA:root,LOCALAPPDATA:root},encoding:'utf8',timeout:30000});
+    check(ran.status===1 && (ran.stdout+ran.stderr).includes('kernel self-test FAILED (1 of 1): drain fixture'),'1854: runner retains red exit and full line');
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+
+
+// --- 1855. Direct shell page reads remind the caller which Desk reader to use.
+async function section1855(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w26-shell-read-')));
+  try {
+    const env = {LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: ''};
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], {cwd: root, env}).exit, 0, '1855: fixture init');
+    const desk = path.join(lib, '.claude', 'seats', 'first');
+    fs.mkdirSync(desk, {recursive: true});
+    fs.writeFileSync(path.join(desk, '.open-books'), 'shelf/demo\nbooks/demo\n');
+    fs.writeFileSync(path.join(desk, '.open-projects'), 'projects/demo\n');
+    const book = 'collection/books/demo/wiki/page.md';
+    const hub = 'collection/projects/demo/_project.md';
+    const shelf = 'shelf/demo/wiki/page.md';
+    for (const page of [book, hub, shelf]) {
+      const file = path.join(lib, page);
+      fs.mkdirSync(path.dirname(file), {recursive: true});
+      fs.writeFileSync(file, 'fixture\n');
+    }
+    const hook = (verb: string, tool_name: string, tool_input: Record<string, unknown>) =>
+      runCli(['hook', verb, '--workspace', lib, '--seat', 'first'], {cwd: lib, env, input: JSON.stringify({tool_name, tool_input})}).stdout;
+    const shell = (command: string) => hook('shell-shelf-read', 'Bash', {command});
+    for (const command of ['cat', 'Get-Content', 'type', 'head -n 2', 'tail', 'less', 'more', "sed -n '1p'"]) {
+      for (const [page, tool] of [[book, 'read_open_book_page'], [shelf, 'read_open_book_page'], [hub, 'read_open_project_page']]) {
+        const answer = shell(`${command} "${page}"`);
+        const output = JSON.parse(answer || '{}').hookSpecificOutput;
+        check(output?.hookEventName === 'PreToolUse' && output?.additionalContext?.includes(tool) && !output.permissionDecision,
+          '1855: ' + command + ' advises the reader for ' + page + ': ' + answer);
+      }
+    }
+    for (const command of ['echo collection/books/demo', 'cat collection/books/demo', 'cat notebook/topic/page.md', "sed 'collection/books/demo/wiki/page.md'"])
+      equal(shell(command).trim(), '', '1855: no advice without an open page read: ' + command);
+    for (const command of ['cat > copy.md "' + book + '"', 'cat "' + book + '" > copy.md',
+      'cat >> copy.md "' + book + '"']) {
+      const advice = JSON.parse(shell(command) || '{}').hookSpecificOutput?.additionalContext;
+      check(advice?.includes('read_open_book_page'), '1855: open operand gets advice: ' + command);
+    }
+    equal(shell('cat local.md > "' + book + '"').trim(), '', '1855: output target gets no read advice');
+    equal(hook('shelf-read', 'Read', {file_path: book}).trim(), '', '1855: Read tool stays silent');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1856. Whole-suite paths keep their coverage when a filename appears in a section.
+async function section1856(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const [legacy, ...lanes] = select.sectionSources((file: string) => fs.readFileSync(path.join(PROGRAM_ROOT, file), 'utf8'));
+  const input = {
+    selftestText: legacy.text,
+    laneSources: lanes.map((lane: {file: string; text: string}) => ({...lane, hunks: []})),
+    covers: {schema: 1, about: 'Path selection', sections: {}},
+  };
+  const choose = (file: string, selftestHunks: {start: number; count: number}[] = []) =>
+    select.selectSections({...input, changed: [file], selftestHunks});
+  const fixture = ['tools/mirror-fixture/fixture', 'sh'].join('.');
+  const fixtureSelection = choose(fixture);
+  check(fixtureSelection.all, '1856: mirror fixture selects every section; selected ' + fixtureSelection.sections.join(', '));
+  check(fixtureSelection.reasons.includes('every section: ' + fixture + ' is on the whole-suite list in tools/check-map.json'),
+    '1856: mirror fixture names its whole-suite rule');
+  check(choose('tools/gate.ts').all, '1856: gate selects every section');
+  // Keep the probe's spelling out of filename-based reader discovery.
+  const lander = choose(['tools/lander', 'mts'].join('.'));
+  check(!lander.all, '1856: the lander selects narrowly');
+  same(lander.sections, [806, 807, 830, 1806, 1850, 1864], '1856: only the real lander readers are selected');
+  const section = select.sectionRanges(legacy.text)[0];
+  const selftest = choose(legacy.file, [{start: section.start, count: 1}]);
+  check(!selftest.all, '1856: a hunk in one legacy section selects narrowly');
+  same(selftest.sections, [section.section], '1856: only the edited legacy section is selected');
+}
+
+// --- 1857. Pinned GitHub links resolve at the named tag, using the real docs gate.
+async function section1857(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w26-pinned-links-'));
+  try {
+    const env = repositoryNeutralEnv();
+    const git = (...args: string[]) => {
+      const ran = spawnSync('git', args, {cwd: root, env, encoding: 'utf8', timeout: 30_000});
+      if (ran.status !== 0) throw Error(ran.stderr || String(ran.error ?? ran.status));
+      return ran.stdout.trim();
+    };
+    const put = (name: string, text: string) => {
+      const file = path.join(root, name);
+      fs.mkdirSync(path.dirname(file), {recursive: true});
+      fs.writeFileSync(file, text);
+    };
+    git('init', '-q');
+    put('README.md', '# Fixture\n');
+    put('docs/present.md', '# Present at the tag\n');
+    put('docs/guide(old).md', '# Parentheses at the tag\n');
+    put('docs/adr/0001-example.md', '# Fixture decision\n');
+    put('docs/_index.md', '# Fixture index\n\n[Fixture decision](adr/0001-example.md)\n');
+    git('add', '.');
+    git('-c', 'core.hooksPath=.git/no-hooks', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--author=Fixture <export@deskpost.invalid>', '-qm', 'Fixture root');
+    git('tag', 'v-fixture');
+    put('docs/new.md', '# Exists only in the working tree\n');
+    const run = () => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/docs-gate.ts'), '--file', 'README.md'],
+      {cwd: root, env, encoding: 'utf8', timeout: 60_000});
+    const base = 'https://github.com/eKioga/deskpost/blob/';
+    const help = '.claude/skills/library-help/references/fixture.md';
+    put(help, `# Fixture\n[Tagged](${base}v-fixture/docs/present.md#heading)\n`);
+    put('llms-install.md', `[Missing tag](${base}v-missing/docs/present.md)\n`);
+    git('add', help, 'llms-install.md');
+    const good = run();
+    check(/^PASS\s+docs\.pinned-github-links: 1 pinned link/m.test(good.stdout), '1857: tagged path resolves: ' + good.stdout);
+    check(/^SKIP\s+docs\.pinned-github-links:.*v-missing.*llms-install\.md:1/m.test(good.stdout), '1857: absent tag is a named skip: ' + good.stdout);
+    put(help, `# Fixture\n[Working only](${base}v-fixture/docs/new.md)\n`);
+    const bad = run();
+    const failures = (output: string) => output.match(/^FAIL\s/gm)?.length ?? 0;
+    equal(failures(bad.stdout), failures(good.stdout) + 1, '1857: a tagged-path failure adds a gate failure');
+    const broken = bad.stdout.split('\n').find(line => /^FAIL\s+docs\.pinned-github-links:/.test(line)) ?? '';
+    check(broken.includes(help + ':2') && broken.includes(base + 'v-fixture/docs/new.md'),
+      '1857: reports the file, line and unresolved link: ' + bad.stdout);
+    const guide = base + 'v-fixture/docs/guide(old).md';
+    const gone = base + 'v-fixture/docs/gone(old).md';
+    put(help, '# Fixture\n[Bare](' + guide + ')\n[Angle](<' + guide + '>)\n');
+    const parentheses = run().stdout;
+    check(/^PASS\s+docs\.pinned-github-links: 2 pinned links?/m.test(parentheses) &&
+      !/^FAIL\s+docs\.pinned-github-links:/m.test(parentheses), '1857: both parenthesized destinations resolve: ' + parentheses);
+    put(help, '# Fixture\n[Gone](' + gone + ')\n');
+    const missing = run().stdout;
+    check(missing.split('\n').some(line => /^FAIL\s+docs\.pinned-github-links:/.test(line) && line.includes(gone)),
+      '1857: reports the full missing path with parentheses: ' + missing);
+    put(help, '# Fixture\n[Tagged](' + base + 'v-fixture/docs/present.md#heading)\n');
+    const exportNotice = 'The gate trusted local git setting deskpost.exportRoot for the export binding. The tree scan remains unverified.';
+    const linkDetail = (output: string) => output.split('\n').find(line => line.includes('docs.links-resolve:')) ?? '';
+    check(!linkDetail(good.stdout).includes(exportNotice), '1857: a checkout without a binding omits the export notice');
+    git('config', '--local', 'deskpost.exportRoot', git('rev-parse', 'HEAD'));
+    const bound = linkDetail(run().stdout);
+    check(bound.startsWith('PASS') && bound.includes(exportNotice), '1857: a valid export binding states what was trusted: ' + bound);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1858. The WSL preamble reports version drift before running the script.
+async function section1858(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {spawnSync} = await import('node:child_process');
+  const {CLONE, PREAMBLE, encodeScript} = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/wsl-run.mts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w26-wsl-versions-'));
+  try {
+    const app = path.join(root, CLONE, 'app');
+    const bin = path.join(root, CLONE, 'node/bin');
+    const workflow = path.join(app, '.forgejo/workflows/ci.yml');
+    fs.mkdirSync(bin, {recursive: true});
+    fs.mkdirSync(path.dirname(workflow), {recursive: true});
+    const source = fs.readFileSync(path.join(PROGRAM_ROOT, '.forgejo/workflows/ci.yml'), 'utf8');
+    fs.writeFileSync(workflow, source);
+    const binary = (name: string, version: string) =>
+      fs.writeFileSync(path.join(bin, name), `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, {mode: 0o755});
+    binary('node', 'v24.12.0');
+    const run = () => spawnSync('bash', ['-c', PREAMBLE, 'fixture.sh', encodeScript('echo script-ran\nexit 7\n')],
+      {env: {...process.env, HOME: root, BASH_ENV: ''}, encoding: 'utf8', timeout: 30_000});
+    binary('git', 'git version 2.43.0');
+    const drift = run();
+    equal(drift.status, 7, '1858: drift does not change the script exit');
+    check(/^wsl-run: .*git 2\.43\.0.*2\.39\.5.*\nscript-ran\n$/.test(drift.stdout),
+      '1858: one mismatch line precedes script output: ' + drift.stdout + drift.stderr);
+    binary('git', 'git version 2.39.5');
+    const match = run();
+    equal(match.stdout, 'script-ran\n', '1858: real workflow image has a matching baseline');
+    binary('node', 'v23.9.0');
+    const nodeDrift = run();
+    check(/^wsl-run: .*Node v23\.9\.0.*24.*\nscript-ran\n$/.test(nodeDrift.stdout), '1858: Node major drift is named');
+    fs.writeFileSync(workflow, source.replace(/^(\s*image:\s*)\S+/m, '$1node:25-bookworm'));
+    const unknown = run();
+    check(/^wsl-run: .*node:25-bookworm.*no version baseline.*\nscript-ran\n$/.test(unknown.stdout),
+      '1858: an unknown image warns and the script still runs');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1859. Recovery commands quote PowerShell literal paths.
+async function section1859(): Promise<void> {
+  const {spawnSync} = await import('node:child_process');
+  const {recoveryGuardRemovalCommand} = await import('../../src/locks.ts');
+  const quotes = ["'", '\u2018', '\u2019', '\u201a', '\u201b'];
+  const cases = quotes.map(quote => {
+    const path = 'a' + quote + 'b';
+    const command = recoveryGuardRemovalCommand(path, 'win32');
+    equal(command, "Remove-Item -LiteralPath 'a" + quote + quote + "b'",
+      '1859: literal quote is doubled (U+' + quote.codePointAt(0)!.toString(16) + ')');
+    return {path, command};
+  });
+  const data = Buffer.from(JSON.stringify(cases), 'utf8').toString('base64');
+  const parser = [
+    "$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + data + "'))",
+    'foreach ($case in (ConvertFrom-Json -InputObject $json)) {',
+    '  $tokens = $null; $errors = $null',
+    '  $tree = [System.Management.Automation.Language.Parser]::ParseInput($case.command, [ref]$tokens, [ref]$errors)',
+    '  $commands = @($tree.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))',
+    '  if ($errors.Count -ne 0 -or $commands.Count -ne 1 -or $commands[0].CommandElements.Count -ne 3 -or',
+    '      $commands[0].CommandElements[2].Value -cne $case.path) { exit 1 }',
+    '}',
+    'exit 0',
+  ].join('\n');
+  const encoded = Buffer.from(parser, 'utf16le').toString('base64');
+  for (const shell of ['pwsh', 'powershell.exe']) {
+    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      {encoding: 'utf8', timeout: 30_000, windowsHide: true});
+    if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') continue;
+    equal(result.status, 0, '1859: each command parses as one command with the original literal path: ' +
+      (result.error ?? result.stderr));
+    return;
+  }
+  console.log('1859: no PowerShell here; the parser case runs on Windows');
+}
+
+// --- 1860. Closed Book refusals name the file routes for literal text.
+async function section1860(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'w27-literal-')));
+  try {
+    const env = {LIBRARY_WORKSPACES: path.join(root, 'registry'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: ''};
+    const lib = path.join(root, 'lib');
+    equal(runCli(['init', lib], {cwd: root, env}).exit, 0, '1860: fixture init');
+    const book = 'shelf/demo/wiki/page.md';
+    fs.mkdirSync(path.dirname(path.join(lib, book)), {recursive: true});
+    fs.writeFileSync(path.join(lib, book), 'fixture');
+    const desk = path.join(lib, '.claude', 'seats', 'first');
+    fs.mkdirSync(desk, {recursive: true});
+    fs.writeFileSync(path.join(desk, '.open-books'), '');
+
+    const literal = 'A reference to ' + book;
+    for (const command of ["printf %s '" + literal + "' > out.md",
+      "deskpost train add x --title '" + literal + "'", 'cat ' + book]) {
+      const answer = runCli(['hook', 'shell-shelf-read', '--workspace', lib, '--seat', 'first'],
+        {cwd: lib, env, input: JSON.stringify({tool_name: 'Bash', tool_input: {command}})}).stdout;
+      const output = JSON.parse(answer || '{}').hookSpecificOutput;
+      equal(output?.permissionDecision, 'deny', '1860: closed path is refused: ' + command);
+      const reason = output?.permissionDecisionReason ?? '';
+      check(reason.includes('A shell command cannot read around that') && reason.includes('use the Grep tool'),
+        '1860: the previous remedy remains: ' + reason);
+      check(reason.includes('the file tool') && reason.includes('--title-path') &&
+        reason.includes('--content-path') && reason.includes('--note-path') && reason.includes('quoted argument'),
+        '1860: literal payload remedy: ' + reason);
+    }
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1861. Only trailing Node warnings can follow a successful test verdict.
+async function section1861(): Promise<void> {
+  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
+  const {verdict} = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel/test/run-parallel.ts')).href);
+  const pass = 'kernel self-test passed (7 checks).\n';
+  const warnings = '(node:321) ExperimentalWarning: fixture\n(Use \x60node --trace-warnings ...\x60 to show where the warning was created)\n';
+  same(verdict(1, 0, pass + warnings), {verdict: 'PASS', checks: 7, detail: ''}, '1861: warning preserves pass and count');
+  equal(verdict(1, 0, pass + 'kernel self-test FAILED\n').verdict, 'FAIL', '1861: trailing failure remains red');
+  equal(verdict(1, 1, pass).verdict, 'FAIL', '1861: nonzero exit remains red');
+}
+
+// --- 1862. Kickoff checks warn about duplicate section claims and paths without areas.
+async function section1862(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {childEnv} = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w27-kickoff-warnings-'));
+  try {
+    const put = (file: string, contents: string) => {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), {recursive: true});
+      fs.writeFileSync(target, contents);
+    };
+    for (const file of ['tools/kickoff-check.mts', 'tools/section-select.mts', 'tools/check-map.json',
+      'kernel/test/gate-lock.ts', 'kernel/src/kickoffcheck.ts', 'kernel/src/verbs.ts', 'kernel/src/contentpath.ts',
+      'docs/areas.json']) put(file, fs.readFileSync(path.join(PROGRAM_ROOT, file), 'utf8'));
+    fs.cpSync(path.join(PROGRAM_ROOT, 'kernel/src'), path.join(root, 'kernel/src'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'docs/adr'));
+    const kickoff = 'TRAIN: example\nWHY NOW:\n- Fixture\nOWNS PATHS:\n- \x60tools/new.mts\x60\nSTAY OUT OF: none\n' +
+      'ROWS:\n1. Example\n   Done when: complete.\nCHARTER: example\nCLOSE: finish.\n**Stop.**\n';
+    const env = {...childEnv(), DESKPOST_GATE_DIR: path.join(root, 'absent')};
+    const run = () => spawnSync(process.execPath, ['tools/kickoff-check.mts', 'kickoff.md'], {cwd: root, env, encoding: 'utf8', timeout: 30_000});
+    put('tools/new.mts', 'export {};\n');
+    put('kernel/test/section-covers.json', JSON.stringify({schema: 1, about: 'Fixture', sections: {}}));
+    put('kickoff.md', kickoff.replace('tools/new.mts', 'none'));
+    const clean = run();
+    check(clean.status === 0 && !clean.stderr.includes('kickoff-check: warning:'), '1862: clean kickoff: ' + clean.stdout + clean.stderr);
+
+    put('kickoff.md', kickoff);
+    const unlisted = run();
+    check(unlisted.status === clean.status && /^kickoff-check: warning: tools\/new\.mts .*node tools\/areas\.mts --check$/m.test(unlisted.stderr),
+      '1862: unlisted checkout file warns: ' + unlisted.stdout + unlisted.stderr);
+    const cover = JSON.stringify({schema: 1, about: 'Fixture', sections: {'1800': []}});
+    put('kernel/test/section-covers.json', cover);
+    put('kernel/test/lanes/guards-and-tooling.covers.json', cover);
+    put('kickoff.md', kickoff.replace('tools/new.mts', 'none'));
+    const duplicate = run();
+    check(duplicate.status === clean.status && /^kickoff-check: warning: section claims unreadable \(section 1800 is claimed in two files: .+\); the pinned-section rule is off for this check$/m.test(duplicate.stderr),
+      '1862: duplicate claims warn without failing the kickoff: ' + duplicate.stdout + duplicate.stderr);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1863. An integration branch's commit subject names its unit.
+async function section1863(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const {childEnv} = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w27-commit-subject-'));
+  try {
+    const env = {...repositoryNeutralEnv(childEnv()), HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root};
+    const run = (...args: string[]) => spawnSync('git', args, {cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', timeout: 30_000});
+    const git = (...args: string[]) => {
+      const result = run(...args);
+      if (result.status !== 0) throw Error(result.stderr || String(result.error ?? result.status));
+    };
+    git('init', '-q', '-b', 'master');
+    git('config', 'user.name', 'Fixture');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'core.hooksPath', '.githooks');
+    fs.mkdirSync(path.join(root, '.library'));
+    fs.writeFileSync(path.join(root, '.library/identity-denylist.txt'), 'fixture-denylisted-term\n');
+    const copy = (file: string) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true});
+      fs.copyFileSync(path.join(PROGRAM_ROOT, file), path.join(root, file));
+    };
+    copy('.githooks/commit-msg');
+    fs.chmodSync(path.join(root, '.githooks/commit-msg'), 0o755);
+    copy('tools/scan.ts');
+    if (fs.existsSync(path.join(PROGRAM_ROOT, 'tools/commit-subject.mts'))) copy('tools/commit-subject.mts');
+    fs.mkdirSync(path.join(root, 'kernel'));
+    fs.cpSync(path.join(PROGRAM_ROOT, 'kernel/src'), path.join(root, 'kernel/src'), {recursive: true});
+    git('commit', '--allow-empty', '-m', 'Any master subject');
+    git('switch', '-qc', 'desk/x');
+    git('commit', '--allow-empty', '-m', 'Any desk subject');
+    git('switch', '-qc', 'int/c161');
+    git('commit', '--allow-empty', '-m', 'c161-r2 row 1: x');
+    git('commit', '--allow-empty', '-m', 'c161: x');
+    git('commit', '--allow-empty', '-m', 'c161 spare S1: x');
+    git('commit', '--allow-empty', '-m', 'fixup! c161: x');
+    const wrong = run('commit', '--allow-empty', '-m', 'row 1: x');
+    check(wrong.status !== 0 && (wrong.stdout + wrong.stderr).includes('c161 row <n>:'), '1863: refusal names the expected form: ' + wrong.stderr);
+    const ambiguous = run('commit', '--allow-empty', '-m', 'c1610 row 1: x');
+    check(ambiguous.status !== 0, '1863: a different unit with the same prefix is refused');
+    git('switch', '-q', '--detach');
+    git('commit', '--allow-empty', '-m', 'Any detached subject');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1864. The head returned before the lander requested a run at the intervening commit.
+async function section1864(): Promise<void> {
+  const { createServer } = await import('node:http');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { createLander, LABELS } = await import(pathToFileURL(join(PROGRAM_ROOT, 'tools/lander.mts')).href);
+  const head = 'a'.repeat(40), intervening = 'b'.repeat(40);
+  const labels = Object.values(LABELS).map((name, id) => ({ name, id: id + 1 }));
+  const checking = labels.find(label => label.name === LABELS.checking)!;
+  const held = labels.find(label => label.name === LABELS.held)!;
+  const pull = { number: 1, head: { sha: head, ref: 'int/fixture' }, base: { ref: 'master' }, labels: [checking] };
+  const comments = [{ id: 1, body: `lander: run-request ${head} #1 after run 10`, user: { login: 'fixture' } }];
+  const runs = [{ id: 21, index_in_repo: 11, commit_sha: intervening, workflow_id: 'ci.yml', event: 'pull_request',
+    status: 'running', event_payload: { pull_request: { number: 1 }, label: { name: LABELS.checking } } }];
+  const server = createServer(async (request, response) => {
+    const route = new URL(request.url!, 'http://fixture').pathname.replace('/api/v1/repos/owner/repo', '');
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    let status = 200, result: unknown = {};
+    if (route === '/labels') result = labels;
+    else if (route === '/pulls') result = [pull];
+    else if (route === '/pulls/1') result = pull;
+    else if (route === '/actions/runs') result = { total_count: runs.length, workflow_runs: runs };
+    else if (route === '/issues/1/comments' && request.method === 'GET') result = comments;
+    else if (route === '/issues/1/comments') {
+      result = { id: comments.length + 1, body: JSON.parse(body).body, user: { login: 'fixture' } };
+      comments.push(result as typeof comments[number]);
+    } else if (route === '/issues/1/labels' && JSON.parse(body).labels.includes(held.id)) {
+      pull.labels.push(held);
+      result = pull.labels;
+    } else if (route === `/issues/1/labels/${checking.id}` && request.method === 'DELETE') {
+      pull.labels = pull.labels.filter(label => label.id !== checking.id);
+      status = 204;
+    } else status = 404;
+    response.writeHead(status, { 'Content-Type': 'application/json' });
+    response.end(status === 204 ? undefined : JSON.stringify(result));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address() as import('node:net').AddressInfo;
+    const lander = createLander({ repoUrl: `http://127.0.0.1:${address.port}/owner/repo`, login: 'fixture',
+      readSecrets: async () => ({ token: 'fixture-token', webhook: 'fixture-webhook' }), say: () => {} });
+    check(await lander.pass(), '1864: a run at the intervening commit lets the lander advance');
+    same(pull.labels, [held], '1864: the pull leaves checking and is held');
+    same(comments.map(comment => comment.body), [
+      `lander: run-request ${head} #1 after run 10`,
+      `lander: held ${head}: head returned to an earlier commit; reset to check it again`,
+    ], '1864: the lander gives the recovery reason without asking for another run');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
+// --- 1865. Landing stops waiting for a child that misses its deadline.
+async function section1865(): Promise<void> {
+  const { basename, join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { execute } = await import(pathToFileURL(join(PROGRAM_ROOT, 'tools/land.mts')).href);
+  const { performance } = await import('node:perf_hooks');
+  const { existsSync, mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const limit = 750;
+  const alive = (pid: number) => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+  };
+  const checkTree = async (detached: boolean) => {
+    const root = mkdtempSync(join(tmpdir(), 'land-child-tree-'));
+    const pidsFile = join(root, 'pids');
+    const start = performance.now();
+    let failure = '';
+    try {
+      try {
+        await execute(process.execPath, ['-e', `
+          const { spawn } = require('node:child_process');
+          const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore', windowsHide: true, detached: ${detached} });
+          require('node:fs').writeFileSync(process.argv[1], JSON.stringify([process.pid, grandchild.pid]));
+        `, pidsFile], root, process.env, limit);
+      } catch (error) {
+        failure = (error as Error).message;
+      }
+      check(failure.includes(basename(process.execPath)) && failure.includes(`${limit} ms`), '1865: the rejection names the child and its limit');
+      check(performance.now() - start < 2000, '1865: the child is stopped before its own exit');
+      const pids: number[] = JSON.parse(readFileSync(pidsFile, 'utf8'));
+      try {
+        for (const pid of pids) {
+          let stopped = !alive(pid);
+          if (!stopped && process.platform === 'linux') {
+            try {
+              const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+              stopped = stat[stat.lastIndexOf(')') + 2] === 'Z';
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+              stopped = true;
+            }
+          }
+          check(stopped, `1865: process ${pid} was still running at rejection`);
+        }
+      } finally {
+        for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  await checkTree(false);
+  if (process.platform === 'linux') await checkTree(true);
+  const windowsCase = prerequisite(1865, () => process.platform === 'win32', 'the missing taskkill case requires Windows');
+  if (!windowsCase) return;
+  const empty = mkdtempSync(join(tmpdir(), 'land-no-taskkill-'));
+  const pidFile = join(empty, 'pid');
+  const env = { ...process.env };
+  const systemRoot = process.env.SystemRoot;
+  const deadline = limit + 2000;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const started = performance.now();
+    process.env.SystemRoot = empty;
+    const result = await Promise.race([
+      execute(process.execPath, ['-e', `
+        require('node:fs').writeFileSync(process.argv[1], String(process.pid));
+        setTimeout(() => {}, 10000);
+      `, pidFile], empty, env, limit)
+        .then(() => 'child completed', (error: Error) => error.message),
+      new Promise<string>(resolve => { deadlineTimer = setTimeout(resolve, deadline, 'deadline elapsed'); }),
+    ]);
+    equal(result, `${basename(process.execPath)} timed out after ${limit} ms; child tree termination failed`,
+      '1865: missing taskkill rejects with the termination failure');
+    check(performance.now() - started < deadline, '1865: missing taskkill settles before the child exits');
+  } finally {
+    if (systemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = systemRoot;
+    clearTimeout(deadlineTimer);
+    try {
+      const wrotePid = existsSync(pidFile);
+      if (wrotePid) {
+        const pid = Number(readFileSync(pidFile, 'utf8'));
+        if (alive(pid)) process.kill(pid, 'SIGKILL');
+      }
+      check(wrotePid, '1865: the child started and wrote its pid before the timeout');
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  }
+}
+
+// --- 1866. A section's child Git uses the fixture repository even when the hook has repository variables.
+async function section1866(): Promise<void> {
+  const { mkdtempSync, realpathSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join, resolve } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'section-1866-')));
+  const outer = join(root, 'outer'), fixture = join(root, 'fixture');
+  const env = childEnv();
+  delete env.GIT_DIR;
+  delete env.GIT_INDEX_FILE;
+  const git = (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) =>
+    spawnSync('git', args, { cwd, env, encoding: 'utf8', windowsHide: true });
+  const originalDir = process.env.GIT_DIR, originalIndex = process.env.GIT_INDEX_FILE;
+  try {
+    for (const folder of [outer, fixture]) {
+      const init = git(root, env, 'init', folder);
+      if (init.status !== 0) throw Error(`1866: git init failed: ${init.stderr}`);
+    }
+    process.env.GIT_DIR = join(outer, '.git');
+    process.env.GIT_INDEX_FILE = join(outer, '.git', 'index');
+    const result = git(fixture, childEnv(), 'rev-parse', '--git-dir');
+    equal(result.status, 0, '1866: fixture Git resolves its repository');
+    equal(resolve(fixture, result.stdout.trim()), join(fixture, '.git'), '1866: child Git ignores the hook repository');
+    check(childEnv().GIT_INDEX_FILE === undefined, '1866: child Git ignores the hook index');
+  } finally {
+    if (originalDir === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = originalDir;
+    if (originalIndex === undefined) delete process.env.GIT_INDEX_FILE;
+    else process.env.GIT_INDEX_FILE = originalIndex;
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
+// --- 1867. The three secret scan entry points accept only a retained file named for the scanner.
+async function section1867(): Promise<void> {
+  const fs = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { pathToFileURL } = await import('node:url');
+  const root = fs.mkdtempSync(join(tmpdir(), 'section-1867-'));
+  try {
+    const exe = process.platform === 'win32' ? '.exe' : '';
+    const valid = join(root, 'gitleaks' + exe), invalid = join(root, 'unrelated' + exe);
+    for (const file of [valid, invalid]) {
+      fs.copyFileSync(process.execPath, file);
+      fs.chmodSync(file, 0o755);
+    }
+    const stub = join(root, 'stub.mjs');
+    fs.writeFileSync(stub, [
+      "import { basename } from 'node:path';",
+      "if (/^(gitleaks|unrelated)(\\.exe)?$/.test(basename(process.execPath))) {",
+      "  if (process.argv[1]?.endsWith('version')) console.log('8.30.2');",
+      "  process.exit(0);",
+      "}",
+    ].join('\n'));
+    const scan = pathToFileURL(join(PROGRAM_ROOT, 'tools/scan.ts')).href;
+    const entryPoints = [
+      { args: [join(PROGRAM_ROOT, 'tools/staged-secrets.mts')], accepted: 'gitleaks 8.30.2' },
+      { args: ['--input-type=module', '-e', `import { gitleaks } from ${JSON.stringify(scan)}; console.log(gitleaks(process.cwd()).detail);`], accepted: 'found nothing' },
+      { args: ['--input-type=module', '-e', `import { secretsScan } from ${JSON.stringify(scan)}; console.log(secretsScan(process.cwd()).detail);`], accepted: 'found nothing' },
+    ];
+    for (const [index, { args, accepted }] of entryPoints.entries()) {
+      const run = (file: string) => spawnSync(process.execPath, args, {
+        cwd: root, encoding: 'utf8', windowsHide: true, timeout: 30_000,
+        env: { ...process.env, PATH: join(root, 'absent'), NODE_OPTIONS: '--import=' + pathToFileURL(stub).href, DESKPOST_GITLEAKS: file },
+      });
+      const good = run(valid), bad = run(invalid);
+      check(good.status === 0 && good.stdout.includes(accepted), `1867: reader ${index + 1} accepts gitleaks: ${good.stderr}`);
+      check(!bad.stdout.includes(accepted) && bad.stderr.includes('ignored DESKPOST_GITLEAKS') && bad.stderr.includes('unrelated'),
+        `1867: reader ${index + 1} reports and ignores the unrelated executable: ${bad.stdout}${bad.stderr}`);
+    }
+  } finally {
+    fs.rmSync(root, { force: true, recursive: true });
+  }
+}
+
+// --- 1868. The compiled module and scan tooling share the identity terms.
+async function section1868(): Promise<void> {
+  const fs = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { pathToFileURL } = await import('node:url');
+  const kernel = await import(pathToFileURL(join(PROGRAM_ROOT, 'kernel/src/identityterms.ts')).href);
+  const scan = await import(pathToFileURL(join(PROGRAM_ROOT, 'tools/scan.ts')).href);
+  const root = fs.mkdtempSync(join(tmpdir(), 'section-1868-'));
+  try {
+    const config = join(root, '.claude');
+    fs.mkdirSync(config);
+    fs.writeFileSync(join(config, '.library-mcp-url'), 'https://fixture.example.invalid/mcp\n');
+    const terms = kernel.deploymentDenylist(root);
+    check(terms.includes('fixture.example.invalid'), '1868: configuration contributes the endpoint host');
+    same(scan.deploymentDenylist(root), terms, '1868: both modules read the same deployment values');
+    const sources = [{ source: 'fixture', text: 'Approved fixture.example.invalid\nactual FIXTURE.EXAMPLE.INVALID' }];
+    const allowed = ['Approved fixture.example.invalid'];
+    const hits = kernel.identityHits(sources, terms, allowed);
+    same(hits, [{ source: 'fixture', line: 2, kind: 'identity', match: 'fixture.example.invalid' }],
+      '1868: match positions and the approval exemption survive the move');
+    same(scan.identityHits(sources, terms, allowed), hits, '1868: both modules produce the same hits');
+  } finally {
+    fs.rmSync(root, { force: true, recursive: true });
+  }
+}
+
+// --- 1869. The source check warns at the same canonical byte boundary as kickoff send.
+async function section1869(): Promise<void> {
+  const fs = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { KICKOFF_SIZE_LIMIT } = await import('../../src/kickoff.ts');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(join(tmpdir(), 'section-1869-'));
+  try {
+    const file = join(root, 'w900.md');
+    const prefix = '# Kickoff fixture\n\nTRAIN: fixture\nWHY NOW:\n- ';
+    const suffix = '\nOWNS PATHS:\n- `none`\nSTAY OUT OF: none\n' +
+      'ROWS:\n1. Fixture\n   Done when: checked.\nCHARTER: fixture\nCLOSE: finish.\n**Stop.**\n';
+    const fill = (bytes: number) => prefix + 'é' + 'x'.repeat(bytes - Buffer.byteLength(prefix + 'é' + suffix)) + suffix;
+    const checkSize = (bytes: number) => {
+      // Disk CRLF makes the raw file longer than the canonical transport payload.
+      fs.writeFileSync(file, fill(bytes).replaceAll('\n', '\r\n'));
+      return spawnSync(process.execPath, [join(PROGRAM_ROOT, 'tools/kickoff-check.mts'), file], {
+        cwd: root, env: { ...childEnv(), DESKPOST_GATE_DIR: join(root, 'absent') },
+        windowsHide: true, encoding: 'utf8', timeout: 30_000,
+      });
+    };
+    const atLimit = checkSize(KICKOFF_SIZE_LIMIT), over = checkSize(KICKOFF_SIZE_LIMIT + 1);
+    equal(atLimit.status, 0, '1869: canonical payload at the limit passes: ' + atLimit.stdout + atLimit.stderr);
+    equal(over.status, 0, '1869: the size warning does not refuse the kickoff: ' + over.stdout + over.stderr);
+    check(!atLimit.stderr.includes('kickoff send'), '1869: no send-size warning at the limit');
+    const warnings = over.stderr.split(/\r?\n/).filter(line => line.includes('kickoff send'));
+    equal(warnings.length, 1, '1869: an oversized payload has one send-size warning');
+    const warning = warnings[0] ?? '';
+    check(warning.includes(`${KICKOFF_SIZE_LIMIT + 1} bytes`) && warning.includes(`${KICKOFF_SIZE_LIMIT} bytes`) &&
+      warning.includes('another office') && warning.includes('refuse'), '1869: warning names both sizes and the refusal');
+  } finally {
+    fs.rmSync(root, { force: true, recursive: true });
+  }
+}
+
+// --- 1871. Host remedies preserve helper paths inside JSON-quoted reader text.
+async function section1871(): Promise<void> {
+  const { hostRemedies, NOT_SHIPPED } = await import('../../src/remedy.ts');
+  const helper = 'tools/CodexBindings.ps1';
+  const line = `Run ${helper} to see the binding.`;
+  equal(hostRemedies(line, 'win32-compiled'), `Run CodexBindings${NOT_SHIPPED} to see the binding.`,
+    '1871: an authored remedy still uses the installed wording');
+  const note = `note: "" -> "x ${helper}:202"`;
+  equal(hostRemedies(note, 'win32-compiled'), note, '1871: the note is preserved as written');
+  const prefixed = 'Unclosed "prefix; ' + note;
+  equal(hostRemedies(prefixed, 'win32-compiled'), prefixed, '1871: a stray quote does not expose a later reader value');
+  const commands = JSON.stringify('pass -WorkspacePath, pass -Seat, library desk');
+  equal(hostRemedies(commands + ' pass -WorkspacePath, pass -Seat, library desk', 'posix'),
+    commands + ' pass --workspace, pass --seat, deskpost desk', '1871: every pass leaves reader values alone');
+  const escaped = JSON.stringify(`x "quoted" ${helper}:202`);
+  equal(hostRemedies(`${escaped} and ${helper}`, 'win32-compiled'), `${escaped} and CodexBindings${NOT_SHIPPED}`,
+    '1871: escaped quotes stay inside the reader text and the following remedy changes');
+}
+
+async function section1872(): Promise<void> {
+  const fs = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { dirname, join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(join(tmpdir(), 'kickoff-shared-'));
+  try {
+    for (const file of ['tools/kickoff-check.mts', 'tools/section-select.mts', 'tools/check-map.json', 'docs/areas.json', 'kernel/test/section-covers.json', 'kernel/test/gate-lock.ts']) {
+      const target = join(root, file);
+      fs.mkdirSync(dirname(target), { recursive: true });
+      fs.copyFileSync(join(PROGRAM_ROOT, file), target);
+    }
+    fs.mkdirSync(join(root, 'docs/adr'));
+    fs.symlinkSync(join(PROGRAM_ROOT, 'kernel/src'), join(root, 'kernel/src'), 'junction');
+    fs.writeFileSync(join(root, 'kernel/test/selftest.ts'), '');
+    fs.writeFileSync(join(root, 'tools/x.mts'), '');
+    const file = join(root, 'w900.md');
+    fs.writeFileSync(file, '# Kickoff fixture\n\nTRAIN: fixture\nWHY NOW:\n- fixture\n'
+      + 'OWNS PATHS:\n- `kernel/test/selftest.ts`\n- `kernel/test/section-covers.json`\n- `tools/x.mts`\n'
+      + 'STAY OUT OF: none\nROWS:\n1. Fixture\n   Done when: checked.\nCHARTER: fixture\nCLOSE: finish.\n**Stop.**\n');
+    const result = spawnSync(process.execPath, [join(root, 'tools/kickoff-check.mts'), file], {
+      cwd: root, env: { ...childEnv(), DESKPOST_GATE_DIR: join(root, 'absent') }, encoding: 'utf8', windowsHide: true, timeout: 30_000,
+    });
+    equal(result.status, 0, '1872: fixture kickoff passed: ' + result.stdout + result.stderr);
+    check(!/kernel\/test\/(?:selftest\.ts|section-covers\.json) is absent from docs\/areas\.json/.test(result.stderr),
+      '1872: shared files do not receive area warnings');
+    check(result.stderr.includes('tools/x.mts is absent from docs/areas.json'), '1872: an unlisted tool still receives a warning');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1873. A regenerated letter fixture guards the named recipient and accepts an answer.
+async function section1873(): Promise<void> {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = mkdtempSync(join(tmpdir(), 'letter-fixture-guard-'));
+  const tools = join(PROGRAM_ROOT, 'tools', 'seat-rules-check');
+  const out = join(root, 'fixtures');
+  const options = { cwd: root, env: childEnv(), encoding: 'utf8' as const, windowsHide: true };
+  try {
+    const recorded = spawnSync(process.execPath,
+      [join(tools, 'record-letters.mts'), '--out', out, '--scratch', root],
+      { ...options, timeout: 90_000 });
+    equal(recorded.status, 0, '1873: recording completed: ' + (recorded.error ?? recorded.stderr));
+    if (recorded.status !== 0) return;
+    const letters = join(out, 'reply-to-closed', 'letters-ring.json');
+    const fixture = JSON.parse(readFileSync(letters, 'utf8'));
+    equal(fixture.expected_capture_for, 'recipient', '1873: regenerated fixture keeps the recipient guard');
+    const request = (id: number, args: Record<string, string>) => JSON.stringify({
+      jsonrpc: '2.0', id, method: 'tools/call',
+      params: { name: 'capture_letter', arguments: { title: 'Fixture letter', body: 'Fixture body', ...args } },
+    });
+    const served = spawnSync(process.execPath,
+      [join(tools, 'fixture-server.mts'), '--root', root, '--log', join(root, 'calls.jsonl'), '--letters', letters],
+      { ...options, timeout: 10_000, input: request(1, { for: 'other' }) + '\n' + request(2, { answers: fixture.answered_page }) + '\n' });
+    equal(served.status, 0, '1873: fixture server completed: ' + (served.error ?? served.stderr));
+    if (served.status !== 0) return;
+    const replies = served.stdout.trim().split('\n').map(line => JSON.parse(line).result);
+    check(replies[0]?.isError === true && replies[0]?.content[0]?.text === 'refused: no seat other here',
+      '1873: the fixture server refuses a different named recipient');
+    same(replies[1], { content: [{ type: 'text', text: fixture.outputs.answers }] },
+      '1873: an answer without a named recipient returns the recorded output');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1874. The landing worktree and gate lock stay held until the child closes.
+async function section1874(): Promise<void> {
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { releaseAfterChild } = await import(pathToFileURL(join(PROGRAM_ROOT, 'tools/land.mts')).href);
+  let close!: () => void;
+  const closed = new Promise<void>(resolve => { close = resolve; });
+  const lines: string[] = [];
+  let released = false;
+  const release = async () => { released = true; };
+  const pending = releaseAfterChild({ pid: 12345, closed }, (line: string) => lines.push(line), release);
+  await Promise.resolve();
+  check(!released, '1874: cleanup has not run while the child is open');
+  equal(lines[0], 'holding the gate lock until process 12345 exits; stop it with taskkill /T /F /PID 12345',
+    '1874: the hold notice names the child and the stop command');
+  close();
+  await pending;
+  check(released, '1874: cleanup ran after the child closed');
+
+  released = false;
+  lines.length = 0;
+  const alreadyClosed = releaseAfterChild(undefined, (line: string) => lines.push(line), release);
+  check(released, '1874: cleanup starts immediately when no child is open');
+  await alreadyClosed;
+  equal(lines.length, 0, '1874: an already closed child needs no hold notice');
+}
+
+// --- 1892. The Linux workflow checks the areas file before self-tests.
+async function section1892(): Promise<void> {
+  const { existsSync, readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const workflow = join(PROGRAM_ROOT, '.forgejo/workflows/ci.yml');
+  if (!prerequisite(1892, () => existsSync(workflow), 'requires .forgejo/workflows/ci.yml')) return;
+  const text = readFileSync(workflow, 'utf8');
+  const step = /^      - name: Areas file matches the tree\s*\n((?:^ {8}[^\n]*\n?)*)/m.exec(text);
+  check(step !== null, '1892: the workflow has an areas check step');
+  if (!step || step[1] === undefined) return;
+  check(/^        working-directory: src$/m.test(step[1]), '1892: the areas check runs from the repository root');
+  check(/^        run: node tools\/areas\.mts --check$/m.test(step[1]), '1892: the step runs the areas checker');
+  const install = text.indexOf('- name: npm ci (kernel)');
+  const selftest = text.indexOf('- name: Self-test,');
+  check(install >= 0 && install < step.index && step.index < selftest,
+    '1892: the areas check runs after kernel dependencies install and before self-tests');
+}
+
+// --- 1893. The Linux reaper preserves success for an explicitly supplied command.
+async function section1893(): Promise<void> {
+  const { spawnSync } = await import('node:child_process');
+  const { join } = await import('node:path');
+  const result = spawnSync('python3', [join(PROGRAM_ROOT, 'tools/ci-reap.py'), '--', process.execPath, '-e', 'process.exit(0)'], {
+    encoding: 'utf8', timeout: 30_000,
+  });
+  equal(result.status, 0, '1893: the reaper runs an explicit command: ' + (result.error ?? result.stderr));
 }

@@ -2,12 +2,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDirectory, writeAtomicText } from './fsx.ts';
+import { readerText } from './remedy.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
-import { resolveSeatName } from './seatdesk.ts';
+import { fencedLineMask, headings, itemBlocks, toLines } from './hubedit.ts';
+import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
 
 type Item = { id: string; title: string; place: string; first_asked: string; source: string; status: 'open' | 'done' | 'dropped'; note: string; lane?: string; group?: string };
 /** A car's opening and arrival (kickoffs/s184): local dates; the front car is the one opened and not arrived. */
-export type Car = { place: string; opened: string; arrived: string | null };
+export type Car = { place: string; opened: string; arrived: string | null; finish_line?: string; plan?: string };
 export type TrainRecord = { schema: 1; changed_at: string; changed_by: string; items: Item[]; cars?: Car[] };
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PLACE = /^(?:foundation|running|bucket:[12]|(?:car|lane):[a-z0-9][a-z0-9.-]*)$/;
@@ -40,6 +42,8 @@ export function readTrain(workspace: string): TrainRecord | null {
     const places = new Set<string>();
     for (const c of r.cars) {
       if (!c || !line(c.place) || !CAR.test(c.place) || places.has(c.place) || !line(c.opened) || !date(c.opened)
+        || (c.finish_line !== undefined && (!line(c.finish_line) || !c.finish_line.trim()))
+        || (c.plan !== undefined && (!line(c.plan) || !c.plan.trim()))
         || (c.arrived !== null && (!line(c.arrived) || !date(c.arrived) || c.arrived < c.opened))) throw new Error('The train register contains an invalid or duplicate car.');
       places.add(c.place);
     }
@@ -55,14 +59,14 @@ export function trainText(record: TrainRecord | null, markdown = false, by?: str
   if (by === 'lane') return trainLanePage(record).map(p => `${markdown ? '## ' : ''}${p.place}\n` + p.lanes.map(l =>
     `${markdown ? '### ' : '  '}${l.lane} (${l.count} open)\n` + l.groups.map(g =>
       `${markdown ? '#### ' : '    '}${g.group} (${g.count} open)\n` + g.items.map(i =>
-        `${markdown ? '- ' : '      '}${i.id}: ${i.title}${i.note ? `; ${i.note}` : ''} (${i.first_asked})`).join('\n')).join('\n')).join('\n'))
+        `${markdown ? '- ' : '      '}${i.id}: ${readerText(i.title)}${i.note ? `; ${readerText(i.note)}` : ''} (${i.first_asked})`).join('\n')).join('\n')).join('\n'))
     .concat(`Changed ${record.changed_at} by ${record.changed_by}`).join('\n\n');
   const groups = new Map<string, Item[]>();
   for (const item of record.items.filter(i => i.status === 'open')) {
     if (!groups.has(item.place)) groups.set(item.place, []);
     groups.get(item.place)!.push(item);
   }
-  return [...groups].map(([place, items]) => `${markdown ? '## ' : ''}${place}\n${items.map(i => `${markdown ? '- ' : '  '}${i.id}: ${i.title}${i.note ? `; ${i.note}` : ''} (${i.first_asked})`).join('\n')}`).concat(`Changed ${record.changed_at} by ${record.changed_by}`).join('\n\n');
+  return [...groups].map(([place, items]) => `${markdown ? '## ' : ''}${place}\n${items.map(i => `${markdown ? '- ' : '  '}${i.id}: ${readerText(i.title)}${i.note ? `; ${readerText(i.note)}` : ''} (${i.first_asked})`).join('\n')}`).concat(`Changed ${record.changed_at} by ${record.changed_by}`).join('\n\n');
 }
 
 /** The optional lane page preserves first-seen place, lane and group order. */
@@ -119,6 +123,41 @@ function notFuture(flag: string, value: string, today: string): void {
   if (value > today) throw new Error(`${flag} ${value} is later than today, ${today}; it must be a day that has come.`);
 }
 
+export function commandLiteral(value: string, platform: NodeJS.Platform = process.platform): string {
+  // PowerShell's about_Quoting_Rules treats typographic single quotes as delimiters too.
+  const escaped = platform === 'win32'
+    ? value.replace(/['\u2018-\u201b]/g, '$&$&')
+    : value.replaceAll("'", "'\\''");
+  return "'" + escaped + "'";
+}
+
+function hubItemsNamingTrainId(workspace: string, seat: string, id: string): string[] {
+  const reference = '`' + id + '`';
+  const notes: string[] = [];
+  for (const hub of deskEntriesForSeat(path.join(workspace, '.claude'), seat, 'projects')) {
+    if (!/^projects\/[a-z0-9-]+$/.test(hub)) continue;
+    const file = path.join(workspace, 'collection', ...hub.split('/'), '_project.md');
+    let lines: string[];
+    try { lines = toLines(fs.readFileSync(file, 'utf8')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const fenced = fencedLineMask(lines);
+    const sections = headings(lines);
+    const slug = hub.slice('projects/'.length);
+    for (const [index, heading] of sections.entries()) {
+      if (heading.level !== 2) continue;
+      const end = sections[index + 1]?.index ?? lines.length;
+      for (const block of itemBlocks(lines, heading.index + 1, end)) {
+        const first = lines[block.start]!;
+        if (!/^(?:[-*+]|[0-9]+\.)[ \t]+\[ \][ \t]+/.test(first) || fenced[block.start]) continue;
+        if (!lines.slice(block.start, block.end + 1).some((line, offset) => !fenced[block.start + offset] && line.includes(reference))) continue;
+        notes.push(`${hub} / ${heading.text}: ${first.trim()}`,
+          `deskpost hub edit ${slug} --mode check-item --section ${commandLiteral(heading.text)} --match-text ${commandLiteral(first.trim())}`);
+      }
+    }
+  }
+  return notes;
+}
+
 /** Every argument and the prior record are checked before either file changes. `now` is the clock, for tests. */
 export function changeTrain(workspace: string, action: string, id: string, options: Map<string, string>, flags: Set<string>, now: Date = new Date(), onChange?: (summary: string) => void): TrainRecord {
   // The seat as every other seat-needing verb names it (kickoffs/s185 row 1): the binding first, then LIBRARY_SEAT.
@@ -164,7 +203,7 @@ export function changeTrain(workspace: string, action: string, id: string, optio
       const before = Object.fromEntries(Object.keys(fields).map(key => [key, item![key as keyof typeof fields] ?? null]));
       Object.assign(item!, fields);
       const committed = commit(workspace, record, at, by, action, id, before, fields);
-      onChange?.('Set ' + id + ': ' + Object.entries(fields).map(([key, value]) => key + ': ' + JSON.stringify(before[key]) + ' -> ' + JSON.stringify(value)).join('; '));
+      onChange?.('Set ' + id + ': ' + Object.entries(fields).map(([key, value]) => key + ': ' + readerText(JSON.stringify(before[key])) + ' -> ' + readerText(JSON.stringify(value))).join('; '));
       return committed;
     }
     if (action === 'add' || action === 'move') {
@@ -174,10 +213,10 @@ export function changeTrain(workspace: string, action: string, id: string, optio
       const before = options.get('before'), first = flags.has('first');
       if (Number(first) + Number(before !== undefined) + Number(after !== undefined) > 1) throw new Error('Use only one of --first, --before or --after.');
       const anchor = before ?? after;
+      const target = anchor === undefined ? undefined : record.items.find(i => i.id === anchor);
       if (anchor !== undefined) {
-        const target = record.items.find(i => i.id === anchor);
         if (anchor === id || !target) throw new Error(`--${before !== undefined ? 'before' : 'after'} names no other train item: '${anchor}'.`);
-        if (target.place !== place) throw new Error(`${anchor} is in ${target.place}, not ${place}`);
+        if (target.place !== place && (action === 'add' || target.status !== 'open')) throw new Error(`${anchor} is in ${target.place}, not ${place}`);
       }
       if (action === 'add') {
         const title = options.get('title') ?? '';
@@ -190,7 +229,12 @@ export function changeTrain(workspace: string, action: string, id: string, optio
         item = { id, title, place, first_asked: first, source, status: 'open', note: '', ...fields };
       }
       item!.place = place;
-      if (action === 'add' || first || anchor !== undefined) {
+      if (target && target.place !== place) {
+        const group = record.items.filter(i => i.place === place);
+        record.items = record.items.filter(i => i.place !== place);
+        const index = record.items.findIndex(i => i.place === target.place && i.status === 'open');
+        record.items.splice(index + Number(after !== undefined), 0, ...group);
+      } else if (action === 'add' || first || anchor !== undefined) {
         record.items = record.items.filter(i => i.id !== id);
         const index = first ? record.items.findIndex(i => i.place === place)
           : anchor !== undefined ? record.items.findIndex(i => i.id === anchor) + Number(after !== undefined) : -1;
@@ -208,7 +252,7 @@ export function changeTrain(workspace: string, action: string, id: string, optio
       const before = { status: item!.status, note: item!.note };
       item!.status = 'open'; item!.note = note;
       const committed = commit(workspace, record, at, by, action, id, before, 'open');
-      onChange?.(`Reopened ${id}: ${before.status} -> open; ${note}`);
+      onChange?.(`Reopened ${id}: ${before.status} -> open; ${readerText(note)}`);
       return committed;
     } else if (action === 'retitle') {
       // s201 row 2: a title that has gone stale is corrected in place; nothing else about the item changes.
@@ -217,13 +261,18 @@ export function changeTrain(workspace: string, action: string, id: string, optio
       const old = item!.title;
       item!.title = title;
       const committed = commit(workspace, record, at, by, action, id, old, title);
-      onChange?.(`Retitled ${id}: ${JSON.stringify(old.slice(0, 100))} -> ${JSON.stringify(title.slice(0, 100))}`);
+      onChange?.(`Retitled ${id}: ${readerText(JSON.stringify(old.slice(0, 100)))} -> ${readerText(JSON.stringify(title.slice(0, 100)))}`);
       return committed;
     } else throw new Error(`Unknown train action '${action}'.`);
+    const hubItems = action === 'close' ? hubItemsNamingTrainId(workspace, by, id) : [];
     const committed = commit(workspace, record, at, by, action, id, from, action === 'close' ? item!.status : item!.place);
     const transition = action === 'close' ? oldStatus + ' -> ' + item!.status : (from ?? 'absent') + ' -> ' + item!.place;
-    onChange?.((action === 'add' ? 'Added' : action === 'move' ? 'Moved' : 'Closed') + ' ' + id + ': ' +
-      JSON.stringify(item!.title.slice(0, 100)) + ' (' + transition + ')' + (item!.note ? ' note: ' + item!.note : '') + (action === 'add' && !item!.lane ? '; no lane: set one with deskpost train set ' + id + ' --lane <lane>' : ''));
+    const summary = (action === 'add' ? 'Added' : action === 'move' ? 'Moved' : 'Closed') + ' ' + id + ': ' +
+      readerText(JSON.stringify(item!.title.slice(0, 100))) + ' (' + transition + ')' + (item!.note ? ' note: ' + readerText(item!.note) : '') + (action === 'add' && !item!.lane ? '; no lane: set one with deskpost train set ' + id + ' --lane <lane>' : '');
+    const car = action === 'close' && oldStatus === 'open' && !record.items.some(open => open.place === item!.place && open.status === 'open')
+      ? record.cars?.find(car => car.place === item!.place) : undefined;
+    const finish = car?.finish_line ? [`Finish line for ${car.place}: ${car.finish_line}. Give the evidence that it was met.`] : [];
+    onChange?.([summary, ...finish, ...hubItems].join('\n'));
     return committed;
   } finally {
     exitBookLock(lock);
@@ -252,7 +301,16 @@ function commit(workspace: string, record: TrainRecord, at: string, by: string, 
 /** `train car <place> --opened|--arrived [--on <date>]` (kickoffs/s184 row 1): one car open at a time. */
 function changeCar(workspace: string, by: string, place: string, options: Map<string, string>, flags: Set<string>, now: Date): TrainRecord {
   if (!CAR.test(place)) throw new Error(`A car's place is car:<name>, not '${place}'.`);
-  if (flags.has('opened') === flags.has('arrived')) throw new Error('Train car needs exactly one of --opened or --arrived.');
+  const finish = options.get('finish-line');
+  const plan = options.get('plan');
+  if (finish === undefined && plan !== undefined) throw new Error('--plan requires --finish-line.');
+  if (finish === undefined && flags.has('opened') === flags.has('arrived')) {
+    throw new Error('Train car needs exactly one of --opened, --arrived or --finish-line.');
+  }
+  if (finish !== undefined && (!line(finish) || !finish.trim() || (plan !== undefined && (!line(plan) || !plan.trim()))
+    || flags.has('opened') || flags.has('arrived') || options.has('on'))) {
+    throw new Error('Set a one-line --finish-line and optional --plan separately from opening or arrival.');
+  }
   const on = options.get('on') ?? localDate(now);
   if (!line(on) || !date(on)) throw new Error(`--on needs a real YYYY-MM-DD date, not '${on}'.`);
   notFuture('--on', on, localDate(now));
@@ -262,6 +320,14 @@ function changeCar(workspace: string, by: string, place: string, options: Map<st
     const record: TrainRecord = readTrain(workspace) ?? { schema: 1, changed_at: at, changed_by: by, items: [] };
     const cars = record.cars ?? [];
     const car = cars.find(c => c.place === place);
+    if (finish !== undefined) {
+      if (!car) throw new Error(`${place} was never opened; open it with --opened first.`);
+      const prior = { finish_line: car.finish_line ?? null, plan: car.plan ?? null };
+      car.finish_line = finish;
+      if (plan !== undefined) car.plan = plan;
+      return commit(workspace, record, at, by, 'car', place, prior,
+        { finish_line: car.finish_line, plan: car.plan ?? null });
+    }
     if (flags.has('opened')) {
       if (car) throw new Error(`${place} was already opened on ${car.opened}.`);
       const open = cars.find(c => c.arrived === null);

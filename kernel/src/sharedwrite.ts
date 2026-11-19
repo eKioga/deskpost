@@ -67,6 +67,8 @@ import { psConvertToJson } from './psjson.ts';
 import { ownedLines, placeOwnedEntry, withoutLine, splitLocalFrontmatter } from './localcatalog.ts';
 import { renderSourceList, SOURCE_LIST_FILE, sourceListBlock, validateSourceList } from './booksources.ts';
 import { unfilledPlaceholderRefusal } from './collectionpage.ts';
+import { newProjectBody, sectionSpan, toLines } from './hubedit.ts';
+import { pageComparisonSha256 } from './sha.ts';
 
 class SharedWriteRefusal extends Error {}
 
@@ -74,8 +76,8 @@ function refuse(message: string): never {
   throw new SharedWriteRefusal(message);
 }
 
-export type SharedAction = 'add-page' | 'replace-page' | 'remove-page' | 'catalog-line' | 'sources' | 'new-book' | 'promote' | 'upkeep' | 'reconcile' | 'changes' | 'init';
-export const SHARED_ACTIONS: SharedAction[] = ['add-page', 'replace-page', 'remove-page', 'catalog-line', 'sources', 'new-book', 'promote', 'upkeep', 'reconcile', 'changes', 'init'];
+export type SharedAction = 'add-page' | 'replace-page' | 'remove-page' | 'catalog-line' | 'sources' | 'new-book' | 'promote' | 'upkeep' | 'reconcile' | 'changes' | 'init' | 'get-page';
+export const SHARED_ACTIONS: SharedAction[] = ['add-page', 'replace-page', 'remove-page', 'catalog-line', 'sources', 'new-book', 'promote', 'upkeep', 'reconcile', 'changes', 'init', 'get-page'];
 export const SHARED_CATALOGS = [
   { page: 'books/README.md', body: '# Books\n\nThe Books in this shared collection.\n\n## Open a Book\n' },
   { page: 'archive/README.md', body: '# Archive\n\nShared Books no longer in use stay readable here.\n\n## Archived Books\n' },
@@ -580,6 +582,8 @@ interface Plan {
   scope: string;
   /** The Catalog's retry (item 5): this Book's line re-applied to the Catalog as it now reads. */
   reapply?: (text: string) => string;
+  /** The page's hash as the validated reader gives it, frontmatter included (kickoffs/s211 row 2); null when it is absent. */
+  readerSha256?: string | null;
 }
 
 function readContentFile(workspace: string, contentPath: string): string {
@@ -623,17 +627,29 @@ function wrongRecord(id: string, why: string): never {
  * Every write action's plan: the target, its note, the current text, and the proposed text or `absent`. `early` is what
  * could be checked before connecting (the slug, the page, the content file); the rest needs the server.
  */
-async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: Opened, early: { page: string; contentText: string | null }): Promise<Plan> {
+async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: Opened, early: { page: string; contentText: string | null; section: SectionEdit | null }): Promise<Plan> {
   const { context } = opened;
   const slug = context.slug;
   const usage = USAGE[action];
   if (action === 'add-page' || action === 'replace-page' || action === 'remove-page') {
     const notePath = `books/${slug}/wiki/${early.page}.md`;
-    const current = await readNow(context, notePath);
+    // readNow's one read, kept whole so the preview can also give the reader's hash of the page.
+    const found = await readExactOrNull(context.session, context.project, notePath, { stopped: 'nothing was written' });
+    const current = found === null ? null : noteBody(found);
+    // A partial add/remove can finish only its map after this Library's completed page change is verified.
+    const completedHere = async (expected: string | null): Promise<boolean> => {
+      const files = await listedFiles(context, `_deskpost/changes/${slug}`);
+      for (const id of recordIds(files, slug).reverse()) {
+        const loaded = await loadRecord(context, files, id, true);
+        if (loaded?.damaged === null && loaded.record?.libraryId === opened.libraryId && loaded.record.target === 'page'
+          && loaded.record.page === notePath && sameValue(loaded.body === null ? null : splitLocalFrontmatter(loaded.body).body, expected)) return true;
+      }
+      return false;
+    };
     const from = fromChangeSide(parsed, action, action === 'replace-page' ? ['base', 'body'] : [], usage);
     let proposed: string | null;
     if (action === 'remove-page') {
-      if (current === null) refuse(`${notePath} does not exist, so there is nothing to remove. Nothing was written.`);
+      if (current === null && !(await completedHere(null))) refuse(`${notePath} does not exist, so there is nothing to remove. Nothing was written.`);
       if (from !== null) {
         const loaded = await fromChange(context, from.id);
         if (loaded.record.target !== 'page' || loaded.record.page !== notePath) wrongRecord(from.id, `is a change to ${loaded.record.page}, not to ${notePath}`);
@@ -657,9 +673,21 @@ async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: 
         refuse(`${notePath} does not exist, so there is nothing to replace. Add it with deskpost shared add-page ${slug} ${early.page} --content-path <file> --preflight. Nothing was written.`);
       }
       if (action === 'add-page' && current !== null) {
-        refuse(`${notePath} already exists. Replace it with deskpost shared replace-page ${slug} ${early.page} --content-path <file> --preflight. Nothing was written.`);
+        if (!sameText(current, proposed) || !(await completedHere(current))) refuse(`${notePath} already exists. Replace it with deskpost shared replace-page ${slug} ${early.page} --content-path <file> --preflight. Nothing was written.`);
+        proposed = current;
       }
-      if (action === 'replace-page') {
+      if (action === 'replace-page' && early.section !== null) {
+        // ONE SECTION, AND NOTHING ELSE MOVES (kickoffs/s211 row 1): the page is built from its current body as `hub edit`
+        // builds a Hub page, so the record, the conflict check, the upkeep grant and the restore line are replace-page's own.
+        const { option, mode, heading } = early.section;
+        const span = sectionSpan(toLines(current ?? ''), heading);
+        if (mode === 'AppendSection' && span === null) refuse(`${notePath} has no section '## ${heading}', so ${option} has nothing to extend. Add it with --add-section '${heading}'. Nothing was written.`);
+        if (mode === 'AddSection' && span !== null) refuse(`${notePath} already has a section '## ${heading}', so ${option} would make a second one. Extend it with --append-section '${heading}'. Nothing was written.`);
+        if ((current ?? '').includes('\r\n') && /(?<!\r)\n/.test(current ?? '')) refuse(`${notePath} has mixed LF and CRLF line endings; a section edit cannot preserve them. Nothing was written.`);
+        proposed = newProjectBody(current ?? '', mode, heading, proposed, '', false, false);
+        // A CRLF page keeps CRLF (kickoffs/s211-r2 row 2): newProjectBody joins with LF, and the preview's diff folds endings.
+        if ((current ?? '').includes('\r\n')) proposed = proposed.replace(/\r?\n/g, '\r\n');
+      } else if (action === 'replace-page') {
         const frontmatter = splitLocalFrontmatter(proposed);
         if (frontmatter.fields !== null) {
           const record = await readExactOrNull(context.session, context.project, notePath, { stopped: 'nothing was written' });
@@ -694,8 +722,9 @@ async function planWrite(action: SharedAction, parsed: ParsedArguments, opened: 
     return {
       change: { target: 'page', notePath, current, recordBase: current, proposed },
       ...(second === undefined ? {} : { second }),
+      readerSha256: found === null ? null : pageComparisonSha256(found.content),
       operation,
-      scope: `Records the change first under _deskpost/changes/${slug}/ (the page's current text, the new text, and who wrote it), then ${how}, and confirms it by listing.${second ? ' Then records and writes the reader-map change shown here, retrying once on a revision conflict.' : ' Nothing else is changed.'}${action === 'add-page' ? ` The page title is its file name; title: ${path.posix.basename(early.page)}.` : ''}`,
+      scope: `Records the change first under _deskpost/changes/${slug}/ (the page's current text, the new text, and who wrote it), then ${how}, and confirms it by listing.${early.section === null ? '' : ` The new text is the current page with only the lines shown here added to section '## ${early.section.heading}'.`}${second ? ' Then records and writes the reader-map change shown here, retrying once on a revision conflict.' : ' Nothing else is changed.'}${action === 'add-page' ? ` The page title is its file name; title: ${path.posix.basename(early.page)}.` : ''}`,
     };
   }
 
@@ -776,8 +805,21 @@ function upkeepable(action: SharedAction, parsed: ParsedArguments): boolean {
   return action === 'add-page' || action === 'replace-page' || action === 'catalog-line' || (action === 'sources' && !parsed.flags.has('remove'));
 }
 
+/** `--append-section <heading>` or `--add-section <heading>` on replace-page (kickoffs/s211 row 1). */
+interface SectionEdit { option: string; mode: 'AppendSection' | 'AddSection'; heading: string }
+
+function sectionEdit(parsed: ParsedArguments): SectionEdit | null {
+  const given = (['append-section', 'add-section'] as const).filter((name) => parsed.options.has(name));
+  if (given.length === 0) return null;
+  if (given.length > 1) refuse(`library shared replace-page takes --append-section or --add-section, not both: ${USAGE['replace-page']}. Nothing was written.`);
+  const name = given[0]!;
+  const heading = (parsed.options.get(name) ?? '').trim();
+  if (!heading || /[\x00-\x1f\x7f]/.test(heading) || heading.startsWith('#')) refuse(`--${name} takes the section's heading text, without the '## ': ${USAGE['replace-page']}. Nothing was written.`);
+  return { option: `--${name}`, mode: name === 'append-section' ? 'AppendSection' : 'AddSection', heading };
+}
+
 /** The checks that need no server: the slug, the page and the content file. */
-function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: string): { slug: string; page: string; contentText: string | null } {
+function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: string): { slug: string; page: string; contentText: string | null; section: SectionEdit | null } {
   const usage = USAGE[action];
   const slug = (parsed.positional[0] ?? '').trim();
   const pageWord = parsed.positional[1] ?? '';
@@ -789,9 +831,18 @@ function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: s
   const planOnly = upkeepable(action, parsed) && !parsed.flags.has('preflight') && !parsed.flags.has('user-confirmed') && (parsed.options.get('plan-id') ?? '') !== '';
   if (!planOnly && parsed.flags.has('preflight') === parsed.flags.has('user-confirmed')) refuse(`library shared ${action} takes --preflight, or --user-confirmed --plan-id <id> after it: ${usage}.`);
   const contentPath = (parsed.options.get('content-path') ?? '').trim();
+  const section = action === 'replace-page' ? sectionEdit(parsed) : null;
+  if (section !== null && parsed.options.has('from-change')) refuse(`library shared replace-page ${section.option} takes --content-path, not --from-change: ${usage}. Nothing was written.`);
   if (contentPath && parsed.options.has('from-change')) refuse(`library shared ${action} takes --content-path or --from-change, not both: ${usage}.`);
-  if (!contentPath) return { slug, page, contentText: null };
+  if (section !== null && !contentPath) refuse(`library shared replace-page ${section.option} needs --content-path <file> holding the section's lines: ${usage}. Nothing was written.`);
+  if (!contentPath) return { slug, page, contentText: null, section };
   let contentText = readContentFile(workspace, contentPath);
+  if (section !== null) {
+    // THE SECTION'S LINES ONLY: a heading of level one or two would start another section, and a frontmatter block is the page's.
+    if (splitLocalFrontmatter(contentText).fields !== null) refuse(`--content-path '${contentPath}' starts with a frontmatter block; ${section.option} takes the section's lines only. Nothing was written.`);
+    const split = toLines(contentText).findIndex((line) => /^ {0,3}#{1,2}[ \t]/.test(line));
+    if (split >= 0) refuse(`Line ${split + 1} of --content-path '${contentPath}' is a heading that would start another section; ${section.option} takes the section's lines only (### stays inside it). Nothing was written.`);
+  }
   if (action === 'add-page' || action === 'replace-page') {
     const placeholder = unfilledPlaceholderRefusal(contentText, `shared ${action}`);
     if (placeholder !== null) refuse(placeholder);
@@ -815,13 +866,13 @@ function earlyChecks(action: SharedAction, parsed: ParsedArguments, workspace: s
     if (checked.list === null) refuse(`--content-path '${contentPath}' is not a valid source list: ${checked.problems.join('; ')}. Nothing was written.`);
     contentText = renderSourceList(checked.list);
   }
-  return { slug, page, contentText };
+  return { slug, page, contentText, section };
 }
 
 const USAGE: Record<SharedAction, string> = {
   init: 'library shared init (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]',
   'add-page': 'library shared add-page <slug> <page> --content-path <file> (--preflight | [--user-confirmed] --plan-id <id>)',
-  'replace-page': 'library shared replace-page <slug> <page> (--content-path <file> | --from-change <record-id> (--base | --body)) (--preflight | [--user-confirmed] --plan-id <id>)',
+  'replace-page': 'library shared replace-page <slug> <page> (--content-path <file> [--append-section <heading> | --add-section <heading>] | --from-change <record-id> (--base | --body)) (--preflight | [--user-confirmed] --plan-id <id>); --content-path takes the page body without frontmatter, or the section lines with a section option',
   'remove-page': 'library shared remove-page <slug> <page> [--from-change <record-id>] (--preflight | --user-confirmed --plan-id <id>)',
   'catalog-line': 'library shared catalog-line <slug> (--title <t> --summary <s> [--collection <c>] | --from-change <record-id> --base) (--preflight | [--user-confirmed] --plan-id <id>)',
   sources: 'library shared sources <slug> (--content-path <file> | --from-change <record-id> (--base | --remove)) (--preflight | [--user-confirmed] --plan-id <id>)',
@@ -830,7 +881,57 @@ const USAGE: Record<SharedAction, string> = {
   upkeep: 'library shared upkeep <slug> (--seats <seat>[,...] | --any-seat) (--preflight | --user-confirmed --plan-id <id>) [--seat <s>]; library shared upkeep <slug> --off (--preflight | --plan-id <id>) [--seat <s>]',
   reconcile: 'library shared reconcile <slug>',
   changes: 'library shared changes [<slug>] [--since <date>]',
+  'get-page': 'library shared get-page <slug> <page> --out <file> [--seat <s>]',
 };
+
+/**
+ * `shared get-page` (kickoffs/s211 row 2), read-only: the page exactly as read_open_book_page returns it, frontmatter and
+ * body with LF endings, written to a new file, with the reader's hash and the replace-page line that takes it back. The
+ * reader decides whether the Book is open on this seat's Desk; it is loaded when asked, since reader.ts reaches this file.
+ */
+export function quoteSharedCommandPath(value: string, platform: NodeJS.Platform = process.platform, portable = false): string {
+  // about_Quoting_Rules: PowerShell treats all five as single-quote delimiters, doubled to escape them.
+  const quotes = /['\u2018-\u201b]/g;
+  const quote = value.match(quotes)?.[0];
+  if (portable && quote) refuse(`--out contains a single quote (U+${quote.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}); name a path without that character so the next command works in both shells. Nothing was written.`);
+  return "'" + (platform === 'win32' ? value.replace(quotes, '$&$&') : value.replace(/'/g, "'\\''")) + "'";
+}
+
+async function runGetPage(parsed: ParsedArguments, workspace: string): Promise<Record<string, PsJsonValue>> {
+  const usage = USAGE['get-page'];
+  const slug = (parsed.positional[0] ?? '').trim();
+  const pageWord = parsed.positional[1] ?? '';
+  const out = (parsed.options.get('out') ?? '').trim();
+  if (!slug || !pageWord || !out) refuse(`library shared get-page needs a Book slug, a page path and --out <file>: ${usage}.`);
+  if (!BOOK_SLUG_PATTERN.test(slug)) refuse(`'${slug}' is not a Book slug: lowercase letters, digits and hyphens. Nothing was written.`);
+  const page = convertToBookPagePath(pageWord);
+  const full = path.resolve(out);
+  const quotedPath = quoteSharedCommandPath(full, process.platform, true);
+  if (fs.existsSync(full)) refuse(`--out '${out}' already exists, and get-page never overwrites a file: name a new one. Nothing was written.`);
+  const { answerReaderTool, readerContext } = await import('./reader.ts');
+  const context = readerContext(workspace, path.join(workspace, '.claude'), parsed.options.get('seat'));
+  const asked: Record<string, string> = { slug, page, place: 'shared' };
+  const answer = await answerReaderTool(context, 'read_open_book_page', {
+    required: (name) => asked[name] ?? '',
+    optional: (name) => asked[name],
+  });
+  const text = answer.text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
+  const digest = pageComparisonSha256(text);
+  // A page the reader frames (a letter's preface) is not the page its hash names; it is never written as if it were.
+  if (answer.sha256 === null || digest !== answer.sha256) refuse(`The reader framed books/${slug}/wiki/${page}.md before its text, so the file would not be the page its hash names. Nothing was written.`);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, text, { encoding: 'utf8', flag: 'wx' });
+  return {
+    schema: 1,
+    operation: 'Take a shared page out to a file',
+    book: `shared/${slug}`,
+    page: `books/${slug}/wiki/${page}.md`,
+    out: full,
+    sha256: digest,
+    shared_library_write: false,
+    next: `deskpost shared replace-page ${slug} ${page} --content-path ${quotedPath} --preflight`,
+  };
+}
 
 /** Explicitly initialize a new shared collection; existing Catalogs are never changed. No Book means no change record. */
 async function runInit(parsed: ParsedArguments, workspace: string, connection: Connection): Promise<Record<string, PsJsonValue>> {
@@ -892,6 +993,7 @@ async function writePlanned(opened: Opened, workspace: string, plan: Plan, madeB
     written = plan.change.notePath === CATALOG ? catalogChange(reread, proposed, context.slug) : { ...plan.change, current: reread, recordBase: reread, proposed };
     outcome = await writeChange(opened, workspace, written, madeBy);
     if (outcome.form === 'conflict') {
+      if (plan.change.notePath === `books/${context.slug}/wiki/_index.md`) refuse(`The reader map ${plan.change.notePath} changed twice (${outcome.code}); it was not overwritten. The change records ${retriedAfter} and ${outcome.recordId} stay.`);
       refuse(`${plan.change.notePath} was written by someone else twice while this Book's line was written (${outcome.code}), so nothing was overwritten; its current checksum is ${outcome.now}. ` +
         `The change records ${retriedAfter} and ${outcome.recordId} stay. Preview it again.`);
     }
@@ -929,6 +1031,9 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     target: change.target,
     page: change.notePath,
     current_sha256: baseDigest,
+    // THE READER'S FORM OF THE SAME PAGE (kickoffs/s211 row 2): current_sha256 is the stored body's; this one is the value
+    // read_open_book_page and shared get-page give, so a seat compares one value with what it read.
+    ...(action === 'replace-page' && plan.readerSha256 ? { reader_sha256: plan.readerSha256 } : {}),
     proposed_sha256: bodyDigest,
     current_lines: change.current === null ? 0 : lineCount(change.current),
     proposed_lines: change.proposed === null ? 0 : lineCount(change.proposed),
@@ -941,7 +1046,7 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     scope: plan.scope,
     ...(map ? { reader_map: { page: map.notePath, current_sha256: sha256(map.current!), proposed_sha256: sha256(map.proposed!), diff: unifiedDiff(map.current!, map.proposed!, DIFF_LINES) } } : {}),
   };
-  if (baseDigest === bodyDigest) {
+  if (baseDigest === bodyDigest && !plan.second) {
     return { ...preview, status: 'unchanged', next: `${change.notePath} already holds this text; nothing was written.` };
   }
   if (parsed.flags.has('preflight')) return preview;
@@ -952,13 +1057,24 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     refuse(`Nothing was written: no upkeep grant from this Library names seat ${opened.seat} for shared/${slug}, so this write needs the reader's yes: rerun it with --user-confirmed --plan-id ${planId}.`);
   }
 
-  const done = await writePlanned(opened, workspace, plan);
-  if (done.form === 'unchanged') {
+  const done = baseDigest === bodyDigest ? null : await writePlanned(opened, workspace, plan);
+  if (done?.form === 'unchanged') {
     return { schema: 1, operation: plan.operation, book: `shared/${slug}`, target: change.target, page: CATALOG, status: 'unchanged', record_id: done.recordId,
       next: `${CATALOG} changed while it was written, and it now holds this Book's line as asked; nothing more was written. The first change record ${done.recordId} stays.` };
   }
+  let mapDone: Planned | null = null;
+  try {
+    mapDone = plan.second ? await writePlanned(opened, workspace, { ...plan, ...plan.second, second: undefined }) : null;
+  } catch (error) {
+    const message = (error as Error).message;
+    const contentPath = parsed.options.get('content-path');
+    const repair = `deskpost shared ${action} ${slug} ${early.page}` + (contentPath ? ` --content-path ${quoteSharedCommandPath(contentPath)}` : '') + ' --preflight';
+    refuse(`The page was ${action === 'remove-page' ? 'removed' : 'written'}; ${/unsettled/i.test(message) ? 'the reader map outcome is unsettled' : 'the reader map was not written'}. ${message}\nRepair: ${repair}\nThe same command verifies the completed page change and updates only the reader map; apply its new preview.`);
+  }
+  if (done === null) return { schema: 1, operation: plan.operation, book: `shared/${slug}`, page: change.notePath, verdict: 'written',
+    ...(mapDone ? { map_record_id: mapDone.form === 'written' ? mapDone.outcome.recordId : mapDone.recordId } : {}),
+    shared_library_write: true, next: 'Only the reader map was updated; the completed page change was left unchanged.' };
   const { written, outcome, retriedAfter } = done;
-  const mapDone = plan.second ? await writePlanned(opened, workspace, { ...plan, ...plan.second, second: undefined }) : null;
   const restore = restoreLine(written.target, slug, written.notePath, written.recordBase === null, outcome.recordId);
   return {
     schema: 1,
@@ -968,6 +1084,7 @@ async function runWrite(action: SharedAction, parsed: ParsedArguments, workspace
     page: change.notePath,
     verdict: 'written',
     record_id: outcome.recordId,
+    ...(action === 'replace-page' && plan.readerSha256 ? { reader_sha256: plan.readerSha256 } : {}),
     ...(mapDone === null ? {} : { map_record_id: mapDone.form === 'written' ? mapDone.outcome.recordId : mapDone.recordId }),
     record: outcome.recordPath,
     ...(retriedAfter === null ? {} : { retried_after: retriedAfter }),
@@ -1789,6 +1906,10 @@ async function runChanges(parsed: ParsedArguments, workspace: string, connection
 /** `deskpost shared <action>` for the connection route's actions, on a local Library. */
 export async function runSharedAction(action: SharedAction, argv: string[], workspace: string): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, argumentTable('shared', action));
+  if (action === 'get-page') {
+    if (!isLocalBackend(workspace)) refuse('library shared get-page is for a local Library. Nothing was written.');
+    return runGetPage(parsed, workspace);
+  }
   const connection = optedIn(action, workspace);
   try {
     if (action === 'init') return await runInit(parsed, workspace, connection);

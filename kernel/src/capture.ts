@@ -73,7 +73,7 @@ import {
 } from './booksources.ts';
 import { rawBatchOwner } from './rawowners.ts';
 import { archiveRecordPath, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
-import { assertSeatMayClose, isAddressedTo, isWrittenBy, noteFrontmatter, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
+import { assertSeatMayClose, isAddressedTo, isWrittenBy, noteFrontmatter, parseShelfNote, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
 import { idsOf, incarnationOf, pastNameRefusal, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
 import { departmentProblem, destinationOf, readSeatMetadata } from './seatmeta.ts';
 
@@ -933,7 +933,9 @@ export function captureVerb(
 
     // A body that already leads with its own H1 keeps it, so that heading -- not --title -- is what
     // the page, the reader map, the validated reader and triage's -MatchText all call this note.
-    const normalisedBody = (routed ? routedBody(routed, routes, fromSeat, originSeat, fillTimePlaceholders(body)) : body).replace(/\s+$/, '');
+    const now = new Date();
+    const literal = filing !== null || routed !== null || internal.literal === true;
+    const normalisedBody = (routed ? routedBody(routed, routes, fromSeat, originSeat, fillTimePlaceholders(body, now)) : body).replace(/\s+$/, '');
     // A BODY THAT OPENS WITH `---` WOULD BE MERGED INTO THE SERVER'S FRONTMATTER (probe S5), so a letter to another
     // Library is refused before anything is written.
     if (remote !== null && /^---[ \t]*\r?\n/.test(body)) {
@@ -943,11 +945,12 @@ export function captureVerb(
     const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalisedBody);
     const keepsOwnHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
     if (!keepsOwnHeading && !title) refuse('Title is required: the body has no leading H1 to name the note, so pass --title.');
-    const pageTitle = keepsOwnHeading ? heading![1]!.trim() : title;
+    const givenTitle = keepsOwnHeading ? heading![1]!.trim() : title;
+    const pageTitle = literal ? givenTitle : fillTimePlaceholders(givenTitle, now);
     const noteSlug = convertToNoteSlug(pageTitle);
     // SAID, NOT SILENT (S67, deskpost-prompts-dev's Report): a --title the body's H1 replaced is named in the result.
     const titleNote =
-      keepsOwnHeading && title && title !== pageTitle
+      keepsOwnHeading && title && title !== givenTitle
         ? `The body's own H1 names this note ('${pageTitle}'); --title '${title}' was not used.`
         : null;
 
@@ -970,7 +973,7 @@ export function captureVerb(
         }
         return { name: requireNoteFile, full: pinned, page: `notes/${requireNoteFile.replace(/\.md$/i, '')}` };
       }
-      const stamp = captureDate || localDate();
+      const stamp = captureDate || localDate(now);
       // A TITLE THAT ALREADY STARTS WITH THE CAPTURE'S DATE IS NOT DATED TWICE (S67): `2026-09-28 -- x` names
       // `2026-09-28-x.md`, not `2026-09-28-2026-09-28-x.md`.
       const stem = noteSlug.startsWith(`${stamp}-`) ? noteSlug : `${stamp}-${noteSlug}`;
@@ -1104,8 +1107,8 @@ export function captureVerb(
     if (go) frontmatter.push(`go_words: ${parsed.options.get('go')}`, `go_typed: ${go.typed}`, 'go_check: transcript');
     frontmatter.push('---');
 
-    // {now} AND {today} BECOME THE TIME OF THE WRITE (kickoffs/s121 row 6), in the body only, never its title or name.
-    const writtenBody = filing !== null || routed !== null || internal.literal === true ? normalisedBody : fillTimePlaceholders(normalisedBody);
+    // {now} AND {today} use the same time in the body, title and derived name.
+    const writtenBody = literal ? normalisedBody : fillTimePlaceholders(normalisedBody, now);
     const rendered = renderCapturedPage(frontmatter, writtenBody, pageTitle);
     const letterBody = rendered.body;
     let page = rendered.text;
@@ -1451,6 +1454,7 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
       writeAtomicText(prior.fullPath, setNoteField(closed, 'closed_read_hash', sha256OfText(closed.replace(/\r\n/g, '\n'))));
     }
 
+    const stamp = utcStamp();
     const plan: Record<string, PsJsonValue> = {
       schema: LIBRARY_OUTPUT_SCHEMA,
       operation: 'Close a letter',
@@ -1460,7 +1464,7 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
       ...(note ? { closed_note: note } : {}),
       confirmation_required: false,
       shared_library_write: false,
-      scope: `Closes ${page} (review: done, reviewed:${note ? ', closed_note:' : ''}), regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`,
+      scope: `Closes ${page} (review: done, reviewed: ${stamp}${note ? ', closed_note: ' + JSON.stringify(note) : ''}), regenerates the reader map and commits a new Discovery manifest generation in the same locked window; no new page is written; nothing is removed.`,
     };
 
     const mapPath = path.join(book.wikiPath, '_index.md');
@@ -1476,7 +1480,7 @@ export function lettersCloseVerb(argv: string[], workspace: string): WriterResul
       mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason: `Close letter ${page}`, lock });
       journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: `Close letter ${page}`, paths: [letter.fullPath, mapPath] }).journalPath;
       const text = readUtf8(letter.fullPath);
-      let closed = setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', utcStamp());
+      let closed = setNoteField(text.replace(/^review:\s*[^\n]*/m, 'review: done'), 'reviewed', stamp);
       // A REOPENED LETTER'S OLD NOTE IS NOT CARRIED INTO THIS CLOSE: replaced by the new one, or removed with none.
       closed = setNoteField(closed, 'closed_note', note || null);
       closed = setNoteField(closed, 'closed_by_seat_id', self.seatId || null);
@@ -1531,8 +1535,15 @@ function openLettersFor(book: ShelfBook, self: SeatIncarnation): ShelfNoteRow[] 
  * for `letters close`. It reads; it writes nothing.
  */
 export function lettersListVerb(argv: string[], workspace: string): WriterResult & { text: string } {
-  parseArguments(argv, argumentTable('letters', 'list'));
+  const parsed = parseArguments(argv, argumentTable('letters', 'list'));
   try {
+    const closed = parsed.flags.has('closed');
+    const since = parsed.options.get('since');
+    const sinceTime = since === undefined ? -Infinity : Date.parse(since);
+    if (closed && parsed.flags.has('sent')) refuse('Use either --sent or --closed.');
+    if (since !== undefined && (!closed || !Number.isFinite(sinceTime))) {
+      refuse('--since needs --closed and a valid date or timestamp.');
+    }
     const book = getShelfBook(workspace, LETTERS_BOOK);
     if (!book.isCapture || !book.takesLetters) {
       refuse(`Shelf Book '${LETTERS_BOOK}' does not take letters (its catalog entry needs '- **Kind:** capture' and '- **Letters:** yes').`);
@@ -1543,13 +1554,51 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
     assertShelfBookOpen(workspace, LETTERS_BOOK, 'listing its letters with deskpost letters list', seat);
     const self = seatIncarnation(stateDirectory(workspace), seat, readSeatIdentityView(stateDirectory(workspace)));
     const oldestFirst = (left: ShelfNoteRow, right: ShelfNoteRow) => left.captured.localeCompare(right.captured) || left.page.localeCompare(right.page);
+    if (parsed.flags.has('sent')) {
+      const letters = shelfNotes(book).filter(row => row.review !== 'done' && !row.malformed.length && isWrittenBy(row, self))
+        .sort(oldestFirst).map(row => {
+          const fields = noteFrontmatter(readUtf8(row.fullPath));
+          return { page: row.page, title: row.title, captured: row.captured, for_seat: row.forSeat,
+            for_library_card: fields.get('for_library_card') ?? null, delivery_id: fields.get('delivery_id') ?? null };
+        });
+      const text = letters.length
+        ? [`${letters.length} pending sent letters for seat '${seat}', oldest first:`,
+          ...letters.map(letter => `  ${letter.captured}  to ${letter.for_seat ?? 'no seat'}${letter.for_library_card ? ` (${letter.for_library_card})` : ''}: ${letter.title}\n    ${letter.page}`)].join('\n')
+        : `No pending sent letters for seat '${seat}'.`;
+      return { refusal: null, text, value: { schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Letters sent by this seat',
+        seat, book: book.bookRoot, count: letters.length, letters, shared_library_write: false } };
+    }
+    if (closed) {
+      const archived = path.join(book.wikiPath, 'reviewed');
+      const rows = [...shelfNotes(book)];
+      if (fs.existsSync(archived)) {
+        for (const file of listFilesRecursive(archived)) {
+          const page = path.relative(book.wikiPath, file).replace(/\\/g, '/').replace(/\.md$/i, '');
+          if (!/^reviewed\/\d{4}-\d{2}\/[^/]+$/.test(page) || !/\.md$/i.test(file)) continue;
+          rows.push({ ...parseShelfNote(path.basename(file), file, readUtf8(file)), page });
+        }
+      }
+      const stamp = (row: ShelfNoteRow) => row.reviewed ? Date.parse(row.reviewed) || 0 : 0;
+      const letters = rows.filter(row => row.review === 'done' && !row.malformed.length
+        && isAddressedTo(row, self) && stamp(row) >= sinceTime)
+        .sort((left, right) => stamp(right) - stamp(left) || left.page.localeCompare(right.page))
+        .map(row => ({ page: row.page, title: row.title, from: row.fromSeat, reviewed: row.reviewed, closed_note: row.closedNote,
+          for_seat: row.forSeat, delivery_id: noteFrontmatter(readUtf8(row.fullPath)).get('delivery_id') ?? null }));
+      const text = letters.length
+        ? [`${letters.length} closed letters for seat '${seat}', newest first:`,
+          ...letters.map(letter => `  ${letter.reviewed ?? 'unknown'}  from ${letter.from ?? 'no seat'}: ${letter.title}${letter.closed_note ? ` (${letter.closed_note})` : ''}\n    ${letter.page}`)].join('\n')
+        : `No closed letters for seat '${seat}'.`;
+      return { refusal: null, text, value: { schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Closed letters for this seat',
+        seat, book: book.bookRoot, count: letters.length, letters, shared_library_write: false } };
+    }
     const open = openLettersFor(book, self).sort(oldestFirst);
     const reopened = shelfNotes(book).filter((row) => row.review === 'pending' && !row.malformed.length &&
       isAddressedTo(row, self) && (row.answeredBy || row.routedTo)).sort(oldestFirst);
     const reopenedRemedies = new Map<string, string>();
     const letters = [...open.map(row => ({ row, reopened: false })), ...reopened.map(row => ({ row, reopened: true }))]
       .map(({ row, reopened }) => {
-        const go = letterGo(readUtf8(row.fullPath), String(readMarker(workspace)?.['id'] ?? ''));
+        const content = readUtf8(row.fullPath);
+        const go = letterGo(content, String(readMarker(workspace)?.['id'] ?? ''));
         const asker = reopened ? routedOrigin(row) : null;
         if (asker) reopenedRemedies.set(row.page, !asker.seat
           ? 'answer with a new letter, or close it with triage'
@@ -1557,6 +1606,7 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
             ? `the first asker is ${asker.seat} in another Library; answer with a new letter through the Postbox, or close it with triage`
             : `answer with a new letter --for ${asker.seat}, or close it with triage`);
         return { page: row.page, from: row.fromSeat, captured: row.captured, title: row.title, go: go !== null, go_typed: go?.typed ?? null,
+          for_seat: row.forSeat, delivery_id: noteFrontmatter(content).get('delivery_id') ?? null,
           read_route: { tool: 'read_open_book_page', book: LETTERS_BOOK, page: row.page },
           ...(reopened ? { reopened: true, asker: asker?.seat || null } : {}) };
       });
@@ -1763,6 +1813,7 @@ export function reportsVerb(action: 'amend' | 'withdraw', argv: string[], worksp
     }
     closableReport(book, page, self, action);
 
+    const stamp = utcStamp();
     const plan: Record<string, PsJsonValue> = {
       schema: LIBRARY_OUTPUT_SCHEMA,
       operation: action === 'amend' ? 'Amend a Report' : 'Withdraw a Report',
@@ -1774,8 +1825,8 @@ export function reportsVerb(action: 'amend' | 'withdraw', argv: string[], worksp
       shared_library_write: false,
       scope:
         action === 'amend'
-          ? `Appends one ## Update section to ${page} and sets updated: and update_count:, leaving its body and earlier updates byte for byte; regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`
-          : `Closes ${page} as withdrawn (review: done, reviewed:, closed_note:), regenerates the reader map and commits a new Discovery manifest generation in the same locked window. No note is written; nothing is removed.`,
+          ? `Appends one ## Update section to ${page} and sets updated: and update_count:, leaving its body and earlier updates byte for byte; regenerates the reader map and commits a new Discovery manifest generation in the same locked window; no new page is written; nothing is removed.`
+          : `Closes ${page} as withdrawn (review: done, reviewed: ${stamp}, closed_note: ${JSON.stringify(note)}), regenerates the reader map and commits a new Discovery manifest generation in the same locked window; no new page is written; nothing is removed.`,
     };
 
     const mapPath = path.join(book.wikiPath, '_index.md');
@@ -1784,7 +1835,6 @@ export function reportsVerb(action: 'amend' | 'withdraw', argv: string[], worksp
     let mutation: BookMutation | null = null;
     let pendingCount = 0;
     let manifestSummary = '';
-    let stamp = '';
     let count = 0;
     try {
       lock = enterBookLock(workspace, book.bookRoot, LOCK_TIMEOUT_SECONDS);
@@ -1795,7 +1845,6 @@ export function reportsVerb(action: 'amend' | 'withdraw', argv: string[], worksp
       mutation = enterBookMutation({ workspace, slug: book.slug, bookRoot: book.bookRoot, reason, lock });
       journalPath = writeBookJournal({ workspace, bookRoot: book.bookRoot, operation: reason, paths: [report.fullPath, mapPath] }).journalPath;
       const text = readUtf8(report.fullPath);
-      stamp = utcStamp();
       let changed: string;
       if (action === 'amend') {
         count = (report.updateCount ?? 0) + 1;
@@ -3217,6 +3266,10 @@ export function reportsSendPendingVerb(argv: string[], workspace: string): Write
       return {state,pin,rows,id};
     };
     let current=snapshot();
+    if (preflight && !current.rows.length) {
+      return { refusal: null, value: { schema: 1, operation: 'Send pending Reports', count: 0, reports: [],
+        confirmation_required: false, shared_library_write: false, note: 'No pending local Reports are waiting to send.' } };
+    }
     const preview:Record<string,PsJsonValue>={schema:1,operation:'Send pending Reports',plan_id:current.id,count:current.rows.length,reports:current.rows.map(r=>({page:r.note.page,title:r.note.title,from_seat:r.note.fromSeat,sent_for:r.seatless?'seatless':null,origin_seat:r.originSeat,origin_seat_id:r.originId})),for_library_id:current.pin.library_id,for_seat:current.pin.seat,confirmation_required:true,shared_library_write:false};
     if(preflight)return {refusal:null,value:preview};
     if(!parsed.flags.has('user-confirmed')||parsed.options.get('plan-id')!==current.id)refuse('reports send-pending needs the current preflight and its exact plan_id with --user-confirmed.');

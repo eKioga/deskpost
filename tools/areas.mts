@@ -65,7 +65,7 @@ export function areasProblems(record: AreasRecord, tracked: readonly string[], e
   }
   for (const [file, places] of homes) if (places.length > 1) faults.push(`${file} is in ${places.length} places: ${places.join(', ')}`);
   for (const file of tracked) if (!homes.has(file)) faults.push(`${file} is in no area and not in shared`);
-  for (const file of homes.keys()) if (!exists(file)) warnings.push(`${file} is listed but missing`);
+  for (const file of homes.keys()) if (!exists(file)) faults.push(`${file} is listed but missing: remove it from docs/areas.json`);
   const laneOf = new Map<string, string[]>();
   for (const [lane, areas] of Object.entries(record.lanes)) for (const area of areas) laneOf.set(area, [...(laneOf.get(area) ?? []), lane]);
   if (Object.hasOwn(record.areas, 'shared')) faults.push('area shared is reserved for the shared list');

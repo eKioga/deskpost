@@ -12,7 +12,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CHECKING_LABEL, SHA, forgejoClient, repositoryApi, type Label, type Pull, type Reply } from './land.mts';
 
-export const LANDER_VERSION = '1.1.0';
+export const LANDER_VERSION = '1.1.4';
 /** The one status context the master rule requires. */
 export const CONTEXT = 'ci / linux (pull_request)';
 export const LABELS = { queued: 'lander: queued', checking: CHECKING_LABEL, red: 'lander: red', held: 'lander: held' } as const;
@@ -96,6 +96,26 @@ export interface LanderOptions {
   login: string;
   readSecrets: () => Promise<Secrets>;
   say?: (line: string) => void;
+}
+
+/** Read bounded run pages and refuse a repeated run instead of looping on an ignored page parameter. */
+export async function readAllRuns(get: (route: string) => Promise<unknown>): Promise<Run[]> {
+  const runs: Run[] = [];
+  const seen = new Set<number>();
+  for (let page = 1; ; page++) {
+    const reply = await get(`/actions/runs?limit=50&page=${page}`) as {workflow_runs?: Run[]; total_count?: number};
+    if (!Array.isArray(reply?.workflow_runs) || !Number.isSafeInteger(reply.total_count) || reply.total_count! < 0)
+      throw Error('Forgejo run list is invalid');
+    for (const run of reply.workflow_runs) {
+      if (!Number.isSafeInteger(run?.id) || run.id < 1) throw Error('Forgejo run list is invalid');
+      if (seen.has(run.id)) throw Error('Forgejo run list repeated a run from an earlier page');
+      seen.add(run.id); runs.push(run);
+    }
+    const total = reply.total_count!;
+    if (runs.length === total) return runs;
+    if (runs.length > total || reply.workflow_runs.length < 50)
+      throw Error(`Forgejo run list count mismatch: received ${runs.length}, expected ${total}`);
+  }
 }
 
 export function createLander(options: LanderOptions) {
@@ -205,16 +225,7 @@ export function createLander(options: LanderOptions) {
     if (has(pull, LABELS.checking)) await removeLabel(pull.number, LABELS.checking);
   }
   const hold = (pull: Pull, why: string) => stop(pull, 'held', why);
-  async function allRuns(): Promise<Run[]> {
-    const runs: Run[] = [];
-    for (let page = 1; ; page++) {
-      const reply = await get(`/actions/runs?limit=50&page=${page}`) as { workflow_runs?: Run[] };
-      if (!Array.isArray(reply?.workflow_runs)) throw Error('Forgejo run list is invalid');
-      runs.push(...reply.workflow_runs);
-      if (reply.workflow_runs.length < 50) break;
-    }
-    return runs;
-  }
+  const allRuns = () => readAllRuns(get);
   const highest = (runs: Run[]) => Math.max(0, ...runs.map(r => r.index_in_repo));
   /** Judge logs by the chosen run's id. Unreadable logs fail closed as a test result. */
   async function leftResult(run: Run): Promise<boolean> {
@@ -248,10 +259,11 @@ export function createLander(options: LanderOptions) {
     }
     for (const pull of pulls.filter(p => has(p, LABELS.held))) {
       const held = lastMatch(await myComments(pull.number), /^lander: held ([a-f0-9]{40}): (.*)/);
-      if (held && held.match[1] !== pull.head.sha && /^(retry limit|run budget)/.test(held.match[2]!)) {
+      const reason = /^(retry limit|run budget)\b/.exec(held?.match[2] ?? '')?.[1];
+      if (held && held.match[1] !== pull.head.sha && reason) {
         await removeLabel(pull.number, LABELS.held);
         pull.labels = pull.labels!.filter(l => l.name !== LABELS.held);
-        await comment(pull.number, `lander: rejoined at ${pull.head.sha} (retry limit was ${held.match[1]})`);
+        await comment(pull.number, `lander: rejoined at ${pull.head.sha} (${reason} was ${held.match[1]})`);
       }
     }
     const queue = pulls.filter(p => !has(p, LABELS.red) && !has(p, LABELS.held));
@@ -273,18 +285,21 @@ export function createLander(options: LanderOptions) {
     const mine = await myComments(n);
     const resetAt = lastMatch(mine, new RegExp(`^lander: reset ${H} after run (\\d+)$`));
     const R0 = Number(resetAt?.match[1] ?? 0);
+    // R is the highest run index seen when this request was written. Only runs after R can belong to it.
     const requests = mine.slice((resetAt?.index ?? -1) + 1).flatMap(body => {
       const match = new RegExp(`^lander: run-request ${H} #(\\d+) after run (\\d+)$`).exec(body);
       return match ? [{ k: Number(match[1]), R: Number(match[2]) }] : [];
     });
     const runs = await allRuns();
-    const own = runs.filter(run => {
+    const pullRuns = runs.flatMap(run => {
+      if (run.workflow_id !== 'ci.yml' || run.event !== 'pull_request') return [];
       let payload: Exclude<Run['event_payload'], string>;
       try { payload = typeof run.event_payload === 'string' ? JSON.parse(run.event_payload) : run.event_payload; }
-      catch { return false; }
-      return run.workflow_id === 'ci.yml' && run.event === 'pull_request' && run.commit_sha === H
-        && run.index_in_repo > R0 && payload?.label?.name === LABELS.checking && payload?.pull_request?.number === n;
+      catch { return []; }
+      return payload?.pull_request?.number === n ? [{ run, label: payload.label?.name }] : [];
     });
+    const own = pullRuns.flatMap(({ run, label }) =>
+      run.commit_sha === H && run.index_in_repo > R0 && label === LABELS.checking ? [run] : []);
     const latest = requests.at(-1);
     const candidates = latest ? own.filter(run => run.index_in_repo > latest.R) : own;
     if (candidates.length > 1) {
@@ -295,11 +310,12 @@ export function createLander(options: LanderOptions) {
     const checking = has(head, LABELS.checking);
     const result = row?.status ?? '';
     let start = !checking || (!latest && !row);
-    const returnedHead = latest && mine.slice(mine.lastIndexOf(`lander: run-request ${H} #${latest.k} after run ${latest.R}`) + 1).some(body => {
+    const returnedByRun = latest && pullRuns.some(({ run }) => run.index_in_repo > latest.R && run.commit_sha !== H);
+    const returnedByRequest = latest && mine.slice(mine.lastIndexOf(`lander: run-request ${H} #${latest.k} after run ${latest.R}`) + 1).some(body => {
       const match = /^lander: run-request ([a-f0-9]{40}) #\d+ after run \d+$/.exec(body);
       return match && match[1] !== H;
     });
-    if (checking && latest && !row && returnedHead) {
+    if (checking && latest && !row && (returnedByRequest || returnedByRun)) {
       await hold(head, 'head returned to an earlier commit; reset to check it again');
       return true;
     }

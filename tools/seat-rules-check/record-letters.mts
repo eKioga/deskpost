@@ -59,6 +59,13 @@ function capture(agent: number, assistant: string, args: string[], mayRefuse = f
   // The refused CLI prints its reason to stderr; keep both streams exactly as printed.
   return ran.stdout + ran.stderr;
 }
+function buildFixture(id: string, target: string, answeredPage: string, outputs: Record<string, LetterFixture['outputs']>): LetterFixture {
+  const selected = (harness: string) => id === 'wants-answer' && page(outputs[harness]!.wants) ? [outputs[harness]!.wants] : outputs[harness]!.plain;
+  const claudePages = selected('claude').map(page), codexPages = selected('codex').map(page);
+  const ring = claudePages.length > 1 ? `From writer: ${claudePages.length} letters for you, letters ${claudePages.join(', ')}` : `From writer: a letter for you, letters ${claudePages[0]}`;
+  const relay = codexPages.length > 1 ? `Tell ${target}: ${codexPages.length} letters for you, letters ${codexPages.join(', ')}` : `Tell ${target}: a letter for you, letters ${codexPages[0]}`;
+  return { agents: target === 'absent' ? [] : [{ name: 'recipient-peer', seat: 'recipient', status: 'idle' }], expected_capture_for: target, expected_ring_target: 'recipient-peer', ring_line: ring, ...(claudePages.length > 1 ? { combined_ring_line: ring } : {}), relay_line: relay, answered_page: answeredPage, outputs: outputs['claude']!, outputs_by_harness: outputs };
+}
 try {
   required(['init', workspace, '--registry-root', registry]);
   for (const project of ['writer-project', 'recipient-project', 'absent-project']) required(['hub', 'new', project, '--title', project, '--workspace', workspace]);
@@ -97,11 +104,7 @@ try {
       const answers = capture(writer, harness, ['--answers', answeredPage], true);
       outputs[harness] = { plain, wants, answers };
     }
-    const selected = (harness: string) => id === 'wants-answer' && page(outputs[harness]!.wants) ? [outputs[harness]!.wants] : outputs[harness]!.plain;
-    const claudePages = selected('claude').map(page), codexPages = selected('codex').map(page);
-    const ring = claudePages.length > 1 ? `From writer: ${claudePages.length} letters for you, letters ${claudePages.join(', ')}` : `From writer: a letter for you, letters ${claudePages[0]}`;
-    const relay = codexPages.length > 1 ? `Tell ${target}: ${codexPages.length} letters for you, letters ${codexPages.join(', ')}` : `Tell ${target}: a letter for you, letters ${codexPages[0]}`;
-    const fixture: LetterFixture = { agents: target === 'absent' ? [] : [{ name: 'recipient-peer', seat: 'recipient', status: 'idle' }], expected_ring_target: 'recipient-peer', ring_line: ring, ...(claudePages.length > 1 ? { combined_ring_line: ring } : {}), relay_line: relay, answered_page: answeredPage, outputs: outputs['claude']!, outputs_by_harness: outputs };
+    const fixture = buildFixture(id, target, answeredPage, outputs);
     const folder = path.join(output, id); fs.mkdirSync(folder, { recursive: true });
     fs.writeFileSync(path.join(folder, 'letters-ring.json'), JSON.stringify(fixture, null, 2) + '\n');
     fs.writeFileSync(path.join(folder, 'README.md'), `# ${id}\n\n${situation}\n\nYou are writer. Use capture_letter to write letters and list_agents to find running recipients.\n${id === 'reply-to-closed' ? 'The incoming page is ' + answeredPage + '. It was already answered and is closed.\n' : ''}\nProgram replies are recorded from the real CLI; expectations are not exposed to the session.\n`);

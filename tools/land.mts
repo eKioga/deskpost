@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // The gate lock and child environment load only on the Windows path, so tools/lander.mts can import this file
 // inside its image, which carries tools/land.mts and tools/lander.mts and nothing of kernel/.
 
-type Runner = (command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<string>;
+type Runner = (command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number) => Promise<string>;
 export type Label = { id: number; name: string };
 export type Pull = { number: number; head: { sha: string; ref: string; repo?: { full_name: string } }; base: { ref: string };
   labels?: Label[]; created_at?: string };
@@ -81,17 +81,118 @@ except deskpost_secrets.SecretError as exc:
     print('error:', exc, file=sys.stderr)
     sys.exit(1)
 `;
-export const execute: Runner = (command, args, cwd, env) => new Promise((resolve, reject) => {
+const CHILD_TIMEOUT_MS = 5 * 60_000;
+const WINDOWS_SECTIONS_TIMEOUT_MS = 30 * 60_000;
+
+type ChildClosure = { pid: number; closed: Promise<void> };
+
+export async function releaseAfterChild(
+  child: ChildClosure | undefined, say: (line: string) => void, release: () => Promise<void>,
+): Promise<void> {
+  if (child) {
+    say(`holding the gate lock until process ${child.pid} exits; stop it with taskkill /T /F /PID ${child.pid}`);
+    await child.closed;
+  }
+  await release();
+}
+
+export const execute: Runner = (command, args, cwd, env, timeoutMs = CHILD_TIMEOUT_MS) => new Promise((resolve, reject) => {
   const reader = command === 'python' || command === 'python3';
   const manifest = args[0]?.endsWith('ci-manifest.mts');
-  const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const windows = process.platform === 'win32';
+  const child = spawn(command, args, { cwd, env, detached: !windows, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let hasClosed = false;
+  const closed = new Promise<void>(resolve => child.once('close', () => { hasClosed = true; resolve(); }));
   let out = '';
   child.stdout.on('data', chunk => { out += String(chunk); });
   // Relay only the reader's SecretError or the credential-free manifest's own diagnostic line.
   let error = '';
   child.stderr.on('data', chunk => { if (reader || manifest) error += String(chunk); });
-  child.on('error', () => reject(Error(`${path.basename(command)} could not start`)));
-  child.on('close', code => {
+  let stopping: Promise<void> | undefined;
+  const message = `${path.basename(command)} timed out after ${timeoutMs} ms`;
+  const stopFailure = () => Object.assign(Error(message + '; child tree termination failed'), {
+    childClosure: hasClosed || child.pid === undefined ? undefined : { pid: child.pid, closed },
+  });
+  const timer = setTimeout(() => {
+    if (child.pid === undefined) return;
+    if (windows) {
+      const killer = spawn(path.join(process.env.SystemRoot ?? '', 'System32', 'taskkill.exe'), ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
+      stopping = new Promise<void>((resolve, rejectKill) => {
+        killer.once('error', rejectKill);
+        killer.once('close', code => code === 0 ? resolve() : rejectKill(Error(`taskkill exited with code ${code}`)));
+      });
+    } else {
+      stopping = new Promise<void>(resolve => {
+        const signal = (pid: number, name: NodeJS.Signals) => {
+          try { process.kill(pid, name); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+        };
+        const root = child.pid!;
+        // Without Linux procfs we can stop only the original process group.
+        if (process.platform !== 'linux' || !fs.existsSync('/proc/self/stat')) {
+          signal(-root, 'SIGKILL');
+          resolve();
+          return;
+        }
+        const pids = new Set([root]);
+        const groups = new Set([root]);
+        try {
+          signal(-root, 'SIGSTOP');
+          // Freeze each group as we discover it, then rescan for children forked during the scan.
+          let previousSize: number;
+          do {
+            previousSize = pids.size;
+            const children = new Map<number, { pid: number; group: number }[]>();
+            for (const entry of fs.readdirSync('/proc')) {
+              if (!/^\d+$/.test(entry)) continue;
+              let stat: string;
+              try { stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8'); }
+              catch (error) {
+                if (['ENOENT', 'ESRCH', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+                throw error;
+              }
+              const [, parent, group] = stat.slice(stat.lastIndexOf(')') + 2).split(' ').map(Number);
+              if (parent === undefined || group === undefined) continue;
+              const siblings = children.get(parent) ?? [];
+              siblings.push({ pid: Number(entry), group });
+              children.set(parent, siblings);
+            }
+            // Set iteration visits descendants added during the walk.
+            for (const pid of pids) {
+              for (const descendant of children.get(pid) ?? []) {
+                if (pids.has(descendant.pid)) continue;
+                pids.add(descendant.pid);
+                if (descendant.group > 1 && !groups.has(descendant.group)) {
+                  groups.add(descendant.group);
+                  signal(-descendant.group, 'SIGSTOP');
+                }
+                signal(descendant.pid, 'SIGSTOP');
+              }
+            }
+          } while (pids.size !== previousSize);
+        } finally {
+          // Signal descendants before the direct child, whose close settles execute.
+          for (const pid of [...pids].reverse()) if (pid !== root) signal(pid, 'SIGKILL');
+          for (const group of groups) if (group !== root) signal(-group, 'SIGKILL');
+          signal(-root, 'SIGKILL');
+          signal(root, 'SIGKILL');
+        }
+        resolve();
+      });
+    }
+    void stopping.catch(() => reject(stopFailure()));
+  }, timeoutMs);
+  child.on('error', () => {
+    clearTimeout(timer);
+    reject(Error(`${path.basename(command)} could not start`));
+  });
+  child.on('close', async code => {
+    clearTimeout(timer);
+    if (stopping) {
+      try { await stopping; reject(Error(message)); }
+      catch { reject(stopFailure()); }
+      return;
+    }
     const failed = args[0] === 'test/run-parallel.ts' ? [...out.matchAll(/^section (\d+): FAIL/gm)].map(m => m[1]) : [];
     const diagnostic = manifest ? error.split(/\r?\n/).find(line => line.startsWith('ci-manifest:'))?.slice(0, 300) : undefined;
     if (code === 0) resolve(reader ? out : out.trim());
@@ -120,6 +221,11 @@ export async function land(branch: string, options: Options = {}): Promise<numbe
     if (options.close && options.open) throw Error('--open and --close cannot be combined; nothing sent');
     if (!options.tokenItem?.trim()) throw Error('Set --token-item to the 1Password item title; nothing sent');
     if (!env['DESKPOST_SECRETS_DIR']) throw Error('Set DESKPOST_SECRETS_DIR to the folder containing deskpost_secrets.py; nothing sent');
+    if (options.open) {
+      const hooksPath = await runner('git', ['config', 'core.hooksPath'], cwd, env).catch(() => '');
+      if (hooksPath.trim() !== '.githooks')
+        throw Error('Commit checks are disabled: run git config core.hooksPath .githooks; nothing pushed or opened');
+    }
     const readerFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-reader-'));
     let readerFailure = '';
     try {
@@ -148,22 +254,23 @@ export async function land(branch: string, options: Options = {}): Promise<numbe
     const { request, get } = forgejoClient(api, () => token, () => Math.max(1, Math.min(remaining(), 30_000)));
     const isWindows = (options.platform ?? process.platform) === 'win32';
     // Only the Windows class: --sections windows also includes both, which CI already ran.
-    const windowsSections = async (root: string) => options.sections ?? (JSON.parse(await runner(process.execPath,
-      [path.join(root, 'tools/ci-manifest.mts'), 'plan'], root, env)) as {sections: {section: number; class: string}[]})
+    const windowsSections = async (root: string, checkEnv: NodeJS.ProcessEnv) => options.sections ?? (JSON.parse(await runner(process.execPath,
+      [path.join(root, 'tools/ci-manifest.mts'), 'plan'], root, checkEnv)) as {sections: {section: number; class: string}[]})
       .sections.filter(s => s.class === 'windows').map(s => s.section);
     /** The `windows` sections on `head` in a detached worktree (Windows), or the named skip line elsewhere. Returns the result line. */
     const windowsCheck = async (head: string, fetchFirst: boolean): Promise<string> => {
+      const { childEnv } = await import('../kernel/test/gate-env.ts');
       let planned: number[] = [];
       if (!isWindows) {
-        planned = await windowsSections(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+        planned = await windowsSections(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), childEnv());
         const line = `windows sections: skipped on Linux (${planned.length}); the next Windows landing runs them`;
         say(line);
         return line;
       }
       const { acquireGateLock } = await import('../kernel/test/gate-lock.ts');
-      const { childEnv } = await import('../kernel/test/gate-env.ts');
       const lock = await acquireGateLock('land');
       let folder = '', worktree = '', added = false, step = 'worktree', failure = '';
+      let childClosure: ChildClosure | undefined;
       try {
         folder = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-land-')); worktree = path.join(folder, 'head');
         const checkEnv = childEnv();
@@ -179,31 +286,38 @@ export async function land(branch: string, options: Options = {}): Promise<numbe
         step = 'install';
         await runner(process.execPath, [npm, 'ci', '--prefer-offline'], kernel, checkEnv);
         step = 'plan';
-        planned = await windowsSections(worktree);
+        planned = await windowsSections(worktree, checkEnv);
         say(`Running Windows sections: ${planned.join(',')}`);
         if (planned.length) {
           step = 'sections';
           await runner(process.execPath, ['test/run-parallel.ts', '--workers', '2', '--require-sections', planned.join(',')], kernel,
-            { ...checkEnv, LIBRARY_SELFTEST_SECTIONS: planned.join(',') });
+            { ...checkEnv, LIBRARY_SELFTEST_SECTIONS: planned.join(',') }, WINDOWS_SECTIONS_TIMEOUT_MS);
         }
         say(`Windows sections passed: ${planned.join(',')}`);
       } catch (error) {
         const cause = scrub(error instanceof Error ? error.message : String(error));
         const failed = step === 'sections' ? /section ([\d,]+)/.exec(cause)?.[1] : undefined;
         failure = `Windows ${step} failed${failed ? ': ' + failed : ''}; ${cause}; ${options.open ? 'nothing pushed or opened' : 'merge refused'}`;
+        childClosure = (error as { childClosure?: ChildClosure } | null)?.childClosure;
+        if (childClosure) say(failure);
       }
       finally {
-        try {
-          if (added) await runner('git', ['worktree', 'remove', '--force', worktree], cwd, env);
-          // This folder was created above solely for this detached test worktree.
-          if (folder) fs.rmdirSync(folder);
-        } catch (error) {
-          const cause = scrub(error instanceof Error ? error.message : String(error));
-          failure = `${failure ? failure + '; ' : ''}Windows cleanup failed; ${cause}; merge refused`;
-        } finally {
-          try { await lock.release(); }
-          catch (error) { failure += `${failure ? '; ' : ''}Windows cleanup failed; ${scrub(String(error))}; merge refused`; }
-        }
+        await releaseAfterChild(childClosure, say, async () => {
+          let cleanupChild: ChildClosure | undefined;
+          try {
+            if (added) await runner('git', ['worktree', 'remove', '--force', worktree], cwd, env);
+            // This folder was created above solely for this detached test worktree.
+            if (folder) fs.rmdirSync(folder);
+          } catch (error) {
+            const cause = scrub(error instanceof Error ? error.message : String(error));
+            failure = `${failure ? failure + '; ' : ''}Windows cleanup failed; ${cause}; merge refused`;
+            cleanupChild = (error as { childClosure?: ChildClosure } | null)?.childClosure;
+            if (cleanupChild) say(failure);
+          } finally {
+            try { await releaseAfterChild(cleanupChild, say, () => lock.release()); }
+            catch (error) { failure += `${failure ? '; ' : ''}Windows cleanup failed; ${scrub(String(error))}; merge refused`; }
+          }
+        });
       }
       if (failure) throw Error(failure);
       return `Windows sections passed: ${planned.join(',')}`;

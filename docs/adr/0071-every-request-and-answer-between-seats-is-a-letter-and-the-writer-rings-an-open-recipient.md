@@ -117,6 +117,8 @@ file passed as a value (0062:111-125) stands.
 
 ## What this deliberately does not do
 
+- **Host limit, recorded 2026-11-17:** a Claude Code Desktop session and a terminal (Orca) seat cannot
+  ring each other. A letter reaches either through its Desk.
 - **Deskpost does not send the ring**, post into a pipe, or log messages.
 - **No acknowledgement of a ring**, and no retry of a held or denied one.
 - **No count, title or sender in the Desk line**, and no line on every prompt where the ledger applies.

@@ -55,21 +55,21 @@ function Assert-ProjectSlug([string]$Slug) {
 # append-only growth the Now seed exists to prevent -- a decision never "closes" the way a task does,
 # so an unbounded Decisions list is the same defect wearing different clothes. See ADR-0003.
 function New-ProjectDevSections {
-    $repoSeed = "- **Working tree:** the local checkout this project's work happens in. Replace this line.`n" +
+    $repoSeed = "- **Working tree:** the local checkout this project's work happens in.`n" +
         "- **Remote:** sanitized remote URL -- no credentials or userinfo.`n" +
         "- **Branch:** the branch work lands on.`n" +
         "- **Gate:** the command that must pass before a change is done.`n" +
         "- **Agent guidance:** point at the working tree's own ``AGENTS.md``; never copy it here, because a copy goes stale silently.`n`n" +
         "Delete any label that does not apply to this subject rather than writing ``n/a``: this section names the working tree the work happens in and what proves a change is done, and the git-shaped labels are the common case rather than the definition. A subject with no repository of its own keeps Working tree and Gate and loses the rest. A dead label costs a reader attention on every orientation, and several would make a live section look broken rather than deliberately short."
-    $decisionsSeed = "Settled ground, as one-line pointers. Replace this line.`n`n" +
-        "- **<date> -- <what was decided>.** <where its record lives>`n`n" +
+    $decisionsSeed = "Settled ground, as one-line pointers.`n`n" +
+        "<!-- - **<date> -- <what was decided>.** <where its record lives> -->`n`n" +
         "Pointers only: the reasoning lives in the subject's own ``docs/adr/`` when it has a repository you control, and in this Hub's ``decisions/`` page when it does not. Operative entries only -- remove a pointer when its decision is superseded, and let the record it names carry that history."
     "## Repo`n`n$repoSeed`n`n## Decisions`n`n$decisionsSeed`n"
 }
 
 function New-ProjectRootBody([string]$RootTitle, [string]$RootPurpose, [string[]]$RootNextAction, [bool]$DevTemplate = $false) {
-    $next = if ($RootNextAction.Count) { ($RootNextAction | ForEach-Object { "- [ ] $_" }) -join "`n" } else { '- [ ] Add the next useful action.' }
-    $purposeText = if ([string]::IsNullOrWhiteSpace($RootPurpose)) { 'Describe what this project is for.' } else { $RootPurpose.Trim() }
+    $next = if ($RootNextAction.Count) { ($RootNextAction | ForEach-Object { "- [ ] $_" }) -join "`n" } else { '<!-- The next action this project can complete. -->' }
+    $purposeText = if ([string]::IsNullOrWhiteSpace($RootPurpose)) { '<!-- What this project is for, in a sentence or two. -->' } else { $RootPurpose.Trim() }
     # The seed matters: the line this replaced -- "Capture the current state here." -- is exactly
     # the invitation that turned a Now section into an append-only changelog. Orientation and a
     # session log have opposite lifecycles, and a Hub that starts by conflating them keeps doing it.
@@ -81,7 +81,7 @@ function New-ProjectRootBody([string]$RootTitle, [string]$RootPurpose, [string[]
     # correctly routed away the whole time -- shipping a feature closes a Next item and adds a Now
     # limit. The fix is the same move that worked in 2026-08-18: name the destination, do not set a
     # number.
-    $nowSeed = "Where this project stands, and anything still open or unproven. Replace this line.`n`nOrientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated ``notes/`` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a ``limits`` page (make it with ``hub edit --mode new-page`` when the first one arrives) with a disposition, a settled question goes to ``## Decisions`` and the record it names, and a standing practice goes to the subject's own rules or docs."
+    $nowSeed = "<!-- Where this project stands, and anything still open or unproven. -->`n`nOrientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated ``notes/`` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a ``limits`` page (make it with ``hub edit --mode new-page`` when the first one arrives) with a disposition, a settled question goes to ``## Decisions`` and the record it names, and a standing practice goes to the subject's own rules or docs. On a dev Hub each item is a short pointer to its record; ``hub status`` shows the live state."
     # The non-dev body is pinned to a fixed literal in the self-test so it cannot drift by accident;
     # a deliberate change moves that literal with its reason, as ADR-0013 did.
     $dev = if ($DevTemplate) { "`n" + (New-ProjectDevSections) } else { '' }
@@ -153,8 +153,8 @@ if ($SelfTest) {
         '## Purpose', '',
         'Exercise the seed.', '',
         '## Now', '',
-        'Where this project stands, and anything still open or unproven. Replace this line.', '',
-        'Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a `limits` page (make it with `hub edit --mode new-page` when the first one arrives) with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject''s own rules or docs.', '',
+        '<!-- Where this project stands, and anything still open or unproven. -->', '',
+        'Orientation and open items only. **Every item here must have a closing condition this project can cause.** What *happened* belongs on a dated `notes/` history page, append-only and unlimited. Anything that will not close by doing the work leaves: a limit whose proof needs an event you cannot cause goes to a `limits` page (make it with `hub edit --mode new-page` when the first one arrives) with a disposition, a settled question goes to `## Decisions` and the record it names, and a standing practice goes to the subject''s own rules or docs. On a dev Hub each item is a short pointer to its record; `hub status` shows the live state.', '',
         '## Next', '',
         '- [ ] Take the next step.'
     ) -join "`n") + "`n"

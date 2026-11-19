@@ -26,18 +26,20 @@ import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
 import { readMarker } from './workspace.ts';
 import { enterBookLock, exitBookLock } from './locks.ts';
-import { writeAtomicText } from './fsx.ts';
+import { writeAtomicBytes, writeAtomicText } from './fsx.ts';
 import { pageComparisonSha256, sha256OfBytes, sha256OfText } from './sha.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, requireSeat } from './seatdesk.ts';
 import { McpSession, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl, sendWrite } from './basicmemory.ts';
 import { assertCollectionWriteAllowed } from './ownership.ts';
 import { hubNewPage } from './hubnewpage.ts';
+import { postedHeader } from './kickoffcheck.ts';
 import { withInlineCutWarning } from './inlinecut.ts';
 import { hubSlug } from './hubslug.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { localDate } from './localdate.ts';
 import { capturePriorBytes, undoBlock, type UndoPathBefore } from './journal.ts';
+import { assertInsideRoot } from './pagepath.ts';
 import { seatConversationRecord } from './desk.ts';
 
 class HubEditRefusal extends Error {}
@@ -45,8 +47,8 @@ class HubEditRefusal extends Error {}
 export function hubRefusalJson(action: string, message: string): Record<string, PsJsonValue> {
   // Fixed openings: '<mode> is not yet performed: rerun the current preflight',
   // '<mode> was given a --plan-id that is not this edit\'s', and 'hub tidy is not yet performed: rerun the current preflight'.
-  const stale = /^(?:remove-section|replace-section|replace-body|replace-item|hub tidy) is not yet performed: rerun the current preflight/.test(message) ||
-    /^(?:add-section|append-section|check-item) was given a --plan-id that is not this edit's/.test(message);
+  const stale = /^(?:remove-page|remove-section|replace-section|replace-body|replace-item|hub tidy) is not yet performed: rerun the current preflight/.test(message) ||
+    /^(?:add-section|append-section|check-item|close-item|insert-item) was given a --plan-id that is not this edit's/.test(message);
   return { schema: 1, status: 'refused', verb: `hub ${action}`, reason: stale ? 'stale-plan' : 'refused', message };
 }
 
@@ -76,10 +78,10 @@ export function pageLimitBytes(pagePath: string): number {
 export const SECTION_SIZE_THRESHOLD = 12000;
 export const ENTRY_SIZE_THRESHOLD = 1200;
 
-export const EDIT_MODES = ['AddSection', 'AppendSection', 'RemoveSection', 'ReplaceSection', 'ReplaceBody', 'CheckItem', 'ReplaceItem'] as const;
+export const EDIT_MODES = ['AddSection', 'AppendSection', 'RemoveSection', 'RemovePage', 'ReplaceSection', 'ReplaceBody', 'CheckItem', 'ReplaceItem', 'InsertItem', 'CloseItem'] as const;
 export type EditMode = (typeof EDIT_MODES)[number];
 const SECTION_MODES: EditMode[] = ['AddSection', 'AppendSection', 'RemoveSection', 'ReplaceSection'];
-const ITEM_MODES: EditMode[] = ['CheckItem', 'ReplaceItem'];
+const ITEM_MODES: EditMode[] = ['CheckItem', 'ReplaceItem', 'InsertItem'];
 
 // --- body editing: pure text ------------------------------------------------------------------------
 
@@ -134,26 +136,258 @@ export function fencedLineMask(lines: string[]): boolean[] {
   return mask;
 }
 
+/** Where `<!--` opens in `text` outside a backtick code span, from `from` on, or -1. */
+function commentOpenAt(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === '`') {
+      const run = /^`+/.exec(text.slice(i))![0];
+      const close = text.indexOf(run, i + run.length);
+      // An unmatched backtick run is text; a matched one is a code span, whose `<!--` is text too.
+      if (close >= 0 && text.slice(close, close + run.length + 1) !== run + '`') { i = close + run.length - 1; continue; }
+      i += run.length - 1;
+      continue;
+    }
+    if (text.startsWith('<!--', i)) return i;
+  }
+  return -1;
+}
+
+/**
+ * ONE READING OF WHAT A PAGE SHOWS (kickoffs/s213-r5 row 2; s198 row 1, s213-r4 row 4). The page is read once, top to
+ * bottom. A fence (three or more backticks or tildes, up to three spaces in) runs to a line of the same character at
+ * least as long, or to the page's end. An HTML comment runs from its `<!--` through the `-->` that closes it: at a line's
+ * start (up to three spaces in) it runs to that `-->` wherever it is; opened after text on its line, outside a code span,
+ * it is a comment when a `-->` follows before the next blank line, and text otherwise. A fence marker inside a comment
+ * and a comment marker inside a fence are text. Each entry is the line's shown text (its parts outside comments, edge
+ * spaces left by a removed comment trimmed at the end), or null when nothing of the line is shown.
+ */
+export function shownText(lines: string[]): (string | null)[] {
+  return scanShown(lines).shown;
+}
+
+/** A fence or HTML comment still open at the end of the lines read: its kind and the index of the line that opened it. */
+export interface OpenBlock {
+  kind: 'fence' | 'comment';
+  index: number;
+}
+
+/** `shownText`'s one pass, also naming the fence or comment left open after the last line (kickoffs/s213-r5 row 3). */
+function scanShown(lines: string[]): { shown: (string | null)[]; open: OpenBlock | null } {
+  const out: (string | null)[] = [];
+  let fenceCharacter = '';
+  let fenceLength = 0;
+  let inComment = false;
+  let openedAt = -1;
+  const closesBeforeBlank = (index: number, rest: string): boolean => {
+    if (rest.includes('-->')) return true;
+    for (let j = index + 1; j < lines.length && !isBlank(lines[j]); j++) if (lines[j]!.includes('-->')) return true;
+    return false;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (fenceCharacter) {
+      if (new RegExp(`^[ ]{0,3}${fenceCharacter === '`' ? '`' : '~'}{${fenceLength},}\\s*$`).test(line)) fenceCharacter = '';
+      out.push(null);
+      continue;
+    }
+    if (!inComment) {
+      const open = /^[ ]{0,3}(`{3,}|~{3,})/.exec(line);
+      if (open) {
+        fenceCharacter = open[1]!.substring(0, 1);
+        fenceLength = open[1]!.length;
+        openedAt = i;
+        out.push(null);
+        continue;
+      }
+    }
+    let text = '';
+    let at = 0;
+    let hadComment = false;
+    while (at <= line.length) {
+      if (inComment) {
+        hadComment = true;
+        const close = line.indexOf('-->', at);
+        if (close < 0) { at = line.length + 1; break; }
+        inComment = false;
+        at = close + 3;
+        continue;
+      }
+      const open = commentOpenAt(line, at);
+      if (open < 0) { text += line.slice(at); break; }
+      const lineStart = /^[ ]{0,3}$/.test(line.slice(0, open)) && at === 0;
+      if (!lineStart && !closesBeforeBlank(i, line.slice(open + 4))) {
+        text += line.slice(at, open + 4);
+        at = open + 4;
+        continue;
+      }
+      text += line.slice(at, open);
+      inComment = true;
+      openedAt = i;
+      at = open + 4;
+    }
+    out.push(!hadComment ? text : isBlank(text) ? null : text.replace(/[ \t]+$/, ''));
+  }
+  const open: OpenBlock | null = fenceCharacter ? { kind: 'fence', index: openedAt } : inComment ? { kind: 'comment', index: openedAt } : null;
+  return { shown: out, open };
+}
+
 export interface Heading {
   index: number;
   level: number;
   text: string;
 }
 
+/** The level-one and level-two headings on shown lines (`shownText`): one in a fence or an HTML comment is content. */
 export function headings(lines: string[]): Heading[] {
-  const fenced = fencedLineMask(lines);
+  const shown = shownText(lines);
   const found: Heading[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (fenced[i]) continue;
-    const match = /^[ ]{0,3}(#{1,2})[ \t]+(.+?)[ \t]*$/.exec(lines[i]!);
+    const text = shown[i];
+    if (text === null || text === undefined) continue;
+    const match = /^[ ]{0,3}(#{1,2})[ \t]+(.+?)[ \t]*$/.exec(text);
     if (match) found.push({ index: i, level: match[1]!.length, text: match[2]! });
   }
   return found;
 }
 
+/** A shown line of `## Next`: its index in the page and its shown text. */
+export interface ShownLine {
+  index: number;
+  text: string;
+}
+
+/**
+ * THE ONE READING OF `## Next` (kickoffs/s213-r5 row 2): the shown lines (`shownText`) under every level-two `## Next`
+ * heading of a page, in page order, each section ending at the next heading `headings` finds; null when the page has
+ * no `## Next`. `kickoff next`, `kickoff check --open`, `kickoff receive`'s pointer stage and `hub edit`'s pointer rules
+ * all read this, so a page cannot hold a pointer one of them sees and another does not.
+ */
+export function nextShownLines(lines: string[]): ShownLine[] | null {
+  const shown = shownText(lines);
+  const all = headings(lines);
+  const found: ShownLine[] = [];
+  let any = false;
+  all.forEach((heading, at) => {
+    if (heading.level !== 2 || heading.text !== 'Next') return;
+    any = true;
+    const end = all[at + 1]?.index ?? lines.length;
+    for (let i = heading.index + 1; i < end; i++) {
+      const text = shown[i];
+      if (text !== null && text !== undefined) found.push({ index: i, text });
+    }
+  });
+  return any ? found : null;
+}
+
 export interface Span {
   start: number;
   end: number;
+}
+
+/**
+ * A DEV HUB (PLAN-hub-redesign.md section 3; ADR-0003, ADR-0009; kickoffs/s213): a Hub root with a level-two `## Repo`
+ * heading outside fenced code. Only `deskpost hub new --dev` seeds one (`collection.ts` `devSections`).
+ */
+export function isDevHubBody(body: string): boolean {
+  return headings(toLines(body)).some((heading) => heading.level === 2 && heading.text === 'Repo');
+}
+
+/** The most pending `Run` pointers a dev Hub's `## Next` holds (PLAN-hub-redesign.md amendment A1, A1-09). */
+export const RUN_QUEUE_CAP = 3;
+
+/** The largest new top-level item of a dev Hub root's `## Now` or `## Next` (PLAN-hub-redesign.md section 3). */
+export const DEV_ITEM_LIMIT = 600;
+/** The largest new `## Decisions` entry of a dev Hub root (PLAN-hub-redesign.md section 3). */
+export const DEV_DECISION_LIMIT = 400;
+
+/** Whether `id` is an item of this Library's train register; false when there is none or it cannot be read. */
+export function trainIdKnown(workspace: string, id: string): boolean {
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(workspace, 'internal', 'train', 'register.json'), 'utf8')) as { items?: { id?: unknown }[] };
+    return Array.isArray(record.items) && record.items.some((item) => item?.id === id);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a record reference is (PLAN-hub-redesign.md section 3): a train id in backticks that the register holds, a
+ * `[[projects/...]]` or `[[books/...]]` link, a `kickoffs/` id, a letter or Report path (`notes/<date>-<words>`), or a
+ * `PLAN-*.md`.
+ */
+export function namesRecord(text: string, knownTrainId: (id: string) => boolean): boolean {
+  if (/\[\[(?:projects|books)\/[^\]]+\]\]/.test(text)) return true;
+  if (/(?:^|[^\w-])kickoffs\/[A-Za-z0-9._-]+/.test(text)) return true;
+  if (/(?:^|[^\w/])notes\/\d{4}-\d{2}-\d{2}-[a-z0-9-]+/.test(text)) return true;
+  if (/\bPLAN-[A-Za-z0-9-]+\.md\b/.test(text)) return true;
+  return [...text.matchAll(/`([a-z0-9]+(?:-[a-z0-9]+)*)`/g)].some((match) => knownTrainId(match[1]!));
+}
+
+/**
+ * THE ROOT OF A DEV HUB HOLDS POINTERS (PLAN-hub-redesign.md section 3; kickoffs/s213 row 22). On a Hub with `## Repo`,
+ * an edit may not add or replace a top-level item of `## Now` or `## Next` that runs past DEV_ITEM_LIMIT bytes or names
+ * no record, nor add a `## Decisions` entry past DEV_DECISION_LIMIT bytes or with no link. Only new text is judged: an
+ * item already on the page, ticked or not, is never refused, so no Hub breaks on upgrade; a Hub without `## Repo` is
+ * unchanged. The refusal says where the wording goes and names `close-item` for what is done.
+ */
+export function devHubPointerProblem(currentBody: string, proposedBody: string, slug: string, knownTrainId: (id: string) => boolean): string | null {
+  if (!isDevHubBody(proposedBody)) return null;
+  // The top-level list entries of a section; for `## Decisions` also each top-level paragraph, a run of non-blank lines
+  // outside a fence that is not a list item (kickoffs/s213-r3 row 4), so prose is judged like an entry.
+  const blocksOf = (body: string, section: string): string[] => {
+    const lines = toLines(body);
+    const span = sectionSpan(lines, section);
+    if (span === null) return [];
+    const fenced = fencedLineMask(lines);
+    const out: string[] = [];
+    let paragraph: number[] = [];
+    const flush = () => { if (paragraph.length) out.push(lines.slice(paragraph[0]!, paragraph[paragraph.length - 1]! + 1).join('\n')); paragraph = []; };
+    for (const block of itemBlocks(lines, span.start + 1, span.end)) {
+      if (fenced[block.start]) { flush(); continue; }
+      if (topLevelEntries(lines, block.start, block.start + 1).length > 0) { flush(); out.push(removeTrailingBlank(lines.slice(block.start, block.end + 1)).join('\n')); continue; }
+      if (section !== 'Decisions' || isListLine(lines[block.start]!)) { flush(); continue; }
+      if (paragraph.length && block.start !== paragraph[paragraph.length - 1]! + 1) flush();
+      paragraph.push(block.start);
+    }
+    flush();
+    return out;
+  };
+  const unticked = (text: string) => text.replace(/^([ \t]*(?:[-*+]|[0-9]+\.)[ \t]+)\[[xX]\]/, '$1[ ]');
+  const remedy = `Put the wording, quotes and hashes in the record and point to it here; close what is done with deskpost hub edit ${slug} --mode close-item --match-text "<text>". Nothing was written.`;
+  for (const section of ['Now', 'Next']) {
+    const had = new Set(blocksOf(currentBody, section).map(unticked));
+    for (const block of blocksOf(proposedBody, section)) {
+      if (had.has(unticked(block))) continue;
+      const bytes = Buffer.byteLength(block, 'utf8');
+      const named = namesRecord(block, knownTrainId);
+      if (bytes <= DEV_ITEM_LIMIT && named) continue;
+      const why = [bytes > DEV_ITEM_LIMIT ? `it is ${bytes} bytes, over ${DEV_ITEM_LIMIT}` : '', named ? '' : 'it names no record'].filter(Boolean).join(' and ');
+      return `On a dev Hub, an item in ## ${section} is a short pointer to its record: at most ${DEV_ITEM_LIMIT} bytes, naming a train id in backticks, a [[projects/...]] or [[books/...]] link, a kickoffs/ id, a letter or Report path (notes/<date>-<words>) or a PLAN-*.md. This item is refused because ${why}: ${block.split('\n')[0]!.trim().slice(0, 120)}. ${remedy}`;
+    }
+  }
+  const had = new Set(blocksOf(currentBody, 'Decisions'));
+  for (const block of blocksOf(proposedBody, 'Decisions')) {
+    if (had.has(block)) continue;
+    const bytes = Buffer.byteLength(block, 'utf8');
+    const linked = /\[\[[^\]]+\]\]/.test(block) || /\bPLAN-[A-Za-z0-9-]+\.md\b/.test(block);
+    if (bytes <= DEV_DECISION_LIMIT && linked) continue;
+    const why = [bytes > DEV_DECISION_LIMIT ? `it is ${bytes} bytes, over ${DEV_DECISION_LIMIT}` : '', linked ? '' : 'it links no record'].filter(Boolean).join(' and ');
+    return `On a dev Hub, a ## Decisions entry is a one-line pointer: at most ${DEV_DECISION_LIMIT} bytes, with a [[...]] link to its record. This entry is refused because ${why}: ${block.split('\n')[0]!.trim().slice(0, 120)}. Put the decision's wording in the linked record (a dated record page) and point to it here; close the Now or Next item it finishes with deskpost hub edit ${slug} --mode close-item --match-text "<text>". Nothing was written.`;
+  }
+  return null;
+}
+
+/**
+ * The unit a Run line names, twice: `id <id>` from `Run <id>:` and `page <id>` from its `kickoffs/<id>` link (A1-07),
+ * lowercased, since `kickoff check --open` matches ids ignoring case: `Run S1:` and `Run s1:` are one unit.
+ */
+function runPointerKeys(line: string): string[] {
+  const keys: string[] = [];
+  const id = /\bRun ([A-Za-z0-9._-]+):/.exec(line)?.[1];
+  if (id !== undefined) keys.push(`id ${id.toLowerCase()}`);
+  const page = /\[\[projects\/[^\]/]+\/kickoffs\/([^\]|#]+)/.exec(line)?.[1];
+  if (page !== undefined) keys.push(`page ${page.toLowerCase()}`);
+  return keys;
 }
 
 export function sectionSpan(lines: string[], section: string): Span | null {
@@ -177,18 +411,11 @@ export function sectionSpan(lines: string[], section: string): Span | null {
 }
 
 /**
- * The lines under every level-two `## Next` heading of a body, together; unlike sectionSpan it never refuses a repeat.
- * Lines inside fenced code are left out (kickoffs/s198 row 1): a `Run` line shown in a fence is an example, not a pointer.
+ * The shown lines under every level-two `## Next` heading of a body, together (`nextShownLines`); unlike sectionSpan it
+ * never refuses a repeat. A `Run` line in a fence or an HTML comment is an example, not a pointer.
  */
-function nextSectionLines(body: string): string[] {
-  const lines = toLines(body);
-  const fenced = fencedLineMask(lines);
-  const all = headings(lines);
-  return all.flatMap((heading, at) => {
-    if (heading.level !== 2 || heading.text !== 'Next') return [];
-    const end = all[at + 1]?.index ?? lines.length;
-    return lines.slice(heading.index + 1, end).filter((_, offset) => !fenced[heading.index + 1 + offset]);
-  });
+export function nextSectionLines(body: string): string[] {
+  return (nextShownLines(toLines(body)) ?? []).map((line) => line.text);
 }
 
 export function sectionText(lines: string[], span: Span | null): string {
@@ -245,13 +472,26 @@ function insideList(lines: string[]): boolean {
   return false;
 }
 
-/** The index just past the section's last list item and its continuation lines, or -1 when it has no list. */
+/**
+ * The index just past the section's last list item and its continuation lines, or -1 when it has no list. A list line
+ * inside fenced code or an HTML comment is an example, not an item (kickoffs/s213-r4 row 4): taking it as the last item
+ * put an appended pointer inside the fence, where neither the pointer count nor kickoff receive could see it.
+ */
 function lastListEnd(lines: string[]): number {
+  const shown = shownText(lines);
   let last = -1;
-  for (let i = 1; i < lines.length; i++) if (isListLine(lines[i]!)) last = i;
+  for (let i = 1; i < lines.length; i++) if (shown[i] !== null && isListLine(shown[i]!)) last = i;
   if (last < 0) return -1;
+  // The item runs on over its indented lines, and over every line of a fence or comment one of them opened, blank ones
+  // too (kickoffs/s213-r5 row 3): a blank line inside an item's fenced example does not end the item.
   let end = last + 1;
-  while (end < lines.length && /^[ \t]+\S/.test(lines[end]!)) end++;
+  let hiddenRun = false;
+  while (end < lines.length) {
+    const hidden = shown[end] === null;
+    if (/^[ \t]+\S/.test(lines[end]!)) hiddenRun = hidden;
+    else if (!(hidden && hiddenRun)) break;
+    end++;
+  }
   return end;
 }
 
@@ -392,6 +632,14 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
       end = itemSpan.end;
     }
     const block = findUniqueBlock(lines, start, end, matchText, mode === 'CheckItem');
+    if (mode === 'InsertItem') {
+      if (!isListLine(lines[block.start]!) || !isListLine(addition[0]!)) refuse('insert-item matches a list item and needs content starting with a list marker.');
+      const eol = currentBody.match(/\r\n|\r|\n/)?.[0] ?? '\n';
+      const offset = (currentBody.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).slice(0, block.end + 1).join('').length;
+      const prefix = currentBody.slice(0, offset);
+      const inserted = replacementItemLines(lines[block.start]!, addition).join(eol) + eol;
+      return prefix + (prefix.endsWith('\n') || prefix.endsWith('\r') ? '' : eol) + inserted + currentBody.slice(offset);
+    }
     const result = lines.slice(0, block.start);
     if (mode === 'CheckItem') {
       result.push(setCheckboxState(lines[block.start]!, !uncheck));
@@ -446,6 +694,14 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
     // A BULLET ADDED TO A SECTION WHOSE LIST IS FOLLOWED BY PROSE joins that list, before the prose (Report
     // 2026-09-29): appended after the prose, it read as the prose's own item.
     const listEnd = !continuesList && isListLine(addition[0]!) ? lastListEnd(sectionLines) : -1;
+    // AN APPENDED LINE IS ALWAYS SHOWN (kickoffs/s213-r5 row 3): text written where a fence or comment is still open
+    // would be hidden in it, where no reader of the section sees it, so the append is refused instead.
+    const open = scanShown([...before, ...sectionLines.slice(0, listEnd > 0 ? listEnd : sectionLines.length)]).open;
+    if (open !== null && open.index >= span.start) {
+      const what = open.kind === 'fence' ? 'fence' : 'HTML comment';
+      const remedy = open.kind === 'fence' ? `Close the fence with a line of ${/^[ ]*(`+|~+)/.exec(lines[open.index]!)?.[1] ?? '```'} after its last line` : 'Close the comment with -->';
+      refuse(`## ${section} ends inside a ${what} that is never closed, opened by '${lines[open.index]!.trim().slice(0, 80)}' (${open.index - span.start} lines below the ## ${section} heading), so an appended line would be hidden in it. ${remedy}, then append again. Nothing was written.`);
+    }
     if (listEnd > 0) {
       result.push(...sectionLines.slice(0, listEnd), ...addition, ...sectionLines.slice(listEnd));
     } else {
@@ -479,12 +735,12 @@ function lineSequenceInSpan(lines: string[], needle: string[], span: Span | null
 /** `Assert-NowStructure`: `Now` is orientation and open items, every column-zero entry with a status. */
 function assertNowStructure(currentBody: string, proposedBody: string, mode: EditMode, section: string, content: string, matchText: string): void {
   if (mode === 'CheckItem') return;
-  if (!['AppendSection', 'AddSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem'].includes(mode)) return;
+  if (!['AppendSection', 'AddSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem', 'InsertItem'].includes(mode)) return;
   const proposedLines = toLines(proposedBody);
   const proposedSpan = sectionSpan(proposedLines, 'Now');
   if (proposedSpan === null) return;
   let targetsNow = mode === 'ReplaceBody' || section === 'Now';
-  if (mode === 'ReplaceItem' && !targetsNow) {
+  if ((mode === 'ReplaceItem' || mode === 'InsertItem') && !targetsNow) {
     const currentLines = toLines(currentBody);
     const currentSpan = sectionSpan(currentLines, 'Now');
     if (currentSpan !== null) targetsNow = sectionText(currentLines, currentSpan) !== sectionText(proposedLines, proposedSpan);
@@ -492,7 +748,7 @@ function assertNowStructure(currentBody: string, proposedBody: string, mode: Edi
   if (!targetsNow) return;
   if (mode !== 'ReplaceBody') {
     let contentLines = removeTrailingBlank(toLines(content));
-    if (mode === 'ReplaceItem') {
+    if (mode === 'ReplaceItem' || mode === 'InsertItem') {
       const currentLines = toLines(currentBody);
       const scope = section ? sectionSpan(currentLines, section) : null;
       const block = findUniqueBlock(currentLines, scope ? scope.start + 1 : 0, scope ? scope.end : currentLines.length, matchText, false);
@@ -511,9 +767,9 @@ function assertNowStructure(currentBody: string, proposedBody: string, mode: Edi
 }
 
 /** `New-ProjectBody`: the proposed page, or the refusal that stops the edit before any write. */
-export function newProjectBody(currentBody: string, mode: EditMode, section: string, content: string, matchText: string, uncheck: boolean): string {
+export function newProjectBody(currentBody: string, mode: EditMode, section: string, content: string, matchText: string, uncheck: boolean, checkNow = true): string {
   const proposed = newProjectBodyRaw(currentBody, mode, section, content, matchText, uncheck);
-  assertNowStructure(currentBody, proposed, mode, section, content, matchText);
+  if (checkNow) assertNowStructure(currentBody, proposed, mode, section, content, matchText);
   return proposed;
 }
 
@@ -762,16 +1018,39 @@ function localStore(workspace: string): PageStore {
   };
 }
 
+function pagesLinkingTo(workspace: string, slug: string, pageName: string): string[] {
+  const directory = path.join(workspace, 'collection', 'projects', slug);
+  const target = `projects/${slug}/${pageName}`;
+  const links: string[] = [];
+  for (const entry of fs.readdirSync(directory, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const full = path.join(entry.parentPath, entry.name);
+    const name = path.relative(directory, full).replace(/\\/g, '/').slice(0, -3);
+    if (name === pageName) continue;
+    const content = fs.readFileSync(full, 'utf8');
+    const wikiLinks = [...content.matchAll(/\[\[([^|#\]]+)(?:[|#][^\]]*)?\]\]/g)];
+    if (wikiLinks.some(match => {
+      const destination = match[1]!.trim().replace(/\.md$/i, '');
+      return destination === target || destination === pageName ||
+        path.posix.join(path.posix.dirname(name), destination) === pageName;
+    })) links.push(`projects/${slug}/${name}`);
+  }
+  return links.sort();
+}
+
 // --- the verb -----------------------------------------------------------------------------------------
 
 const MODE_WORDS: Record<string, EditMode> = {
   'add-section': 'AddSection',
   'append-section': 'AppendSection',
   'remove-section': 'RemoveSection',
+  'remove-page': 'RemovePage',
   'replace-section': 'ReplaceSection',
   'replace-body': 'ReplaceBody',
   'check-item': 'CheckItem',
   'replace-item': 'ReplaceItem',
+  'insert-item': 'InsertItem',
+  'close-item': 'CloseItem',
 };
 
 /** The quote characters a `new-page --title` may not start or end with: straight, typographic and guillemets. */
@@ -811,6 +1090,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   // A NEW PAGE ON A LOCAL HUB (S67, PLAN-local-collection-writers.md step B): a mode of this verb with a write half of
   // its own, because the edit store below overwrites and a creation must never replace a page.
   if (['new-page', 'newpage'].includes(modeWord.toLowerCase())) {
+    if (parsed.options.has('supersedes')) refuse('--supersedes is for append-section on the Hub root’s Next section only.');
     // A TITLE THAT STARTS OR ENDS WITH A QUOTE is almost always one the shell left in place (S97 row 4), and a page's H1
     // is written once: until 1.4.0 nothing changes it, so it is refused rather than written.
     const title = (parsed.options.get('title') ?? '').trim();
@@ -839,7 +1119,8 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     if (!isBlank(newPage.content) && !isBlank(newPage.contentPath)) refuse('Supply exactly one of --content or --content-path.');
     const given = newPageText(newPage.content, newPage.contentPath, workspace);
     if (given !== null) loadedContent(given);
-    if (given === null || !hasWritePlaceholders(given)) return hubNewPage(newPage, workspace);
+    const posted = given === null ? null : postedHeader(given);
+    if (given === null || (!posted && !hasWritePlaceholders(given))) return hubNewPage(newPage, workspace);
     if (newPage.preflight) return { ...(await hubNewPage(newPage, workspace)), time_placeholders: HUB_PLACEHOLDER_NOTE };
     if (newPage.planId) {
       const planned = (await hubNewPage({ ...newPage, preflight: true }, workspace)) as Record<string, PsJsonValue>;
@@ -847,7 +1128,13 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
       if (planned['plan_id'] !== newPage.planId) return hubNewPage(newPage, workspace);
     }
     const states = path.join(workspace, '.claude');
-    const filled = fillWritePlaceholders(given, new Date(), states, () => requireSeat({ seat: newPage.seat, stateDirectory: states }));
+    const sourceLines = given.split(/(\r?\n)/);
+    if (posted) {
+      const lineIndex = posted.line * 2;
+      const line = sourceLines[lineIndex]!;
+      sourceLines[lineIndex] = line.slice(0, posted.column) + '{now}' + line.slice(posted.column + '{posted}'.length);
+    }
+    const filled = fillWritePlaceholders(sourceLines.join(''), new Date(), states, () => requireSeat({ seat: newPage.seat, stateDirectory: states }));
     // A `kickoffs/` page is judged by the text as given (kickoffs/s174 standing answer 3), as the preflight judged it: in
     // the filled text a doubled-brace time word is single, which the placeholder rule would refuse.
     const written = await hubNewPage({ ...newPage, content: filled, contentPath: '', planId: '', judgedText: given }, workspace);
@@ -868,6 +1155,27 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
   if (slugProblem !== null) refuse(slugProblem);
 
+  // CLOSING AN ITEM IS AS CHEAP AS ADDING ONE (PLAN-hub-redesign.md section 1; kickoffs/s213 row 12): one top-level item of
+  // the root's Now or Next moved, ticked, to the newest tidy-history page (hubtidy.ts), with no gate beyond check-item's.
+  if (mode === 'CloseItem') {
+    if (parsed.options.has('after')) refuse('--after is for insert-item only; close-item finds its item with --match-text.');
+    if (parsed.options.has('content') || parsed.options.has('content-path')) refuse('close-item moves an item word for word; it takes no content.');
+    if (parsed.flags.has('uncheck') || parsed.options.has('supersedes')) refuse('close-item takes --match-text and, optionally, --section Now or --section Next.');
+    const page = (parsed.options.get('page') ?? '_project').trim().replace(/\.md$/i, '');
+    if (page !== '_project') refuse('close-item closes items on the Hub root, _project, only.');
+    const matches = parsed.lists.get('match-text') ?? [];
+    const match = parsed.options.get('match-text') ?? '';
+    if (matches.length > 1) refuse('close-item closes one item: give one --match-text.');
+    if (isBlank(match)) refuse('close-item requires --match-text: text appearing in exactly one top-level item of ## Now or ## Next, matched case-sensitively.');
+    const given = parsed.options.get('section');
+    const timeout = Number(parsed.options.get('lock-timeout') ?? '20');
+    const { closeItem } = await import('./hubtidy.ts');
+    return closeItem(workspace, {
+      slug, matchText: match, section: given === undefined ? null : given.trim().replace(/^#+/, '').trim(), seat: parsed.options.get('seat'),
+      preflight: parsed.flags.has('preflight'), planId: (parsed.options.get('plan-id') ?? '').trim(), lockTimeout: Number.isFinite(timeout) ? timeout : 20,
+    });
+  }
+
   // THE FENCE, THEN THE COLLECTION ID, before anything about the page: the oracle's order, so a
   // workspace that may not write learns that first.
   const marker = readMarker(workspace);
@@ -881,32 +1189,58 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     refuse('Page must be a canonical path below the Project root, such as _project or notes/topic/Article.');
   }
   const pagePath = `projects/${slug}/${pageName}.md`;
+  const removingPage = mode === 'RemovePage';
+  if (removingPage && (shared || !pageName.startsWith('notes/'))) {
+    refuse('remove-page is available only for notes/ pages in a local Hub.');
+  }
+  const localPage = path.join(workspace, 'collection', ...pagePath.split('/'));
+  const assertLocalFile = (): void => {
+    assertInsideRoot(path.join(workspace, 'collection'), pagePath, 'the local collection');
+    if (!fs.lstatSync(localPage).isFile()) {
+      refuse('remove-page requires a regular page in this Hub. Nothing was written.');
+    }
+  };
   // A KICKOFF IS WRITTEN ONCE (kickoffs/s174 row 3; CONTEXT.md, "Kickoff"): the rule was on paper only, and every mode
   // below could edit the page the reader's yes was bound to. Refused at --preflight too.
   if (/^kickoffs\//i.test(pageName)) refuse('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.');
 
   let section = parsed.options.get('section') ?? '';
-  const matchText = parsed.options.get('match-text') ?? '';
+  if (mode !== 'InsertItem' && parsed.options.has('after')) refuse('--after is for insert-item only.');
+  if (mode === 'InsertItem' && parsed.options.has('match-text')) refuse('insert-item takes --after, not --match-text.');
+  const matchText = parsed.options.get(mode === 'InsertItem' ? 'after' : 'match-text') ?? '';
+  const matches = parsed.lists.get('match-text') ?? [];
+  if (matches.length > 1 && mode !== 'CheckItem' && mode !== 'ReplaceItem') {
+    refuse('Repeated --match-text is for check-item and replace-item only.');
+  }
+  if (matches.some(isBlank)) refuse('--match-text needs non-empty text.');
+
+  const supersedes = parsed.options.get('supersedes');
   const contentGiven = parsed.options.has('content');
   const contentPathGiven = parsed.options.has('content-path');
   let content = parsed.options.get('content') ?? '';
   const contentPath = parsed.options.get('content-path') ?? '';
   if (SECTION_MODES.includes(mode) && isBlank(section)) refuse(`${cliMode} requires --section, the exact level-two heading text without the leading '##'.`);
   if (!isBlank(section)) section = section.trim().replace(/^#+/, '').trim();
+  if (supersedes !== undefined && (mode !== 'AppendSection' || section !== 'Next' || pageName !== '_project')) {
+    refuse('--supersedes is for append-section on the Hub root’s Next section only.');
+  }
+  if (removingPage && (section || matchText || contentGiven || contentPathGiven || parsed.flags.has('uncheck'))) {
+    refuse('remove-page takes --page and no section, match or content.');
+  }
   if (mode === 'RemoveSection') {
     if (section === 'Purpose' || section === 'Now' || section === 'Next') refuse(`Section '${section}' is structural and cannot be removed.`);
     if (contentGiven || contentPathGiven) refuse('remove-section takes no content; do not supply --content or --content-path.');
     if (parsed.options.has('match-text')) refuse('remove-section takes no --match-text.');
   }
   if (ITEM_MODES.includes(mode) && isBlank(matchText)) {
-    refuse(`${cliMode} requires --match-text: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
+    refuse(`${cliMode} requires ${mode === 'InsertItem' ? '--after' : '--match-text'}: text appearing in exactly one item, matched case-sensitively. --section is optional and narrows the search.`);
   }
   const usedContent = !isBlank(content);
   const usedContentPath = !isBlank(contentPath);
   let contentFull = '';
   if (mode === 'CheckItem') {
     if (usedContent || usedContentPath) refuse('check-item changes only the checkbox marker; it takes no content.');
-  } else if (mode !== 'RemoveSection' && usedContent === usedContentPath) {
+  } else if (mode !== 'RemoveSection' && !removingPage && usedContent === usedContentPath) {
     refuse('Supply exactly one of --content or --content-path.');
   }
   if (usedContentPath) {
@@ -954,7 +1288,8 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     );
   }
 
-  const isReplacing = ['RemoveSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem'].includes(mode);
+  const isReplacing = ['RemovePage', 'RemoveSection', 'ReplaceSection', 'ReplaceBody', 'ReplaceItem'].includes(mode);
+  if (removingPage) assertInsideRoot(path.join(workspace, 'collection'), pagePath, 'the local collection');
   const existing = await store.read(pagePath);
   if (existing === null) {
     // THE ROUTE NAMED IS THE ONE THAT WORKS HERE (S67, deskpost-prompts-dev's Report): both PowerShell helpers need
@@ -965,8 +1300,51 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
         : `Page '${pagePath}' does not exist. This mode edits an existing page; make a new one with deskpost hub edit ${slug} --mode new-page --page ${pageName} --content-path <file>.`,
     );
   }
+  if (removingPage) assertLocalFile();
+  const linkedFrom = removingPage ? pagesLinkingTo(workspace, slug, pageName) : [];
   const currentBody = removeFrontmatter(existing);
-  const proposedBody = newProjectBody(currentBody, mode, section, content, matchText, parsed.flags.has('uncheck'));
+  let appendBase = currentBody;
+  if (supersedes !== undefined) {
+    const runPointer = /^- \[ \] (Run [A-Za-z0-9._-]+:) \[\[projects\/[^\]/]+\/kickoffs\/[^\]]+\]\]/;
+    const key = supersedes.trim();
+    const pointers = nextSectionLines(currentBody).filter(line => runPointer.exec(line)?.[1] === key);
+    if (pointers.length !== 1) refuse('--supersedes must name exactly one unticked Run pointer in Next.');
+    const newPointer = runPointer.exec(content.trim());
+    if (!newPointer || toLines(content.trim()).length !== 1 || newPointer[1] === key) {
+      refuse('--supersedes requires one new unticked Run pointer as content.');
+    }
+    appendBase = newProjectBody(currentBody, 'CheckItem', 'Next', '', pointers[0]!, false);
+  }
+  const uncheck = parsed.flags.has('uncheck');
+  const originalLines = toLines(currentBody);
+  const scope = matches.length > 1 && section ? sectionSpan(originalLines, section) : null;
+  if (matches.length > 1 && section && !scope) refuse(`Section '${section}' was not found.`);
+  const blocks = matches.length > 1 ? matches.map(match => ({
+    match,
+    ...findUniqueBlock(originalLines, scope ? scope.start + 1 : 0, scope?.end ?? originalLines.length, match, mode === 'CheckItem'),
+  })) : [];
+  const ordered = [...blocks].sort((a, b) => b.start - a.start);
+  if (ordered.some((block, index) => index > 0 && block.end >= ordered[index - 1]!.start)) {
+    refuse('Each --match-text must name a different item. Matched items cannot overlap.');
+  }
+  const batchReplacement = (block: Span, text: string): string[] => mode === 'CheckItem'
+    ? [setCheckboxState(originalLines[block.start]!, !uncheck), ...originalLines.slice(block.start + 1, block.end + 1)]
+    : replacementItemLines(originalLines[block.start]!, removeTrailingBlank(toLines(text)));
+  const buildBody = (text: string): string => {
+    if (!ordered.length) return newProjectBody(appendBase, mode, section, text, matchText, uncheck);
+    const lines = [...originalLines];
+    for (const block of ordered) {
+      newProjectBody(currentBody, mode, section, text, block.match, uncheck);
+      lines.splice(block.start, block.end - block.start + 1, ...batchReplacement(block, text));
+    }
+    return joinLines(lines);
+  };
+  const proposedBody = removingPage ? '' : buildBody(content);
+  // ON A DEV HUB, A NEW ITEM IS A SHORT POINTER (PLAN-hub-redesign.md section 3; kickoffs/s213 row 22).
+  if (pageName === '_project' && !removingPage) {
+    const problem = devHubPointerProblem(currentBody, proposedBody, slug, (id) => trainIdKnown(workspace, id));
+    if (problem !== null) refuse(problem);
+  }
   // ONE PENDING Run POINTER (kickoffs/s174 row 3, standing answer 7), judged on the `## Next` this edit would write, for
   // every mode, at --preflight and at apply: an edit that changes `## Next` may not leave two unticked `Run` lines unless
   // it lowers their count. `check-item --uncheck` could revive an old pointer beside the pending one.
@@ -975,8 +1353,27 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   if (nextBefore.join('\n') !== nextAfter.join('\n')) {
     const pending = (lines: string[]): string[] => lines.filter((line) => /^\s*- \[ \] Run /.test(line)).map((line) => line.trim());
     const after = pending(nextAfter);
-    if (after.length > 1 && after.length >= pending(nextBefore).length) {
-      refuse(`## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first. Nothing was written.`);
+    // A DEV HUB HOLDS A QUEUE OF THREE (PLAN-hub-redesign.md amendment A1, A1-09; kickoffs/s213 row 2): a Hub with
+    // `## Repo` may hold up to three pending pointers, run in page order; every other Hub keeps one, word for word.
+    const queueCap = isDevHubBody(proposedBody) ? RUN_QUEUE_CAP : 1;
+    if (after.length > queueCap && after.length >= pending(nextBefore).length) {
+      refuse(queueCap === 1
+        ? `## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first, or append with --supersedes to replace an unrun Kickoff. Nothing was written.`
+        : `## Next on a dev Hub holds at most three pending Run pointers, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first, or append with --supersedes to replace an unrun Kickoff. Nothing was written.`);
+    }
+    // ONE PENDING POINTER A UNIT (A1-07; kickoffs/s213 row 3): two unticked pointers naming one `<id>` or one
+    // `kickoffs/<id>` page are refused; a revision replaces its pointer where it stands (replace-item keeps its place).
+    const repeated = (lines: string[]): string[] => {
+      const seen = new Set<string>(), twice = new Set<string>();
+      for (const line of lines) {
+        for (const key of runPointerKeys(line)) (seen.has(key) ? twice : seen).add(key);
+      }
+      return [...twice];
+    };
+    const doubledBefore = new Set(repeated(pending(nextBefore)));
+    const doubled = repeated(pending(nextAfter)).filter((key) => !doubledBefore.has(key));
+    if (doubled.length > 0) {
+      refuse(`This edit would leave a second pending Run pointer for ${doubled[0]!.replace(/^(id|page) /, '')} in ## Next. A revision replaces its pointer where it stands (hub edit --mode replace-item --match-text "Run <id>:"), or append with --supersedes. Nothing was written.`);
     }
     // A RUN POINTER THE RULE CAN SEE (kickoffs/s181-r2 spare S1): a line this edit adds that names `Run <id>:` and a
     // `kickoffs/` link must be the canonical form (`kickoff.ts`), or the count above and /meanwhile miss it. A line already
@@ -991,25 +1388,33 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
   const currentLines = toLines(currentBody);
   const proposedLines = toLines(proposedBody);
+  const now = new Date();
+  // THE TIME OF THE WRITE (kickoffs/s121 row 6): the plan id above bound the text as given; only the new text is filled,
+  // never the page's existing lines, and the readback judges what was written.
+  const filling = hasWritePlaceholders(content);
+  const fillBody = () => buildBody(fillWritePlaceholders(content, now, stateDirectory, () => seat));
+  const filledReplacement = mode === 'ReplaceItem' && filling ? fillBody() : null;
+  const needsConfirmation = isReplacing && (mode !== 'ReplaceItem'
+    || !linesPreserved(currentLines, proposedLines) || !linesPreserved(currentLines, toLines(filledReplacement ?? proposedBody)));
   if (mode === 'CheckItem') {
     if (currentLines.length !== proposedLines.length) refuse('check-item would change the page shape; the edit stopped without writing.');
     const differing = currentLines.map((_, i) => i).filter((i) => currentLines[i] !== proposedLines[i]);
-    if (differing.length > 1) refuse(`check-item would change ${differing.length} lines; the edit stopped without writing.`);
-    if (differing.length === 1) {
-      const normalizedOld = currentLines[differing[0]!]!.replace(/\[[ xX]\]/g, '[ ]');
-      const normalizedNew = proposedLines[differing[0]!]!.replace(/\[[ xX]\]/g, '[ ]');
+    if (differing.length > Math.max(1, blocks.length)) refuse(`check-item would change ${differing.length} lines; the edit stopped without writing.`);
+    for (const line of differing) {
+      const normalizedOld = currentLines[line]!.replace(/\[[ xX]\]/g, '[ ]');
+      const normalizedNew = proposedLines[line]!.replace(/\[[ xX]\]/g, '[ ]');
       if (normalizedOld !== normalizedNew) refuse('check-item would change more than the checkbox marker; the edit stopped without writing.');
     }
-  } else if (!isReplacing && !linesPreserved(currentLines, proposedLines)) {
+  } else if (!isReplacing && !linesPreserved(toLines(appendBase), proposedLines)) {
     refuse(`${cliMode} would not preserve the existing page text; the edit stopped without writing.`);
   }
 
   // Hash the page the reader sees, including the front matter the store preserves.
   const front = /^---\r?\n[\s\S]*?\r?\n---\r?\n(?:\r?\n)*/.exec(existing)?.[0] ?? '';
   const currentHash = pageComparisonSha256(existing);
-  const proposedHash = pageComparisonSha256(front + proposedBody);
+  const proposedHash = removingPage ? null : pageComparisonSha256(front + proposedBody);
   const counts = changeCounts(currentBody, proposedBody);
-  const planId = 'project-edit-' + sha256OfText(`${pagePath}|${mode}|${section}|${matchText}|${currentHash}|${proposedHash}`);
+  const planId = 'project-edit-' + sha256OfText(`${pagePath}|${mode}|${section}|${blocks.length ? JSON.stringify(matches) : matchText}|${currentHash}|${proposedHash}${removingPage ? JSON.stringify(linkedFrom) : ''}`);
   let sectionBefore: PsJsonValue = null;
   let sectionAfter: PsJsonValue = null;
   let itemBefore: PsJsonValue = null;
@@ -1024,7 +1429,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     const afterSpan = sectionSpan(proposedLines, section);
     sectionAfter = afterSpan === null ? null : sectionText(proposedLines, afterSpan);
   }
-  if (ITEM_MODES.includes(mode)) {
+  if (ITEM_MODES.includes(mode) && !blocks.length) {
     let scopeStart = 0;
     let scopeEnd = currentLines.length;
     if (!isBlank(section)) {
@@ -1034,7 +1439,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     }
     const block = findUniqueBlock(currentLines, scopeStart, scopeEnd, matchText, mode === 'CheckItem');
     itemBefore = currentLines.slice(block.start, block.end + 1).join('\n');
-    itemAfter = mode === 'CheckItem' ? proposedLines.slice(block.start, block.end + 1).join('\n') : replacementItemLines(currentLines[block.start]!, removeTrailingBlank(toLines(content))).join('\n');
+    itemAfter = mode === 'InsertItem' ? proposedLines.slice(block.start, block.end + 1 + removeTrailingBlank(toLines(content)).length).join('\n') : mode === 'CheckItem' ? proposedLines.slice(block.start, block.end + 1).join('\n') : replacementItemLines(currentLines[block.start]!, removeTrailingBlank(toLines(content))).join('\n');
   }
 
   const plan: Record<string, PsJsonValue> = {
@@ -1058,14 +1463,20 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     section_after: sectionAfter,
     item_before: itemBefore,
     item_after: itemAfter,
+    ...(blocks.length ? { items: blocks.map(block => ({
+      match_text: block.match,
+      before: currentLines.slice(block.start, block.end + 1).join('\n'),
+      after: batchReplacement(block, content).join('\n'),
+    })) } : {}),
     plan_id: planId,
-    confirmation_required: isReplacing,
+    confirmation_required: needsConfirmation,
+    ...(removingPage ? { linked_from: linkedFrom } : {}),
     advice: null,
     shared_library_write: false,
   };
 
   if (plan['unchanged'] && mode === 'CheckItem') {
-    plan['unchanged_reason'] = `${parsed.flags.has('uncheck') ? 'already unticked' : 'already ticked'}: ${String(itemBefore)}`;
+    plan['unchanged_reason'] = `${parsed.flags.has('uncheck') ? 'already unticked' : 'already ticked'}: ${blocks.length ? matches.join(', ') : String(itemBefore)}`;
   }
 
   // Computed BEFORE the preflight return, from the proposed body, so a preflight can report them.
@@ -1090,7 +1501,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     // `status` AND `journal` AS collection add-page SAYS THEM (S72 row 5), beside `written`, which stays.
     return { schema: 1, operation: 'Edit Project Hub', project_slug: slug, page_path: pagePath, page_file: shared ? null : `collection/${pagePath}`, mode, unchanged: true, ...(plan['unchanged_reason'] ? { unchanged_reason: plan['unchanged_reason'] } : {}), written: false, status: 'unchanged', journal: null, shared_library_write: false };
   }
-  if (isReplacing) {
+  if (needsConfirmation) {
     if (!parsed.flags.has('user-confirmed')) refuse(`${cliMode} removes existing text and is not yet performed: review the preflight and rerun with --user-confirmed.`);
     // THE SECOND SENTENCE SAYS WHAT A STALE ID USUALLY MEANS (kickoffs/s99 row K2, ruling 7), with the page's hash now; the
     // first stays word for word. An id never issued reads the same: telling the two apart would need stored previews.
@@ -1108,12 +1519,8 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   }
 
   const pageLabel = pageName.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
-  const now = new Date();
-  // THE TIME OF THE WRITE (kickoffs/s121 row 6): the plan id above bound the text as given; only the new text is filled,
-  // never the page's existing lines, and the readback judges what was written.
-  const filling = hasWritePlaceholders(content);
-  const writtenBody = filling ? newProjectBody(currentBody, mode, section, fillWritePlaceholders(content, now, stateDirectory, () => seat), matchText, parsed.flags.has('uncheck')) : proposedBody;
-  let writtenHash = pageComparisonSha256(front + writtenBody);
+  const writtenBody = filledReplacement ?? (filling ? fillBody() : proposedBody);
+  let writtenHash = removingPage ? null : pageComparisonSha256(front + writtenBody);
   const pad = (value: number): string => String(value).padStart(2, '0');
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   // `Join-Path $workspace "internal/publication-journals/..."`, which normalises every separator:
@@ -1176,6 +1583,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   const timeout = Number(parsed.options.get('lock-timeout') ?? '20');
   const lock = enterBookLock(workspace, `projects/${slug}`, Number.isFinite(timeout) ? timeout : 20);
   let verified = false;
+  let removed = false;
   try {
     const recheck = await store.read(pagePath);
     if (recheck === null) refuse(`Page '${pagePath}' disappeared between the plan and the write; nothing was written.`);
@@ -1184,20 +1592,38 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
         `Page '${pagePath}' changed after this edit was planned, so nothing was written. Re-read the page and plan the edit again; the text you were editing is no longer what is there.`,
       );
     }
-    if (undoable) prior = capturePriorBytes(workspace, [path.join(workspace, 'collection', ...pagePath.split('/'))]);
-    saveJournal('pending', '');
-    await store.write(pagePath, writtenBody);
-    const readback = await store.read(pagePath);
-    if (readback === null) refuse(`Write '${pagePath}' did not become readable.`);
-    if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(writtenBody.replace(/\r\n/g, '\n'))) {
-      refuse(`Readback of '${pagePath}' did not match the approved text; the previous text is in ${journalPath}.`);
+    if (removingPage) {
+      assertLocalFile();
+      if (pageComparisonSha256(recheck) !== currentHash
+        || JSON.stringify(pagesLinkingTo(workspace, slug, pageName)) !== JSON.stringify(linkedFrom)) {
+        refuse('The page or its links changed after preflight. Nothing was written.');
+      }
     }
-    writtenHash = pageComparisonSha256(readback);
+    if (undoable) prior = capturePriorBytes(workspace, [localPage]);
+    saveJournal('pending', '');
+    if (removingPage) {
+      fs.unlinkSync(localPage);
+      removed = true;
+      if (fs.existsSync(localPage)) refuse(`Removed page '${pagePath}' is still present.`);
+    } else {
+      await store.write(pagePath, writtenBody);
+      const readback = await store.read(pagePath);
+      if (readback === null) refuse(`Write '${pagePath}' did not become readable.`);
+      if (sha256OfText(removeFrontmatter(readback).replace(/\r\n/g, '\n')) !== sha256OfText(writtenBody.replace(/\r\n/g, '\n'))) {
+        refuse(`Readback of '${pagePath}' did not match the approved text; the previous text is in ${journalPath}.`);
+      }
+      writtenHash = pageComparisonSha256(readback);
+    }
     warn(true);
-    verified = true;
+    verified = !removingPage;
     saveJournal('complete', '');
+    verified = true;
   } catch (error) {
-    const failure = (error as Error).message;
+    let failure = (error as Error).message;
+    if (removed && !verified && !fs.existsSync(localPage)) {
+      try { writeAtomicBytes(localPage, Buffer.from(prior[0]!.content_base64!, 'base64')); }
+      catch (rollback) { failure += ` Page restore failed: ${(rollback as Error).message}`; }
+    }
     if (!verified) {
       try {
         saveJournal('incomplete', failure);
@@ -1206,6 +1632,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
       }
     }
     if (verified) refuse(`The Project edit was verified, but its journal could not be saved: ${failure}`);
+    if (failure !== (error as Error).message) refuse(failure);
     throw error;
   } finally {
     exitBookLock(lock);
@@ -1252,11 +1679,53 @@ const TIME_PLACEHOLDER = /\{\{(now|today)\}\}|\{(now|today)\}/g;
 export const TIME_PLACEHOLDER_NOTE =
   'The text holds {now} or {today}: they are shown here as written, and filled with the time and date of the write when it is applied ({{now}} writes {now}).';
 
+function mapMarkdownProse(text: string, map: (prose: string) => string): string {
+  const pieces = text.split(/(\r\n|\n|\r)/);
+  const fenced = fencedLineMask(pieces.filter((_, index) => index % 2 === 0));
+  const mapInline = (chunk: string): string => {
+    const ticks = [...chunk.matchAll(/`+/g)];
+    const nextByLength = new Map<number, number>();
+    const closing = new Map<number, number>();
+    for (let index = ticks.length - 1; index >= 0; index--) {
+      const size = ticks[index]![0].length;
+      const next = nextByLength.get(size);
+      if (next !== undefined) closing.set(index, next);
+      nextByLength.set(size, index);
+    }
+    let result = '', start = 0;
+    for (let index = 0; index < ticks.length; index++) {
+      const open = ticks[index]!;
+      const close = closing.get(index);
+      if (close === undefined || (/(?:^|[^\\])(?:\\\\)*\\$/.test(chunk.slice(0, open.index)))) continue;
+      const end = ticks[close]!.index + ticks[close]![0].length;
+      result += map(chunk.slice(start, open.index)) + chunk.slice(open.index, end);
+      start = end;
+      index = close;
+    }
+    return result + map(chunk.slice(start));
+  };
+  let result = '', prose = '';
+  for (let index = 0; index < pieces.length; index += 2) {
+    const line = pieces[index]! + (pieces[index + 1] ?? '');
+    if (fenced[index / 2]) {
+      result += mapInline(prose) + line;
+      prose = '';
+    } else prose += line;
+  }
+  return result + mapInline(prose);
+}
+
 export function hasTimePlaceholders(text: string): boolean {
-  return new RegExp(TIME_PLACEHOLDER.source).test(text);
+  let found = false;
+  mapMarkdownProse(text, prose => { found ||= new RegExp(TIME_PLACEHOLDER.source).test(prose); return prose; });
+  return found;
 }
 
 export function fillTimePlaceholders(text: string, now: Date = new Date()): string {
+  return mapMarkdownProse(text, prose => formatTimePlaceholders(prose, now));
+}
+
+function formatTimePlaceholders(text: string, now: Date): string {
   const hours = now.getHours();
   const zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(now).find((part) => part.type === 'timeZoneName')?.value ?? '';
   const time = `${localDate(now)} ${hours % 12 || 12}:${String(now.getMinutes()).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}${zone ? ` ${zone}` : ''}`;
@@ -1285,7 +1754,12 @@ const HUB_PLACEHOLDER_NOTE =
   "The text holds {now}, {today} or {session}: they are shown here as written, and filled with the time, the date and this seat's session id (unrecorded when none is recorded) when it is applied ({{now}} writes {now}, {{session}} writes {session}).";
 
 function hasWritePlaceholders(text: string): boolean {
-  return hasTimePlaceholders(text) || new RegExp(SESSION_PLACEHOLDER.source).test(text);
+  let found = false;
+  mapMarkdownProse(text, prose => {
+    found ||= new RegExp(TIME_PLACEHOLDER.source).test(prose) || new RegExp(SESSION_PLACEHOLDER.source).test(prose);
+    return prose;
+  });
+  return found;
 }
 
 function fillWritePlaceholders(text: string, now: Date, stateDirectory: string, seat: () => string): string {
@@ -1293,7 +1767,8 @@ function fillWritePlaceholders(text: string, now: Date, stateDirectory: string, 
   if (new RegExp(SESSION_PLACEHOLDER.source).test(text)) {
     try { session = seatConversationRecord(stateDirectory, seat()).sessionId; } catch { session = ''; }
   }
-  return fillTimePlaceholders(text.replace(SESSION_PLACEHOLDER, (match) => (match === '{{session}}' ? '{session}' : session || 'unrecorded')), now);
+  return mapMarkdownProse(text, prose => formatTimePlaceholders(prose.replace(SESSION_PLACEHOLDER,
+    match => match === '{{session}}' ? '{session}' : session || 'unrecorded'), now));
 }
 
 /** new-page's text as given, read the way new-page reads it, or null when it cannot be read (new-page then says why). */

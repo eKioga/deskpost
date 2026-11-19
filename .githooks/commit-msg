@@ -1,10 +1,10 @@
 #!/bin/sh
 #
-# Library commit-message gate: the identity scan's second boundary.
+# Library commit-message gate: scan identities and check integration subjects.
 #
 # PLAN-public-release.md step 12, local half. The pre-commit hook scans the blobs this commit will
 # publish; a commit MESSAGE is not a blob until after this hook has passed it, so no file scan can
-# reach it. That is the only reason this hook exists, and it is not a small gap: a message is where
+# reach it. That scan closes a gap: a message is where
 # a path gets pasted -- "fixed the trust store at C:\Users\<name>\.codex" -- by the same reflex that
 # puts one in a comment.
 #
@@ -26,4 +26,5 @@ if [ $status -ne 0 ]; then
     exit 1
 fi
 
-exit 0
+LIBRARY_WORKSPACE= LIBRARY_SEAT= LIBRARY_SEAT_CLAIM= node tools/commit-subject.mts "$1"
+exit $?

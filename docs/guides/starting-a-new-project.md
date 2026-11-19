@@ -193,15 +193,14 @@ Run `deskpost seat start fallout` again. Then ask for two things:
 
 > "What's on my desk?": your seat, what is open, what is waiting.
 >
-> "Brief me on this project.": the Hub's own orientation, its `Now` and `Next`, and the connections
+> "Brief me on this project.": the Hub's own orientation, its live status, its `Now` and `Next`, and the connections
 > it recorded.
 
 That is the whole cold start. The Hub holds what the project is and what is open, and the seat holds
 what you had on the Desk and in your Notebook.
 
 **Close a session by asking the Librarian to bring the Hub current.** Keep the Hub's front page to
-orientation and open items, never a session log. Each change to it is previewed first, like any
-other.
+orientation and open items, never a session log. Closing a completed item moves it word for word into history with a pointer. Ask for the Hub's live status to check what is still open. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170), including builder queues.
 
 **Closing a session retires nothing.** The seat, its Desk, its Notebook and its Project are all
 still there next time.

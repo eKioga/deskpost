@@ -19,9 +19,10 @@
  *   - permission prompts the reader answered: a record whose `permissionDecision.source` starts "user".
  *
  * THE DRIFT RULE (the plan's Risks): this reader was written for the layout LAYOUT names. A line that is not a JSON
- * object, an unknown record type carrying a `message` or `permissionDecision` key, or a reader message whose content
+ * object, an unknown record type carrying a message, decision or approval key, or a reader message whose content
  * is not text, an image or a tool result refuses the whole count, naming the file and line. Unknown string types
- * with neither key are skipped and tallied by type in `skipped_records`; a missing or non-string type still refuses.
+ * with neither key are skipped only when on the known-safe list, tallied in `skipped_records`; all others are
+ * tallied by type in `unknown_records` and shown as not judged. A missing or non-string type still refuses.
  *
  * `--write` keeps the count as `internal/asks/measure-<ISO week>.json`, atomically; the Desk shows the newest such file
  * as one line and never runs the count (`asksDeskLine`). Codex session logs are not read: their layout is not known.
@@ -136,6 +137,9 @@ export function countAsks(workspace: string, options: AsksOptions = {}): Record<
   const refusals: Record<string, number> = Object.fromEntries(DESKPOST_REFUSALS.map((refusal) => [refusal.name, 0]));
   const byKickoff: Record<string, { messages: number; approvals: number }> = {};
   const skippedRecords = new Map<string, number>();
+  const unknownRecords = new Map<string, number>();
+  // Captured metadata-only type, also pinned by section 503; a future type is never assumed safe.
+  const safeSkips = new Set(['session-owner']);
   let messages = 0, approvals = 0, autoMode = 0, promptsAccepted = 0, promptsRejected = 0, filesRead = 0;
   const sessions = new Set<string>();
   const names = fs.readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl')).map((entry) => entry.name).sort();
@@ -160,8 +164,9 @@ export function countAsks(workspace: string, options: AsksOptions = {}): Record<
       }
       if (record === null || typeof record !== 'object' || Array.isArray(record)) throw new AsksRefusal(`${where} is not a JSON object; this count was written for ${LAYOUT}, and nothing was counted.`);
       const type = record['type'];
-      if (typeof type === 'string' && !RECORD_TYPES.has(type) && !('message' in record) && !('permissionDecision' in record)) {
-        skippedRecords.set(type, (skippedRecords.get(type) ?? 0) + 1);
+      if (typeof type === 'string' && !RECORD_TYPES.has(type) && !('message' in record) && !Object.keys(record).some(key => /decision|approval/i.test(key))) {
+        const counts = safeSkips.has(type) ? skippedRecords : unknownRecords;
+        counts.set(type, (counts.get(type) ?? 0) + 1);
         continue;
       }
       if (typeof type !== 'string' || !RECORD_TYPES.has(type)) {
@@ -228,6 +233,7 @@ export function countAsks(workspace: string, options: AsksOptions = {}): Record<
     week: isoWeek(until),
     files_read: filesRead,
     skipped_records: Object.fromEntries([...skippedRecords].sort(([left], [right]) => left.localeCompare(right))),
+    ...(unknownRecords.size ? { unknown_records: Object.fromEntries([...unknownRecords].sort(([left], [right]) => left.localeCompare(right))) } : {}),
     sessions: sessions.size,
     messages,
     approvals,
@@ -246,6 +252,7 @@ export function asksText(count: Record<string, PsJsonValue>): string {
   const prompts = count['permission_prompts'] as { accepted: number; rejected: number };
   const kickoffs = count['by_kickoff'] as Record<string, { messages: number; approvals: number }>;
   const skipped = Object.entries(count['skipped_records'] ?? {});
+  const unknown = Object.entries(count['unknown_records'] ?? {});
   const ids = Object.keys(kickoffs).filter((id) => id !== 'none').sort();
   if (kickoffs['none']) ids.push('none');
   return [
@@ -260,6 +267,7 @@ export function asksText(count: Record<string, PsJsonValue>): string {
     ...DESKPOST_REFUSALS.map((refusal) => `  ${refusal.name}: ${refusals[refusal.name] ?? 0}`),
     `Permission prompts answered: ${prompts.accepted + prompts.rejected} (${prompts.rejected} declined)`,
     ...(skipped.length ? [`Skipped (unknown type, no message): ${skipped.map(([type, n]) => `${type} ${n}`).join(', ')}`] : []),
+    ...(unknown.length ? [`Unknown records (not judged): ${unknown.map(([type, n]) => `${type} ${n}`).join(', ')}`] : []),
   ].join('\n');
 }
 

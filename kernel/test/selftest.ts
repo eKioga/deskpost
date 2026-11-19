@@ -148,7 +148,7 @@ function runCli(args: string[], options: { cwd?: string; env?: Record<string, st
   const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
   const result = spawnSync(file!, [...prefix, ...args], {
     cwd: options.cwd ?? PROGRAM_ROOT,
-    env: { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB, ...(options.env ?? {}) },
+    env: { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB, DESKPOST_LIBRARY_MOVE: '1', ...(options.env ?? {}) },
     encoding: 'utf8',
     ...(options.input !== undefined ? { input: options.input } : {}),
   });
@@ -163,7 +163,7 @@ function runCli(args: string[], options: { cwd?: string; env?: Record<string, st
 function runCliAsync(args: string[], options: { cwd?: string; env?: Record<string, string> } = {}): Promise<{ exit: number; stdout: string; stderr: string }> {
   const [file, ...prefix] = KERNEL_COMMAND.length ? KERNEL_COMMAND : [process.execPath, CLI];
   return new Promise((resolve) => {
-    const child = spawn(file!, [...prefix, ...args], { cwd: options.cwd ?? PROGRAM_ROOT, env: { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB, ...(options.env ?? {}) } });
+    const child = spawn(file!, [...prefix, ...args], { cwd: options.cwd ?? PROGRAM_ROOT, env: { ...process.env, LIBRARY_WORKSPACE: '', ...QUIET_TAB, DESKPOST_LIBRARY_MOVE: '1', ...(options.env ?? {}) } });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
@@ -1474,16 +1474,16 @@ async function section19(): Promise<void> {
       const denied = (answer: string, words: string, label: string) =>
         check(answer.includes('"permissionDecision":"deny"') && answer.includes(words), `${label}: ${answer || '(allowed)'}`);
       const allowed = (answer: string, label: string) => check(answer.trim() === '', `${label}: ${answer}`);
-      denied(read(path.join(workspace, 'shelf', 'beta', 'p.md')), "Shelf Book 'beta' is closed", 'a closed Book by absolute POSIX path was not denied');
+      denied(read(path.join(workspace, 'shelf', 'beta', 'p.md')), "No Shelf Book named 'beta' is in this Library; deskpost browse lists what it holds.", 'a closed Book by absolute POSIX path was not denied');
       allowed(read(path.join(workspace, 'shelf', 'alpha', 'p.md')), 'an open Book by absolute POSIX path was denied');
-      denied(read('shelf/beta/p.md'), "Shelf Book 'beta' is closed", 'a closed Book by relative path was not denied');
-      denied(read(workspace.toUpperCase() + '/SHELF/BETA/p.md'), "Shelf Book 'beta' is closed", 'a closed Book in another case was not denied');
-      denied(read(path.join(workspace, 'notes') + '/../shelf/beta/p.md'), "Shelf Book 'beta' is closed", "a closed Book reached through '..' was not denied");
+      denied(read('shelf/beta/p.md'), "No Shelf Book named 'beta' is in this Library; deskpost browse lists what it holds.", 'a closed Book by relative path was not denied');
+      denied(read(workspace.toUpperCase() + '/SHELF/BETA/p.md'), "No Shelf Book named 'beta' is in this Library; deskpost browse lists what it holds.", 'a closed Book in another case was not denied');
+      denied(read(path.join(workspace, 'notes') + '/../shelf/beta/p.md'), "No Shelf Book named 'beta' is in this Library; deskpost browse lists what it holds.", "a closed Book reached through '..' was not denied");
       denied(read('/' + path.join(workspace, 'shelf', 'alpha', 'p.md')), 'an absolute local path', "a path with a leading '//' was not denied as unplaceable");
       allowed(read(path.join(root, 'elsewhere', 'x.md')), 'a path outside every workspace was denied');
       denied(read(path.join(other, 'shelf', 'alpha', 'p.md')), 'which is not this workspace', "another registered POSIX workspace's Shelf was not denied");
       denied(shell('cat ' + path.join(other, 'notebook', 'x.md')), 'which is not this workspace', "a shell command naming another POSIX workspace's Notebook was not denied");
-      denied(shell('cat shelf/beta/p.md'), "Shelf Book 'beta' is closed", 'a shell command naming a closed Book was not denied');
+      denied(shell('cat shelf/beta/p.md'), "No Shelf Book named 'beta' is in this Library; deskpost browse lists what it holds.", 'a shell command naming a closed Book was not denied');
       allowed(shell('ls /usr/bin 2>/dev/null'), 'a shell command naming no workspace was denied');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -2028,9 +2028,9 @@ async function seatClaimWorkspace(label: string, options: { pin?: boolean } = {}
       return null;
     }
   };
-  // The holder notices its agent's death on its own poll; a claim still held ten seconds later is not.
+  // The holder notices its agent's death on its own poll; a claim still held thirty seconds later is not.
   const untilFree = (seat: string): boolean => {
-    const until = Date.now() + 10000;
+    const until = Date.now() + 30000;
     while (Date.now() < until) {
       if (claimed(seat) === false) return true;
       pause(200);
@@ -2171,8 +2171,12 @@ async function section25(): Promise<void> {
     const attemptFile = path.join(seatDirectory, 'holder-attempt.json');
     const lateAttempt = '25000000000000000000000000000001';
     const lateDeadline = Date.now() + 6000;
-    const attemptRecord = (state: string) =>
-      fs.writeFileSync(attemptFile, JSON.stringify({ seat: 'first', attempt_id: lateAttempt, holder_pid: 0, started_utc: new Date().toISOString(), deadline_utc: new Date(lateDeadline).toISOString(), state }) + '\n');
+    const attemptRecord = (state: string) => {
+      const temporary = attemptFile + '.tmp';
+      fs.writeFileSync(temporary, JSON.stringify({ seat: 'first', attempt_id: lateAttempt, holder_pid: 0, started_utc: new Date().toISOString(), deadline_utc: new Date(lateDeadline).toISOString(), state }) + '\n');
+      // The holder rereads the record while this fixture commits it. Publish the complete record in one step.
+      fs.renameSync(temporary, attemptFile);
+    };
     attemptRecord('pending');
     const lateHolder = w.asAsync(late, ['seat', 'hold', '--workspace', w.workspace, '--seat', 'first', '--attempt-id', lateAttempt, '--agent-pid', String(late), '--agent-start-utc', '']);
     let tookHandle = false;
@@ -2181,10 +2185,10 @@ async function section25(): Promise<void> {
       if (!tookHandle) w.pause(100);
     }
     check(tookHandle, 'the hand-driven holder did not take the handle before its deadline, so the check below proves nothing');
-    while (Date.now() < lateDeadline + 700) w.pause(200);
+    while (Date.now() <= lateDeadline) w.pause(Math.max(1, Math.min(lateDeadline - Date.now() + 1, 100)));
     attemptRecord('committed');
-    w.pause(1000);
     check(w.claimed('first') === true, 'a holder let go of a seat committed just after its deadline');
+    // Once the agent exits, the holder exits successfully only if it read the committed record.
     process.kill(late);
     check(w.untilFree('first'), 'the hand-driven holder did not let go when its agent died');
     const lateExit = await lateHolder;
@@ -6818,6 +6822,11 @@ async function section69(): Promise<void> {
     const denied = (answer: string, words: string[], label: string) =>
       check(answer.includes('"permissionDecision":"deny"') && words.every((word) => answer.includes(word)), `${label}: ${answer || '(allowed)'}`);
     const allowed = (answer: string, label: string) => check(answer.trim() === '', `${label}: ${answer}`);
+    const advised = (answer: string, tool: string, label: string) => {
+      const output = JSON.parse(answer || '{}').hookSpecificOutput;
+      check(output?.hookEventName === 'PreToolUse' && output?.additionalContext?.includes(tool) && !output.permissionDecision,
+        `${label}: ${answer}`);
+    };
     const hubPage = path.join(lib, 'collection', 'projects', 'other', '_project.md');
     const bookPage = path.join(lib, 'collection', 'books', 'demo', 'wiki', 'page.md');
 
@@ -6839,8 +6848,8 @@ async function section69(): Promise<void> {
     allowed(read(bookPage), 'a Read of an open collection Book page was denied');
     allowed(hook('shelf-read', { tool_name: 'Grep', tool_input: { pattern: 'x', path: path.join(lib, 'collection', 'projects', 'other') } }), 'a Grep inside an open Hub was denied');
     allowed(hook('shelf-read', { tool_name: 'Glob', tool_input: { pattern: 'collection/books/demo/**' } }), 'a Glob inside an open collection Book was denied');
-    allowed(shell(`Get-Content ${hubPage}`), 'a shell Get-Content of an open Hub page was denied');
-    allowed(shell('Get-Content collection/books/demo/wiki/page.md'), 'a shell read of an open collection Book page was denied');
+    advised(shell(`Get-Content ${hubPage}`), 'read_open_project_page', 'a shell Get-Content of an open Hub page was denied');
+    advised(shell('Get-Content collection/books/demo/wiki/page.md'), 'read_open_book_page', 'a shell read of an open collection Book page was denied');
 
     for (const surface of ['collection/books/README.md', 'collection/projects/README.md', 'collection/.library/catalog.json']) {
       allowed(read(surface), `the catalog surface ${surface} was denied`);
@@ -10828,17 +10837,7 @@ async function section119(): Promise<void> {
   const register = fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'library-rules.md'), 'utf8');
   const rows = register.split(/\r?\n/).filter((line) => /^\|\s*U\d+\s*\|/.test(line));
   check(rows.length >= 8, `docs/library-rules.md has ${rows.length} register rows; expected at least the eight upkeep rules`);
-  const ids = new Set<string>();
-  const problems: string[] = [];
-  for (const row of rows) {
-    const cells = row.split('|').slice(1, -1).map((cell) => cell.trim());
-    const [id, rule, home, enforcer] = cells;
-    if (cells.length !== 5 || !id || !rule || !home || !enforcer) {
-      problems.push(`a row does not have five filled cells: ${row.slice(0, 80)}`);
-      continue;
-    }
-    if (ids.has(id)) problems.push(`${id} is used twice`);
-    ids.add(id);
+  function homes(id: string, home: string, problems: string[]): void {
     for (const part of home.split(';').map((entry) => entry.trim())) {
       const entry = /^`([^`]+)`(?:\s*:\s*`([^`]+)`)?$/.exec(part);
       if (!entry) {
@@ -10853,7 +10852,36 @@ async function section119(): Promise<void> {
       if (entry[2] !== undefined && !fs.readFileSync(file, 'utf8').includes(entry[2])) problems.push(`${id}: '${entry[2]}' no longer occurs in ${entry[1]}`);
     }
   }
+  function rowProblems(text: string, claims: boolean, ids: Set<string>): string[] {
+    const problems: string[] = [];
+    const matching = text.split(/\r?\n/).filter((line) => (claims ? /^\|\s*D\d+\s*\|/ : /^\|\s*U\d+\s*\|/).test(line));
+    for (const row of matching) {
+      const cells = row.split('|').slice(1, -1).map((cell) => cell.trim());
+      const [id, rule, home, enforcer] = cells;
+      if (cells.length !== (claims ? 4 : 5) || !id || !rule || !home || !enforcer) {
+        problems.push(`a row does not have ${claims ? 'four' : 'five'} filled cells: ${row.slice(0, 80)}`);
+        continue;
+      }
+      if (ids.has(id)) problems.push(`${id} is used twice`);
+      ids.add(id);
+      if (claims && [home, enforcer].some((cell) => cell.split(';').some((part) => !/^`([^`]+)`\s*:\s*`([^`]+)`$/.test(part.trim())))) {
+        problems.push(`${id}: document and code parts need a path and an anchor`);
+      }
+      homes(id, home, problems);
+      if (claims) homes(id, enforcer, problems);
+    }
+    return problems;
+  }
+  const ids = new Set<string>();
+  const problems = rowProblems(register, false, ids);
   check(problems.length === 0, `docs/library-rules.md has ${problems.length} home(s) that do not resolve: ${problems.join('; ')}`);
+  const claims = rowProblems(register, true, ids);
+  check(ids.has('D1') && claims.length === 0, `docs/library-rules.md document claims: ${claims.join('; ') || 'D1 resolves'}`);
+  const fixture = '| D0 | Launch access definition | `docs/releasing.md`: `LAUNCH_ACCESS_VALUES` | `kernel/src/seatlaunch.ts`: `export const LAUNCH_ACCESS_VALUES` |';
+  const wrong = rowProblems(fixture, true, new Set());
+  check(wrong.length === 1 && wrong[0] === "D0: 'export const LAUNCH_ACCESS_VALUES' no longer occurs in kernel/src/seatlaunch.ts", `document claim fixture rejects wrong source: ${wrong.join('; ')}`);
+  const right = rowProblems(fixture.replace('kernel/src/seatlaunch.ts', 'kernel/src/menuaccess.ts'), true, new Set());
+  check(right.length === 0, `document claim fixture accepts menuaccess.ts: ${right.join('; ') || 'resolved'}`);
 }
 if (selected(119)) await section119();
 
@@ -10866,7 +10894,7 @@ if (selected(119)) await section119();
 // its ceiling fails too, so the ceiling is lowered in the same commit that sweeps a string.
 async function section120(): Promise<void> {
   const ADVICE_PATTERN = /tools\/[A-Za-z-]+\.ps1|(?:^|[\s(])-[A-Z][A-Za-z]+\b/;
-  const EXCEPTIONS: { pattern: RegExp; why: string }[] = [
+  const EXCEPTIONS: { pattern: RegExp; why: string; file?: string }[] = [
     {
       pattern: /^-(?:NoProfile|ExecutionPolicy|File|StateDirectory|NoLogo|NonInteractive|Command)$|powershell\.exe -NoProfile|-ReaderToolPrefix/,
       why: 'a PowerShell process the kernel starts',
@@ -10875,6 +10903,7 @@ async function section120(): Promise<void> {
     // S89: `library install` spells these as install.ps1 does when that forwarder runs it (`--forwarded`).
     { pattern: /-InstallRoot|-NoPathChange|-Resume\b|-DryRun|-Json\b|-PlanId|install\.ps1/, why: "the installer's own flags, and the installer ships" },
     { pattern: /^-Title$/, why: "a result's title_source value, which the oracle reports the same" },
+    { file: 'locks.ts', pattern: /^Remove-Item -LiteralPath '\uFFFC'$/, why: 'the one copyable manual recovery command' },
   ];
   // THE BACKLOG, file by file: the PowerShell-era strings not yet rewritten (S85's handback lists them for B).
   const BACKLOG: Record<string, number> = {
@@ -10915,7 +10944,7 @@ async function section120(): Promise<void> {
     for (const text of literals(fs.readFileSync(path.join(source, name), 'utf8'))) {
       scanned += 1;
       if (!ADVICE_PATTERN.test(text)) continue;
-      if (EXCEPTIONS.some((exception) => exception.pattern.test(text))) {
+      if (EXCEPTIONS.some((exception) => (exception.file === undefined || exception.file === name) && exception.pattern.test(text))) {
         excepted += 1;
         continue;
       }
@@ -16843,7 +16872,7 @@ async function section182(): Promise<void> {
     // R2: one section, the fenced heading ignored, the whole page's hash.
     const two = envelope(read('bk', 'guide/start', ['--section', 'Two']));
     equal(two.content[0]?.text, '## Two\n\nSecond section.\n', 'the section Two was not cut at the next heading, past the fenced one');
-    equal(two.content[1]?.text, whole.content[1]?.text, "a section's sha256 is not the whole page's");
+    equal(two.content[1]?.text, 'page ' + whole.content[1]?.text, "a section's sha256 is not the whole page's");
     const absent = read('bk', 'guide/start', ['--section', 'Three']);
     check(envelope(absent).isError && said(absent).includes("Its ## headings: 'One', 'Two', 'Twice', 'Twice'") && !said(absent).includes('First section'), `a heading not on the page was not refused naming the headings: ${said(absent).slice(0, 300)}`);
     const twice = read('bk', 'guide/start', ['--section', 'Twice']);
@@ -16894,7 +16923,7 @@ async function section182(): Promise<void> {
       check(tools.find((tool) => tool.name === name)?.inputSchema.properties['section'] !== undefined, `mcp serve does not list section on ${name}`);
     }
     const servedPage = served.find((answer) => answer.id === 2)?.result as { content: { text: string }[] } | undefined;
-    check(servedPage?.content[0]?.text === '## One\n\nFirst section.\n\n```\n## Two\n```\n' && servedPage?.content[1]?.text === whole.content[1]?.text, `mcp serve did not answer the section with the page's hash: ${JSON.stringify(servedPage).slice(0, 300)}`);
+    check(servedPage?.content[0]?.text === '## One\n\nFirst section.\n\n```\n## Two\n```\n' && servedPage?.content[1]?.text === 'page ' + whole.content[1]?.text, `mcp serve did not answer the section with the page's hash: ${JSON.stringify(servedPage).slice(0, 300)}`);
   } catch (error) {
     failures.push(`section 182 stopped early: ${(error as Error).message}`);
   } finally {
@@ -18648,7 +18677,7 @@ async function section199(): Promise<void> {
     }));
     const said = (id: number) => answers.get(id) ?? { isError: false, text: `no answer: ${(served.stderr ?? '').slice(0, 300)}` };
     const refusedWith = (id: number, text: string, label: string) => check(said(id).isError && said(id).text.includes(text), `${label}: ${said(id).text.slice(0, 300)}`);
-    refusedWith(1, "read_open_project_page takes slug, page and section; it does not take 'x'. Nothing was read.", 'an undeclared argument');
+    refusedWith(1, "read_open_project_page takes slug, page, section and hash_only; it does not take 'x'. Nothing was read.", 'an undeclared argument');
     refusedWith(2, "read_book_catalog takes location shared, shelf, all, archive, collection or shared-archive; it does not take 'nowhere'.", 'a location outside its list');
     refusedWith(3, "read_project_catalog takes shelf active or archive; it does not take 'attic'.", 'a shelf outside its list');
     refusedWith(4, 'is bound to the workspace', 'another workspace');
@@ -20404,9 +20433,20 @@ async function section215(): Promise<void> {
 
     // (a) Unclaimed files, on a fixture and on this checkout's map.
     equal(JSON.stringify(select.unclaimedFiles(map, ['kernel/src/alpha.ts', 'kernel/src/delta.ts', 'kernel/src/beta.ts'])), '["kernel/src/delta.ts"]', 'an unclaimed kernel/src file was not named');
-    const realMap = select.parseCovers(fs.readFileSync(path.join(PROGRAM_ROOT, select.COVERS_PATH), 'utf8'));
+    const claimMap = (read: (file: string) => string | null) => select.mergeCovers(select.coversFiles(read));
+    const fixtureClaims = new Map([
+      [select.COVERS_PATH, JSON.stringify(map)],
+      ['docs/areas.json', JSON.stringify({ lanes: { 'guards-and-tooling': [] } })],
+      ['kernel/test/lanes/guards-and-tooling.covers.json', JSON.stringify(covers({ '1872': ['kernel/src/delta.ts'] }))],
+    ]);
+    equal(JSON.stringify(select.unclaimedFiles(claimMap(file => fixtureClaims.get(file) ?? null), ['kernel/src/delta.ts'])),
+      '[]', 'a file claimed only in a lane was reported unclaimed');
+    const realMap = claimMap(file => {
+      const full = path.join(PROGRAM_ROOT, file);
+      return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+    });
     const realFiles = fs.readdirSync(path.join(PROGRAM_ROOT, 'kernel', 'src')).filter((file) => file.endsWith('.ts')).map((file) => `kernel/src/${file}`);
-    equal(JSON.stringify(select.unclaimedFiles(realMap, realFiles)), '[]', `${select.COVERS_PATH} leaves a kernel/src file unclaimed`);
+    equal(JSON.stringify(select.unclaimedFiles(realMap, realFiles)), '[]', 'the merged section claim map leaves a kernel/src file unclaimed');
     let malformed = '';
     try {
       select.parseCovers(JSON.stringify({ schema: 1, about: 'x', sections: { '4': ['src/alpha.ts'] } }));
@@ -23485,7 +23525,7 @@ async function section256(): Promise<void> {
     const madeText = fs.readFileSync(path.join(lib, 'collection', 'projects', 'work', 'notes', 'times.md'), 'utf8');
     check(window(newStart, newEnd).has(stamped.exec(madeText)?.[1] ?? '') && !madeText.includes('{now}') && !madeText.includes('{today}'), `the new page was not filled: ${madeText}`);
 
-    // 4. capture: the preflight says so; the note's body is filled, its title and file name are not.
+    // 4. capture: the preflight says so; the note's title and body are filled.
     const notePre = json(['capture', 'holding', '--title', 'Seen {today}', '--body', 'Seen at {now}.', '--preflight']);
     check(typeof notePre['time_placeholders'] === 'string', `capture's preflight did not say it will fill: ${JSON.stringify(notePre).slice(0, 400)}`);
     const capStart = new Date();
@@ -23493,7 +23533,10 @@ async function section256(): Promise<void> {
     const capEnd = new Date();
     const notePath = path.join(lib, 'shelf', String(captured['note_page'] ?? '').replace(/^shelf\//, '') + '.md');
     const noteText = fs.existsSync(notePath) ? fs.readFileSync(notePath, 'utf8') : '';
-    check(window(capStart, capEnd).has(stamped.exec(noteText)?.[1] ?? '') && noteText.includes('# Seen {today}'), `the captured body was not filled, or its title was: ${noteText || JSON.stringify(captured)}`);
+    const titles = [capStart, capEnd].map(date => '# Seen ' + fillTimePlaceholders('{today}', date));
+    check(window(capStart, capEnd).has(stamped.exec(noteText)?.[1] ?? '')
+      && titles.some(title => noteText.split(/\r?\n/).includes(title)) && !noteText.includes('{today}'),
+    `the captured body or title was not filled: ${noteText || JSON.stringify(captured)}`);
   } catch (error) {
     failures.push(`section 256 stopped early: ${(error as Error).message}`);
   } finally {
@@ -28821,7 +28864,7 @@ async function section330(): Promise<void> {
     check(!f.has('unknown_wire_key') && Number(row['dropped_keys'])>=1,'330(c): unknown key retained or not counted');
     const delivered=path.join(inbox,'delivered',`${id}.md`);
     check(fs.existsSync(delivered) && !fs.existsSync(delivery),'330(a): not moved to delivered');
-    equal((t.json(t.cli(t.far.lib,['postbox','check','--json']))['filed'] as unknown[]).length,0,'330(b): repeat filed again');
+    equal((t.json(t.cli(t.far.lib,['postbox','check','--json']))['filed'] as unknown[]).length,0,`330(b): repeat filed again for delivery ${id}`);
     fs.writeFileSync(path.join(t.far.lib,'.claude','seats','clerk','.open-books'),'shelf/letters\nshelf/reports\n');
     fs.writeFileSync(file,setNoteField(setNoteField(text,'review','done'),'reviewed','2026-09-01T00:00:00Z'));
     const tidy=t.json(t.cli(t.far.lib,['shelf','tidy','reports','--preflight','--json'],'clerk'));
@@ -28831,7 +28874,7 @@ async function section330(): Promise<void> {
     fs.writeFileSync(delivered,fs.readFileSync(delivered,'utf8').replace(/^permalink: .+$/m,`permalink: postbox/inbox/${t.far.id}/delivered/${id}`));
     fs.copyFileSync(delivered,delivery);
     const tidied=t.json(t.cli(t.far.lib,['postbox','check','--json']));
-    equal((tidied['filed'] as unknown[]).length,0,'330(b): tidied copy duplicated');
+    equal((tidied['filed'] as unknown[]).length,0,`330(b): tidied copy duplicated for delivery ${id}`);
     equal(tidied['already_filed'],1,'330(b): reviewed identity not found');
     for(const [kind,key] of [['control','amends_delivery_id'],['outcome','closes_delivery_id']] as const) {
       const copyId=`${id}-${kind}`;
@@ -29240,8 +29283,8 @@ async function section339(): Promise<void> {
     const { VERBS } = await import('../src/verbs.ts');
     const refused = runLibraryVerb(['nosuch']);
     check(refused.value === null && refused.refusal !== null, `library nosuch was not refused: ${JSON.stringify(refused)}`);
-    check(String(refused.refusal).includes("library has no action 'nosuch'. It has: card, default, forget, list."), `the refusal does not name all four actions: ${refused.refusal}`);
-    equal((VERBS['library']?.actions ?? []).join(','), 'card,default,forget,list', 'the verb table no longer declares the four actions');
+    check(String(refused.refusal).includes("library has no action 'nosuch'. It has: card, default, forget, list, move."), `the refusal does not name all five actions: ${refused.refusal}`);
+    equal((VERBS['library']?.actions ?? []).join(','), 'card,default,forget,list,move', 'the verb table no longer declares the five actions');
   } catch (error) {
     failures.push(`section 339 stopped early: ${(error as Error).message}`);
   }
@@ -29313,7 +29356,7 @@ async function section342(): Promise<void> {
       return { status: ran.status, out: `${ran.stdout}${ran.stderr}` };
     };
     const page = (rows: string) => kc.REQUIRED_SECTIONS.map((name: string) =>
-      name === 'ROWS' ? `ROWS:\n${rows}` : name === 'CLOSE' ? 'CLOSE:\n- the Handback.\n- **Stop.**' : name === 'OWNS PATHS' ? 'OWNS PATHS:\n- `a.ts`' : `${name}: filled`).join('\n');
+      name === 'ROWS' ? `ROWS:\n${rows}` : name === 'CLOSE' ? 'CLOSE:\n- the Handback.\n- **Stop.**' : name === 'OWNS PATHS' ? 'OWNS PATHS:\n- `kernel/a.ts`' : `${name}: filled`).join('\n');
 
     const comma = page('1. **The red run**: `powershell -NoProfile -File tools/Invoke-AcceptanceMatrix.ps1 -Row a,b -Kernel \'node kernel/src/cli.ts\'`.\n   Done when: both rows mismatch.');
     const commaLine = comma.split('\n').findIndex((line) => line.includes('-Row a,b')) + 1;
@@ -29868,7 +29911,8 @@ async function section354(): Promise<void> {
     check(entry.metadata['origin_seat']==='asker'&&entry.metadata['sent_for']==='seatless'&&!('from_seat' in entry.metadata),'354: seatless envelope lost its return address');
     for(const e of all)check(readRecords(t.home.lib).some(r=>r.delivery_id===e.delivery_id&&isComplete(r)),'354: original-delivery intent incomplete');
     const again=t.json(preview());equal(again['count'],0,'354: sent copies are still candidates');
-    equal(t.cli(t.home.lib,['reports','send-pending','--user-confirmed','--plan-id',String(again['plan_id'])],'asker').exit,0,'354: empty apply failed');
+    check(!('plan_id' in again) && /nothing|no .*pending/i.test(String(again['note'])),
+      '354: empty preview should explain why there is no plan');
     equal(readOutbox(t.home.lib).length,all.length,'354: second apply created another delivery');
     equal(t.cli(t.far.lib,['postbox','check']).exit,0,'354: seatless delivery did not file');
     const received='notes/'+t.reportWithDelivery(t.far.lib,seatlessId)[0]!.replace(/\.md$/,'');
@@ -32586,7 +32630,7 @@ async function section448(): Promise<void> {
       const canonical = canonicalPayload(text, id);
       check(fs.existsSync(pageFile(id)) && fs.readFileSync(pageFile(id), 'utf8') === canonical, `448 (${what}): the page is not the sent canonical bytes`);
       equal(pointers(id).length, 1, `448 (${what}): not exactly one pointer`);
-      check(/^- \[[ x]\] Run [a-z0-9-]+: \[\[projects\/work-clerk\/kickoffs\/[a-z0-9-]+\]\] \(from Home Office\)$/.test(pointers(id)[0] ?? ''), `448 (${what}): the pointer is not in its form: ${pointers(id)[0]}`);
+      check(/^- \[[ x]\] Run [a-z0-9-]+: \[\[projects\/work-clerk\/kickoffs\/[a-z0-9-]+\]\] \(r1, sha256 `[0-9a-f]{64}`, from Home Office\)$/.test(pointers(id)[0] ?? ''), `448 (${what}): the pointer is not in its form: ${pointers(id)[0]}`);
       equal(review(letter), 'done', `448 (${what}): the letter was not closed`);
       const record = fs.existsSync(recordFile(id)) ? JSON.parse(fs.readFileSync(recordFile(id), 'utf8')) as { stages: { name: string; state: string }[]; sha256: string; completed_utc: string | null } : null;
       check(record !== null && record.stages.map((s) => `${s.name}:${s.state}`).join(',') === 'page:done,pointer:done,close:done' && record.sha256 === sha256OfText(canonical) && record.completed_utc !== null, `448 (${what}): the record is not complete: ${JSON.stringify(record)}`);
@@ -34221,6 +34265,16 @@ async function undoFixture(label: string) {
       return {};
     }
   };
+  const cliAsync = (args: string[], extra: Record<string, string> = {}) =>
+    runCliAsync([...args, '--workspace', lib], { cwd: w.root, env: { ...env, ...extra } });
+  const agentPidOf = (seat: string): number => {
+    const status = cli(['seat', 'status', '--seat', seat, '--json']);
+    const pid = json(status)['seats']?.[0]?.agent_pid;
+    if (status.exit !== 0 || !Number.isSafeInteger(pid) || pid < 1) {
+      throw Error(`${label}: no agent process for fixture seat ${seat}`);
+    }
+    return pid;
+  };
   const said = (result: { stdout: string; stderr: string }) => (result.stdout + ' ' + result.stderr).replace(/\s+/g, ' ').slice(0, 700);
   const file = (name: string, text: string) => {
     const full = path.join(w.root, name);
@@ -34321,7 +34375,7 @@ async function undoFixture(label: string) {
     return json(cli(['book', 'replace-page', 'guide', 'page', '--content-path', second, '--base-sha256', String(preview['current_sha256']), '--json']));
   };
 
-  return { w, lib, cli, json, said, file, at, bytes, hash, journal, idOf, undo, undoAsync, gated, applied, triage, noteOf, bookReplaced, hubPage, guide, guideMap };
+  return { w, lib, cli, json, said, file, at, bytes, hash, journal, idOf, undo, undoAsync, gated, applied, triage, noteOf, bookReplaced, hubPage, guide, guideMap, agentPid: agent, agentPidOf, cliAsync };
 }
 
 // --- 494. EVERY QUALIFYING WRITE JOURNALS WHAT UNDO NEEDS (kickoffs/s165 row 1) --------------------------------------
@@ -37559,11 +37613,17 @@ async function section560(): Promise<void> {
     equal(order(), 'y,x,w', '560: before order');
     equal(train(['move', 'x', '--place', 'lane:fixes', '--after', 'w']).exit, 0, '560: after');
     equal(order(), 'y,w,x', '560: after order');
-    for (const flags of [['--after', 'z'], ['--before', 'z'], ['--first', '--before', 'y'], ['--first', '--after', 'y'], ['--before', 'y', '--after', 'w'], ['--before', 'x'], ['--after', 'x'], ['--before', 'missing'], ['--after', 'missing']]) {
+    const places = () => (JSON.parse(train(['page', '--by', 'lane', '--json']).stdout) as { place: string }[]).map(row => row.place);
+    for (const [flag, expected] of [['--after', ['foundation', 'lane:fixes']], ['--before', ['lane:fixes', 'foundation']]] as const) {
+      const result = train(['move', 'x', '--place', 'lane:fixes', flag, 'z']);
+      equal(result.exit, 0, `560: cross-place ${flag}: ${result.stderr}`);
+      same(places(), expected, `560: cross-place ${flag} orders the place`);
+      equal(order(), 'y,w,x', `560: cross-place ${flag} keeps the order within the place`);
+    }
+    for (const flags of [['--first', '--before', 'y'], ['--first', '--after', 'y'], ['--before', 'y', '--after', 'w'], ['--before', 'x'], ['--after', 'x'], ['--before', 'missing'], ['--after', 'missing']]) {
       const prior = fs.readFileSync(file), log = fs.readFileSync(history);
       const result = train(['move', 'x', '--place', 'lane:fixes', ...flags]);
       check(result.exit !== 0, `560: accepted ${flags.join(' ')}`);
-      if (flags[1] === 'z') check(result.stderr.includes('z is in foundation, not lane:fixes'), `560: wrong place refusal ${result.stderr}`);
       check(prior.equals(fs.readFileSync(file)) && log.equals(fs.readFileSync(history)), '560: refusal changed files');
     }
     const lines = () => fs.readFileSync(history, 'utf8').trim().split('\n').length;
@@ -37593,6 +37653,13 @@ async function section561(): Promise<void> {
   const children: ReturnType<typeof spawn>[] = [];
   try {
     const { enterBookLock, exitBookLock } = await import('../src/locks.ts');
+    const locks = await import('../src/locks.ts');
+    check(typeof locks.recoveryGuardRemovalCommand === 'function', '561: recovery removal command helper exists');
+    if (typeof locks.recoveryGuardRemovalCommand === 'function') {
+      equal(locks.recoveryGuardRemovalCommand("a'b", 'win32'), "Remove-Item -LiteralPath 'a''b'", '561: PowerShell literal quoting');
+      equal(locks.recoveryGuardRemovalCommand("a'b", 'linux'), "rm -- 'a'\\''b'", '561: POSIX literal quoting');
+    }
+
     const { deskOverview } = await import('../src/desk.ts');
     const { dashboardText } = await import('../src/dashboard.ts');
     const agent = w.startAgent();
@@ -37631,7 +37698,8 @@ async function section561(): Promise<void> {
     check(fs.existsSync(guard) && fs.readFileSync(guard, 'utf8') === record, '561: crashed guard preserved');
     check(!fs.existsSync(log), '561: no holder entered behind the guard');
     const forward = guard.replace(/\\/g, '/');
-    // Copyable PowerShell advice is parked: section 120 forbids it and its allowlist is outside c78's OWNS.
+    for (const output of outputs) check(output.includes(process.platform === 'win32' ? 'Remove-Item -LiteralPath' : 'rm --'), '561: confirmed timeout includes copyable removal');
+    // Manual removal is copyable; section 120 permits only locks.ts's removal-command form.
     for (const output of outputs) check(output.includes(forward) && output.includes(String(gone)) && output.includes('safe') && output.includes('again'), `561: confirmed timeout names recovery: ${output}`);
     const view = deskOverview({ workspace: w.workspace, seat: 'first' });
     check(String(JSON.stringify(view['stale_recovery_guards'])).includes(forward), '561: Desk names guard');
@@ -37654,6 +37722,8 @@ async function section561(): Promise<void> {
     let message = '';
     try { exitBookLock(enterBookLock(w.workspace, 'shelf/demo', 0)); } catch (e) { message = (e as Error).message; }
     check(message.includes('could not confirm the owner is gone') && message.includes(String(gone)) && message.includes('old') && !message.includes('safe'), `561: unconfirmed timeout: ${message}`);
+    const removal = locks.recoveryGuardRemovalCommand(guard.replace(/\\/g, '/'));
+    check(message.includes(removal) && message.indexOf('check that pid is gone first') < message.indexOf(removal), '561: unconfirmed owner must be checked before manual removal');
     const unknown = dashboardText(deskOverview({ workspace: w.workspace, seat: 'first' }), { width: 2000, now: Date.now() });
     check(unknown.includes('could not confirm the owner is gone') && !unknown.includes('safe'), '561: unconfirmed Desk line');
     console.log(`561 confirmed timeout: ${outputs[0]}\n561 dashboard: ${frame}\n561 doctor: ${JSON.stringify(row)}\n561 unconfirmed: ${message}`);
@@ -38324,7 +38394,7 @@ async function section575(): Promise<void> {
   const kc = await import('../src/kickoffcheck.ts');
   const page = (extra: string, open = 'filled', train = 'first') => kc.KNOWN_SECTIONS.map(name =>
     name === 'WHY NOW' ? `WHY NOW:\n${extra}` : name === 'OPEN' ? `OPEN:\n${open}` : name === 'TRAIN' ? `TRAIN: ${train}` :
-    name === 'ROWS' ? 'ROWS:\n1. A change.\n   Done when: proved.' : name === 'CLOSE' ? 'CLOSE:\n- **Stop.**' : name === 'OWNS PATHS' ? 'OWNS PATHS:\n- `a.ts`' : `${name}: filled`).join('\n');
+    name === 'ROWS' ? 'ROWS:\n1. A change.\n   Done when: proved.' : name === 'CLOSE' ? 'CLOSE:\n- **Stop.**' : name === 'OWNS PATHS' ? 'OWNS PATHS:\n- `kernel/a.ts`' : `${name}: filled`).join('\n');
   const verdict = (extra: string, open = 'filled', options: Parameters<typeof kc.kickoffVerdict>[1] = { adrFiles: [] }) => kc.kickoffVerdict(page(extra, open), options);
   const refused = (extra: string, term: string, open = 'filled') => check(verdict(extra, open).problems.some(p => p.includes(term)), `575: missing ${term} refusal for ${extra || open}`);
   const passes = (extra: string, open = 'filled') => equal(verdict(extra, open).problems.length, 0, `575: safe text refused: ${extra || open}: ${verdict(extra, open).problems.join('; ')}`);
@@ -38348,7 +38418,7 @@ async function section575(): Promise<void> {
   }
   equal(verdict('').warnings.length, 0, '575: no names means no bare-tool warning');
   const noLibrary = verdict('[[projects/work/_project]]');
-  equal(noLibrary.warnings.join(), 'names not checked: no Library', '575: bare tool warns once for real names');
+  equal(noLibrary.warnings.join(), 'names not checked: no Library; run deskpost kickoff check <file> in a Library to check them', '575: bare tool warns once for real names');
   const placeholders = verdict('[[projects/work/notes/<date>-c1]] and `projects/work` page `notes/<date>-a1`.');
   equal(placeholders.problems.length + placeholders.warnings.length, 0, '575: placeholder pages skipped entirely');
 
@@ -38420,10 +38490,10 @@ if (selected(575)) await section575();
 // --- 576. WINDOWS HOOK SELECTION USES THE INDEX AND ALWAYS INCLUDES THE TYPE CHECK (c84 row 1). ---
 async function section576(): Promise<void> {
   try {
-    const helper = await import('../../tools/section-select.mts') as unknown as { hookSections: (git: (args: string[]) => string) => { all: boolean; sections: number[]; reasons: string[] } };
+    const helper = await import('../../tools/section-select.mts') as unknown as { stagedSelection: (git: (args: string[]) => string) => { all: boolean; sections: number[]; reasons: string[] } };
     const calls: string[] = [];
     const map = JSON.stringify({ schema: 1, sections: { '12': ['kernel/src/one.ts'], '88': ['kernel/src/one.ts'] } });
-    const choose = (changed: string[], covers = map, broken = false) => helper.hookSections(args => {
+    const choose = (changed: string[], covers = map, broken = false) => helper.stagedSelection(args => {
       const command = args.join(' '); calls.push(command);
       if (broken) throw Error('fixture git failed');
       if (command === 'show :kernel/test/section-covers.json') return covers;
@@ -38455,7 +38525,7 @@ async function section576(): Promise<void> {
       git(['add', '.']); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=.git/no-hooks', 'commit', '-qm', 'fixture base']);
       fs.mkdirSync(path.join(root, 'kernel/src')); fs.writeFileSync(path.join(root, 'kernel/src/one.ts'), 'export {};\n'); git(['add', 'kernel/src/one.ts']);
       fs.writeFileSync(path.join(root, 'kernel/test/section-covers.json'), '{broken unstaged map');
-      equal(helper.hookSections(git).sections.join(','), '12,88,155', '576: staged map wins over malformed working copy');
+      equal(helper.stagedSelection(git).sections.join(','), '12,88,155', '576: staged map wins over malformed working copy');
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   } catch (error) { failures.push(`section 576 stopped early: ${(error as Error).message}`); }
 }
@@ -38476,14 +38546,14 @@ async function section577(): Promise<void> {
     put('tools/owns.mts', 'process.exit(0);\n'); put('tools/staged-secrets.mts', 'process.exit(0);\n'); put('tools/docs-gate.ts', 'process.exit(4);\n');
     put('tools/gate.ts', 'import fs from"node:fs";fs.writeFileSync(process.env.C109_RECEIPT,JSON.stringify(process.argv.slice(2)));process.exit(Number(process.env.C109_EXIT??0));\n');
     put('kernel/test/section-covers.json', JSON.stringify({ schema: 1, sections: { '12': ['kernel/src/one.ts'], '88': ['kernel/src/two.ts'] } }));
-    put('kernel/test/selftest.ts', 'if (selected(12)) {\n// gate.ts\n}\nif (selected(88)) {\n}\n');
+    put('kernel/test/selftest.ts', 'if (selected(12)) {\n// probe.mts\n}\nif (selected(88)) {\n}\n');
     put('kernel/src/one.ts', 'baseline\n'); put('kernel/src/two.ts', 'baseline\n');
     git('add', '.'); git('commit', '-qm', 'baseline'); git('update-ref', 'refs/remotes/origin/master', 'HEAD');
     put('kernel/src/one.ts', 'first change\n'); git('add', '.'); git('commit', '-qm', 'first');
     put('kernel/src/two.ts', 'second change\n'); git('add', '.'); git('commit', '-qm', 'second');
     equal(gate.selection(root, null, true).selection.sections.join(','), '12,88', '577: push must cover both outgoing commits with an empty index');
     equal(gate.selection(root, null).changed.length, 0, '577: commit selection must remain staged only');
-    put('tools/gate.ts', fs.readFileSync(path.join(root,'tools/gate.ts'),'utf8') + '// changed\n'); git('add', '.');
+    put('tools/probe.mts', '// changed\n'); git('add', '.');
     equal(gate.selection(root, null).selection.sections.join(','), '12', '577: tool selection needs unchanged selftest text'); git('commit', '-qm', 'tool');
     const hooks = path.join(root, '.git/hooks'); fs.copyFileSync(path.join(PROGRAM_ROOT, '.githooks/pre-commit'), path.join(hooks, 'pre-commit')); fs.chmodSync(path.join(hooks, 'pre-commit'), 0o755); git('config', 'core.hooksPath', '.git/hooks');
     for (const file of ['kernel/src/one.ts', '.claude/settings.json']) {
@@ -38525,7 +38595,7 @@ async function section579(): Promise<void> {
     put('tools/owns.mts', 'process.exit(0);\n');
     put('tools/staged-secrets.mts', 'process.exit(0);\n');
     put('tools/docs-gate.ts', 'import{spawnSync}from"node:child_process";const r=spawnSync("git",["diff","--cached","--name-only","HEAD"],{encoding:"utf8"});process.exit(r.status===0&&r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith(".md"))?0:4);\n');
-    put('tools/section-select.mts', 'export function hookSections(){return{all:false,sections:[155],reasons:[]};}\n');
+    put('tools/section-select.mts', 'export function stagedSelection(){return{all:false,sections:[155],reasons:[]};}\n');
     put('tools/Invoke-LibraryChecks.ps1', 'import fs from"node:fs";fs.writeFileSync(process.env.C84_RECEIPT,"ran");\n');
     put('kernel/test/gate-lock.ts', 'import fs from"node:fs";import{spawnSync}from"node:child_process";const a=process.argv.slice(2),f=a[a.indexOf("-File")+1];if(f!=="tools/Invoke-LibraryChecks.ps1"||!a.includes("-Fast"))throw Error("wrong Fast route");process.exit(spawnSync(process.execPath,["--input-type=module"],{input:fs.readFileSync(f,"utf8"),stdio:["pipe","inherit","inherit"]}).status??1);\n');
     put('tools/gate.ts', 'import fs from"node:fs";fs.writeFileSync(process.env.C84_RECEIPT,"ran");\n');
@@ -39612,7 +39682,7 @@ async function ownsFixture(label: string) {
   }
   put('tools/staged-secrets.mts', 'process.exit(0);\n');
   put('tools/docs-gate.ts', 'import fs from "node:fs";import{spawnSync}from"node:child_process";fs.writeFileSync(process.env.C95_RECEIPT,"ran");const r=spawnSync("git",["diff","--cached","--name-only"],{encoding:"utf8"});process.exit(r.status===0&&r.stdout.trim().split(/\\r?\\n/).every(p=>p.endsWith(".md"))?0:4);\n');
-  put('tools/section-select.mts', 'export function hookSections(){return{all:false,sections:[155],reasons:[]};}\n');
+  put('tools/section-select.mts', 'export function stagedSelection(){return{all:false,sections:[155],reasons:[]};}\n');
   put('tools/Invoke-LibraryChecks.ps1', 'console.log("fixture Fast runner");\n');
   put('kernel/test/gate-lock.ts', 'import fs from"node:fs";import{spawnSync}from"node:child_process";const a=process.argv.slice(2),f=a[a.indexOf("-File")+1];process.exit(spawnSync(process.execPath,["--input-type=module"],{input:fs.readFileSync(f,"utf8"),stdio:["pipe","inherit","inherit"]}).status??1);\n');
   put('tools/gate.ts', 'process.exit(0);\n');
@@ -40680,7 +40750,7 @@ async function section615(): Promise<void> {
       for (const command of settingCommands) {
         const answer = judge(command);
         check(answer.includes('"permissionDecision":"deny"'), '615: refuses enabling even when already on: ' + seat + ' ' + command);
-        if (answer) equal(JSON.parse(answer).hookSpecificOutput.permissionDecisionReason, refusal, '615: enabling remedy');
+        if (answer) equal(JSON.parse(answer).hookSpecificOutput.permissionDecisionReason, refusal + ' If this is only text bound for a file, write it with the file editor and pass the file by path.', '615: enabling remedy');
       }
       for (const command of ['deskpost seat settings first --computer-use off', 'deskpost seat settings first --computer-use unset',
         'deskpost seat settings first --computer-use=off', 'deskpost seat describe first'])
@@ -42724,7 +42794,7 @@ async function section656(): Promise<void> {
     git(['update-ref', 'refs/remotes/origin/master', 'HEAD']);
     putMap(after); git(['add', '.']); putMap('{broken working map');
     equal(gate.selection(root, null).selection.sections.join(','), '656', '656(a): staged map comes from index');
-    equal(selector.hookSections(git).sections.join(','), '155,656', '656(a): hook compares index to HEAD');
+    equal(selector.stagedSelection(git).sections.join(','), '155,656', '656(a): hook compares index to HEAD');
     putMap(after); git(['commit', '-qm', 'add key']);
     const commit = git(['rev-parse', 'HEAD']);
     putMap('{broken working map');
@@ -42734,7 +42804,7 @@ async function section656(): Promise<void> {
     putMap(after); git(['add', '.']);
     let refused = false; try { gate.selection(root, null); } catch { refused = true; }
     check(refused, '656(a): gate refuses malformed previous map');
-    const fallback = selector.hookSections(git);
+    const fallback = selector.stagedSelection(git);
     check(fallback.all && fallback.reasons.some((reason: string) => reason.includes('selection unavailable')), '656(a): hook explains malformed previous map fallback');
   } catch (error) { failures.push('section 656 stopped early: ' + (error as Error).message); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -44481,8 +44551,7 @@ async function section681(): Promise<void> {
       `681: the preview does not list every page, the target and the archive plan: ${f.said(preview)}`);
 
     // 3. A page changed while the apply waits at the archive lock: the archive is refused, naming it; the copy stays.
-    // undoFixture keeps its agent's pid to itself; the seat's binding names it.
-    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const firstAgent = String(f.agentPid);
     const lock = f.at('internal/book-locks/collection-archive.lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
@@ -44551,7 +44620,7 @@ async function section682(): Promise<void> {
     const blocker = f.at('collection/archive/demo');
     // The fresh preview now checks the slot (c123); introduce the race only after the copy, as section 701 does.
     const preview = f.json(f.cli(['shared', 'promote', 'demo', '--seat', 'first', '--preflight', '--json']));
-    const firstAgent = String(JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')).agent_pid ?? '');
+    const firstAgent = String(f.agentPid);
     const lock = f.at('internal/book-locks/collection-archive.lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
@@ -44630,7 +44699,7 @@ async function section683(): Promise<void> {
     check(moved.startsWith('moved to the shared collection as `shared/demo`'), `683: the quoted line is not _moved.md's: ${moved}`);
 
     // 2. The promoting seat's overview lists the second seat as still holding books/demo.
-    const firstAgent = Number((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
+    const firstAgent = f.agentPid;
     const firstView = overview(firstAgent, 'first');
     const still = ((firstView['moved_books_still_open'] ?? []) as Record<string, any>[]).find((row) => row['book'] === 'books/demo');
     check(still !== undefined && JSON.stringify(still['seats']) === JSON.stringify(['second']) && still['shared'] === 'shared/demo',
@@ -45287,8 +45356,7 @@ async function section701(): Promise<void> {
     const sharedPage = path.join(storage, 'books', 'demo', 'wiki', 'guide', 'start.md');
 
     // 1. The copy lands while the archive lock is held; a copied page is removed during the wait; the archive is refused.
-    // undoFixture keeps its agent's pid to itself; the seat's binding names it (section 681's pattern).
-    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const firstAgent = String(f.agentPid);
     const lock = f.at('internal/book-locks/collection-archive.lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
@@ -45662,7 +45730,6 @@ async function section707(): Promise<void> {
       const ran = f.cli(['shared', 'add-page', 'demo', `p${n}`, '--content-path', f.file(`p${n}.md`, `# P${n}\n\nText.\n`), '--seat', seat, '--preflight', '--json'], { CLAUDE_PID: String(agent) });
       return ran.exit === 0 ? f.json(ran)['confirmation_required'] === false : null;
     };
-    const agentOf = (seat: string) => Number((JSON.parse(fs.readFileSync(f.at(`.claude/seats/${seat}/binding.json`), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
     const planned = (args: string[]) => {
       const preview = f.w.as(process.pid, [...args, '--preflight', '--workspace', f.lib, '--json']);
       try {
@@ -45671,7 +45738,7 @@ async function section707(): Promise<void> {
         return '';
       }
     };
-    const firstAgent = agentOf('first');
+    const firstAgent = f.agentPidOf('first');
     const firstId = u.seatId('first');
     check(f.gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']).ran.exit === 0, '707: the grant was not applied');
     equal(ungated('first', firstAgent), true, '707: the granted seat was gated');
@@ -45732,7 +45799,7 @@ async function section708(): Promise<void> {
     const books = f.at('.claude/seats/first/.open-books');
     const held = fs.existsSync(books) ? fs.readFileSync(books, 'utf8') : '';
     fs.writeFileSync(books, held + (held === '' || held.endsWith('\n') ? '' : '\n') + 'shared/demo\n');
-    const firstAgent = Number((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid']);
+    const firstAgent = f.agentPid;
     const entry = () => {
       const desk = f.w.as(firstAgent, ['desk', '--seat', 'first', '--workspace', f.lib, '--json']);
       try {
@@ -45796,7 +45863,7 @@ async function section709(): Promise<void> {
 
     // 1. The copy path: a copied page changed during the wait on the archive lock is refused as changed.
     const preview = f.json(f.cli([...promote, '--preflight', '--json']));
-    const firstAgent = String((JSON.parse(fs.readFileSync(f.at('.claude/seats/first/binding.json'), 'utf8').replace(/^﻿/, '')) as Record<string, unknown>)['agent_pid'] ?? '');
+    const firstAgent = String(f.agentPid);
     const lock = f.at('internal/book-locks/collection-archive.lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, `pid=1\nacquired=${new Date().toISOString()}\nbook=collection/archive\n`);
@@ -45993,11 +46060,27 @@ async function section712(): Promise<void> {
       equal(open.books_unavailable.find(book => book.book_root === 'shared/cap')?.reason, raw, '712: open Book keeps raw reason');
       check(discovery.formatDiscoveryResult(open).includes(secret), '712: open text retains detail');
     }
-    const { sharedFailureClass } = await import('../src/sharedmanifests.ts');
-    equal(sharedFailureClass(raw), 'listing failed', '712: map listing failures');
-    equal(sharedFailureClass('books/cap/wiki/_book.md could not be read'), '_book.md would not read', '712: map root reads');
-    equal(sharedFailureClass('a lock is held'), "the Book's lock was held", '712: map locks');
-    equal(sharedFailureClass('server leaked arbitrary text'), 'server error', '712: unmatched server errors');
+    const { sharedFailureClass, sharedFolder, rebuildSharedManifests } = await import('../src/sharedmanifests.ts');
+    const { enterBookLock, exitBookLock } = await import('../src/locks.ts');
+    const u = await upkeepFixture('712-real-failures', 712);
+    try {
+      u.newBook('demo');
+      const server = await u.serve(['--malformed-list', 'empty-object:1']);
+      const { McpSession } = await import('../src/basicmemory.ts');
+      const session = new McpSession(server.url, '712-listing'); await session.initialize();
+      let listing: unknown;
+      try { await sharedFolder(session, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', 'books/demo/wiki'); } catch (error) { listing = error; }
+      equal(sharedFailureClass(listing), 'listing failed', '712: map listing failures');
+      const actualClass = () => JSON.parse(fs.readFileSync(u.f.at('internal/book-manifests/shared/_roster.json'), 'utf8')).books[0].unavailable_class;
+      await u.serve(['--vanish', '_book.md']);
+      await rebuildSharedManifests(u.f.w.workspace);
+      equal(actualClass(), '_book.md would not read', '712: map root reads');
+      await u.serve();
+      const lock = enterBookLock(u.f.w.workspace, 'shared/demo');
+      try { await rebuildSharedManifests(u.f.w.workspace); } finally { exitBookLock(lock); }
+      equal(actualClass(), "the Book's lock was held", '712: map locks');
+    } finally { u.dispose(); }
+    equal(sharedFailureClass(new Error('server leaked arbitrary text')), 'server error', '712: unmatched server errors');
   } catch (error) { failures.push('section 712 stopped early: ' + (error as Error).message); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -46158,12 +46241,25 @@ async function section716(): Promise<void> {
     equal(fs.readFileSync(copy, 'utf8'), valid, '716: stale copy repaired exactly');
     equal(writes(), count, '716: repairs make no server writes');
     equal(fs.readFileSync(u.note, 'utf8'), before, '716: server grant unchanged');
-    const { sharedFailureClass } = await import('../src/sharedmanifests.ts');
-    equal(sharedFailureClass('books/demo/wiki could not be read: server refused'), 'listing failed', '716: folder listing');
-    equal(sharedFailureClass('could not be read: the listing\'s answer'), 'listing failed', '716: listing answer');
-    equal(sharedFailureClass('books/demo/wiki/blocked.md could not be read: server refused'), 'page would not read', '716: blocked page is no lock');
-    equal(sharedFailureClass('books/demo/wiki/locked.md could not be read: server refused'), 'page would not read', '716: locked page name is no held lock');
-    equal(sharedFailureClass('Another operation holds the lock for books/demo. Wait for it to finish.'), "the Book's lock was held", '716: actual held lock');
+    const { sharedFailureClass, SharedReadFailure, sharedFolder, sharedPage } = await import('../src/sharedmanifests.ts');
+    const { McpSession } = await import('../src/basicmemory.ts');
+    const refusedListing = async () => {
+      const server = await u.serve(['--malformed-list', 'empty-object:1']);
+      const session = new McpSession(server.url, '716-listing'); await session.initialize();
+      try { await sharedFolder(session, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', 'books/demo/wiki'); } catch (error) { return sharedFailureClass(error); }
+      return '';
+    };
+    const refusedPage = async (file: string) => {
+      // This transport stand-in throws misleading words; the real page reader must supply the class.
+      const session = { surface: 'bm', callTool: async () => { throw new Error('listing failed, lock held'); } } as unknown as InstanceType<typeof McpSession>;
+      try { await sharedPage(session, { id: 'fixture', name: 'fixture' }, file, file.slice(0, -3)); } catch (error) { return sharedFailureClass(error); }
+      return '';
+    };
+    equal(await refusedListing(), 'listing failed', '716: folder listing');
+    equal(await refusedListing(), 'listing failed', '716: listing answer');
+    equal(await refusedPage('books/demo/wiki/blocked.md'), 'page would not read', '716: blocked page is no lock');
+    equal(await refusedPage('books/demo/wiki/locked.md'), 'page would not read', '716: locked page name is no held lock');
+    equal(sharedFailureClass(new SharedReadFailure("the Book's lock was held", 'Another operation holds the lock for books/demo. Wait for it to finish.')), "the Book's lock was held", '716: actual held lock');
   } catch (error) { failures.push('section 716 stopped early: ' + (error as Error).message); }
   finally { u.dispose(); }
 }
@@ -46921,7 +47017,7 @@ async function section734(): Promise<void> {
     const ran = r.receive(letter);
     check(ran.exit === 0 && r.t.json(ran)['status'] === 'received', `734: (b) receive beside a fenced example refused: ${ran.stderr.slice(0, 400)}`);
     equal(r.stages('k1'), 'page:done,pointer:done,close:done', '734: (b) the receive did not finish every stage');
-    equal(r.pointers('k1').filter((line) => line.endsWith('(from Home Office)')).length, 1, '734: (b) not exactly one real pointer');
+    equal(r.pointers('k1').filter((line) => line.endsWith(', from Home Office)')).length, 1, '734: (b) not exactly one real pointer');
   } catch (error) { failures.push(`section 734 stopped early: ${(error as Error).message}`); }
   finally { server.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -47022,7 +47118,7 @@ async function section739(): Promise<void> {
   const help = runCli(['hub', 'edit', '--help']);
   equal(help.exit, 0, '739: help exit');
   check(help.stdout.includes('[--preflight | [--user-confirmed] --plan-id <id>]'), '739: optional reader confirmation in usage');
-  check(help.stdout.includes('remove-section, replace-section, replace-body and replace-item need --user-confirmed'), '739: help names every gated mode');
+  check(help.stdout.includes('remove-section, replace-section and replace-body need --user-confirmed'), '739: help names every gated mode');
 }
 if (selected(739)) await section739();
 
@@ -47858,7 +47954,7 @@ async function section760(): Promise<void> {
   if (typeof gate.masterMoved !== 'function') return;
   const old = '1'.repeat(40), next = '2'.repeat(40);
   const moved = gate.masterMoved(PROGRAM_ROOT, old, () => `${next}\trefs/heads/master\n`);
-  equal(moved?.line, `origin/master moved during the gate: ${old} -> ${next}; fetch and rebase before pushing`, '760: moved line');
+  equal(moved?.line, `origin/master on the remote is ${next}, not the selected ${old}: fetch and rebase before pushing`, '760: moved line');
   same(moved?.master_moved, { old, new: next }, '760: both SHAs in report');
   equal(gate.masterMoved(PROGRAM_ROOT, old, () => `${old}\trefs/heads/master\n`), null, '760: unchanged master is silent');
   const failed = gate.masterMoved(PROGRAM_ROOT, old, () => { throw new Error('offline'); });
@@ -47903,7 +47999,7 @@ async function section763(): Promise<void> {
   same(trainProblems('TRAIN: a, (lane:fixes)', record), [], '763: trailing comma');
   same(trainProblems('TRAIN: a; (lane:fixes)', record), [], '763: trailing semicolon');
   same(trainProblems('TRAIN: a, b (lane:fixes)', record), ["TRAIN lists 'b' after a comma; write it as a (lane:fixes; this unit also carries b)"], '763: extra comma id');
-  same(trainProblems('TRAIN: a, b, c (lane:fixes)', record), ["TRAIN lists 'b' after a comma; write it as a (lane:fixes; this unit also carries b)", "TRAIN lists 'c' after a comma; write it as a (lane:fixes; this unit also carries c)"], '763: every extra id');
+  same(trainProblems('TRAIN: a, b, c (lane:fixes)', record), ["TRAIN lists 'b', 'c' after a comma; write it as a (lane:fixes; this unit also carries b, c)"], '763: every extra id');
   same(trainProblems('TRAIN: a (lane:fixes; this unit also carries b)', record), [], '763: carried id');
   check(trainProblems('TRAIN: absent, (lane:fixes)', record)[0]?.includes("TRAIN id 'absent'") === true, '763: primary still must be open');
   same(trainProblems('TRAIN: `a` (lane:fixes)', record), [], '763: backticked open primary');
@@ -48155,6 +48251,8 @@ async function section768(): Promise<void> {
       git(root, '--git-dir', remote, 'update-ref', '-d', ref);
     }
     refused('HEAD:refs/tags/int/x', 'tag push or deletion');
+    const github = spawnSync(process.execPath, [path.join(repo, 'tools/push-guard.mts'), 'origin', 'https://github.com/fixture/repository.git'], {cwd:repo,env,encoding:'utf8',input:'',timeout:30000});
+    check(github.status === 1 && (github.stdout+github.stderr).includes('public push'), '768: github.com remote refused before any connection');
     const publicRemote = path.join(root, 'Kioga', 'deskpost.git').split(path.sep).join('/');
     fs.mkdirSync(path.dirname(publicRemote), { recursive: true });
     git(root, 'init', '--bare', '-q', publicRemote);
@@ -48471,6 +48569,8 @@ async function section778(): Promise<void> {
     const again = status()['check_history'] as Record<string, unknown>[];
     check(!Object.hasOwn(again[0]!, 'late_deliveries'), '778: empty check omits late key');
     same(again[1]?.['late_deliveries'], expected, '778: later check preserves earlier late rows');
+    same(JSON.parse(fs.readFileSync(stateFile, 'utf8'))['late_deliveries'], expected, '778: later check keeps the dedicated cache list');
+    same(status()['late_deliveries'], expected, '778: status shows the dedicated cache list');
     same(desk()['late_deliveries_recent'], expected, '778: later check does not hide late rows');
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     const row = { filed: 1, already_filed: 0, error: null, late_deliveries: expected };
@@ -48624,7 +48724,7 @@ const runner=async(command,args,cwd,env)=>{
     const r=spawnSync(pythonCommand(),args,{cwd,env,encoding:'utf8',windowsHide:true});
     if(r.status!==0)throw Error(r.stderr.split(/\\r?\\n/).find(line=>line.startsWith('error:'))||'fixture reader failed');return r.stdout;
   }
-  commands.push({command,args,cwd,sections:env.LIBRARY_SELFTEST_SECTIONS});
+  commands.push({command,args,cwd,sections:env.LIBRARY_SELFTEST_SECTIONS,seat:env.LIBRARY_SEAT,hasGateLock:Boolean(env.DESKPOST_GATE_LOCK)});
   fs.writeFileSync(${JSON.stringify(commandLog)},JSON.stringify(commands));
   if(args.includes('fetch')||args[0]==='worktree') return '';
   if(command===process.execPath){if(args[1]==='plan'){if(process.argv[2]==='manifest'&&!commands.some(c=>c.args.includes('ci')))throw Error('node.exe failed (exit 2)');return JSON.stringify({sections:[{section:888,class:'windows'},{section:889,class:'windows'},{section:999,class:'both'}]});}if(process.argv[2]==='fail'&&args[0]==='test/run-parallel.ts')throw Error('section 888 failed');return '';}
@@ -48635,7 +48735,9 @@ process.exitCode=await land('int/fixture',{platform:process.argv[3],tokenItem:pr
 `);
   const run = async (scenario: string, options: { missing?: boolean; absent?: boolean; windows?: boolean; seamLinux?: boolean } = {}) => {
     mode = scenario; head = scenario === 'mismatch' ? B : H; exists = scenario !== 'open'; polls = 0; updates = 0; merges = 0; requests = [];
-    const childEnvironment = { ...env, DESKPOST_SECRETS_DIR: options.absent ? '' : secretsDir };
+    const childEnvironment = { ...env, LIBRARY_SEAT: 'fixture-caller', DESKPOST_SECRETS_DIR: options.absent ? '' : secretsDir,
+      ...(options.windows ? {DESKPOST_GATE_LOCK_NAME: path.basename(root), DESKPOST_GATE_LOCK: '', DESKPOST_GATE_SERIAL: '1',
+        DESKPOST_GATE_DIR: path.join(root, 'gate')} : {}) };
     // Linux now refuses before any request; use the existing in-process seam to retain every protocol check there.
     const seamRun = options.windows || options.seamLinux || process.platform === 'linux';
     const minutes = scenario === 'timeout' ? '0.005' : '1', item = options.missing ? '' : 'fixture-builder';
@@ -48658,15 +48760,15 @@ process.exitCode=await land('int/fixture',{platform:process.argv[3],tokenItem:pr
   try {
     const { execute } = await import(pathToFileURL(tool).href);
     for (const [name, diagnostic, retained] of [
-      ['ci-manifest.mts', 'ci-manifest: lane files the section readers cannot read: x', true],
+      ['ci-manifest.mts', 'ci-manifest: lane files the section readers cannot read: ' + 'x'.repeat(400), true],
       ['other-child.mts', 'fixture-secret-line', false],
     ] as const) {
       const script = path.join(root, name);
-      fs.writeFileSync(script, `console.error(${JSON.stringify(diagnostic)}); process.exit(2);`);
+      fs.writeFileSync(script, `console.error('fixture preamble'); console.error(${JSON.stringify(diagnostic)}); console.error('ci-manifest: later diagnostic'); process.exit(2);`);
       let failure = '';
       try { await execute(process.execPath, [script], root, env); }
       catch (error) { failure = (error as Error).message; }
-      check(failure.includes('failed (exit 2)') && (retained ? failure.includes(diagnostic) : !failure.includes(diagnostic)),
+      check(failure.includes('failed (exit 2)') && (retained ? failure.endsWith(diagnostic.slice(0, 300)) : !failure.includes(diagnostic)),
         '781: execute retains only the manifest diagnostic for ' + name);
     }
     for (const flags of [{ missing: true }, { absent: true }]) {
@@ -48719,8 +48821,11 @@ process.exitCode=await land('int/fixture',{platform:process.argv[3],tokenItem:pr
     check(commands.some(c => c.args[0] === 'test/run-parallel.ts' && c.args.includes('2') && c.sections === '888,889'), '781: Windows runs only injected Windows sections with two workers');
     check(commands.some(c => c.args[0] === 'worktree' && c.args[1] === 'remove'), '781: Windows removes temporary worktree');
     const manifestRun = await run('windows-manifest', { windows: true }); equal(manifestRun.status, 0, `781: head manifest passes: ${manifestRun.output}`);
-    const manifestCommands = JSON.parse(fs.readFileSync(commandLog, 'utf8')) as {args: string[]; cwd: string; sections?: string}[];
+    const manifestCommands = JSON.parse(fs.readFileSync(commandLog, 'utf8')) as {args: string[]; cwd: string; sections?: string; seat?: string; hasGateLock: boolean}[];
     const planCommand = manifestCommands.find(c => c.args[1] === 'plan');
+    equal(planCommand?.seat, '', '781: the manifest plan runs in the same seat-neutral environment as the checks');
+    check(planCommand?.hasGateLock === true && manifestCommands.some(c => c.args[0] === 'test/run-parallel.ts' && c.hasGateLock),
+      '781: planning and the Windows runner inherit the landing gate lock');
     const installIndex = manifestCommands.findIndex(c => c.args.includes('ci'));
     check(installIndex >= 0 && installIndex < manifestCommands.indexOf(planCommand!), '781: Windows installs before planning the head manifest');
     check(!!planCommand && planCommand.cwd !== repo && planCommand.args[0] === path.join(planCommand.cwd, 'tools/ci-manifest.mts'), '781: Windows derives manifest from detached head');
@@ -49031,6 +49136,10 @@ async function section788(): Promise<void> {
     const early=spawnSync(process.execPath,[seam,'--tier','commit','--json'],{cwd:repo,env:{...repositoryNeutralEnv(f.env),DESKPOST_GATE_WORKERS:'2',LIBRARY_SELFTEST_SECTIONS:''},encoding:'utf8',windowsHide:true,timeout:90_000});
     equal(early.status,1,'788: early scan failure refuses the gate');
     const noList=JSON.parse(early.stdout);
+    const identity = noList.checks.find((row: {check: string}) => row.check === 'public.identity-scan');
+    same([identity?.status, identity?.detail], ['fail', 'fixture early failure'], '788: identity check names its fixture failure');
+    const selftest = noList.checks.find((row: {check: string}) => row.check === 'kernel.selftest (selected sections)');
+    same([selftest?.status, selftest?.detail], ['skip', 'not run: public.identity-scan failed first'], '788: self-test skip names the earlier identity failure');
     equal(noList.selection.executed,null,'788: early failure produces no section list');
     check(!Object.hasOwn(noList.selection,'executed_basis'),'788: no planned-list explanation without a list');
     const earlyRecords=fs.readdirSync(path.join(repo,'.gate/runs')).map(name=>JSON.parse(fs.readFileSync(path.join(repo,'.gate/runs',name),'utf8')));
@@ -49753,7 +49862,7 @@ async function section806(): Promise<void> {
       if (route === '/labels') return send(200, page(labels));
       if (route === '/pulls') return send(200, page(pulls.filter(p => !p.merged).map(pullJson)));
       if ((m = /^\/pulls\/(\d+)$/.exec(route))) return send(200, pullJson(pulls.find(p => p.number === Number(m![1]))!));
-      if (route === '/actions/runs') return send(200, { workflow_runs: page(runs) });
+      if (route === '/actions/runs') return send(200, { total_count: runs.length, workflow_runs: page(runs) });
       if ((m = /^\/actions\/runs\/(\d+)\/jobs$/.exec(route))) return send(200, [{ id: Number(m[1]) + 10000 }]);
       if ((m = /^\/actions\/jobs\/(\d+)\/logs$/.exec(route))) { res.writeHead(200); return res.end(resultLogs.get(Number(m[1]) - 10000) ?? 'stopped before tests'); }
       if ((m = /^\/issues\/(\d+)\/comments$/.exec(route))) return send(200, page(comments.filter(c => (c.n ?? 1) === Number(m![1]))));
@@ -49992,6 +50101,7 @@ async function section806(): Promise<void> {
     check(has(LABELS.held) && own(A).length === 2, '806: restart retains spent retry budget');
     pulls[0]!.sha = B; await lander!.wake('new head');
     check(has(LABELS.checking) && !has(LABELS.held), '806: a new head rejoins a run-budget hold');
+    check(said().includes(`lander: rejoined at ${B} (run budget was ${A})`), '806: rejoin names the run budget it cleared');
     const rejoined = own(B)[0];
     check(!!rejoined, '806: rejoined head has a run to judge');
     if (rejoined) rejoined.status = 'success'; branch.protected = false;
@@ -50101,6 +50211,7 @@ async function section808(): Promise<void> {
       env: { ...repositoryNeutralEnv(), DESKPOST_SECRETS_DIR: 'fixture' }, say: (line: string) => lines.push(line),
       runner: async (command: string, args: string[]) => {
         if (command === 'python' || command === 'python3') return token;
+        if (args.join(' ') === 'config core.hooksPath') return '.githooks';
         if (args[0] === 'rev-parse') return H;
         if (args[0] === 'remote') return `http://127.0.0.1:${port}/owner/repo.git`;
         if (args[0] === 'ls-remote') return options.remote ? `${options.remote}\trefs/heads/int/fixture` : '';
@@ -50712,7 +50823,7 @@ async function section820(): Promise<void> {
     r = run({ ...good, lanes: { ...good.lanes, 'books-and-memory': ['seats'] } });
     check(r.code === 1 && r.out.includes('area seats is in 2 lanes: seats-and-screens, books-and-memory'), `820: an area in two lanes fails, named: ${r.out}`);
     r = run(good, { untracked: true });
-    check(r.code === 0 && r.out.includes('areas: warning: kernel/src/hubedit.ts is listed but missing'), `820: a missing listed file warns and passes: ${r.out}`);
+    check(r.code === 1 && r.out.includes('kernel/src/hubedit.ts is listed but missing: remove it from docs/areas.json'), `820: a missing listed file fails with the remedy: ${r.out}`);
     r = run({ schema: 2 });
     check(r.code === 1 && r.out.includes('not a schema-1 record'), `820: a record of another schema fails: ${r.out}`);
     const page = path.join(root, 'page.md');
@@ -50802,7 +50913,7 @@ async function section830(): Promise<void> {
   const hiddenValue = 'fixture-hidden-placeholder';
   const never = [clientId, clientSecret, accessToken, token, webhook, hiddenValue];
   const clean = (text: string) => never.every(value => !text.includes(value));
-  // Sees process.stdout.write and process.stderr.write only; lander.mts has no other console route (checked below), and land.mts's one child process pipes both streams.
+  // Captures stdout and stderr writes; the source check below allows only the filesystem read and refuses other output routes.
   const captureConsole = async <T>(call: () => Promise<T>) => {
     let output = '';
     const stdout = process.stdout.write, stderr = process.stderr.write;
@@ -50910,7 +51021,61 @@ async function section830(): Promise<void> {
     const source = fs.readFileSync(toolPath, 'utf8');
     const anchor = "accessToken = typeof signIn.data?.accessToken === 'string' ? signIn.data.accessToken : '';";
     check(source.split(anchor).length === 2, '830: the accessToken assignment anchor occurs exactly once');
-    check(!/writeSync\s*\(|_rawDebug|child_process/.test(source), '830: lander.mts has no console route the capture cannot see (fs.writeSync, process._rawDebug, a child process)');
+    const ts = await import('typescript');
+    const routesAllowed = (code: string): boolean => {
+      const tree = ts.createSourceFile('lander.mts', code, ts.ScriptTarget.Latest, true);
+      const approvedModules = new Set(['node:fs', 'node:http', 'node:crypto', 'node:path', 'node:url', './land.mts']);
+      const loaderNames = new Set(['require', 'createRequire', 'getBuiltinModule', 'module']);
+      let allowed = !/_rawDebug|child_process/.test(code);
+      const visit = (node: import('typescript').Node): void => {
+        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+          const specifier = node.moduleSpecifier;
+          if (specifier && (!ts.isStringLiteral(specifier) || !approvedModules.has(specifier.text))) allowed = false;
+        }
+        if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)
+            && node.moduleSpecifier.text === 'node:fs') allowed = false;
+        if (ts.isIdentifier(node) && loaderNames.has(node.text)) allowed = false;
+        if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression)
+            && (node.expression.text === 'process' || node.expression.text === 'globalThis')) allowed = false;
+        if (ts.isStringLiteralLike(node) && /^(?:node:)?worker_threads$/.test(node.text)) allowed = false;
+        if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && /^(?:node:)?fs(?:\/|$)/.test(node.moduleSpecifier.text)) {
+          const clause = node.importClause;
+          if (node.moduleSpecifier.text !== 'node:fs' || clause?.name?.text !== 'fs' || clause.namedBindings) allowed = false;
+        }
+        if (ts.isIdentifier(node) && node.text === 'fs') {
+          const parent = node.parent;
+          const importing = ts.isImportClause(parent) && parent.name === node;
+          const read = ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'readFileSync';
+          if (!importing && !read) allowed = false;
+        }
+        if (ts.isCallExpression(node)) {
+          if (node.expression.kind === ts.SyntaxKind.ImportKeyword) allowed = false;
+        }
+        // Other filesystem import forms cannot introduce an alias outside the checked binding.
+        if (ts.isCallExpression(node) && node.arguments.some(arg => ts.isStringLiteralLike(arg) && /^(?:node:)?fs(?:\/|$)/.test(arg.text))) allowed = false;
+        ts.forEachChild(node, visit);
+      };
+      visit(tree); return allowed;
+    };
+    for (const code of [
+      "import fs from 'node:fs'; fs.writeSync(1, value);",
+      "import fs from 'node:fs'; fs.writeFileSync(2, value);",
+      "import fs from 'node:fs'; fs.appendFileSync(1, value);",
+      "import fs from 'node:fs'; fs.write(2, value, done);",
+      "import fs from 'node:fs'; fs.createWriteStream('', {fd:1});",
+      "import {writeFileSync} from 'node:fs'; writeFileSync(1, value);",
+      "import {writeSync as send} from 'node:fs'; send(2, value);",
+      "import fs from 'node:fs'; fs['appendFileSync'](1, value);",
+      "import fs from 'node:fs'; const {write:send}=fs; send(2, value);",
+      "import {Worker} from 'node:worker_threads';",
+      "const worker = import('worker_threads');",
+      "import fixture from './unapproved-fixture.mts';",
+      "export { fixture } from './unapproved-fixture.mts';",
+      "const pathModule = import('node:path');",
+      "const m = 'node:fs'; const io = await import(m); io.writeSync(1, value);",
+      "const io = await import(`node:${'fs'}`); io.writeSync(1, value);",
+    ]) check(!routesAllowed(code), '830: unseen output route refused: '+code);
+    check(routesAllowed(source), '830: lander.mts uses only captured output and allowed filesystem reads');
     if (source.split(anchor).length === 2) {
       for (const kind of ['log', 'error']) {
         const mutantPath = path.join(folder, `lander-mutant-${kind}.mts`);
@@ -50977,6 +51142,7 @@ await (await import('./lanes/guards-and-tooling.ts')).runLane(harness);
 if (SECTIONS.size > 0 && checks === 0) failures.push(`LIBRARY_SELFTEST_SECTIONS selected no checks: ${[...SECTIONS].join(',')}`);
 if (failures.length) {
   process.stderr.write(`kernel self-test FAILED (${failures.length} of ${checks}): ${failures.join('; ')}\n`);
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  process.stdout.write(`kernel self-test passed (${checks} checks).\n`);
 }
-process.stdout.write(`kernel self-test passed (${checks} checks).\n`);

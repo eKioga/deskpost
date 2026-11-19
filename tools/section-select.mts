@@ -28,7 +28,7 @@ class UnmappedPathError extends Error {
   constructor(file: string) { super(`unmapped changed path ${file}: add its covering checks to ${CHECK_MAP_PATH}`); }
 }
 type CheckRule = { pattern: string; sections: number[] | 'named'; checks: string[]; contract?: string };
-const checkMap = JSON.parse(fs.readFileSync(new URL('./check-map.json', import.meta.url), 'utf8')) as {schema:number;paths:CheckRule[]};
+const checkMap = JSON.parse(fs.readFileSync(new URL('./check-map.json', import.meta.url), 'utf8')) as {schema:number;paths:CheckRule[];wholeSuite?:Record<string,string>};
 if (checkMap.schema !== 1 || !Array.isArray(checkMap.paths) || checkMap.paths.some(row =>
   typeof row.pattern !== 'string' || !(row.sections === 'named' || Array.isArray(row.sections) && row.sections.every(n => Number.isInteger(n) && n > 0))
   || (row.contract !== undefined && (typeof row.contract !== 'string' || !row.contract || row.sections !== 'named' && !row.sections.length && !row.checks?.length))
@@ -144,6 +144,7 @@ function legacyNumberProblems(file: string, text: string, grandfathered: Readonl
 
 /** Declarations must reach the runner's column-zero inventory through exactly one canonical dispatch. */
 const dispatchCache = new Map<string, string[]>();
+export let dispatchParseCount = 0;
 function dispatchProblems(file: string, text: string): string[] {
   const cached = dispatchCache.get(text);
   if (cached) return cached.map(problem => file + problem);
@@ -152,6 +153,7 @@ function dispatchProblems(file: string, text: string): string[] {
   let ts: any;
   try { ts = createRequire(import.meta.url)('../kernel/node_modules/typescript/lib/typescript.js'); }
   catch { return [`${file}: cannot load kernel/node_modules/typescript; run npm ci in kernel/ before reading sections`]; }
+  dispatchParseCount++;
   const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const declarations: { n: string; line: number }[] = [];
   const dispatches = new Map<string, number>();
@@ -256,7 +258,14 @@ export function sectionRanges(selftestText: string): SectionRange[] {
     const open = declaration ?? /^if \(selected\((\d+)\)/.exec(lines[i]!);
     if (!open) continue;
     let start = i;
-    while (start > 0 && /^\/\/( |$)/.test(lines[start - 1]!)) start -= 1;
+    while (start > 0) {
+      if (/^\/\/( |$)/.test(lines[start - 1]!)) { start -= 1; continue; }
+      if (!/\*\/\s*$/.test(lines[start - 1]!)) break;
+      let opening = start - 1;
+      while (opening >= 0 && !/^\/\*/.test(lines[opening]!)) opening -= 1;
+      if (opening < 0 || lines.slice(opening, start - 1).some(line => /\*\//.test(line))) break;
+      start = opening;
+    }
     if (!declaration && !/\{\s*$/.test(lines[i]!)) {
       ranges.push({ section: Number(open[1]), start: start + 1, end: i + 1 });
       continue;
@@ -276,6 +285,7 @@ export interface Covers {
   about: string;
   /** Section number to the kernel/src files it claims. */
   sections: Record<string, string[]>;
+  wholeTreeSections?: number[];
 }
 
 /** The claim map, checked for shape; a malformed map is an error, never an empty selection. `file` names it in errors. */
@@ -288,6 +298,7 @@ export function parseCovers(text: string, file: string = COVERS_PATH): Covers {
       throw new Error(`${file}: section ${section} must list kernel/src/<file>.ts paths`);
     }
   }
+  if (parsed.wholeTreeSections !== undefined && (!Array.isArray(parsed.wholeTreeSections) || parsed.wholeTreeSections.some(n => !Number.isSafeInteger(n) || n < 1))) throw new Error(`${file}: invalid wholeTreeSections`);
   return parsed as Covers;
 }
 
@@ -301,8 +312,10 @@ export function mergeCovers(parts: readonly { file: string; text: string }[], so
   for (const source of sources ?? []) for (const range of sectionRanges(source.text)) if (!home.has(range.section)) home.set(range.section, source.file);
   const sections: Record<string, string[]> = {};
   const claimedIn = new Map<string, string>();
+  const wholeTreeSections = new Set<number>();
   for (const part of parts) {
     const covers = parseCovers(part.text, part.file);
+    for (const n of covers.wholeTreeSections ?? []) wholeTreeSections.add(n);
     const lane = LANES.find(name => part.file === laneCoversPath(name));
     for (const [section, files] of Object.entries(covers.sections)) {
       const earlier = claimedIn.get(section);
@@ -314,7 +327,7 @@ export function mergeCovers(parts: readonly { file: string; text: string }[], so
       sections[section] = files;
     }
   }
-  return { schema: 1, about: `merged from ${parts.map(part => part.file).join(', ')}`, sections };
+  return { schema: 1, about: `merged from ${parts.map(part => part.file).join(', ')}`, sections, wholeTreeSections: [...wholeTreeSections].sort((a,b) => a-b) };
 }
 
 /** The claim-map files from a reader of repository-relative paths (null: no such file); section-covers.json must exist. */
@@ -325,6 +338,15 @@ export function coversFiles(read: (file: string) => string | null): { file: stri
     const text = read(laneCoversPath(lane));
     return text === null ? [] : [{ file: laneCoversPath(lane), text }];
   })];
+}
+
+/** Tracked tool and test paths with neither a map nor a deliberate whole-suite reason. */
+export function unmappedPaths(files: readonly string[], covers: Covers, mapping = checkMap): string[] {
+  const claimed = new Set(Object.values(covers.sections).flat());
+  const deliberate = (mapping as typeof checkMap & { wholeSuite?: Record<string, string> }).wholeSuite ?? {};
+  return [...new Set(files)].filter(file => /^(tools|kernel\/test)\//.test(file)
+    && !claimed.has(file) && !mapping.paths.some(row => new RegExp(row.pattern).test(file))
+    && !(typeof deliberate[file] === 'string' && deliberate[file]!.trim())).sort();
 }
 
 /** Rule (a): the kernel/src files no section claims, sorted. */
@@ -388,6 +410,10 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
     for (const file of files) claimants.set(file, [...(claimants.get(file) ?? []), Number(section)]);
   }
   for (const file of [...input.changed].sort()) {
+    if (file.startsWith('kernel/src/') && input.covers.wholeTreeSections?.length) {
+      input.covers.wholeTreeSections.forEach(n => chosen.add(n));
+      reasons.push(`${listed(input.covers.wholeTreeSections)}: read the whole source tree`);
+    }
     const mapped = rules.filter(row => row.match.test(file));
     for (const row of mapped) if (Array.isArray(row.sections)) {
       row.sections.forEach(section => chosen.add(section));
@@ -404,6 +430,10 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
       const after = input.covers.sections;
       const added = Object.keys(after).filter(section => !before || !Object.hasOwn(before, section)).map(Number);
       added.forEach(section => ownSections.add(section));
+      if (JSON.stringify(input.previousCovers?.wholeTreeSections ?? []) !== JSON.stringify(input.covers.wholeTreeSections ?? [])) {
+        all = true;
+        reasons.push('every section: whole-source-tree reader list changed');
+      }
       if (!before || Object.entries(before).some(([section, claims]) =>
         !Object.hasOwn(after, section) || JSON.stringify([...claims].sort()) !== JSON.stringify([...after[section]!].sort()))) {
         all = true;
@@ -412,6 +442,9 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         added.forEach(section => chosen.add(section));
         if (added.length) reasons.push(`${listed(added)}: added claim-map keys`);
       }
+    } else if (file !== SELFTEST_PATH && Object.hasOwn(checkMap.wholeSuite ?? {}, file)) {
+      all = true;
+      reasons.push(`every section: ${file} is on the whole-suite list in ${CHECK_MAP_PATH}`);
     } else if (SHARED_FILES.has(file)) {
       all = true;
       reasons.push(`every section: ${file} is on the shared list`);
@@ -430,6 +463,10 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
         sections.forEach((section) => chosen.add(section));
         reasons.push(`${listed(sections)}: claim ${file.slice('kernel/src/'.length)}`);
       }
+    } else if (isLaneTestFile(file)) {
+      // The source hunks below select lane sections; never infer from the lane filename.
+    } else if (mapped.length && mapped.every(row => Array.isArray(row.sections))) {
+      // An explicit map names the readers; filename inference is only the fallback.
     } else if (file.startsWith('.githooks/') || file.startsWith('tools/') || mapped.some(row => row.sections === 'named')) {
       const name = file.slice(file.lastIndexOf('/') + 1);
       const named = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
@@ -574,22 +611,22 @@ export function platformRefusals(required: readonly string[], skips: ReadonlyMap
   });
 }
 
-/** Windows hook selection over staged Git data; the caller supplies the read-only Git boundary. */
-export function hookSections(git: (args: string[]) => string): Selection {
+/** Staged selection shared by the commit tier and its hook fixtures. Strict callers propagate invalid input. */
+export function stagedSelection(git: (args: string[]) => string, strict = false, readUnchanged?: (file: string) => string | null): Selection {
   try {
     const changed = git(['diff', '--name-only', '--no-renames', '--cached', 'HEAD']).split(/\r?\n/).filter(Boolean);
     // A lane file the tree does not hold (or a git that cannot show it) is no source: the legacy files still decide.
     const optional = (spec: string) => { try { return git(['show', spec]); } catch { return null; } };
     const at = (revision: string) => (file: string) => file === COVERS_PATH || file === SELFTEST_PATH ? git(['show', `${revision}:${file}`]) : optional(`${revision}:${file}`);
-    const sources = sectionSources(at(''));
+    const sources = sectionSources(file => readUnchanged && !changed.includes(file) ? readUnchanged(file) : at('')(file));
     const covers = mergeCovers(coversFiles(at('')), sources);
     const previousCovers = mergeCovers(coversFiles(at('HEAD')));
     const hunks = (file: string) => changed.includes(file) ? parseHunks(git(['diff', '-U0', '--no-renames', '--cached', 'HEAD', '--', file])) : [];
     const chosen = selectSections({ changed, covers, previousCovers, selftestText: sources[0]!.text, selftestHunks: hunks(SELFTEST_PATH),
       laneSources: sources.slice(1).map(source => ({ ...source, hunks: hunks(source.file) })) });
-    return chosen.all ? chosen : { ...chosen, sections: [...new Set([...chosen.sections, 155])].sort((a, b) => a - b) };
+    return strict || chosen.all ? chosen : { ...chosen, sections: [...new Set([...chosen.sections, 155])].sort((a, b) => a - b) };
   } catch (error) {
-    if (error instanceof UnmappedPathError) throw error;
+    if (strict || error instanceof UnmappedPathError) throw error;
     return { all: true, sections: [], reasons: [`selection unavailable: ${String(error).replace(/[\r\n]+/g, ' ')}`] };
   }
 }

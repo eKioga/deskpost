@@ -19,6 +19,9 @@
 # PATH entry holding a deskpost shim is dropped, as tools/Test-BuiltRelease.ps1 does, for this run only.
 set -f
 DESKPOST_GITLEAKS=$(command -v gitleaks 2>/dev/null || true)
+if [ -n "$DESKPOST_GITLEAKS" ] && command -v cygpath >/dev/null 2>&1; then
+    DESKPOST_GITLEAKS=$(cygpath -m "$DESKPOST_GITLEAKS" 2>/dev/null || true)
+fi
 export DESKPOST_GITLEAKS
 clean_path=""
 old_ifs=$IFS

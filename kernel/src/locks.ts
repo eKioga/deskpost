@@ -276,11 +276,18 @@ function recoveryGuard(file: string) {
   }
 }
 
+/** Copyable manual removal only; diagnostics never execute this command. */
+export function recoveryGuardRemovalCommand(guardPath: string, platform: string = process.platform): string {
+  return platform === 'win32'
+    ? `Remove-Item -LiteralPath '${guardPath.replace(/['\u2018-\u201b]/g, '$&$&')}'`
+    : "rm -- '" + guardPath.replaceAll("'", "'\\''") + "'";
+}
+
 function recoveryGuardDiagnostic(guardPath: string, pid: number | null, owner_gone: boolean, age_ms: number | null, stale: boolean, unreadable: string | null) {
   const detail = owner_gone ? 'owner is gone; deleting it is safe' : `could not confirm the owner is gone; ${Math.floor((age_ms ?? 0) / 1000)} seconds old; check that pid is gone first`;
   return { path: guardPath, pid, owner_gone, age_ms, stale, unreadable,
     message: unreadable === null
-      ? `${owner_gone ? 'A crashed recovery left one file' : 'A recovery guard remains'}: ${guardPath} (pid ${pid ?? 'unknown'}; ${detail}).\nRun the same command again to retry after removing this file.`
+      ? `${owner_gone ? 'A crashed recovery left one file' : 'A recovery guard remains'}: ${guardPath} (pid ${pid ?? 'unknown'}; ${detail}).\n${recoveryGuardRemovalCommand(guardPath)}\nRun the same command again to retry after removing this file.`
       : `A recovery guard is unreadable: ${guardPath} (pid unknown; ${unreadable}).` };
 }
 

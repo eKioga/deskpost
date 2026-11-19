@@ -40,8 +40,11 @@ import { openCollection, readLocalProjectCatalog } from './collection.ts';
 import { deskFileEntries, deskFileName, deskStateDirectory, resolveSeatName } from './seatdesk.ts';
 import { resolveAgentClientProcess } from './procstart.ts';
 import { findOpenBookLines, formatFullTextResult } from './fulltext.ts';
+import { sharedPages } from './sharedmanifests.ts';
+import { assertSearchQuery, newSearchBudget, testSearchBudgetSpent, testSearchBudgetAcceptsText, testSearchContains, convertToSearchDisplay, getSearchBudgetNote } from './rawsearch.ts';
 import { findBookPages, formatDiscoveryResult } from './discovery.ts';
 import { projectSlugArgument } from './hubslug.ts';
+import { captureBookRows } from './desk.ts';
 import { deskPin, markerConnection, McpSession, readValidatedRecord, resolveMcpUrl } from './basicmemory.ts';
 import {
   BOOK_ROOT_ACCEPT_PATTERN,
@@ -153,6 +156,7 @@ function projectPageArgument(slug: string, page: string): string {
 export interface ReaderAnswer {
   text: string;
   sha256: string | null;
+  pageHash?: boolean;
 }
 
 /**
@@ -185,8 +189,21 @@ function sectionArgument(value: unknown): string | null {
 }
 
 /** The page, its hash, and the section asked for, if any: the hash is always the whole page's. */
-function pageAnswer(content: string, section: string | null): ReaderAnswer {
-  return { text: section === null ? content : pageSection(content, section), sha256: pageComparisonSha256(content) };
+function pageAnswer(content: string, section: string | null, hashOnly = false): ReaderAnswer {
+  const text = section === null ? content : pageSection(content, section);
+  const sha256 = pageComparisonSha256(content);
+  if (hashOnly) {
+    const lines = toLines(content);
+    if (lines.at(-1) === '') lines.pop(); // A final newline terminates a line; it does not create another one.
+    return { text: `sha256: ${sha256}\nlines: ${lines.length}\ntitle: ${headings(lines)[0]?.text ?? 'none'}`, sha256: null };
+  }
+  return { text, sha256, pageHash: section !== null };
+}
+
+function hashOnlyArgument(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'boolean') refuse('hash_only must be a boolean. Nothing was read.');
+  return value;
 }
 
 /**
@@ -201,7 +218,8 @@ function pagesEndingIn(directory: string, page: string): string[] {
       if (entry.isDirectory()) walk(path.join(folder, entry.name), `${prefix}${entry.name}/`);
       else if (entry.isFile() && entry.name.endsWith('.md')) {
         const candidate = `${prefix}${entry.name.slice(0, -3)}`;
-        if (candidate.endsWith(`/${page}`) || (page.includes('/') && candidate === page.slice(page.indexOf('/') + 1))) found.push(candidate);
+        const underscored = path.posix.join(path.posix.dirname(page), '_' + path.posix.basename(page));
+        if (candidate === underscored || candidate.endsWith(`/${page}`) || (page.includes('/') && candidate === page.slice(page.indexOf('/') + 1))) found.push(candidate);
       }
     }
   };
@@ -346,7 +364,7 @@ function readShelfBookPage(workspace: string, wikiRoot: string, page: string): s
   if (!fs.existsSync(path.join(workspace, 'shelf')) || !fs.statSync(path.join(workspace, 'shelf')).isDirectory()) refuse('This workspace has no local Shelf.');
   const exact = exactRelativePath(workspace, `${wikiRoot}/${page}.md`);
   const bookWikiRoot = path.resolve(workspace, ...wikiRoot.split('/'));
-  if (!exact || !fs.statSync(exact).isFile()) refuse('That page is not in this Book.' + didYouMean([...pagesEndingIn(bookWikiRoot, page), ...pagesCutShort(bookWikiRoot, page)]));
+  if (!exact || !fs.statSync(exact).isFile()) refuse('That page is not in this Book.' + didYouMean([...pagesEndingIn(bookWikiRoot, page), ...pagesCutShort(bookWikiRoot, page)]) + capturePageHint(workspace, wikiRoot.split('/')[1]!));
   if (!path.resolve(exact).startsWith(bookWikiRoot + path.sep)) refuse('The resolved page lies outside this Book; its content was withheld.');
   const content = fs.readFileSync(exact, 'utf8').replace(/^﻿/, '');
   if (!content.trim()) refuse('The exact Shelf Book page has no readable content.');
@@ -456,16 +474,22 @@ export function withLetterPreface(content: string, libraryId: string | null = nu
  * `Read-ValidatedBookPage`: a page of a Book open at this seat, from the Shelf, the collection or the connection. The
  * hash is the page's own, never the letter preface's; a section is cut from the page before the preface frames it.
  */
-async function readValidatedBookPage(context: ReaderContext, slug: string, page: string, place: BookPlace | null = null, section: string | null = null): Promise<ReaderAnswer> {
+async function readValidatedBookPage(context: ReaderContext, slug: string, page: string, place: BookPlace | null = null, section: string | null = null, hashOnly = false): Promise<ReaderAnswer> {
   const content = await readValidatedBookPageContent(context, slug, page, place);
-  const answer = pageAnswer(content, section);
+  const answer = pageAnswer(content, section, hashOnly);
+  if (hashOnly) return answer;
   let self: SeatIncarnation | null = null;
   try {
     const seat = context.deskDirectory ? path.basename(context.deskDirectory) : '';
     if (seat) self = seatIncarnation(context.stateDirectory, seat);
   } catch { /* Unresolved readers receive only the informational line. */ }
   const framed = withLetterPreface(content, String(readMarker(context.workspace)?.['id'] ?? '') || null, self);
-  return { text: framed.slice(0, framed.length - content.length) + answer.text, sha256: answer.sha256 };
+  return { ...answer, text: framed.slice(0, framed.length - content.length) + answer.text };
+}
+
+function capturePageHint(workspace: string, slug: string): string {
+  if (!['reports', 'letters', 'holding'].includes(slug) && !captureBookRows(workspace).some(book => book.slug === slug)) return '';
+  return ` Its notes are listed by \`${slug === 'letters' ? 'deskpost letters list' : 'deskpost triage inventory'}\`.`;
 }
 
 async function readValidatedBookPageContent(context: ReaderContext, slug: string, page: string, place: BookPlace | null): Promise<string> {
@@ -518,7 +542,7 @@ async function readValidatedBookPageContent(context: ReaderContext, slug: string
     refuse('That page is not in this Book.' + (local ? didYouMean([
       ...pagesEndingIn(path.join(openCollection(context.workspace).root, ...bookRoot.wikiRoot.split('/')), page),
       ...pagesCutShort(path.join(openCollection(context.workspace).root, ...bookRoot.wikiRoot.split('/')), page),
-    ]) : ''));
+    ]) : '') + capturePageHint(context.workspace, slug));
   }
   return record.content;
 }
@@ -584,6 +608,14 @@ async function readValidatedBookCatalog(context: ReaderContext, location: string
   if (location === 'archive') return (await readSharedBookCatalog(context, 'archive/README')) + ARCHIVE_CATALOG_NOTE;
   if (location === 'shared' || location === 'collection') return readSharedBookCatalog(context, 'books/README');
   const shared = await readSharedBookCatalog(context, 'books/README');
+  let connection = '';
+  if (connected) {
+    try {
+      connection = "\n\n## Basic Memory connection\n\n" + await readConnectionBookCatalog(context, 'books/README');
+    } catch (error) {
+      connection = "\n\nThe connection's catalog was left out: " + (error as Error).message.replace(/[\r\n]+/g, ' ');
+    }
+  }
   // The Shelf is local and must not make the whole catalog unreadable if it is absent.
   let shelf: string;
   try {
@@ -592,8 +624,10 @@ async function readValidatedBookCatalog(context: ReaderContext, location: string
     shelf = `# Local Shelf\n\n${(error as Error).message}`;
   }
   return (
-    shared + '\n\n---\n\n' + shelf +
-    '\n\nShared Books open with deskpost desk open book <slug> --location shared; Shelf Books with --location shelf. Both are read through read_open_book_page.'
+    shared + connection + '\n\n---\n\n' + shelf +
+    (connected
+      ? "\n\nBooks under Basic Memory connection belong to the connection; open them with deskpost desk open book <slug> --location shared. The Library's own Books use --location collection, and Shelf Books --location shelf. All are read through read_open_book_page."
+      : '\n\nShared Books open with deskpost desk open book <slug> --location shared; Shelf Books with --location shelf. Both are read through read_open_book_page.')
   );
 }
 
@@ -675,6 +709,95 @@ async function readSharedProjectPage(context: ReaderContext, slug: string, page:
     refuse((page === '_project' ? 'That page is not in this Project.' : "That page is not in this Project. A Project Hub's root page is '_project'.") + advice);
   }
   return { path: requested, content: record.content };
+}
+
+/** Search only open Project roots, and validate every page through the Project reader before matching it. */
+async function searchOpenProjects(context: ReaderContext, query: string, maxResults = 50): Promise<string> {
+  const needle = assertSearchQuery(query);
+  const state = deskState(context);
+  const budget = newSearchBudget({ wallClockSeconds: 10, maxFilesScanned: 5000, maxCollectedMatches: 5000, maxMatchedBytes: 65536 });
+  const roots = [...state.openProjects].sort();
+  const hits: { root: string; page: string; line: number; text: string }[] = [];
+  const finished: string[] = [], partial: string[] = [], notReached: string[] = [];
+  const withheld: { root: string; page: string; reason: string }[] = [];
+  for (const root of roots) {
+    if (testSearchBudgetSpent(budget)) { notReached.push(root); continue; }
+    const slug = root.split('/').at(-1)!;
+    if (roots.filter(other => other.split('/').at(-1) === slug).length !== 1) {
+      withheld.push({ root, page: '_project', reason: `Project '${slug}' is ambiguous; close one location before reading.` });
+      continue;
+    }
+    let complete = true;
+    try {
+      // A local walk lists paths only and follows no reparse point. The remote walk is paged and clock-bounded.
+      const pages = async function* (): AsyncGenerator<string> {
+        if (isLocalCollection(context)) {
+          let directory = openCollection(context.workspace).root;
+          for (const segment of root.split('/')) {
+            directory = path.join(directory, segment);
+            if (fs.lstatSync(directory).isSymbolicLink()) throw Error('The Project path crosses a reparse point; its pages were withheld.');
+          }
+          const walk = function* (folder: string, prefix = ''): Generator<string> {
+            if (testSearchBudgetSpent(budget)) return;
+            if (fs.lstatSync(folder).isSymbolicLink()) throw Error('The Project root or a folder is a reparse point; its pages were withheld.');
+            for (const entry of fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+              if (testSearchBudgetSpent(budget)) return;
+              if (entry.name.startsWith('.')) continue;
+              if (entry.isSymbolicLink()) { withheld.push({ root, page: prefix + entry.name, reason: 'reparse point; content withheld' }); continue; }
+              if (entry.isDirectory()) yield* walk(path.join(folder, entry.name), prefix + entry.name + '/');
+              else if (entry.isFile() && entry.name.endsWith('.md')) yield prefix + entry.name.slice(0, -3);
+            }
+          };
+          yield* walk(directory);
+        } else {
+          const session = await remoteSession(context.workspace);
+          for await (const node of sharedPages(session, state.projectId, root, () => testSearchBudgetSpent(budget))) {
+            const file = String(node.file_path);
+            if (!file.startsWith(root + '/') || !file.endsWith('.md')) throw Error('A listed page is outside this Project; content withheld.');
+            yield file.slice(root.length + 1, -3);
+          }
+        }
+      };
+      for await (const page of pages()) {
+        if (testSearchBudgetSpent(budget)) { complete = false; break; }
+        try {
+          const content = (await readSharedProjectPage(context, slug, page)).content;
+          budget.filesScanned++;
+          if (Buffer.byteLength(content, 'utf8') > 2097152) throw Error('Page exceeds the 2097152-byte cap; content withheld.');
+          if (testSearchBudgetSpent(budget)) { complete = false; break; }
+          const lines = content.replace(/\r\n/g, '\n').split('\n');
+          for (let index = 0; index < lines.length; index++) {
+            if (!testSearchContains(lines[index]!, needle)) continue;
+            const shown = convertToSearchDisplay(lines[index]!);
+            hits.push({ root, page, line: index + 1, text: shown.length > 400 ? shown.slice(0, 400) + ' [line truncated]' : shown });
+            budget.collectedMatches++;
+            if (testSearchBudgetSpent(budget)) { complete = false; break; }
+          }
+        } catch (error) { withheld.push({ root, page, reason: (error as Error).message }); }
+      }
+      if (testSearchBudgetSpent(budget)) complete = false;
+      (complete ? finished : partial).push(root);
+    } catch (error) { withheld.push({ root, page: '', reason: (error as Error).message }); }
+  }
+  // Closing or making a slug ambiguous while the search runs removes every matching line from it.
+  const end = deskState(context).openProjects;
+  const live = (root: string) => end.includes(root) && end.filter(other => other.split('/').at(-1) === root.split('/').at(-1)).length === 1;
+  const returned: typeof hits = [];
+  for (const hit of hits.filter(hit => live(hit.root)).slice(0, maxResults)) {
+    if (!testSearchBudgetAcceptsText(budget, hit.text, returned.length === 0)) break;
+    returned.push(hit);
+  }
+  const answer = [`Full text over ${finished.filter(live).length} of ${roots.length} open Project(s) for: ${convertToSearchDisplay(query)}`];
+  if (partial.filter(live).length) answer.push('Projects partly searched: ' + partial.filter(live).join(', ') + '.');
+  if (notReached.filter(live).length) answer.push('Projects not reached: ' + notReached.filter(live).join(', ') + '.');
+  for (const item of withheld) if (end.includes(item.root)) answer.push(`${item.root}/${item.page}: ${item.reason}`);
+  if (roots.some(root => !end.includes(root))) answer.push('Projects closed during this query had their results discarded.');
+  const note = getSearchBudgetNote(budget); if (note) answer.push(note);
+  if (hits.filter(hit => live(hit.root)).length > returned.length) answer.push(`Showing the first ${returned.length} matching lines; the answer was truncated.`);
+  for (const hit of returned) answer.push(`[${hit.root}] ${hit.page}:${hit.line}: ${hit.text}`);
+  if (!returned.length) answer.push('No matching line was returned from the pages searched.');
+  answer.push('A hit is a location, not a reading: use read_open_project_page before answering from it. Closed Projects are not searched.');
+  return answer.join('\n');
 }
 
 /** `Get-MarkdownSectionItems`: a section's bullets, each with its wrapped continuation lines. */
@@ -788,7 +911,8 @@ async function suggestActiveProjects(context: ReaderContext, query: string): Pro
     if (!entries.some((kept) => kept.slug.toLowerCase() === entry.slug.toLowerCase())) entries.push(entry);
   }
   if (entries.length === 0) return '# Active Project suggestions\n\nThere are no active Projects to search. No Project was opened.';
-  if (entries.length > 25) refuse('The active Project Catalog has more than 25 entries; narrow discovery before requesting suggestions.');
+  // NO CEILING (kickoffs/s213 row 28, s213-r5 row 6): the whole catalog is ranked and the top five returned; a refusal
+  // past 25 entries stopped every suggestion once a Library grew.
 
   const projectId = deskProjectId(context);
   const suggestions: { slug: string; title: string; score: number; matched: string[]; purpose: string }[] = [];
@@ -867,7 +991,7 @@ async function answerReaderToolText(context: ReaderContext, tool: string, args: 
         refuse((error as Error).message);
       }
       const section = sectionArgument(args.optional('section'));
-      return readValidatedBookPage(context, args.required('slug'), args.required('page'), place, section);
+      return readValidatedBookPage(context, args.required('slug'), args.required('page'), place, section, hashOnlyArgument(args.optional('hash_only')));
     }
     case 'read_project_catalog': {
       // A Project Hub lives in the collection the workspace is attached to: the local collection in Tier 0
@@ -886,21 +1010,46 @@ async function answerReaderToolText(context: ReaderContext, tool: string, args: 
     }
     case 'read_open_project_page': {
       const section = sectionArgument(args.optional('section'));
-      return pageAnswer((await readSharedProjectPage(context, args.required('slug'), args.required('page'))).content, section);
+      const hashOnly = hashOnlyArgument(args.optional('hash_only'));
+      return pageAnswer((await readSharedProjectPage(context, args.required('slug'), args.required('page'))).content, section, hashOnly);
     }
-    case 'read_open_project_briefing':
-      return readSharedProjectBriefing(context, args.required('slug'));
+    case 'read_open_project_briefing': {
+      // THE BRIEFING CARRIES THE HUB'S LIVE STATE (kickoffs/s213 row 27, s213-r5 row 5): today's briefing, then `hub
+      // status` for that Hub as this seat's Desk allows it, under its own heading line. A status that cannot be built at
+      // all leaves the briefing as it was, plus one line naming why.
+      const slug = projectSlugArgument(args.required('slug'));
+      const briefing = await readSharedProjectBriefing(context, slug);
+      let live: string;
+      try {
+        const { readSeatRegistry } = await import('./desk.ts');
+        const { hubStatus, hubStatusText } = await import('./hubstatus.ts');
+        const seat = readSeatRegistry(context.stateDirectory).find((row) => context.deskDirectory !== null && deskStateDirectory(context.stateDirectory, row.seat) === context.deskDirectory)?.seat;
+        if (seat === undefined) throw new Error(context.seatMessage || 'no seat is named for this reader');
+        live = hubStatusText(hubStatus(context.workspace, slug, seat)).trimEnd();
+      } catch (error) {
+        live = `Live state: not shown: ${(error as Error).message.split('\n')[0]}`;
+      }
+      return `${briefing}\n\n${live}`;
+    }
     case 'search_open_books': {
       const query = args.required('query');
       const cap = resultCap(args.optional('max_results'));
+      if (String(args.optional('place') ?? '').trim().toLowerCase() === 'project') {
+        if (args.optional('books') !== undefined && args.optional('books') !== null) refuse('books filters Books only; omit it when place is project. Nothing was searched.');
+        return searchOpenProjects(context, query, cap);
+      }
       let place: BookPlace | null;
       try {
         place = parsePlaceArgument(args.optional('place'));
       } catch (error) {
         refuse((error as Error).message);
       }
+      const named = args.optional('books');
+      if (named !== null && named !== undefined && (!Array.isArray(named) || named.some((slug) => typeof slug !== 'string' || !slug.trim()))) refuse('books must be a list of open Book slugs.');
+      if (Array.isArray(named) && named.length === 0) refuse('Name at least one open Book slug, or leave books out to search every open Book. Nothing was searched.');
+      const books = Array.isArray(named) && named.length ? (named as string[]).map((slug) => slug.trim()) : null;
       if (!context.deskDirectory) refuse(context.seatMessage);
-      return formatFullTextResult(await findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory, place }));
+      return formatFullTextResult(await findOpenBookLines({ workspace: context.workspace, query, maxResults: cap, deskStateDirectory: context.deskDirectory, place, books }));
     }
     case 'discover_book_pages': {
       const query = args.required('query');
@@ -917,11 +1066,11 @@ async function answerReaderToolText(context: ReaderContext, tool: string, args: 
  * The response envelope, which is what the row compares -- the text block and an error flag. A page read adds a second
  * text item, `sha256: <hex>` (S102 row 1, R1), after the page, so the first item is the page and nothing else.
  */
-export function readerEnvelope(id: PsJsonValue, text: string, isError: boolean, sha256: string | null = null): PsJsonValue {
+export function readerEnvelope(id: PsJsonValue, text: string, isError: boolean, sha256: string | null = null, pageHash = false): PsJsonValue {
   // A refusal's remedy, never a page's content, is said as this host should say it (S42, remedy.ts).
   if (isError) text = hostRemedies(text);
   const content: PsJsonValue[] = [{ type: 'text', text }];
-  if (!isError && sha256 !== null) content.push({ type: 'text', text: `sha256: ${sha256}` });
+  if (!isError && sha256 !== null) content.push({ type: 'text', text: `${pageHash ? 'page ' : ''}sha256: ${sha256}` });
   return {
     jsonrpc: '2.0',
     id,
@@ -974,7 +1123,7 @@ export async function runMcpVerb(argv: string[]): Promise<McpResult> {
     const argumentRefusal = toolArgumentRefusal(tool, given);
     if (argumentRefusal !== null) refuse(argumentRefusal);
     const answer = await answerReaderTool(context, tool, args);
-    return { refusal: null, value: readerEnvelope(id, answer.text, false, answer.sha256), exitCode: 0 };
+    return { refusal: null, value: readerEnvelope(id, answer.text, false, answer.sha256, answer.pageHash), exitCode: 0 };
   } catch (error) {
     // A REFUSAL IS A RESULT HERE, NOT A CRASH. The adapter answers a rejected call with a well-formed
     // response whose `isError` is true and whose exit code is 0, because the transport succeeded even

@@ -170,6 +170,10 @@ The first command shows one view. The second keeps a terminal pane up to date fo
 stop watching when you are done. The dashboard is optional: you can still ask "what's on my desk?"
 in the conversation.
 
+## Returning to your project
+
+Ask "brief me on this project" to see its orientation and live Hub state. Ask the Librarian to close a completed Hub item into history. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170) for status and builder queues. `deskpost library move` is turned off in 1.7.0 and returns in a later release.
+
 ## When something refuses you
 
 Three questions answer almost everything, and "what's on my desk?" answers all three:

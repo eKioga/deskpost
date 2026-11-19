@@ -504,6 +504,7 @@ export function findBookPages(options: {
   const unavailable: UnavailableBook[] = [];
   const stale: StaleBook[] = [];
   const partlyRead: NonNullable<DiscoveryResult['books_partly_read']> = [];
+  const captureNotesUnsearched: string[] = [];
   const searchedByCollection: Record<string, number> = {};
   for (const name of MANIFEST_COLLECTIONS) searchedByCollection[name] = 0;
   let order = 0;
@@ -581,6 +582,7 @@ export function findBookPages(options: {
       // live path is gated on the Book being open, not on its kind -- but a Book reported as
       // curated while its catalog calls it capture would be a lie in the answer.
       const kind = manifest['kind'] === 'capture' || (book !== null && book.isCapture) ? 'capture' : 'curated';
+      if (kind === 'capture' && !isOpen) captureNotesUnsearched.push(bookRoot);
 
       const livePages = kind === 'capture' && isOpen && book !== null ? discoveryLivePages(book.wikiPath) : [];
 
@@ -703,6 +705,7 @@ export function findBookPages(options: {
     books_total: slugs.length + sharedSlugs.length + shelfArchiveSlugs.length + sharedArchiveSlugs.length + collectionSlugs.length + collectionArchiveSlugs.length,
     books_searched: shelfSearched + sharedSearched + shelfArchiveSearched + sharedArchiveSearched + collectionSearched + collectionArchiveSearched,
     books_unavailable: unavailable,
+    ...(captureNotesUnsearched.length ? { capture_notes_unsearched: captureNotesUnsearched } : {}),
     ...(stale.length ? { books_stale: stale } : {}),
     ...(partlyRead.length ? { books_partly_read: partlyRead } : {}),
     ...((roster?.entries ?? []).some(entry => entry.maintained_by || entry.maintained_unreadable) ? { books_maintained: roster!.entries.filter(entry => entry.maintained_by || entry.maintained_unreadable).map(entry => ({ book: entry.slug, book_root: `${collectionPrefix('shared', localBackend)}/${entry.slug}`, ...(entry.maintained_by ? { maintained_by: entry.maintained_by } : { maintained_unreadable: entry.maintained_unreadable! }) })) } : {}),
@@ -718,6 +721,7 @@ export function findBookPages(options: {
 /** The coverage line comes FIRST and unconditionally: a Discovery answer must never look complete. */
 export function formatDiscoveryResult(result: DiscoveryResult): string {
   const lines: string[] = [];
+  const skipped = (result as DiscoveryResult & { capture_notes_unsearched?: string[] }).capture_notes_unsearched;
   lines.push(`Discovery over the ${result.scope} for: ${result.query}`);
   lines.push(
     `${result.result_count} result(s) from ${result.books_searched} of ${result.books_total} Book(s) -- Shelf ` +
@@ -727,6 +731,7 @@ export function formatDiscoveryResult(result: DiscoveryResult): string {
   );
   if (result.collection_note) lines.push(result.collection_note);
   lines.push(result.archive_note);
+  if (skipped?.length) lines.push(`Capture notes were not searched: ${skipped.join(', ')}. Open the Book and use search_open_books, or use deskpost triage inventory.`);
   if (result.truncated) {
     lines.push(
       `Showing the first ${result.result_count} of ${result.match_count} matches; ask for more with a larger result cap.`,

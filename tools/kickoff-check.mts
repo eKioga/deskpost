@@ -9,7 +9,7 @@
  * It reads the machine slot setting and checks BASE ancestry in slot mode; it never writes.
  */
 
-const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires; --train <register file> (internal/train/register.json) also checks its TRAIN id';
+const USAGE = 'node tools/kickoff-check.mts <kickoff file>: checks the sections docs/kickoff-template.md requires; --repo <dir> selects the BASE checkout; --train <register file> (internal/train/register.json) also checks its TRAIN id';
 
 async function main(argv: string[]): Promise<number> {
   const fs = await import('node:fs');
@@ -19,10 +19,11 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${USAGE}\n`);
     return 2;
   }
-  let file: string | undefined, trainFile: string | undefined;
+  let file: string | undefined, trainFile: string | undefined, repository: string | undefined;
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (arg === '--train' && !trainFile && argv[index + 1] && !argv[index + 1]!.startsWith('-')) trainFile = argv[++index];
+    else if (arg === '--repo' && !repository && argv[index + 1] && !argv[index + 1]!.startsWith('-')) repository = argv[++index];
     else if (!arg.startsWith('-') && !file) file = arg;
     else {
       process.stderr.write(`kickoff-check: cannot read argument '${arg}'; usage: ${USAGE}\n`);
@@ -53,12 +54,21 @@ async function main(argv: string[]): Promise<number> {
   }
   // Only this source tool passes the section claims (kickoffs/s194 spare S1): the installed check's verdict is unchanged.
   let covers: Record<string, string[]> | undefined;
+  let newPathMapped: ((file: string) => boolean) | undefined;
   // With each lane's claim file (kickoffs/s210 row 3), merged as the commit check merges them.
   try {
     const select = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'section-select.mts')).href) as typeof import('./section-select.mts');
     const repo = path.join(adrFolder, '..', '..');
     covers = select.mergeCovers(select.coversFiles(name => fs.existsSync(path.join(repo, name)) ? fs.readFileSync(path.join(repo, name), 'utf8') : null)).sections;
-  } catch {
+    newPathMapped = file => {
+      if (fs.existsSync(path.join(repo, file)) || select.pathChecks([file]).length) return true;
+      // Mapped documents and section-only rules can have no named checks. The selector distinguishes them from absence.
+      try { select.selectSections({ changed: [file], selftestHunks: [], selftestText: '', covers: { schema: 1, about: '', sections: covers ?? {} } }); return true; }
+      catch (error) { if ((error as Error).message.startsWith('unmapped changed path ')) return false; throw error; }
+    };
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).replace(/\s*\r?\n\s*/g, ' ');
+    process.stderr.write(`kickoff-check: warning: section claims unreadable (${message}); the pinned-section rule is off for this check\n`);
     covers = undefined;
   }
   // The lane rule requires readable, well-formed docs/areas.json (c155-r2 spare S2).
@@ -68,16 +78,36 @@ async function main(argv: string[]): Promise<number> {
   let numbering: ReturnType<typeof kc.parseKickoffNumbering>;
   try { areasText = fs.readFileSync(path.join(adrFolder, '..', 'areas.json'), 'utf8'); numbering = kc.parseKickoffNumbering(areasText); }
   catch (error) { process.stderr.write(`kickoff-check: docs/areas.json cannot be read: ${(error as Error).message}\n`); return 1; }
+  let shared: string[];
   try {
-    const record = JSON.parse(areasText ?? '') as Partial<import('../kernel/src/kickoffcheck.ts').KickoffAreas>;
+    const record = JSON.parse(areasText ?? '') as Partial<import('../kernel/src/kickoffcheck.ts').KickoffAreas> & { shared?: unknown };
     const listMap = (value: unknown) => !!value && typeof value === 'object' && Object.values(value).every(list => Array.isArray(list) && list.every(item => typeof item === 'string'));
     if (!record || !listMap(record.lanes) || !listMap(record.areas)) throw new Error('lanes and areas must map names to string lists');
     areas = { lanes: record.lanes!, areas: record.areas! };
+    if (record.shared !== undefined && (!Array.isArray(record.shared) || record.shared.some(item => typeof item !== 'string'))) {
+      throw new Error('shared must list paths');
+    }
+    shared = (record.shared ?? []) as string[];
   } catch (error) {
     process.stderr.write(`kickoff-check: docs/areas.json is malformed: ${(error as Error).message}\n`);
     return 1;
   }
-  const verdict = kc.kickoffVerdict(text, { adrFiles, train, covers, areas, numbering });
+  const checkout = path.resolve(adrFolder, '..', '..');
+  const listed = new Set([...Object.values(areas.areas).flat(), ...shared]);
+  for (const file of new Set(kc.ownsPaths(text).patterns)) {
+    if (!/^(?:kernel\/(?:src|test)|tools)\//.test(file) || listed.has(file)) continue;
+    if (fs.statSync(path.join(checkout, file), {throwIfNoEntry: false})?.isFile()) {
+      process.stderr.write(`kickoff-check: warning: ${file} is absent from docs/areas.json; run node tools/areas.mts --check\n`);
+    }
+  }
+  const { buildEnvelope, KICKOFF_ID } = await import('../kernel/src/kickoffenvelope.ts');
+  const { KICKOFF_SIZE_LIMIT } = await import('../kernel/src/kickoff.ts');
+  const name = path.basename(file, path.extname(file));
+  const envelope = buildEnvelope(KICKOFF_ID.test(name) ? name : 'check', text);
+  if (envelope.bytes > KICKOFF_SIZE_LIMIT) {
+    process.stderr.write(`kickoff-check: warning: ${envelope.bytes} bytes exceeds the ${KICKOFF_SIZE_LIMIT} bytes limit; kickoff send to another office will refuse it.\n`);
+  }
+  const verdict = kc.kickoffVerdict(text, { adrFiles, train, covers, areas, numbering, newPathMapped });
   if (unreadable !== null) verdict.problems.push(unreadable);
   const { readSlots } = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'test', 'gate-lock.ts')).href) as typeof import('../kernel/test/gate-lock.ts');
   const slots = readSlots(line => process.stderr.write(line + '\n'));
@@ -94,7 +124,7 @@ async function main(argv: string[]): Promise<number> {
     else {
       const { spawnSync } = await import('node:child_process');
       // Fixture-only repository override; ordinary invocations compare in this tool's checkout.
-      const root = process.env['DESKPOST_KICKOFF_TEST_REPOSITORY'] ?? path.resolve(adrFolder, '..', '..');
+      const root = repository || process.env['DESKPOST_KICKOFF_TEST_REPOSITORY'] || path.resolve(adrFolder, '..', '..');
       const git = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', slots.u2Tip, base], { encoding: 'utf8', windowsHide: true });
       if (git.status === 1) verdict.problems.push(`BASE: ${base} is before recorded U2 ${slots.u2Tip}; a Kickoff on code before U2 would not see the gate slots; rebase the unit's base, or --set-slots off first.`);
       else if (git.status !== 0) {

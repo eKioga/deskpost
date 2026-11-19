@@ -18,8 +18,8 @@ How a reviewed release candidate goes to the public download, and the exact comm
    silent about one is fixed before the bump. It also moves the README's `Status:` line to the release's minor
    version.
    This commit and the release-notes text form the candidate. Before its review, run the acceptance matrix against
-   the source kernel (`tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel 'node kernel/src/cli.ts'`, or one `-Row` per
-   call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
+   the source kernel from the checkout's root
+   (`tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel 'node kernel/src/cli.ts'`, or one `-Row` per call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
    sentence names a `tools/*.ps1` helper is judged against a build ("The compiled arm"), never from source
    ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Before any proof, read every
    line changed since the last release the way `prepare.ps1`'s staged scan will: first `git rev-parse --verify v<prev>`
@@ -32,6 +32,11 @@ How a reviewed release candidate goes to the public download, and the exact comm
    prove connectivity and read access only. Read Forgejo `permissions.push` where available; record
    authorization without a non-mutating source as unverified until publish. Secrets resolve only
    through `deskpost_secrets.py`'s service-account route, without printed values or bare `op`.
+   Open a dedicated release-candidate pull request from the current tip of `master` and let the
+   lander check and merge it without rebasing the candidate. If `master` moves before landing,
+   build and review a fresh candidate from the new tip. Record the candidate SHA that landed
+   and place the source tag on that same SHA. A follow-up publish Kickoff starts after the merge.
+
 2. **Prepare that candidate, locally, in a publish folder** outside the checkout (`<publish>`),
    under a release-preparation Kickoff. A changed candidate voids only the proofs whose inputs changed, and needs
    review of its new commits only ("What a changed candidate voids", below).
@@ -51,14 +56,16 @@ How a reviewed release candidate goes to the public download, and the exact comm
    - prints `READY: main <sha>, tag v<version>, refs/releases/v<version>; nothing pushed`.
 3. **Publish, on Eric's separate named `publish X`**: first tag the reviewed candidate in the source checkout
    (`prepare.ps1`'s `$app`) with `git -C <app> tag -a v<version> -m "Deskpost <version>" <candidate SHA>`, push only
-   that tag to `Kioga/library` with `git -C <app> push origin refs/tags/v<version>`, then run
+   that tag to `Kioga/deskpost-private` with `git -C <app> push origin refs/tags/v<version>`, then run
    `node tools/release-tag-check.ts <app> <version>`; anything but PASS stops before the public push. Then make
    one atomic push from the publish clone, bound to the reviewed candidate SHA and the exact READY refs.
    Refuse if either moved. Nothing else publishes a release.
    Set `DESKPOST_RELEASE_PUSH=1` for that approved source-tag push only; the pre-push hook otherwise refuses tags.
 4. **Start the mirror** right after the push: the release session starts the `publish-mirror` workflow on
    `Kioga/deskpost-ops` itself, through Forgejo's API (`workflow_dispatch`). It is never the reader's manual step. If
-   the start fails, the release session says so, and the mirror's daily run (12:00 UTC) publishes within a day.
+   the start fails, the release session says so. The daily run (12:00 UTC) waits on the same
+   `Kioga/deskpost-ops` runner. At release close, read the run status and GitHub's `main` once. If the run
+   is still waiting some minutes after its start, or `main` has not moved, ask home-lab-admin to check that runner.
    **The token never comes from a bare `op`**: a seat shell has no 1Password account. Read the item
    `forgejo-dispatch (deskpost)` once through `deskpost_secrets.py`'s `_op`
    (`D:\dev\projects\deskpost-secrets`), which hands this PC's service-account token to `op` in its child
@@ -68,7 +75,8 @@ How a reviewed release candidate goes to the public download, and the exact comm
 ## Proving a release (steps 1-2 in practice)
 
 Re-read installed `codex --help` and `claude --help`: compare their approval, sandbox and permission-mode
-values with `LAUNCH_ACCESS_VALUES` beside `LAUNCH_FLAG_TABLE` in `kernel/src/seatlaunch.ts`. A changed list
+values with the launch access definitions: `LAUNCH_ACCESS_VALUES` lives in `kernel/src/menuaccess.ts`.
+`kernel/src/seatlaunch.ts` re-exports it and defines `LAUNCH_FLAG_TABLE`. A changed list
 needs a source correction and its tests before the release candidate is judged.
 
 The checks every release session has run since 1.3.8 (S100, S107, S111, S113, S114), written here so that any release
@@ -267,12 +275,12 @@ git -C <publish>\pub push --atomic origin main refs/tags/v<version> refs/release
   `git -C <publish>\pub rev-parse main v<version>^{commit} refs/releases/v<version>`.
 - **What follows**: the release session starts the mirror right after this push (step 4, through Forgejo's
   API), and it publishes `Kioga/deskpost` to `eKioga/deskpost`; its daily run
-  catches a missed start. It pushes
+  waits on the same `Kioga/deskpost-ops` runner. It pushes
   `main` and the tag, then makes the GitHub release from `refs/releases/<tag>`. Check both
   `https://github.com/eKioga/deskpost/releases/latest` and the tag's release page before telling anyone to upgrade.
 
-`Kioga/library` (this checkout's `origin`) publishes nothing. The source tag push above is the one release-time
-push there; other pushes are ordinary development (`docs/dev-loop-orchestrator.md`, "The mirror source"). A source
+`Kioga/deskpost-private` (this checkout's `origin`, renamed on 2026-11-09; the old name redirects) publishes
+nothing. The source tag push above is the one release-time push there; other pushes are ordinary development (`docs/dev-loop-orchestrator.md`, "The mirror source"). A source
 tag on a commit that was never published is removed only on Eric's yes.
 
 ## Starting the mirror (step 4)
@@ -283,7 +291,10 @@ S107 (run 3137); the route is home-lab-admin's (its letter of 2026-10-09). Moved
 
 **When.** Only after the publish push to `Kioga/deskpost` has landed, and only under a Kickoff's CHARTER or the
 reader's explicit yes. One 1Password item read, ONE dispatch call, ONE status read. Do not poll. If any step fails,
-the mirror's daily run (cron `0 12 * * *`, 12:00 UTC) publishes within a day; say so at close.
+say so at close. The daily run (cron `0 12 * * *`, 12:00 UTC) waits on the same `Kioga/deskpost-ops`
+runner. At release close, read the run status and GitHub's `main` once. If the run is still waiting some
+minutes after its start, or `main` has not moved, ask home-lab-admin to check that runner. Run 3455 stayed
+waiting until Eric restarted the runner about 02:29 UTC on 2026-11-17 (deskpost-lead's release record).
 
 **The token: never with a bare `op`.**
 
@@ -397,8 +408,9 @@ finished, then gives the reader the upgrade steps, starting with `deskpost upgra
 
 ## After the publish
 
-- If the publish slipped a day, B corrects the release date in `docs/roadmap.md` on the next `desk/sNN`, which
-  reaches `master` at that Kickoff's MERGE (B never commits on `master`). The public copy follows at the next release.
+- If the publish slipped a day, the next unit that touches documents corrects the release date in
+  `docs/roadmap.md` through its pull request. Include `Shipped as public commit <sha>, from <candidate>.`
+  The public copy follows at the next release.
 - Only once `releases/latest` names the new version, and it is newer than the installed one, is anyone given an
   upgrade line. Before giving one, check which install root and which Library it acts on: an install outside the
   default root, run with the bare one-liner, refuses as a second install, and a retry can fall into a new install's

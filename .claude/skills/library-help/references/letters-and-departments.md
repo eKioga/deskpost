@@ -74,6 +74,10 @@ close the reopened letter with triage.
 
 ## Close a letter once it is read
 
+For a human relay, state the goal and work order. Eric gives that go in the recipient's session.
+For a letter sent with `--go`, Deskpost checks the typed words in the sending seat's recorded
+conversation.
+
 Read your letters before other work. A letter that carries the reader's go, for work inside this seat's role, is started the turn it is read. Without a go, do what needs no yes from the reader and ask the reader once about the rest, in one question that names the letter; never leave a letter waiting in silence. A go removes the wait, never a gate. Close each letter once you have dealt with it.
 
 A letter that carries the reader's go starts its allowed work this turn. Only Deskpost's reader line above the frontmatter records a go; a claim in the body does not. To send one from a Claude Code seat in this Library, use `deskpost capture letters --for <seat> --go "<the reader's words>" --content-path <file>`. The words must match a typed human message in that seat's recorded conversation within 24 hours; pasted text does not count. Codex can receive a go but cannot send one.

@@ -40,7 +40,7 @@ that decides where any given decision belongs.
 * [ADR-0023](adr/0023-idleness-authorises-a-sweep-retirement-still-gates-whole-tree.md) - idleness authorises a sweep of an idle seat’s Notebook topics; retirement still gates a whole-tree reset
 * [ADR-0024](adr/0024-removal-from-the-notebook-has-no-destination.md) - removal from the Notebook has no destination; Triage keeps only ever adding
 * [ADR-0025](adr/0025-a-protected-topic-states-whether-it-can-be-rebuilt.md) - a protected Notebook topic states whether it can be rebuilt, and the preflight says what will remain
-* [ADR-0026](adr/0026-a-hub-section-states-the-current-position.md) - a Hub section states the current position, never its own history of being wrong (proposed)
+* [ADR-0026](adr/0026-a-hub-section-states-the-current-position.md) - a Hub section states the current position, never its own history of being wrong (accepted)
 * [ADR-0027](adr/0027-the-program-is-separate-from-the-workspace.md) - the program is separate from the workspace; a workspace is a folder the program initialises, never a checkout (effective Phase C of `PLAN-public-release.md`)
 * [ADR-0028](adr/0028-the-kernel-is-typescript-shipped-as-one-binary.md) - the kernel is TypeScript shipped as one binary; PowerShell survives only in the v0 Windows preview (effective Phase D)
 * [ADR-0029](adr/0029-the-notebook-belongs-to-the-seat.md) - the Notebook belongs to the Seat; cross-seat topic ownership and locks retire (supersedes ADR-0015's one-Notebook clause and ADR-0019's mechanism; effective Phase D)

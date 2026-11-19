@@ -341,8 +341,8 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     const projects = openProjects.length ? openProjects.join(', ') : '(none)';
     // NAMING THE CALLABLE TOOL, for the kind of material actually open.
     const readerCalls: string[] = [];
-    if (openBooks.length) readerCalls.push(`${prefix}read_open_book_page for an open Book`);
-    if (openProjects.length) readerCalls.push(`${prefix}read_open_project_page for an open Project Hub`);
+    if (openBooks.length) readerCalls.push(`${prefix}read_open_book_page(slug, page) for open Books`);
+    if (openProjects.length) readerCalls.push(`${prefix}read_open_project_page(slug, page; root _project) for open Hubs`);
     const capability = readerCalls.length
       ? ' The validated reader is connected: call ' + readerCalls.join(', ') + '.'
       : ` The validated reader is connected: call ${prefix}read_book_catalog or ${prefix}read_project_catalog to see what could be opened.`;

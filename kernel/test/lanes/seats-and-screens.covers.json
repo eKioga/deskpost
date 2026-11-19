@@ -36,6 +36,22 @@
     "1008": [
       "kernel/src/dashboard.ts"
     ],
-    "1009": []
+    "1009": [],
+    "1010": [
+      "kernel/src/librarymove.ts",
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1011": [
+      "kernel/src/librarymove.ts"
+    ],
+    "1012": [
+      "kernel/src/librarymove.ts"
+    ],
+    "1013": ["kernel/src/librarymove.ts", "kernel/src/init.ts"],
+    "1014": ["kernel/src/librarymove.ts", "kernel/src/cli.ts", "kernel/src/verbs.ts"],
+    "1015": ["kernel/src/librarymove.ts"],
+    "1016": ["kernel/src/librarymove.ts"],
+    "1018": ["kernel/src/cli.ts"]
   }
 }

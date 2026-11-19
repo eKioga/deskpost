@@ -35,6 +35,20 @@ outside this repository; Deskpost behaves the same without it.
 | U8 | `raw/` is ingestion staging, not storage. | `templates/workspace-instructions.md`: `ingestion staging` | prose | not seen |
 | U9 | Reports, letters and Hubs never carry a secret: name the 1Password item, never its value. | `.claude/skills/library-help/references/letters-and-departments.md`: `Reports, letters and Hubs never carry a secret`; `templates/seats/orchestrator.json`: `Reports, letters and Hubs never carry a secret` | prose (the role text and triage carry it) | not seen |
 
+## Document claims
+
+Each D row ties a document claim to its words and the code it describes; the docs gate checks every path and anchor.
+
+| id | claim | document | code |
+| --- | --- | --- | --- |
+| D1 | Removing a page or the sources always needs the reader's yes. | `.claude/skills/library-help/references/books-and-projects.md`: `Removing a page or the sources,` | `kernel/src/sharedwrite.ts`: `const planOnly = upkeepable(action, parsed)`; `kernel/src/sharedwrite.ts`: `(action === 'sources' && !parsed.flags.has('remove'))`; `kernel/src/sharedwrite.ts`: `if (!planOnly && parsed.flags.has('preflight') === parsed.flags.has('user-confirmed')) refuse` |
+| D2 | Launch access values and flag tables live in their named source files. | `docs/releasing.md`: `values with the launch access definitions:` | `kernel/src/menuaccess.ts`: `export const LAUNCH_ACCESS_VALUES`; `kernel/src/seatlaunch.ts`: `export const LAUNCH_FLAG_TABLE` |
+| D3 | Named sections run through the parallel runner. | `docs/dev-session-loop.md`: `To run named sections from` | `kernel/test/run-parallel.ts`: `export function sectionNumbers(text: string, selection = process.env['LIBRARY_SELFTEST_SECTIONS']`; `kernel/test/lanes/guards-and-tooling.covers.json`: `"sections"`; `kernel/test/section-covers.json`: `"sections"` |
+| D4 | The queued lander updates and merges pull requests one at a time. | `docs/dev-session-loop.md`: `The queued lander updates each pull request,`; `docs/dev-session-loop.md`: `checks and merges one pull request at a time, oldest first.` | `tools/lander.mts`: `One pass: read every open pull request to master and act on the head of the queue.`; `tools/lander.mts`: `/update?style=rebase`; `tools/lander.mts`: `/pulls/${n}/merge` |
+| D5 | The installer copies reader MCP permissions, without adding shell-writer rules. | `.claude/skills/library-help/SKILL.md`: `it adds no shell-writer allow rules` | `kernel/src/init.ts`: `.filter((entry) => entry.startsWith('mcp__validated-book-reader__'))` |
+| D6 | Closeout and checkpoint see directly invoked writers. | `.claude/skills/library-help/SKILL.md`: `The closeout and checkpoint count a write only when the shell command runs the writer itself.` | `kernel/src/checkpoint.ts`: `Quoted command text and heredoc bodies are data, never another command.`; `kernel/src/checkpoint.ts`: `function libraryStatements(command: string): string[][] {`; `kernel/src/checkpoint.ts`: `$/i.test(exe)) return []` |
+| D7 | Shared Book writes can use a standing upkeep grant. | `.claude/skills/library-help/SKILL.md`: `A local Library with a Basic Memory connection writes to a shared Book through` | `kernel/src/sharedwrite.ts`: `const grant = upkeepable(action, parsed) && !catalogRemoval && !confirmed ? await upkeepGrant(opened) : null`; `kernel/src/sharedwrite.ts`: `confirmation_required: grant === null,` |
+
 ## Adding or moving a row
 
 - Add a row when a rule about keeping the Library tidy gains a home. Give it the next free id.

@@ -42,7 +42,7 @@ try {
     const integrationBranch = /^refs\/heads\/int\/.+$/.test(ref);
     if ((ref.startsWith('refs/tags/') || (deletion && !integrationBranch)) && !release)
       refuse('A tag push or deletion needs a separately approved release. Set DESKPOST_RELEASE_PUSH=1 for that approved release push only.');
-    // An approved deletion has no local commit whose ancestry could be checked.
+    // A deletion has no local commit whose ancestry can be checked; int/ deletions need no release approval.
     if (!integrationBranch && !deletion && !/^0+$/.test(previous) && git('merge-base', '--is-ancestor', previous, sha).status !== 0)
       refuse('The remote base is not an ancestor of the proposed commit, or its ancestry cannot be read. Fetch and reconcile the moved base under a new charter; do not force the push.');
     if (ref === 'refs/heads/master') greenRecord(sha);

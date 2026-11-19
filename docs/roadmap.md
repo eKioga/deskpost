@@ -29,7 +29,7 @@ The next milestones are listed below.
 
 ## Next
 
-**1.6.1 is released:** Libraries can read and write shared Books. Next comes the foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell** (Eric, 2026-10-26 and 2026-10-27).
+**1.7.0 is released:** Hubs show their live state, completed items move into history, and builders can queue their next Kickoffs. Next comes the remaining foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell**.
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -149,6 +149,15 @@ Set aside on purpose, not planned, until real use calls for them again:
   may see your material.
 
 ## Released
+
+### 1.7.0: Hubs that show their state (released 2026-11-18)
+
+- **Live Hub status:** `deskpost hub status` reads the current state of the records named in Now and Next.
+- **Completed items leave the front page:** `hub edit --mode close-item` moves an item word for word into history.
+- **Builder queues:** up to three Kickoffs wait in order, and `kickoff next` starts the next only when its conditions hold.
+- **Returning to a project:** the briefing includes the Hub's live state. Hub readers agree on which lines are hidden inside comments.
+- **Your text stays as typed:** program output preserves reader wording, spelling and punctuation.
+- **Library moves wait:** `library move` is in the program but turned off because a known fault can rewrite unrelated paths; it returns in a later release.
 
 ### 1.2.4: Tidy shelves (released in 1.2.5, 2026-09-30)
 
@@ -388,7 +397,7 @@ A fix release.
 - **Codex sessions get the seat-start, compaction and search-hit hooks Claude Code has** (from
   `codex/parity-1`; [`codex-parity.md`](codex-parity.md)).
 
-### 1.6.1: Shared Books that finish their moves, and letters that answer (released 2026-11-15)
+### 1.6.1: Shared Books that finish their moves, and letters that answer (released 2026-11-16)
 
 - A Book moved into the shared collection finishes its archive even when its reader map has no local links, and an archived collection Book can be restored.
 - A shared Book's reader map stays in step with its pages as they are added and removed.
@@ -397,6 +406,8 @@ A fix release.
 - `deskpost kickoff check` refuses a builder Kickoff that orders a push test run or a push to `master`, and reads a backticked train id.
 - A new seat keeps the assistant its command names.
 - For builders: pull requests land through a queued lander with a Linux check, and self-test sections live in one file per lane.
+
+Shipped as public commit fb20d0425c7a7b2675f60f9f2fb5f4c28af33685, from bb02a5e.
 
 ### 1.6.0: One collection for the household (released 2026-11-07)
 

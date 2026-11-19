@@ -75,7 +75,7 @@ const BEHAVIOUR_ROOTS = new Set(['kernel', 'tools', 'templates']);
  */
 const CONTRACT_DOCUMENTS = contractDocuments();
 
-type Outcome = { check: string; status: 'pass' | 'warn' | 'fail'; detail: string };
+type Outcome = { check: string; status: 'pass' | 'warn' | 'fail' | 'skip'; detail: string };
 
 function git(root: string, args: string[], input?: string): { status: number; stdout: Buffer; stderr: string } {
   const ran = spawnSync('git', args, { cwd: root, input, maxBuffer: 1 << 30 });
@@ -304,6 +304,7 @@ function linksResolve(index: Index): Outcome {
   const exported = roots.status === 0 && commits.length === 1 && binding.status === 0 &&
     commits[0] === `${binding.stdout.toString('utf8').trim()} export@deskpost.invalid`;
   const allowed = exported ? allowlist() : null;
+  const exportDetail = exported ? '. The gate trusted local git setting deskpost.exportRoot for the export binding. The tree scan remains unverified.' : '';
   const files = index.subjects().filter((entry) => (entry.startsWith('docs/') || !entry.includes('/')) && entry.endsWith('.md'));
   index.load(files);
   const broken: string[] = [];
@@ -318,9 +319,65 @@ function linksResolve(index: Index): Outcome {
       }
     }
   }
-  if (broken.length) return { check, status: 'fail', detail: `broken link(s): ${broken.join('; ')}` };
-  if (privateLinks.length) return { check, status: 'warn', detail: `${privateLinks.length} link(s) to private files a scanned export leaves out: ${privateLinks.join('; ')}` };
-  return { check, status: 'pass', detail: `${files.length} files scanned, all links resolve` };
+  if (broken.length) return { check, status: 'fail', detail: `broken link(s): ${broken.join('; ')}${exportDetail}` };
+  if (privateLinks.length) return { check, status: 'warn', detail: `${privateLinks.length} link(s) to private files a scanned export leaves out: ${privateLinks.join('; ')}${exportDetail}` };
+  return { check, status: 'pass', detail: `${files.length} files scanned, all links resolve${exportDetail}` };
+}
+
+/** Check GitHub's pinned paths against locally available tags. A shallow clone can lack the tag. */
+function pinnedGitHubLinks(index: Index): Outcome[] {
+  const check = 'docs.pinned-github-links';
+  const files = index.paths.filter(file => file === 'README.md' || file === 'llms-install.md' ||
+    (file.startsWith('.claude/skills/library-help/') && file.endsWith('.md')));
+  index.load(files);
+  const pinned = /(<)?https:\/\/github\.com\/eKioga\/deskpost\/blob\/([^/\s<>"()[\]?#]+)\//g;
+  const seenTags = new Map<string, boolean>();
+  const missingTags = new Map<string, string[]>();
+  const broken: string[] = [];
+  let resolved = 0;
+  for (const file of files) {
+    const lines = (index.text(file) ?? '').split(/\r?\n/);
+    for (const [i, line] of lines.entries()) {
+      for (const match of line.matchAll(pinned)) {
+        const [prefix, angle, tag] = match;
+        const start = match.index + prefix.length;
+        let end = start;
+        if (angle) {
+          end = line.indexOf('>', start);
+          if (end < 0) continue;
+        } else {
+          let depth = 0;
+          for (; end < line.length; end++) {
+            const char = line[end]!;
+            if (/[\s<>"[\]]/.test(char) || (char === ')' && depth === 0)) break;
+            if (char === '(') depth++;
+            if (char === ')') depth--;
+          }
+        }
+        const encodedPath = line.slice(start, end).split(/[?#]/, 1)[0];
+        if (!tag || !encodedPath) continue;
+        const link = line.slice(match.index + (angle ? 1 : 0), end);
+        const where = file + ':' + (i + 1) + ' ' + link;
+        const ref = 'refs/tags/' + tag;
+        if (!seenTags.has(tag)) seenTags.set(tag, git(index.rootPath(), ['show-ref', '--verify', '--quiet', ref]).status === 0);
+        if (!seenTags.get(tag)) {
+          const locations = missingTags.get(tag) ?? [];
+          locations.push(where);
+          missingTags.set(tag, locations);
+          continue;
+        }
+        let target: string;
+        try { target = decodeURIComponent(encodedPath); } catch { broken.push(where); continue; }
+        if (git(index.rootPath(), ['cat-file', '-e', ref + ':' + target]).status === 0) resolved++;
+        else broken.push(where);
+      }
+    }
+  }
+  const outcomes: Outcome[] = [...missingTags].map(([tag, locations]) =>
+    ({check, status: 'skip', detail: 'tag ' + tag + ' is unavailable in this checkout: ' + locations.join('; ')}));
+  if (broken.length) outcomes.push({check, status: 'fail', detail: 'paths missing at their tags: ' + broken.join('; ')});
+  if (resolved) outcomes.unshift({check, status: 'pass', detail: resolved + ' pinned link(s) resolve at their tags'});
+  return outcomes;
 }
 
 function adrIndexIsComplete(index: Index): Outcome {
@@ -538,6 +595,7 @@ function main(argv: string[]): number {
   if (documents.includes('CLAUDE.md') || documents.includes('AGENTS.md')) outcomes.push(alwaysOnBudget(index, root));
   outcomes.push(
     linksResolve(index),
+    ...pinnedGitHubLinks(index),
     adrIndexIsComplete(index),
     readerGuides(index),
     noForeignInstall(index, root),

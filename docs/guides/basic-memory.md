@@ -229,6 +229,10 @@ yes. The old workspace and Basic Memory stay intact throughout, as the fallback.
 vault's own doctor over the new Library's folder. Settle anything it flags before a whole collection lands in a
 synced folder.
 
+## Reader text and local Hubs
+
+In 1.7.0, program output keeps reader text as typed. Project Hubs stay local; their [live status and builder queues](README.md#hubs-that-show-their-state-in-170) do not change the shared Book approval rules below.
+
 ## Writing shared Books
 
 Ask the Librarian to correct an open shared Book, make a new shared Book, or move a Book from this Library's collection to the shared one. It previews the exact change first. Each correction to an existing page records its old text before changing it, uses a conditional write, and can be restored from its record. New Book and promote records keep their history; removing a whole shared Book or reusing its name is done on the server by hand for now. A page changed since the preview is refused and needs a new preview.

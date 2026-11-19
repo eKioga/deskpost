@@ -82,6 +82,10 @@ flowchart TD
 Opening and closing act on **your** Desk and need your seat. A closed Book is never quietly read
 around the edge. The Librarian says it is closed and offers to open it.
 
+## Keeping a Project Hub current
+
+A return briefing includes the Hub's live state, checked from the records named in Now and Next. A completed item moves word for word into history when closed. Builders can queue their next Kickoffs, with each start checked separately. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170). Program output preserves your text as typed.
+
 ## Into the Notebook, and out to somewhere durable
 
 The Notebook is volatile working knowledge, and each seat has its own. **Capture** is the move that

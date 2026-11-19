@@ -47,7 +47,7 @@ import { repositoryNeutralEnv } from '../kernel/src/gitenv.ts';
 import { childEnv, withHookSeat } from '../kernel/test/gate-env.ts';
 import { acquireGateLock, LockError, type GateWait, gateLockOffNotice } from '../kernel/test/gate-lock.ts';
 import { SERIAL_SECTIONS, fastRoster, parseOptions, requiredListRefusals, requiredSectionsVerdict, rosterProblems, sectionLimitWarning, runBounded, runPool, runSection, sectionNumbers, startIdentity, terminateOwnedTree, type PoolItem, type Result } from '../kernel/test/run-parallel.ts';
-import { COVERS_PATH, SELFTEST_PATH, LINUX_SKIP_PATH, applyPlatformSkips, coversFiles, mergeCovers, parseLinuxSkip, platformSkips, parseHunks, platformRefusals, sectionSources, selectSections, suiteText, unclaimedFiles, type Selection } from './section-select.mts';
+import { COVERS_PATH, SELFTEST_PATH, LINUX_SKIP_PATH, applyPlatformSkips, coversFiles, mergeCovers, parseLinuxSkip, platformSkips, parseHunks, platformRefusals, sectionSources, selectSections, stagedSelection, suiteText, unclaimedFiles, type Selection } from './section-select.mts';
 
 /** Skip numbers belong to the checked suite; fixture section 4 is not the real section 4. */
 export function readRootPlatformSkips(root: string, platform: string = process.platform): Map<number, string> {
@@ -163,13 +163,33 @@ function git(root: string, args: string[], extraEnv: Record<string, string> = {}
   return ran.stdout ?? '';
 }
 
+/** Staged text bytes: new files may use CRLF; an existing LF file may not acquire it silently. */
+export function lineEndingProblems(root: string): string[] {
+  const indexEnv: Record<string,string> = {};
+  if (process.env['GIT_INDEX_FILE'] && path.resolve(root) === path.resolve(git(process.cwd(), ['rev-parse','--show-toplevel']).trim()))
+    indexEnv['GIT_INDEX_FILE'] = process.env['GIT_INDEX_FILE'];
+  const changed = git(root, ['diff','--cached','--name-only','--diff-filter=ACMR','-z','HEAD'], indexEnv).split('\0').filter(Boolean);
+  const existing = new Set(git(root, ['ls-tree','-r','--name-only','-z','HEAD']).split('\0'));
+  const problems: string[] = [];
+  for (const file of changed.filter(file => /\.(?:md|ts|mts|json|ps1|py|sh|yml)$/i.test(file))) {
+    const text = git(root, ['cat-file','blob',`:${file}`], indexEnv);
+    if (text.includes('\0')) continue;
+    const lineAt = (at: number) => text.slice(0,at).split('\n').length;
+    for (const match of text.matchAll(/\r(?!\n)/g)) problems.push(`${file}:${lineAt(match.index!)}: lone carriage return`);
+    const first = text.indexOf('\r\n');
+    if (first >= 0 && existing.has(file) && !git(root,['cat-file','blob',`HEAD:${file}`]).includes('\r\n'))
+      problems.push(`${file}:${lineAt(first)}: CRLF introduced over an LF file`);
+  }
+  return problems;
+}
+
 /** Advisory only: a moved or unreachable remote never changes a gate's verdict. */
 export function masterMoved(root: string, selectedSha: string, lsRemote = (root: string) => git(root, ['ls-remote', 'origin', 'refs/heads/master'], { GIT_TERMINAL_PROMPT: '0' })): { line: string; master_moved?: { old: string; new: string } } | null {
   try {
     const remote = lsRemote(root).trim().split(/\s+/)[0] ?? '';
     if (!/^[a-f0-9]{40,64}$/.test(remote)) throw new Error('origin/master returned no SHA');
     return remote === selectedSha ? null : {
-      line: `origin/master moved during the gate: ${selectedSha} -> ${remote}; fetch and rebase before pushing`,
+      line: `origin/master on the remote is ${remote}, not the selected ${selectedSha}: fetch and rebase before pushing`,
       master_moved: { old: selectedSha, new: remote },
     };
   } catch (error) {
@@ -277,6 +297,10 @@ async function docsGate(root: string, tier: Tier, powerShell = powerShellPresent
 
 /** What the commit (or --commit <sha>) changed, and the selection rules over it. */
 export function selection(root: string, commit: string | null, outgoing = false): { selection: Selection; changed: string[]; selectedSha: string | null } {
+  if (commit === null && !outgoing) {
+    const changed = git(root, ['diff', '--name-only', '--no-renames', '--cached', 'HEAD']).split(/\r?\n/).filter(Boolean);
+    return {selection: stagedSelection(args => git(root, args), true, file => treeFile(root, file)), changed, selectedSha:null};
+  }
   const selectedSha = outgoing ? git(root, ['rev-parse', 'origin/master']).trim() : null;
   const range = outgoing ? [selectedSha!, 'HEAD'] : commit === null ? ['--cached', 'HEAD'] : [`${commit}^`, commit];
   const current = outgoing ? 'HEAD' : commit === null ? '' : commit;
@@ -643,6 +667,10 @@ async function runTier(argv: string[], tierWait: GateWait | null = null, platfor
     for (const reason of chosen.selection.reasons) process.stdout.write(`       ${reason}\n`);
   }
   if (options.tier === 'commit' || options.tier === 'push') {
+    if (options.tier === 'commit') {
+      const started = performance.now(), problems = lineEndingProblems(root);
+      say({check:'staged.line-endings',tier:'commit',status:problems.length ? 'fail' : 'pass',seconds:(performance.now()-started)/1000,detail:problems.length ? problems.join('; ') : 'staged text has no lone carriage return or new CRLF over LF',caught:'staged line-ending changes, section 1852'});
+    }
     for (const outcome of await scanChecks(root)) say(outcome);
     for (const outcome of await settingsChecks(root, chosen.changed)) say(outcome);
     const earlyFailures = outcomes.filter(outcome => outcome.status === 'fail' && !outcome.diagnostic);

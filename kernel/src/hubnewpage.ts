@@ -90,7 +90,7 @@ export interface NewPageArguments {
  * `deskpost kickoff check` and `hub edit --mode new-page --page kickoffs/<id>` share. No register: the TRAIN rule is
  * skipped with a warning (standing answer 5); one that cannot be read is a problem, as the tool's `--train` says.
  */
-export function judgeKickoff(text: string, workspace: string, rules: { placeholders?: boolean; train?: boolean; names?: boolean; programRoot?: string; postingPage?: string } = {}): { problems: string[]; warnings: string[] } {
+export function judgeKickoff(text: string, workspace: string, rules: { placeholders?: boolean; postedHint?: boolean; train?: boolean; names?: boolean; programRoot?: string; postingPage?: string } = {}): { problems: string[]; warnings: string[] } {
   const root = rules.programRoot ?? programRoot();
   const adrFolder = path.join(root, 'docs', 'adr');
   if (!fs.existsSync(adrFolder)) return { problems: [`no docs/adr in the program root (${adrFolder}), so the ADRs a Kickoff names cannot be checked`], warnings: [] };
@@ -113,7 +113,7 @@ export function judgeKickoff(text: string, workspace: string, rules: { placehold
   try { numbering = parseKickoffNumbering(fs.existsSync(areasFile) ? fs.readFileSync(areasFile, 'utf8') : null); }
   catch (error) { numbering = { unreadable: `docs/areas.json cannot be read: ${(error as Error).message}` }; }
   const resolveName = kickoffNameResolver(workspace);
-  const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, names: rules.names, resolveName: rules.names === false ? undefined : name => name === rules.postingPage ? { status: 'exists' } : resolveName(name), numbering });
+  const verdict = kickoffVerdict(text, { adrFiles, train, missingAdrs: 'warn', placeholders: rules.placeholders, postedHint: rules.postedHint, names: rules.names, resolveName: rules.names === false ? undefined : name => name === rules.postingPage ? { status: 'exists' } : resolveName(name), numbering });
   return { ...verdict, problems: [...verdict.problems, ...problems], warnings: [...warnings, ...verdict.warnings] };
 }
 

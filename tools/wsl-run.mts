@@ -39,6 +39,45 @@ const SCRIPT_LIMIT = 16_000;
  */
 export const LINUX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
+// The Linux container in .forgejo/workflows/ci.yml supplies the Node major in its image tag.
+// The wsl-run-ci-versions train item records the Git baseline for that Bookworm image.
+const CI_IMAGE_VERSIONS = {
+  'node:24-bookworm': {nodeMajor: 24, git: '2.39.5'},
+};
+
+// Read the Linux job's container image in the clone that will run the script.
+const CI_VERSION_CHECK = [
+  'ci_image=$(awk \'',
+  '  /^  linux:[[:space:]]*($|#)/ { linux=1; next }',
+  '  linux && /^  [^ ]/ { exit }',
+  '  linux && /^    container:[[:space:]]*($|#)/ { container=1; next }',
+  '  container && /^    [^ ]/ { container=0 }',
+  '  container && /^      image:/ {',
+  '    sub(/^      image:[[:space:]]*/, "")',
+  '    sub(/[[:space:]]+#.*/, "")',
+  '    sub(/[[:space:]]+$/, "")',
+  '    gsub(/["\\047]/, "")',
+  '    print; exit',
+  '  }\' .forgejo/workflows/ci.yml 2>/dev/null)',
+  'ci_node= ci_git=',
+  'case "$ci_image" in',
+  ...Object.entries(CI_IMAGE_VERSIONS).map(([image, version]) =>
+    "  '" + image + "') ci_node=" + version.nodeMajor + '; ci_git=' + version.git + ' ;;'),
+  '  *) printf "wsl-run: CI image %s has no version baseline\\n" "${ci_image:-unavailable}" ;;',
+  'esac',
+  'if [[ -n "$ci_node" ]]; then',
+  '  clone_node=$(node --version 2>/dev/null) || clone_node=unavailable',
+  '  clone_git=$(git --version 2>/dev/null) || clone_git=unavailable',
+  '  clone_git="${clone_git#git version }"',
+  '  differences=()',
+  '  [[ "$clone_node" == "v$ci_node."* ]] || differences+=("Node $clone_node (CI major $ci_node)")',
+  '  [[ "$clone_git" == "$ci_git" ]] || differences+=("git $clone_git (CI $ci_git)")',
+  '  if (( ${#differences[@]} )); then',
+  '    printf "wsl-run: CI image %s version differences: %s\\n" "$ci_image" "${differences[*]}"',
+  '  fi',
+  'fi',
+];
+
 /**
  * The constant bash program `wsl.exe -e bash -c` runs. $0 is the script's file name, $1 its base64 text, the rest
  * its arguments. 125 is this preamble's own failure, before the script starts.
@@ -53,6 +92,7 @@ export const PREAMBLE = [
   `export PATH="$HOME/${CLONE}/node/bin:${LINUX_PATH}"`,
   `export DESKPOST_LINUX_CLONE="$HOME/${CLONE}/app"`,
   `cd "$HOME/${CLONE}/app" || exit 125`,
+  ...CI_VERSION_CHECK,
   'exec bash "$d/$0" "$@"',
 ].join('\n');
 

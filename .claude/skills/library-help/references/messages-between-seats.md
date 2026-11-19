@@ -113,6 +113,9 @@ once, naming it. The full gate list and how to send a go are in
 
 ## Who may ring a seat
 
+A Claude Code Desktop session and a terminal (Orca) seat cannot ring each other. A letter reaches
+either through its Desk; use a letter across those hosts.
+
 Each seat says it for itself: `library seat settings <seat> --inbound accept|hold|refuse` writes
 the seat's own one-key file, `.claude/seats/<seat>/settings.json`, after a preview and a yes, and
 `--inbound unset` deletes it. A new seat can take it at creation: `seat start <seat> --project <slug>

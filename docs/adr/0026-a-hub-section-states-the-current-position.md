@@ -12,8 +12,15 @@ because the record it cites already holds the detail.
 
 ## Status
 
-proposed — 2026-09-19, awaiting the reader's ruling. Every other ADR here is `accepted`; this one is
-drafted rather than settled, and the status changes when it is ruled on.
+accepted — 2026-11-17, with the amendment below (`PLAN-hub-redesign.md`, signed by Eric 2026-11-11; built in
+kickoffs/s213). Proposed 2026-09-19.
+
+**Amendment (2026-11-17): point 2 is carried by a check.** On a dev Hub (one with `## Repo`), `hub edit` refuses an
+added or replaced top-level item of `## Now` or `## Next` over 600 bytes or naming no record, and an added
+`## Decisions` entry over 400 bytes or with no link (`PLAN-hub-redesign.md` section 3). A loop's status therefore
+lives in its record, and the root holds a short pointer to it. The question this ADR left open, a remove-item mode,
+is answered by `hub edit --mode close-item`: closing an item moves it word for word to the Hub's newest history page,
+so it is not a deletion, and it is as cheap as adding one. `deskpost hub status` shows each pointer's live state.
 
 **Amends [ADR-0013](0013-a-hub-section-holds-only-what-the-project-can-close.md) by naming a second
 growth source, not by reversing it.** ADR-0013's taxonomy holds and its three destinations still

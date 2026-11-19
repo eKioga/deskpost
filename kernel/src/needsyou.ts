@@ -107,10 +107,11 @@ export function readNeedsYou(workspace: string): NeedsYou {
       continue;
     }
     const next = items(sectionLines(text, 'Next'));
-    for (const item of next) {
-      const run = /^- \[ \] Run ([A-Za-z0-9][A-Za-z0-9-]*):/.exec(item);
-      if (run) kickoffs.push({ seat: hubSeat(hub), text: `${hubSeat(hub)}: ${run[1]}, waiting for you to start the seat and say yes.` });
-    }
+    // THE FIRST POINTER IS THE ONE TO START (PLAN-hub-redesign.md A1-04; kickoffs/s213 row 5): a dev Hub queues up to
+    // three, run in page order, so only the first waits on a start and a yes; the rest are one counted line.
+    const runs = next.map((item) => /^- \[ \] Run ([A-Za-z0-9][A-Za-z0-9-]*):/.exec(item)?.[1]).filter((id): id is string => id !== undefined);
+    if (runs.length > 0) kickoffs.push({ seat: hubSeat(hub), text: `${hubSeat(hub)}: ${runs[0]}, waiting for you to start the seat and say yes.` });
+    if (runs.length > 1) kickoffs.push({ seat: hubSeat(hub), text: `${hubSeat(hub)}: ${runs.length - 1} more queued` });
     for (const item of [...items(sectionLines(text, 'Now')), ...next]) {
       const open = /^- \[ \] (?:\*\*)?(Eric:.*)$/.exec(item);
       if (!open) continue;
@@ -312,9 +313,12 @@ export function refreshAfterCommand(argv: string[]): void {
   let args = argv;
   if (args[0] === '--workspace') args = [...args.slice(2), '--workspace', args[1] ?? ''];
   const [verb, action] = args;
-  // `kickoff check` READS A FILE AND WRITES NOTHING (kickoffs/s174 row 2), exempt by verb and action: `check` is not a read
-  // action of `checkpoint check` or `postbox check`, which keep refreshing.
-  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list')) || (verb === 'kickoff' && action === 'check')) return;
+  // `kickoff check` READS A FILE AND WRITES NOTHING (kickoffs/s174 row 2), and `kickoff next` only reads the Hub, its pages
+  // and the closeout record to answer start or stop (kickoffs/s213-r2 row 7): both are exempt by verb and action, so the
+  // read never rewrites the vault's needs-you page. `check` and `next` are not read actions of other verbs:
+  // `checkpoint check` and `postbox check` keep refreshing.
+  if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list'))
+    || (verb === 'kickoff' && (action === 'check' || action === 'next'))) return;
   if (args.some((item) => ['--preflight', '--help', '-h', '--dry-run'].includes(item))) return;
   let workspace: string;
   try {
