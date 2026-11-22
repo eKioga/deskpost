@@ -35,7 +35,7 @@ import { parseArguments } from './argv.ts';
 import { tableFor } from './verbs.ts';
 import { sha256OfText } from './sha.ts';
 import { strayControlRefusal } from './controlchars.ts';
-import { getShelfBook, readUtf8, listFilesRecursive, type ShelfBook } from './shelfbook.ts';
+import { getShelfBook, readUtf8, listFilesRecursive, shelfCatalogSections, type ShelfBook } from './shelfbook.ts';
 import { assertSeatMayClose, HELD_RECORD_SHAPE, shelfNotes, whyRefusal, type ShelfNoteRow } from './shelfnote.ts';
 import { seatIncarnation } from './seatincarnation.ts';
 import { isLocalBackend } from './basicmemory.ts';
@@ -45,6 +45,10 @@ import { triageInventory } from './triageinventory.ts';
 import { batchNeedsYes, triageActions, triageBatch } from './triagebatch.ts';
 import { convertToBookPagePath } from './pagepath.ts';
 import { localDate } from './localdate.ts';
+import { readSeatRegistry } from './desk.ts';
+import { postboxCache } from './postbox.ts';
+import { readTrain } from './train.ts';
+import { releaseTuple } from './programroot.ts';
 
 const LIBRARY_OUTPUT_SCHEMA = 1;
 const ARCHIVE_FOLDER = '_archive';
@@ -505,7 +509,12 @@ export function convertToTriageAction(
     refuse('close it with review and an outcome first; a closed note can then be filed');
   }
   if (hasOutcome && (!receivedReport || kind !== 'review' || triageTruthy(triageValue(action, 'reopen')))) {
-    refuse('outcome and outcome_note are fields only a review close of a received Report takes.');
+    const localReportClose = source.bookSlug === 'reports' && !receivedReport && kind === 'review' &&
+      !triageTruthy(triageValue(action, 'reopen'));
+    const message = 'outcome and outcome_note are fields only a review close of a received Report takes.';
+    refuse(localReportClose
+      ? message + " A local Report's verdict goes on the triaging seat's Hub record: deskpost triage prepare names that page (record.hub)."
+      : message);
   }
   if (receivedReport && kind === 'review' && !triageTruthy(triageValue(action, 'reopen'))) {
     const letters = getShelfBook(workspace, 'letters');
@@ -907,6 +916,132 @@ export interface TriageResult {
   value: PsJsonValue | null;
 }
 
+export function triagePrepare(workspace: string): Record<string, PsJsonValue> {
+  const stateDirectory = path.join(workspace, '.claude');
+  const resolved = resolveSeatName({ stateDirectory, actingSeatOnly: true });
+  if (resolved.status !== 'named') {
+    refuse(`library triage prepare reads this seat's records, so it needs a seat. ${resolved.message}`.trim());
+  }
+  const seat = resolved.seat!;
+  const problems: string[] = [];
+  let project: string | undefined;
+  try {
+    project = readSeatRegistry(stateDirectory).find(row => row.seat === seat)?.project;
+    if (!project) {
+      problems.push(`Seat '${seat}' has no Project Hub in the seat registry, so no Hub records its verdicts: deskpost seat status ${seat} shows what the registry holds for it.`);
+    }
+  } catch (error) {
+    problems.push(`The seat registry cannot be read (${(error as Error).message}): deskpost seat status ${seat} names the fault.`);
+  }
+  const hub = project ? `projects/${project}` : null;
+
+  const { state } = postboxCache(workspace);
+  const pin = state?.['reports_triager'] as { library_id: string; seat?: string } | null;
+  const conflict = state?.['reports_triager_conflict'] as { claimants?: PsJsonValue[] } | null;
+  let triager: PsJsonValue;
+  if (!state && fs.existsSync(path.join(workspace, 'internal', 'postbox', 'state.json'))) {
+    triager = { state: 'unknown' };
+    problems.push("This Library's Postbox state (internal/postbox/state.json) cannot be read: deskpost postbox status names the fault.");
+  } else if (conflict) {
+    triager = { state: 'conflict', claimants: conflict.claimants ?? [] };
+    problems.push('Two Libraries claim to triage Reports: deskpost reports triager --follow <library> --preflight chooses one.');
+  } else if (!pin) {
+    triager = { state: 'none' };
+    problems.push('No record names the seat that triages Reports: deskpost reports triager <seat> --preflight names one.');
+  } else if (pin.library_id !== state?.['library_id']) {
+    const entries = state?.['entries_seen'] as { library_id: string; library_card: string }[] | undefined;
+    const card = entries?.find(entry => entry.library_id === pin.library_id)?.library_card ?? null;
+    triager = { state: 'other-library', library_id: pin.library_id, library_card: card, seat: pin.seat ?? null };
+    problems.push(`Reports from this Library go to ${card || pin.library_id}: deskpost reports send-pending --preflight offers the pending ones.`);
+  } else if (pin.seat === seat) {
+    triager = { state: 'this-seat' };
+  } else {
+    triager = { state: 'other-seat', seat: pin.seat ?? null };
+    problems.push(`Reports here are seat '${pin.seat}''s to triage, not this seat's: leave them to it, or deskpost reports triager <seat> --preflight names another.`);
+  }
+  let notes: Record<string, PsJsonValue>[] | null = null;
+  try {
+    let relative = 'notebook';
+    try {
+      relative = notebookScope(workspace, seat, 'read', 'Triage inventory').relative;
+    } catch {
+      // Use the same whole-tree fallback as inventory during a Notebook migration.
+    }
+    const inventory = triageInventory(workspace, relative, { pendingOnly: true, book: 'reports' });
+    notes = inventory['holding_notes'] as Record<string, PsJsonValue>[];
+  } catch (error) {
+    problems.push(`The pending Reports cannot be read (${(error as Error).message}): deskpost triage inventory --pending --book reports names the fault.`);
+  }
+
+  let train: ReturnType<typeof readTrain> = null;
+  let trainReadable = true;
+  try {
+    train = readTrain(workspace);
+  } catch (error) {
+    trainReadable = false;
+    problems.push(`The train register cannot be read (${(error as Error).message}): deskpost train --json names the fault.`);
+  }
+  const reports = notes?.map(note => {
+    const page = String(note['page']).replace(/^notes\//, '');
+    const received = Boolean(note['from_library_id']);
+    const matches = (train?.items ?? [])
+      .filter(item => [item.source, item.title, item.note].some(value => value.includes(page)))
+      .map(({ id, title, status, place, note }) => ({ id, title, status, place, note }));
+    return {
+      ...note,
+      received,
+      filed_by_this_seat: !received && note['from_seat'] === seat,
+      suspected: /^suspected/i.test(String(note['title'])),
+      train_items: trainReadable ? matches : null,
+    };
+  }) ?? null;
+  const version = releaseTuple()['binary_version'];
+  const tag = version ? `v${version}` : null;
+  if (!tag) {
+    problems.push("This program reports no version, so no tag names the code it was built from: check against the code's own commit.");
+  }
+
+  let classesPage: string | null = null;
+  let classes: { name: string; state: string | null }[] | null = null;
+  if (hub && project) {
+    let hubOpen: boolean | undefined;
+    try {
+      hubOpen = deskEntriesForSeat(stateDirectory, seat, 'projects').includes(hub);
+    } catch (error) {
+      problems.push(`This seat's Desk cannot be read (${(error as Error).message}), so it is not known whether ${hub} is open: deskpost desk names the fault.`);
+    }
+    if (hubOpen === false) {
+      problems.push(`${hub} is not open: deskpost desk open project ${project}.`);
+    } else if (hubOpen) {
+      try {
+        const text = readUtf8(path.join(workspace, 'collection', hub, 'classes.md'));
+        classes = shelfCatalogSections(text + '\n').map(section => ({
+          name: section.title,
+          state: /^State:[ \t]*(\S+)/m.exec(section.body)?.[1] ?? null,
+        }));
+        classesPage = `${hub}/classes`;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          problems.push(`${hub}/classes cannot be read (${(error as Error).message}): deskpost hub status ${project} shows the Hub's status.`);
+        }
+      }
+    }
+  }
+  return {
+    schema: LIBRARY_OUTPUT_SCHEMA,
+    operation: 'Library Triage Prepare',
+    seat, hub, triager, problems,
+    train: train === null ? null : { changed_at: train.changed_at, changed_by: train.changed_by },
+    reports,
+    report_count: reports?.length ?? null,
+    held_count: notes?.filter(note => Boolean(note['held'])).length ?? null,
+    program: { version: version ?? null, tag },
+    record: { hub, classes_page: classesPage, classes, fields: classesPage ? ['Class', 'Missed by'] : [] },
+    shared_library_write: false,
+    scope: "Read-only local records for this seat's Report triage.",
+  };
+}
+
 /** The default `--capture-date`: the local calendar date, as a capture names its note (S50). */
 export function runTriageVerb(argv: string[], workspace: string): TriageResult {
   const action = argv[0] ?? '';
@@ -988,7 +1123,8 @@ export function runTriageVerb(argv: string[], workspace: string): TriageResult {
       // a resume is the same --actions run again, which is the same batch and so the same journal.
       return triageBatch(argv.slice(1), workspace);
     }
-    return { refusal: `library triage has no action '${action}'. It has: batch, inventory, validate.`, value: null };
+    if (action === 'prepare') return { refusal: null, value: triagePrepare(workspace) };
+    return { refusal: `library triage has no action '${action}'. It has: batch, inventory, prepare, validate.`, value: null };
   } catch (error) {
     return { refusal: (error as Error).message, value: null };
   }

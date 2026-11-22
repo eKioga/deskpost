@@ -204,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.7.0**, "Hubs that show their state": see a Project Hub's live status, close completed items into history, queue builder Kickoffs and return to a briefing with the current state. Reader text keeps the spelling you typed. `library move` is turned off until a later release. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.7.1**, "Groups for your seats, and Library moves": departments can have groups with their own orchestrator and letters, and `library move` is on with a preview before any change. Hub status and briefings give a clearer view of current work. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: builders working from Webtop**, reading and writing the shared collection, alongside the remaining work for builders to share the gate.

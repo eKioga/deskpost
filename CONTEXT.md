@@ -420,9 +420,13 @@ where the menu's card layout or the 1.5.0 Library card cannot be meant (ADR-0069
 _Avoid_: profile, description, bio
 
 **Department**:
-A slug a seat may carry in the registry, grouping seats that share an orchestrator. It exists while a
-seat carries it; there is no departments file.
-_Avoid_: team (the whole Library's seats), group, lane (a seat's own work)
+A name a seat may carry in the registry, grouping seats that share an orchestrator. A department
+may hold groups, including when no seat carries the parent name. There is no departments file.
+_Avoid_: team (the whole Library's seats), lane (a seat's own work)
+
+**Group**:
+A department of its own under a parent, named `<parent>/<group>` with a slug in each part and
+one level of groups. It has its own seats, orchestrator and letter destination.
 
 **Orchestrator**:
 The one seat of a department that letters to the department reach, and that answers or routes them.

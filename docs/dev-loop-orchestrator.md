@@ -156,14 +156,20 @@ row 4 on the candidate.
   Claude Code's and Codex's settings; anything outside Deskpost; product goals, scope and name; and one priority
   call after each release. These always go to Eric; a Kickoff's standing answers cannot decide them for him.
 
-### Sizing by context, and spare items
+### One deliverable per Kickoff
 
-(Decision, 2026-11-17.) Include the work needed to achieve the Kickoff's goal. Keep any spare
-items explicitly chartered and scoped, with their files in OWNS PATHS and their ids in SPARE TRAIN.
-Record `Context: <window> window, <tokens> at handback (<n>%), peak <n>%, compactions <n>`
-from the builder's own session file when those figures are available. Use the readings as evidence
-when planning later Kickoffs. A builder works through the chartered rows and hands back early
-when a concrete blocker prevents further progress.
+(PLAN-features-ship, 2026-11-20.) A Kickoff charters one deliverable: one behaviour change a Library
+reader would see, named by the command or screen that changes and landed on `master`, or a blocker
+removal that names the deliverable it unblocks. The header line `DELIVERABLE: <slug>` names it;
+use the same slug on every Kickoff for that deliverable. If a Kickoff cannot name the one command
+or screen that behaves differently, it is two Kickoffs or a blocker removal.
+
+A fix rides only when it changes a file the deliverable already changes and costs one small row.
+Each free builder gets its own deliverable; with none free, it waits. A read of a sensitive range
+that had no second read is the one exception. Never charter a unit of fixes alone.
+
+Before a third started Kickoff on one deliverable, the orchestrator reads the failure itself,
+reproduces it where it failed, and asks Eric: "re-cut, ship what works with the limit listed, or continue".
 
 Each Kickoff names its lane in WHY NOW as `- **Lane:** <lane>`, from `docs/areas.json`, and its OWNS PATHS stay in that
 lane's areas or `shared` unless a `- **Cross-lane:**` line names the path and why (Two Builders rule 9). The source

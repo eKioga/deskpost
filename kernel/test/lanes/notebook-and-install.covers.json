@@ -1,5 +1,82 @@
 {
   "schema": 1,
   "about": "The kernel/src files each section of kernel/test/lanes/notebook-and-install.ts covers, as kernel/test/section-covers.json says for selftest.ts (kickoffs/s210).",
-  "sections": {}
+  "sections": {
+    "1600": [
+      "kernel/src/cli.ts",
+      "kernel/src/install.ts"
+    ],
+    "1601": [
+      "kernel/src/cli.ts"
+    ],
+    "1602": [
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1603": [
+      "kernel/src/checkpointverb.ts",
+      "kernel/src/checkpoint.ts"
+    ],
+    "1604": [
+      "kernel/src/setup.ts",
+      "kernel/src/install.ts"
+    ],
+    "1605": [
+      "kernel/src/cli.ts",
+      "kernel/src/verbs.ts"
+    ],
+    "1606": [
+      "kernel/src/notebooklinks.ts"
+    ],
+    "1607": [
+      "kernel/src/checkpoint.ts"
+    ],
+    "1608": [
+      "kernel/src/checkpoint.ts"
+    ],
+    "1609": [
+      "kernel/src/cli.ts"
+    ],
+    "1610": [
+      "kernel/src/init.ts",
+      "kernel/src/human.ts"
+    ],
+    "1611": [
+      "kernel/src/setup.ts",
+      "kernel/src/init.ts"
+    ],
+    "1612": [
+      "kernel/src/init.ts"
+    ],
+    "1613": [
+      "kernel/src/checkpoint.ts"
+    ],
+    "1614": [],
+    "1615": [
+      "kernel/src/notebook.ts"
+    ],
+    "1616": [
+      "kernel/src/init.ts"
+    ],
+    "1617": [
+      "kernel/src/checkpoint.ts"
+    ],
+    "1618": [
+      "kernel/src/notebooklinks.ts"
+    ],
+    "1619": [],
+    "1620": ["kernel/src/checkpoint.ts", "kernel/src/cli.ts"],
+    "1621": ["kernel/src/checkpoint.ts"],
+    "1622": ["kernel/src/checkpoint.ts", "kernel/src/checkpointverb.ts"],
+    "1623": ["kernel/src/checkpoint.ts", "kernel/src/checkpointverb.ts", "kernel/src/verbs.ts", "kernel/src/needsyou.ts"],
+    "1624": ["kernel/src/checkpointverb.ts", "kernel/src/init.ts", "kernel/src/hookregistry.ts"],
+    "1625": ["kernel/src/skillcopy.ts", "kernel/src/init.ts", "kernel/src/human.ts", "kernel/src/checkpoint.ts"],
+    "1627": ["kernel/src/deskcontext.ts"],
+    "1626": ["kernel/src/checkpoint.ts", "kernel/src/checkpointverb.ts", "kernel/src/cli.ts"],
+    "1640": ["kernel/src/init.ts"],
+    "1641": ["kernel/src/init.ts", "kernel/src/installs.ts"],
+    "1642": ["kernel/src/init.ts", "kernel/src/doctor.ts"],
+    "1643": ["kernel/src/init.ts"],
+    "1644": ["kernel/src/checkpoint.ts"]
+  }
 }

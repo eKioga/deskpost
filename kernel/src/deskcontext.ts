@@ -20,9 +20,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
-import { archivedSinceOpened, missingBookRepair, missingSinceOpened, movedNoteLine, pendingLetterPagesForSeat, pendingLetterGoForSeat, splitBookRoot } from './desk.ts';
+import { archivedSinceOpened, missingBookRepair, missingSinceOpened, movedNoteLine, pendingLetterPagesForSeat, pendingLetterGoForSeat, readSeatRegistry, splitBookRoot } from './desk.ts';
 import { asText, BOOK_ROOT_ACCEPT_PATTERN, convertToBookRoot, field, readStateLines } from './guards.ts';
-import { setHookServed, testHookServed } from './hookledger.ts';
+import { readHookLedger, saveHookLedger, setHookServed, testHookServed } from './hookledger.ts';
+import { getShelfBook } from './shelfbook.ts';
+import { shelfNotes } from './shelfnote.ts';
+import { nextShownLines, sectionSpan, toLines } from './hubedit.ts';
 import { currentAgentProcessId, launcherDirectAgent } from './procstart.ts';
 import { getSeatClaimState, launcherHoldsSeatForThisAgent, readSeatActivity, writeSeatActivity } from './seatclaim.ts';
 import { conversationTitle, isConversationId, transcriptRoot } from './conversation.ts';
@@ -370,33 +373,49 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     // THIS SEAT'S PENDING LETTERS (kickoffs/s108 ruling 3), in their own `try`: a reader fault leaves no line and the
     // text-only key, so it can never make the block per prompt. The newest page reaches the ledger key only.
     let letterLine = '';
+    let handbackLine = '';
     let newestPending = '';
     try {
       const pending = pendingLetterPagesForSeat(workspace, seat);
       if (pending.length) {
         letterLine = ` ${LETTERS_WAIT_LINE}${pendingLetterGoForSeat(workspace, seat) ? ` ${LETTERS_GO_LINE}` : ''}`;
         newestPending = pending[pending.length - 1]!;
+        const titles = new Map<string, Map<string, string>>();
+        for (const page of [...pending].reverse()) {
+          const [slug, ...parts] = page.split('/');
+          if (!slug) continue;
+          if (!titles.has(slug)) titles.set(slug, new Map(shelfNotes(getShelfBook(workspace, slug)).map(note => [note.page, note.title])));
+          const title = titles.get(slug)!.get(parts.join('/'));
+          if (title && /^[a-z0-9][a-z0-9-]* handback:/i.test(title)) { handbackLine = ` Handback waits: ${title}`; break; }
+        }
       }
     } catch {
       letterLine = '';
       newestPending = '';
     }
-    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}.${missingBooks} Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${seatWarning}${notebookWarning}`;
-    // ONCE PER SESSION, KEYED ON THE TEXT ITSELF (kickoffs/s77 row 0, the desk-context Report): an identical block
-    // already served into this conversation is still in it, so it is not sent again. A changed Desk, seat or warning
-    // is a different text and is sent. Only where the ledger clear is proven to reach this ledger (above), only for
-    // Claude Code's own reader prefix -- a Codex or plugin session runs no clear of its own -- and never without a
-    // session id. A withheld block still carries the session's name: naming is its own once-only record.
+    let startLine = '';
     try {
-      const claudeCode = prefix === DEFAULT_READER_PREFIX && (process.env['DESKPOST_ASSISTANT'] ?? '') !== 'codex';
-      if (claudeCode && sessionId.trim() && ledgerClearReaches(workspace, stateDirectory)) {
-        // ONCE PER NEWEST PENDING LETTER (kickoffs/s108 ruling 3): a newer letter is a new key, served once; the close of
-        // an older one while a newer waits leaves the key as it was. With none pending, the text-only key as before.
+      const hub = readSeatRegistry(stateDirectory).find(row => row.seat === seat)?.project;
+      if (hub && openProjects.includes(`projects/${hub}`)) {
+        const lines = toLines(fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8'));
+        if (sectionSpan(lines, 'Repo')) for (const line of nextShownLines(lines) ?? []) {
+          const run = /^- \[ \] Run ([A-Za-z0-9._-]+):/.exec(line.text);
+          if (run) { startLine = ` Ready to start: Run ${run[1]}`; break; }
+        }
+      }
+    } catch { /* An unavailable Hub advertises no work to start. */ }
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}.${missingBooks} Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${handbackLine}${startLine}${seatWarning}${notebookWarning}`;
+    // Keep only the last delivered snapshot. Returning A after B sends A again, on either harness,
+    // only where the registered compaction clear reaches this conversation's serve ledger.
+    try {
+      if (sessionId.trim() && ledgerClearReaches(workspace, stateDirectory)) {
         const ledgerKey = `desk-context:${seat}:${sha256OfText(newestPending ? `${text}|${newestPending}` : text)}`;
-        if (testHookServed(stateDirectory, sessionId, ledgerKey)) {
+        const ledger = readHookLedger(stateDirectory), keys = ledger.get(sessionId) ?? [];
+        if (keys.findLast(key => key.startsWith('desk-context:')) === ledgerKey) {
           return sessionTitle ? JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT, sessionTitle } }) : '';
         }
-        setHookServed(stateDirectory, sessionId, ledgerKey);
+        ledger.set(sessionId, [...keys.filter(key => !key.startsWith('desk-context:')), ledgerKey]);
+        saveHookLedger(stateDirectory, ledger);
       }
     } catch {
       // a ledger that cannot be read or written sends the block: repetition, never a withheld Desk

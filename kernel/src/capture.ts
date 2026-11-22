@@ -39,7 +39,7 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
-import { createOutboxEntry, newDeliveryId, inboxPath, payloadDigest, removeOutboxEntry, resolveRemoteSeat, sendAfterCapture, postboxCache } from './postbox.ts';
+import { createOutboxEntry, newDeliveryId, inboxPath, payloadDigest, removeOutboxEntry, resolveRemoteSeat, sendAfterCapture, postboxCache, checkBeforeReading } from './postbox.ts';
 import type { OutboxEntry, PostboxFiling, RemoteAddress } from './postbox.ts';
 import { resolveContentPath } from './contentpath.ts';
 import { argumentTable } from './verbs.ts';
@@ -73,7 +73,7 @@ import {
 } from './booksources.ts';
 import { rawBatchOwner } from './rawowners.ts';
 import { archiveRecordPath, getShelfBook, listFilesRecursive, readUtf8, type ShelfBook } from './shelfbook.ts';
-import { assertSeatMayClose, isAddressedTo, isWrittenBy, noteFrontmatter, parseShelfNote, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
+import { assertSeatMayClose, departmentNameForText, isAddressedTo, isWrittenBy, noteFrontmatter, parseShelfNote, seatNameForText, setNoteField, shelfNotes, whyRefusal, type SeatIncarnation, type ShelfNoteRow } from './shelfnote.ts';
 import { idsOf, incarnationOf, pastNameRefusal, readSeatIdentityView, seatIncarnation, type SeatIdentityView } from './seatincarnation.ts';
 import { departmentProblem, destinationOf, readSeatMetadata } from './seatmeta.ts';
 
@@ -459,7 +459,7 @@ function routedBody(original: ShelfNoteRow, page: string, router: string, origin
   const originalBody = (close >= 0 ? text.slice(close + 5) : text).replace(/^\n+/, '').replace(/\s+$/, '');
   const link = /^notes\/[a-z0-9][a-z0-9.-]*$/.test(page) ? `\`${page}\`` : '(a letter of this Book)';
   const to = original.forDepartment
-    ? `to department ${seatNameForText(original.forDepartment)}, resolved to ${seatNameForText(original.forSeat)}`
+    ? `to department ${departmentNameForText(original.forDepartment)}, resolved to ${seatNameForText(original.forSeat)}`
     : `to seat ${seatNameForText(original.forSeat)}`;
   const provenance = `Originally from seat ${seatNameForText(origin)} (claimed by its capture, not proof), ${to}; routed by ${seatNameForText(router)} from ${link}.`;
   return `${provenance}\n\n${body.replace(/\s+$/, '')}\n\n## Original letter\n\n${originalBody}\n`;
@@ -680,7 +680,7 @@ export function captureVerb(
     if (given('library')) {
       if (!library) refuse('--library names the Library a letter is for, by its id or its card: --for <seat> --library <id-or-card>. Nothing was captured.');
       if (!given('for') || given('for-department') || given('routes') || given('answers') || given('supersedes')) {
-        refuse('--library takes --for <seat> only: a letter to another Library names one of its seats, and is never a department letter, a route, an answer or a supersession. Nothing was captured.');
+        refuse('--library takes --for <seat> only: a letter to another Library names one of its seats, and is never a department letter, a route, an answer or a supersession. Nothing was captured. To answer a letter from another Library, use --answers notes/<page> alone: it sends the reply home to the Library that asked, by itself.');
       }
     }
     if (filing !== null && (given('for') || given('for-department') || given('answers') || given('routes') || given('supersedes') || given('library'))) {
@@ -776,6 +776,14 @@ export function captureVerb(
       const projection = readSeatMetadata(stateDirectory(workspace));
       const destination = destinationOf(projection, forDepartment);
       if (destination.kind === 'none') {
+        if (destination.groups) {
+          const groups = destination.groups.map(({ department, destination: group }) => {
+            if (group.kind === 'none') return `${department} (no destination)`;
+            const role = group.kind === 'orchestrator' ? 'orchestrator' : 'only seat';
+            return `${department} (${role}: ${group.seat})`;
+          });
+          refuse(`Department '${forDepartment}' has groups and no orchestrator of its own. Write to a group with --for-department ${forDepartment}/<group>. Groups: ${groups.join(', ')}. Nothing was captured.`);
+        }
         if (!destination.seats.length) {
           const known = projection.departments.map((view) => view.department);
           refuse(`Department '${forDepartment}' has no seat in this Library, so a letter to it reaches no one. Departments: ${known.length ? known.join(', ') : '(none)'}. Write to a seat with --for <seat>. Nothing was captured.`);
@@ -945,6 +953,9 @@ export function captureVerb(
     const heading = /^#[ \t]+(.+?)[ \t]*$/m.exec(normalisedBody);
     const keepsOwnHeading = heading !== null && heading.index === 0 && /[a-zA-Z0-9]/.test(heading[1]!);
     if (!keepsOwnHeading && !title) refuse('Title is required: the body has no leading H1 to name the note, so pass --title.');
+    if (filing === null && keepsOwnHeading && normalisedBody.length === heading[0].length) {
+      refuse(`The note body holds only its heading '${heading[1]!.trim()}', so it has no text: nothing was captured. On Windows the deskpost launcher ends --body at its first line break; write the text to a file and pass --content-path <file>.`);
+    }
     const givenTitle = keepsOwnHeading ? heading![1]!.trim() : title;
     const pageTitle = literal ? givenTitle : fillTimePlaceholders(givenTitle, now);
     const noteSlug = convertToNoteSlug(pageTitle);
@@ -1085,7 +1096,10 @@ export function captureVerb(
     // A LETTER TO ANOTHER LIBRARY, the sender's record (kickoffs/s123 row 2): both Libraries, the delivery id and where it
     // goes; an answer also the asker's delivery id it answers. After every older line, so a local letter is unchanged.
     if (remote !== null) {
-      frontmatter.push(`from_library_id: ${remote.from_library_id}`, `from_library_card: ${remote.from_library_card}`, `for_library_id: ${remote.library_id}`, `delivery_id: ${deliveryId}`);
+      // `for_library_card` after `for_library_id` (kickoffs/s219 row 9, train review-nits-w28 part 1): `letters list --sent`
+      // names the card it reads, so the sent note keeps it.
+      frontmatter.push(`from_library_id: ${remote.from_library_id}`, `from_library_card: ${remote.from_library_card}`, `for_library_id: ${remote.library_id}`,
+        `for_library_card: ${remote.library_card}`, `delivery_id: ${deliveryId}`);
       if (answersDeliveryId) frontmatter.push(`answers_delivery_id: ${answersDeliveryId}`);
       frontmatter.push(`postbox_path: ${inboxPath(remote.library_id, deliveryId)}`);
     }
@@ -1381,7 +1395,7 @@ export function captureVerb(
         ? 'This Book is open at this seat; read the note with read_open_book_page when you are ready to review.'
         : `This Book is closed by default. Open it with deskpost desk open book ${slug} --location shelf when you are ready to review.`) +
       (why || !whyMissingSaid ? '' : WHY_MISSING_NEXT);
-    if (typeof plan['recipient_message_name'] === 'string') {
+    if (typeof plan['recipient_message_name'] === 'string' && process.env['DESKPOST_ASSISTANT'] !== 'codex') {
       plan['next'] += `\nRing: SendMessage to "${plan['recipient_message_name']}", first line "${plan['ring_line']}"`;
     } else if (plan['recipient_message_name'] === null) {
       const reason = plan['recipient_message_name_reason'];
@@ -1532,7 +1546,7 @@ function openLettersFor(book: ShelfBook, self: SeatIncarnation): ShelfNoteRow[] 
 /**
  * `deskpost letters list [--json]` (kickoffs/s120 row 3): this seat's open letters, oldest first, each with its page,
  * sender, capture time and title. The seat is resolved, never typed, and the letters Book must be open on its Desk, as
- * for `letters close`. It reads; it writes nothing.
+ * for `letters close`. The plain list checks the Postbox first, which can file newly arrived letters.
  */
 export function lettersListVerb(argv: string[], workspace: string): WriterResult & { text: string } {
   const parsed = parseArguments(argv, argumentTable('letters', 'list'));
@@ -1591,6 +1605,7 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
       return { refusal: null, text, value: { schema: LIBRARY_OUTPUT_SCHEMA, operation: 'Closed letters for this seat',
         seat, book: book.bookRoot, count: letters.length, letters, shared_library_write: false } };
     }
+    const postbox = checkBeforeReading(workspace);
     const open = openLettersFor(book, self).sort(oldestFirst);
     const reopened = shelfNotes(book).filter((row) => row.review === 'pending' && !row.malformed.length &&
       isAddressedTo(row, self) && (row.answeredBy || row.routedTo)).sort(oldestFirst);
@@ -1617,6 +1632,7 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
       book: book.bookRoot,
       count: open.length,
       ...(reopened.length ? { reopened_count: reopened.length } : {}),
+      ...(postbox === null ? {} : { postbox }),
       letters,
       shared_library_write: false,
     };
@@ -1630,7 +1646,10 @@ export function lettersListVerb(argv: string[], workspace: string): WriterResult
             `    Read with read_open_book_page: Book letters, page ${letter.page}.`];
           })].join('\n')
       : `No open letters for seat '${seat}'.`;
-    return { refusal: null, value, text };
+    const postboxLine = postbox === null ? '' : postbox.checked
+      ? `\nPostbox checked now: ${postbox.filed} filed.`
+      : `\nPostbox not reached (${postbox.error}); last checked ${postbox.last_check ?? 'never'}. Letters filed before then are listed.`;
+    return { refusal: null, value, text: text + postboxLine };
   } catch (error) {
     return { refusal: (error as Error).message, value: null, text: '' };
   }

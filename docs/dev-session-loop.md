@@ -179,13 +179,15 @@ A Kickoff requires TRAIN, WHY NOW, OWNS PATHS, STAY OUT OF, ROWS, CHARTER and CL
 The builder works the rows in order, committing per cut through the pre-commit gate (rows a cut tests together go in
 one commit unless the Kickoff names a reason to split them; see "The gates") (Eric, 2026-10-11).
 
-**The context self-check and spare items** (Decision, 2026-11-17). Record
-`Context after <row>: <tokens> of <window> (<n>%)` after each row and at handback, using `unknown`
-when the harness has no reading. In Claude Code, use the last main-thread assistant record in
-the session's transcript and add input tokens, cache reads and cache writes. In Codex, use the
-session's last `token_count` event and the reported context window. Read only this session's file.
-These readings help the next Kickoff's author judge the workload. Work the chartered rows until
-they are done. Hand back early when a concrete blocker prevents further progress.
+**When the builder stops** (PLAN-features-ship, 2026-11-20): a change would touch a Library's real data,
+a published release, `master` directly, a protected branch or a signed plan outside the Kickoff's charter;
+a product question needs a decision; a required check fails at the base or on a file the Kickoff does
+not own, with no standing answer for it; or the tools or platform block every remaining row.
+Anything else is noted in the handback and the run goes on.
+
+**A stop's follow-up** is written by the orchestrator the same day, fresh and short, carrying finished
+rows as done. The builder writes no Context lines in its handback; it still gives `kickoff next` its
+reading when the harness shows one (Close step 7).
 
 **The least code that works** (Decision, 2026-10-21, after Ponytail's ladder, `DietrichGebert/ponytail`, MIT). Before
 writing code for a row, the builder asks in order: does it need to exist at all; does the codebase already do it
@@ -288,7 +290,7 @@ instruction: the reader still decides whether to interrupt the builder.
    and run `deskpost kickoff next --context <percent|unknown> [--compacted] --json` (add `--compacted` when the harness
    compacted this session). It answers start only when the Handback says `Outcome: pushed` or `published`, this session's closeout record
    is complete, the next pending pointer's page hashes to the sha256 it carries, both Kickoffs say `CHAIN: yes`, and the
-   reading is below 60% with no compaction. On **start**, the builder runs the next Kickoff's whole OPEN as a fresh session
+   reading is below 60% or `unknown`, with no compaction (a program older than this change still stops on `unknown`). On **start**, the builder runs the next Kickoff's whole OPEN as a fresh session
    would: the standing yes recorded against its hash, a clean checkout, `git fetch`, and its own row 0 from its own pinned
    base, never from the previous branch's head; a row 0 refusal ends the chain. On **stop**, the turn ends.
 8. **Stop.** (Eric, 2026-10-11) The turn ends with the reply above. Nothing after it builds, and a later prompt is answered by
@@ -479,7 +481,7 @@ Children blank the seat variables and remove installed program shims from their 
 time: "we need to design kickoffs with how long it takes to clear these gates in mind. We should always ask
 ourselves, do we need this gate?"). As measured in S103: a `-Fast` gate about 17 minutes, a full kernel
 self-test about 17, the full gate about 35. Since c2's eight-worker self-test (S118, 2026-10-12), see "Measured times" below. So:
-- every Kickoff's SIZE gives gate minutes per row and per cut beside context, and asks of each gate what
+- every Kickoff's SIZE gives gate minutes per row and per cut, and asks of each gate what
   defect it catches that an earlier one did not (Eric, 2026-10-08);
 - rows a cut tests together are committed together, one commit per cut, unless the Kickoff names a
   reason to split them (Eric, 2026-10-08). The commit hook runs the selected checks once for the cut. Before the commit, run only
@@ -588,14 +590,6 @@ keeps `sections.log` and `result.json` on success, and keeps child output and sn
 (or on request with `--keep-logs`). A snapshot records the process/parent chain, CPU, start time, thread
 wait states and decoded input JSON. It records environment names, with values limited to gate/seat fields
 and credentials omitted; descendant environments are explicitly not readable.
-
-**The acceptance matrix in a build session.** (Report, 2026-10-08) `tools/Invoke-AcceptanceMatrix.ps1` takes **one `-Row` per
-call**: through `powershell.exe -File`, `-Row a,b` arrives as one row name and is refused (S102 stall 4).
-Against the source kernel (`-Kernel 'node kernel/src/cli.ts'`), a row whose oracle sentence names a
-`tools/*.ps1` helper mismatches by design: the judge rewrites that sentence only for a compiled kernel, and
-self-test section 120 keeps the source naming only what ships. Such a row (today
-`reader.refuses-a-seatless-session`) is judged against a build of the same commit, never by a delta or by
-changing the source (S103 K1, closed by the orchestrator 2026-10-08) (Report, 2026-10-08).
 
 **Watching a long gate.** (Report, 2026-10-13) A builder that watches a running gate with a background monitor has it
 speak only on a flag: the gate exited, a process is stuck, or no CPU progress for a set time. Periodic

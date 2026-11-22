@@ -59,6 +59,15 @@ function mergedPaths(): Set<string> {
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return merged;
 }
+function kickoffTitle(text: string): string {
+  return text.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').split(/\r?\n/)[0]!;
+}
+export function kickoffTitleUnit(text: string): string | null {
+  return /^#\s+([csw]\d+)(?:-r\d+)?\s+kickoff\b/i.exec(kickoffTitle(text))?.[1]?.toLowerCase() ?? null;
+}
+export function branchUnit(branch: string): string {
+  return branch.slice(branch.indexOf('/') + 1).replace(/-r\d+$/, '');
+}
 function main(args: string[]): number {
   if (args[0] !== 'start' && args[0] !== 'check' || args[0] === 'check' && args.length !== 1) throw Error('usage: node tools/owns.mts start --kickoff <file> --sha256 <64 hex> | check');
   const branch = branchName();
@@ -75,11 +84,11 @@ function main(args: string[]): number {
     if (hash !== args[4]!.toLowerCase()) throw Error('SHA-256 mismatch for ' + args[2]);
     const text = bytes.toString('utf8'), parsed = ownsPaths(text);
     if (parsed.problems.length) throw Error(parsed.problems.join('; '));
-    const title = text.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').split(/\r?\n/)[0]!;
-    const unit = /^#\s+([csw]\d+)(?:-r\d+)?\s+kickoff\b/i.exec(title)?.[1]?.toLowerCase();
+    const title = kickoffTitle(text);
+    const unit = kickoffTitleUnit(text);
     if (!unit) throw Error(`Kickoff title gives no unit id: ${title}; write # w19-r2 kickoff: ... with this branch's unit id`);
-    const branchUnit = branch.split('/')[1]!.replace(/-r\d+$/, '');
-    if (unit && unit !== branchUnit) throw Error(`branch ${branch} belongs to ${branchUnit}, but the Kickoff title names ${unit}; start on that unit's branch`);
+    const owner = branchUnit(branch);
+    if (unit !== owner) throw Error(`branch ${branch} belongs to ${owner}, but the Kickoff title names ${unit}; start on that unit's branch`);
     let previous: Ownership | null = null;
     try { fs.statSync(file); previous = readRecord(file, branch); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -112,5 +121,7 @@ function main(args: string[]): number {
   process.stderr.write(refused.slice(0, 10).join('\n') + '\npark the row and say which file and why in the handback; never edit a file outside OWNS (RULE 3(f)). Nothing was committed.\n');
   return 1;
 }
-try { process.exitCode = main(process.argv.slice(2)); }
-catch (error) { process.stderr.write('owns: ' + oneLine((error as Error).message) + '\n'); process.exitCode = 1; }
+if (/(?:^|[\\/])owns\.mts$/.test(process.argv[1] ?? '')) {
+  try { process.exitCode = main(process.argv.slice(2)); }
+  catch (error) { process.stderr.write('owns: ' + oneLine((error as Error).message) + '\n'); process.exitCode = 1; }
+}

@@ -17,6 +17,8 @@ if (/^(?:fixup!|amend!) /.test(subject)) process.exit(0);
 
 const merge = spawnSync('git', ['rev-parse', '--verify', '-q', 'MERGE_HEAD'], {stdio: 'ignore', windowsHide: true});
 if (merge.status === 0) process.exit(0);
+const cherryPick = spawnSync('git', ['rev-parse', '--verify', '-q', 'CHERRY_PICK_HEAD'], {stdio: 'ignore', windowsHide: true});
+if (cherryPick.status === 0) process.exit(0);
 
 const suffix = subject.startsWith(unit) ? subject.slice(unit.length) : '';
 if (!/^(?:-r[1-9]\d*)?(?: row [1-9]\d*:| spare [\w-]+:|:)/.test(suffix)) {

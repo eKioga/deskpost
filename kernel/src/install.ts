@@ -214,7 +214,9 @@ function prompt(question: string): Promise<string> {
 function runShown(json: boolean, exe: string, args: string[]): number {
   if (json) {
     const ran = runCaptured(exe, args);
-    if (ran.stdout.trim()) process.stderr.write(ran.stdout.trimEnd() + '\n');
+    let stdout = ran.stdout.trimEnd();
+    try { if (JSON.parse(stdout)?.status === 'refused') stdout = ''; } catch { /* Ordinary child output stays as said. */ }
+    if (stdout.trim()) process.stderr.write(stdout + '\n');
     if (ran.stderr.trim()) process.stderr.write(ran.stderr.trimEnd() + '\n');
     return ran.exit;
   }
@@ -672,7 +674,7 @@ export function runClosing(state: Pick<RunState, 'args' | 'say'>, exe: string, c
   let report: Record<string, unknown> | null = null;
   try {
     const parsed = JSON.parse(ran.stdout) as unknown;
-    report = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    report = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as Record<string, unknown>).status !== 'refused' ? (parsed as Record<string, unknown>) : null;
   } catch {
     report = null;
   }
@@ -969,7 +971,7 @@ async function transaction(state: RunState, inputs: TransactionInputs): Promise<
   const plan = (resources: string): SetupPlan => {
     const made = setupPlan({ answers, resources, registerAs: currentLink });
     made.plan_id = planId(made, { archiveSha256: args.archiveSha256, scriptSha256: args.scriptSha });
-    made.view = planView(made);
+    made.view = planView(made, undefined, args.dryRun);
     return made;
   };
   let tempPlan: SetupPlan | null = null;

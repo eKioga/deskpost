@@ -199,7 +199,7 @@ function New-CodexHooksDocument {
     $compiled = [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or (Test-Path -LiteralPath (Join-Path $checkpointRoot 'bin/library.exe') -PathType Leaf)
     $checkpointTarget = if ($compiled) { $checkpointRoot + '/bin/library' } else { $checkpointRoot + '/kernel/src/cli.ts' }
     $posixLiteral = "'" + $checkpointTarget.Replace("'", ("'" + [char]34 + "'" + [char]34 + "'")) + "'"
-    $windowsLiteral = "'" + $checkpointTarget.Replace("'", "''") + "'"
+    $windowsLiteral = "'" + ($checkpointTarget -replace ('([' + [char]39 + [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + '])'), '$1$1') + "'"
     $checkpointPosix = if ($compiled) { $posixLiteral + ' hook checkpoint' } else { 'node ' + $posixLiteral + ' hook checkpoint' }
     $checkpointWindows = if ($compiled) { '& ' + $windowsLiteral + ' hook checkpoint' } else { "& 'node' " + $windowsLiteral + ' hook checkpoint' }
     $text = Expand-CodexTemplateToken -Text $text -Token '"__CHECKPOINT_COMMAND__"' `

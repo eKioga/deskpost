@@ -5,7 +5,7 @@
  *
  * WHAT IT SHOWS, each line naming the record it came from:
  *   - each train id, `kickoffs/` id and letter path named in the Hub's `## Now` and `## Next`, with its state now, and
- *     `closed: tick or close this item` on an unticked item whose record has closed;
+ *     `closed: tick or close this item` when an unticked item closes on that record (no closing condition, or one naming it);
  *   - this Hub's pending Run pointers, in queue order;
  *   - the Library train, labelled as the Library's: the one open car, if any, and the first five open items in register
  *     order with their recorded place. The register has no owner per seat (`train.ts`), so no lane grouping and no claim
@@ -75,6 +75,21 @@ function rootItems(body: string): { section: string; text: string; ticked: boole
 }
 
 /**
+ * An item's closing condition: the text after `Closes when` up to the sentence's end (any case), or null when the item
+ * has none (kickoffs/s219 row 1).
+ */
+function closingCondition(text: string): string | null {
+  const match = /\bcloses when\b([\s\S]*?)(?:[.!?](?=\s|$)|$)/i.exec(text);
+  return match === null ? null : match[1]!;
+}
+
+/** Whether a closing condition names a record (`<train id>`, `kickoffs/<id>` or `notes/<page>`) as a whole word. */
+function namesRecord(condition: string, record: string): boolean {
+  const escaped = record.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'i').test(condition);
+}
+
+/**
  * The Run pointers of a Hub's `## Next`, in page order, ticked or not, read through the one reading every other reader
  * of `## Next` uses (`nextShownLines`, kickoffs/s213-r6 row 1), so a pointer in a fence or an HTML comment is none here.
  */
@@ -123,16 +138,39 @@ export function hubStatus(workspace: string, slug: string, seatOption?: string):
     try { for (const note of lettersBook === null ? [] : shelfNotes(lettersBook)) letterReview.set(path.basename(note.file).replace(/\.md$/i, ''), note.review); } catch { /* no letters read */ }
     const ownRuns = runPointers(body);
     const otherRoots = new Map<string, string | null>();
+    const kickoffPages = new Map<string, string[]>();
+    // A Hub's `kickoffs/` page names, read once per Hub; a read that fails is one line in the group that asked.
+    const kickoffPagesOf = (hub: string, group: StatusLine['group']): string[] => {
+      let pages = kickoffPages.get(hub);
+      if (pages === undefined) {
+        const folder = path.join(workspace, 'collection', 'projects', hub, 'kickoffs');
+        pages = [];
+        try {
+          pages = fs.readdirSync(folder, { withFileTypes: true })
+            .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+            .map(entry => entry.name.slice(0, -3)).sort();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') add(group, `projects/${hub}/kickoffs`, `projects/${hub}/kickoffs: unreadable: ${(error as Error).message}`);
+        }
+        kickoffPages.set(hub, pages);
+      }
+      return pages;
+    };
+    const items = rootItems(body);
     const seen = new Set<string>();
-    for (const item of rootItems(body)) {
-      const closedNote = (closed: boolean) => (closed && item.ticked === false ? '; closed: tick or close this item' : '');
+    for (const item of items) {
+      // The advice only when the item closes on that record: it has no closing condition, or its condition names it.
+      const closedNote = (record: string, closed: boolean, names: (text: string) => boolean) => (closed && items.some(candidate => {
+        const condition = closingCondition(candidate.text);
+        return candidate.ticked === false && names(candidate.text) && (condition === null || namesRecord(condition, record));
+      }) ? '; closed: tick or close this item' : '');
       const once = (key: string): boolean => (seen.has(key) ? false : (seen.add(key), true));
       // Train ids, in backticks.
       for (const match of item.text.matchAll(/`([a-z0-9]+(?:-[a-z0-9]+)*)`/g)) {
         const id = match[1]!;
         if (!trainIds.has(id) || !once(`train:${id}`)) continue;
         const state = trainIds.get(id)!;
-        add('pointers', `train:${id}`, `train ${id}: ${state}${closedNote(state !== 'open')}`);
+        add('pointers', `train:${id}`, `train ${id}: ${state}${closedNote(id, state !== 'open', text => text.includes('`' + id + '`'))}`);
       }
       if (trainProblem !== null && /`[a-z0-9-]+`/.test(item.text) && once('train-problem')) add('pointers', 'internal/train/register.json', `train: unreadable: ${trainProblem}`);
       // Kickoffs: this Hub's own, by `Run <id>:` or `kickoffs/<id>`, and another Hub's only by its link, when open.
@@ -153,8 +191,23 @@ export function hubStatus(workspace: string, slug: string, seatOption?: string):
           runs = runPointers(other);
         }
         const run = runs.find((row) => row.id.toLowerCase() === id.toLowerCase());
-        const state = run === undefined ? 'no Run pointer' : run.pending ? 'pending' : 'ticked';
-        add('pointers', source, `${hub === slug ? '' : `projects/${hub} `}kickoffs/${id}: ${state}${closedNote(run !== undefined && !run.pending)}`);
+        let state = run === undefined ? 'no Run pointer' : run.pending ? 'pending' : 'ticked';
+        if (run?.pending) {
+          const pages = kickoffPagesOf(hub, 'pointers');
+          const stem = run.id.replace(/-r\d+$/, '').toLowerCase();
+          let highest = BigInt(/-r(\d+)$/.exec(run.id)?.[1] ?? '1');
+          let newer: string | undefined;
+          for (const page of pages) {
+            const revision = /^(.*)-r(\d+)$/.exec(page);
+            if (revision === null || revision[1]!.toLowerCase() !== stem || BigInt(revision[2]!) <= highest) continue;
+            highest = BigInt(revision[2]!);
+            newer = page;
+          }
+          if (newer !== undefined) state += `; newer revision kickoffs/${newer} posted`;
+        }
+        add('pointers', source, `${hub === slug ? '' : `projects/${hub} `}kickoffs/${id}: ${state}${closedNote(`kickoffs/${id}`, run !== undefined && !run.pending,
+          text => [...text.matchAll(/(?:\[\[projects\/([a-z0-9]+(?:-[a-z0-9]+)*)\/)?kickoffs\/([A-Za-z0-9._-]+?)(?=\]\]|[\s|,.;)]|$)/g)]
+            .some(named => (named[1] ?? slug) === hub && named[2] === id))}`);
       }
       // Letters, by their notes/ path, one by one only while the letters Book is open.
       for (const match of item.text.matchAll(/(?<![\w/])notes\/(\d{4}-\d{2}-\d{2}-[a-z0-9-]+)/g)) {
@@ -162,12 +215,36 @@ export function hubStatus(workspace: string, slug: string, seatOption?: string):
         if (!letterReview.has(page) || !once(`letter:${page}`)) continue;
         if (!lettersOpen) continue;
         const closed = letterReview.get(page) === 'done';
-        add('pointers', `letters/notes/${page}`, `letter notes/${page}: ${closed ? 'closed' : 'open'}${closedNote(closed)}`);
+        add('pointers', `letters/notes/${page}`, `letter notes/${page}: ${closed ? 'closed' : 'open'}${closedNote(`notes/${page}`, closed,
+          text => [...text.matchAll(/(?<![\w/])notes\/(\d{4}-\d{2}-\d{2}-[a-z0-9-]+)/g)].some(named => named[1] === page))}`);
       }
     }
     // 2. THIS HUB'S QUEUE, in page order.
     const pending = ownRuns.filter((run) => run.pending);
     pending.forEach((run, index) => add('queue', `${hubSource} ## Next`, `${index + 1}. Run ${run.id}${index === 0 ? ' (the one to open)' : ''}`));
+    // A Kickoff page no Run pointer names (kickoffs/s219 row 3): not in `## Next`, ticked or not, nor on a `notes/` page
+    // a pointer moved to, and more than an hour old, so a page just posted waits for its pointer. Any `notes/` page holding
+    // a pointer line counts, since tidy history has had other names (`hub-history-s142-tidy`, `h5-sort`).
+    const named = new Set(ownRuns.map((run) => run.id.toLowerCase()));
+    const notes = path.join(workspace, 'collection', 'projects', slug, 'notes');
+    try {
+      for (const entry of fs.readdirSync(notes, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        for (const line of shownText(toLines(fs.readFileSync(path.join(notes, entry.name), 'utf8')))) {
+          const match = /^\s*[-*+] \[[ xX]\] Run ([A-Za-z0-9._-]+):/.exec(line ?? '');
+          if (match) named.add(match[1]!.toLowerCase());
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') add('queue', `projects/${slug}/notes`, `projects/${slug}/notes: unreadable: ${(error as Error).message}`);
+    }
+    const folder = path.join(workspace, 'collection', 'projects', slug, 'kickoffs');
+    for (const id of kickoffPagesOf(slug, 'queue')) {
+      if (named.has(id.toLowerCase())) continue;
+      let age = 0;
+      try { age = Date.now() - fs.statSync(path.join(folder, `${id}.md`)).mtimeMs; } catch { continue; }
+      if (age > 60 * 60 * 1000) add('queue', `projects/${slug}/kickoffs/${id}`, `kickoffs/${id}: no Run pointer names it`);
+    }
   }
 
   // 3. THE LIBRARY'S TRAIN: the one open car and the first five open items, in register order, with their place.
@@ -218,6 +295,28 @@ export function hubStatus(workspace: string, slug: string, seatOption?: string):
   return { schema: 1, operation: 'Hub status', hub: `projects/${slug}`, seat, lines };
 }
 
+/** A text cut to `width` columns from its middle, keeping its start and its end (kickoffs/s219 row 2). */
+function shortenMiddle(text: string, width: number): string {
+  if (text.length <= width) return text;
+  const keep = width - 3;
+  return text.slice(0, Math.ceil(keep / 2)) + '...' + text.slice(text.length - Math.floor(keep / 2));
+}
+
+/** The shortest a record's name may be cut to before its state goes to a second line. */
+const NAME_MINIMUM = 30;
+
+/**
+ * A long `pointers` line that keeps its state and advice whole (kickoffs/s219 row 2): the record's name is shortened from
+ * its middle, and when the state and advice would leave it under NAME_MINIMUM columns they go to a second indented line.
+ */
+function fitPointer(text: string): string[] {
+  const at = text.indexOf(': ');
+  if (text.length <= STATUS_WIDTH || at < 0) return [fitLine(text)];
+  const name = text.slice(0, at), rest = text.slice(at);
+  if (STATUS_WIDTH - rest.length >= NAME_MINIMUM) return [shortenMiddle(name, STATUS_WIDTH - rest.length) + rest];
+  return [shortenMiddle(name, STATUS_WIDTH - 1) + ':', fitLine('    ' + rest.slice(2))];
+}
+
 /** The terminal view: a heading per block, each line indented, none wider than STATUS_WIDTH columns. */
 export function hubStatusText(status: ReturnType<typeof hubStatus>): string {
   const out: string[] = [fitLine(`${status.hub}: live state, read now`)];
@@ -225,7 +324,14 @@ export function hubStatusText(status: ReturnType<typeof hubStatus>): string {
     const lines = status.lines.filter((line) => line.group === group);
     if (!lines.length) continue;
     if (GROUP_HEADINGS[group]) out.push('', GROUP_HEADINGS[group]);
-    for (const line of lines) out.push(fitLine(`${GROUP_HEADINGS[group] ? '  ' : ''}${line.text}`));
+    for (const line of lines) {
+      const text = `${GROUP_HEADINGS[group] ? '  ' : ''}${line.text}`;
+      const revisionAt = text.indexOf('; newer revision kickoffs/');
+      if (group === 'pointers' && revisionAt >= 0 && text.length > STATUS_WIDTH) {
+        out.push(...fitPointer(text.slice(0, revisionAt + 1)), fitLine('    ' + text.slice(revisionAt + 2)));
+      } else if (group === 'pointers') out.push(...fitPointer(text));
+      else out.push(fitLine(text));
+    }
   }
   return out.join('\n') + '\n';
 }

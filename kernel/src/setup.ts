@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { psConvertToJson, type PsJsonValue } from './psjson.ts';
-import { applyLibraryInit, planLibraryInit, registerWorkspace, type LibraryInitPlan } from './init.ts';
+import { applyLibraryInit, planLibraryInit, registerWorkspace, skipTemporaryRegistration, type LibraryInitPlan } from './init.ts';
 import { findWorkspaceByMarker, markerField, readMarker, registryPath, toWorkspaceRoot } from './workspace.ts';
 import { COMMAND_NAME, findAssistant, ownedRegistration, readInstallReceipt } from './machine.ts';
 import { discoverInstalls, librariesServedByRoot, missingProgramRoot, sameFolder } from './installs.ts';
@@ -856,9 +856,9 @@ export function screenRows(view: ScreenView): { title: string; rows: [string, st
       : view.state === 'new'
         ? 'your Books, Notebook and seats (new folder)'
         : view.repairLibrary && view.unguarded
-          ? 'existing Library, with no Deskpost guards: they are registered again'
+          ? `existing Library, with no Deskpost guards: they ${view.dryRun ? 'would be' : 'are'} registered again`
           : view.repairLibrary
-          ? 'existing Library, repaired (its managed files brought up to date)'
+          ? `existing Library, ${view.dryRun ? 'would be repaired' : 'repaired'} (its managed files brought up to date)`
           : 'existing Library, used as it is';
   rows.push(['Library', view.library ?? (servedOnly ? (refresh.length ? refresh.map((entry) => entry.workspace) : kept).join(', ') : '-'), libraryNote]);
   // EACH SERVED LIBRARY'S REFRESH, BESIDE THE PROGRAM PLAN (ADR-0063 decisions 1 and 4): a count, or the reason it is kept.
@@ -1049,7 +1049,7 @@ export function planId(plan: SetupPlan, release: { archiveSha256: string; script
 }
 
 /** The view an assistant shows, built from the answers and the plan (the same rows as the screen). */
-export function planView(plan: SetupPlan, registryRoot?: string): PlanView {
+export function planView(plan: SetupPlan, registryRoot?: string, dryRun = false): PlanView {
   const answers = plan.answers;
   const refresh: RefreshPreview[] = (plan.refresh ?? []).map((entry) => ({
     workspace: entry.workspace,
@@ -1057,7 +1057,7 @@ export function planView(plan: SetupPlan, registryRoot?: string): PlanView {
     refused: entry.reason,
     codex: (entry.plan?.writes ?? []).some((write) => write.relative === '.codex/hooks.json'),
   }));
-  const { title, rows } = screenRows({ ...viewOfAnswers(answers), refresh });
+  const { title, rows } = screenRows({ ...viewOfAnswers(answers), refresh, dryRun });
   const state: PlanView['state'] =
     answers.library_state === 'none'
       ? 'program-only'
@@ -1288,7 +1288,9 @@ export function refreshServedText(value: Record<string, unknown>): string {
 function setupLibraryApply(plan: SetupPlan): Record<string, unknown> {
   if (plan.library !== null) return { library: applyLibraryInit(plan.library, { makeDefault: plan.answers.make_default }) };
   if (plan.register !== null) {
-    const registration = registerWorkspace(plan.register.workspace, plan.register.id, undefined, plan.answers.make_default);
+    const registration = skipTemporaryRegistration(plan.register.workspace)
+      ? { path: registryPath(), action: 'skipped-temporary' }
+      : registerWorkspace(plan.register.workspace, plan.register.id, undefined, plan.answers.make_default);
     return { library: { status: 'used_as_it_is', workspace: plan.register.workspace, id: plan.register.id, registry: registration.path, registration: registration.action, files: [] } };
   }
   const kept = plan.answers.kept_libraries ?? [];
@@ -1422,7 +1424,9 @@ export function applyText(result: Record<string, unknown>): string {
     const kept = Array.isArray(result['kept_libraries']) ? (result['kept_libraries'] as unknown[]).map(String) : [];
     return [...(kept.length ? [keptText(kept)] : []), ...tail, ...(!kept.length && !tail.length ? ['No Library was set up.'] : [])].join('\n');
   }
-  if (library['status'] === 'used_as_it_is') return [`The Library at ${String(library['workspace'])} is registered, and was left as it is.`, ...tail].join('\n');
+  if (library['status'] === 'used_as_it_is') return [library['registration'] === 'skipped-temporary'
+    ? `The Library at ${String(library['workspace'])} was left as it is and was not added to this machine's Library list because it is in the temp directory; ${COMMAND_NAME} library default ${String(library['workspace'])} adds it on purpose.`
+    : `The Library at ${String(library['workspace'])} is registered, and was left as it is.`, ...tail].join('\n');
   return [`The Library at ${String(library['workspace'])} is ready (${String(library['status']).replace('_', ' ')}).`, ...tail].join('\n');
 }
 

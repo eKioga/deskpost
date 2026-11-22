@@ -65,7 +65,7 @@ import {
   type OwnerRow,
 } from './notebook.ts';
 import { readNotebookLayout, seatNotebookRoots } from './notebooklayout.ts';
-import { librariesServedByRoot, sameFolder } from './installs.ts';
+import { librariesServedByRoot, libraryScriptRegistrations, sameFolder } from './installs.ts';
 import { asList, codexHookShapeFaults, enabledClaudePluginHooks, codexRegistrationProblems, claudeHookShapeFaults, hookRegistrationProblems, isObject, REQUIRED_HOOKS, type Json } from './hookregistry.ts';
 import { COMMAND_NAME, findAssistant, installRootOf, installShim, ownedRegistration, programOfBinary, programRelation, readInstallReceipt, resolveOnPath } from './machine.ts';
 
@@ -1940,6 +1940,12 @@ function doctorChecks(workspace: string, program: string): { results: CheckResul
       const { guards, unreadable } = listStaleRecoveryGuards(workspace);
       return unreadable !== null ? `WARN: ${unreadable}` : guards.length ? `WARN: ${guards.map(guard => guard.message).join('\n')}` : 'no stale recovery guards';
     }) : { check: 'locks.stale-recovery-guard', status: 'skipped', detail: 'no Library here, so no recovery guards to check' },
+    ...(workspace ? [runCheck('workspace.powershell-registrations', () => {
+      const scripts = libraryScriptRegistrations(workspace).filter(row => ownedRegistration(row.entry, deskpostScripts(program)) !== null);
+      return scripts.length
+        ? `WARN: ${workspace} still runs Deskpost PowerShell scripts: ${scripts.map(row => `${row.label} -> ${row.file}`).join('; ')}. Run deskpost init ${workspace}.`
+        : 'every Deskpost registration uses the kernel';
+    })] : []),
     ...SKILL_LOCATIONS.map((location) => workspace
       ? runCheck(`workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, () => skillInstallationStatus(workspace, program, location))
       : { check: `workspace.${location.startsWith('.agents') ? 'codex' : 'claude'}-skills-installed`, status: 'skipped', detail: 'no Library here, so no workspace skills to check' }),

@@ -9,8 +9,8 @@
  * than pretending: a kernel that exited 0 on a verb it does not have would compare green against
  * nothing at all on some future row.
  *
- * REFUSALS GO TO STDERR AND THE EXIT CODE IS NON-ZERO. A dispatcher that printed a refusal on
- * stdout and exited 0 is indistinguishable from a result to everything that runs it.
+ * REFUSALS GO TO STDERR AND THE EXIT CODE IS NON-ZERO. With --json, a refusal also goes to stdout as
+ * one object with status "refused"; a command's own refusal object is preserved.
  *
  * STDOUT IS WRITTEN AS ONE STRING, NEVER FORMATTED. The PowerShell half of this program pays for
  * that repeatedly -- `docs/helper-write-and-output-contracts.md` records a `-Json` document that
@@ -26,6 +26,7 @@ import { hubRefusalJson } from './hubedit.ts';
 import { runLibraryInit } from './init.ts';
 import { deskOverview, deskWrite } from './desk.ts';
 import { runCheckpointVerb } from './checkpointverb.ts';
+import { startWriteLedger, finishWriteLedger, type LedgerRun } from './checkpoint.ts';
 import { runShelfVerb } from './shelf.ts';
 import { shelfDuplicates } from './duplicates.ts';
 import { captureVerb, lettersCloseVerb, lettersListVerb, reportsListVerb, reportsVerb, runBookVerb } from './capture.ts';
@@ -68,7 +69,7 @@ import { runFinishUninstall } from './finisher.ts';
 import { installVerb } from './install.ts';
 import { upgradeVerb } from './upgrade.ts';
 import { menuIsInteractive, runLibraryVerb, runMenuVerb, runWelcomeVerb } from './menu.ts';
-import { dashboardText, watchDashboard } from './dashboard.ts';
+import { builderRunStates, dashboardReport, dashboardText, kickoffStatusText, watchDashboard } from './dashboard.ts';
 import { vaultVerb } from './vault.ts';
 import { needsYouText, readNeedsYou, refreshAfterCommand, writeNeedsYou } from './needsyou.ts';
 import { redoUndo, undoJournal, undoList } from './undo.ts';
@@ -89,7 +90,10 @@ export function asciiJson(document: string): string {
   return document.replace(/[^\x00-\x7f]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
 }
 
+let writeLedger: LedgerRun | null = null;
+let writerDispatched = false;
 export function emit(value: PsJsonValue, asJson: boolean, humanText?: string): void {
+  if (writeLedger) writeLedger.receipts.push(value);
   // A RELATIVE --content-path FOUND IN BOTH PLACES SAYS WHICH WAS READ (kickoffs/s106 row 6c, contentpath.ts).
   const note = takeContentPathNote();
   if (note !== null && value !== null && typeof value === 'object' && !Array.isArray(value) && !('content_path_resolved' in value)) {
@@ -116,11 +120,16 @@ function hostHookOutput(stdout: string): string {
  * (`UV_HANDLE_CLOSING`, exit 3221226505), which s191 row 2 met after a Basic Memory call. A catch that re-refuses with the
  * caught message (`refuse((error as Error).message)`) says the same words once.
  */
-class CliRefusal extends Error {}
-
-function refuse(message: string): never {
-  throw new CliRefusal(message);
+class CliRefusal extends Error {
+  readonly exitCode: number;
+  constructor(message: string, exitCode = 1) { super(message); this.exitCode = exitCode; }
 }
+
+function refuse(message: string, exitCode = 1): never {
+  throw new CliRefusal(message, exitCode);
+}
+
+const refusalOutput = { json: false, verb: '', action: null as string | null, written: false };
 
 async function main(argv: string[]): Promise<number> {
   // The global workspace may precede the verb, as the top-level usage promises.
@@ -173,6 +182,7 @@ async function main(argv: string[]): Promise<number> {
   const { action, argv: tail } = commandAction(verb, rest);
   const ownTable = VERBS[verb]!.arguments[action];
   const ours = ownTable?.passthrough && rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest;
+  Object.assign(refusalOutput, { json: ours.includes('--json'), verb, action: action || null });
   if (ours.includes('--help') || ours.includes('-h')) {
     writeStdout(verbUsageText(verb, VERBS[verb]!.actions.includes(rest[0] ?? '') ? rest[0] : undefined));
     return 0;
@@ -203,10 +213,11 @@ async function main(argv: string[]): Promise<number> {
   if (VERBS[verb]!.ported && ownTable) {
     const command = `deskpost ${verb}${action ? ` ${action}` : ''}`;
     const refusal = checkArguments(command, tail, table);
-    if (refusal !== null) refuse(refusal);
+    if (refusal !== null) refuse(refusal, declared.usageExitCode?.[action] ?? 1);
     for (const warning of quoteWarnings(command, tail, table)) process.stderr.write(warning + '\n');
   }
 
+  writerDispatched = true;
   switch (verb) {
     case 'verbs': {
       emit(verbInventory() as PsJsonValue, true);
@@ -332,6 +343,14 @@ async function main(argv: string[]): Promise<number> {
         if (!watch && (parsed.options.has('interval-seconds') || iterations !== undefined)) refuse('deskpost dashboard --interval-seconds and --iterations need --watch.');
         const width = parsed.options.get('width');
         if (width !== undefined && (!/^\d+$/.test(width) || !Number.isSafeInteger(Number(width)))) refuse('deskpost dashboard --width needs a whole number.');
+        // THE DISPLAY REPORT ON THE ONE-SHOT READ (kickoffs/s220-r2 row 5): the conversation and the row's room are named here.
+        const conversation = parsed.options.get('conversation'), columnsText = parsed.options.get('columns'), reserveText = parsed.options.get('reserve');
+        if (watch && (conversation !== undefined || columnsText !== undefined || reserveText !== undefined)) refuse('deskpost dashboard --conversation, --columns and --reserve are for the one-shot read; use them without --watch.');
+        if (conversation !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(conversation)) refuse('deskpost dashboard --conversation needs a conversation id: a letter or digit, then up to 127 letters, digits, hyphens or underscores.');
+        if (columnsText !== undefined && (!/^\d+$/.test(columnsText) || Number(columnsText) < 20 || Number(columnsText) > 400)) refuse('deskpost dashboard --columns must be a whole number from 20 to 400.');
+        const columns = columnsText === undefined ? 80 : Number(columnsText);
+        if (reserveText !== undefined && (!/^\d+$/.test(reserveText) || Number(reserveText) > columns - 20)) refuse(`deskpost dashboard --reserve must be a whole number from 0 to ${columns - 20} (the columns less 20).`);
+        const reserve = reserveText === undefined ? 0 : Number(reserveText);
         const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
         if (watch) {
           await watchDashboard({ workspace, seat: seat!, width: width === undefined ? undefined : Number(width), intervalSeconds: Number(interval), iterations: iterations === undefined ? undefined : Number(iterations) });
@@ -340,9 +359,11 @@ async function main(argv: string[]): Promise<number> {
         const overview = deskOverview({ workspace, seat });
         const { dashboardColor, dashboardWidth, readDashboardCheckpoint } = await import('./dashboard.ts');
         const now = Date.now();
-        const checkpoint = readDashboardCheckpoint(workspace, overview, now);
+        const checkpoint = readDashboardCheckpoint(workspace, overview, now, conversation);
         const color = dashboardColor(process.stdout.isTTY === true, process.env);
-        emit({ ...overview, ...checkpoint } as PsJsonValue, parsed.flags.has('json'), dashboardText(overview, { width: dashboardWidth(width === undefined ? undefined : Number(width), process.stdout.columns), rows: process.stdout.rows, now, color, checkpoint: checkpoint.checkpoint }));
+        // The report reads the overview just read, so the Desk is read once; the frame draws the lines --watch draws.
+        const report = dashboardReport(workspace, { seat: typeof overview['seat'] === 'string' && overview['seat'] ? overview['seat'] : seat ?? '', conversation, columns, reserve, now, overview });
+        emit({ ...overview, ...checkpoint, report } as unknown as PsJsonValue, parsed.flags.has('json'), dashboardText(overview, { width: dashboardWidth(width === undefined ? undefined : Number(width), process.stdout.columns), rows: process.stdout.rows, now, color, checkpoint: checkpoint.checkpoint, report }));
         return 0;
       } catch (error) {
         refuse((error as Error).message);
@@ -442,7 +463,9 @@ async function main(argv: string[]): Promise<number> {
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
       } catch (error) {
-        refuse(`library ${verb} : ${(error as Error).message}`);
+        const message = `library ${verb} : ${(error as Error).message}`;
+        if (verb === 'hub' && (action === 'edit' || action === 'tidy')) process.stdout.write(JSON.stringify(hubRefusalJson(action, hostRemedies(message))) + '\n');
+        refuse(message);
       }
       if (verb === 'hub' && action === 'history') {
         try {
@@ -459,6 +482,27 @@ async function main(argv: string[]): Promise<number> {
         try {
           const status = hubStatus(workspace, slug, parsed.options.get('seat'));
           emit(status as unknown as PsJsonValue, parsed.flags.has('json'), hubStatusText(status));
+          return 0;
+        } catch (error) { refuse((error as Error).message); }
+      }
+      // A HUB'S NOTES PAGES, LISTED (kickoffs/s219 row 7): read only, and only for a Hub open on this seat's Desk.
+      if (verb === 'hub' && action === 'notes') {
+        const { hubNotesPages } = await import('./hubpages.ts');
+        const { deskEntriesForSeat, requireSeat } = await import('./seatdesk.ts');
+        const slug = (parsed.positional[0] ?? '').trim().replace(/^projects\//, '');
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) refuse('hub notes needs one Hub slug, such as deskpost-dev.');
+        try {
+          const stateDirectory = path.join(workspace, '.claude');
+          const seat = requireSeat({ seat: parsed.options.get('seat'), stateDirectory });
+          if (!deskEntriesForSeat(stateDirectory, seat, 'projects').includes(`projects/${slug}`)) {
+            throw new Error(`Project '${slug}' is not open on this seat's Desk. Open it first: deskpost desk open project ${slug}`);
+          }
+          const pages = hubNotesPages(path.join(workspace, 'collection', 'projects', slug), { prefix: parsed.options.get('prefix'), match: parsed.options.get('match') });
+          const local = (iso: string) => { const at = new Date(iso); const two = (n: number) => String(n).padStart(2, '0'); return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`; };
+          const text = pages.length === 0
+            ? `projects/${slug}: no notes pages${parsed.options.has('prefix') || parsed.options.has('match') ? ' match' : ''}.\n`
+            : `projects/${slug}: ${pages.length} notes page${pages.length === 1 ? '' : 's'}, newest first\n` + pages.map(page => `  ${page.page}  ${page.size_bytes} bytes  ${local(page.modified_utc)}`).join('\n') + '\n';
+          emit({ schema: 1, operation: 'Hub notes pages', hub: `projects/${slug}`, seat, pages: pages as unknown as PsJsonValue }, parsed.flags.has('json'), text);
           return 0;
         } catch (error) { refuse((error as Error).message); }
       }
@@ -488,8 +532,18 @@ async function main(argv: string[]): Promise<number> {
 
     // THE AUDIT RECORD (kickoffs/s112 ruling 5): `revision`, `record` and `due`, lines for a person, the document with --json.
     case 'audit': {
-      if (!['revision', 'record', 'due'].includes(action)) refuse(`library audit has no action '${rest[0] ?? ''}'. It has: due, record, revision.`);
+      if (!['revision', 'record', 'due', 'balance'].includes(action)) refuse(`library audit has no action '${rest[0] ?? ''}'. It has: balance, due, record, revision.`);
       const parsed = parseArguments(tail, table);
+      if (action === 'balance') {
+        try {
+          const { auditBalance } = await import('./auditbalance.ts');
+          if (parsed.options.has('since') && parsed.positional.length || !parsed.options.has('since') && parsed.options.has('tip')) refuse('Use two refs, or --since with an optional --tip.');
+          const result = auditBalance({repo: parsed.options.get('repo'), base: parsed.positional[0],
+            tip: parsed.positional[1] ?? parsed.options.get('tip'), since: parsed.options.get('since')});
+          emit(result.value, parsed.flags.has('json'), result.text);
+        } catch (error) { refuse((error as Error).message); }
+        return 0;
+      }
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -514,8 +568,10 @@ async function main(argv: string[]): Promise<number> {
 
     // A KICKOFF BETWEEN OFFICES (kickoffs/s159 rows 2 and 3): `send` and `receive`, read from the words after it.
     case 'kickoff': {
-      if (action !== 'check' && action !== 'next' && action !== 'send' && action !== 'receive') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: check, next, receive, send.`);
-      const parsed = parseArguments(tail, table);
+      if (action !== 'check' && action !== 'next' && action !== 'send' && action !== 'receive' && action !== 'status') refuse(`library kickoff has no action '${rest[0] ?? ''}'. It has: check, next, receive, send, status.`);
+      let parsed: ReturnType<typeof parseArguments>;
+      try { parsed = parseArguments(tail, table); }
+      catch (error) { refuse((error as Error).message, action === 'check' ? 2 : 1); }
       let workspace: string;
       try {
         workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
@@ -545,22 +601,19 @@ async function main(argv: string[]): Promise<number> {
           return verdict.ok ? 0 : 1;
         }
         if (!file) {
-          process.stderr.write(`usage: ${VERBS.kickoff!.usage.split('; ')[0]}\n`);
-          return 2;
+          refuse(`usage: ${VERBS.kickoff!.usage.split('; ')[0]}`, 2);
         }
         let text: string;
         try {
           text = fs.readFileSync(file, 'utf8');
         } catch (error) {
-          process.stderr.write(`kickoff-check: cannot read ${file}: ${(error as Error).message}\n`);
-          return 2;
+          refuse(`kickoff-check: cannot read ${file}: ${(error as Error).message}`, 2);
         }
         let verdict: { problems: string[]; warnings: string[] };
         try {
           verdict = judgeKickoff(text, workspace, { placeholders: !parsed.flags.has('posted'), postedHint: true });
         } catch (error) {
-          process.stderr.write(`kickoff-check: ${(error as Error).message}\n`);
-          return 2;
+          refuse(`kickoff-check: ${(error as Error).message}`, 2);
         }
         if (parsed.flags.has('json')) emit({ file, complete: verdict.problems.length === 0, problems: verdict.problems, warnings: verdict.warnings }, true);
         else writeStdout(verdictText(file, verdict));
@@ -578,6 +631,18 @@ async function main(argv: string[]): Promise<number> {
         } catch (error) {
           refuse((error as Error).message);
         }
+        return 0;
+      }
+      // EVERY BUILDER'S RUN STATE (kickoffs/s220-r2 row 6; PLAN-mods-redesign.md U1): read only, as the display report reads it.
+      if (action === 'status') {
+        const { resolveSeatName } = await import('./seatdesk.ts');
+        const resolved = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
+        if (resolved.status !== 'named') refuse(`deskpost kickoff status reads the builders as a seat's Desk sees them, so it needs a seat: pass --seat <name>. ${resolved.message}`.trim());
+        let rows: ReturnType<typeof builderRunStates>;
+        try { rows = builderRunStates(workspace, resolved.seat!); }
+        catch (error) { refuse((error as Error).message); }
+        if (parsed.flags.has('json')) emit(rows as unknown as PsJsonValue, true);
+        else writeStdout(kickoffStatusText(rows));
         return 0;
       }
       try {
@@ -632,6 +697,10 @@ async function main(argv: string[]): Promise<number> {
       const result = action === 'send-pending' ? (await import('./capture.ts')).reportsSendPendingVerb(tail, workspace) : action === 'triager' ? await reportsTriagerVerb(tail, workspace) : reportsVerb(action, tail, workspace);
       // Let the asynchronous transport drain before exiting on a triager refusal (Windows/libuv).
       if (action === 'triager' && result.refusal !== null) {
+        if (refusalOutput.json && !refusalOutput.written) {
+          writeStdout(asciiJson(psConvertToJson(hostRemedyFields({ status: 'refused', refusal: hostRemedies(result.refusal),
+            verb: refusalOutput.verb, action: refusalOutput.action }))));
+        }
         process.stderr.write(hostRemedies(result.refusal) + '\n');
         return 1;
       }
@@ -682,6 +751,19 @@ async function main(argv: string[]): Promise<number> {
       } catch (error) {
         refuse((error as Error).message);
       }
+      return 0;
+    }
+
+    case 'meanwhile': {
+      if (action !== 'prepare') refuse(`library meanwhile has no action '${rest[0] ?? ''}'. It has: prepare.`);
+      const parsed = parseArguments(tail, table);
+      const workspace = requireWorkspace({ explicit: parsed.options.get('workspace') });
+      const { resolveSeatName } = await import('./seatdesk.ts');
+      const resolved = resolveSeatName({ seat: parsed.options.get('seat'), stateDirectory: path.join(workspace, '.claude') });
+      if (resolved.status !== 'named') refuse(`deskpost meanwhile prepare needs a seat: pass --seat <name>. ${resolved.message}`.trim());
+      const { meanwhilePrepare } = await import('./meanwhile.ts');
+      const result = meanwhilePrepare(workspace, resolved.seat!);
+      emit(result as unknown as PsJsonValue, parsed.flags.has('json'), result.request);
       return 0;
     }
 
@@ -842,11 +924,6 @@ async function main(argv: string[]): Promise<number> {
     // WHICH LIBRARY BARE `deskpost` OPENS (step 5a): the list, and `default <folder>`.
     case 'library': {
       if (rest[0] === 'move') {
-        if (process.env['DESKPOST_LIBRARY_MOVE'] !== '1') {
-          const message = 'deskpost library move is turned off in this release because a known fault can rewrite unrelated paths; it returns in a later release, and nothing was changed.';
-          if (rest.includes('--json')) emit({ refusal: message }, true);
-          refuse(message);
-        }
         const { moveLibrary } = await import('./librarymove.ts');
         const parsed = parseArguments(rest, table);
         const preview = moveLibrary({ destination: parsed.positional[1],
@@ -1029,20 +1106,34 @@ const invokedDirectly =
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
+  process.stdout.write = new Proxy(process.stdout.write, {
+    apply(writer, stream, args) {
+      refusalOutput.written = true;
+      return Reflect.apply(writer, stream, args);
+    },
+  });
+  writeLedger = startWriteLedger(process.argv.slice(2));
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;
+      finishWriteLedger(writeLedger, code);
       // THE "NEEDS YOU" PAGE KEPT CURRENT (kickoffs/s161 row 6): after a verb that exited 0 and can change it; a failure is
       // one line on standard error and never this exit code.
       if (code === 0) refreshAfterCommand(process.argv.slice(2));
     })
     .catch((error: unknown) => {
+      finishWriteLedger(writeLedger, 1, !writerDispatched);
       const message = (error as Error).message ?? String(error);
       process.stderr.write((error instanceof CliRefusal ? hostRemedies(message) : message) + '\n');
-      process.exitCode = 1;
+      if (error instanceof CliRefusal && (refusalOutput.json || refusalOutput.verb === 'checkpoint') && !refusalOutput.written) {
+        writeStdout(asciiJson(psConvertToJson(hostRemedyFields({ status: 'refused', refusal: hostRemedies(message),
+          verb: refusalOutput.verb, action: refusalOutput.action }))));
+      }
+      const exitCode = error instanceof CliRefusal ? error.exitCode : 1;
+      process.exitCode = exitCode;
       // A BACKSTOP, NOT THE EXIT: the loop ends on its own once the transport has closed. Only a handle a refused verb left
       // open (a timer, a child's pipe) keeps it past ten seconds, and then the exit is forced; unref'd, it never waits.
-      setTimeout(() => process.exit(1), 10_000).unref();
+      setTimeout(() => process.exit(exitCode), 10_000).unref();
     });
 }
 

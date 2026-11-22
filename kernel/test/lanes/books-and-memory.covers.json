@@ -151,6 +151,24 @@
     ],
     "1247": [
       "kernel/src/remedy.ts"
+    ],
+    "1248": [
+      "kernel/src/publish.ts",
+      "kernel/src/localarchive.ts",
+      "kernel/src/recallrecord.ts"
+    ],
+    "1249": [
+      "kernel/src/localarchive.ts",
+      "kernel/src/publish.ts"
+    ],
+    "1250": [
+      "kernel/src/shelfwriters.ts",
+      "kernel/src/localarchive.ts",
+      "kernel/src/publish.ts",
+      "kernel/src/sharedwrite.ts"
+    ],
+    "1251": [
+      "kernel/src/publish.ts"
     ]
   }
 }

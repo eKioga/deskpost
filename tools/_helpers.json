@@ -7,22 +7,6 @@
     "test": "A test runner, invoked by Invoke-LibraryChecks.ps1 rather than by the Librarian. Must NOT be allowlisted."
   },
   "helpers": {
-    "AcceptanceFixtures.ps1": {
-      "role": "internal",
-      "summary": "The eight fixture workspace shapes the supported-operation matrix runs over (PLAN-public-release.md step 23), built through the real writers rather than composed by hand. Dot-sourced by AcceptanceMatrix.ps1."
-    },
-    "AcceptanceKernelStub.ps1": {
-      "role": "test",
-      "summary": "A test double standing in for the TypeScript kernel, so Invoke-AcceptanceMatrix.ps1's comparison can be falsified before the kernel exists. Driven four ways: agreeing, divergent, divergent only where a delta approves it, and refusing. Never a kernel and never called by a helper."
-    },
-    "AcceptanceSharedCollection.ps1": {
-      "role": "internal",
-      "summary": "A disposable acceptance-<guid> Basic Memory project for each arm of each shared matrix row: created and accepted only when the project list changes by exactly that one, pinned into the arm's fixture, snapshotted after the SMB client's cache lifetimes, and deleted after the row. Refuses to delete any project this run did not create. Dot-sourced by Invoke-AcceptanceMatrix.ps1."
-    },
-    "AcceptanceMatrix.ps1": {
-      "role": "internal",
-      "summary": "The supported-operation matrix's shape and coverage rules, the normalisation applied before two implementations are compared, the comparison itself with its approved deltas, and the renderer for docs/supported-operation-matrix.md. Dot-sourced."
-    },
     "Add-CatalogEntry.ps1": {
       "role": "public",
       "summary": "List an existing shared Book or Project Hub that is missing from its Catalog. Additive only: issues one edit_note find_replace against the collection heading, adds exactly one line, removes nothing, and reports already_listed without writing when the slug is present."
@@ -177,10 +161,6 @@
     "Initialize-CodexLibrary.ps1": {
       "role": "public",
       "summary": "Generate idempotent machine-local Codex MCP and hook bindings from tracked path-free templates for the current copy of the Library."
-    },
-    "Invoke-AcceptanceMatrix.ps1": {
-      "role": "test",
-      "summary": "The supported-operation matrix harness of PLAN-public-release.md step 23. Runs each row against the PowerShell tools and the TypeScript kernel over its own fixture workspace and compares normalised outcomes. With no -Kernel attached a differential row reports `pending`, never green. -SelfTest builds every fixture, runs one row end to end and falsifies the comparison against a stub kernel; -RenderDoc writes the generated region of docs/supported-operation-matrix.md."
     },
     "Invoke-LibraryChecks.ps1": {
       "role": "public",
@@ -441,10 +421,6 @@
     "Test-NotebookSweep.ps1": {
       "role": "test",
       "summary": "The cross-seat sweep end to end: which seats' Notebook topics Reset-LocalNotebook.ps1 -AllIdleSeats takes, which it names and leaves, what its preflight shows before the reader approves, and what the one quarantine it makes records about whose each topic was. Run by Invoke-LibraryChecks.ps1 as notebook.idle-seat-sweep."
-    },
-    "Test-NotebookMigration.ps1": {
-      "role": "test",
-      "summary": "ADR-0029's migration, judged over workspace-legacy-notebook -- every state of the shared Notebook, each built by the legacy writer that produces it -- through the kernel's front door: activation refused while anything is undecided, nothing moved by a refused run, no byte lost by a completed one, and the run killed at every step on both sides of each journal write, then resumed to the reference tree and rolled back to the legacy one. Run by Invoke-LibraryChecks.ps1 as notebook.migration."
     },
     "Test-InstallLifecycle.ps1": {
       "role": "test",

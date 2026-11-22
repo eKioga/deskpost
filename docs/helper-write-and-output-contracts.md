@@ -95,8 +95,8 @@ that matters: a nested caller simply does not pass it and keeps getting objects.
 emit JSON unconditionally would fix the boundary case by reproducing the empty-field bug *inside* the
 composed call — the same defect, one layer down, where no process boundary explains it.
 
-Failures leave by a different door: **stderr plus a non-zero exit code**, never a formatted object on
-stdout that a caller might mistake for a result.
+Failures use **stderr plus a non-zero exit code**. The kernel also answers a refusal requested with
+`--json` as one object on stdout with `status: "refused"`; a command's own refusal object is preserved.
 
 ## Key Takeaways
 

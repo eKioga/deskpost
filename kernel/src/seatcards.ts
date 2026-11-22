@@ -25,7 +25,7 @@ import { pendingLetterCounts, readSeatRegistry, readSeatRetirementRecords } from
 import { resolveSeatName } from './seatdesk.ts';
 import { getSeatClaimState } from './seatclaim.ts';
 import { seatMessageAddress } from './conversation.ts';
-import { departmentDestination, readSeatMetadata, roleLabel, type SeatMetadata } from './seatmeta.ts';
+import { departmentParent, destinationOf, groupsOf, readSeatMetadata, roleLabel, type SeatMetadata } from './seatmeta.ts';
 
 /** A refusal of this verb's. */
 export class SeatCardsRefusal extends Error {}
@@ -93,11 +93,16 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
 
   const own = seat !== null ? meta(seat) : null;
   const view = seat === null || options.all ? 'all' : own!.department === null ? 'no-department' : own!.role === 'orchestrator' ? 'orchestrator' : 'performer';
-  const departments: Entry[] = projection.departments.map((department) => {
+  const parents = [...new Set(projection.departments.map((view) => departmentParent(view.department) ?? view.department))].sort();
+  const ordered = parents.flatMap((parent) => [
+    projection.departments.find((view) => view.department === parent) ?? { department: parent, orchestrator: null, seats: [] },
+    ...groupsOf(projection, parent),
+  ]);
+  const departments: Entry[] = ordered.map((department) => {
     const mine = seat !== null && own!.department === department.department;
     // EACH DEPARTMENT'S ONE DESTINATION (kickoffs/s110 ruling 7, ADR-0073): the default views list it, its orchestrator
     // or its only seat, so a seat sees where a letter to that department goes.
-    const destination = departmentDestination(department);
+    const destination = destinationOf(projection, department.department);
     const shown =
       view === 'all' || (view === 'orchestrator' && mine)
         ? department.seats
@@ -106,9 +111,14 @@ export function seatCardsResult(options: { workspace: string; seat?: string; all
           : [];
     return {
       department: department.department,
+      parent: departmentParent(department.department),
       orchestrator: department.orchestrator,
       ...(department.orchestrator === null ? { orchestrator_note: 'none yet' } : {}),
-      destination: { kind: destination.kind, seat: destination.seat },
+      destination: {
+        kind: destination.kind,
+        seat: destination.seat,
+        ...(destination.kind === 'none' && destination.groups ? { groups: destination.groups } : {}),
+      },
       seats: shown.map(entry),
       hidden: department.seats.length - shown.length - (mine && !shown.includes(seat!) ? 1 : 0),
     };
@@ -176,9 +186,10 @@ export function seatCardsText(report: Record<string, unknown>): string {
   }
   for (const department of departments) {
     const destination = (department['destination'] ?? {}) as Record<string, unknown>;
-    lines.push(`${String(department['department'])}${destination['kind'] === 'only-seat' ? ` (only seat: ${String(destination['seat'])})` : department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
-    if (Number(department['hidden']) > 0) lines.push(`  ${Number(department['hidden'])} seat(s) not shown; deskpost seat cards --all lists them`);
-    for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width));
+    const indent = department['parent'] ? '  ' : '';
+    lines.push(`${indent}${String(department['department'])}${destination['kind'] === 'only-seat' ? ` (only seat: ${String(destination['seat'])})` : department['orchestrator'] === null ? ' (no orchestrator yet)' : ''}`);
+    if (Number(department['hidden']) > 0) lines.push(`${indent}  ${Number(department['hidden'])} seat(s) not shown; deskpost seat cards --all lists them`);
+    for (const row of (department['seats'] as Record<string, unknown>[]) ?? []) lines.push(...entryLine(row, width).map((line) => indent + line));
   }
   // THE `all` VIEW PRINTS NO EMPTY GROUP (kickoffs/s146 row 4): "No department" only when a seat lacks one.
   if ((report['view'] === 'all' && without.length) || report['view'] === 'no-department') {

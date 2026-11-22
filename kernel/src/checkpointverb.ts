@@ -12,10 +12,14 @@ import { beginSeatMutation, recheckSeatMutation } from './seatpaths.ts';
 import { readSeatIdentityView } from './seatincarnation.ts';
 import { readRegistryRows, registryFilePath } from './seatregistry.ts';
 import { parseBookRoot, placeOfRoot } from './places.ts';
+import { getShelfBook } from './shelfbook.ts';
+import { shelfNotes } from './shelfnote.ts';
+import { hubStatus } from './hubstatus.ts';
+import { sectionSpan, shownText, toLines } from './hubedit.ts';
 import { enterSeatRegistryLock, enterBookLock, exitBookLock } from './locks.ts';
 import { writeAtomicText } from './fsx.ts';
 import type { PsJsonValue } from './psjson.ts';
-import { beginCheckpoint, cancelCheckpoint, checkCheckpoint, checkpointPrompt, emptyCheckpoint, observeCheckpointResult,
+import { beginCheckpoint, cancelCheckpoint, checkCheckpoint, checkpointPrompt, checkpointLedger, emptyCheckpoint, observeCheckpointResult,
   type CheckpointState, type CheckpointKind, type OpenItem, type CheckpointToolResult } from './checkpoint.ts';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -33,7 +37,8 @@ export function validateCheckpoint(value: unknown, seatId: string, conversation:
   if (value.savedAt !== null && (typeof value.savedAt !== 'number' || !Number.isFinite(value.savedAt))) return fail();
   if (value.closedOutAt !== undefined && value.closedOutAt !== null && (typeof value.closedOutAt !== 'number' || !Number.isFinite(value.closedOutAt))) return fail();
   if (!choice(value.saveState,['none','asked','saved','gaps','waits']) || !choice(value.closeout,['none','asked','done','gaps','waits','stale'])) return fail();
-  if (!Array.isArray(value.writes) || !value.writes.every(w => own(w) && choice(w.kind,['hub','book','report']) && typeof w.name === 'string' && typeof w.page === 'string' && typeof w.at === 'number' && Number.isFinite(w.at) && (w.where === undefined || choice(w.where,['shelf','collection','shared'])))) return fail();
+  if (!Array.isArray(value.writes) || !value.writes.every(w => own(w) && choice(w.kind,['hub','book','report','notebook']) && typeof w.name === 'string' && typeof w.page === 'string' && typeof w.at === 'number' && Number.isFinite(w.at) && (w.where === undefined || choice(w.where,['shelf','collection','shared'])))) return fail();
+  for (const key of ['ledgerSeen', 'ledgerGaps']) if (value[key] !== undefined && !strings(value[key])) return fail();
   if (Number(value.savedWrites) > value.writes.length) return fail();
   if (value.savedAt === null && (value.saveState === 'saved' || value.closeout === 'done' || Number(value.savedWrites) > 0)) return fail();
   if (!Array.isArray(value.trouble) || !value.trouble.every(t => own(t) && typeof t.id === 'string' && typeof t.text === 'string' && typeof t.at === 'number' && Number.isFinite(t.at))) return fail();
@@ -61,16 +66,45 @@ function checkpointDesk(workspace: string, stateDirectory: string, seat: string)
   return [...books,...hubs];
 }
 
+/** A read-only decision, before there is any pending closeout request. Commands are argument arrays. */
+function prepareCloseout(workspace: string, stateDirectory: string, seat: string): PsJsonValue {
+  const open = checkpointDesk(workspace, stateDirectory, seat);
+  const row = readRegistryRows(registryFilePath(stateDirectory)).find(row => row.seat === seat);
+  const hub = typeof row?.project === 'string' && open.some(item => item.kind === 'hub' && item.name === row.project) ? row.project : null;
+  if (!hub) return { ask_first: null };
+  const status = hubStatus(workspace, hub, seat);
+  const over = status.lines.some(line => line.group === 'pages' && line.source === `projects/${hub}/_project` && line.text.includes(', over its limit'));
+  const lines = toLines(fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8')), shown = shownText(lines);
+  const commands: PsJsonValue[] = [];
+  for (const section of ['Now', 'Next']) {
+    const span = sectionSpan(lines, section);
+    if (!span) continue;
+    for (let index = span.start + 1; index < span.end; index++) {
+      const line = shown[index];
+      if (line && /^(?:[-*+]|[0-9]+\.)[ \t]+\[[xX]\][ \t]+/.test(line)) commands.push({ argv: ['deskpost', 'hub', 'edit', hub, '--mode', 'close-item', '--section', section, '--match-text', line] });
+    }
+  }
+  if (!commands.length && !over) return { ask_first: null };
+  if (over) commands.push({ when: 'The Hub is still over its limit after closing ticked items',
+    preflight: ['deskpost', 'hub', 'tidy', hub, '--preflight'],
+    apply: ['deskpost', 'hub', 'tidy', hub, '--user-confirmed'], plan_id_from: 'the preflight result; append --plan-id and that exact value' });
+  return { ask_first: { question: 'Tidy your Hub before closeout?', choices: [
+    { label: 'Tidy it now', decided: 'tidied', commands }, { label: 'Not now', decided: 'declined', commands: [] },
+  ] } };
+}
+
 export function runCheckpointVerb(argv: string[], input?: string, answerUnavailable = false): { value: PsJsonValue } {
   const parsed = parseArguments(argv, verbTable('checkpoint'));
   const [action,kind] = parsed.positional;
-  if (!['request','observe','check','status','cancel'].includes(action ?? '')) throw Error('deskpost checkpoint takes request, observe, check, status or cancel.');
+  if (!['prepare','request','observe','check','status','cancel'].includes(action ?? '')) throw Error('deskpost checkpoint takes prepare, request, observe, check, status or cancel.');
+  if (action === 'prepare' && kind !== 'closeout') throw Error('checkpoint prepare needs closeout.');
   if (['request','check'].includes(action!) && !['save','closeout'].includes(kind ?? '')) throw Error('checkpoint request/check needs save or closeout.');
   const conversation = parsed.options.get('conversation');
   if (!conversation || !SAFE_ID.test(conversation)) throw Error('deskpost checkpoint requires --conversation <id>: 1-128 letters, digits, hyphens or underscores, starting with a letter or digit.');
   const workspace = requireWorkspace({explicit:parsed.options.get('workspace')});
   const stateDirectory = path.join(workspace,'.claude');
   const seat = requireSeat({stateDirectory,seat:parsed.options.get('seat')});
+  if (action === 'prepare') return { value: prepareCloseout(workspace, stateDirectory, seat) };
   const started = beginSeatMutation(workspace,seat);
   const identity = readSeatIdentityView(stateDirectory).live.find(row=>row.seat===seat);
   if (!identity || identity.identity !== 'valid') throw Error(`Seat '${seat}' needs a valid seat_id before checkpoint records can be used.`);
@@ -86,7 +120,7 @@ export function runCheckpointVerb(argv: string[], input?: string, answerUnavaila
     }
   };
   assertRecordPath();
-  const read = () => fs.existsSync(file) ? validateCheckpoint(JSON.parse(fs.readFileSync(file,'utf8')),seatId,conversation) : emptyCheckpoint(conversation,seatId);
+  const read = () => checkpointLedger(fs.existsSync(file) ? validateCheckpoint(JSON.parse(fs.readFileSync(file,'utf8')),seatId,conversation) : emptyCheckpoint(conversation,seatId), workspace);
   if (action === 'status') return {value:read() as unknown as PsJsonValue};
   assertSeatClaimHeld({workspace,stateDirectory,seat});
   const registryLock = enterSeatRegistryLock(workspace);
@@ -108,16 +142,26 @@ export function runCheckpointVerb(argv: string[], input?: string, answerUnavaila
       const row = readRegistryRows(registryFilePath(stateDirectory)).find(r=>r.seat===seat);
       const project = typeof row?.project === 'string' ? row.project : null;
       const hub = project && open.some(o=>o.kind==='hub' && o.name===project) ? project : null;
-      next = beginCheckpoint(state,{id:randomUUID(),kind:kind as CheckpointKind,at,since:state.savedAt,open,hub,trouble:state.trouble.map(t=>t.text),...(parsed.options.has('turn')?{turn:parsed.options.get('turn')!}:{})});
+      const decided = parsed.options.get('decided');
+      if (decided !== undefined && !['tidied', 'declined', 'tidy-refused'].includes(decided)) throw Error('--decided is tidied, declined or tidy-refused.');
+      const reports = state.writes.filter(write => write.kind === 'report');
+      const pendingReports = reports.length ? shelfNotes(getShelfBook(workspace, 'reports'))
+        .filter(note => note.review === 'pending' && reports.some(write => write.page === note.page)).map(note => note.title) : [];
+      next = beginCheckpoint(state,{id:randomUUID(),kind:kind as CheckpointKind,at,since:state.savedAt,open,hub,pendingReports,...(decided ? { decided: decided as 'tidied' | 'declined' | 'tidy-refused' } : {}),trouble:state.trouble.map(t=>t.text),...(parsed.options.has('turn')?{turn:parsed.options.get('turn')!}:{})});
       const harness=parsed.options.get('harness') ?? 'codex';
       if (!['codex','claude'].includes(harness)) throw Error('--harness is codex or claude.');
       prompt=checkpointPrompt(next.request!,next,harness==='codex'?'$':'/');
     } else if (action === 'observe') {
       const event: unknown = JSON.parse(stdin());
-      if (!own(event)) throw Error('checkpoint observe reads one tool-result object as JSON on stdin.');
-      next=observeCheckpointResult(state,event as CheckpointToolResult,at);
+      if (!own(event) || !['command', 'cmd', 'tool_input', 'input'].some(key => key in event))
+        throw Error('checkpoint observe reads one tool-result object as JSON on stdin, with command, cmd, tool_input or input; a bare writer receipt is not that shape.');
+      next=observeCheckpointResult(state,event as CheckpointToolResult,at,true);
     } else if (action === 'check') {
-      if(!state.request || state.request.kind!==kind) throw Error('No pending request of that kind.');
+      if(!state.request || state.request.kind!==kind) {
+        const checked = kind === 'save' ? state.saveState : state.closeout;
+        if (checked !== 'none' && checked !== 'asked') throw Error(`The ${kind} request was already checked (${checked}). A check answers a request once. Start a new one with deskpost checkpoint request ${kind}.`);
+        throw Error('No pending request of that kind.');
+      }
       next=checkCheckpoint(state,parsed.options.get('request-id') ?? state.request.id,stdin(),checkpointDesk(workspace,stateDirectory,seat),at,parsed.options.get('turn'));
       if (answerUnavailable) {
         const gap = 'unchecked: the answer was not available';
@@ -131,7 +175,7 @@ export function runCheckpointVerb(argv: string[], input?: string, answerUnavaila
   } finally { exitBookLock(recordLock); exitBookLock(registryLock); }
 }
 
-/** Codex advisory adapter. Payloads: https://learn.chatgpt.com/docs/hooks (2026-10-15).
+/** Shared advisory adapter. Each harness supplies its conversation, turn and actual final answer.
  * Never denies or changes configuration; the same checkpoint front door owns every mutation. */
 export function runCheckpointHook(argv: string[], input: string): string {
   try {
@@ -150,18 +194,31 @@ export function runCheckpointHook(argv: string[], input: string): string {
       if (watching && view(before) !== view(after)) refreshNeedsYou(workspace);
     };
     const name = event.hook_event_name;
-    if (name === 'PostToolUse') { const before = watching ? invoke(['status']) : null; refreshIfChanged(before, invoke(['observe'], JSON.stringify(event))); return ''; }
+    if (name === 'PostToolUse') {
+      let before: CheckpointState | null = null;
+      if (watching) {
+        const stateDirectory = path.join(workspace, '.claude'), seat = requireSeat({ stateDirectory, seat: parsed.options.get('seat') });
+        const identity = readSeatIdentityView(stateDirectory).live.find(row => row.seat === seat);
+        if (!identity || identity.identity !== 'valid') throw Error('Checkpoint hook needs a valid seat identity.');
+        const file = path.join(workspace, 'internal', 'checkpoints', identity.seatId, event.session_id + '.json');
+        if (fs.existsSync(file)) before = validateCheckpoint(JSON.parse(fs.readFileSync(file, 'utf8')), identity.seatId, event.session_id);
+      }
+      refreshIfChanged(before, invoke(['observe'], JSON.stringify(event))); return '';
+    }
     if (!['UserPromptSubmit','Stop','Interrupt'].includes(String(name))) return '';
-    const state = invoke(['status']);
+    let state = invoke(['status']);
+    const turn = typeof event.turn_id === 'string' ? event.turn_id : typeof event.prompt_id === 'string' ? event.prompt_id : undefined;
     if (name === 'UserPromptSubmit') {
-      const context = `Checkpoint conversation id: ${event.session_id}.` + (typeof event.turn_id==='string'?` Checkpoint turn id: ${event.turn_id}.`:'') +
+      if (typeof event.prompt_id === 'string' && state.request && state.request.turn !== turn) { const before = state; state = invoke(['cancel']); refreshIfChanged(before, state); }
+      const context = `Checkpoint conversation id: ${event.session_id}.` + (turn !== undefined ? ` Checkpoint turn id: ${turn}.` : '') +
+        ` Checkpoint harness: ${typeof event.prompt_id === 'string' ? 'claude' : 'codex'}.` +
         (state.request ? ` A ${state.request.kind} request waits (request id ${state.request.id}); check or cancel it before another request.` : ' No checkpoint request waits.');
       return JSON.stringify({hookSpecificOutput:{hookEventName:name,additionalContext:context}});
     }
     if (!state.request) return '';
     if (name === 'Interrupt') { refreshIfChanged(state, invoke(['cancel'])); return ''; }
     const answer = typeof event.last_assistant_message==='string' ? event.last_assistant_message : '';
-    const next = invoke(['check',state.request.kind,'--request-id',state.request.id,...(typeof event.turn_id==='string'?['--turn',event.turn_id]:[])],answer,typeof event.last_assistant_message!=='string');
+    const next = invoke(['check',state.request.kind,'--request-id',state.request.id,...(turn !== undefined ? ['--turn',turn] : [])],answer,typeof event.last_assistant_message!=='string');
     refreshIfChanged(state, next);
     const gaps = state.request.kind==='save'?next.saveGaps:next.gaps;
     const waits = state.request.kind==='save'?next.saveWaits:next.waits;

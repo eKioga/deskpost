@@ -196,6 +196,10 @@ export function hubNewPage(options: NewPageArguments, workspace: string): Record
       refuse(`--content-path '${options.contentPath}' (resolved to ${sourceFile}) is not valid UTF-8: ${(error as Error).message}`);
     }
   }
+  // A PAGE IS WRITTEN WITH LF (kickoffs/s219 row 8): a CRLF line end becomes LF before the page is judged or rendered,
+  // as hub edit already writes (`toLines`, `joinLines`); the source's own bytes stay as they are for its evidence hash.
+  // A lone CR is still refused below as a stray control character (section 152), never turned into a line end.
+  raw = raw.replace(/\r\n/g, '\n');
   if (!raw.trim()) refuse('The page body is empty; nothing was written.');
   // NO STRAY CONTROL CHARACTER REACHES A PAGE (kickoffs/s94 row 3).
   const stray = strayControlRefusal(raw, hasPath ? `--content-path '${options.contentPath}'` : '--content');

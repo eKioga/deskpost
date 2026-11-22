@@ -147,6 +147,7 @@ export function initText(result: Record<string, unknown>, written: readonly stri
     ...written.filter((file) => !reported.some((entry) => covers(entry.file, file))).map((file) => ({ file, action: 'written' })),
   ];
   const fresh = result['status'] === 'initialized';
+  const removed = reported.filter(entry => entry.action === 'removed');
   const workspace = String(result['workspace'] ?? '');
   const lines = [
     fresh
@@ -155,8 +156,14 @@ export function initText(result: Record<string, unknown>, written: readonly stri
         ? `${glyphs.ok} ${workspace} was already a Library; ${changed.length} of its files were brought up to date.`
         : `${glyphs.ok} ${workspace} was already a Library, and nothing needed changing.`,
   ];
+  if (removed.length && !changed.length) lines[0] = `${glyphs.ok} ${workspace} was already a Library.`;
   if (changed.length) lines.push(`  Written: ${changed.map((file) => `${file.file} (${file.action})`).join(', ')}`);
-  lines.push(`  Registered in ${String(result['registry'] ?? '')} (${String(result['registration'] ?? '')})`);
+  const skill = result['skill'] as { files?: { file: string; action: string }[]; left?: string[] } | undefined;
+  for (const file of skill?.files ?? []) if (file.action === 'removed') lines.push(`  Removed ${file.file}/ (unchanged retired skill).`);
+  for (const left of skill?.left ?? []) lines.push(`  Kept ${left}`);
+  lines.push(result['registration'] === 'skipped-temporary'
+    ? `  The Library was not added to this machine's Library list because it is in the temp directory; ${COMMAND_NAME} library default ${workspace} adds it on purpose.`
+    : `  Registered in ${String(result['registry'] ?? '')} (${String(result['registration'] ?? '')})`);
   // A KEPT DEFAULT IS SAID TO A PERSON TOO (kickoffs/s147 row 2): `default_kept` names the Library that stays the default.
   const kept = result['default_kept'];
   if (typeof kept === 'string' && kept) lines.push(`  The default Library stays ${kept}; make this one the default with: ${COMMAND_NAME} library default ${workspace}`);

@@ -120,6 +120,20 @@ export function identityScan(root: string, messageFile = '', termRoot = path.joi
   const hits = identityHits(sources, deny, allow);
   return hits.length ? { status: 'fail', hits, detail: `${scope}; ${hits.length} identity hit(s) in the blobs this commit would publish: ${sorted(hits.map(hit => `${hit.source}:${hit.line} [${hit.match}]`)).join('; ')}. Remove the value or generalise it; if it is approved attribution, add it to ${allowPath}.` } : { status: 'pass', hits, detail: `${scope} clean against ${deny.length} denylisted term(s) and ${allow.length} approved attribution(s)` };
 }
+export function textIdentityHits(text: string, termRoot = path.join(process.env['USERPROFILE'] || os.homedir(), '.library')) {
+  const deny = terms(path.join(termRoot, 'identity-denylist.txt'));
+  const allow = terms(path.join(termRoot, 'identity-allowlist.txt')) ?? [];
+  const sources = [{ source: '<kickoff>', text }];
+  const resolved = resolveWorkspace({ startDirectory: process.cwd() });
+  const denyRoot = resolved.kind === 'resolved' ? fs.realpathSync(resolved.workspace!)
+    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const deployment = resolved.kind === 'conflict' ? [] : deploymentDenylist(denyRoot);
+  const hits = [
+    ...identityHits(sources, deny ?? [], allow).map(({ line }) => ({ line, kind: 'identity' as const })),
+    ...identityHits(sources, deployment, []).map(({ line }) => ({ line, kind: 'deployment' as const })),
+  ];
+  return { hits, identityDenylistMissing: deny === null };
+}
 const allowedHost = (host: string) => [/^localhost$/i, /^127\.0\.0\.1$/, /^\[::1\]$/, /\.invalid$/i, /\.example$/i, /\.example\.(com|net|org)$/i, /^192\.0\.2\.\d{1,3}$/, /^198\.51\.100\.\d{1,3}$/, /^203\.0\.113\.\d{1,3}$/].some(rule => rule.test(host));
 export function structuralHits(text: string, file: string): Hit[] {
   const hits: Hit[] = [];

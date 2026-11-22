@@ -24,7 +24,8 @@ import { parseArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
 import { enterBookLock, enterSeatRegistryLock, exitBookLock, withBookLocks, type BookLock } from './locks.ts';
 import { seatsHoldingEntry } from './seatdesk.ts';
-import { collectionPageManifest, driftRefusal, hasDrift, readRecallRecord, recallDrift, recallRecordDirectory } from './recallrecord.ts';
+import { collectionPageManifest, hasDrift, readRecallRecord, recallDrift, recallRecordDirectory, type RecallDrift } from './recallrecord.ts';
+import { applyCommand } from './shelfwriters.ts';
 import { writeAtomicText } from './fsx.ts';
 import { completeBookRenameMutation, enterBookMutation, undoBookMutation, type BookMutation } from './mutation.ts';
 import { newBookManifestForCollectionBook } from './collectionbooks.ts';
@@ -259,10 +260,12 @@ export function localSharedRestore(argv: string[], workspace: string): Record<st
       matches.push({ shelf, file: name, record });
     }
     if (matches.length > 1) refuse(`Two recall records name '${slug}': ${matches.map(row => row.file).join(', ')}. Nothing was moved.`);
+    // RECALL DRIFT IS SAID, NOT REFUSED (kickoffs/s221 row 1): the restore moves the archive whole and its plan id binds
+    // every archived file, so it loses nothing. Only the return can write over a drifted page, so the choice is made there.
+    let drift: RecallDrift | null = null;
     if (matches.length) {
-      const match = matches[0]!;
-      const drift = recallDrift(match.record, collectionPageManifest(wiki));
-      if (hasDrift(drift)) refuse(driftRefusal(slug, match.shelf, drift).replace(`collection/books/${slug}`, `collection/archive/${slug}`));
+      const found = recallDrift(matches[0]!.record, collectionPageManifest(wiki));
+      if (hasDrift(found)) drift = found;
     }
     const catalog = readCatalogOrTemplate(catalogFile, LOCAL_ARCHIVE_CATALOG_TEXT).text;
     const owned = ownedLines(catalog, [`${from}/wiki/_book`]);
@@ -278,7 +281,7 @@ export function localSharedRestore(argv: string[], workspace: string): Record<st
       const archived = path.join(wiki, relative);
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.existsSync(archived)) refuse(`Restored reader map links outside its pages or to a missing page: ${link}.md; nothing was moved.`);
     }
-    return { seats, catalog, owned, recall: matches.length ? `matches ${matches[0]!.shelf}` : 'none', unread };
+    return { seats, catalog, owned, recall: matches.length ? `matches ${matches[0]!.shelf}` : 'none', recallShelf: matches.length ? matches[0]!.shelf : null, drift, unread };
   };
   const previewLock = enterSeatRegistryLock(workspace, 20);
   let preview;
@@ -286,9 +289,12 @@ export function localSharedRestore(argv: string[], workspace: string): Record<st
   const plan: Record<string, PsJsonValue> = {
     schema: 1, operation: 'Restore Book', book_slug: slug, book_title: firstHeading(readUtf8(path.join(wiki, '_book.md'))) ?? slug,
     from, to, recall: preview.recall, ...(preview.unread.length ? { recall_unread: preview.unread } : {}),
+    ...(preview.drift ? { recall_drift: { added: preview.drift.added, changed: preview.drift.changed, removed: preview.drift.removed } } : {}),
     archive_catalog_line_removed: preview.owned.length === 1, confirmation_required: true, shared_library_write: false,
     plan_id: restorePlanId(workspace, slug),
   };
+  // THE PREVIEW NAMES ITS OWN APPLY COMMAND (kickoffs/s221 row 3).
+  plan['next'] = applyCommand('shared restore', argv, argumentTable('shared', 'restore'), String(plan['plan_id']), true);
   if (parsed.flags.has('preflight')) return plan;
   if (!parsed.flags.has('user-confirmed')) refuse('Restoring requires the preview and --user-confirmed --plan-id <id>. Nothing was moved.');
   const approved = parsed.options.get('plan-id') ?? '';
@@ -321,8 +327,13 @@ export function localSharedRestore(argv: string[], workspace: string): Record<st
         const manifest = completeBookRenameMutation({ mutation, newSlug: slug, newBookRoot: to, newLock: locks.find(lock => lock.bookRoot === to)!, newCollection: 'collection', manifest: newBookManifestForCollectionBook(workspace, 'active', slug) });
         if (manifest.status !== 'committed') refuse(manifest.summary);
         mutation = null;
+        // BOTH RETURNS, AND WHAT EACH DOES WITH THE SHELF COPY (kickoffs/s221 row 2), and the drift the return will stop on (row 1).
+        const shelf = current.recallShelf ?? slug;
+        const driftNote = current.drift
+          ? ' The collection copy changed after the recall (recall_drift lists the pages), so either return stops on that drift until you add --accept-drift, which keeps each drifted page under internal/shelf-recalls before writing over it.'
+          : '';
         return { ...plan, restored: true, discovery_manifest: manifest.summary,
-          next: `Restore writes no Books Catalog line. Run deskpost publish refresh ${slug} --preflight for a recalled Book, or deskpost shared list-entry ${slug} --preflight to write its line.` };
+          next: `Restore writes no Books Catalog line. For a recalled Book, return the Shelf copy: deskpost publish ${shelf} --replace-existing --preflight returns the Book and deletes the Shelf copy after; deskpost publish refresh ${shelf} --preflight returns it and keeps the copy.${driftNote} Otherwise run deskpost shared list-entry ${slug} --preflight to write its line.` };
       } catch (error) {
         if (mutation !== null && !moved) undoBookMutation(mutation);
         refuse(`Book restoration stopped. ${moved ? `The Book was moved to 'collection/${to}'; inspect it and the archive Catalog before retrying.` : 'The archived Book was left in place.'} ${(error as Error).message}`);

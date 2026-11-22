@@ -109,6 +109,8 @@ export const execute: Runner = (command, args, cwd, env, timeoutMs = CHILD_TIMEO
   let error = '';
   child.stderr.on('data', chunk => { if (reader || manifest) error += String(chunk); });
   let stopping: Promise<void> | undefined;
+  const OUTPUT_CLOSE_GRACE_MS = 2_000;
+  let outputGrace: ReturnType<typeof setTimeout> | undefined;
   const message = `${path.basename(command)} timed out after ${timeoutMs} ms`;
   const stopFailure = () => Object.assign(Error(message + '; child tree termination failed'), {
     childClosure: hasClosed || child.pid === undefined ? undefined : { pid: child.pid, closed },
@@ -179,6 +181,14 @@ export const execute: Runner = (command, args, cwd, env, timeoutMs = CHILD_TIMEO
         }
         resolve();
       });
+      void stopping.then(() => {
+        if (hasClosed) return;
+        outputGrace = setTimeout(() => {
+          reject(Error(message + '; output was still held open by a process the stop could not reach'));
+          child.stdout.destroy();
+          child.stderr.destroy();
+        }, OUTPUT_CLOSE_GRACE_MS);
+      }, () => { /* The stop failure below reports this error. */ });
     }
     void stopping.catch(() => reject(stopFailure()));
   }, timeoutMs);
@@ -188,6 +198,7 @@ export const execute: Runner = (command, args, cwd, env, timeoutMs = CHILD_TIMEO
   });
   child.on('close', async code => {
     clearTimeout(timer);
+    clearTimeout(outputGrace);
     if (stopping) {
       try { await stopping; reject(Error(message)); }
       catch { reject(stopFailure()); }

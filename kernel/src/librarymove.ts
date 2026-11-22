@@ -1,4 +1,4 @@
-/** A Library move is planned from bytes; history and ambiguous paths are never rewritten. */
+/** A Library move is planned from bytes; history and ambiguous paths (a match inside a longer path, on either side) are never rewritten. */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -106,28 +106,29 @@ function manifest(root: string, reasons: string[] = []): ManifestEntry[] {
   return rows.sort((a, b) => a.relative.localeCompare(b.relative));
 }
 
+const displayPath = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase());
 function movePlan(options: MoveOptions, barrierRun?: string, includeWarnings = true) {
     const started = performance.now();
     const destination = options.destination ?? '';
     if (!destination) throw new Error('Run deskpost library move <destination> --preflight [--workspace <path>] [--json].');
     if (!path.isAbsolute(destination) || (process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(destination))) throw new Error('Give a full path, such as P:\\dev\\Deskpost\\Library.');
-    if (/['"`]/.test(destination)) throw new Error(`${destination} holds a quote character, which the settings files that name this Library cannot hold unescaped; choose a folder name without quotes`);
-    if (/[\u0000-\u001f\u007f]/.test(destination)) throw new Error(`${destination.replace(/[\u0000-\u001f\u007f]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase())} holds a control character, which the settings files that name this Library cannot hold; choose a folder name without one`);
+    if (/[\u0000-\u001f\u007f]/.test(destination)) throw new Error(`${displayPath(destination)} holds a control character, which the settings files that name this Library cannot hold; choose a folder name without one`);
+    if (/['"`]/.test(destination)) throw new Error(`${displayPath(destination)} holds a quote character, which the settings files that name this Library cannot hold unescaped; choose a folder name without quotes`);
     const root = options.workspace ? path.resolve(options.workspace) : findWorkspaceByMarker(process.cwd());
     if (!root || !readMarker(root)) throw new Error('No Library marker found. Run inside a Library, or give --workspace <path>.');
     const target = path.resolve(destination);
     let ancestor = target;
     while (!pathExists(ancestor)) {
       const parent = path.dirname(ancestor);
-      if (parent === ancestor) throw new Error(`${ancestor} is unavailable; mount the drive or choose an available destination, then run the preview again`);
+      if (parent === ancestor) throw new Error(`${displayPath(ancestor)} is unavailable; mount the drive or choose an available destination, then run the preview again`);
       ancestor = parent;
     }
-    if (!fs.statSync(ancestor).isDirectory()) throw new Error(`${ancestor} is a file; choose a destination under a folder`);
+    if (!fs.statSync(ancestor).isDirectory()) throw new Error(`${displayPath(ancestor)} is a file; choose a destination under a folder`);
     const resolvedTarget = path.resolve(fs.realpathSync.native(ancestor), path.relative(ancestor, target));
     const resolvedRoot = fs.realpathSync.native(root);
     if (within(resolvedTarget, resolvedRoot) || within(resolvedRoot, resolvedTarget)) throw new Error(`Choose a folder outside ${root}; neither folder may contain the other.`);
     if (fs.existsSync(target) && fs.readdirSync(target).length) throw new Error('Choose a new folder, or empty it first.');
-    if (options.destinationRule !== 'any' && process.platform === 'win32' && target.slice(path.parse(target).root.length).split(path.sep)[0]?.toLowerCase() !== 'dev') throw new Error(`New folders go under a drive's dev folder (Eric, 2026-10-17): use ${path.parse(target).root}dev\\<name>.`);
+    if (options.destinationRule !== 'any' && process.platform === 'win32' && target.slice(path.parse(target).root.length).split(path.sep)[0]?.toLowerCase() !== 'dev') throw new Error(`New folders go under a drive's dev folder (Eric, 2026-10-17): use ${displayPath(path.parse(target).root)}dev\\<name>.`);
     if (!barrierRun) assertNoMaintenanceBarrier(root, 'library move');
     else if (JSON.parse(fs.readFileSync(path.join(root, 'internal/maintenance-barrier.json'), 'utf8')).run_id !== barrierRun) throw new Error('The maintenance barrier changed; inspect the move journal before continuing');
     const warnings: string[] = [];
@@ -154,7 +155,7 @@ function movePlan(options: MoveOptions, barrierRun?: string, includeWarnings = t
     const free = stat.bavail * stat.bsize;
     const bytes = sourceManifest.reduce((sum, row) => sum + row.size, 0);
     const room = free >= BigInt(Math.max(bytes, expectedManifest.reduce((sum, row) => sum + row.size, 0)));
-    if (!room) reasons.push(`${ancestor} has insufficient free space; free space or choose another destination, then run the preview again`);
+    if (!room) reasons.push(`${displayPath(ancestor)} has insufficient free space; free space or choose another destination, then run the preview again`);
     const planId = digest(JSON.stringify({ root, target, sourceManifest, pointers: recorded.pointers.map(({ file, sha256, occurrences, ambiguous, newBytes }) => ({ file, sha256, occurrences, ambiguous, output: newBytes ? digest(newBytes) : null })) }));
     return { root, target, sourceManifest, expectedManifest, recorded, warnings, reasons, bytes, room, free: Number(free), planId, seconds: (performance.now() - started) / 1000 };
 }
@@ -172,19 +173,19 @@ type MoveJournal = {
 type MoveResult = { refusal: string | null; value: PsJsonValue | null; humanText?: string };
 
 /** Stage beside the file, flush its bytes, then replace with a single filesystem rename. */
-function atomic(file: string, bytes: Buffer | string) {
+function atomic(file: string, bytes: Buffer | string, mode = pathExists(file) ? fs.statSync(longPath(file)).mode & 0o7777 : 0o600) {
   fs.mkdirSync(longPath(path.dirname(file)), { recursive: true });
   const temporary = longPath(file + `.move-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-  const handle = fs.openSync(temporary, 'wx');
-  try { fs.writeFileSync(handle, bytes); fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+  const handle = fs.openSync(temporary, 'wx', mode);
+  try { fs.writeFileSync(handle, bytes); fs.fchmodSync(handle, mode); fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
   fs.renameSync(temporary, longPath(file));
 }
 function saveJournal(journal: MoveJournal) {
   const bytes = JSON.stringify(journal, null, 2) + '\n';
-  atomic(path.join(journal.directory, 'journal.json'), bytes);
+  atomic(path.join(journal.directory, 'journal.json'), bytes, 0o600);
   const copy = path.join(journal.target, 'internal/move-journals', journal.run_id);
   // Keep the completed copy current without recreating a destination renamed by rollback.
-  if (journal.state === 'complete' && journal.steps['journal-copy'] === 'done' && fs.existsSync(copy)) atomic(path.join(copy, 'journal.json'), bytes);
+  if (journal.state === 'complete' && journal.steps['journal-copy'] === 'done' && fs.existsSync(copy)) atomic(path.join(copy, 'journal.json'), bytes, 0o600);
 }
 function barrier(root: string, runId: string) {
   if (!pathExists(path.join(root, 'internal'))) throw new Error(`${path.join(root, 'internal')} is missing; create it as an empty folder, then run the preview again`);
@@ -195,6 +196,13 @@ function barrier(root: string, runId: string) {
     return;
   }
   atomic(file, JSON.stringify({ run_id: runId, operation: 'Library move', reason: 'A Library move is in progress' }) + '\n');
+}
+/** Before a run's first step, refuse when a barrier it would place names another run, so nothing is written; barrier() keeps its own check. */
+function refuseForeignBarriers(roots: (string | null)[], runId: string) {
+  for (const root of roots) {
+    const file = root && path.join(root, 'internal/maintenance-barrier.json');
+    if (file && fs.existsSync(file) && JSON.parse(fs.readFileSync(file, 'utf8')).run_id !== runId) throw new Error(`${file} belongs to another run; inspect its journal before continuing`);
+  }
 }
 function liftBarrier(root: string, runId: string) {
   const file = path.join(root, 'internal/maintenance-barrier.json');
@@ -214,6 +222,16 @@ function verifyTree(root: string, expected: ManifestEntry[]) {
 function requireQuiet(journal: Pick<MoveJournal, 'insideVault'>, options: MoveOptions) {
   const quiet = quietCheck({ processTable: options.processTable, inside_obsidian_vault: journal.insideVault });
   if (quiet.refusal) throw new Error(quiet.refusal);
+}
+function obsidianVault(root: string, unreadable?: (file: string, error: unknown) => void): string | null {
+  for (let folder = path.resolve(root); ; folder = path.dirname(folder)) {
+    const file = path.join(folder, '.obsidian');
+    try { if (fs.statSync(file).isDirectory()) return folder; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { if (unreadable) unreadable(file, error); else throw error; }
+    }
+    if (path.dirname(folder) === folder) return null;
+  }
 }
 function fault(options: MoveOptions, point: string) {
   if (options.faultAt !== point) return;
@@ -286,8 +304,11 @@ function finishMove(journal: MoveJournal, options: MoveOptions) {
   step(journal, 'complete', () => { liftBarrier(journal.target, journal.run_id); }, options);
   step(journal, 'journal-copy', () => {
     const copy = path.join(journal.target, 'internal/move-journals', journal.run_id);
-    fs.mkdirSync(copy, { recursive: true });
-    for (const file of fs.readdirSync(journal.directory)) fs.copyFileSync(path.join(journal.directory, file), path.join(copy, file));
+    fs.mkdirSync(copy, { recursive: true, mode: 0o700 }); fs.chmodSync(copy, 0o700);
+    for (const [index, file] of fs.readdirSync(journal.directory).entries()) {
+      atomic(path.join(copy, file), fs.readFileSync(path.join(journal.directory, file)), 0o600);
+      if (index === 0) fault(options, 'journal-copy:file');
+    }
   }, options);
   journal.state = 'complete'; saveJournal(journal);
 }
@@ -303,11 +324,7 @@ export function moveLibrary(options: MoveOptions): MoveResult {
   if (!options.userConfirmed) return { refusal: `run the preview first: deskpost library move ${options.destination ?? '<destination>'} --preflight`, value: null };
   let journal: MoveJournal | undefined;
   try {
-    let insideVault = false;
-    for (let folder = path.resolve(options.workspace ?? process.cwd()); ; folder = path.dirname(folder)) {
-      if (fs.existsSync(path.join(folder, '.obsidian'))) { insideVault = true; break; }
-      if (path.dirname(folder) === folder) break;
-    }
+    const insideVault = obsidianVault(options.workspace ?? findWorkspaceByMarker(process.cwd()) ?? process.cwd()) !== null;
     requireQuiet({ insideVault }, options);
     const plan = movePlan(options, undefined, false);
     if (within(fs.realpathSync.native(process.cwd()), fs.realpathSync.native(plan.root))) throw new Error(`run it from a folder outside ${plan.root}`);
@@ -320,12 +337,13 @@ export function moveLibrary(options: MoveOptions): MoveResult {
     const runId = 'move-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     const directory = path.join(path.dirname(registryFile), 'move-journals', runId);
     if (within(directory, plan.root) || within(directory, plan.target)) throw new Error('The move journal must be outside both trees; choose an outside --registry-root before previewing');
+    refuseForeignBarriers([plan.root, plan.target], runId);
     const priorRow = { ...registryRow }; registryRow.path = plan.target;
     journal = { schema: 1, run_id: runId, root: plan.root, target: plan.target, staging: plan.target + '.partial-' + runId, aside: plan.root + '.moved-' + runId,
       directory, sourceManifest: plan.sourceManifest, expectedManifest: plan.expectedManifest, insideVault: plan.recorded.vault !== null,
       registryRoot: path.dirname(registryFile), registryFile, registryBefore: registryBefore.toString('base64'), registryOutputSha: digest(JSON.stringify(registryDocument, null, 2) + '\n'), registryRow: priorRow,
       pointers: [], programPointers: [], listed: [], steps: {}, state: 'phase-a', emptyDestination: fs.existsSync(plan.target) };
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700);
     for (const pointer of plan.recorded.pointers) {
       if (pointer.ambiguous || pointer.reason) journal.listed.push(`${pointer.file}: ${pointer.ambiguous} ambiguous occurrences; ${pointer.reason ?? 'left as written'}`);
       if (!pointer.newBytes || !pointer.occurrences) continue;
@@ -404,6 +422,8 @@ function verifyRecovery(journal: MoveJournal) {
   if (locations.destination && locations.destination !== journal.staging) verifyTree(locations.destination, journal.rollbackManifest ?? journal.expectedManifest);
   return locations;
 }
+/** One key for a registry row's path, used by the rollback's judgement and its readback alike: an alias of a path is that path. */
+const registryKey = (value: unknown) => process.platform === 'win32' ? path.resolve(String(value)).toLowerCase() : path.resolve(String(value));
 function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () => void) {
   const locations = verifyRecovery(journal); // Refusals here change no bytes, including barriers and the journal.
   if (journal.state === 'rolled-back') return;
@@ -413,11 +433,13 @@ function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () 
   else if (digest(registryBytes) === journal.registryOutputSha) registryState = 'output';
   else {
     const rows = (JSON.parse(registryBytes.toString('utf8')) as { workspaces: Record<string, unknown>[] }).workspaces;
-    const movedRow = rows.find(row => row['path'] === journal.target);
-    if (!movedRow && rows.some(row => row['path'] === journal.root && row['id'] === journal.registryRow.id)) registryState = 'restored';
-    else if (JSON.stringify(movedRow) === JSON.stringify({ ...journal.registryRow, path: journal.target }) && !rows.some(row => row['path'] === journal.root)) registryState = 'moved';
+    const movedRows = rows.filter(row => registryKey(row['path']) === registryKey(journal.target));
+    const sourceRows = rows.filter(row => registryKey(row['path']) === registryKey(journal.root));
+    if (!movedRows.length && sourceRows.length === 1 && sourceRows[0]!['id'] === journal.registryRow.id) registryState = 'restored';
+    else if (movedRows.length === 1 && !sourceRows.length && JSON.stringify(movedRows[0]) === JSON.stringify({ ...journal.registryRow, path: journal.target })) registryState = 'moved';
     else throw new Error('The moved registry row changed; inspect it before retrying the rollback');
   }
+  refuseForeignBarriers([locations.source, locations.destination], journal.run_id);
   validated();
   journal.rollbackCommitted ??= locations.source === journal.aside || journal.steps['cutover'] === 'done';
   step(journal, 'rollback-barriers', () => {
@@ -446,7 +468,7 @@ function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () 
     if (registryState === 'output') atomic(journal.registryFile, registryBefore);
     else if (registryState === 'moved') relocateWorkspace(journal.registryRoot, { path: journal.target, id: journal.registryRow.id }, journal.root);
     const rows = (JSON.parse(fs.readFileSync(journal.registryFile, 'utf8')) as { workspaces: { path: string; id: string }[] }).workspaces;
-    if (!rows.some(row => row.path === journal.root && row.id === journal.registryRow.id) || rows.some(row => row.path === journal.target)) throw new Error('The restored registry did not read back; inspect it before retrying the rollback');
+    if (!rows.some(row => registryKey(row.path) === registryKey(journal.root) && row.id === journal.registryRow.id) || rows.some(row => registryKey(row.path) === registryKey(journal.target))) throw new Error('The restored registry did not read back; inspect it before retrying the rollback');
   }, options);
   for (const [index, pointer] of journal.pointers.entries()) step(journal, 'rollback-pointer-' + index, () => {
     let actual = '';
@@ -478,8 +500,9 @@ function recoverMove(options: MoveOptions): MoveResult {
     requireQuiet(journal, options);
     if (options.rollback) rollbackMove(journal, options, () => { active = journal; });
     else {
-      active = journal;
       if (locations.source !== journal.aside || locations.destination !== journal.target || journal.state === 'rolled-back') throw new Error('Only a move past its commit point can resume; run its --rollback <run-id> --preflight instead');
+      refuseForeignBarriers([journal.aside, journal.target], journal.run_id);
+      active = journal;
       step(journal, 'resume-barriers', () => { barrier(journal.aside, journal.run_id); barrier(journal.target, journal.run_id); }, options);
       finishMove(journal, options);
     }
@@ -543,16 +566,24 @@ function recordedPaths(root: string, registryRoot?: string, destination = root, 
       if (fs.lstatSync(file).isSymbolicLink()) { unknown(place, file, 'Symbolic link left unread; check its target separately.'); return; }
       const bytes = fs.readFileSync(file);
       const binary = /\.db$/i.test(file);
-      let counts: ReturnType<ReturnType<typeof pathCounter>>;
-      try { counts = matches(bytes, destination, binary); }
+      const format = binary ? 'binary' : /\.json$/i.test(file) ? 'json' : /\.toml$/i.test(file) ? 'toml' : 'text';
+      let counts: PathCount;
+      try { counts = matches(bytes, destination, format); }
       catch {
-        counts = matches(bytes, destination, true);
+        counts = matches(bytes, destination, 'binary');
         if (!counts.occurrences && !counts.ambiguous) return;
         const reason = `${file} is not valid UTF-8; change it by hand or remove the path, then run the preview again`;
-        reasons.push(reason); pointers.push({ place, file, rewrite, ...counts, reason, sha256: digest(bytes) }); return;
+        reasons.push(reason); pointers.push({ place, file, rewrite, occurrences: counts.occurrences, ambiguous: counts.ambiguous, reason, sha256: digest(bytes) }); return;
       }
-      if (counts.occurrences || counts.ambiguous) pointers.push({ place, file, rewrite, ...counts, sha256: digest(bytes),
-        ...(binary ? { reason: 'open the workspace again in Orca after the move' } : {}) });
+      const { reason, notExecutable, ...count } = counts;
+      // A file the counter refuses (plan D5.2, D5.3) is listed with its reason and stops the move, as a file that is not UTF-8 does.
+      if (notExecutable) {
+        const refused = `${file}: ${notExecutable}`;
+        reasons.push(refused);
+        pointers.push({ place, file, rewrite, ...count, reason: reason ? `${reason}; ${notExecutable}` : notExecutable, sha256: digest(bytes) }); return;
+      }
+      if (counts.occurrences || counts.ambiguous) pointers.push({ place, file, rewrite, ...count, sha256: digest(bytes),
+        ...(binary ? { reason: 'open the workspace again in Orca after the move' } : reason ? { reason } : {}) });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unknown(place, file, error);
     }
@@ -584,40 +615,243 @@ function recordedPaths(root: string, registryRoot?: string, destination = root, 
     }
     for (const entry of entries('Orca stores', orca)) if (/\.(json|db)$/i.test(entry.name)) inspect('Orca store', path.join(orca, entry.name), 'orca');
   }
-  let vault: string | null = null;
-  for (let folder = path.dirname(root); ; folder = path.dirname(folder)) {
-    try { if (fs.statSync(path.join(folder, '.obsidian')).isDirectory()) { vault = folder; break; } }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unknown('Obsidian vault check', path.join(folder, '.obsidian'), error); }
-    if (path.dirname(folder) === folder) break;
-  }
+  const vault = obsidianVault(root, (file, error) => { unknown('Obsidian vault check', file, error); });
   const didNotSearch = 'Not searched: other homes, other application stores, other drives, remote services, and files outside the named locations. Symbolic links are not followed.';
   const humanText = ['program', 'eric', 'orca', 'unknown'].flatMap(rewrite => {
     const rows = pointers.filter(row => row.rewrite === rewrite);
     return rows.length ? [`Who may rewrite: ${rewrite}`, ...rows.map(row => `${row.place}: ${row.file}: ${row.occurrences} occurrences; ${row.ambiguous} ambiguous${row.reason ? '; ' + row.reason : ''}`)] : [];
-  }).join('\n');
+  }).concat('Check any rewritten value whose earlier text is not a command word: a relative folder named like an option, or ending in a space or a quote, before the Library path is rewritten too.').join('\n');
   return { pointers, vault, didNotSearch, humanText };
 }
 
-function pathCounter(root: string) {
+/** What pathCounter found in one file: occurrences it would rewrite, ambiguous ones it lists, the new bytes (never for a .db
+ * file or a refused one), a reason to list beside the counts, and a reason the move must refuse the file (plan D5.2, D5.3). */
+export type PathCount = { occurrences: number; ambiguous: number; newBytes?: Buffer; reason?: string; notExecutable?: string };
+
+const ESCAPED_REASON = 'the old path is written here with an escaped character; change it by hand';
+const RESIDUE_REASON = 'the old path may be written here in a form the move cannot read; change it by hand, then run the preview again';
+const COLLISION_REASON = 'two keys would become one; merge them by hand';
+
+export function pathCounter(root: string) {
   const fold = (text: string) => process.platform !== 'win32' ? text : Array.from(text, char => {
     const lower = char.toLowerCase(); return lower.length === char.length && Array.from(lower).length === 1 ? lower : char;
   }).join('');
-  return (bytes: Buffer, destination = root, binary = false) => {
-    const text = binary ? bytes.toString('latin1') : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    const needle = binary ? Buffer.from(root).toString('latin1') : root;
-    const escaped = fold(needle).split(/[\\/]+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]+');
-    let occurrences = 0, ambiguous = 0;
-    let output = '', cursor = 0;
-    for (const match of fold(text).matchAll(new RegExp(escaped, 'g'))) {
-      const start = match.index!, end = start + match[0].length;
-      if (end < text.length && (binary ? /[a-z0-9_. -]/i.test(text[end]!) : !/[\\/"'<>|*?\r\n\t]/.test(text[end]!))) { ambiguous++; continue; }
-      occurrences++;
-      const original = text.slice(start, end);
-      const replacement = original.includes('\\\\') ? destination.replace(/[\\/]/g, '\\\\') : original.includes('\\') ? destination.replace(/[\\/]/g, '\\') : destination.replace(/\\/g, '/');
-      output += text.slice(cursor, start) + replacement; cursor = end;
+  const pattern = () => new RegExp(fold(root).split(/[\\/]+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]+'), 'g');
+  const leading = (value: string) => /^[\\/]*/.exec(value)![0].length;
+  // The first path in its value: no / or \ before it there; between it and the nearest whitespace, quote or the value's start,
+  // nothing, an option, a variable or a tool pattern (D1.4, D1.5).
+  const starts = (prior: string) => !/[\\/]/.test(prior) &&
+    /^(?:|--?[A-Za-z][A-Za-z0-9-]*=|[A-Za-z_][A-Za-z0-9_]*=|[A-Za-z][A-Za-z0-9]*\()$/.test(/[^\s"'`]*$/u.exec(prior)![0]);
+  return (bytes: Buffer, destination = root, format: 'json' | 'toml' | 'text' | 'binary' = 'text'): PathCount => {
+    const binary = format === 'binary';
+    // A .db file is counted, never rewritten; its bytes are read as UTF-8 (a broken sequence reads as U+FFFD, which ends a
+    // run), so the case-fold on Windows compares letters, not Latin-1 bytes (D1.1, plan r6).
+    const text = binary ? bytes.toString('utf8') : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    // Nothing that continues a path after it (D1.7); undefined is the end of the value.
+    const ends = (next: string | undefined) => next === undefined || (binary ? !/[a-z0-9_. -]/i.test(next) : /[\\/"'<>|*?\r\n\t]/.test(next));
+    let occurrences = 0, ambiguous = 0, escapedCharacter = false;
+    const edits: { start: number; end: number; text: string }[] = [];
+    const strings = format === 'json' ? jsonStrings(text) : format === 'toml' ? tomlStrings(text) : null;
+    if (format === 'text' || binary) {
+      // The value is the line (in binary, the run of printable bytes); no escapes, so the raw text is the decoded text.
+      for (const match of fold(text).matchAll(pattern())) {
+        const start = match.index!, end = start + match[0].length;
+        let from = start;
+        if (binary) while (from > 0 && /[\x20-\x7e]/.test(text[from - 1]!)) from--;
+        else from = text.lastIndexOf('\n', start - 1) + 1;
+        if (!starts(text.slice(from, start)) || leading(match[0]) > leading(root) || !ends(text[end])) { ambiguous++; continue; }
+        occurrences++;
+        const original = text.slice(start, end);
+        edits.push({ start, end, text: original.includes('\\\\') ? destination.replace(/[\\/]/g, '\\\\') : original.includes('\\') ? destination.replace(/[\\/]/g, '\\') : destination.replace(/\\/g, '/') });
+      }
+    } else {
+      // A raw match not wholly inside one string (outside any, crossing a string's end, or anywhere in a file the scanner
+      // cannot read) is ambiguous; one inside a string is judged on the string's decoded text below, so a raw run that only
+      // looks like the path (\root/library: a \r escape, then oot/library) is no occurrence (D1.1, D1.2).
+      for (const match of fold(text).matchAll(pattern())) {
+        const start = match.index!, end = start + match[0].length;
+        if (!strings?.some(span => span.start <= start && end <= span.end)) ambiguous++;
+      }
+      for (const span of strings ?? []) {
+        const value = decodeString(text, span);
+        for (const match of fold(value.text).matchAll(pattern())) {
+          const start = match.index!, end = start + match[0].length;
+          // An escape outside the format's table, or malformed, before the occurrence leaves its value unread (D1.3).
+          if (value.unreadFrom < start || !starts(value.text.slice(0, start)) || leading(match[0]) > leading(root) || !ends(value.text[end])) { ambiguous++; continue; }
+          // The occurrence's own raw characters: a separator written as an escape (\\ for \, and in JSON \/ for /) keeps it
+          // a path; any other escape makes it ambiguous, listed with its reason (D1.3).
+          let slashEscape = false, doubled = false, single = false, escaped = false;
+          for (let i = start; i < end; i++) {
+            const raw = text.slice(value.from[i], value.to[i]);
+            if (raw === '\\') single = true;
+            else if (raw.length === 1) continue;
+            else if (raw === '\\\\' && value.text[i] === '\\') doubled = true;
+            else if (raw === '\\/' && span.kind === 'json') slashEscape = true;
+            else escaped = true;
+          }
+          if (escaped) { ambiguous++; escapedCharacter = true; continue; }
+          occurrences++;
+          // The occurrence keeps its slash form, read from its raw text as in a text file (a literal string's backslashes
+          // too); a JSON span written with \/ is rewritten with \/ for every separator (D1.8).
+          const rawStart = value.from[start]!, rawEnd = value.to[end - 1]!;
+          edits.push({ start: rawStart, end: rawEnd, text: slashEscape ? destination.replace(/[\\/]/g, '\\/')
+            : doubled || text.slice(rawStart, rawEnd).includes('\\\\') ? destination.replace(/[\\/]/g, '\\\\') : single ? destination.replace(/[\\/]/g, '\\') : destination.replace(/\\/g, '/') });
+        }
+      }
     }
-    return { occurrences, ambiguous, ...(!binary ? { newBytes: Buffer.from(output + text.slice(cursor)) } : {}) };
+    const listed = escapedCharacter ? { reason: ESCAPED_REASON } : {};
+    // A TOML file the scanner cannot read (three quotes in a row) holding the path, raw or after every transform a basic
+    // string applies, is refused: the move cannot tell where the path is written (D5.2).
+    if (format === 'toml' && !strings && (ambiguous || fold(tomlResidue(text)).search(pattern()) >= 0)) return { occurrences, ambiguous, ...listed, notExecutable: RESIDUE_REASON };
+    if (binary) return { occurrences, ambiguous, ...listed };
+    let output = '', cursor = 0;
+    for (const edit of edits.sort((a, b) => a.start - b.start)) { output += text.slice(cursor, edit.start) + edit.text; cursor = edit.end; }
+    output += text.slice(cursor);
+    // A rewritten key that would equal another key of its object (JSON) or of the file (TOML, read without its tables, so
+    // it leans to refusing) is refused: two keys would become one (D5.3).
+    if (format !== 'text' && edits.length && keysCollide(text, output, format)) return { occurrences, ambiguous, ...listed, notExecutable: COLLISION_REASON };
+    return { occurrences, ambiguous, ...listed, newBytes: Buffer.from(output) };
   };
+}
+
+// One string's decoded text, with each decoded UTF-16 unit's raw span (from, to) in the file. An escape outside the format's
+// table, or malformed, reads as U+FFFD and sets unreadFrom, the first decoded index it covers (Infinity when none).
+function decodeString(text: string, span: StringSpan) {
+  const json = new Map([['"', '"'], ['\\', '\\'], ['/', '/'], ['b', '\b'], ['f', '\f'], ['n', '\n'], ['r', '\r'], ['t', '\t']]);
+  const toml = new Map([['b', '\b'], ['t', '\t'], ['n', '\n'], ['f', '\f'], ['r', '\r'], ['"', '"'], ['\\', '\\'], ['e', '\x1b']]);
+  const out = { text: '', from: [] as number[], to: [] as number[], unreadFrom: Infinity };
+  const put = (decoded: string, from: number, to: number) => { for (const unit of decoded.split('')) { out.text += unit; out.from.push(from); out.to.push(to); } };
+  for (let i = span.start; i < span.end;) {
+    if (span.kind === 'literal' || text[i] !== '\\') { put(text[i]!, i, i + 1); i++; continue; }
+    const letter = text[i + 1] ?? '', simple = (span.kind === 'json' ? json : toml).get(letter);
+    if (simple !== undefined) { put(simple, i, i + 2); i += 2; continue; }
+    const width = span.kind === 'json' ? (letter === 'u' ? 4 : 0) : ({ x: 2, u: 4, U: 8 } as Record<string, number>)[letter] ?? 0;
+    const hex = text.slice(i + 2, i + 2 + width);
+    const code = width && new RegExp(`^[0-9a-fA-F]{${width}}$`).test(hex) ? parseInt(hex, 16) : -1;
+    // JSON's \u names one UTF-16 unit (a lone surrogate decodes to itself); TOML's escapes name a Unicode scalar value.
+    if (code >= 0 && (span.kind === 'json' || (code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)))) {
+      put(span.kind === 'json' ? String.fromCharCode(code) : String.fromCodePoint(code), i, i + 2 + width); i += 2 + width; continue;
+    }
+    out.unreadFrom = Math.min(out.unreadFrom, out.text.length);
+    put('\ufffd', i, Math.min(i + 2, span.end)); i += 2;
+  }
+  return out;
+}
+
+// D5.2's second reading of a TOML file the scanner cannot read: every transform a basic string applies, across the whole
+// file (a line-ending backslash with the whitespace and line breaks after it removed, then each escape decoded). It may find
+// the path where TOML would not, never the reverse, since the raw text is searched too.
+function tomlResidue(text: string): string {
+  const simple: Record<string, string> = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\', e: '\x1b' };
+  return text.replace(/\\(?:[ \t]*\r?\n[ \t\r\n]*|x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|([btnfr"\\e]))/g, (all, x?: string, u?: string, long?: string, letter?: string) => {
+    if (letter) return simple[letter]!;
+    const hex = x ?? u ?? long;
+    if (hex === undefined) return '';
+    const code = parseInt(hex, 16);
+    return code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : all;
+  });
+}
+
+// D5.3: whether a rewrite makes two keys one. Keys are the strings in key places (in JSON, before a colon; in TOML, before =
+// or . or a table header's ]), decoded; a JSON key's scope is its object, a TOML key's the whole file. Two keys collide when
+// a rewritten key's new text is shared, in its scope, by keys whose old texts differ.
+function keysCollide(before: string, after: string, format: 'json' | 'toml'): boolean {
+  const keys = (text: string) => {
+    const spans = format === 'json' ? jsonStrings(text) : tomlStrings(text);
+    if (!spans) return null;
+    const found: { scope: number; text: string }[] = [];
+    const stack: number[] = []; let objects = 0, cursor = 0;
+    for (const span of spans) {
+      if (format === 'json') {
+        for (; cursor < span.start - 1; cursor++) {
+          const char = text[cursor];
+          if (char === '{' || char === '[') stack.push(char === '{' ? ++objects : -1); else if (char === '}' || char === ']') stack.pop();
+        }
+        cursor = span.end + 1;
+      }
+      const next = (format === 'json' ? /^\s*(.?)/ : /^[ \t]*(.?)/).exec(text.slice(span.end + 1))![1];
+      const header = /^[ \t]*\[/.test(text.slice(text.lastIndexOf('\n', span.start) + 1, span.start));
+      if (format === 'json' ? next === ':' : next === '=' || next === '.' || (next === ']' && header)) {
+        const raw = text.slice(span.start, span.end);
+        found.push({ scope: format === 'json' ? stack.at(-1) ?? 0 : 0, text: (span.kind === 'json' ? jsonDecode(raw) : span.kind === 'toml' ? tomlDecode(raw) : raw) ?? raw });
+      }
+    }
+    return { count: spans.length, found };
+  };
+  const old = keys(before), now = keys(after);
+  if (!old || !now || old.count !== now.count || old.found.length !== now.found.length) return true;
+  const groups = new Map<string, Set<string>>();
+  now.found.forEach((key, i) => { const id = key.scope + '\u0000' + key.text; groups.set(id, (groups.get(id) ?? new Set()).add(old.found[i]!.text)); });
+  return now.found.some((key, i) => key.text !== old.found[i]!.text && groups.get(key.scope + '\u0000' + key.text)!.size > 1);
+}
+
+// A string's text between its quotes, and how its escapes read: JSON, a TOML basic string, or a TOML literal string (none).
+type StringSpan = { start: number; end: number; kind: 'json' | 'toml' | 'literal' };
+
+// JSON's escapes (RFC 8259 section 7): \" \\ \/ \b \f \n \r \t, and \u with four hex digits, one UTF-16 code unit (a lone
+// surrogate decodes to itself). Any other escape, or a malformed one, is undecodable (null).
+function jsonDecode(raw: string): string | null {
+  const simple = new Map([['"', '"'], ['\\', '\\'], ['/', '/'], ['b', '\b'], ['f', '\f'], ['n', '\n'], ['r', '\r'], ['t', '\t']]);
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '\\') { out += raw[i]; continue; }
+    const letter = raw[++i] ?? '', hex = raw.slice(i + 1, i + 5);
+    if (simple.has(letter)) out += simple.get(letter);
+    else if (letter === 'u' && /^[0-9a-fA-F]{4}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 4; }
+    else return null;
+  }
+  return out;
+}
+
+// TOML basic strings' escapes (1.0, plus 1.1's \e and \x): \b \t \n \f \r \" \\ \e, \x with two hex digits, \u with four and
+// \U with eight, each naming a Unicode scalar value (no surrogate, nothing above U+10FFFF). Any other escape, or a malformed
+// one, is undecodable (null).
+function tomlDecode(raw: string): string | null {
+  const simple = new Map([['b', '\b'], ['t', '\t'], ['n', '\n'], ['f', '\f'], ['r', '\r'], ['"', '"'], ['\\', '\\'], ['e', '\x1b']]);
+  const widths = new Map([['x', 2], ['u', 4], ['U', 8]]);
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '\\') { out += raw[i]; continue; }
+    const letter = raw[++i] ?? '', width = widths.get(letter) ?? 0, hex = raw.slice(i + 1, i + 1 + width);
+    if (simple.has(letter)) { out += simple.get(letter); continue; }
+    const code = width && new RegExp(`^[0-9a-fA-F]{${width}}$`).test(hex) ? parseInt(hex, 16) : -1;
+    if (code < 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return null;
+    out += String.fromCodePoint(code); i += width;
+  }
+  return out;
+}
+
+// JSON strings: outside one, " opens a string; inside, \ escapes the next character and an unescaped " closes it. An
+// unclosed string leaves the whole file unread (null).
+function jsonStrings(text: string): StringSpan[] | null {
+  const spans: StringSpan[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '"') continue;
+    const start = ++i;
+    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    if (i >= text.length) return null;
+    spans.push({ start, end: i, kind: 'json' });
+  }
+  return spans;
+}
+
+// TOML strings, line by line: basic "..." (with \ escapes) and literal '...'; # outside a string ends the line, and a string
+// unclosed at its line's end or the file's end leaves the file unread. Three quotes in a row anywhere (a multiline string) leave the file unread (null).
+function tomlStrings(text: string): StringSpan[] | null {
+  if (/"""|'''/.test(text)) return null;
+  const spans: StringSpan[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const quote = text[i];
+    if (quote === '#') { while (i + 1 < text.length && text[i + 1] !== '\n') i++; continue; }
+    if (quote !== '"' && quote !== "'") continue;
+    const start = ++i;
+    while (i < text.length && text[i] !== quote && text[i] !== '\n' && text[i] !== '\r') {
+      i += quote === '"' && text[i] === '\\' && text[i + 1] !== '\n' && text[i + 1] !== '\r' ? 2 : 1;
+    }
+    if (text[i] !== quote) return null;
+    spans.push({ start, end: i, kind: quote === '"' ? 'toml' : 'literal' });
+  }
+  return spans;
 }
 
 function historyPaths(root: string, limit: number) {
@@ -636,7 +870,10 @@ function historyPaths(root: string, limit: number) {
       if (!entry.isFile()) continue;
       try {
         if (fs.statSync(file).size > limit) { skipped.set(key, (skipped.get(key) ?? 0) + 1); continue; }
-        const hits = matches(fs.readFileSync(file), root, true);
+        const bytes = fs.readFileSync(file);
+        const format = /\.db$/i.test(file) ? 'binary' : /\.json$/i.test(file) ? 'json' : /\.toml$/i.test(file) ? 'toml' : 'text';
+        let hits: ReturnType<ReturnType<typeof pathCounter>>;
+        try { hits = matches(bytes, root, format); } catch { hits = matches(bytes, root, 'binary'); }
         if (hits.occurrences || hits.ambiguous) counts.set(key, (counts.get(key) ?? 0) + 1);
       } catch (error) { unreadable.push({ file, reason: (error as Error).message }); }
     }

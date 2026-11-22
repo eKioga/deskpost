@@ -93,6 +93,7 @@ $script:PublicTreeIncludeDirectories = @(
 # product: `.codex/` holds this machine's generated Codex configuration, and the repository root
 # holds every PLAN record.
 $script:PublicTreeIncludeFiles = @(
+    '.deskpost/code-balance.json',
     '.claude/settings.json',
     '.codex/config.template.toml',
     '.codex/hooks.template.json',

@@ -20,7 +20,15 @@ export function childEnv(): NodeJS.ProcessEnv {
   const separator = process.platform === 'win32' ? ';' : ':';
   env[key] = (env[key] ?? '')
     .split(separator)
-    .filter((entry) => entry && !fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost')))
+    .filter((entry) => {
+      if (!entry) return false;
+      if (!fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost'))) return true;
+      if (!env['DESKPOST_GITLEAKS']) {
+        const scanner = path.resolve(entry, process.platform === 'win32' ? 'gitleaks.exe' : 'gitleaks');
+        if (fs.statSync(scanner, { throwIfNoEntry: false })?.isFile()) env['DESKPOST_GITLEAKS'] = scanner;
+      }
+      return false;
+    })
     .join(separator);
   if (!env[key].split(separator).some(entry => entry && fs.existsSync(path.join(entry, process.platform === 'win32' ? 'node.exe' : 'node')))) {
     const nodeDir = path.dirname(process.execPath);

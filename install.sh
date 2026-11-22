@@ -50,6 +50,15 @@ VERSIONS="$INSTALL_ROOT/versions"
 fail() { printf 'install.sh: %s\n' "$1" >&2; exit 1; }
 say() { printf '  %s\n' "$1"; }
 
+sh_quote() {
+  rest=$1 quoted=
+  while [ "$rest" != "${rest#*"'"}" ]; do
+    quoted=$quoted${rest%%"'"*}"'\\''"
+    rest=${rest#*"'"}
+  done
+  printf "'%s%s'" "$quoted" "$rest"
+}
+
 [ -n "$FOUND_ROOT" ] && say "Deskpost is installed at $FOUND_ROOT (found from $FOUND_FROM); upgrading it in place."
 
 replace_link() {
@@ -205,7 +214,7 @@ if [ "${DESKPOST_PLUGIN:-0}" = 1 ]; then
       say "The Claude Code plugin install FAILED; the binary is installed."
     fi
   else
-    say "claude is not on PATH. Run: claude plugin marketplace add \"$INSTALL_ROOT/current\" && claude plugin install deskpost@deskpost"
+    say "claude is not on PATH. Run: claude plugin marketplace add $(sh_quote "$INSTALL_ROOT/current") && claude plugin install deskpost@deskpost"
   fi
   say "Codex has no non-interactive plugin install yet. In Codex, run /plugins and add the marketplace at $INSTALL_ROOT/current."
 fi
@@ -225,3 +234,6 @@ else
 fi || fail 'library doctor is not green, so this install is not accepted. It is in place; DESKPOST_ROLLBACK=1 switches back.'
 [ "$on_path" = 1 ] || say "$BIN_DIR is not on PATH; add it to your shell profile."
 # --- end of the closing check ---
+# --- manual Library update ---
+say "The Libraries this program serves were not brought up to date by this installer; run $(sh_quote "$INSTALL_ROOT/current/bin/library") init <folder> for each Library to bring it up to date."
+# --- end of manual Library update ---

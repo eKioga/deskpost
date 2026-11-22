@@ -83,6 +83,38 @@ import { convertToBookPagePath } from './pagepath.ts';
 import { localDate as today } from './localdate.ts';
 import { releaseTuple } from './programroot.ts';
 import { deleteRecallRecord, readRecallRecord, recallRecordLabel, recallRecordPath, recallRecordTakenRefusal, writeRecallRecord } from './recallrecord.ts';
+import type { ArgumentTable } from './argv.ts';
+import { quoteSharedCommandPath } from './sharedwrite.ts';
+
+/**
+ * THE EXACT COMMAND THAT APPLIES A PREVIEW (kickoffs/s221 row 3): the preview's own arguments as the verb read them,
+ * without `--preflight`, a stale `--plan-id`, `--user-confirmed` and `--json`, then the approval. A word a shell would
+ * split or expand is quoted as `quoteSharedCommandPath` quotes a path. `confirmed` adds `--user-confirmed` for the verbs
+ * that take it; the Shelf writers apply with `--plan-id` alone, and refuse a flag they never read.
+ *
+ * IT NAMES THE LIBRARY THE PREVIEW READ (kickoffs/s221-r2 row 2): a `--workspace` the preview carried is kept, made
+ * absolute against the folder the preview ran in (as workspace.ts resolves it), so the command run from anywhere applies
+ * to that Library and not the caller's own.
+ */
+export function applyCommand(words: string, argv: string[], table: ArgumentTable, planId: string, confirmed = false): string {
+  const valued = new Set([...(table.valued ?? []), ...(table.repeatable ?? []), 'workspace']);
+  const dropped = new Set(['plan-id']);
+  const kept: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const item = argv[index]!;
+    const name = item.startsWith('--') ? item.substring(2) : null;
+    if (name !== null && valued.has(name)) {
+      const value = argv[index + 1] ?? '';
+      if (!dropped.has(name)) kept.push(item, name === 'workspace' && value !== '' ? path.resolve(value) : value);
+      index += 1;
+      continue;
+    }
+    if (name === 'preflight' || name === 'user-confirmed' || name === 'json') continue;
+    kept.push(item);
+  }
+  const word = (value: string) => (/^[A-Za-z0-9_.,:/@+=-]+$/.test(value) ? value : quoteSharedCommandPath(value));
+  return ['deskpost', words, ...kept.map(word), ...(confirmed ? ['--user-confirmed'] : []), '--plan-id', planId].join(' ');
+}
 
 /** Whether a Shelf slug has a recall record (S70). Unreadable counts as present: the writer says so rather than skip it. */
 function recallRecordExists(workspace: string, slug: string): boolean {
@@ -246,6 +278,7 @@ export function describeVerb(argv: string[], programRoot: string, workspace: str
     derived_files: ['shelf/_catalog.md', 'the Book Discovery manifest'],
     plan_id: planId, confirmation_required: true, recoverable: true, shared_library_write: false,
     scope: 'Replaces this open Book Purpose and catalog Summary, regenerates its capture map when applicable, and journals the previous texts under its Book lock.',
+    next: applyCommand('shelf describe', argv, argumentTable('shelf', 'describe'), planId),
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
   if (parsed.options.get('plan-id') !== planId) refuse('The Book was not described: review the current preflight and rerun with its exact --plan-id.');
@@ -420,6 +453,7 @@ export function renameVerb(argv: string[], programRoot: string, workspace: strin
       "Every other page is verified byte-identical afterwards. Its Discovery manifest is regenerated under the new " +
       "slug and the old slug's manifest store is retired. Source references listed above are tracked text and are " +
       'migrated with the same commit; this helper does not edit them.',
+    next: applyCommand('shelf rename', argv, argumentTable('shelf', 'rename'), planId),
   };
   void references;
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
@@ -750,7 +784,7 @@ export function removeVerb(argv: string[], programRoot: string, workspace: strin
   } finally {
     exitBookLock(previewLock);
   }
-  if (parsed.flags.has('preflight')) return { refusal: null, value: preview.document };
+  if (parsed.flags.has('preflight')) return { refusal: null, value: { ...preview.document, next: applyCommand('shelf remove', argv, argumentTable('shelf', 'remove'), preview.planId) } };
 
   const approved = parsed.options.get('plan-id') ?? '';
   if (!approved) refuse('The Shelf Book was not deleted: review the preflight and rerun with its exact --plan-id.');
@@ -939,7 +973,10 @@ function deletePlan(workspace: string, slug: string, reason: string, actingSeat:
     refuse(
       `shelf/${slug} is open at ${foreign.length} other seat(s): ${foreign.join(', ')}. ` +
         'Deletion would leave each of them an entry naming a Book that no longer exists, and entitling ' +
-        'them to whatever Book lands on that slug next. Close it at those seats first.',
+        'them to whatever Book lands on that slug next. Close it at those seats first: ' +
+        // EACH SEAT'S OWN COMMAND (kickoffs/s221 row 4): the remedy named, not only the state.
+        foreign.map((seat) => `ask ${seat} to run deskpost desk close book ${slug} --location shelf (a letter: deskpost capture letters --why for-seat --for ${seat})`).join('; ') +
+        '; a seat not running closes it at its next start.',
     );
   }
   const wasOpen = holders.length > 0;
@@ -1123,6 +1160,7 @@ export function archiveVerb(argv: string[], programRoot: string, workspace: stri
       ? `blocking_references lists ${references.blocking.length} file(s) on a surface shelf.references-resolve reads, so the gate WILL fail until they are updated in the same commit. other_references are mentions the gate does not read; a dated record naming this Book stays true and needs no edit.`
       : `No blocking references: nothing on a surface shelf.references-resolve reads names this Book, so the gate will pass. other_references lists ${references.other.length} mention(s) elsewhere -- history rather than live claims, and no edit is needed for the gate.`,
   };
+  plan['next'] = `${String(plan['next'])} Apply it with: ${applyCommand('shelf archive', argv, argumentTable('shelf', 'archive'), planId)}`;
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
   const approved = parsed.options.get('plan-id') ?? '';
@@ -1343,6 +1381,7 @@ export function restoreVerb(argv: string[], programRoot: string, workspace: stri
       'Moves the archived Book back to shelf/<slug>, restores its Book Catalog entry verbatim, and commits a fresh ' +
       'Discovery manifest. Every page is verified byte-identical afterwards. The Book is restored CLOSED; open it ' +
       'with deskpost desk open book <slug> --location shelf.',
+    next: applyCommand('shelf restore', argv, argumentTable('shelf', 'restore'), planId),
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 
@@ -1578,7 +1617,8 @@ export function stubVerb(argv: string[], programRoot: string, workspace: string)
       'the same window. No other page, the reader map, and the Book Catalog are not changed.',
     next:
       'Read the page first if you have not. Then rerun with this exact --plan-id. The prior ' +
-      'body is recoverable from the journal until the next write to this Book.',
+      'body is recoverable from the journal until the next write to this Book. Apply it with: ' +
+      applyCommand('shelf stub', argv, argumentTable('shelf', 'stub'), planId),
   };
   if (parsed.flags.has('preflight')) return { refusal: null, value: plan };
 

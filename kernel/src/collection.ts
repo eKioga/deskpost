@@ -357,12 +357,15 @@ async function hubNew(argv: string[], workspace: string): Promise<Record<string,
   };
   if (parsed.flags.has('preflight')) {
     const exists = collection.readPage(rootPath) !== null;
+    const body = projectRootBody(title, parsed.options.get('purpose') ?? '', nextAction === undefined ? [] : [nextAction], dev);
     return {
       schema: 1,
       operation: 'Create Project Hub',
       ...plan,
       existing_project: exists,
       action: exists ? 'existing' : 'create',
+      planned_root_sections: sectionNames(body),
+      planned_root_bytes: Buffer.byteLength(body, 'utf8'),
       would_write: exists ? [] : [connectionsPath, rootPath, ACTIVE_CATALOG.join('/')].map(file => `collection/${file}`),
       confirmation_required: false,
       next: exists ? 'This Project Hub already exists; nothing to create.' : 'Run deskpost hub new again with the same arguments and without the preview flag to create this Hub.',

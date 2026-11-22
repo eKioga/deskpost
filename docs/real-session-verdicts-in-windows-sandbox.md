@@ -18,9 +18,8 @@ shown and one approval. Deskpost-specific findings land on this page instead, in
 Four rows can only be judged by a real session ([ADR-0039](adr/0039-an-independent-row-is-judged-against-the-kernel-under-test.md)):
 `harness.claude-code-refuses-a-shell-read-of-a-closed-book`, `harness.codex-refuses-a-shell-read-of-a-closed-book`,
 `harness.a-post-compaction-session-still-knows-where-it-is` and `seat.launcher-starts-a-harness-in-the-seat-it-named`.
-A verdict is recorded in `tools/acceptance-verdicts.json` bound to the SHA-256 of the exact `library.exe` it judged,
-so **every release is judged again**; a new binary reads the four rows as `pending` until it is. After recording,
-run the four rows with `-IncludeIndependent -Kernel <that exact library.exe>` and expect four green.
+Record the release binary's SHA-256, steps, observed result and evidence on the release review page using
+the [Harness looks](releasing.md#harness-looks) checklist. Repeat it for each release binary.
 
 ## The kit
 
@@ -82,8 +81,8 @@ treat a hook-level verdict as the same evidence.
   verdict to the same binary before anything is published (S50).
 - **A compiled Bun kernel on Windows ignores `TZ`** and reads the OS zone (S50). A judge that injects a zone through
   `TZ` measures only a source run there.
-- Evidence strings written through the Bash tool lose doubled backslashes; write `acceptance-verdicts.json`
-  evidence with the Write or Edit tool and check it parses with no control characters.
+- Write release-review evidence with an editor, preserving backslashes, and check for control characters.
+  Use the [Harness looks](releasing.md#harness-looks) checklist.
 - **A probe on the host inherits this session's `LIBRARY_WORKSPACE`.** S49's hand-run probe created a Project Hub in
   the reader's shared collection through it (archived with the reader's approval). Blank `LIBRARY_WORKSPACE`,
   `LIBRARY_SEAT` and the endpoint variables for any command run outside a harness that already does.

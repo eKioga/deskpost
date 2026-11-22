@@ -1986,8 +1986,15 @@ function seatRetire(argv: string[]): Record<string, PsJsonValue> {
     // only seat. Where its letters go after, from the registry without this seat.
     const losesDestination = (() => {
       const department = leaving?.department ?? null;
-      if (department === null || destinationOf(seatMetadata(rawRows), department).seat !== seat) return null;
+      if (department === null) return null;
+      const before = destinationOf(seatMetadata(rawRows), department);
+      const lastParentSeat = before.kind === 'none' && before.groups && before.seats.length === 1;
+      if (before.seat !== seat && !lastParentSeat) return null;
       const after = destinationOf(seatMetadata(rawRows.filter((row) => String(row['seat']) !== seat)), department);
+      if (after.kind === 'none' && after.groups) {
+        const groups = after.groups.map((group) => group.department).join(', ');
+        return { department, note: `After this, letters to department '${department}' are refused until a seat becomes its orchestrator with deskpost seat describe <seat> --department ${department} --role orchestrator. Write to a group meanwhile: ${groups}.` };
+      }
       const note =
         after.kind === 'only-seat'
           ? `After this, letters to department '${department}' go to its only seat, ${after.seat}.`

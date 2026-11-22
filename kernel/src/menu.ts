@@ -730,6 +730,11 @@ function newSeatBooks(workspace: string): string[] {
   return fs.existsSync(path.join(workspace, 'shelf', 'letters', 'wiki')) ? ['letters'] : [];
 }
 
+/** A group uses its own slug in a proposed seat name. */
+function seatNameBase(department: string): string {
+  return department.slice(department.indexOf('/') + 1);
+}
+
 async function seatChoices(state: MenuState, projectSeat: string, slug: string, withHub: string[]): Promise<{ choices: SeatStartChoices; seat: string }> {
   const { talk, workspace } = state;
   const rows = seatRegistryRows(workspace);
@@ -745,7 +750,7 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
       : '  No seat has a department yet.',
   );
   for (;;) {
-    const typed = await talk.ask('Department, a slug   [Enter] none › ');
+    const typed = await talk.ask('Department, a slug or <department>/<group>   [Enter] none › ');
     if (!typed) break;
     const problem = departmentProblem(typed);
     if (problem) {
@@ -797,7 +802,7 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
     // THEN THE NAME, proposed as <department>-<job> (ruling 10): editable, checked as every creator checks it, and a
     // collision offered the next suffix, never taken over.
     const job = WIZARD_JOBS[choices.template ?? ''] ?? 'dev';
-    const base = `${department}-${job}`;
+    const base = `${seatNameBase(department)}-${job}`;
     let proposed = base;
     for (let next = 2; !newSeatVerdict(workspace, proposed, slug, withHub, true).creatable && next < 20; next += 1) proposed = `${base}-${next}`;
     for (;;) {
@@ -1664,7 +1669,7 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
       // A typed name submitted as text (a script's answer) is taken as typed, as the list's own items are.
       let typed = picked.id.startsWith('department:') ? picked.id.slice('department:'.length) : picked.id.startsWith('create:') ? picked.id.slice('create:'.length) : picked.id === 'submit' ? picked.text.trim() : '';
       if (picked.id === 'new') {
-        const named = await inputScreen(state, 'More choices', 'Department', '', '_ a new department name');
+        const named = await inputScreen(state, 'More choices', 'Department', '', '_ a department slug or <department>/<group>');
         if (named.id === 'back') continue;
         typed = named.text.trim();
       }
@@ -1681,7 +1686,7 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
           // template's `<department>-<job>`, and the existing planner checks every choice.
           const projects = activeProjects(state.workspace);
           const free = (seat: string) => newSeatVerdict(state.workspace, seat, projectName, [...projects, projectName], true, choices).creatable;
-          const base = choices.department + '-' + WIZARD_JOBS[template.id];
+          const base = seatNameBase(typed) + '-' + WIZARD_JOBS[template.id];
           const kept = !!name && free(name);
           let proposed = kept ? name : base, suffix = 2;
           while (!kept && !free(proposed) && suffix < 20) proposed = base + '-' + suffix++;

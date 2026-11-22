@@ -592,6 +592,7 @@ async function section8(): Promise<void> {
       // s159. An unknown action stops in the verb's own branch.
       kickoff: ['kickoff', 'no-such-action'],
       // s161. An unknown action stops in the verb's own branch.
+      meanwhile: ['meanwhile', 'no-such-action'],
       vault: ['vault', 'no-such-action'],
       // s161. With no workspace it refuses in the resolver's words, in its own branch.
       'needs-you': ['needs-you', 'no-such-word'],
@@ -1595,12 +1596,12 @@ if (selected(21) && prerequisite(21, () => process.platform !== 'win32', 'requir
     const cliSource = path.join(program, 'kernel', 'src', 'cli.ts');
     const fromSource = !fs.existsSync(binary) && fs.existsSync(cliSource);
     const prefix = fromSource ? `"${process.execPath}" "${cliSource}" hook ` : `"${binary}" hook `;
-    // NINE SINCE S82 (ADR-0064), found stale in the clean distro by S83 row 5: the four hooks that were scripts are
-    // verbs, so a POSIX init registers them too -- search-hit, compact-clear on PostCompact and SessionStart, seat-start.
-    check(claude.length === 9 && claude.every((row) => row.command.startsWith(prefix)), `init's Claude hooks are not the binary's nine: ${claude.map((row) => row.command).join(' | ')}`);
+    // The nine existing registrations plus checkpoint on prompt submission, tool completion and Stop.
+    check(claude.length === 12 && claude.every((row) => row.command.startsWith(prefix)), `init's Claude hooks are not the kernel's twelve: ${claude.map((row) => row.command).join(' | ')}`);
     for (const [verb, event] of [
       ['basic-memory-read', 'PreToolUse'], ['shelf-read', 'PreToolUse'], ['shell-shelf-read', 'PreToolUse'], ['desk-context', 'UserPromptSubmit'], ['settings-integrity', 'ConfigChange'],
       ['search-hit', 'PostToolUse'], ['compact-clear', 'PostCompact'], ['compact-clear', 'SessionStart'], ['seat-start', 'SessionStart'],
+      ['checkpoint', 'UserPromptSubmit'], ['checkpoint', 'PostToolUse'], ['checkpoint', 'Stop'],
     ]) {
       check(claude.some((row) => row.event === event && row.command === prefix + verb), `init registered no ${event} '${verb}' for Claude`);
     }
@@ -1614,7 +1615,7 @@ if (selected(21) && prerequisite(21, () => process.platform !== 'win32', 'requir
     const shellQuoted = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
     const checkpointCommand = fromSource ? `${shellQuoted(process.execPath)} ${shellQuoted(cliSource)} hook checkpoint` : `${shellQuoted(binary)} hook checkpoint`;
     const computerUseCommand = checkpointCommand.replace(' hook checkpoint', ' hook computer-use');
-    check(codex.length === claude.filter(row => row.event !== 'ConfigChange').length + checkpointEvents.length + 1 && codex.every((row) => row.command.startsWith(prefix) || row.command === checkpointCommand || row.command === computerUseCommand), `init's Codex hooks differ from the kernel inventory: ${codex.map((row) => row.command).join(' | ')}`);
+    check(codex.length === claude.filter(row => row.event !== 'ConfigChange' && !row.command.endsWith(' hook checkpoint')).length + checkpointEvents.length + 1 && codex.every((row) => row.command.startsWith(prefix) || row.command === checkpointCommand || row.command === computerUseCommand), `init's Codex hooks differ from the kernel inventory: ${codex.map((row) => row.command).join(' | ')}`);
     equal(codex.filter(row => row.event === 'PreToolUse' && row.command === computerUseCommand).length, 1, 'Codex computer-use inventory');
     for (const event of checkpointEvents) equal(codex.filter(row => row.event === event && row.command === checkpointCommand).length, 1, `Codex checkpoint inventory for ${event}`);
     check(codex.filter((row) => row.command.endsWith(' --reader-tool-prefix mcp__validated_book_reader__')).length === 4, "init's Codex hooks do not hand four of them Codex's reader prefix");
@@ -3314,17 +3315,17 @@ async function section36(): Promise<void> {
     };
     const server = mcp.mcpServers['validated-book-reader'];
     const codex = fs.readFileSync(path.join(w.workspace, '.codex', 'config.toml'), 'utf8');
-    const kernelReader = compiled || process.platform !== 'win32';
+    const kernelReader = true;
     // FROM A SOURCE CHECKOUT ON POSIX the reader runs as its hooks do, the Node that ran init and the front door
     // (kickoffs/s154 row 1, as section 21 expects; kickoffs/s155 row 2). The compiled and Windows checks are as they were.
-    if (kernelReader && !compiled && process.platform !== 'win32') {
+    if (kernelReader && !compiled) {
       const cliSource = path.join(PROGRAM_ROOT, 'kernel', 'src', 'cli.ts');
-      const lead = [process.execPath, cliSource, 'mcp', 'serve'];
+      const lead = [process.platform === 'win32' ? 'node' : process.execPath, cliSource.replace(/\\/g, '/'), 'mcp', 'serve'];
       check(
         server !== undefined && JSON.stringify([server.command, ...server.args.slice(0, 3)]) === JSON.stringify(lead),
         `a Tier 0 init from source on POSIX registered ${server ? `${server.command} ${server.args.join(' ')}` : 'no reader'} for Claude, not ${lead.join(' ')}`,
       );
-      check(codex.includes(`command = ${JSON.stringify(process.execPath)}`) && codex.includes(`args = [${[cliSource, 'mcp', 'serve'].map((word) => JSON.stringify(word)).join(', ')}`), `a Tier 0 init from source on POSIX registered another reader for Codex: ${codex.slice(0, 400)}`);
+      check(codex.includes(`command = ${JSON.stringify(lead[0])}`) && codex.includes(`args = [${[lead[1]!, 'mcp', 'serve'].map((word) => JSON.stringify(word)).join(', ')}`), `a Tier 0 init from source on POSIX registered another reader for Codex: ${codex.slice(0, 400)}`);
     } else if (kernelReader) {
       check(
         server !== undefined && /\/bin\/library$/.test(server.command) && server.args[0] === 'mcp' && server.args[1] === 'serve',
@@ -3332,18 +3333,18 @@ async function section36(): Promise<void> {
       );
       check(/command = "[^"]*\/bin\/library"/.test(codex) && codex.includes('"mcp", "serve"'), `a Tier 0 init by a compiled kernel registered another reader for Codex: ${codex.slice(0, 400)}`);
     } else {
-      check(server !== undefined && server.command === 'powershell.exe', `a Tier 0 init from source registered ${server ? server.command : 'no reader'}, where only the adapter is there to name`);
+      check(false, 'a fresh init must register the kernel reader');
     }
 
-    // A Basic Memory workspace keeps the adapter: its collection is the adapter's to read.
+    // A Basic Memory workspace uses the kernel reader too.
     const shared = path.join(w.root, 'shared');
-    // A workspace that is ALREADY attached to Basic Memory, re-initialised: the adapter is kept.
+    // A workspace already attached to Basic Memory is re-initialised.
     basicMemoryWorkspace(shared, path.join(w.root, 'reg'), 'http://127.0.0.1:1/mcp', '44444444-4444-4444-4444-444444444444', { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
     fs.rmSync(path.join(shared, '.mcp.json'), { force: true });
     runCli(['init', shared, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
     const sharedMcp = JSON.parse(fs.readFileSync(path.join(shared, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as { mcpServers: Record<string, { command: string }> };
     if (process.platform === 'win32') {
-      check(sharedMcp.mcpServers['validated-book-reader']?.command === 'powershell.exe', `a Basic Memory init on Windows stopped registering the adapter: ${sharedMcp.mcpServers['validated-book-reader']?.command}`);
+      check(sharedMcp.mcpServers['validated-book-reader']?.command === (compiled ? `${PROGRAM_ROOT.replace(/\\/g, '/')}/bin/library` : 'node'), `a Basic Memory init must register the kernel reader: ${sharedMcp.mcpServers['validated-book-reader']?.command}`);
     }
 
     // RE-RUN OVER THE LIBRARY'S OWN OLD ADAPTER: a workspace an earlier release initialised carries the adapter entry,
@@ -3355,7 +3356,7 @@ async function section36(): Promise<void> {
       fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': adapterEntry, other: { command: 'x' } } }, null, 2));
       const again = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
       const redone = JSON.parse(fs.readFileSync(mcpPath, 'utf8').replace(/^\uFEFF/, '')) as { mcpServers: Record<string, { command: string }> };
-      check(again.exit === 0 && /\/bin\/library$/.test(redone.mcpServers['validated-book-reader']?.command ?? ''), `init over the Library's own adapter entry did not replace it: exit ${again.exit} ${again.stderr.trim().slice(0, 200)}`);
+      check(again.exit === 0 && redone.mcpServers['validated-book-reader']?.command === (compiled ? `${PROGRAM_ROOT.replace(/\\/g, '/')}/bin/library` : 'node'), `init over the Library's own adapter entry did not replace it: exit ${again.exit} ${again.stderr.trim().slice(0, 200)}`);
       check(redone.mcpServers['other']?.command === 'x', "init over the Library's own adapter entry dropped another server");
       fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': { command: 'node', args: ['mine.js'] } } }, null, 2));
       const foreign = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
@@ -3571,10 +3572,10 @@ if (selected(39) && prerequisite(39, () => process.platform === 'win32', 'requir
     check(![...claude, ...codex].some((row) => spelled(row.entry).toLowerCase().includes('get-playbookcontext')), `an init registered the retired playbook hook: ${[...claude, ...codex].map((row) => spelled(row.entry)).join(' | ')}`);
 
     if (!compiled) {
-      check(claude.length > 0 && claude.every((row) => row.entry.command === 'powershell.exe'), `an init from source registered something other than the guard scripts for Claude: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+      check(claude.length > 0 && claude.every((row) => row.entry.command === 'node' && row.entry.args?.[0] === `${program}/kernel/src/cli.ts` && row.entry.args?.[1] === 'hook' && !!row.entry.args?.[2]), `an init from source registered something other than kernel verbs for Claude: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
     } else {
       const exec = claude.filter((row) => row.entry.command === binary);
-      check(exec.length === ported.length && exec.every((row) => Array.isArray(row.entry.args) && row.entry.args[0] === 'hook' && row.entry.args.length === 2), `a compiled init's Claude hooks are not the kernel's ${ported.length} in exec form: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
+      check(exec.length === ported.length + 3 && exec.every((row) => Array.isArray(row.entry.args) && row.entry.args[0] === 'hook' && row.entry.args.length === 2), `a compiled init's Claude hooks are not the kernel's ${ported.length + 3} in exec form: ${claude.map((row) => spelled(row.entry)).join(' | ')}`);
       check(!claude.some((row) => spelled(row.entry).includes('Restore-CompactedGuidance.ps1')), 'a compiled init still registers the compaction clear script, which empties the program\'s ledger');
       for (const [verb, event] of ported) check(exec.some((row) => row.event === event && row.entry.args?.[1] === verb), `a compiled init registered no ${event} '${verb}' for Claude`);
       // EVERY HOOK HAS A VERB SINCE S82, so a compiled init registers no PowerShell for Claude at all.
@@ -4565,11 +4566,14 @@ if (selected(46) && prerequisite(46, () => !isCompiled(), 'requires source suite
 // too, and under the fake install it would be another program's: there it is pointed at the install's own copy. A
 // function, not inline code: the module body is at TypeScript's TS2563 limit.
 function pointSourceHooksAtInstall(document: { hooks: Record<string, { hooks: Record<string, unknown>[] }[]> }, version: string, current: string): void {
-  if (process.platform === 'win32') return;
   fs.mkdirSync(path.join(version, 'kernel', 'src'), { recursive: true });
   fs.writeFileSync(path.join(version, 'kernel', 'src', 'cli.ts'), '// the fake install\n');
   const [from, to] = [path.join(PROGRAM_ROOT, 'kernel', 'src', 'cli.ts'), path.join(current, 'kernel', 'src', 'cli.ts')];
-  for (const blocks of Object.values(document.hooks)) for (const block of blocks) block.hooks = block.hooks.map((entry) => JSON.parse(JSON.stringify(entry).split(from).join(to)) as Record<string, unknown>);
+  const rewrite = (value: unknown): unknown => typeof value === 'string'
+    ? value.split(from).join(to).split(from.split(path.sep).join('/')).join(to.split(path.sep).join('/'))
+    : Array.isArray(value) ? value.map(rewrite) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewrite(item)])) : value;
+  for (const blocks of Object.values(document.hooks)) for (const block of blocks) block.hooks = block.hooks.map(entry => rewrite(entry) as Record<string, unknown>);
 }
 async function section47(): Promise<void> {
   const { tokenizeCommand, ownedRegistration, programRelation } = await import('../src/machine.ts');
@@ -4753,15 +4757,14 @@ async function section48(): Promise<void> {
     const drawn = doctorText({ program: 'p', workspace: '', checks: [], program_checks: [{ check: 'program.command-resolves', status: 'fail', detail: 'pass -WorkspacePath x' }] }, marks({ isTTY: false }));
     check(drawn.includes('[x]') && drawn.includes('--workspace x') && drawn.includes('1 check failed'), `doctor's lines did not mark a failure, or kept -WorkspacePath: ${drawn}`);
 
-    // THE CODEX RENDER (#11): a single-quoted literal runs a path holding ' and $ through powershell -Command, as Codex does.
+    // THE CODEX RENDER (#11): a single-quoted literal carries a path holding ' and $ through powershell -Command, as Codex
+    // runs a hook. The real PowerShell parser's answer for this render was captured once at d6c23e53 and is kept here
+    // (kickoffs/s225, standing answer 4): no errors, one statement, one command run by '&', the whole path as its first word.
     equal(powerShellLiteral("C:\\Users\\O'Neil\\D $work"), "'C:\\Users\\O''Neil\\D $work'", 'the PowerShell literal is not single-quoted with a doubled quote');
-    if (process.platform === 'win32') {
-      const odd = path.join(root, "O'Neil $work", 'bin');
-      fs.mkdirSync(odd, { recursive: true });
-      fs.writeFileSync(path.join(odd, 'library.cmd'), '@echo ran %*\r\n');
-      const ran = spawnSync('powershell.exe', ['-NoProfile', '-Command', `& ${powerShellLiteral(path.join(odd, 'library.cmd'))} hook desk-context`], { encoding: 'utf8', timeout: 60000 });
-      check((ran.stdout ?? '').includes('ran hook desk-context'), `the single-quoted render did not run a path holding ' and $: ${ran.status} ${ran.stdout} ${ran.stderr}`);
-    }
+    const codexRender = { line: "& '<root>\\O''Neil $work\\bin\\library.cmd' hook desk-context", errors: 0, statements: 1, invocation: 'Ampersand', words: ["<root>\\O'Neil $work\\bin\\library.cmd", 'hook', 'desk-context'] };
+    const oddPath = path.win32.join('<root>', "O'Neil $work", 'bin', 'library.cmd');
+    equal(`& ${powerShellLiteral(oddPath)} hook desk-context`, codexRender.line, "the Codex render of a path holding ' and $ is no longer the form PowerShell was seen to parse");
+    equal(JSON.stringify(codexRender.words), JSON.stringify([oddPath, 'hook', 'desk-context']), "the parser's recorded words are not the path and the hook's arguments");
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {
@@ -4920,17 +4923,14 @@ async function section50(): Promise<void> {
     check(skipped.some((line) => line.includes('gone')), 'a registered Library that is not there was not reported skipped');
     check(!fs.readFileSync(path.join(library, '.claude', 'settings.local.json'), 'utf8').includes('"removed"') && fs.readFileSync(path.join(library, '.claude', 'settings.local.json'), 'utf8').includes('shelf-read'), 'computing the edits wrote to the Library');
 
-    // THE LEGACY INVENTORY: a real ZIP, read from its central directory.
-    if (process.platform === 'win32') {
-      const tree = path.join(root, 'zipme', 'deskpost-1.0.0-win-x64');
-      fs.mkdirSync(path.join(tree, 'bin'), { recursive: true });
-      fs.writeFileSync(path.join(tree, 'release.json'), '{"schema":1}\n');
-      fs.writeFileSync(path.join(tree, 'bin', 'library.exe'), 'MZ'.repeat(5000));
+    // THE LEGACY INVENTORY: a real ZIP, read from its central directory. Written here, deflated and with the backslash
+    // names Windows PowerShell 5.1's Compress-Archive gave (kickoffs/s225: no PowerShell is started to make it).
+    {
+      const files = { 'release.json': Buffer.from('{"schema":1}\n'), 'bin/library.exe': Buffer.from('MZ'.repeat(5000)) };
       const zip = path.join(root, 'deskpost-1.0.0-win-x64.zip');
-      const made = spawnSync('powershell.exe', ['-NoProfile', '-Command', `Compress-Archive -Path '${tree}' -DestinationPath '${zip}'`], { encoding: 'utf8', timeout: 120000 });
-      equal(made.status, 0, `Compress-Archive could not make the fixture ZIP: ${made.stderr}`);
+      fs.writeFileSync(zip, selftestZip(Object.entries(files).map(([name, bytes]) => ({ name: `deskpost-1.0.0-win-x64\\${name.replace(/\//g, '\\')}`, bytes, deflate: true }))));
       const listed = zipInventory(zip).map((entry) => `${entry.path.replace(/\\/g, '/')}:${entry.sha256}`).sort();
-      const expected = ['bin/library.exe', 'release.json'].map((name) => `deskpost-1.0.0-win-x64/${name}:${createHash('sha256').update(fs.readFileSync(path.join(tree, ...name.split('/')))).digest('hex')}`).sort();
+      const expected = Object.entries(files).map(([name, bytes]) => `deskpost-1.0.0-win-x64/${name}:${createHash('sha256').update(bytes).digest('hex')}`).sort();
       equal(listed.join('\n'), expected.join('\n'), 'the ZIP inventory did not read the entries and their hashes');
     }
 
@@ -5204,51 +5204,7 @@ async function section51(): Promise<void> {
     const stale = runCli(['seat', 'start', 'orchard', '--project', 'orchard', '--plan-id', '0000000000000000', '--no-launch', '--workspace', library], { env });
     check(stale.exit !== 0 && stale.stderr.includes('the seats changed between the plan you were shown and this write') && !fs.existsSync(path.join(library, '.claude', 'seats', 'orchard')), `a stale plan_id was not refused with nothing written: ${stale.stderr.trim()}`);
 
-    // PARITY: THE ROWS AND THE GRAMMAR AGREE WITH tools/SeatPicker.ps1 ON THE SAME SEATS (Claude-owned rows).
-    if (windows) {
-      const script = [
-        "$ErrorActionPreference = 'Stop'",
-        `. '${path.join(PROGRAM_ROOT, 'tools', 'SeatPicker.ps1').replace(/'/g, "''")}'`,
-        `$rows = @(Get-SeatPickerRows -StateDirectory '${path.join(library, '.claude').replace(/'/g, "''")}' -TranscriptRoot '${transcripts.replace(/'/g, "''")}')`,
-        "$grammar = @('1', 'n1', 'R1', '+', 'q', 'Quit', 'x', '0', '99', '', ' 1 ') | ForEach-Object { $c = Resolve-SeatPickerChoice -Choice $_ -RowCount 1; [pscustomobject]@{ typed = $_; action = [string]$c.action; index = [int]$c.index } }",
-        "[pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]@{ seat = [string]$_.seat; project = [string]$_.project; state = [string]$_.state; session_id = [string]$_.session_id; title_status = [string]$_.title_status; entry_action = [string]$_.entry_action } }); grammar = @($grammar) } | ConvertTo-Json -Depth 5 -Compress",
-      ].join('\n');
-      const scriptFile = path.join(root, 'parity.ps1');
-      fs.writeFileSync(scriptFile, script);
-      const ps = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], { encoding: 'utf8', env: { ...process.env, ...env } });
-      type PickerOracle = { rows: Record<string, string>[]; grammar: { typed: string; action: string; index: number }[] };
-      let oracle: PickerOracle | null = null;
-      try {
-        oracle = JSON.parse(ps.stdout) as PickerOracle;
-      } catch {
-        oracle = null;
-      }
-      check(oracle !== null, `the PowerShell picker did not answer the parity script: ${ps.stderr.slice(0, 400)}`);
-      if (oracle !== null) {
-        const { menuRows, resolveChoice } = await import('../src/menu.ts');
-        const ours = menuRows(library, { transcriptRoot: transcripts });
-        const oracleRows = (Array.isArray(oracle.rows) ? oracle.rows : [oracle.rows]).filter((row) => row !== null);
-        equal(ours.length, oracleRows.length, 'the kernel roster and the PowerShell roster count different seats');
-        for (const row of ours) {
-          const theirs = oracleRows.find((candidate) => candidate['seat'] === row.seat);
-          check(theirs !== undefined, `the PowerShell roster has no row for ${row.seat}`);
-          if (!theirs) continue;
-          equal(row.project, theirs['project'], `parity: ${row.seat}'s Project`);
-          equal(row.state, theirs['state'], `parity: ${row.seat}'s state`);
-          if (row.view.assistant === 'claude') {
-            equal(row.view.session_id, theirs['session_id'], `parity: ${row.seat}'s conversation`);
-            equal(row.view.title_status, theirs['title_status'], `parity: ${row.seat}'s title status`);
-            equal(row.view.entry_action, theirs['entry_action'], `parity: ${row.seat}'s entry action`);
-          }
-        }
-        // A COMPARISON THAT COMPARED NOTHING IS NOT PARITY (post-build inspection #8).
-        check(ours.some((row) => row.view.assistant === 'claude' && oracleRows.some((candidate) => candidate['seat'] === row.seat)), 'parity compared no Claude-owned row with the PowerShell roster');
-        for (const entry of oracle.grammar) {
-          const mine = resolveChoice(entry.typed ?? '', 1);
-          equal(`${mine.action}:${mine.index}`, `${entry.action}:${entry.index}`, `parity: the choice '${entry.typed}'`);
-        }
-      }
-    }
+    // The parity comparison with tools/SeatPicker.ps1 retired (kickoffs/s225): the roster and choices above are the kernel's own.
 
     // WHICH LIBRARY: the one holding this folder; else the default; else the only valid one; else ask once.
     const other = path.join(root, 'other');
@@ -6343,15 +6299,8 @@ async function section62(): Promise<void> {
     const untouched = library('untouched');
     denied(shell(untouched, 'echo x > notebook/first/topic/a.md'), 'not active yet', 'a shell write on a fresh Notebook was not denied');
 
-    // E.4: THE TWO POWERSHELL HELPERS REFUSE ON A SEAT-OWNED LIBRARY.
-    if (process.platform === 'win32') {
-      const ps = (script: string, args: string[]) =>
-        spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(PROGRAM_ROOT, 'tools', script), ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
-      const owner = ps('Set-NotebookTopicOwner.ps1', ['-Topic', 'some-topic', '-Seat', 'first', '-WorkspacePath', fresh]);
-      check(owner.status !== 0 && (owner.stderr + owner.stdout).includes('seat-owned') && !fs.existsSync(path.join(fresh, 'internal', 'notebook-topic-owners.json')), `Set-NotebookTopicOwner.ps1 wrote an ownership row on a seat-owned Library: ${owner.status} ${(owner.stderr + owner.stdout).trim().slice(0, 300)}`);
-      const render = ps('NotebookIndex.ps1', ['-Render', '-WorkspacePath', fresh]);
-      check(render.status !== 0 && (render.stderr + render.stdout).includes('seat-owned') && !fs.existsSync(path.join(fresh, 'notebook', '_master-index.md')), `NotebookIndex.ps1 -Render wrote a shared index on a seat-owned Library: ${render.status} ${(render.stderr + render.stdout).trim().slice(0, 300)}`);
-    }
+    // E.4, the two PowerShell helpers' own refusal (Set-NotebookTopicOwner.ps1, NotebookIndex.ps1), retired with its
+    // PowerShell run (kickoffs/s225); the kernel's guards above are the section's subject.
   } catch (error) {
     failures.push(`section stopped early: ${(error as Error).message}`);
   } finally {
@@ -8854,9 +8803,9 @@ async function section96(): Promise<void> {
     // NO SESSION ID: sent every time.
     sends(prompt({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }), 'the first prompt with no session id');
     sends(prompt({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }), 'the second prompt with no session id');
-    // A CODEX SESSION RUNS NO CLEAR: sent every time.
+    // A Codex conversation shares the snapshot rule where its clear reaches this ledger.
     sends(prompt(payload(session(2)), { DESKPOST_ASSISTANT: 'codex' }), 'the first Codex prompt');
-    sends(prompt(payload(session(2)), { DESKPOST_ASSISTANT: 'codex' }), 'the second Codex prompt');
+    equal(prompt(payload(session(2)), { DESKPOST_ASSISTANT: 'codex' }), '', 'the unchanged second Codex prompt is withheld');
     // A NAMING PROMPT WITH A WITHHELD BLOCK STILL CARRIES THE NAME, and only the name.
     const transcript = path.join(config, 'projects', 'ws', `${session(3)}.jsonl`);
     fs.writeFileSync(transcript, '{"type":"user"}\n');
@@ -9382,9 +9331,9 @@ async function section102(): Promise<void> {
     equal(recorded(), `mine @ ${session(2)}`, 'a first-ever prompt with a title did not record it');
     equal(status(), 'mine', 'seat status did not name the new conversation');
     withheld(prompt(payload(session(2), 'mine')), 'the second prompt of the new conversation');
-    // A CODEX SEAT RECORDS NOTHING, and its block is sent every time (it runs no clear).
+    // A Codex seat records no name; this fixture has a reachable clear, so an unchanged snapshot is withheld.
     const codex = output(prompt(payload(session(2), 'codex-name'), { DESKPOST_ASSISTANT: 'codex' }));
-    equal(codex['additionalContext'], baseline, 'a Codex prompt got a different Desk block');
+    check(!('additionalContext' in codex), 'an unchanged Codex snapshot was sent despite a reachable clear');
     check(!('sessionTitle' in codex), `a Codex session was named: ${JSON.stringify(codex)}`);
     equal(recorded(), `mine @ ${session(2)}`, 'a Codex prompt recorded a name');
     // AN UNPROVEN SEAT RECORDS NOTHING: named by --seat, with no agent behind it.
@@ -10538,9 +10487,10 @@ if (selected(114)) await section114();
 // A compiled kernel reads a process's start time, its parents, its exit and the process list through `bun:ffi`. So
 // judged against a compiled kernel (LIBRARY_SELFTEST_KERNEL naming an .exe) the child runs with every PATH entry that
 // holds powershell.exe or pwsh.exe removed -- the child's PATH only -- and must still answer, by the `bun-ffi` route.
-// The start time must equal the oracle's own expression for the same pid, read here in this process: the binding is
-// compared by exact string, so a spelling that differs by 100 ns reads as another process. From source (Node) the
-// kernel's fallback is that expression itself, so there the same checks run with PATH untouched. One pid, no DST claim.
+// The start time is the kernel's own `process start` answer, in its seven-digit form, and every other read of the same
+// pid must give that same string: the binding is compared by exact string, so a spelling that differs by 100 ns reads as
+// another process. The comparison with PowerShell's Get-Process expression retired (kickoffs/s225). From source (Node)
+// the same checks run with PATH untouched. One pid, no DST claim.
 if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requires Windows')) {
   const compiledKernel = KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!);
   const sleepers: ReturnType<typeof spawn>[] = [];
@@ -10572,17 +10522,12 @@ if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requ
     const routeOk = (value: Record<string, unknown>) => !compiledKernel || value['route'] === 'bun-ffi';
     const target = sleeper(120000);
     const pid = target.pid!;
-    const oracle = spawnSync(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`],
-      { encoding: 'utf8', windowsHide: true },
-    ).stdout.trim();
-    check(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/.test(oracle), `the oracle's expression read no start time for the fixture process: '${oracle}'`);
-
     const start = run(['process', 'start', String(pid)]);
     equal(start.exit, 0, `library process start exited non-zero: ${start.stderr.trim()}`);
     check(routeOk(start.value), `a compiled kernel read the start time by the '${String(start.value['route'])}' route, not bun-ffi`);
-    equal(start.value['start_utc'], oracle, "the kernel's start time differs from the oracle expression's for the same pid");
+    const started = String(start.value['start_utc'] ?? '');
+    check(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/.test(started), `the kernel read no seven-digit start time for the fixture process: '${started}'`);
+    equal(run(['process', 'start', String(pid)]).value['start_utc'], started, 'a second read of the same pid gave another start time');
 
     const ancestry = run(['process', 'ancestry', String(pid)]);
     const records = (ancestry.value['records'] ?? []) as { pid: number; parent_pid: number; name: string; created_utc: string | null }[];
@@ -10591,8 +10536,8 @@ if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requ
     check(records[0]?.pid === pid && records[0]?.parent_pid === process.pid, `the walk did not start at the fixture child with this process as its parent: ${JSON.stringify(records.slice(0, 2))}`);
     check(records[1]?.pid === process.pid && /^node(\.exe)?$/i.test(records[1]?.name ?? ''), `the walk from the child did not reach its parent: ${JSON.stringify(records.slice(0, 2))}`);
     // Exact for the compiled kernel; the Node fallback reads Win32_Process.CreationDate, which WMI keeps to the microsecond.
-    if (compiledKernel) equal(records[0]?.created_utc, oracle, "the walk's record for the child carries a different start time");
-    else equal(records[0]?.created_utc?.slice(0, 26), oracle.slice(0, 26), "the walk's record for the child carries a different start time");
+    if (compiledKernel) equal(records[0]?.created_utc, started, "the walk's record for the child carries a different start time");
+    else equal(records[0]?.created_utc?.slice(0, 26), started.slice(0, 26), "the walk's record for the child carries a different start time");
 
     const list = run(['process', 'list', '--name', path.basename(process.execPath)]);
     const rows = (list.value['processes'] ?? []) as { pid: number; parent_pid: number; path: string | null }[];
@@ -10607,7 +10552,8 @@ if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requ
     check(Number(mismatched.value['waited_ms'] ?? 1e9) < 5000 && target.exitCode === null, `the wait waited on a process whose start time does not match (${String(mismatched.value['waited_ms'])} ms)`);
 
     const short = sleeper(2500);
-    const shortStart = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${short.pid}).StartTime.ToUniversalTime().ToString('o')`], { encoding: 'utf8', windowsHide: true }).stdout.trim();
+    const shortStart = String(run(['process', 'start', String(short.pid)]).value['start_utc'] ?? '');
+    check(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/.test(shortStart), `the kernel read no start time for the short-lived child: '${shortStart}'`);
     const waited = run(['process', 'wait', String(short.pid), '--start-utc', shortStart]);
     equal(waited.exit, 0, `library process wait exited non-zero: ${waited.stderr.trim()}`);
     check(short.exitCode !== null || spawnSync('tasklist', ['/FI', `PID eq ${short.pid}`, '/NH'], { encoding: 'utf8' }).stdout.indexOf(String(short.pid)) < 0, 'the wait returned while the child it waited on was still running');
@@ -10622,7 +10568,8 @@ if (selected(115) && prerequisite(115, () => process.platform === 'win32', 'requ
 // --- 116: the uninstall finisher is the program (kickoffs/s83 row 2, PLAN-no-powershell-runtime.md D8, ruling 4) -------
 // Judged only against a compiled kernel (LIBRARY_SELFTEST_KERNEL naming an .exe): the finisher is a copy of that binary.
 // A fixture install of it -- a version folder with its inventory, `current`, the shim, current.json and a receipt that
-// owns a PATH entry -- is uninstalled with powershell.exe off the child's PATH. The PATH entry lives in a fixture key
+// owns a PATH entry -- is uninstalled with powershell.exe off the child's PATH. The fixture key is made, read and removed
+// here with reg.exe (kickoffs/s225: no PowerShell is started). The PATH entry lives in a fixture key
 // (DESKPOST_PATH_KEY, an HKCU\Software subkey), never HKCU\Environment, and the value left is asserted here (S89 row 4:
 // install.ps1's Remove-DeskpostPathEntry, the oracle until then, left with the forwarder): every other entry byte for
 // byte, unexpanded, empty entries dropped, REG_EXPAND_SZ. Then the fault: DESKPOST_UNINSTALL_FAULT=no-finisher writes
@@ -10632,11 +10579,12 @@ if (selected(116) && prerequisite(116, () => process.platform === 'win32' && KER
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-finisher-')));
   const tag = path.basename(root).replace(/[^A-Za-z0-9]/g, '');
   const keys = { kernel: `Software\\Deskpost-selftest-${tag}-kernel` };
-  const ps = (script: string, env: Record<string, string> = {}) =>
-    spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 120000, env: { ...process.env, ...env } });
+  const regExe = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'reg.exe');
+  const reg = (args: string[]) => spawnSync(regExe, args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
+  // reg query prints `    Path    REG_EXPAND_SZ    <value>` and never expands the value it shows.
   const readKey = (key: string) => {
-    const read = ps("$k = Get-Item -LiteralPath ('HKCU:\\' + $env:S116_KEY); [Console]::Out.Write($k.GetValueKind('Path').ToString() + '|' + [string]$k.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames))", { S116_KEY: key });
-    return read.stdout;
+    const shown = /^\s+Path\s+(REG_\w+)\s{4}(.*)$/m.exec(reg(['query', `HKCU\\${key}`, '/v', 'Path']).stdout ?? '');
+    return shown ? `${shown[1] === 'REG_EXPAND_SZ' ? 'ExpandString' : shown[1]}|${shown[2]!.replace(/\r$/, '')}` : '';
   };
   const resultFile = path.join(os.tmpdir(), 'deskpost-uninstall-result.json');
   const finisherCopies = () => fs.readdirSync(os.tmpdir()).filter((name) => /^deskpost-finish-[0-9a-f]+\.exe$/i.test(name));
@@ -10671,8 +10619,9 @@ if (selected(116) && prerequisite(116, () => process.platform === 'win32' && KER
     const r = install('R', null);
     const entry = path.join(r, 'bin');
     const stored = `%USERPROFILE%\\tools;${entry}\\;C:\\Other Dir;;C:\\last`;
-    const made = ps("New-Item -Path ('HKCU:\\' + $env:S116_KEY) -Force | Out-Null; New-ItemProperty -Path ('HKCU:\\' + $env:S116_KEY) -Name Path -PropertyType ExpandString -Value $env:S116_VALUE -Force | Out-Null", { S116_KEY: keys.kernel, S116_VALUE: stored });
+    const made = reg(['add', `HKCU\\${keys.kernel}`, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', stored, '/f']);
     equal(made.status, 0, `the fixture PATH key could not be made: ${made.stderr}`);
+    equal(readKey(keys.kernel), `ExpandString|${stored}`, 'the fixture PATH key does not read back as it was written');
     const receipt = JSON.parse(fs.readFileSync(path.join(r, 'install-receipt.json'), 'utf8')) as Record<string, unknown>;
     receipt['owned'] = [{ kind: 'path', entry }];
     fs.writeFileSync(path.join(r, 'install-receipt.json'), JSON.stringify(receipt));
@@ -10708,7 +10657,7 @@ if (selected(116) && prerequisite(116, () => process.platform === 'win32' && KER
   } catch (error) {
     failures.push(`section 116 stopped early: ${(error as Error).message}`);
   } finally {
-    for (const key of Object.values(keys)) ps("Remove-Item -LiteralPath ('HKCU:\\' + $env:S116_KEY) -Recurse -Force -ErrorAction SilentlyContinue", { S116_KEY: key });
+    for (const key of Object.values(keys)) reg(['delete', `HKCU\\${key}`, '/f']);
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
@@ -19075,18 +19024,17 @@ async function section204(): Promise<void> {
       }
     })();
     equal(enteredJson['letters_waiting'], 1, `seat enter did not report the waiting letter: ${JSON.stringify(enteredJson).slice(0, 400)}`);
-    // THE LAST CLOSE: the block is the no-letter text this session already holds, so nothing; a new session gets it
-    // with no line.
+    // The last close changes the delivered snapshot back to the no-letter text, so it is sent again.
     equal(w.as(agent, ['letters', 'close', newer, '--workspace', w.workspace]).exit, 0, 'the newer letter did not close');
-    equal(prompt(session(1)), '', 'the last close re-served a block this session already holds');
+    check(context(prompt(session(1))).includes('Virtual Desk (seat first'), 'the last close sends the no-letter snapshot again');
     const after = prompt(session(4));
     check(context(after).includes('Virtual Desk (seat first') && !context(after).includes(LINE), `the block after the last close is wrong: ${after.slice(0, 400)}`);
     const quiet = JSON.parse(w.as(agent, ['seat', 'enter', 'first', '--agent-pid', String(agent), '--workspace', w.workspace, '--json']).stdout || '{}') as Record<string, unknown>;
     check(!('letters_waiting' in quiet), `seat enter reported letters with none waiting: ${JSON.stringify(quiet).slice(0, 300)}`);
-    // A CODEX SESSION RUNS NO CLEAR, so the line comes with the block on every prompt: the existing exception.
+    // A Codex conversation with a reachable clear withholds the unchanged second snapshot.
     letter('C third question');
     check(context(prompt(session(2), { DESKPOST_ASSISTANT: 'codex' })).includes(LINE), 'the first Codex prompt lost the line');
-    check(context(prompt(session(2), { DESKPOST_ASSISTANT: 'codex' })).includes(LINE), 'the second Codex prompt lost the line');
+    equal(prompt(session(2), { DESKPOST_ASSISTANT: 'codex' }), '', 'the unchanged second Codex letter snapshot is withheld');
     // A BROKEN LEDGER SENDS THE BLOCK EVERY TIME: repetition, never a withheld Desk.
     const ledgerFile = path.join(stateDirectory, '.hook-served.json');
     fs.rmSync(ledgerFile, { force: true });
@@ -21083,7 +21031,7 @@ async function section219(): Promise<void> {
     fs.mkdirSync(path.join(canonical, 'references'), { recursive: true });
     fs.writeFileSync(path.join(canonical, 'SKILL.md'), '---\nname: library-help\ndescription: Library procedures.\n---\nversion one\n');
     fs.writeFileSync(path.join(canonical, 'references', 'guide.md'), 'guide one\n');
-    for (const name of ['save', 'closeout']) {
+    for (const name of ['save', 'closeout', 'triage']) {
       const folder = path.join(program, '.agents', 'skills', name);
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: Checked fixture checkpoint.\n---\nFixture skill.\n`);
@@ -21837,32 +21785,24 @@ async function section226(): Promise<void> {
 if (selected(226)) await section226();
 
 // --- 227. C8: built-release runner launches every fixture with empty PATH and refuses incomplete proof -----
-if (selected(227) && prerequisite(227, () => process.platform === 'win32' && fs.existsSync(path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')), 'Windows PowerShell is required for the existing release runner')) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-c8-release-runner-')));
+// Read from tools/Test-BuiltRelease.ps1's own text: its run through powershell.exe retired (kickoffs/s225), and U3 of
+// PLAN-powershell-retirement.md replaces the runner. What stays checked: every listed fixture exists, each is started
+// by an absolute powershell.exe path (so an empty PATH still runs it), a failing fixture is a FAIL row, an empty or
+// short run is refused, and the success line comes only after both refusals.
+if (selected(227) && prerequisite(227, () => !isCompiled(), "requires the source checkout's tools folder")) {
   try {
     const source = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools', 'Test-BuiltRelease.ps1'), 'utf8');
     const names = [...source.matchAll(/file\s*=\s*'([^']+\.ps1)'/g)].map(match => match[1]!);
     check(names.length > 0, 'release runner declared no fixtures');
-    const tools = path.join(root, 'tools'), release = path.join(root, 'release'); fs.mkdirSync(tools); fs.mkdirSync(release);
-    fs.writeFileSync(path.join(release, 'SHA256SUMS'), 'fixture metadata\n');
-    const runner = path.join(tools, 'Test-BuiltRelease.ps1'); fs.writeFileSync(runner, source);
-    for (const name of names) fs.writeFileSync(path.join(tools, name), "Write-Output 'fixture passed'\nexit 0\n");
-    const shell = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const env = { ...process.env };
-    for (const key of Object.keys(env).filter(key => key.toUpperCase() === 'PATH')) delete env[key]; env['PATH'] = '';
-    let turn = 0;
-    const run = () => spawnSync(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner, '-Release', release, '-PreviousRelease', release, '-Work', path.join(root, 'work-' + (++turn))], { cwd: root, env, encoding: 'utf8', timeout: 30_000 });
-    const passed = run();
-    check(passed.status === 0 && passed.stdout.includes(`All ${names.length} release fixtures passed`), 'empty-PATH runner did not launch every fixture: ' + passed.stderr);
-    check(names.every(name => passed.stdout.includes(path.basename(name, '.ps1'))), 'runner omitted a fixture row');
-    const failing = names[0]!; fs.writeFileSync(path.join(tools, failing), "Write-Output 'fixture failed'\nexit 7\n");
-    const failed = run();
-    check(failed.status !== 0 && failed.stdout.includes('FAIL (7)'), 'failed fixture was accepted as release proof');
-    fs.writeFileSync(runner, source.replace(/\$script:Fixtures = @\([\s\S]*?\r?\n\)/, '$script:Fixtures = @()'));
-    const zero = run();
-    check(zero.status !== 0 && (zero.stdout + zero.stderr).includes('nonempty complete run') && !zero.stdout.includes('All 0 release fixtures passed'), 'zero-fixture runner reported success');
+    for (const name of names) check(fs.existsSync(path.join(PROGRAM_ROOT, 'tools', name)), `release runner lists ${name}, which tools/ does not hold`);
+    check(source.includes("& (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $fixture.file)"), 'runner no longer starts each fixture by an absolute powershell.exe path, so an empty PATH could not run it');
+    check(source.includes('"FAIL ($exit)"'), 'a failing fixture is no longer a FAIL row');
+    const short = source.indexOf('if (-not $script:Fixtures.Count -or $rows.Count -ne $script:Fixtures.Count) { throw');
+    const failed = source.indexOf("$bad = @($rows | Where-Object { $_.result -ne 'PASS' })");
+    const passed = source.indexOf('"All $($rows.Count) release fixtures passed against $Release."');
+    check(short > 0 && source.slice(short).includes('a nonempty complete run is required'), 'an empty or short run is no longer refused');
+    check(short > 0 && failed > short && passed > failed, 'the success line is no longer printed only after the empty-run and failed-fixture refusals');
   } catch (error) { failures.push('section 227 stopped early: ' + (error as Error).message); }
-  finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 // --- 228. K2: developer/planner templates and their effects through the new-seat wizard ------------------
@@ -22960,7 +22900,7 @@ async function section247(): Promise<void> {
     const agent = w.startAgent();
     w.seatMade('first','alpha',agent,'Checkpoint CLI fixture');
     // No launcher claim: a caller's DESKPOST_LAUNCHER_PID would make the intruder's wrong token a failed launcher proof (s134 row 1).
-    const env = {LIBRARY_WORKSPACE:'',LIBRARY_WORKSPACES:path.join(w.root,'reg'),LIBRARY_SEAT:'first',LIBRARY_SEAT_CLAIM:w.claimToken('first'),CLAUDE_PID:String(agent),DESKPOST_LAUNCHER_PID:''};
+    const env = {LIBRARY_WORKSPACE:'',LIBRARY_WORKSPACES:path.join(w.root,'reg'),LIBRARY_SEAT:'first',LIBRARY_SEAT_CLAIM:w.claimToken('first'),CLAUDE_PID:String(agent),DESKPOST_LAUNCHER_PID:'',CODEX_THREAD_ID:'conversation-one',CLAUDE_CODE_SESSION_ID:''};
     const cli=(args:string[],input?:string,extra:Record<string,string>={}) => runCli(['checkpoint',...args,'--conversation','conversation-one','--workspace',w.workspace],{cwd:w.root,env:{...env,...extra},...(input===undefined?{}:{input})});
     const help=runCli(['checkpoint','--help'],{cwd:w.root,env});
     equal(help.exit,0,'checkpoint help failed');
@@ -23010,6 +22950,8 @@ async function section247(): Promise<void> {
     equal(checkpointJson(replay, 'observe').closeout,'done','observer replay staled done');
     const other=runCli(['checkpoint','status','--conversation','conversation-two','--workspace',w.workspace],{cwd:w.root,env});
     equal(checkpointJson(other, 'status --conversation conversation-two').savedAt,null,'conversations share state');
+    const laterWriter=runCli(['hub','edit','alpha','--mode','new-page','--page','notes/checkpoint-two','--content-path',content,'--workspace',w.workspace],{cwd:w.root,env});
+    equal(laterWriter.exit,0,'247: later real writer failed: '+laterWriter.stderr);
     equal(cli(['observe'],JSON.stringify({...observed,call_id:'actual-two'})).exit,0,'later write failed');
     equal(checkpointJson(cli(['status']), 'status').closeout,'stale','later write not stale');
     equal(cli(['request','save','--turn','turn-a']).exit,0,'save request failed');
@@ -23045,7 +22987,10 @@ async function section247(): Promise<void> {
     check(cli(['observe'],'{bad').exit!==0,'malformed observer input accepted');
     equal(fs.readFileSync(record,'utf8'),original,'malformed observation changed record');
     // Two independent tool children write one conversation at once; neither may lose the other's evidence.
-    const concurrent=(id:string) => new Promise<{code:number|null;output:string}>((resolve,reject)=>{
+    const concurrent=async(id:string) => {
+      const actual=await runCliAsync(['hub','edit','alpha','--mode','new-page','--page','notes/'+id,'--content-path',content,'--workspace',w.workspace],{cwd:w.root,env});
+      equal(actual.exit,0,'247: concurrent real writer failed: '+actual.stderr);
+      return new Promise<{code:number|null;output:string}>((resolve,reject)=>{
       const [file,...prefix]=KERNEL_COMMAND.length?KERNEL_COMMAND:[process.execPath,CLI];
       const child=spawn(file!,[...prefix,'checkpoint','observe','--conversation','conversation-one','--workspace',w.workspace],
         {cwd:w.root,env:{...process.env,...QUIET_TAB,...env},stdio:['pipe','pipe','pipe'],windowsHide:true});
@@ -23055,7 +23000,8 @@ async function section247(): Promise<void> {
       child.on('error',error=>{clearTimeout(timer);reject(error);});
       child.on('close',code=>{clearTimeout(timer);resolve({code,output});});
       child.stdin.end(JSON.stringify({...observed,call_id:id}));
-    });
+      });
+    };
     const raced=await Promise.all([concurrent('race-one'),concurrent('race-two')]);
     for(const ran of raced) equal(ran.code,0,'concurrent observation failed: '+ran.output);
     equal(checkpointJson(cli(['status']), 'status').writes.length,JSON.parse(original).writes.length+2,'concurrent observation lost a successful write');
@@ -23080,6 +23026,8 @@ async function section248(): Promise<void> {
     equal(request().exit,0,'hook fixture request failed');
     check(hook('UserPromptSubmit').stdout.includes('request waits'),'pending request context missing');
     const receipt={written:true,status:'written',page_path:'projects/alpha/_project.md'};
+    const itemFile = path.join(w.root, 'checkpoint-item.md'); fs.writeFileSync(itemFile, '- [ ] Checkpoint fixture.\n');
+    equal(cli(['hub','edit','alpha','--mode','append-section','--section','Now','--content-path',itemFile],undefined,{CODEX_THREAD_ID:'hook-one',CLAUDE_CODE_SESSION_ID:''}).exit,0,'248: actual writer records its own receipt');
     const observed=hook('PostToolUse',{tool_name:'Bash',tool_use_id:'write-one',tool_input:{command:'deskpost hub edit alpha --section Now'},tool_response:'Process exited with code 0\n'+JSON.stringify(receipt)});
     equal(observed.exit,0,'observation hook blocked'); equal(status().writes.length,1,'native tool_response writer lost');
     hook('PostToolUse',{tool_name:'Bash',tool_use_id:'write-one',tool_input:{command:'deskpost hub edit alpha --section Now'},tool_response:JSON.stringify(receipt)});
@@ -23113,7 +23061,13 @@ async function section248(): Promise<void> {
       if(event==='Interrupt')equal(handlers[0].timeout,3,'Interrupt timeout exceeds Codex maximum');
     }
     for(const file of ['settings.json','settings.local.json']) {
-      const f=path.join(w.workspace,'.claude',file);if(fs.existsSync(f))check(!fs.readFileSync(f,'utf8').includes('hook checkpoint'),'checkpoint reached Claude');
+      const f=path.join(w.workspace,'.claude',file);if(fs.existsSync(f)) {
+        const { namesHook } = await import('../src/hookregistry.ts');
+        const hooks = JSON.parse(fs.readFileSync(f,'utf8')).hooks;
+        // init keeps portable permissions in settings.json and renders its hook block in settings.local.json.
+        if (!hooks) continue;
+        for (const event of ['UserPromptSubmit','PostToolUse','Stop']) equal((hooks[event] ?? []).flatMap((b:{hooks:unknown[]}) => b.hooks).filter((h:unknown) => namesHook((h as {command:string;args?:string[]}).command + ' ' + ((h as {args?:string[]}).args ?? []).join(' '), 'checkpoint')).length, 1, 'Claude checkpoint once per event: '+event);
+      }
     }
   } finally {w.dispose();}
 }
@@ -23125,11 +23079,17 @@ async function section249(): Promise<void> {
     const ws=path.join(root,'ws'), registry=path.join(root,'registry');
     const options={workspacePath:ws,programRoot:PROGRAM_ROOT,registryRoot:registry};
     runLibraryInit(options);
-    for(const skill of ['save','closeout']) {
+    for(const skill of ['closeout', 'triage']) {
       const target=path.join(ws,'.agents/skills',skill,'SKILL.md');
       equal(fs.readFileSync(target,'utf8'),fs.readFileSync(path.join(PROGRAM_ROOT,'.agents/skills',skill,'SKILL.md'),'utf8'),'Codex canonical content differs');
-      check(!fs.existsSync(path.join(ws,'.claude/skills',skill)),'Codex-only skill reached Claude: '+skill);
+      equal(fs.readFileSync(path.join(ws,'.claude/skills',skill,'SKILL.md'),'utf8'),fs.readFileSync(target,'utf8'),'shared skill differs on Claude: '+skill);
     }
+    const triage=fs.readFileSync(path.join(ws,'.agents/skills/triage/SKILL.md'),'utf8');
+    check(/^name: triage$/m.test(triage),'triage skill name missing');
+    check(triage.includes('deskpost triage prepare --json'),'triage preparation missing');
+    check(triage.includes('triage batch'),'triage batch missing');
+    check(!/[A-Za-z]:[\\/]/.test(triage),'triage holds a drive path');
+    check(!triage.includes('deskpost-lead'),'triage holds a site seat');
     runLibraryInit(options);
     check(skillPlans(ws,PROGRAM_ROOT).plans.every(p=>p.action==='unchanged'),'repeat init changed skills');
     const collision=path.join(root,'collision'), user=path.join(collision,'.agents/skills/save/SKILL.md');
@@ -23140,11 +23100,11 @@ async function section249(): Promise<void> {
     check(skillInstallationStatus(collision,PROGRAM_ROOT,'.agents/skills').includes('.agents/skills/save'),'user save collision not named');
     const codex=skillInstallationStatus(ws,PROGRAM_ROOT,'.agents/skills');
     const claude=skillInstallationStatus(ws,PROGRAM_ROOT,'.claude/skills');
-    check(codex.startsWith('library-help, save, closeout installed'),'Codex inventory missing skills: '+codex);
-    check(claude.startsWith('library-help installed'),'Claude inventory changed: '+claude);
+    check(codex.startsWith('library-help, closeout, triage installed'),'Codex inventory missing skills: '+codex);
+    check(claude.startsWith('library-help, closeout, triage installed'),'Claude inventory changed: '+claude);
     const doctor=runCli(['doctor','--workspace',ws,'--json'],{cwd:root,env:{LIBRARY_WORKSPACE:'',LIBRARY_WORKSPACES:registry,LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:''}});
     const d=JSON.parse(doctor.stdout), rows=[...(d.checks??[]),...(d.library_checks??[]),...(d.program_checks??[])];
-    for(const [name,expected] of [['codex','library-help, save, closeout'],['claude','library-help installed']])
+    for(const [name,expected] of [['codex','library-help, closeout, triage'],['claude','library-help, closeout, triage installed']])
       check(rows.some((r:{check:string;detail:string})=>r.check===`workspace.${name}-skills-installed`&&r.detail.includes(expected!)),'doctor row missing inventory: '+name);
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 }
@@ -23938,8 +23898,11 @@ async function section261(): Promise<void> {
 }
 if (selected(261)) await section261();
 
-// --- 262. Scan port agrees with the PowerShell oracle on staged bytes, patterns and exceptions. ---
-if (selected(262) && prerequisite(262, () => process.platform === 'win32' && !isCompiled(), 'requires Windows PowerShell scan oracle')) {
+// --- 262. The scan port's verdicts on staged bytes, patterns and exceptions. ---
+// Until kickoffs/s225 each case was compared with tools/DeploymentScan.ps1 run through PowerShell. That run retired: the
+// verdicts it gave on every case, captured at d6c23e53, stand below as each case's expected identity/deployment
+// verdicts, and the allowlist cases keep Test-AllowlistRuleParity.ps1's pinned counts as data.
+if (selected(262) && prerequisite(262, () => process.platform === 'win32' && !isCompiled(), 'requires Windows (where.exe finds git) and the source scanner')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-scan-parity-')));
   try {
     const scanner = path.join(PROGRAM_ROOT, 'tools/scan.ts');
@@ -23955,45 +23918,36 @@ if (selected(262) && prerequisite(262, () => process.platform === 'win32' && !is
     const placed=run('git',['rev-parse','--show-toplevel'],repo,poisoned);
     equal(placed.status,0,'neutral fixture Git failed');
     equal(path.resolve(placed.stdout.trim()),path.resolve(repo),'fixture Git followed inherited repository variables');
-    const ps = String.raw`
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-. (Join-Path $env:SCAN_PROGRAM 'tools/DeploymentScan.ps1')
-# Native gitleaks progress uses stderr on PowerShell 5.1; its exit code remains the verdict.
-$ErrorActionPreference='Continue'
-$identity=Invoke-IdentityScan -Workspace $env:SCAN_ROOT -TermRoot $env:SCAN_TERMS -CommitMessageFile $env:SCAN_MESSAGE
-$ErrorActionPreference='Stop'
-$terms=Get-IdentityScanTerms -TermRoot $env:SCAN_TERMS
-$sources=@(Get-IdentityScanStagedBlobs -Workspace $env:SCAN_ROOT)
-if($env:SCAN_MESSAGE){$sources+=@([pscustomobject]@{source='<commit message>';text=(ConvertFrom-IdentityScanBytes ([IO.File]::ReadAllBytes($env:SCAN_MESSAGE)))})}
-$ih=@(Find-IdentityScanHits -Sources $sources -DenyTerms $terms.deny -AllowTerms $terms.allow)
-$files=@(Get-DeploymentScanFiles -Workspace $env:SCAN_ROOT)
-$selected=if($env:SCAN_FILES){@($env:SCAN_FILES -split "\n")}else{$files}
-$dh=@(Find-DeploymentScanHits -Workspace $env:SCAN_ROOT -Files $selected -Denylist @(Get-DeploymentScanDenylist -Workspace $env:SCAN_ROOT))
-$ErrorActionPreference='Continue'
-$leaks=Invoke-IdentityScanGitleaks -Workspace $env:SCAN_ROOT
-$ErrorActionPreference='Stop'
-[Console]::Out.WriteLine((@{identity=@{status=$identity.status;hits=$ih};deployment=@{status=$(if($dh.Count){'fail'}else{'pass'});hits=$dh};files=$files;gitleaks=$leaks}|ConvertTo-Json -Depth 8 -Compress))
-`;
-    const psExe = path.join(process.env['SystemRoot']!, 'System32/WindowsPowerShell/v1.0/powershell.exe');
-    const canonical = (hits: unknown[]) => JSON.stringify(hits.map(hit => { const h=hit as Record<string, unknown>; return [h.file ?? h.source,h.line,h.kind,h.match]; }).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
-    const table: {case: string; powershell: string; typescript: string}[] = [];
-    const compare = (name: string, extra: Partial<typeof env> = {}, expected?: string) => {
+    const table: {case: string; verdict: string}[] = [];
+    // Each case's exact identity and deployment hits, in the projection the PowerShell comparison used until s225
+    // ([file or source, line, kind, match], sorted): the port's hits at cacda115, which matched that scan (kickoffs/s225-r2).
+    // The deployment matches are written in pieces, as the cases below write them, so this file stays clean to the scan.
+    const hit = (kind: string, match: string, source = 'sample.txt', line = 2) => [source, line, kind, match];
+    const exactHits: Record<string, [unknown[], unknown[]]> = {
+      'repository commit in fixture': [[], []],
+      'endpoint': [[hit('identity', 'private-fixture')], [hit('endpoint', 'https://'+'private-fixture.test'+'/mcp')]],
+      'UNC collection': [[hit('identity', 'private-fixture')], [hit('share-root', '\\\\private-fixture\\collection\\'+'basic-memory'+'\\books')]],
+      'mapped collection': [[hit('identity', 'private-fixture')], [hit('share-root', 'Q:'+'\\private-fixture\\'+'basic-memory'+'\\books')]],
+      'configured': [[], [hit('configured', 'configured-fixture-value')]],
+      'staged blobs differ from worktree': [[hit('identity', 'private-fixture', 'sample.txt', 1), hit('identity', 'private-fixture')], []],
+      'commit message': [[hit('identity', 'private-fixture', '<commit message>', 1)], []],
+      'allowlisted identity': [[], []],
+      'empty denylist and allowed deployment': [[], []],
+      'gitleaks absent from PATH': [[], []],
+      'exportable untracked product file': [[], []],
+      'binary staged blob': [[], []],
+    };
+    const canonical = (hits: unknown[]) => hits.map(found => { const h = found as Record<string, unknown>; return [h.file ?? h.source, h.line, h.kind, h.match]; }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const compare = (name: string, extra: Partial<typeof env>, expected: string) => {
       const childEnv = { ...env, ...extra };
-      const oracle = run(psExe, ['-NoProfile', '-NonInteractive', '-Command', ps], repo, childEnv);
-      equal(oracle.status, 0, name+' oracle failed: '+oracle.stderr);
-      if (oracle.status !== 0) throw Error(name+' oracle failed');
-      const old = JSON.parse(oracle.stdout);
       const actual = run(process.execPath, [scanner,'--root',childEnv.SCAN_ROOT,'--term-root',termRoot,'--identity','--deployment',...(childEnv.SCAN_MESSAGE?['--commit-message-file',message]:[]),...(childEnv.SCAN_FILES?['--files',childEnv.SCAN_FILES]:[]),'--json'], repo, childEnv);
       check(actual.status === 0 || actual.status === 1, name+' scan crashed: '+actual.stderr);
       const next = JSON.parse(actual.stdout);
-      for(const kind of ['identity','deployment']) {
-        equal(next[kind].status,old[kind].status,name+' '+kind+' verdict');
-        equal(canonical(next[kind].hits),canonical(old[kind].hits),name+' '+kind+' exact hits');
-      }
-      if(expected) equal(next.deployment.status,expected,name+' expected deployment verdict');
-      table.push({case:name,powershell:old.identity.status+'/'+old.deployment.status,typescript:next.identity.status+'/'+next.deployment.status});
-      return {old,next};
+      const verdict = next.identity.status+'/'+next.deployment.status;
+      equal(verdict, expected, name+' identity/deployment verdicts (the PowerShell scan gave '+expected+')');
+      equal(JSON.stringify([canonical(next.identity.hits), canonical(next.deployment.hits)]), JSON.stringify(exactHits[name] ?? 'no recorded hits'), name+' exact identity and deployment hits');
+      table.push({case:name,verdict});
+      return {next};
     };
     const write = (text: string) => {fs.writeFileSync(path.join(repo,'sample.txt'),text);git('add','sample.txt');};
     fs.writeFileSync(path.join(termRoot,'identity-denylist.txt'),'private-fixture\n');
@@ -24014,33 +23968,30 @@ $ErrorActionPreference='Stop'
     equal(run('git',['init','-q'],snapshot).status,0,'snapshot git init');
     equal(run('git',['add','-A'],snapshot).status,0,'snapshot staging');
     equal(run('git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-q','-m','repository baseline'],snapshot).status,0,'snapshot baseline commit');
-    compare('repository commit in fixture', {SCAN_ROOT:snapshot}, 'pass');
-    for(const [name,text] of [
-      ['endpoint','https://'+'private-fixture.test'+'/mcp'],
-      ['UNC collection','\\\\private-fixture\\collection\\'+'basic-memory'+'\\books'],
-      ['mapped collection','Q:'+'\\private-fixture\\'+'basic-memory'+'\\books'],
-      ['configured','configured-fixture-value'],
+    compare('repository commit in fixture', {SCAN_ROOT:snapshot}, 'pass/pass');
+    for(const [name,text,expected] of [
+      ['endpoint','https://'+'private-fixture.test'+'/mcp','fail/fail'],
+      ['UNC collection','\\\\private-fixture\\collection\\'+'basic-memory'+'\\books','fail/fail'],
+      ['mapped collection','Q:'+'\\private-fixture\\'+'basic-memory'+'\\books','fail/fail'],
+      ['configured','configured-fixture-value','pass/fail'],
     ]) {
       fs.mkdirSync(path.join(repo,'.claude'),{recursive:true});fs.writeFileSync(path.join(repo,'.claude/.library-project'),'configured-fixture-value');
-      write('safe\n'+text+'\n'); compare(name!, {}, 'fail');
+      write('safe\n'+text+'\n'); compare(name!, {}, expected!);
     }
     write('private-fixture\nprivate-fixture\n'); fs.writeFileSync(path.join(repo,'sample.txt'),'working tree hides staged identity\n');
-    const staged = compare('staged blobs differ from worktree'); equal(staged.next.identity.hits.length,2,'identity scanned the working tree');
-    write('safe\n'); fs.writeFileSync(message,'message private-fixture\n');compare('commit message',{SCAN_MESSAGE:message});
-    fs.writeFileSync(path.join(termRoot,'identity-allowlist.txt'),'approved private-fixture attribution\n');write('approved private-fixture attribution\n');const allowed=compare('allowlisted identity');equal(allowed.next.identity.status,'pass','allowed attribution refused');
+    const staged = compare('staged blobs differ from worktree', {}, 'fail/pass'); equal(staged.next.identity.hits.length,2,'identity scanned the working tree');
+    write('safe\n'); fs.writeFileSync(message,'message private-fixture\n');compare('commit message',{SCAN_MESSAGE:message},'fail/pass');
+    fs.writeFileSync(path.join(termRoot,'identity-allowlist.txt'),'approved private-fixture attribution\n');write('approved private-fixture attribution\n');const allowed=compare('allowlisted identity',{},'pass/pass');equal(allowed.next.identity.status,'pass','allowed attribution refused');
     // Both scans inherit the actual hook index, including commit -a's temporary index.
     write('safe\n');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-q','-m','hook baseline');
     const hooks=path.join(root,'parity-hooks');fs.mkdirSync(hooks);
     const driver=path.join(root,'parity-hook.mjs');
     fs.writeFileSync(driver,`import {spawnSync} from 'node:child_process';
 const env={...process.env,SCAN_MESSAGE:process.argv[2]};
-const old=spawnSync(${JSON.stringify(psExe)},['-NoProfile','-NonInteractive','-Command',${JSON.stringify(ps)}],{env,encoding:'utf8'});
 const next=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(scanner)},'--root',env.SCAN_ROOT,'--term-root',env.SCAN_TERMS,'--identity','--deployment','--commit-message-file',process.argv[2],'--json'],{env,encoding:'utf8'});
-if(old.status!==0 || ![0,1].includes(next.status))throw Error(old.stderr+next.stderr);
-const a=JSON.parse(old.stdout),b=JSON.parse(next.stdout);
-const hits=x=>JSON.stringify(x.map(h=>[h.file??h.source,h.line,h.kind,h.match]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
-for(const kind of ['identity','deployment'])if(a[kind].status!==b[kind].status||hits(a[kind].hits)!==hits(b[kind].hits))throw Error('hook oracle mismatch '+JSON.stringify({a,b}));
-console.log('SCAN-HOOK-PARITY '+a.identity.status+'/'+b.identity.status);
+if(![0,1].includes(next.status))throw Error(next.stderr);
+const b=JSON.parse(next.stdout);
+console.log('SCAN-HOOK '+b.identity.status);
 process.exitCode=b.identity.status==='fail'?1:0;
 `);
     const shellQuote=(value:string)=>"'"+value.replaceAll("'","'\\''")+"'";
@@ -24049,54 +24000,47 @@ process.exitCode=b.identity.status==='fail'?1:0;
     fs.writeFileSync(path.join(repo,'sample.txt'),'private-fixture\n');
     const hooked=run('git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-a','-m','hook parity']);
     equal(hooked.status,1,'hook scans allowed working-tree-only identity');
-    check((hooked.stdout+hooked.stderr).includes('SCAN-HOOK-PARITY fail/fail'),'hook scans did not agree: '+hooked.stdout+hooked.stderr);
-    table.push({case:'commit -a hook index',powershell:'fail',typescript:'fail'});
+    check((hooked.stdout+hooked.stderr).includes('SCAN-HOOK fail'),'the hook scan did not fail on the hook index (the PowerShell scan gave fail): '+hooked.stdout+hooked.stderr);
+    table.push({case:'commit -a hook index',verdict:'fail'});
     git('config','--unset','core.hooksPath');
-    fs.writeFileSync(path.join(termRoot,'identity-denylist.txt'),'');write('https://localhost/mcp https://192.0.2.8/mcp \\\\nas\\share\\basic-memory\n');compare('empty denylist and allowed deployment',{},'pass');
+    fs.writeFileSync(path.join(termRoot,'identity-denylist.txt'),'');write('https://localhost/mcp https://192.0.2.8/mcp \\\\nas\\share\\basic-memory\n');compare('empty denylist and allowed deployment',{},'warn/pass');
     const gitWhere=spawnSync('where.exe',['git'],{encoding:'utf8',windowsHide:true});
     const gitDirectory=path.dirname(gitWhere.stdout.trim().split(/\r?\n/)[0]!);
-    const noLeaks={...env,PATH:gitDirectory,Path:gitDirectory};
-    const absent=compare('gitleaks absent from PATH',noLeaks);
-    equal(absent.old.gitleaks.ran,false,'oracle unexpectedly ran gitleaks');equal(absent.next.identity.gitleaks.ran,false,'port falsely claimed gitleaks ran');
+    // DESKPOST_GITLEAKS (the commit hook sets it) names gitleaks past PATH, so it is cleared for the absent case too.
+    const noLeaks={...env,PATH:gitDirectory,Path:gitDirectory,DESKPOST_GITLEAKS:''};
+    const absent=compare('gitleaks absent from PATH',noLeaks,'warn/pass');
+    equal(absent.next.identity.gitleaks.ran,false,'port falsely claimed gitleaks ran');
     // The deployment set includes an exportable untracked file, but no ignored dependencies.
     fs.mkdirSync(path.join(repo,'docs'));fs.writeFileSync(path.join(repo,'docs/untracked.md'),'safe');
     const port=await import('../../tools/scan.ts');
-    const setResult=compare('exportable untracked product file');
-    equal(JSON.stringify(port.productFiles(repo).sort()),JSON.stringify(setResult.old.files.sort()),'product file union differs');
+    compare('exportable untracked product file',{},'warn/pass');
+    equal(JSON.stringify(port.productFiles(repo).sort()), JSON.stringify(['docs/untracked.md', 'sample.txt']), 'the product files are not the staged file and the exportable untracked file');
     const original=fs.readFileSync(path.join(termRoot,'identity-denylist.txt'),'utf8');
     fs.writeFileSync(path.join(termRoot,'identity-denylist.txt'),'private-fixture\n');
-    fs.writeFileSync(path.join(repo,'sample.txt'),Buffer.from([0,112,114,105,118,97,116,101]));git('add','sample.txt');compare('binary staged blob');
+    fs.writeFileSync(path.join(repo,'sample.txt'),Buffer.from([0,112,114,105,118,97,116,101]));git('add','sample.txt');compare('binary staged blob',{},'pass/pass');
     fs.writeFileSync(path.join(termRoot,'identity-denylist.txt'),original);
-    // Use the existing oracle's table and the real server block, including its two divergences.
-    const allowOracle = run(psExe, ['-NoProfile','-NonInteractive','-Command',String.raw`
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-. (Join-Path $env:SCAN_PROGRAM 'tools/Test-AllowlistRuleParity.ps1')
-. (Join-Path $env:SCAN_PROGRAM 'tools/DeploymentScan.ps1')
-$bash=Resolve-ParityBash
-$block=@(Get-ServerScannerBlock -DocPath (Join-Path $env:SCAN_PROGRAM 'docs/mirror-publishing-job.md'))
-$result=@(foreach($case in $script:Cases){
-  $local=@(Find-IdentityScanHits -Sources @([pscustomobject]@{source='fixture';text=$case.surface}) -DenyTerms @($case.deny) -AllowTerms @($case.allow))
-  $server=Invoke-ServerScanner -Block $block -Surface $case.surface -DenyTerms @($case.deny) -AllowTerms @($case.allow) -BashPath $bash
-  @{name=$case.name;surface=$case.surface;deny=@($case.deny);allow=@($case.allow);local=$local.Count;server=$server;expectedLocal=$case.local;expectedServer=$case.server;agree=$case.agree}
-})
-[Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Depth 8 -Compress))
-`]);
-    equal(allowOracle.status,0,'allowlist server oracle failed: '+allowOracle.stderr);
-    const allowCases=JSON.parse(allowOracle.stdout) as {name:string;surface:string;deny:string[];allow:string[];local:number;server:number;expectedLocal:number;expectedServer:number;agree:boolean}[];
-    equal(allowCases.length,8,'allowlist oracle lost a case');
+    // Test-AllowlistRuleParity.ps1's cases and pins, as data (its PowerShell run retired with kickoffs/s225): the port's
+    // count is judged against the local pin, and its flag against the server pin, with the two known divergences.
+    const allowCases: {name:string;surface:string;deny:string[];allow:string[];expectedLocal:number;expectedServer:number;agree:boolean}[] = [
+      {name:'approved attribution is excused by both',surface:'Written by Ashby Vale, 2026.',deny:['Ashby'],allow:['Ashby Vale'],expectedLocal:0,expectedServer:0,agree:true},
+      {name:'a bare name in a home directory is caught by both',surface:'path D:\\home\\Ashby\\AppData\\Roaming',deny:['Ashby'],allow:['Ashby Vale'],expectedLocal:1,expectedServer:1,agree:true},
+      {name:'DECOY: a denied term that is a strict substring of an allowlisted string, occurring independently',surface:'Ashby Vale wrote it. The Vale office is elsewhere.',deny:['Vale'],allow:['Ashby Vale'],expectedLocal:1,expectedServer:1,agree:true},
+      {name:'DIVERGENCE 1: the allowlist removal is case-sensitive, the local containment is not',surface:'written by ashby vale',deny:['Ashby'],allow:['Ashby Vale'],expectedLocal:0,expectedServer:1,agree:false},
+      {name:'DIVERGENCE 2: deleting an allowlisted string SPLICES a denied term that was never there',surface:'AsXXhby',deny:['Ashby'],allow:['XX'],expectedLocal:0,expectedServer:1,agree:false},
+      {name:'the local scan counts occurrences where the server counts terms (same verdict, different value)',surface:'Ashby here and Ashby there and Ashby again',deny:['Ashby'],allow:[],expectedLocal:3,expectedServer:1,agree:true},
+      {name:'an empty allowlist excuses nothing in either',surface:'Written by Ashby Vale, 2026.',deny:['Ashby'],allow:[],expectedLocal:1,expectedServer:1,agree:true},
+      {name:'SHARED GAP: an allowlisted string occurring inside an unrelated word excuses the denied term in BOTH',surface:'the Ashby Valeting Service depot',deny:['Vale'],allow:['Ashby Vale'],expectedLocal:0,expectedServer:0,agree:true},
+    ];
     let disagreements=0;
     for(const test of allowCases) {
       const hits=port.identityHits([{source:'fixture',text:test.surface}],test.deny,test.allow);
-      equal(hits.length,test.local,test.name+' port/oracle count');
       equal(hits.length,test.expectedLocal,test.name+' local pin');
-      equal(test.server,test.expectedServer,test.name+' server pin');
-      const agrees=(hits.length>0)===(test.server>0);
+      const agrees=(hits.length>0)===(test.expectedServer>0);
       equal(agrees,test.agree,test.name+' flag-level agreement');if(!agrees)disagreements++;
     }
     equal(disagreements,2,'server/local flag divergences changed');
-    console.log('ALLOWLIST-PARITY 8 cases, 2 known server divergences');
-    console.log('SCAN-PARITY '+JSON.stringify(table));
+    console.log('ALLOWLIST 8 cases, 2 known server divergences');
+    console.log('SCAN '+JSON.stringify(table));
   } catch(error) { failures.push('section 262 stopped early: '+(error as Error).message); }
   finally { fs.rmSync(root,{recursive:true,force:true}); }
 }
@@ -25644,13 +25588,7 @@ if (selected(280) && prerequisite(280, () => !isCompiled(), 'requires source run
       check(fs.statSync(key === 'PSModuleAnalysisCachePath' ? path.dirname(env[key]!) : env[key]!).isDirectory(), `${key}'s folder was not made`);
     }
     equal(env['LIBRARY_SELFTEST_SECTIONS'], '280', 'section environment selects its section');
-    const powershell = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    if (prerequisite(280, () => process.platform === 'win32' && fs.existsSync(powershell), 'Windows powershell.exe is required to observe its module cache')) {
-      const cwd = path.join(root, 'scratch'); fs.mkdirSync(cwd);
-      const ran = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Get-Command Get-ChildItem | Out-Null'], { env, cwd, encoding: 'utf8', timeout: 30_000, windowsHide: true });
-      check(ran.status === 0 && !ran.error, `PowerShell cache probe failed: ${ran.error ?? ran.stderr}`);
-      check(!fs.existsSync(path.join(cwd, 'Microsoft')), 'PowerShell left Microsoft in its working folder');
-    }
+    // The run that watched PowerShell's own module cache retired (kickoffs/s225); the folders above are what it relied on.
   } catch (error) { failures.push(`section 280 stopped early: ${(error as Error).message}`); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -27168,7 +27106,7 @@ if (selected(304) && prerequisite(304, () => !isCompiled(), 'requires the source
 async function section305(): Promise<void> {
   const w = await seatClaimWorkspace('dashboard', { pin: false });
   try {
-    const { dashboardText } = await import('../src/dashboard.ts');
+    const { dashboardReport, dashboardText } = await import('../src/dashboard.ts');
     const { deskOverview } = await import('../src/desk.ts');
     const agent = w.startAgent();
     w.seatMade('first', 'alpha', agent, 'dashboard fixture seat');
@@ -27211,8 +27149,9 @@ async function section305(): Promise<void> {
     const ran = w.as(process.pid, ['dashboard', '--seat', 'first', '--width', '40', '--workspace', w.workspace]);
     const after = Date.now();
     equal(ran.exit, 0, `dashboard CLI: ${ran.stderr}`);
-    const expectedBefore = dashboardText(overview, { width: 40, now: before });
-    const expectedAfter = dashboardText(overview, { width: 40, now: after });
+    // The one-shot frame draws the display report as --watch does (kickoffs/s220-r2 row 5).
+    const expectedBefore = dashboardText(overview, { width: 40, now: before, report: dashboardReport(w.workspace, { seat: 'first', now: before, overview }) });
+    const expectedAfter = dashboardText(overview, { width: 40, now: after, report: dashboardReport(w.workspace, { seat: 'first', now: after, overview }) });
     check(ran.stdout.trim() === expectedBefore || ran.stdout.trim() === expectedAfter,
       `dashboard CLI differs from its pure formatter -- expected ${JSON.stringify(expectedBefore)} or ${JSON.stringify(expectedAfter)}, got ${JSON.stringify(ran.stdout.trim())}`);
     const json = w.as(process.pid, ['dashboard', '--seat', 'first', '--json', '--workspace', w.workspace]);
@@ -27318,7 +27257,9 @@ async function section306(): Promise<void> {
     const beforeInvalid = hashFiles();
     for (const flags of [['--interval-seconds', '1'], ['--interval-seconds', '61'], ['--iterations', '0'], ['--json']]) {
       const invalid = runCli(['dashboard', '--watch', '--seat', 'first', '--workspace', w.workspace, ...flags], { cwd: w.root, env });
-      check(invalid.exit !== 0 && invalid.stdout === '', `invalid watch option ran: ${flags.join(' ')}`);
+      check(invalid.exit !== 0 && (flags.includes('--json')
+        ? JSON.stringify(JSON.parse(invalid.stdout)) === JSON.stringify({ status: 'refused', refusal: invalid.stderr.trimEnd(), verb: 'dashboard', action: null })
+        : invalid.stdout === ''), `invalid watch option ran: ${flags.join(' ')}`);
     }
     sameFiles(beforeInvalid, hashFiles(), 'invalid watch options changed files');
     // Exercise both signal handlers in isolated Node processes. A synthetic TTY pins emitted escape
@@ -29999,11 +29940,11 @@ async function section355(): Promise<void> {
     const first=t.report('Count the outcome');t.close(first.page);checkHome();
     const entry=readOutbox(t.far.lib).find(e=>e.metadata['closes_delivery_id']===first.id)!;
     const desk=()=>t.json(t.cli(t.home.lib,['desk','--json'],'asker')) as Record<string,any>;
-    equal(desk()['postbox']?.['outcomes_received'],1,'355: Desk did not count outcome');
-    equal((t.json(t.cli(t.home.lib,['desk','--json'],'aide')) as Record<string,any>)['postbox']?.['outcomes_received'],0,'355: another seat inherited outcome count');
+    equal(desk()['postbox']?.['outcome_letters_pending'],1,'355: Desk did not count pending outcome letters');
+    equal((t.json(t.cli(t.home.lib,['desk','--json'],'aide')) as Record<string,any>)['postbox']?.['outcome_letters_pending'],0,'355: another seat inherited pending outcome letters');
     const letter='notes/'+t.withDelivery(t.home.lib,entry.delivery_id)[0]!.replace(/\.md$/,'');
     equal(t.cli(t.home.lib,['letters','close',letter,'--note','Read the verdict'],'asker').exit,0,'355: letter close failed');
-    equal(desk()['postbox']?.['outcomes_received'],0,'355: closed letter still counted');
+    equal(desk()['postbox']?.['outcome_letters_pending'],0,'355: closed letter still counted as pending outcome letters');
     // Delivery identity in the retained letter proves a duplicate receipt after tidy and record expiry.
     const originalLetter=t.letterFile(t.home.lib,letter);
     fs.writeFileSync(originalLetter,setNoteField(fs.readFileSync(originalLetter,'utf8'),'reviewed','2026-09-01T00:00:00Z'));
@@ -30022,7 +29963,7 @@ async function section355(): Promise<void> {
     if(replay.exit!==0)throw new Error('355: replay after record cleanup failed: '+replay.stderr);
     equal(t.withDelivery(t.home.lib,entry.delivery_id).length,0,'355: replay duplicated a tidied letter');
     check(!noteFrontmatter(fs.readFileSync(movedLetter,'utf8')).has('outcome_superseded'),'355: same generation became superseded after letter tidy');
-    equal(desk()['postbox']?.['outcomes_received'],0,'355: replay reopened a closed outcome letter');
+    equal(desk()['postbox']?.['outcome_letters_pending'],0,'355: replay reopened pending outcome letters');
     const late=t.report('Late older outcome');t.close(late.page);
     const old=readOutbox(t.far.lib).find(e=>e.metadata['closes_delivery_id']===late.id)!;
     const wire=path.join(storage,'.projects','deskpost',old.path);const saved=fs.readFileSync(wire,'utf8');fs.unlinkSync(wire);
@@ -31758,7 +31699,23 @@ async function section408(): Promise<void> {
     const command=args[args.indexOf('--command')+1]??'';
     check(command.includes(process.execPath)&&command.includes(path.join(PROGRAM_ROOT,'kernel','src','cli.ts')),'408: command does not name launcher absolute executable/source');
     check(command.includes('dashboard --watch --seat first --workspace'),'408: command missing explicit seat/workspace');
-    const shellRun=spawnSync(process.platform==='win32'?'powershell.exe':'/bin/sh',process.platform==='win32'?['-NoProfile','-Command',command+' --iterations 1']:['-c',command+' --iterations 1'],{cwd:w.root,env:{...process.env,...QUIET_TAB,LIBRARY_WORKSPACES:path.join(w.root,'reg')},encoding:'utf8',timeout:20000,windowsHide:true});
+    // On Windows the Orca pane runs this command with powershell -Command. The real PowerShell parser's answer for it was
+    // captured once at d6c23e53 and is kept here (kickoffs/s225-r2, as s225's paste proofs): no errors, one statement, one
+    // command run by '&', and these words. The printed command must still be that form, with the fixture folder written
+    // <root>, process.execPath <node> and the checkout's cli.ts <cli>. Then the kernel's own reader of that form
+    // (tokenizeCommand, whose quoting section 47 pins) splits it, and its words are run directly (no PowerShell is
+    // started). Elsewhere sh runs it.
+    const paneParse={line:"& '<node>' '<cli>' dashboard --watch --seat first --workspace '<root>\\ws'",errors:0,statements:1,invocation:'Ampersand',words:['<node>','<cli>','dashboard','--watch','--seat','first','--workspace','<root>\\ws']};
+    const cliPath=path.join(PROGRAM_ROOT,'kernel','src','cli.ts');
+    const filled=(text:string,literal:boolean)=>{const value=(raw:string)=>literal?raw.replaceAll("'","''"):raw;return text.replace('<node>',value(process.execPath)).replace('<cli>',value(cliPath)).replace('<root>',value(w.root));};
+    const {tokenizeCommand}=await import('../src/machine.ts');
+    const words=process.platform==='win32'?tokenizeCommand(command):[];
+    if(process.platform==='win32'){
+      equal(command,filled(paneParse.line,true),'408: the Windows pane command is no longer the form PowerShell was seen to parse');
+      equal(JSON.stringify(paneParse.words.map(word=>filled(word,false))),JSON.stringify([process.execPath,cliPath,'dashboard','--watch','--seat','first','--workspace',w.workspace]),"408: the parser's recorded words are not the program, the launcher and the dashboard's arguments");
+      equal(JSON.stringify(words),JSON.stringify(['&',...paneParse.words.map(word=>filled(word,false))]),'408: the kernel reads the pane command into other words than PowerShell did');
+    }
+    const shellRun=process.platform==='win32'?spawnSync(words[1]!,[...words.slice(2),'--iterations','1'],{cwd:w.root,env:{...process.env,...QUIET_TAB,LIBRARY_WORKSPACES:path.join(w.root,'reg')},encoding:'utf8',timeout:20000,windowsHide:true}):spawnSync('/bin/sh',['-c',command+' --iterations 1'],{cwd:w.root,env:{...process.env,...QUIET_TAB,LIBRARY_WORKSPACES:path.join(w.root,'reg')},encoding:'utf8',timeout:20000,windowsHide:true});
     check(shellRun.status===0&&shellRun.stdout.includes('first')&&shellRun.stdout.includes('Books'),'408: pane command could not run one fixture frame: '+shellRun.stderr);
     check(calls().some(args=>args[1]==='rename'&&args.includes('term_new')&&args.includes('Desk: first')),'408: pane not titled');
     equal(launch().exit,0,'408: repeat launch');equal(splits().length,1,'408: repeated launch stacked panes');
@@ -32151,7 +32108,7 @@ async function section424(): Promise<void> {
       [['shelf','stub','curated','page','--canonical','curated/other','--preflight','--json'],"Shelf Book 'curated' is closed. Open it with deskpost desk open book curated --location shelf before replacing one of its pages with a stub."],
       [['triage','batch','--actions-path',actions,'--preflight','--json'],"Shelf Book 'holding' is closed. Open it with deskpost desk open book holding --location shelf before triaging its notes."],
     ];
-    for(const [args,expected]of cases){const ran=t.cli(args);equal(ran.exit,1,'424: closed route accepted '+args[0]);equal(ran.stdout,'','424: refusal wrote stdout');equal(ran.stderr,expected+'\n','424: refusal bytes changed for '+args.slice(0,2).join(' '));}
+    for(const [args,expected]of cases){const ran=t.cli(args);equal(ran.exit,1,'424: closed route accepted '+args[0]);const value=JSON.parse(ran.stdout);equal(value.status,'refused','424: refusal status');equal(value.refusal,ran.stderr.trimEnd(),'424: refusal matches standard error');equal(ran.stderr,expected+'\n','424: refusal bytes changed for '+args.slice(0,2).join(' '));}
     equal(snapshot(),before,'424: closed guard wrote reader material');
   }catch(error){failures.push('section 424 stopped early: '+(error as Error).message);}
   finally{fs.rmSync(t.root,{recursive:true,force:true});}
@@ -33897,11 +33854,11 @@ async function section479(): Promise<void> {
     w = await seatClaimWorkspace('needs-you-hook', { pin: false });
     const agent = w.startAgent();
     w.seatMade('first', 'alpha', agent, '479: seat');
-    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: w.claimToken('first'), CLAUDE_PID: String(agent) };
+    const conversation = '61c00000-0000-4000-8000-000000000479';
+    const env = { LIBRARY_WORKSPACE: '', LIBRARY_WORKSPACES: path.join(w.root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: w.claimToken('first'), CLAUDE_PID: String(agent), CLAUDE_CODE_SESSION_ID: conversation, CODEX_THREAD_ID: conversation, CODEX_HOME: path.join(w.root, 'codex'), CLAUDE_CONFIG_DIR: path.join(w.root, 'claude') };
     const cli = (args: string[], input?: string) => runCli([...args, '--workspace', w!.workspace], { cwd: w!.workspace, env, ...(input === undefined ? {} : { input }) });
     fs.rmSync(page, { force: true });
     connect(w.workspace, w.workspace, env);
-    const conversation = '61c00000-0000-4000-8000-000000000479';
     const hook = (event: Record<string, unknown>) => cli(['hook', 'checkpoint'], JSON.stringify({ session_id: conversation, cwd: w!.workspace, ...event }));
     // Tool-result tracking begins with the first observed result; a close-out checked before it is a gap, not a wait.
     equal(hook({ hook_event_name: 'PostToolUse', turn_id: 't0', tool_name: 'Bash', tool_input: { command: 'echo start' }, tool_response: 'start', tool_use_id: 'start-call' }).exit, 0, '479: the first observe failed');
@@ -33923,6 +33880,9 @@ async function section479(): Promise<void> {
     const status = JSON.parse(cli(['checkpoint', 'status', '--conversation', conversation, '--seat', 'first']).stdout || '{}') as Record<string, unknown>;
     equal(status['closeout'], 'stale', `479: the fixture's write did not turn the close-out stale (${realEdit.exit} ${realEdit.stderr.slice(0, 200)})`);
     check(!read().includes('## Stopped saves'), '479: a PostToolUse write that turned the close-out stale did not remove the stopped save');
+    const afterWriteBytes = fs.readFileSync(page), afterWriteStamp = fs.statSync(page).mtimeMs;
+    equal(hook({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'echo quiet after write' }, tool_response: 'quiet after write', tool_use_id: 'quiet-after-write' }).exit, 0, '479: quiet observe after write');
+    check(fs.readFileSync(page).equals(afterWriteBytes) && fs.statSync(page).mtimeMs === afterWriteStamp, '479: quiet observe after write leaves page bytes and modification time unchanged');
     const before = read();
     equal(cli(['hook', 'desk-context'], JSON.stringify({ session_id: conversation, hook_event_name: 'UserPromptSubmit', cwd: w.workspace })).exit, 0, '479: the desk-context hook failed');
     equal(read(), before, '479: a hook verb other than checkpoint refreshed the page');
@@ -35009,7 +34969,7 @@ async function section503(): Promise<void> {
     const lineNumber = fs.readFileSync(drifted, 'utf8').trimEnd().split('\n').length;
     const refused = runCli(['asks', ...window, '--json', '--workspace', lib], { cwd: root, env });
     check(refused.exit !== 0 && refused.stderr.includes(`${drifted}, line ${lineNumber}`) && refused.stderr.includes('"brand-new-record"'), `503: an unknown shape did not refuse naming its file and line: ${refused.exit} ${refused.stderr.slice(0, 400)}`);
-    equal(refused.stdout.trim(), '', '503: a refused count printed a count');
+    same(JSON.parse(refused.stdout), { status: 'refused', refusal: refused.stderr.trimEnd(), verb: 'asks', action: null }, '503: standard output is exactly the refusal object');
 
     const decisionConfig = path.join(root, 'decision');
     const decisionFolder = path.join(decisionConfig, 'projects', projectFolderName(lib));
@@ -35019,7 +34979,7 @@ async function section503(): Promise<void> {
     const decisionLine = fs.readFileSync(decisionFile, 'utf8').trimEnd().split('\n').length;
     const decisionRefused = runCli(['asks', ...window, '--json', '--workspace', lib], { cwd: root, env: { ...env, CLAUDE_CONFIG_DIR: decisionConfig } });
     check(decisionRefused.exit !== 0 && decisionRefused.stderr.includes(`${decisionFile}, line ${decisionLine}`) && decisionRefused.stderr.includes('"brand-new-decision"'), `503: unknown decision did not refuse: ${decisionRefused.stderr}`);
-    equal(decisionRefused.stdout.trim(), '', '503: a refused decision printed a count');
+    same(JSON.parse(decisionRefused.stdout), { status: 'refused', refusal: decisionRefused.stderr.trimEnd(), verb: 'asks', action: null }, '503: standard output is exactly the refusal object');
 
     // Kickoff tags persist across typed messages, but only main-thread assistant names can change them.
     // This separate fixture leaves the original count and Desk-line pins above unchanged.
@@ -38095,30 +38055,21 @@ if (selected(569)) await section569();
 
 
 // --- 570. RELEASE BUILDS REFUSE BUN WITH COMPROMISED ROOTS (c80 row 0b) -----------------------------------
+// Read from tools/Build-KernelRelease.ps1's own text: its run through powershell.exe retired (kickoffs/s225), and U3 of
+// PLAN-powershell-retirement.md replaces the builder. What stays checked: the floor is 1.4.4, the Bun version is read
+// with --version before the target is checked, and the refusal names the executable, the version found, the minimum
+// and the reason.
 async function section570(): Promise<void> {
-  if (!prerequisite(570, () => process.platform === 'win32', 'Windows PowerShell is required for the release builder')) return;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-bun-floor-'));
+  if (!prerequisite(570, () => !isCompiled(), "requires the source checkout's tools folder")) return;
   try {
-    const script = path.join(PROGRAM_ROOT, 'tools/Build-KernelRelease.ps1');
-    for (const version of ['1.4.2', '1.4.4', '']) {
-      const label = version || 'empty', bun = path.join(root, `bun-${label}.cmd`);
-      const calls = path.join(root, `calls-${label}.txt`), destination = path.join(root, `release-${label}`);
-      fs.writeFileSync(bun, `@echo off\r\necho %*>>"${calls}"\r\n${version ? `echo ${version}\r\n` : ''}exit /b 0\r\n`);
-      // An unknown target is the documented dry stop: it follows the Bun preconditions and precedes all build work.
-      const ran = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Bun', bun, '-Destination', destination, '-Target', 'fixture-no-build'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
-      const output = `${ran.stdout ?? ''}${ran.stderr ?? ''}`.replace(/\s+/g, ' ');
-      check(ran.status !== 0 && !ran.error, `570: ${label} stops before building: ${output}`);
-      if (version === '1.4.4') check(output.includes("unknown target 'fixture-no-build'"), `570: minimum Bun passes its check: ${output}`);
-      else {
-        check(!output.includes('unknown target'), `570: ${label} refused before target validation: ${output}`);
-        check(output.includes(bun) && output.includes('1.4.4') && (version ? output.includes(version) : /unreadable/i.test(output)) && output.includes('its certificate list trusts roots that were compromised in 2026-10'), `570: ${label} refusal names executable, version, minimum and reason: ${output}`);
-      }
-      equal(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim() : '', '--version', `570: ${label} reads Bun version exactly once`);
-      check(!fs.existsSync(destination), `570: ${label} creates no build output`);
-      console.log(`570 Bun ${label}: ${output}`);
-    }
+    const source = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/Build-KernelRelease.ps1'), 'utf8');
+    check(source.includes("$minimumBunVersion = [version]'1.4.4'"), '570: the Bun floor is no longer 1.4.4');
+    check(source.includes(`$foundVersion = if ($bunVersion) { $bunVersionText } else { "unreadable '$bunVersionText'" }`), '570: an unreadable version is no longer named as unreadable');
+    const refusal = 'throw "Bun $Bun has version $foundVersion; a release requires Bun $minimumBunVersion or later: its certificate list trusts roots that were compromised in 2026-10.';
+    check(source.includes(refusal), '570: the refusal no longer names executable, version, minimum and reason');
+    const read = source.indexOf('(& $Bun --version'), target = source.indexOf('throw "unknown target');
+    check(read > 0 && target > read, `570: the Bun version is no longer read before the target is checked (${read}, ${target})`);
   } catch (error) { failures.push(`section 570 stopped early: ${(error as Error).message}`); }
-  finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 if (selected(570)) await section570();
 
@@ -46724,7 +46675,8 @@ async function section728(): Promise<void> {
     fs.writeFileSync(path.join(recordDir, 'renamed.json'), JSON.stringify(record));
     const page = f.at('collection/archive/demo/wiki/guide/start.md');
     const before = fs.readFileSync(page); fs.appendFileSync(page, '\nDrift.\n');
-    refused(['collection/archive/demo changed after shelf/renamed was recalled', 'changed: guide/start.md', 'would overwrite work it never saw']);
+    const drifted = preview();
+    check(drifted.exit === 0 && JSON.stringify(f.json(drifted).recall_drift?.changed ?? []) === JSON.stringify(['guide/start.md']), `728: restore drift is said in the preview as recall_drift: ${f.said(drifted)}`);
     fs.writeFileSync(page, before);
     fs.writeFileSync(path.join(recordDir, 'duplicate.json'), JSON.stringify(record));
     refused(['Two recall records', 'duplicate.json', 'renamed.json']);
@@ -48032,7 +47984,7 @@ if (selected(763)) await section763();
 // c131-r3's real 0.167.0 rollout 01a1bedc-8f98-7481-959a-3d23180974bd contains no hook context.
 // This checks the producer contract only; it does not establish loading or delivery by Codex.
 async function section764(): Promise<void> {
-  const { LETTERS_WAIT_LINE } = await import('../src/deskcontext.ts');
+  const { LETTERS_WAIT_LINE, ledgerClearReaches } = await import('../src/deskcontext.ts');
   const w = await seatClaimWorkspace('codex-letter-envelope');
   try {
     const agent = w.startAgent();
@@ -48045,7 +47997,7 @@ async function section764(): Promise<void> {
         input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: '76400000-0000-4000-8000-000000000001', prompt: 'CONTROL' }),
       });
       equal(ran.exit, 0, '764: hook exits successfully');
-      return JSON.parse(ran.stdout).hookSpecificOutput as Record<string, unknown>;
+      return (ran.stdout.trim() ? JSON.parse(ran.stdout).hookSpecificOutput : {}) as Record<string, unknown>;
     };
     const control = prompt();
     equal(control['hookEventName'], 'UserPromptSubmit', '764: control event');
@@ -48053,9 +48005,13 @@ async function section764(): Promise<void> {
     equal(w.as(agent, ['capture', 'letters', '--for', 'first', '--title', 'Private fixture title', '--body', 'Private fixture body', '--why', 'for-seat', '--workspace', w.workspace]).exit, 0, '764: capture pending letter');
     for (let turn = 0; turn < 2; turn++) {
       const pending = prompt();
+      if (turn === 1 && ledgerClearReaches(w.workspace, path.join(w.workspace, '.claude'))) {
+        check(!('additionalContext' in pending), '764: unchanged snapshot withheld where clear reaches');
+        continue;
+      }
       equal(pending['hookEventName'], 'UserPromptSubmit', '764: pending event');
       const context = String(pending['additionalContext']);
-      check(context.endsWith(LETTERS_WAIT_LINE), '764: exact notice reaches additionalContext on each Codex prompt');
+      check(context.endsWith(LETTERS_WAIT_LINE), '764: exact notice reaches additionalContext when changed or no clear reaches');
       check(!context.includes('Private fixture'), '764: context excludes letter title and body');
     }
   } finally { w.dispose(); }
@@ -49569,7 +49525,7 @@ async function section800(): Promise<void> {
     const ws = w.workspace, agent = w.startAgent();
     w.seatMade('first','alpha',agent,'800: first seat created');
     equal(w.as(process.pid,['seat','start','second','--project','beta','--no-launch','--workspace',ws]).exit,0,'800: second seat created');
-    const letter = (pid: number, to: string, title: string) => jsonOf(w.as(pid,['capture','letters','--for',to,'--title',title,'--body','Please look.','--workspace',ws,'--json']).stdout);
+    const letter = (pid: number, to: string, title: string) => jsonOf(w.as(pid,['capture','letters','--for',to,'--title',title,'--body','Please look.','--workspace',ws,'--json'], { DESKPOST_ASSISTANT: 'claude' }).stdout);
     const closed = letter(agent,'second','Closed recipient');
     check(String(closed['next']).includes('Ring unavailable: closed.'),'800: next explains a closed recipient');
     const unnamed = letter(process.pid,'first','Unnamed recipient');

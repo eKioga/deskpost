@@ -17,11 +17,7 @@ How a reviewed release candidate goes to the public download, and the exact comm
    The same commit checks `docs/guides/` against the milestones the release carries: a guide that is wrong or
    silent about one is fixed before the bump. It also moves the README's `Status:` line to the release's minor
    version.
-   This commit and the release-notes text form the candidate. Before its review, run the acceptance matrix against
-   the source kernel from the checkout's root
-   (`tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel 'node kernel/src/cli.ts'`, or one `-Row` per call, never a comma list), so a delta the release means joins the candidate before review; a row whose oracle
-   sentence names a `tools/*.ps1` helper is judged against a build ("The compiled arm"), never from source
-   ([the loop's acceptance-matrix rule](dev-session-loop.md#the-gates-what-green-means)). Before any proof, read every
+   This commit and the release-notes text form the candidate. Before any proof, read every
    line changed since the last release the way `prepare.ps1`'s staged scan will: first `git rev-parse --verify v<prev>`
    must name the last release's tag; then, in Bash with `set -o pipefail`, `git diff v<prev> HEAD | gitleaks stdin
    --no-banner --no-color --redact` must exit 0 and print `no leaks found`. A diff that cannot run feeds gitleaks nothing
@@ -126,7 +122,8 @@ core.autocrlf=false`) in the session's scratch folder:
    `install.ps1`, `install.sh`, `llms-install.md`).
 2. `tools/Test-BuiltRelease.ps1 -Release <scratch>\rel -PreviousRelease <pf>\v<prev>\rel -Work <scratch>\fx` to
    "All N release fixtures passed", run from a neutral folder.
-3. The compiled self-test sections (as of 1.4.3: 115-117, 129-138, 143, 144 with its built-release half, 146-151) with
+3. The compiled self-test sections (115-117, 129-138, 143, 144 with its built-release half, 146-151; also
+   10, 25-36, 40, 59, 60, 68, 85, 86, 97, 221-227, 229, 230, 232-239 and 1954) with
    `LIBRARY_SELFTEST_KERNEL` naming the release's own extracted `library.exe` (Windows' `tar.exe -xf`) and
    `LIBRARY_SELFTEST_PREVIOUS_INSTALLER` a copy of `<pf>\v<prev>\rel\install.ps1`; `DESKPOST_UPDATE_CHECK` unset; a
    count of `library.exe` and `selftest-win.exe` processes before and after.
@@ -195,14 +192,6 @@ a registered distribution's disk; `wsl.exe -l -v` lists them.
 
 Both `HOME`s deleted afterwards by the program that made them; the distro stopped again if it was stopped.
 
-**The compiled arm**: `tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel <rel's win-x64 library.exe> -KeepFixtures
--WorkDirectory <evidence folder>\matrix`, no `-IncludeShared`, alone; without `-KeepFixtures` each row's folder is
-deleted after its verdict, and a mismatch cannot be diagnosed from the summary alone. Every differential row green except the two known init-rerun rows. A difference the release
-means (a Kickoff or an attempt page names the field) is approved as a delta with `approved_by` naming the Kickoff,
-value patterns at absent, null, `0`, `all` or `none` where they can, in one commit, `acceptance.matrix-shape` green,
-the rows rerun green. Any other difference is a defect. **A delta commit changes the release commit**: build and judge
-again from it, and, where the release needs a review of the candidate first, the candidate is new.
-
 **`prepare.ps1` to READY**: run it from `<pf>\v<new>` to `READY: main <sha>, tag v<new>, refs/releases/v<new>; nothing
 pushed`. Then check: its `library.exe` byte-identical to the one judged; eight files in `rel`; `git ls-tree
 refs/releases/v<new>` gives each versioned zip and its twin the same blob; the public README (read from the clean
@@ -231,6 +220,37 @@ a real person, domain or account. Fixtures are made and removed by the one progr
 mirror check before the yes ("Starting the mirror"), `prepare.ps1`'s clone of the public repository, and any read the
 Kickoff names.
 
+## Harness looks
+
+Once per release, use disposable fixture Libraries and real signed-in harness sessions to take each look below.
+On the release review page record the candidate commit, exact binary SHA-256, harness version, step, observed
+result and evidence. A fresh binary needs fresh observations. If a model declines before a tool call, record
+that separately from a hook-level refusal; neither proves an event reached a model's context.
+
+1. **Launcher:** start a named fixture seat through `deskpost seat start` in Claude Code or Codex.
+   The session opens in that seat's Library and reports the named seat.
+2. **Claude Code closed Book:** ask for a shell read of a closed fixture Book page and an ordinary control command.
+   The hook denies the page read with its guard explanation; the control completes in the same session.
+3. **Codex closed Book:** trust the disposable project and review its hooks, then make the same plain request.
+   The closed-page read is denied and the control completes; an untrusted project's silent hook omission is not a pass.
+4. **Codex startup and resume:** launch a fixture seat, inspect the first context, resume the conversation and inspect it again.
+   The SessionStart output names that seat at both startup and resume.
+5. **Codex compaction:** compact the fixture session and send another prompt.
+   PostCompact clears this session's served-context entry and the next prompt receives the Desk context again.
+6. **Codex search through the reader:** run a validated-reader search in the real session.
+   The next model context receives the search-hit reminder, and the session opens the hit before answering from it.
+7. **Codex search through the shell:** run `deskpost raw search` in the real session.
+   The shell's PostToolUse reminder reaches the next model context.
+8. **Codex skill discovery:** initialize a fresh disposable Library, start Codex and ask it to list available skill names without tools.
+   It lists `library-help`; copied files alone do not prove discovery.
+9. **Claude Code skill discovery:** repeat in Claude Code with only the Skill tool enabled, invoking no tools.
+   It lists `library-help` for the initialized disposable Library.
+10. **Location after compaction:** compact a fixture session, then ask where it is.
+    It resolves its Library, seat and Desk, and the instruction surface served again says the same.
+11. **Codex with the daemon running:** keep the shared daemon running and launch a fixture seat through `deskpost seat start`.
+    The new session holds its own seat and records the command-line interface version. Use the harness's normal sign-in;
+    never substitute copied login files or a real Library seat.
+
 ## What a changed candidate voids
 
 (Decision, 2026-11-03; `PLAN-checks-earn-their-wait.md` U6.) A proof stands for a new candidate only when **every** input it
@@ -240,13 +260,11 @@ release seat judges it from the diff and writes down why. Everything else runs a
 
 | Proof | It depends on |
 | --- | --- |
-| The doctor counts and the source matrix | `kernel/src`, `tools/acceptance-matrix.json`, every file under `tools/` except `.md` (the runner dot-sources helpers and runs scripts by name, so no hand list stays whole), and its fixtures |
 | The launch values | `kernel/src/menuaccess.ts`, and the installed `codex` and `claude` |
 | The push tier | the pushed commit (the pre-push guard needs its record) |
 | Build and judge, and the release fixtures | the archives' contents (any shipped file, `kernel/test/` included), `tools/Build-KernelRelease.ps1`, `tools/Test-BuiltRelease.ps1` and its fixtures, Bun, the previous release's `rel` |
 | The compiled sections | `library.exe` per platform, `kernel/test/selftest.ts` and what it reads, the runner copy, the previous installer |
 | The upgrade with rollback, and Linux | `library.exe` and the archives, the runner copies, the previous release's `rel`, the WSL distro |
-| The compiled arm | `library.exe`, the acceptance matrix and its fixtures, and every file under `tools/` except `.md` |
 | The candidate's review | the commits since the last reviewed candidate |
 | `prepare.ps1` to READY | always rerun: it is the publish's own input |
 

@@ -38,6 +38,14 @@ Every letter records who wrote it and for whom, as the registry read at that mom
 `origin_seat_id` for the writer, `for_seat_id` for the recipient. A letter written with no seat records no
 origin. Nothing fills an id in later.
 
+### Groups
+
+A department can hold groups one level deep. Each group has its own orchestrator and letter
+destination. Address a group with `--for-department games/sbox`. A letter to a parent
+with groups requires an orchestrator in the parent itself. If the parent has none,
+capture refuses and lists the groups and their destinations. `seat cards` shows the groups
+under the parent. An older Deskpost version reads a letter addressed to a group as malformed.
+
 ## Answering and routing
 
 Both need the letters Book open on your Desk (`deskpost desk open book letters --location shelf`), and

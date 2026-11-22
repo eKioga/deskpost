@@ -20,6 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DEFAULT_GROWING_DAYS, DEFAULT_GROWING_PENDING, readUtf8, type ClosedBy, type ShelfBook } from './shelfbook.ts';
 import { resolvesTo, type SeatIdentityView } from './seatincarnation.ts';
+import { DEPARTMENT_PATTERN } from './seatmeta.ts';
 
 export type { ClosedBy };
 
@@ -190,7 +191,7 @@ const FIELD_SHAPES: Record<string, RegExp> = {
   for_seat_id: /^[0-9a-f]{32}$/,
   origin_seat_id: /^[0-9a-f]{32}$/,
   origin_seat: NOTE_SLUG,
-  for_department: NOTE_SLUG,
+  for_department: DEPARTMENT_PATTERN,
   department_delivery: /^(orchestrator|only-seat)$/,
   answers: NOTE_LINK,
   answered_by: NOTE_LINK,
@@ -268,6 +269,12 @@ export function malformedNoteKeys(content: string): string[] {
  */
 export function seatNameForText(value: string | null | undefined): string {
   return value && NOTE_SLUG.test(value) ? `\`${value}\`` : value && value.trim() ? '(not a seat name)' : '(none recorded)';
+}
+
+/** A department name safe to repeat in a letter. */
+export function departmentNameForText(value: string): string {
+  if (DEPARTMENT_PATTERN.test(value)) return `\`${value}\``;
+  return value.includes('/') ? '(invalid department name)' : seatNameForText(value);
 }
 
 /** A seat as the recipient rule sees it: its slug and its registry row's `seat_id` ('' for a pre-identity row). */

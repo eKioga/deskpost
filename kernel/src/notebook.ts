@@ -214,7 +214,7 @@ function indexDrift(notebookRoot: string, relative: string, repair: string, abse
     return unrenderableTopics(notebookRoot, relative, (error as Error).message).map((message) => {
       const problem = `a topic cannot be rendered: ${message}`;
       return seat
-        ? `${relative}: ${problem}; it belongs to seat ${seat}: give that topic an _index.md with one H1 heading, or move the folder out of the Notebook, then run ${repair}`
+        ? `${relative}: ${problem}; it belongs to seat ${seat}: give that topic an _index.md with one H1 heading, or move the folder out of the Notebook; you may create the topic's _index.md with your own file tools, then run ${repair}`
         : problem;
     });
   }
@@ -263,7 +263,8 @@ export function invokeNotebookRender<T>(scope: NotebookScope, commit?: () => T, 
           `${(error as Error).message}. Every directory under ${scope.relative}/ must hold an _index.md carrying exactly ` +
           'one column-zero H1, because that heading is the label the index shows. Repair or remove that ' +
           'directory: until it is renderable, no Notebook write that changes which topics exist can ' +
-          'complete, since the index would have to leave out a topic that is really there.',
+          'complete, since the index would have to leave out a topic that is really there. ' +
+          "Create the topic's _index.md with your own file tools, then run library notebook render.",
       );
     }
     writeAtomicText(masterPath, text);

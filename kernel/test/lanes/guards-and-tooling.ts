@@ -58,7 +58,6 @@ if (selected(1841)) await section1841();
 if (selected(1842)) await section1842();
 if (selected(1843)) await section1843();
 if (selected(1844)) await section1844();
-if (selected(1845) && prerequisite(1845, () => !isCompiled(), 'requires source tools')) await section1845();
 if (selected(1846) && prerequisite(1846, () => !isCompiled(), 'requires source tools')) await section1846();
 if (selected(1847) && prerequisite(1847, () => !isCompiled(), 'requires source tools')) await section1847();
 if (selected(1848) && prerequisite(1848, () => !isCompiled(), 'requires source tools')) await section1848();
@@ -87,8 +86,25 @@ if (selected(1871) && prerequisite(1871, () => !isCompiled(), 'requires source t
 if (selected(1872) && prerequisite(1872, () => !isCompiled(), 'requires source tools')) await section1872();
 if (selected(1873) && prerequisite(1873, () => !isCompiled(), 'requires source tools')) await section1873();
 if (selected(1874) && prerequisite(1874, () => !isCompiled(), 'requires source landing tool')) await section1874();
+if (selected(1875) && prerequisite(1875, () => process.platform !== 'win32' && !isCompiled(), 'requires a POSIX shell and source tools')) await section1875();
+if (selected(1876) && prerequisite(1876, () => !isCompiled(), 'requires source tools')) await section1876();
+if (selected(1884) && prerequisite(1884, () => !isCompiled(), 'requires source tools')) await section1884();
+if (selected(1885) && prerequisite(1885, () => !isCompiled(), 'requires source tools')) await section1885();
+if (selected(1886) && prerequisite(1886, () => !isCompiled(), 'requires source tools')) await section1886();
 if (selected(1892)) await section1892();
 if (selected(1893) && prerequisite(1893, () => process.platform === 'linux' && !isCompiled(), 'requires Linux and the source reaper')) await section1893();
+if (selected(1894) && prerequisite(1894, () => !isCompiled(), 'requires source tools and Git')) await section1894();
+if (selected(1895) && prerequisite(1895, () => !isCompiled(), 'requires the source worker environment')) await section1895();
+if (selected(1896) && prerequisite(1896, () => process.platform === 'linux' && !isCompiled(), 'requires Linux and source landing tools')) await section1896();
+if (selected(1898) && prerequisite(1898, () => !isCompiled(), 'requires the source section selector')) await section1898();
+if (selected(1899) && prerequisite(1899, () => !isCompiled(), 'requires the source section selector')) await section1899();
+if (selected(1900) && prerequisite(1900, () => !isCompiled(), 'requires source tools')) await section1900();
+if (selected(1950)) await section1950();
+if (selected(1951)) await section1951();
+if (selected(1952) && prerequisite(1952, () => !isCompiled(), 'requires source inventory checker and real Git')) await section1952();
+if (selected(1953) && prerequisite(1953, () => !isCompiled(), 'requires source inventory command and real Git')) await section1953();
+if (selected(1954)) await section1954();
+if (selected(1980)) await section1980();
 }
 
 // --- 1800. A lane section runs inside the real suite: its failing check fails the suite, a lane-only selection counts its
@@ -1521,16 +1537,6 @@ async function section1844(): Promise<void> {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-// --- 1845. w25 regression.
-async function section1845(): Promise<void> {
-  const path = await import('node:path'), {pathToFileURL} = await import('node:url');
-  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
-  const chosen = select.selectSections({changed:['tools/acceptance-matrix.json'], selftestText:'', selftestHunks:[], covers:{schema:1,about:'fixture',sections:{}}});
-  check(!chosen.all, '1845: matrix must not select every kernel section');
-  same(chosen.sections, [], '1845: no kernel section reads the matrix; PowerShell acceptance checks read it');
-  same(select.pathChecks(['tools/acceptance-matrix.json']), ['acceptance.harness-selftest','acceptance.kernel-verbs-exist','acceptance.matrix-covers-every-public-helper','acceptance.matrix-doc-matches-rows','acceptance.matrix-shape'], '1845: actual matrix readers');
-}
-
 // --- 1846. w25 regression.
 async function section1846(): Promise<void> {
   const path = await import('node:path'), {pathToFileURL} = await import('node:url');
@@ -1554,7 +1560,7 @@ async function section1847(): Promise<void> {
   equal(result.status,0,'1847: tracked inventory read');
   const covers = select.mergeCovers(select.coversFiles((file: string) => fs.existsSync(path.join(PROGRAM_ROOT,file)) ? fs.readFileSync(path.join(PROGRAM_ROOT,file),'utf8') : null));
   same(select.unmappedPaths(result.stdout.split('\0').filter(Boolean),covers),[],'1847: every tool/test path has a mapping or whole-suite reason');
-  same(select.unmappedPaths(['tools/new-unmapped.mts','tools/acceptance-matrix.json'],covers),['tools/new-unmapped.mts'],'1847: new unmapped tool named, mapped matrix omitted');
+  same(select.unmappedPaths(['tools/new-unmapped.mts','tools/areas.mts'],covers),['tools/new-unmapped.mts'],'1847: new unmapped tool named, mapped area tool omitted');
 }
 
 // --- 1848. w25 regression.
@@ -1896,7 +1902,6 @@ async function section1858(): Promise<void> {
 
 // --- 1859. Recovery commands quote PowerShell literal paths.
 async function section1859(): Promise<void> {
-  const {spawnSync} = await import('node:child_process');
   const {recoveryGuardRemovalCommand} = await import('../../src/locks.ts');
   const quotes = ["'", '\u2018', '\u2019', '\u201a', '\u201b'];
   const cases = quotes.map(quote => {
@@ -1906,28 +1911,20 @@ async function section1859(): Promise<void> {
       '1859: literal quote is doubled (U+' + quote.codePointAt(0)!.toString(16) + ')');
     return {path, command};
   });
-  const data = Buffer.from(JSON.stringify(cases), 'utf8').toString('base64');
-  const parser = [
-    "$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + data + "'))",
-    'foreach ($case in (ConvertFrom-Json -InputObject $json)) {',
-    '  $tokens = $null; $errors = $null',
-    '  $tree = [System.Management.Automation.Language.Parser]::ParseInput($case.command, [ref]$tokens, [ref]$errors)',
-    '  $commands = @($tree.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))',
-    '  if ($errors.Count -ne 0 -or $commands.Count -ne 1 -or $commands[0].CommandElements.Count -ne 3 -or',
-    '      $commands[0].CommandElements[2].Value -cne $case.path) { exit 1 }',
-    '}',
-    'exit 0',
-  ].join('\n');
-  const encoded = Buffer.from(parser, 'utf16le').toString('base64');
-  for (const shell of ['pwsh', 'powershell.exe']) {
-    const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      {encoding: 'utf8', timeout: 30_000, windowsHide: true});
-    if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') continue;
-    equal(result.status, 0, '1859: each command parses as one command with the original literal path: ' +
-      (result.error ?? result.stderr));
-    return;
+  // The real PowerShell parser's answer for each command, captured once at d6c23e53 (kickoffs/s225, standing answer 4):
+  // no errors, one command of three words, the third the original literal path. It holds on every platform now.
+  const parsed: {line: string; words: string[]}[] = [
+    {line: "Remove-Item -LiteralPath 'a''b'", words: ["Remove-Item", "-LiteralPath", "a'b"]},
+    {line: "Remove-Item -LiteralPath 'a\u2018\u2018b'", words: ["Remove-Item", "-LiteralPath", "a\u2018b"]},
+    {line: "Remove-Item -LiteralPath 'a\u2019\u2019b'", words: ["Remove-Item", "-LiteralPath", "a\u2019b"]},
+    {line: "Remove-Item -LiteralPath 'a\u201a\u201ab'", words: ["Remove-Item", "-LiteralPath", "a\u201ab"]},
+    {line: "Remove-Item -LiteralPath 'a\u201b\u201bb'", words: ["Remove-Item", "-LiteralPath", "a\u201bb"]},
+  ];
+  equal(cases.length, parsed.length, '1859: every command has its recorded parse');
+  for (const [index, item] of cases.entries()) {
+    equal(item.command, parsed[index]?.line, '1859: the command is the form PowerShell was seen to parse: ' + item.command);
+    equal(parsed[index]?.words[2], item.path, '1859: the recorded parse gives back the original literal path: ' + item.path);
   }
-  console.log('1859: no PowerShell here; the parser case runs on Windows');
 }
 
 // --- 1860. Closed Book refusals name the file routes for literal text.
@@ -1984,7 +1981,7 @@ async function section1862(): Promise<void> {
       fs.mkdirSync(path.dirname(target), {recursive: true});
       fs.writeFileSync(target, contents);
     };
-    for (const file of ['tools/kickoff-check.mts', 'tools/section-select.mts', 'tools/check-map.json',
+    for (const file of ['tools/kickoff-check.mts', 'tools/owns.mts', 'tools/scan.ts', 'tools/section-select.mts', 'tools/check-map.json',
       'kernel/test/gate-lock.ts', 'kernel/src/kickoffcheck.ts', 'kernel/src/verbs.ts', 'kernel/src/contentpath.ts',
       'docs/areas.json']) put(file, fs.readFileSync(path.join(PROGRAM_ROOT, file), 'utf8'));
     fs.cpSync(path.join(PROGRAM_ROOT, 'kernel/src'), path.join(root, 'kernel/src'), { recursive: true });
@@ -2128,24 +2125,43 @@ async function section1865(): Promise<void> {
   const checkTree = async (detached: boolean) => {
     const root = mkdtempSync(join(tmpdir(), 'land-child-tree-'));
     const pidsFile = join(root, 'pids');
+    // Off Windows, the child and its grandchild share one connection; it closes once both have released it, which they do only as they exit.
+    const posix = process.platform !== 'win32';
+    const socketPath = join(root, 'tree.sock');
+    let treeExited = (): void => {};
+    const exited = new Promise<void>(resolve => { treeExited = resolve; });
+    const { createServer } = await import('node:net');
+    const connections = new Set<import('node:net').Socket>();
+    const server = createServer(connection => { connections.add(connection); connection.resume(); connection.once('close', () => treeExited()); });
+    if (posix) await new Promise<void>(resolve => server.listen(socketPath, () => resolve()));
     const start = performance.now();
     let failure = '';
     try {
       try {
         await execute(process.execPath, ['-e', `
           const { spawn } = require('node:child_process');
-          const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore', windowsHide: true, detached: ${detached} });
-          require('node:fs').writeFileSync(process.argv[1], JSON.stringify([process.pid, grandchild.pid]));
-        `, pidsFile], root, process.env, limit);
+          const begin = shared => {
+            const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: shared ? ['ignore', 'ignore', 'ignore', shared] : 'ignore', windowsHide: true, detached: ${detached} });
+            require('node:fs').writeFileSync(process.argv[1], JSON.stringify([process.pid, grandchild.pid]));
+          };
+          if (process.argv[2]) { const shared = require('node:net').connect(process.argv[2], () => begin(shared)); } else begin();
+        `, pidsFile, posix ? socketPath : ''], root, process.env, limit);
       } catch (error) {
         failure = (error as Error).message;
       }
       check(failure.includes(basename(process.execPath)) && failure.includes(`${limit} ms`), '1865: the rejection names the child and its limit');
       check(performance.now() - start < 2000, '1865: the child is stopped before its own exit');
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const treeGone = posix && await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>(resolve => { deadlineTimer = setTimeout(resolve, 2000, false); }),
+      ]);
+      clearTimeout(deadlineTimer);
+      if (posix) check(treeGone, '1865: the child and its grandchild release their connection within 2000 ms of the rejection');
       const pids: number[] = JSON.parse(readFileSync(pidsFile, 'utf8'));
       try {
         for (const pid of pids) {
-          let stopped = !alive(pid);
+          let stopped = treeGone || !alive(pid);
           if (!stopped && process.platform === 'linux') {
             try {
               const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -2161,6 +2177,8 @@ async function section1865(): Promise<void> {
         for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
       }
     } finally {
+      for (const connection of connections) connection.destroy();
+      if (posix) await new Promise<void>(resolve => server.close(() => resolve()));
       rmSync(root, { recursive: true, force: true });
     }
   };
@@ -2181,7 +2199,7 @@ async function section1865(): Promise<void> {
       execute(process.execPath, ['-e', `
         require('node:fs').writeFileSync(process.argv[1], String(process.pid));
         setTimeout(() => {}, 10000);
-      `, pidFile], empty, env, limit)
+      `, pidFile], tmpdir(), env, limit)
         .then(() => 'child completed', (error: Error) => error.message),
       new Promise<string>(resolve => { deadlineTimer = setTimeout(resolve, deadline, 'deadline elapsed'); }),
     ]);
@@ -2375,7 +2393,7 @@ async function section1872(): Promise<void> {
   const { childEnv } = await import('../gate-env.ts');
   const root = fs.mkdtempSync(join(tmpdir(), 'kickoff-shared-'));
   try {
-    for (const file of ['tools/kickoff-check.mts', 'tools/section-select.mts', 'tools/check-map.json', 'docs/areas.json', 'kernel/test/section-covers.json', 'kernel/test/gate-lock.ts']) {
+    for (const file of ['tools/kickoff-check.mts', 'tools/owns.mts', 'tools/scan.ts', 'tools/section-select.mts', 'tools/check-map.json', 'docs/areas.json', 'kernel/test/section-covers.json', 'kernel/test/gate-lock.ts']) {
       const target = join(root, file);
       fs.mkdirSync(dirname(target), { recursive: true });
       fs.copyFileSync(join(PROGRAM_ROOT, file), target);
@@ -2466,6 +2484,202 @@ async function section1874(): Promise<void> {
   equal(lines.length, 0, '1874: an already closed child needs no hold notice');
 }
 
+// --- 1875. Commit settings checks fall back to PowerShell 7 and report when both executables are absent.
+async function section1875(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { pathToFileURL } = await import('node:url');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-settings-pwsh-'));
+  try {
+    const withPwsh = fs.mkdirSync(path.join(root, 'with-pwsh'), { recursive: true })!;
+    const empty = fs.mkdirSync(path.join(root, 'empty'), { recursive: true })!;
+    fs.writeFileSync(path.join(withPwsh, 'pwsh'), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-Only" ]; then
+    printf '{"checks":[{"check":"%s","status":"pass","detail":"stand-in"}]}\\n' "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+`, { mode: 0o755 });
+    const gateUrl = pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href;
+    const script = `
+      import { settingsChecks } from ${JSON.stringify(gateUrl)};
+      console.log(JSON.stringify(await settingsChecks(process.cwd(), ['.claude/settings.json'])));
+    `;
+    const run = (searchPath: string) => {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: root, env: { ...process.env, PATH: searchPath }, encoding: 'utf8', timeout: 30_000,
+      });
+      equal(result.status, 0, `1875: settings child exited: ${result.error ?? result.stderr}`);
+      return result.status === 0 ? JSON.parse(result.stdout) as { check: string; status: string; detail: string }[] : [];
+    };
+    const available = run(withPwsh);
+    check(available.length > 0 && available.every(row => row.status === 'pass' && row.detail === 'stand-in'),
+      `1875: each settings check passes through pwsh: ${JSON.stringify(available)}`);
+    const missing = run(empty);
+    check(missing.length > 0 && missing.every(row => row.status === 'fail'
+      && row.detail.includes('powershell.exe is missing') && row.detail.includes('pwsh') && row.detail.includes(row.check)),
+      `1875: each failure names both executables and the check: ${JSON.stringify(missing)}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1876. Each PowerShell script with a matching self-test selects it when changed.
+async function section1876(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { settingsChecksForPaths } = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+  const hubChecks = settingsChecksForPaths(['tools/New-ProjectHub.ps1']);
+  for (const name of ['new-project-hub.selftest', 'hub.dev-template-seeds-sections']) {
+    check(hubChecks.includes(name), `1876: tools/New-ProjectHub.ps1 must select ${name}`);
+  }
+
+  const toolsDir = path.join(PROGRAM_ROOT, 'tools');
+  const runner = fs.readFileSync(path.join(toolsDir, 'Invoke-LibraryChecks.ps1'), 'utf8');
+  const selfTests = new Set(Array.from(runner.matchAll(/\bInvoke-Check\s+'([\w-]+\.selftest)'/g), match => match[1]));
+  const pairs: string[] = [], missing: string[] = [];
+  for (const file of fs.readdirSync(toolsDir).sort()) {
+    if (!file.endsWith('.ps1')) continue;
+    const name = file.slice(0, -4)
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1-$2')
+      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+      .toLowerCase() + '.selftest';
+    if (!selfTests.has(name)) continue;
+    const source = `tools/${file}`;
+    const pair = `${source} -> ${name}`;
+    pairs.push(pair);
+    if (!settingsChecksForPaths([source]).includes(name)) missing.push(pair);
+  }
+  check(pairs.length >= 25, `1876: found ${pairs.length} PowerShell script and self-test pairs (expected at least 25): ${pairs.join(', ')}`);
+  check(missing.length === 0, `1876: missing self-test mappings: ${missing.join(', ')}. All pairs: ${pairs.join(', ')}`);
+}
+
+// --- 1884. The source checker and ownership command agree on the title's unit.
+async function section1884(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { spawnSync } = await import('node:child_process'), { createHash } = await import('node:crypto');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kickoff-branch-unit-'));
+  try {
+    const file = path.join(root, 'kickoff.md');
+    const env = { ...childEnv(), HOME: root, USERPROFILE: root, DESKPOST_GATE_DIR: path.join(root, 'absent') };
+    const run = (cwd: string, command: string, args: string[]) =>
+      spawnSync(command, args, { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+    const fixture = (title: string, branches: string) =>
+      `# ${title} kickoff: fixture\n\nBranch: ${branches}\n\nTRAIN: fixture\nWHY NOW:\n- Fixture\n`
+      + 'OWNS PATHS:\n- \x60none\x60\nSTAY OUT OF: none\nROWS:\n1. Fixture\n   Done when: checked.\nCHARTER: fixture\nCLOSE: finish.\n**Stop.**\n';
+    const validate = (text: string) => {
+      fs.writeFileSync(file, text);
+      return run(PROGRAM_ROOT, process.execPath, ['tools/kickoff-check.mts', file]);
+    };
+    for (const [unit, branch] of [['w7', 'int/w7'], ['c160-r10', 'int/c160-r7']] as const) {
+      const result = validate(fixture(unit, branch));
+      equal(result.status, 0, '1884: matching unit: ' + result.stdout + result.stderr);
+    }
+    const wrong = fixture('c162', 'int/c161');
+    const mismatch = validate(wrong);
+    check(mismatch.status === 1 && mismatch.stdout.includes('BRANCH: header names int/c161, which belongs to c161, but the title names c162'),
+      '1884: wrong unit refused: ' + mismatch.stdout + mismatch.stderr);
+    const multiple = validate(fixture('c162', 'int/c161 and int/c160'));
+    check(multiple.status === 1 && multiple.stdout.includes('BRANCH: header names int/c161 and int/c160; a Kickoff continues one branch'),
+      '1884: two branches refused: ' + multiple.stdout + multiple.stderr);
+    fs.writeFileSync(file, wrong);
+    const init = run(root, 'git', ['init', '--initial-branch=int/c160']);
+    equal(init.status, 0, '1884: fixture Git initialized: ' + init.stderr);
+    const start = run(root, process.execPath, [path.join(PROGRAM_ROOT, 'tools/owns.mts'), 'start', '--kickoff', file,
+      '--sha256', createHash('sha256').update(wrong).digest('hex')]);
+    check(start.status === 1 && start.stderr.includes("branch int/c160 belongs to c160, but the Kickoff title names c162; start on that unit's branch"),
+      '1884: ownership command still refuses: ' + start.stdout + start.stderr);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1885. Kickoff identity warnings name the line and keep the term private.
+async function section1885(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { spawnSync } = await import('node:child_process'), { pathToFileURL } = await import('node:url');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kickoff-identity-'));
+  try {
+    const termRoot = path.join(root, '.library');
+    fs.mkdirSync(termRoot);
+    const denyFile = path.join(termRoot, 'identity-denylist.txt');
+    const privateTerm = 'fixture-private-identity';
+    const allowedTerm = 'fixture-approved-attribution';
+    fs.writeFileSync(denyFile, `${privateTerm}\n${allowedTerm}\n`);
+    fs.writeFileSync(path.join(termRoot, 'identity-allowlist.txt'), allowedTerm + '\n');
+    const text = `# w7 kickoff: fixture\n\nTRAIN: fixture\nWHY NOW:\n- ${privateTerm}\n- ${allowedTerm}\n`
+      + 'OWNS PATHS:\n- \x60none\x60\nSTAY OUT OF: none\nROWS:\n1. Fixture\n   Done when: checked.\nCHARTER: fixture\nCLOSE: finish.\n**Stop.**\n';
+    const file = path.join(root, 'kickoff.md');
+    fs.writeFileSync(file, text);
+    const run = () => spawnSync(process.execPath, ['tools/kickoff-check.mts', file], {
+      cwd: PROGRAM_ROOT, env: { ...childEnv(), HOME: root, USERPROFILE: root, DESKPOST_GATE_DIR: path.join(root, 'absent') },
+      encoding: 'utf8', windowsHide: true, timeout: 30_000,
+    });
+    const result = run();
+    equal(result.status, 0, '1885: private-term warning does not refuse the Kickoff');
+    check(result.stderr.includes('warning: line 5 names a private identity term') && !result.stderr.includes('warning: line 6'),
+      '1885: warns only on the denylisted line');
+    check(!(result.stdout + result.stderr).includes(privateTerm), '1885: neither stream exposes the private term');
+    const scan = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/scan.ts')).href);
+    if (typeof scan.textIdentityHits === 'function') {
+      same(scan.textIdentityHits(text, termRoot), { hits: [{ line: 5, kind: 'identity' }], identityDenylistMissing: false },
+        '1885: direct helper reports the redacted line and kind');
+    }
+    fs.unlinkSync(denyFile);
+    const missing = run();
+    equal(missing.status, 0, '1885: missing denylist does not refuse the Kickoff');
+    check(!missing.stderr.includes('names a private identity term'), '1885: missing denylist has no identity warning');
+    if (typeof scan.textIdentityHits === 'function') {
+      same(scan.textIdentityHits(text, termRoot), { hits: [], identityDenylistMissing: true },
+        '1885: helper records the missing denylist');
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1886. A Catches here line identifies sections the bounded commit tier may defer.
+async function section1886(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { spawnSync } = await import('node:child_process'), { childEnv } = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kickoff-catches-here-'));
+  try {
+    const file = path.join(root, 'kickoff.md');
+    const run = (catches: string) => {
+      fs.writeFileSync(file, '# w7 kickoff: fixture\n\nTRAIN: fixture\nWHY NOW:\n- Fixture\n'
+        + 'OWNS PATHS:\n- \x60none\x60\nSTAY OUT OF: none\nROWS:\n1. Add section 1886.\n'
+        + `   Catches here: ${catches}\n   Done when: checked.\nCHARTER: fixture\nCLOSE: finish.\n**Stop.**\n`);
+      return spawnSync(process.execPath, ['tools/kickoff-check.mts', file], {
+        cwd: PROGRAM_ROOT, env: { ...childEnv(), HOME: root, USERPROFILE: root, DESKPOST_GATE_DIR: path.join(root, 'absent') },
+        encoding: 'utf8', windowsHide: true, timeout: 30_000,
+      });
+    };
+    for (const [catches, sections] of [
+      ['the commit tier runs sections 1, 2 and 3.', ''],
+      ['the bounded commit tier runs the new section 1886.', '1886'],
+      ['the commit tier runs 1872.', '1872'],
+      ['the commit tier runs sections 1 and 1872, or the runners take them.', ''],
+      ['the commit tier runs 1872, or the push tier runs it.', ''],
+      ['the commit tier runs 1872, or the Linux check runs it.', ''],
+      ['the commit tier runs sections 1010 to 1012.', '1010, 1011, 1012'],
+    ]) {
+      const result = run(catches!);
+      equal(result.status, 0, '1886: tier warning is advisory: ' + result.stdout + result.stderr);
+      const warnings = result.stderr.split(/\r?\n/).filter(line => line.includes('bounded commit tier may leave'));
+      equal(warnings.length, sections ? 1 : 0, '1886: expected warning count for ' + catches);
+      if (sections) check(warnings[0]?.includes(`line 11: the bounded commit tier may leave section(s) ${sections} to the runners`) === true,
+        '1886: warning names the line and all deferred sections: ' + result.stderr);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // --- 1892. The Linux workflow checks the areas file before self-tests.
 async function section1892(): Promise<void> {
   const { existsSync, readFileSync } = await import('node:fs');
@@ -2492,4 +2706,741 @@ async function section1893(): Promise<void> {
     encoding: 'utf8', timeout: 30_000,
   });
   equal(result.status, 0, '1893: the reaper runs an explicit command: ' + (result.error ?? result.stderr));
+}
+
+// --- 1894. A cherry-pick continued after a conflict keeps the carried subject.
+async function section1894(): Promise<void> {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { childEnv } = await import('../gate-env.ts');
+  const root = mkdtempSync(join(tmpdir(), 'deskpost-carried-subject-'));
+  const env = { ...childEnv(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'no-global-config') };
+  const run = (command: string, ...args: string[]) => spawnSync(command, args, { cwd: root, env, encoding: 'utf8', timeout: 10_000 });
+  const git = (...args: string[]) => {
+    const result = run('git', ...args);
+    if (result.status !== 0) throw Error(result.stderr || String(result.error ?? result.status));
+  };
+  const commit = (text: string) => {
+    writeFileSync(join(root, 'conflict.txt'), text + '\n');
+    git('add', 'conflict.txt');
+    git('commit', '-qm', text);
+  };
+  const subject = 'c164-r4 row 1: refuse recovery';
+  const message = join(root, 'message');
+  try {
+    git('init', '-qb', 'main');
+    git('config', 'user.name', 'Fixture');
+    git('config', 'user.email', 'fixture@example.invalid');
+    commit('common');
+    git('switch', '-qc', 'side');
+    commit(subject);
+    git('switch', '-qc', 'int/demo', 'main');
+    commit('demo: change the same line');
+    equal(run('git', 'cherry-pick', 'side').status, 1, '1894: the cherry-pick stops for a conflict');
+    git('rev-parse', '--verify', 'CHERRY_PICK_HEAD');
+    writeFileSync(join(root, 'conflict.txt'), 'resolved\n');
+    git('add', 'conflict.txt');
+    writeFileSync(message, subject + '\n');
+    const guard = () => run(process.execPath, join(PROGRAM_ROOT, 'tools/commit-subject.mts'), message);
+    const carried = guard();
+    equal(carried.status, 0, '1894: the guard accepts the carried subject: ' + carried.stderr);
+    git('cherry-pick', '--abort');
+    const ordinary = guard();
+    equal(ordinary.status, 1, '1894: the guard refuses the same subject for an ordinary commit');
+    check(ordinary.stderr.includes('int/demo'), '1894: the refusal names int/demo');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1895. Filtering an installed Deskpost directory preserves its gitleaks.
+async function section1895(): Promise<void> {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'deskpost-worker-gitleaks-'));
+  const dropped = join(root, 'installed');
+  const kept = join(root, 'kept');
+  const scanner = process.platform === 'win32' ? 'gitleaks.exe' : 'gitleaks';
+  const installedScanner = join(dropped, scanner);
+  const explicitScanner = join(root, scanner);
+  try {
+    mkdirSync(dropped);
+    mkdirSync(kept);
+    writeFileSync(join(dropped, process.platform === 'win32' ? 'deskpost.cmd' : 'deskpost'), '');
+    writeFileSync(installedScanner, '', { mode: 0o755 });
+    writeFileSync(explicitScanner, '', { mode: 0o755 });
+    const module = pathToFileURL(join(HERE, 'gate-env.ts')).href;
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
+    const run = (override: string): NodeJS.ProcessEnv => {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+        'import { childEnv } from ' + JSON.stringify(module) + '; console.log(JSON.stringify(childEnv()));'],
+      { env: { ...env, PATH: [dropped, kept].join(delimiter), DESKPOST_GITLEAKS: override }, encoding: 'utf8', timeout: 10_000 });
+      if (result.status !== 0) throw Error(result.stderr || String(result.error ?? result.status));
+      return JSON.parse(result.stdout);
+    };
+    const filtered = run('');
+    const entries = filtered.PATH?.split(delimiter) ?? [];
+    check(!entries.includes(dropped) && entries.includes(kept), '1895: the worker drops only the installed directory');
+    equal(filtered.DESKPOST_GITLEAKS, installedScanner, '1895: the worker retains the scanner in the dropped directory');
+    equal(run(explicitScanner).DESKPOST_GITLEAKS, explicitScanner, '1895: an explicit scanner wins');
+    rmSync(installedScanner);
+    equal(run('').DESKPOST_GITLEAKS, '', '1895: a directory with no scanner leaves the override empty');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1896. Landing stops waiting when a reparented process keeps its output open.
+async function section1896(): Promise<void> {
+  const { existsSync, mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { basename, join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'deskpost-held-output-'));
+  const pidFile = join(root, 'grandchild.pid');
+  const childScript = `
+    const { spawn } = require('node:child_process');
+    const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 35000)'],
+      { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
+    require('node:fs').writeFileSync(process.argv[1], String(grandchild.pid));
+    process.exit(0);
+  `;
+  const land = pathToFileURL(join(PROGRAM_ROOT, 'tools/land.mts')).href;
+  const callerScript = `
+    import { execute } from ${JSON.stringify(land)};
+    execute(process.execPath, ['-e', ${JSON.stringify(childScript)}, process.argv[1]], process.cwd(), process.env, 500)
+      .catch(error => console.log(error.message));
+  `;
+  const grandchildPid = () => existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
+  const signal = (pid: number, name: NodeJS.Signals | 0) => {
+    if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+    try { process.kill(pid, name); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      throw error;
+    }
+  };
+  try {
+    const caller = spawnSync(process.execPath, ['--input-type=module', '-e', callerScript, pidFile],
+      { cwd: root, encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL' });
+    check(grandchildPid() > 1, '1896: the detached grandchild wrote its pid');
+    equal(caller.status, 0, '1896: the caller exits within ten seconds: ' + (caller.error ?? caller.stderr));
+    check(caller.stdout.includes(basename(process.execPath) + ' timed out after 500 ms') &&
+      caller.stdout.includes('output was still held open'), '1896: the timeout names the held output: ' + caller.stdout);
+    console.log('1896: detached grandchild survived the stop: ' + signal(grandchildPid(), 0));
+  } finally {
+    signal(grandchildPid(), 'SIGKILL');
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- 1898. Section selection accounts for removed text as well as new text.
+async function section1898(): Promise<void> {
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const select = await import(pathToFileURL(join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const file = select.laneTestPath('guards-and-tooling');
+  const first = 'async function section1880() {\n  first();\n  last();\n}\n';
+  const second = 'async function section1881() {\n  next();\n}\n';
+  const run = (text: string, diff: string) => select.selectSections({
+    changed: [file], selftestText: '', selftestHunks: [],
+    covers: { schema: 1, about: 'fixture', sections: { 1880: [], 1881: [] } },
+    laneSources: [{ file, text, hunks: select.parseHunks(diff) }],
+  });
+  const replaced = run(first + '\n' + second, '@@ -5 +5 @@\n-sharedHelper();\n+\n');
+  check(replaced.all && replaced.reasons.some((reason: string) => reason.includes(file) && reason.includes('line 5')),
+    '1898: replacing a shared helper with a blank selects every section and names line 5: ' + replaced.reasons.join('; '));
+  const deleted = run(first + second, '@@ -5 +4,0 @@\n-sharedHelper();\n');
+  check(deleted.all && deleted.reasons.some((reason: string) => reason.includes(file) && reason.includes('after line 4')),
+    '1898: deleting a shared helper selects every section and names the boundary: ' + deleted.reasons.join('; '));
+  const blank = run(first + second, '@@ -5 +4,0 @@\n-  \n');
+  check(!blank.all && blank.sections.length === 0, '1898: deleting a blank line selects nothing: ' + blank.reasons.join('; '));
+  const inside = run(first + second, '@@ -3 +2,0 @@\n-  middle();\n');
+  check(!inside.all, '1898: deleting a line strictly inside one section stays local');
+  same(inside.sections, [1880], '1898: the deletion selects only its section');
+}
+
+// --- 1899. A repeated section key in one claim file is refused before JSON can discard it.
+async function section1899(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path');
+  const {pathToFileURL} = await import('node:url');
+  const select = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/section-select.mts')).href);
+  const thrown = (run: () => unknown) => { try { run(); return ''; } catch (error) { return (error as Error).message; } };
+  const compact = '{"schema": 1, "sections": {"7": [], "7": ["kernel/src/cli.ts"]}}';
+  const message = 'x.json: section 7 is claimed twice in this file; keep one claim';
+  equal(thrown(() => select.parseCovers(compact, 'x.json')), message, '1899: (a) compact duplicate is refused by name');
+  for (const newline of ['\n', '\r\n']) {
+    const text = ['{', '  "schema": 1,', '  "sections": {', '    "7": [],', '    "7": ["kernel/src/cli.ts"]', '  }', '}'].join(newline);
+    equal(thrown(() => select.parseCovers(text, 'x.json')), message, '1899: (b) laid out duplicate is refused with ' + JSON.stringify(newline));
+  }
+  const safe = JSON.stringify({schema: 1, about: '"7": []', sections: {'7': []}});
+  same(select.parseCovers(safe, 'x.json').sections, {'7': []}, '1899: (c) quoted example is not a claim');
+  const lane = select.laneCoversPath('guards-and-tooling');
+  equal(thrown(() => select.mergeCovers([{file: lane, text: compact}])),
+    lane + ': section 7 is claimed twice in this file; keep one claim', '1899: (d) merging refuses the repeated key by file');
+  const read = (file: string) => fs.existsSync(path.join(PROGRAM_ROOT, file)) ? fs.readFileSync(path.join(PROGRAM_ROOT, file), 'utf8') : null;
+  for (const part of select.coversFiles(read)) {
+    equal(thrown(() => select.parseCovers(part.text, part.file)), '', '1899: (e) real claim file parses: ' + part.file);
+  }
+}
+
+// --- 1950. Real Git ranges count lines, binary files and literal paths without writes.
+async function section1950(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const {auditBalance, readBalanceConfig} = await import('../../src/auditbalance.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c172-balance-'));
+  const config = {schema: 1, buckets: {product: ['product/**'], tests: ['tests/**', '**/*.spec'], tools: ['tools/**'], docs: ['**/*.md']}};
+  const put = (file: string, value: string | Buffer) => { fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), value); };
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', args, {cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8'});
+    if (r.status !== 0) throw Error(r.stderr || String(r.error));
+    return r.stdout.trim();
+  };
+  const thrown = (fn: () => unknown) => { try { fn(); return ''; } catch (e) { return (e as Error).message; } };
+  try {
+    git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'core.hooksPath', 'absent-hooks'); git('config', 'core.autocrlf', 'false');
+    const cfg = path.join(root, '.deskpost/code-balance.json');
+    check(thrown(() => readBalanceConfig(root)).includes(cfg), '1950: missing setting names its path');
+    put('.deskpost/code-balance.json', '{"schema":2}');
+    check(thrown(() => readBalanceConfig(root)).includes('schema'), '1950: malformed schema names its key');
+    for (const bad of [{...config, buckets: {product: 'bad'}}, {...config, heavy: -1}, {...config, bloated: 'six'}]) {
+      put('.deskpost/code-balance.json', JSON.stringify(bad));
+      check(thrown(() => readBalanceConfig(root)).includes('code-balance.json'), '1950: invalid setting refuses');
+    }
+    put('.deskpost/code-balance.json', JSON.stringify(config));
+    put('product/old', 'old\n'.repeat(80)); put('tests/old', 'old\n'.repeat(80));
+    git('add', '.'); git('commit', '-qm', 'Base'); const base = git('rev-parse', 'HEAD');
+    const cases = [
+      ['no code', 'docs/readme.md', 3], ['BALANCED', 'product/new', 10],
+      ['HEAVY', 'tests/new', 40], ['BLOATED', 'tools/new', 30],
+    ] as const;
+    let tip = base;
+    for (const [verdict, file, lines] of cases) {
+      put(file, 'new\n'.repeat(lines)); git('add', '.'); git('commit', '-qm', verdict); tip = git('rev-parse', 'HEAD');
+      const r = auditBalance({repo: root, base, tip});
+      equal(r.value.verdict, verdict, '1950: ' + verdict);
+      equal(r.value.ratio, verdict === 'no code' ? null : verdict === 'BALANCED' ? 0 : verdict === 'HEAVY' ? 4 : 7, '1950: added-line ratio');
+      check(r.text.split('\n').length <= 6, '1950: at most six text lines');
+      if (verdict === 'HEAVY' || verdict === 'BLOATED') check(r.text.includes('tests/new'), '1950: largest paths named');
+    }
+    const change = (file: string, content: string, verdict: string) => {
+      const before = tip; put(file, content); git('add', '.'); git('commit', '-qm', verdict); tip = git('rev-parse', 'HEAD');
+      const r = auditBalance({repo: root, base: before, tip});
+      equal(r.value.verdict, verdict, '1950: ' + verdict); equal(r.value.ratio, null, '1950: no product additions means no ratio');
+    };
+    change('tests/old', '', 'tidy'); change('product/old', '', 'product-removal'); change('tests/only', 'test\n', 'test-only');
+    const beforeBinary = tip; put('product/binary', Buffer.from([0, 1, 2])); git('add', '.'); git('commit', '-qm', 'Binary'); tip = git('rev-parse', 'HEAD');
+    const binary = auditBalance({repo: root, base: beforeBinary, tip}).value;
+    equal(binary.verdict, 'no code', '1950: binary-only product is no code'); equal(binary.buckets.product!.binary_files, 1, '1950: binary counted by file');
+    equal(binary.ratio, null, '1950: binary adds no ratio');
+    equal(git('status', '--porcelain'), '', '1950: reading leaves repository clean');
+    const refError = thrown(() => auditBalance({repo: root, base: 'absent-ref', tip}));
+    check(refError.includes('absent-ref') && refError.includes('git fetch'), '1950: unresolved ref names it and git fetch');
+    const dated = auditBalance({repo: root, since: '2030-01-01', tip});
+    equal(dated.value.base, tip, '1950: since resolves the last commit before the date');
+    for (const args of [{base}, {base, tip, since: '2020-01-01'}, {since: ''}]) {
+      check(thrown(() => auditBalance({repo: root, ...args})).length > 0, '1950: incomplete or mixed arguments refused');
+    }
+    // Build paths in Git's index: Windows cannot create tab or newline filenames on disk.
+    git('config', 'core.protectNTFS', 'false');
+    const blob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: root, env: repositoryNeutralEnv(), input: 'odd\n', encoding: 'utf8'}).stdout.trim();
+    const beforeOdd = tip;
+    put('.deskpost/code-balance.json', JSON.stringify({...config, heavy: 2})); git('add', '.deskpost/code-balance.json');
+    for (const file of ['tests/café.spec', 'tools/tab\tfile', 'tools/new\nfile', 'product/first.spec', 'outside/extra']) {
+      git('update-index', '--add', '--cacheinfo', '100644', blob, file);
+    }
+    git('commit', '-qm', 'Literal paths'); tip = git('rev-parse', 'HEAD');
+    const odd = auditBalance({repo: root, base: beforeOdd, tip});
+    equal(odd.value.buckets.product!.added, 1, '1950: first matching bucket wins');
+    equal(odd.value.buckets.tests!.added, 1, '1950: non-ASCII path matched'); equal(odd.value.buckets.tools!.added, 2, '1950: tab and newline paths matched');
+    check(odd.text.includes('tab\\tfile') && odd.text.includes('new\\nfile') && !odd.text.includes('tab\tfile'), '1950: text escapes control characters');
+    check(odd.value.other.paths.some(f => f.path === 'outside/extra'), '1950: largest unmatched paths shown');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1951. Code balance works in a plain repository without a Library.
+async function section1951(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {readBalanceConfig} = await import('../../src/auditbalance.ts');
+  equal(readBalanceConfig(PROGRAM_ROOT).schema, 1, '1951: shipped repository setting loads');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const {childEnv} = await import('../gate-env.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c172-cli-'));
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', args, {cwd: root, env: repositoryNeutralEnv(childEnv()), encoding: 'utf8'});
+    if (r.status !== 0) throw Error(r.stderr || String(r.error)); return r.stdout.trim();
+  };
+  try {
+    git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'core.hooksPath', 'absent-hooks');
+    fs.mkdirSync(path.join(root, '.deskpost')); fs.writeFileSync(path.join(root, '.deskpost/code-balance.json'), JSON.stringify({schema: 1, buckets: {product: ['*.ts'], tests: [], tools: [], docs: []}}));
+    git('add', '.'); git('commit', '-qm', 'Base'); const base = git('rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(root, 'app.ts'), 'product\n'); git('add', '.'); git('commit', '-qm', 'Tip');
+    const ran = runCli(['audit', 'balance', base, 'HEAD', '--json'], {cwd: root});
+    equal(ran.exit, 0, '1951: plain repository exit: ' + ran.stderr);
+    if (ran.exit === 0) { const value = JSON.parse(ran.stdout); equal(value.verdict, 'BALANCED', '1951: reading'); equal(value.buckets.product.added, 1, '1951: counts product'); }
+    const bad = runCli(['audit', 'balance', '--c160-no-such-flag', '--json'], {cwd: root});
+    equal(bad.exit, 1, '1951: unknown flag exit'); const refusal = JSON.parse(bad.stdout);
+    equal(refusal.status, 'refused', '1951: structured refusal'); equal(refusal.verb, 'audit', '1951: refusal verb'); equal(refusal.action, 'balance', '1951: refusal action');
+    equal(git('status', '--porcelain'), '', '1951: command writes nothing');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1952. The tools inventory checks the index in both directions on either gate tier.
+async function section1952(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const {inventoryChecks} = await import('../../../tools/inventory.mts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c173-inventory-'));
+  const put = (file: string, text = '') => { fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text); };
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', args, {cwd: root, env: repositoryNeutralEnv(), encoding: 'utf8'});
+    if (r.status !== 0) throw Error(r.stderr || String(r.error));
+  };
+  const row = (file: string) => '| `' + file + '` | Fixture | by hand | Fixture | keep |\n';
+  const body = '| Path | What it does | Run by | Evidence | Decision |\n| --- | --- | --- | --- | --- |\n' + row('tools/INVENTORY.md') + row('tools/one.mts');
+  try {
+    git('init', '-q'); git('config', 'core.autocrlf', 'false');
+    put('tools/INVENTORY.md', body); put('tools/one.mts');
+    equal(inventoryChecks(root)[0]!.status, 'skip', '1952: an untracked inventory skips the gate');
+    git('add', '.');
+    for (const tier of ['commit', 'push'] as const) {
+      const result = inventoryChecks(root, tier)[0]!;
+      equal(result.status, 'pass', '1952: complete index passes ' + tier);
+      equal(result.tier, tier, '1952: outcome names its tier');
+      equal(result.check, 'tools.inventory', '1952: named gate check');
+    }
+    for (const file of ['tools/new.mts', 'tools/seat-rules-check/nested.mts']) {
+      put(file); git('add', file);
+      const commit = inventoryChecks(root, 'commit')[0]!, push = inventoryChecks(root, 'push')[0]!;
+      equal(commit.status, 'fail', '1952: staged unlisted file fails');
+      check(commit.detail.includes(file), '1952: names staged file ' + file);
+      equal(push.detail, commit.detail, '1952: both tiers report the same fault');
+      equal(push.status, commit.status, '1952: both tiers refuse');
+    }
+    const complete = body + row('tools/new.mts') + row('tools/seat-rules-check/nested.mts');
+    put('tools/INVENTORY.md', complete); equal(inventoryChecks(root)[0]!.status, 'pass', '1952: adding rows restores green');
+    put('tools/INVENTORY.md', complete + row('tools/missing.mts'));
+    const phantom = inventoryChecks(root)[0]!;
+    equal(phantom.status, 'fail', '1952: phantom refuses'); check(phantom.detail.includes('tools/missing.mts'), '1952: phantom named');
+    put('tools/INVENTORY.md', complete + row('tools/one.mts'));
+    const duplicate = inventoryChecks(root)[0]!;
+    equal(duplicate.status, 'fail', '1952: duplicate refuses'); check(duplicate.detail.includes('path listed twice: tools/one.mts'), '1952: duplicate named');
+    put('tools/INVENTORY.md', complete.replace(/\n/g, '\r\n'));
+    equal(inventoryChecks(root)[0]!.status, 'pass', '1952: carriage-return line endings accepted');
+    const gate = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/gate.ts'), 'utf8');
+    check(gate.includes("if (options.tier === 'commit' || options.tier === 'push')") && gate.includes('for (const outcome of inventoryChecks(root, options.tier)) say(outcome);'), '1952: gate calls the same function in the shared tier branch');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1953. The inventory command checks the real tracked tree.
+async function section1953(): Promise<void> {
+  const {spawnSync} = await import('node:child_process'), path = await import('node:path');
+  const {childEnv} = await import('../gate-env.ts'), {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const ran = spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/inventory.mts'), '--check'], {cwd: PROGRAM_ROOT, env: repositoryNeutralEnv(childEnv()), encoding: 'utf8', timeout: 60_000});
+  equal(ran.status, 0, '1953: real inventory command succeeds: ' + ran.stdout + ran.stderr);
+  check(ran.stdout.includes('is complete'), '1953: complete summary printed');
+}
+
+// --- 1900. A continuation checks section claims at its merge base, with working-tree fallback.
+async function section1900(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const {spawnSync} = await import('node:child_process'), {childEnv} = await import('../gate-env.ts');
+  const {repositoryNeutralEnv} = await import('../../src/gitenv.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c169-claims-'));
+  try {
+    const put = (file: string, contents: string) => {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), {recursive: true});
+      fs.writeFileSync(target, contents);
+    };
+    for (const file of ['tools/kickoff-check.mts', 'tools/owns.mts', 'tools/scan.ts', 'tools/section-select.mts', 'tools/check-map.json',
+      'kernel/test/gate-lock.ts', 'docs/areas.json']) put(file, fs.readFileSync(path.join(PROGRAM_ROOT, file), 'utf8'));
+    fs.cpSync(path.join(PROGRAM_ROOT, 'kernel/src'), path.join(root, 'kernel/src'), {recursive: true});
+    fs.mkdirSync(path.join(root, 'docs/adr'));
+    const env = {...childEnv(), HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, DESKPOST_GATE_DIR: path.join(root, 'absent')};
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', args, {cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', timeout: 30_000});
+      if (result.status !== 0) throw Error(result.stderr || String(result.error ?? result.status));
+      return result.stdout.trim();
+    };
+    git('init', '-q');
+    git('config', 'user.name', 'Fixture');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'core.hooksPath', 'absent-hooks');
+    const lane = 'kernel/test/lanes/guards-and-tooling.covers.json';
+    const claims = (sections: Record<string, string[]>) => JSON.stringify({schema: 1, about: 'Fixture', sections});
+    put('kernel/test/section-covers.json', claims({}));
+    put(lane, claims({'1800': []}));
+    git('add', '.');
+    git('commit', '-qm', 'Fixture base');
+    git('update-ref', 'refs/remotes/origin/master', git('rev-parse', 'HEAD'));
+    put(lane, claims({'1800': [], '1801': []}));
+    git('add', lane);
+    git('commit', '-qm', 'Fixture continuation');
+    const run = (section: number) => {
+      put('kickoff.md', '# c999 kickoff: fixture\nTRAIN: example\nWHY NOW:\n- **Lane:** guards-and-tooling\n' +
+        'OWNS:\n- New sections ' + section + '.\nOWNS PATHS:\n- `kernel/test/lanes/guards-and-tooling.ts`\n' +
+        '- `kernel/test/lanes/guards-and-tooling.covers.json`\nSTAY OUT OF: none\nROWS:\n1. Fixture\n' +
+        '   Done when: complete.\nCHARTER: example\nCLOSE: finish.\n**Stop.**\n');
+      const result = spawnSync(process.execPath, ['tools/kickoff-check.mts', 'kickoff.md'],
+        {cwd: root, env: repositoryNeutralEnv(env), encoding: 'utf8', timeout: 30_000});
+      if (result.error || result.status === null) throw Error(String(result.error ?? result.signal));
+      return result;
+    };
+    const continuation = run(1801);
+    check(!continuation.stdout.includes('section 1801 is taken at the base'), '1900: continuation does not claim its own new section at the base: ' + continuation.stdout);
+    check(!continuation.stderr.includes('section claims unreadable'), '1900: merge-base claim files are readable: ' + continuation.stderr);
+    const existing = run(1800);
+    check(existing.stdout.includes('section 1800 is taken at the base'), '1900: a section present at the base still warns: ' + existing.stdout);
+    git('update-ref', '-d', 'refs/remotes/origin/master');
+    const fallback = run(1801);
+    check(fallback.stdout.includes('section 1801 is taken at the base'), '1900: without origin/master the working-tree warning returns: ' + fallback.stdout);
+    check(!fallback.stderr.includes('section claims unreadable'), '1900: fallback claims remain readable: ' + fallback.stderr);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+
+
+// --- 1954. Legacy Notebook migration keeps every state and recovers at every journal boundary.
+async function section1954(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
+  const { createHash } = await import('node:crypto');
+  const { enterSeatClaim, exitSeatClaim } = await import('../../src/seatclaim.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-states-'));
+  // Captured from the legacy writers at 2c107daf on 2026-11-21. Only the Notebook, its ownership
+  // record, the retired seat and the reset quarantine are retained; no live Library is read.
+  const captured: Record<string, string> = {
+    ".claude/seats/_registry.json": "{\r\n    \"schema\":  1,\r\n    \"seats\":  [\r\n                  {\r\n                      \"seat\":  \"beta\",\r\n                      \"project\":  \"acceptance-second\",\r\n                      \"created_utc\":  \"2026-11-21T17:26:04.0773957Z\",\r\n                      \"seat_id\":  \"22222222-2222-2222-2222-222222222222\"\r\n                  },\r\n                  {\r\n                      \"seat\":  \"fixture\",\r\n                      \"project\":  \"acceptance\",\r\n                      \"created_utc\":  \"2026-11-21T17:26:02.7242559Z\",\r\n                      \"seat_id\":  \"11111111-1111-1111-1111-111111111111\"\r\n                  }\r\n              ]\r\n}\n",
+    ".library/workspace.json": "{\r\n    \"id\":  \"12135337-2901-415c-90cd-012019e618c8\",\r\n    \"program_version\":  \"1.7.0\",\r\n    \"collection_id\":  \"00000000-0000-0000-0000-000000000000\",\r\n    \"backend\":  \"local\",\r\n    \"writable\":  false,\r\n    \"created\":  \"2026-11-21T09:26:01.4517822-08:00\"\r\n}\n",
+    "internal/notebook-reset-quarantine/beta-20261121-172607/beta-scratch/note.md": "# Note\n\nWritten into beta-scratch by the legacy fixture.\n",
+    "internal/notebook-reset-quarantine/beta-20261121-172607/beta-scratch/_index.md": "# Beta scratch\n\n- [Note](note.md)\n",
+    "internal/notebook-reset-quarantine/beta-20261121-172607/loose-idea.md": "# A loose idea\n\nWritten straight into notebook/, under no topic.\n",
+    "internal/notebook-reset-quarantine/beta-20261121-172607/reset-journal.json": "{\r\n    \"operation\":  \"Reset local notebook\",\r\n    \"seat\":  \"beta\",\r\n    \"whole_tree\":  false,\r\n    \"all_idle_seats\":  false,\r\n    \"clear_desk\":  false,\r\n    \"plan_id\":  \"reset-local-notebook-276520d3c7bd1cc2df6af0e66aef0f026358ef9923c94e607d5f4b0a927c4255\",\r\n    \"quarantined_utc\":  \"2026-11-21T17:26:07.3007723Z\",\r\n    \"moves\":  [\r\n                  {\r\n                      \"topic\":  \"beta-scratch\",\r\n                      \"moved\":  true,\r\n                      \"source\":  \"notebook/beta-scratch\",\r\n                      \"destination\":  \"D:\\\\dev\\\\scratch\\\\deskpost\\\\c174\\\\legacy-capture\\\\workspace\\\\internal\\\\notebook-reset-quarantine\\\\beta-20261121-172607\\\\beta-scratch\"\r\n                  }\r\n              ],\r\n    \"targets\":  [\r\n                    {\r\n                        \"topic\":  \"beta-scratch\",\r\n                        \"seat\":  \"beta\",\r\n                        \"seat_id\":  \"22222222-2222-2222-2222-222222222222\"\r\n                    }\r\n                ],\r\n    \"loose_files\":  [\r\n                        \"loose-idea.md\"\r\n                    ]\r\n}\n",
+    "internal/notebook-topic-owners.json": "{\r\n    \"schema\":  1,\r\n    \"topics\":  [\r\n                   {\r\n                       \"topic\":  \"acceptance\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:03.3197454Z\",\r\n                       \"seat\":  \"fixture\",\r\n                       \"project\":  \"acceptance\",\r\n                       \"seat_id\":  \"11111111-1111-1111-1111-111111111111\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"beta\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:07.3934312Z\",\r\n                       \"seat\":  \"beta\",\r\n                       \"project\":  \"acceptance-second\",\r\n                       \"seat_id\":  \"22222222-2222-2222-2222-222222222222\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"beta-scratch\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:04.1540596Z\",\r\n                       \"seat\":  \"beta\",\r\n                       \"project\":  \"acceptance-second\",\r\n                       \"seat_id\":  \"22222222-2222-2222-2222-222222222222\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"gone-topic\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:10.0048077Z\",\r\n                       \"seat\":  \"fixture\",\r\n                       \"project\":  \"acceptance\",\r\n                       \"seat_id\":  \"11111111-1111-1111-1111-111111111111\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"house-style\",\r\n                       \"scope\":  \"shared\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:09.7457946Z\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"old-notes\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:07.4161550Z\",\r\n                       \"seat\":  \"gamma\",\r\n                       \"project\":  \"acceptance-third\",\r\n                       \"seat_id\":  \"33333333-3333-3333-3333-333333333333\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"orphan-notes\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:09.7125244Z\",\r\n                       \"seat\":  \"delta\",\r\n                       \"project\":  \"acceptance-fourth\",\r\n                       \"seat_id\":  \"44444444-4444-4444-4444-444444444444\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"portability\",\r\n                       \"scope\":  \"owned\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:03.3622564Z\",\r\n                       \"seat\":  \"fixture\",\r\n                       \"project\":  \"acceptance\",\r\n                       \"seat_id\":  \"11111111-1111-1111-1111-111111111111\"\r\n                   },\r\n                   {\r\n                       \"topic\":  \"reference-copy\",\r\n                       \"scope\":  \"excluded\",\r\n                       \"recorded_utc\":  \"2026-11-21T17:26:09.9851623Z\"\r\n                   }\r\n               ]\r\n}\n",
+    "internal/seat-archive/gamma-20261121-172609/.open-books": "",
+    "internal/seat-archive/gamma-20261121-172609/.open-projects": "",
+    "internal/seat-archive/gamma-20261121-172609/seat.json": "{\r\n    \"seat\":  \"gamma\",\r\n    \"seat_id\":  \"33333333-3333-3333-3333-333333333333\",\r\n    \"project\":  \"acceptance-third\",\r\n    \"retired_utc\":  \"2026-11-21T17:26:09.5677876Z\",\r\n    \"open_books\":  [\r\n\r\n                   ],\r\n    \"open_projects\":  [\r\n\r\n                      ]\r\n}\n",
+    "notebook/acceptance/oracle-notes.md": "# Oracle notes\n\n## Key Takeaways\n\n- A fixture proves the code works when given the input.\n",
+    "notebook/acceptance/_index.md": "# Acceptance\n\n- [Oracle notes](oracle-notes.md)\n",
+    "notebook/beta/note.md": "# Note\n\nWritten into beta by the legacy fixture.\n",
+    "notebook/beta/_index.md": "# Named like its seat\n\n- [Note](note.md)\n",
+    "notebook/drafts/note.md": "# Note\n\nWritten into drafts by the legacy fixture.\n",
+    "notebook/drafts/_index.md": "# Drafts\n\n- [Note](note.md)\n",
+    "notebook/house-style/note.md": "# Note\n\nWritten into house-style by the legacy fixture.\n",
+    "notebook/house-style/_index.md": "# House style\n\n- [Note](note.md)\n",
+    "notebook/old-notes/note.md": "# Note\n\nWritten into old-notes by the legacy fixture.\n",
+    "notebook/old-notes/_index.md": "# Old notes\n\n- [Note](note.md)\n",
+    "notebook/orphan-notes/note.md": "# Note\n\nWritten into orphan-notes by the legacy fixture.\n",
+    "notebook/orphan-notes/_index.md": "# Orphan notes\n\n- [Note](note.md)\n",
+    "notebook/portability/line-endings.md": "# Line endings\n\nMeasured with a byte counter, never with a line grep.\n",
+    "notebook/portability/_index.md": "# Portability\n\n- [Line endings](line-endings.md)\n",
+    "notebook/reference-copy/note.md": "# Note\n\nWritten into reference-copy by the legacy fixture.\n",
+    "notebook/reference-copy/_index.md": "# Reference copy\n\n- [Note](note.md)\n",
+    "notebook/scratch.md": "# Scratch\n\nA loose file written after the reset.\n",
+    "notebook/_master-index.md": "# Notebook Index\n\n- [[acceptance/_index|Acceptance]]\n- [[beta/_index|Named like its seat]]\n- [[drafts/_index|Drafts]]\n- [[house-style/_index|House style]]\n- [[old-notes/_index|Old notes]]\n- [[orphan-notes/_index|Orphan notes]]\n- [[portability/_index|Portability]]\n- [[reference-copy/_index|Reference copy]]\n"
+  };
+  const choices = ['--assign', 'drafts=fixture,orphan-notes=beta,scratch.md=fixture', '--set-aside', 'house-style,reference-copy'];
+  let copies = 0;
+  const fresh = () => {
+    const ws = path.join(root, 'copy-' + copies++);
+    for (const [name, text] of Object.entries(captured)) {
+      const file = path.join(ws, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text);
+    }
+    for (const seat of ['fixture', 'beta']) fs.mkdirSync(path.join(ws, '.claude/seats', seat), { recursive: true });
+    return ws;
+  };
+  const call = (ws: string, args: string[], env: Record<string, string> = {}) => runCli([...args, '--workspace', ws, '--json'], {
+    cwd: root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', LIBRARY_WORKSPACES: path.join(root, 'registry'), ...env },
+  });
+  const callAsync = (ws: string, args: string[]) => runCliAsync([...args, '--workspace', ws, '--json'], {
+    cwd: root, env: { LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', CLAUDE_PID: '', LIBRARY_WORKSPACES: path.join(root, 'registry') },
+  });
+  const json = (r: ReturnType<typeof call>) => {
+    equal(r.exit, 0, '1954: command succeeds: ' + r.stderr);
+    if (r.exit !== 0) throw Error('1954: command refused: ' + r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const plan = (ws: string, args = choices) => json(call(ws, ['migrate', ...args, '--preflight']));
+  const tree = (ws: string, normal = false) => {
+    const files: Record<string, string> = {};
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name), relative = path.relative(ws, file).replaceAll(path.sep, '/');
+        if (relative.startsWith('internal/book-locks/')) continue;
+        if (entry.isDirectory()) walk(file);
+        else {
+          const name = normal ? relative.replace(/migration-\d{8}-\d{6}/g, 'migration-<stamp>') : relative;
+          files[name] = normal && (/^internal\/notebook-migration\/journal.*\.json$/.test(name) || name === 'internal/notebook-layout.json' || name === 'internal/notebook-reset-quarantine/migration-<stamp>/reset-journal.json')
+            ? 'present' : createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+        }
+      }
+    };
+    walk(ws); return Object.fromEntries(Object.entries(files).sort(([a], [b]) => a.localeCompare(b)));
+  };
+  try {
+    const ws = fresh(), before = tree(ws), bare = plan(ws, []);
+    same([...new Set(bare.items.map((i: { state: string }) => i.state))].sort(),
+      ['owned', 'owned-retired', 'owned-unaccounted', 'shared', 'excluded', 'unmapped', 'loose', 'stale-row', 'record', 'derived', 'quarantine'].sort(), '1954: every legacy state');
+    const byName = Object.fromEntries(bare.items.map((i: { item: string }) => [i.item, i]));
+    check(byName['old-notes'].legacy_owner === 'gamma' && byName['old-notes'].disposition === 'set-aside', '1954: retired ownership is set aside');
+    check(byName.beta.disposition === 'seat' && byName.beta.seat === 'beta', '1954: topic named like a seat');
+    equal(byName['beta-scratch'].state, 'stale-row', '1954: reset left a stale ownership row');
+    equal(bare.items.filter((i: { state: string; disposition: string }) => i.state === 'quarantine' && i.disposition === 'keep').length, 1, '1954: old quarantine kept');
+    check(bare.activation === 'refused' && bare.plan_id === '', '1954: undecided migration has no approval plan');
+    same(bare.unaccounted.sort(), ['drafts', 'house-style', 'orphan-notes', 'reference-copy', 'scratch.md'], '1954: all undecided items named');
+    for (const extra of [[], ['--plan-id', 'migrate-notebook-0000']]) {
+      const r = call(ws, ['migrate', ...choices, ...extra]);
+      check(r.exit !== 0 && r.stderr.includes('nothing was moved'), '1954: absent or wrong plan refuses');
+    }
+    check(plan(ws, ['--assign', 'draft=fixture']).refusals.some((s: string) => s.includes("'draft' names no topic")), '1954: typo refused');
+    same(tree(ws), before, '1954: refusals move nothing');
+    for (const args of [['reset', '--seat', 'fixture', '--preflight'], ['notebook', 'render', '--seat', 'fixture']]) {
+      const r = call(ws, args); check(r.exit !== 0 && r.stderr.includes('migrate --preflight'), '1954: legacy writer names migration');
+    }
+    const own = call(ws, ['notebook', 'own', 'acceptance']);
+    check(own.exit !== 0 && own.stderr.includes('ADR-0029'), '1954: ownership writer retired');
+    const ready = plan(ws);
+    check(ready.activation === 'ready' && ready.plan_id, '1954: complete dispositions issue a plan');
+    equal(json(call(ws, ['migrate', ...choices, '--plan-id', ready.plan_id])).status, 'complete', '1954: reference completes');
+    const reference = tree(ws, true), raw = tree(ws);
+    for (const name of ['notebook/fixture/_master-index.md', 'notebook/fixture/acceptance/_index.md', 'notebook/fixture/portability/_index.md',
+      'notebook/fixture/drafts/_index.md', 'notebook/fixture/scratch.md', 'notebook/beta/_master-index.md', 'notebook/beta/beta/_index.md',
+      'notebook/beta/orphan-notes/_index.md', 'internal/notebook-migration/legacy/notebook-topic-owners.json', 'internal/notebook-migration/legacy/_master-index.md',
+      'internal/notebook-layout.json', 'internal/notebook-migration/journal.json',
+      ...['old-notes', 'house-style', 'reference-copy'].map(t => 'internal/notebook-reset-quarantine/migration-<stamp>/' + t + '/_index.md')])
+      check(name in reference, '1954: reference destination ' + name);
+    for (const name of ['internal/notebook-topic-owners.json', 'notebook/_master-index.md', 'notebook/acceptance/_index.md', 'notebook/scratch.md'])
+      check(!(name in reference), '1954: old location retired ' + name);
+    check(!fs.existsSync(path.join(ws, 'internal/notebook-migration/staging')), '1954: staging removed');
+    for (const [name, hash] of Object.entries(before).filter(([n]) => n.startsWith('notebook/') || n.startsWith('internal/notebook-reset-quarantine/') || n === 'internal/notebook-topic-owners.json'))
+      check(Object.values(raw).includes(hash), '1954: preserves bytes ' + name);
+    const index = fs.readFileSync(path.join(ws, 'notebook/beta/_master-index.md'), 'utf8');
+    check(index.includes('[[beta/_index|') && index.includes('[[orphan-notes/_index|'), '1954: seat index lists both topics');
+    const quarantine = fs.readdirSync(path.join(ws, 'internal/notebook-reset-quarantine')).find(n => n.startsWith('migration-'))!;
+    const journal = JSON.parse(fs.readFileSync(path.join(ws, 'internal/notebook-reset-quarantine', quarantine, 'reset-journal.json'), 'utf8'));
+    const retired = journal.targets.filter((i: { topic: string }) => i.topic === 'old-notes');
+    check(retired.length === 1 && retired[0].seat === 'gamma' && retired[0].seat_id === '33333333-3333-3333-3333-333333333333', '1954: quarantine keeps retired identity');
+    equal(plan(ws, []).status, 'already-seat-owned', '1954: repeat migration is a no-op');
+    const held = enterSeatClaim(path.join(ws, '.claude'), 'fixture');
+    try {
+      const env = { LIBRARY_SEAT: 'fixture', LIBRARY_SEAT_CLAIM: held.token };
+      const reset = json(call(ws, ['reset', '--preflight'], env));
+      same(reset.topics_to_quarantine, ['acceptance', 'drafts', 'portability'], '1954: reset takes only own topics');
+      same(reset.loose_files_to_quarantine, ['scratch.md'], '1954: reset takes own loose page');
+      json(call(ws, ['reset', '--plan-id', reset.plan_id], env));
+      check(fs.existsSync(path.join(ws, 'notebook/beta/beta/_index.md')), '1954: reset leaves other seat');
+      const args = ['reset', 'restore', '--quarantine', quarantine, '--topic', 'house-style', '--adopt'];
+      const restore = json(call(ws, [...args, '--preflight'], env));
+      json(call(ws, [...args, '--plan-id', restore.plan_id], env));
+      check(fs.existsSync(path.join(ws, 'notebook/fixture/house-style/_index.md')), '1954: set-aside adopts into own Notebook');
+      const retiredOwn = call(ws, ['notebook', 'own', 'house-style'], env);
+      check(retiredOwn.exit !== 0 && retiredOwn.stderr.includes('ADR-0029') && !fs.existsSync(path.join(ws, 'internal/notebook-topic-owners.json')), '1954: no writer recreates ownership');
+    } finally { exitSeatClaim(held); }
+    const migration = JSON.parse(fs.readFileSync(path.join(ws, 'internal/notebook-migration/journal.json'), 'utf8'));
+    const points = ['journal-created', ...migration.steps.flatMap((s: { id: string }) => [s.id, s.id + ':recorded'])];
+    check(points.length >= 20, '1954: interruption set reaches every journal step');
+    const pending = points.flatMap(point => ['resume', 'rollback'].map(ending => ({ point, ending })));
+    // Every recovery owns its entire workspace. Four workers bound process pressure while keeping
+    // all journal boundaries in the commit proof rather than sampling interruption points.
+    await Promise.all(Array.from({ length: 4 }, async () => { while (pending.length) {
+      const { point, ending } = pending.shift()!;
+      const copy = fresh(), p = json(await callAsync(copy, ['migrate', ...choices, '--preflight']));
+      const fault = await callAsync(copy, ['migrate', ...choices, '--plan-id', p.plan_id, '--fault-after', point]);
+      check(fault.exit !== 0 && fault.stderr.includes('FAULT INJECTED'), '1954: fault reached ' + point);
+      const reset = await callAsync(copy, ['reset', '--seat', 'fixture', '--preflight']);
+      check(reset.exit !== 0 && reset.stderr.includes('migrate --resume'), '1954: interrupted reset refuses ' + point);
+      equal(json(await callAsync(copy, ['migrate', '--preflight'])).status, 'interrupted', '1954: preflight reports interrupted ' + point);
+      equal(json(await callAsync(copy, ['migrate', '--' + ending])).status, ending === 'resume' ? 'complete' : 'rolled-back', '1954: recovery ' + point);
+      if (ending === 'resume') same(tree(copy, true), reference, '1954: resume reaches reference ' + point);
+      else {
+        const back = tree(copy), history = Object.keys(back).filter(n => n.startsWith('internal/notebook-migration/journal-rolled-back-'));
+        equal(history.length, 1, '1954: rollback keeps one journal ' + point);
+        for (const name of history) delete back[name];
+        same(back, before, '1954: rollback restores every byte ' + point);
+      }
+    } }));
+    console.log('1954: all eleven legacy states, seven case groups, ' + points.length + ' interruption points resumed and rolled back');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1980. No self-test section starts PowerShell outside its allowed list (kickoffs/s225 row 3; PLAN-powershell-retirement.md
+// U2 items 4 and 6). Every code file under kernel/test/ is read for a PowerShell launch: a spawn, spawnSync, execFile,
+// execFileSync or boundedCommand whose program is powershell or pwsh, by name or by a WindowsPowerShell path, written in
+// the call or in the variable the call names; such a call whose arguments hold PowerShell's -File; and any -EncodedCommand.
+// Each launch must sit in a section or helper the list below names, with the unit that removes it, and an entry with no
+// launch left fails too, so each owner removes its own entry. Fixture files prove each spelling is caught and that a
+// mention which starts nothing (a hook registration, a PATH filter, a message, a comment) is not.
+async function section1980(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  // The spellings are assembled, so this section's own text holds none of them.
+  const PS = ['power', 'shell'].join(''), PW = ['pw', 'sh'].join(''), WPS = ['Windows', 'Power', 'Shell'].join('');
+  const ENC = ['-Encoded', 'Command'].join(''), FILE = ['-Fi', 'le'].join(''), SPAWN = ['spawn', 'Sync'].join('');
+  type Allowed = {file: string; owner: string; who: string};
+  const allowed: Allowed[] = [
+    {file: 'run-parallel.ts', owner: PS, who: "U2 item 3: the runner's process reads, once a release carries c176's process list"},
+    {file: 'selftest.ts', owner: 's39', who: "c175's follow-up (pull request 107 changes section 39)"},
+    {file: 'selftest.ts', owner: 's132', who: 'stays: it runs install.ps1, the plan\'s one exception'},
+    {file: 'selftest.ts', owner: 's137', who: 'stays: it runs install.ps1, the plan\'s one exception'},
+    {file: 'selftest.ts', owner: 's231', who: "s224's follow-up (pull request 108)"},
+    {file: 'selftest.ts', owner: 's625', who: "s224's follow-up: its check moves to tools/gate-checks.ts in pull request 108"},
+    {file: 'selftest.ts', owner: 's754', who: "s224's follow-up for the check (pull request 108); U4 for Initialize-CodexLibrary.ps1"},
+    {file: 'lanes/notebook-and-install.ts', owner: 's1612', who: 'U4 (the notebook-and-install lane is c175\'s file)'},
+  ];
+  const program = new RegExp(`['"\`](?:[^'"\`\\n]*[\\\\/])?(?:${PS}|${PW})(?:\\.exe)?['"\`]|${WPS}`, 'i');
+  const fileFlag = new RegExp(`['"\`]${FILE}['"\`]`), encoded = new RegExp(`['"\`]${ENC}['"\`]`, 'gi');
+  const calls = /\b(?:spawn|spawnSync|execFile|execFileSync|boundedCommand)\s*\(/g;
+  const markers = [/^(?:export )?(?:async )?function\s+section(\d+)\b/, /^if \(selected\((\d+)\)/, /^\/\/ --- (\d+)[.:]/, /^\/\/ SECTION (\d+)\./, /^(?:export )?(?:async )?function\s+(\w+)/];
+  // The text inside the parentheses that open at `open`, skipping string contents.
+  const inside = (text: string, open: number): string => {
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+      const ch = text[i]!;
+      if (ch === "'" || ch === '"' || ch === '`') {
+        for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) return text.slice(open + 1, i);
+    }
+    return text.slice(open + 1);
+  };
+  const firstArgument = (args: string): string => {
+    let depth = 0;
+    for (let i = 0; i < args.length; i++) {
+      const ch = args[i]!;
+      if (ch === "'" || ch === '"' || ch === '`') {
+        for (i++; i < args.length && args[i] !== ch; i++) if (args[i] === '\\') i++;
+        continue;
+      }
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) depth--;
+      else if (ch === ',' && depth === 0) return args.slice(0, i);
+    }
+    return args;
+  };
+  // A declaration's value, from just after its `=` to the `;` that ends it outside brackets and strings, or to the end of
+  // a line where every bracket is closed, the value does not end in an operator, and the next line starts a statement.
+  const statementFrom = (text: string, from: number, end: number): string => {
+    let depth = 0;
+    for (let i = from; i < end; i++) {
+      const ch = text[i]!;
+      if (ch === "'" || ch === '"' || ch === '`') {
+        for (i++; i < end && text[i] !== ch; i++) if (text[i] === '\\') i++;
+        continue;
+      }
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) { if (depth === 0) return text.slice(from, i); depth--; }
+      else if (ch === ';' && depth === 0) return text.slice(from, i);
+      else if (ch === '\n' && depth === 0) {
+        const soFar = text.slice(from, i);
+        if (soFar.trim() && !/[=+\-*/%,?:|&(]\s*$/.test(soFar) && /^\s*(?:(?:const|let|var|if|for|while|do|return|await|throw|try|switch|function|class)\b|[A-Za-z_$][\w$.]*\s*\()/.test(text.slice(i + 1, end))) return soFar;
+      }
+    }
+    return text.slice(from, end);
+  };
+  const scan = (root: string, list: Allowed[]) => {
+    const files: string[] = [];
+    const walk = (folder: string) => {
+      for (const entry of fs.readdirSync(folder, {withFileTypes: true})) {
+        if (entry.name === 'node_modules') continue;
+        const full = path.join(folder, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(?:ts|mts|js|mjs|cjs)$/.test(entry.name)) files.push(full);
+      }
+    };
+    walk(root);
+    const launches: {file: string; line: number; owner: string; why: string}[] = [];
+    for (const full of files.sort()) {
+      const file = path.relative(root, full).split(path.sep).join('/');
+      const text = fs.readFileSync(full, 'utf8').replace(/\r\n/g, '\n');
+      const lines = text.split('\n');
+      const starts: number[] = [];
+      for (let i = 0, at = 0; i < lines.length; at += lines[i]!.length + 1, i++) starts.push(at);
+      const lineOf = (index: number) => { let low = 0, high = starts.length - 1; while (low < high) { const mid = (low + high + 1) >> 1; if (starts[mid]! <= index) low = mid; else high = mid - 1; } return low; };
+      const comment = (line: number) => /^\s*(?:\/\/|\*|\/\*)/.test(lines[line]!);
+      const owner = (line: number) => {
+        for (let i = line; i >= 0; i--) for (const marker of markers) { const found = marker.exec(lines[i]!); if (found) return /^\d+$/.test(found[1]!) ? 's' + found[1] : found[1]!; }
+        return '(top)';
+      };
+      const add = (index: number, why: string) => {
+        const line = lineOf(index);
+        if (comment(line) || launches.some(seen => seen.file === file && seen.line === line + 1)) return;
+        launches.push({file, line: line + 1, owner: owner(line), why});
+      };
+      for (const call of text.matchAll(calls)) {
+        const args = inside(text, call.index! + call[0].length - 1), first = firstArgument(args).trim();
+        if (program.test(first)) { add(call.index!, 'starts ' + first.replace(/\s+/g, ' ').slice(0, 80)); continue; }
+        if (fileFlag.test(args)) { add(call.index!, `passes ${FILE} to ${first.slice(0, 40)}`); continue; }
+        const name = /^([A-Za-z_$][\w$]*)!?$/.exec(first)?.[1];
+        if (!name) continue;
+        const line = lineOf(call.index!);
+        for (let i = line; i >= Math.max(0, line - 80); i--) {
+          const declared = new RegExp(`(?:const|let|var)\\s+${name}\\s*=`).exec(lines[i]!);
+          const listed = new RegExp(`for\\s*\\(\\s*(?:const|let)\\s+${name}\\s+of\\s+([^)]*)`).exec(lines[i]!);
+          if (!declared && !listed) continue;
+          // A declaration is read whole, across lines (kickoffs/s225-r2), so a path built over several lines is seen.
+          const value = declared ? statementFrom(text, starts[i]! + declared.index + declared[0].length, call.index!) : listed![1]!;
+          if (program.test(value)) add(call.index!, `starts ${name}, which holds a PowerShell path (line ${i + 1})`);
+          break;
+        }
+      }
+      for (const found of text.matchAll(encoded)) add(found.index!, `passes ${ENC}`);
+    }
+    const unlisted = launches.filter(launch => !list.some(entry => entry.file === launch.file && entry.owner === launch.owner));
+    const stale = list.filter(entry => !launches.some(launch => launch.file === entry.file && launch.owner === entry.owner));
+    return {files: files.length, launches, unlisted, stale};
+  };
+  const shown = (rows: {file: string; line: number; owner: string; why: string}[]) => rows.map(row => `${row.file}:${row.line} (${row.owner}) ${row.why}`).join('; ');
+
+  // FIXTURES: each spelling once in a file of its own, a data-only file, and an allowed launch.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-launch-audit-'));
+  try {
+    const put = (name: string, body: string) => { fs.mkdirSync(path.dirname(path.join(root, name)), {recursive: true}); fs.writeFileSync(path.join(root, name), body); };
+    const caught = {
+      'by-name.ts': `async function section1() {\n  const ran = ${SPAWN}('${PS}.exe', ['-NoProfile', '-Command', 'exit 0']);\n}\n`,
+      'lanes/by-path.ts': `async function section2() {\n  const shell = path.join(root, 'System32', '${WPS}', 'v1.0', '${PS}.exe');\n  const ran = ${SPAWN}(\n    shell,\n    ['-NoProfile'],\n  );\n}\n`,
+      'by-list.ts': `async function section3() {\n  for (const shell of ['${PW}', '${PS}.exe']) {\n    const ran = spawn(shell, ['-NoProfile']);\n  }\n}\n`,
+      'encoded.ts': `async function section4() {\n  const ran = run(exe, ['${ENC}', text]);\n}\n`,
+      'file-flag.ts': `async function section5() {\n  const ran = execFileSync(exe, ['-NoProfile', '${FILE}', 'tools/Check.ps1']);\n}\n`,
+      'by-binding-lines.ts': `async function section9() {\nconst shell = path.join(\n  root, '${PW}.exe'\n);\n${SPAWN}(shell, ['-Command', 'exit 0']);\n}\n`,
+    };
+    // The same binding over several lines, naming Node, starts no PowerShell.
+    put('node-binding-lines.ts', `async function section10() {\nconst shell = path.join(\n  root, 'node.exe'\n);\n${SPAWN}(shell, ['-Command', 'exit 0']);\n}\n`);
+    for (const [name, body] of Object.entries(caught)) put(name, body);
+    put('data.ts', [
+      'async function section6() {',
+      `  const block = [{ hooks: [{ type: 'command', command: '${PS}.exe', args: ['-NoProfile', '${FILE}', 'C:/p/Hook.ps1'] }] }];`,
+      `  const entries = paths.filter((entry) => !fs.existsSync(path.join(entry, '${PS}.exe')));`,
+      `  const where = ${SPAWN}('where.exe', ['${PS}.exe', '${PW}.exe']);`,
+      `  check(row.detail.includes('${PS}.exe is missing'), 'named');`,
+      `  // ${SPAWN}('${PS}.exe', ['${ENC}', x]) in a comment starts nothing`,
+      '}',
+      '',
+    ].join('\n'));
+    put('allowed.ts', `// --- 7. An allowed launch.\nif (selected(7)) {\n  const ran = ${SPAWN}('${PS}.exe', ['-NoProfile']);\n}\n`);
+    const fixtureList: Allowed[] = [{file: 'allowed.ts', owner: 's7', who: 'the fixture'}, {file: 'gone.ts', owner: 's8', who: 'a launch already removed'}];
+    const fixture = scan(root, fixtureList);
+    same(fixture.unlisted.map(row => row.file).sort(), Object.keys(caught).sort(), '1980: each spelling is caught once, and nothing in the data file or the allowed launch: ' + shown(fixture.unlisted));
+    same(fixture.unlisted.map(row => `${row.file}:${row.owner}`).sort(), ['by-binding-lines.ts:s9', 'by-list.ts:s3', 'by-name.ts:s1', 'encoded.ts:s4', 'file-flag.ts:s5', 'lanes/by-path.ts:s2'], '1980: each launch is named by its section');
+    same(fixture.launches.filter(row => row.file === 'node-binding-lines.ts').map(row => row.owner), [], '1980: a binding over several lines that names Node is taken for a PowerShell launch');
+    equal(fixture.unlisted.find(row => row.file === 'lanes/by-path.ts')?.line, 3, '1980: a call over several lines is named at its first line');
+    same(fixture.launches.filter(row => row.file === 'allowed.ts').map(row => row.owner), ['s7'], '1980: the allowed launch is seen and passes');
+    same(fixture.stale.map(entry => entry.file), ['gone.ts'], '1980: an entry with no launch left is reported');
+
+    // THIS CHECKOUT: no launch outside the list, and no entry without one.
+    const real = scan(path.join(PROGRAM_ROOT, 'kernel', 'test'), allowed);
+    check(real.files > 10, `1980: kernel/test/ held only ${real.files} code files`);
+    check(real.unlisted.length === 0, `1980: ${real.unlisted.length} PowerShell launch(es) in kernel/test/ outside the allowed list: ${shown(real.unlisted)}. Rewrite the section so it judges the kernel without PowerShell (kickoffs/s225), or add an entry naming the unit that removes it.`);
+    check(real.stale.length === 0, `1980: allowed entries with no launch left; remove them: ${real.stale.map(entry => `${entry.file} ${entry.owner} (${entry.who})`).join('; ')}`);
+    console.log(`1980: ${real.files} files read; ${real.launches.length} launches, ${real.unlisted.length} outside the list: ${shown(real.launches)}`);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
 }

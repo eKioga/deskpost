@@ -834,6 +834,20 @@ function runPostboxChild(workspace: string, args: string[]): { ok: boolean; valu
   return { ok: ran.status === 0 && value !== null, value, said };
 }
 
+/** Check for new deliveries before a seat reads, keeping the cached time if the server cannot be reached. */
+export function checkBeforeReading(workspace: string): { checked: boolean; filed: number; error: string | null; last_check: string | null } | null {
+  const state = readState(workspace);
+  if (state === null || !UUID.test(String(state['project_id'] ?? ''))) return null;
+  const { ok, value, said } = runPostboxChild(workspace, ['check']);
+  const checked = ok && value?.['reachable'] !== false;
+  const filed = value?.['filed'];
+  const error = !ok ? said.split(/\r?\n/, 1)[0] || 'Postbox check failed'
+    : checked ? null : String(value?.['detail'] ?? 'server unreachable').split(/\r?\n/, 1)[0]!;
+  const lastCheck = checked ? value?.['last_check'] : state['last_check'];
+  return { checked, filed: checked && Array.isArray(filed) ? filed.length : 0, error,
+    last_check: typeof lastCheck === 'string' ? lastCheck : null };
+}
+
 /** Where a letter to another Library goes, as capture records it. */
 export interface RemoteAddress {
   from_library_id: string;

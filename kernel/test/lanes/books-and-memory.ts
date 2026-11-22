@@ -711,7 +711,7 @@ async function section1232(): Promise<void> {
     // One actual repair output pins the helper's use; every quote character then crosses the real parser too.
     const content = f.put('content\u2019;Write-Output marker;#.md', '# Page\n');
     const failed = f.gated(['shared', 'add-page', 'demo', 'new-page', '--content-path', content]);
-    const repair = /Repair: (deskpost shared [^\r\n]* --preflight)/.exec(failed.stdout + failed.stderr)?.[1];
+    const repair = /Repair: (deskpost shared [^\r\n]* --preflight)/.exec(failed.stderr)?.[1];
     check(!!repair, `1232: actual repair printed: ${failed.stderr}`);
     const cases = [{ line: next, path: out }, ...(repair ? [{ line: repair, path: content }] : [])];
     const shared = await import('../../src/sharedwrite.ts');
@@ -722,31 +722,24 @@ async function section1232(): Promise<void> {
         cases.push({ line: `deskpost shared add-page demo page --content-path ${shared.quoteSharedCommandPath(value, 'win32')} --preflight`, path: value });
       }
     }
-    const input = f.put('parser-input.json', JSON.stringify(cases));
-    // Data travels in files. ParseInput never executes any of the printed commands.
-    const script = f.put('parser.txt', [
-      '$ErrorActionPreference = "Stop"',
-      '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      '$cases = Get-Content -LiteralPath $args[0] -Raw -Encoding UTF8 | ConvertFrom-Json',
-      '$results = @(foreach ($case in $cases) {',
-      '  $tokens = $null; $errors = $null',
-      '  $tree = [System.Management.Automation.Language.Parser]::ParseInput($case.line, [ref]$tokens, [ref]$errors)',
-      '  $statements = @($tree.EndBlock.Statements)',
-      '  $elements = @($statements[0].PipelineElements[0].CommandElements)',
-      '  $index = 0; while ($index -lt $elements.Count -and $elements[$index].Extent.Text -ne "--content-path") { $index++ }',
-      '  $value = if ($index + 1 -lt $elements.Count) { $elements[$index + 1].Value } else { $null }',
-      '  @{ statements = $statements.Count; errors = @($errors).Count; value = $value; expected = $case.path }',
-      '})',
-      'ConvertTo-Json -InputObject $results -Compress',
-    ].join('\n'));
-    const parser = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '& ([scriptblock]::Create([IO.File]::ReadAllText($env:DESKPOST_QUOTE_SCRIPT))) $env:DESKPOST_QUOTE_INPUT'], { encoding: 'utf8', timeout: 10000, windowsHide: true, env: { ...process.env, DESKPOST_QUOTE_SCRIPT: script, DESKPOST_QUOTE_INPUT: input } });
-    equal(parser.status, 0, `1232: PowerShell parser ran: ${parser.stderr}`);
-    const results = JSON.parse(parser.stdout || '[]') as { statements: number; errors: number; value: string; expected: string }[];
-    equal(results.length, cases.length, '1232: every printed command parsed');
-    for (const result of results) {
-      equal(result.statements, 1, `1232: one statement for ${result.expected}`);
-      equal(result.errors, 0, `1232: no parser errors for ${result.expected}`);
-      equal(result.value, result.expected, '1232: one literal path argument');
+    // The real PowerShell parser's answer for each printed command, captured once at d6c23e53 (kickoffs/s225, standing
+    // answer 4), with the fixture folder written <root>: every one parsed with no errors as one statement, and the
+    // value after --content-path is the path, whole. The printed commands must stay exactly those forms.
+    const parsed: { line: string; value: string }[] = [
+      { line: "deskpost shared replace-page demo page --content-path '<root>\\space $dollar `tick\\page.md' --preflight", value: "<root>\\space $dollar `tick\\page.md" },
+      { line: "deskpost shared add-page demo new-page --content-path '<root>\\content\u2019\u2019;Write-Output marker;#.md' --preflight", value: "<root>\\content\u2019;Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path'';Write-Output marker;#.md' --preflight", value: "<root>\\path';Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path\u2018\u2018;Write-Output marker;#.md' --preflight", value: "<root>\\path\u2018;Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path\u2019\u2019;Write-Output marker;#.md' --preflight", value: "<root>\\path\u2019;Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path\u201a\u201a;Write-Output marker;#.md' --preflight", value: "<root>\\path\u201a;Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path\u201b\u201b;Write-Output marker;#.md' --preflight", value: "<root>\\path\u201b;Write-Output marker;#.md" },
+      { line: "deskpost shared add-page demo page --content-path '<root>\\path\u2032;Write-Output marker;#.md' --preflight", value: "<root>\\path\u2032;Write-Output marker;#.md" },
+    ];
+    const shown = cases.map(item => ({ line: item.line.split(f.root).join('<root>'), path: item.path.split(f.root).join('<root>') }));
+    equal(shown.length, parsed.length, '1232: every printed command has its recorded parse');
+    for (const [index, item] of shown.entries()) {
+      equal(item.line, parsed[index]?.line, `1232: the printed command is the form PowerShell was seen to parse, for ${item.path}`);
+      equal(parsed[index]?.value, item.path, `1232: the recorded parse gives back one literal path argument, ${item.path}`);
     }
   } finally { await f.dispose(); }
   check(Date.now() - started < 20000, `1232: focused proof under 20 seconds (${Date.now() - started}ms)`);
@@ -1256,6 +1249,356 @@ async function section1247(): Promise<void> {
     `${adjacent}${escaped} Run ${installed} now.`, '1247: escaped quotes and adjacent values keep all passes outside');
 }
 
+// --- 1248. A DRIFTED RECALL GOES HOME BY THE READER'S CHOICE, WITH THE DRIFTED PAGES KEPT (kickoffs/s221 row 1). ------
+// Pika-page's shape: a Book recalled to the Shelf, its collection copy archived, then a nested `_index.md` and one page
+// changed in the archive and one page added at a path the Shelf copy also holds. The restore says the drift and
+// applies; the return refuses without --accept-drift, binds each drifted page with it, keeps each one's old text under
+// internal/shelf-recalls before writing over it, and writes nothing when that copy cannot be made.
+async function recallFixture(label: string) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `kernel-${label}-`)));
+  const env = { LIBRARY_WORKSPACES: path.join(root, 'reg'), LIBRARY_SEAT: 'first', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACE: '', AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const lib = path.join(root, 'lib');
+  const cli = (args: string[], extra: Record<string, string> = {}) => runCli([...args, '--workspace', lib], { cwd: root, env: { ...env, ...extra } });
+  // `cli` without its `--workspace` (kickoffs/s221-r2 row 2): the words as given, from the folder given.
+  const bare = (args: string[], cwd: string, extra: Record<string, string> = {}) => runCli(args, { cwd, env: { ...env, ...extra } });
+  const json = (ran: { stdout: string }): Record<string, any> => { try { return JSON.parse(ran.stdout); } catch { return {}; } };
+  const said = (ran: { stdout: string; stderr: string }) => (ran.stderr + ran.stdout).replace(/\s+/g, ' ');
+  const at = (relative: string) => path.join(lib, ...relative.split('/'));
+  const put = (relative: string, text: string) => { const full = at(relative); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, text); return full; };
+  const read = (relative: string) => fs.readFileSync(at(relative), 'utf8');
+  const sha = (relative: string) => createHash('sha256').update(fs.readFileSync(at(relative))).digest('hex');
+  const setDesk = (...roots: string[]) => put('.claude/seats/first/.open-books', roots.map((line) => line + '\n').join(''));
+  const gated = (args: string[]) => { const plan = json(cli([...args, '--preflight', '--json'])); return { plan, ran: cli([...args, '--user-confirmed', '--plan-id', String(plan['plan_id'] ?? ''), '--json']) }; };
+  const dispose = async () => {
+    for (let n = 0; n < 50; n++) { try { fs.rmSync(root, { recursive: true, force: true }); return; } catch { await sleep(100); } }
+  };
+  try {
+    equal(runCli(['init', lib], { cwd: root, env: { ...env, LIBRARY_SEAT: '' } }).exit, 0, `${label}: init`);
+    equal(cli(['hub', 'new', 'work', '--title', 'Work']).exit, 0, `${label}: Hub`);
+    equal(cli(['seat', 'start', 'first', '--project', 'work', '--no-launch']).exit, 0, `${label}: seat`);
+    equal(cli(['shelf', 'new', 'demo', '--title', 'Demo', '--summary', 'A curated Book.', '--json']).exit, 0, `${label}: Shelf Book`);
+    setDesk('shelf/demo');
+    put('shelf/demo/wiki/alpha.md', '# Alpha\n\nThe first page.\n');
+    // The nested map sits in a folder of its own: a recall refuses a topic folder whose pages its map folds (Report filed).
+    put('shelf/demo/wiki/topic/_index.md', '# Topic\n\n- [[beta|Beta]]\n');
+    put('shelf/demo/wiki/beta.md', '# Beta\n\nThe second page.\n');
+    const exit = gated(['publish', 'demo', '--title', 'Demo', '--summary', 'A curated Book.']);
+    check(exit.ran.exit === 0 && !fs.existsSync(at('shelf/demo')), `${label}: the Book did not leave the Shelf: ${said(exit.ran).slice(0, 300)}`);
+    setDesk('books/demo');
+    const recalled = gated(['shelf', 'recall', 'demo']);
+    check(recalled.ran.exit === 0 && fs.existsSync(at('internal/shelf-recalls/demo.json')), `${label}: recall: ${said(recalled.ran).slice(0, 300)}`);
+    setDesk('shelf/demo');
+  } catch (error) { await dispose(); throw error; }
+  return { root, lib, env, cli, bare, json, said, at, put, read, sha, setDesk, gated, dispose };
+}
+
+async function section1248(): Promise<void> {
+  const f = await recallFixture('s221-1248');
+  try {
+    // THE SHELF COPY MOVES ON: a new page, and an edit.
+    f.put('shelf/demo/wiki/topic/gamma.md', '# Gamma\n\nWritten on the Shelf.\n');
+    f.put('shelf/demo/wiki/alpha.md', '# Alpha\n\nThe first page, edited on the Shelf.\n');
+    const archived = f.gated(['shared', 'archive', 'demo']);
+    check(archived.ran.exit === 0 && fs.existsSync(f.at('collection/archive/demo/wiki/_book.md')), `1248: archive: ${f.said(archived.ran).slice(0, 300)}`);
+    // THE ARCHIVE DRIFTS: a nested map rewritten, a page changed, and a page added at a path the Shelf copy holds.
+    f.put('collection/archive/demo/wiki/topic/_index.md', '# Topic\n\n- [[archive/demo/wiki/beta|Beta]]\n');
+    f.put('collection/archive/demo/wiki/alpha.md', '# Alpha\n\nThe first page, edited in the archive.\n');
+    f.put('collection/archive/demo/wiki/topic/gamma.md', '# Gamma\n\nWritten in the archive.\n');
+    const old = { alpha: f.read('collection/archive/demo/wiki/alpha.md'), index: f.read('collection/archive/demo/wiki/topic/_index.md'), gamma: f.read('collection/archive/demo/wiki/topic/gamma.md') };
+
+    // (a) THE RESTORE SAYS THE DRIFT AND APPLIES.
+    const restore = f.gated(['shared', 'restore', 'demo']);
+    const drift = restore.plan['recall_drift'] ?? {};
+    check(JSON.stringify(drift.changed ?? []) === JSON.stringify(['alpha.md', 'topic/_index.md']) && JSON.stringify(drift.added ?? []) === JSON.stringify(['topic/gamma.md']) && (drift.removed ?? []).length === 0,
+      `1248: the restore preview did not carry recall_drift with all three pages: ${JSON.stringify(restore.plan).slice(0, 400)}`);
+    check(restore.ran.exit === 0 && fs.existsSync(f.at('collection/books/demo/wiki/_book.md')), `1248: the restore did not apply: ${f.said(restore.ran).slice(0, 300)}`);
+    check(String(f.json(restore.ran)['next'] ?? '').includes('--accept-drift'), `1248: the restore result did not name --accept-drift: ${restore.ran.stdout.slice(0, 600)}`);
+
+    // (b) WITHOUT THE FLAG THE RETURN REFUSES, NAMING ALL THREE ROUTES.
+    const plain = f.cli(['publish', 'refresh', 'demo', '--preflight']);
+    check(plain.exit !== 0 && ['--accept-drift', 'kept under internal/shelf-recalls', 'deskpost shelf recall demo --shelf-slug <new-slug>', 'deskpost shelf remove demo'].every((word) => f.said(plain).includes(word)),
+      `1248: the return without --accept-drift did not refuse naming the routes: ${f.said(plain).slice(0, 500)}`);
+
+    // WITH IT, EACH DRIFTED PAGE IS LISTED WITH ITS HASH, AND A PAGE THAT CHANGES AGAIN VOIDS THE APPROVAL.
+    const preview = f.json(f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--preflight']));
+    const accepted = (preview['drift_accepted'] ?? []) as { path: string; change: string; sha256: string | null }[];
+    const wanted = ['alpha.md', 'topic/_index.md', 'topic/gamma.md'].map((page) => `collection/books/demo/wiki/${page}`);
+    check(wanted.every((page) => accepted.some((row) => row.path === page && row.sha256 === f.sha(page))) && accepted.length === 3,
+      `1248: the preview did not list the three drifted pages with their hashes: ${JSON.stringify(accepted)}`);
+    const firstId = String(preview['refresh_plan_id'] ?? '');
+    f.put('collection/books/demo/wiki/alpha.md', old.alpha + 'Changed again after the preview.\n');
+    const voided = f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--user-confirmed', '--plan-id', firstId]);
+    check(voided.exit !== 0 && f.read('collection/books/demo/wiki/alpha.md').includes('Changed again') && !fs.existsSync(f.at('internal/shelf-recalls/demo-drift')),
+      `1248: a page changed after the preview did not void the approval: ${f.said(voided).slice(0, 300)}`);
+    f.put('collection/books/demo/wiki/alpha.md', old.alpha);
+
+    // THE COPY CANNOT BE MADE (standing answer 8): a file planted where the copy folder goes, and the return writes nothing.
+    f.put('internal/shelf-recalls/demo-drift', 'Not a folder.\n');
+    const blockedId = String(f.json(f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--preflight']))['refresh_plan_id'] ?? '');
+    const blocked = f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--user-confirmed', '--plan-id', blockedId]);
+    check(blocked.exit !== 0 && f.said(blocked).includes('could not be kept under internal/shelf-recalls/demo-drift') && f.read('collection/books/demo/wiki/alpha.md') === old.alpha && f.read('collection/books/demo/wiki/topic/gamma.md') === old.gamma,
+      `1248: a failed copy did not refuse the whole return: ${f.said(blocked).slice(0, 400)}`);
+    fs.rmSync(f.at('internal/shelf-recalls/demo-drift'));
+
+    // THE CONFIRMED RETURN WRITES THE SHELF COPY AND KEEPS THE OLD TEXT, BYTE FOR BYTE.
+    const id = String(f.json(f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--preflight']))['refresh_plan_id'] ?? '');
+    const done = f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--user-confirmed', '--plan-id', id]);
+    const kept = f.json(done)['drift_kept'] ?? {};
+    const folder = String(kept.folder ?? '');
+    check(done.exit === 0 && folder.startsWith('internal/shelf-recalls/demo-drift/'), `1248: the confirmed return did not run and name its folder: ${f.said(done).slice(0, 400)}`);
+    for (const page of ['alpha.md', 'topic/_index.md', 'topic/gamma.md']) {
+      equal(f.read(`collection/books/demo/wiki/${page}`), f.read(`shelf/demo/wiki/${page}`), `1248: the return did not write the Shelf copy's ${page}`);
+    }
+    if (folder) {
+      equal(f.read(`${folder}/alpha.md`), old.alpha, '1248: the old alpha.md was not kept byte for byte');
+      equal(f.read(`${folder}/topic/_index.md`), old.index, '1248: the old nested _index.md was not kept byte for byte');
+      equal(f.read(`${folder}/topic/gamma.md`), old.gamma, '1248: the added page was not kept byte for byte');
+    }
+
+    // THE SAME THROUGH `publish --replace-existing --accept-drift`, which deletes the Shelf copy after.
+    f.put('collection/books/demo/wiki/alpha.md', '# Alpha\n\nChanged in the collection again.\n');
+    f.put('collection/books/demo/wiki/topic/delta.md', '# Delta\n\nAdded in the collection.\n');
+    f.put('shelf/demo/wiki/topic/delta.md', '# Delta\n\nAdded on the Shelf.\n');
+    const second = { alpha: f.read('collection/books/demo/wiki/alpha.md'), delta: f.read('collection/books/demo/wiki/topic/delta.md') };
+    const shelfAlpha = f.read('shelf/demo/wiki/alpha.md');
+    const publishPlan = f.json(f.cli(['publish', 'demo', '--replace-existing', '--accept-drift', '--preflight']));
+    const nested = (publishPlan['publication_plan']?.['drift_accepted'] ?? []) as { path: string }[];
+    check(nested.length === 2, `1248: the publish preview did not list the two drifted pages: ${JSON.stringify(publishPlan).slice(0, 400)}`);
+    const published = f.cli(['publish', 'demo', '--replace-existing', '--accept-drift', '--user-confirmed', '--plan-id', String(publishPlan['plan_id'] ?? '')]);
+    const keptAgain = String(f.json(published)['publication']?.['drift_kept']?.['folder'] ?? '');
+    check(published.exit === 0 && !fs.existsSync(f.at('shelf/demo')) && f.read('collection/books/demo/wiki/alpha.md') === shelfAlpha, `1248: publish --accept-drift did not return the Book and remove the Shelf copy: ${f.said(published).slice(0, 400)}`);
+    if (keptAgain) {
+      equal(f.read(`${keptAgain}/alpha.md`), second.alpha, '1248: publish did not keep the old alpha.md');
+      equal(f.read(`${keptAgain}/topic/delta.md`), second.delta, '1248: publish did not keep the added delta.md');
+    } else check(false, '1248: publish named no drift_kept folder');
+
+    // EACH RETURN KEEPS ITS PAGES IN A FOLDER OF ITS OWN (kickoffs/s221-r2 row 1), called directly at one fixed instant,
+    // as two returns in the same moment would. The first call makes the instant's folder; its page is then planted with
+    // a known text, as an earlier return's backup.
+    const { keepDriftedPages } = await import('../../src/publish.ts');
+    const instant = new Date('2026-11-20T01:02:03.456Z');
+    const whole = (relative: string) => (fs.existsSync(f.at(relative)) ? f.read(relative) : '(missing)');
+    const planted = keepDriftedPages(f.lib, 'direct', 'demo', ['alpha.md'], instant).folder;
+    f.put(`${planted}/alpha.md`, 'Kept by an earlier return.\n');
+    // (a) A SECOND RETURN AT THE SAME INSTANT GETS THE NEXT FREE NAME, AND THE EARLIER BACKUP IS UNCHANGED.
+    const again = keepDriftedPages(f.lib, 'direct', 'demo', ['alpha.md', 'topic/_index.md'], instant);
+    equal(again.folder, `${planted}-2`, '1248: a second return at the same instant did not get a folder of its own');
+    equal(whole(`${planted}/alpha.md`), 'Kept by an earlier return.\n', '1248: a second return wrote over an earlier backup');
+    equal(whole(`${again.folder}/alpha.md`), f.read('collection/books/demo/wiki/alpha.md'), '1248: the second return did not keep alpha.md');
+    // (b) A COPY THAT FAILS AFTER ITS FOLDER IS MADE REMOVES ONLY THAT FOLDER.
+    let refusal = '';
+    try { keepDriftedPages(f.lib, 'direct', 'demo', ['alpha.md', 'missing.md'], instant); } catch (error) { refusal = (error as Error).message; }
+    check(refusal.includes(`could not be kept under ${planted}-3 `) && !fs.existsSync(f.at(`${planted}-3`)),
+      `1248: a failed copy did not refuse and remove only its own folder: ${refusal}`);
+    equal(whole(`${planted}/alpha.md`), 'Kept by an earlier return.\n', '1248: a failed copy removed an earlier backup');
+    equal(whole(`${again.folder}/topic/_index.md`), f.read('collection/books/demo/wiki/topic/_index.md'), '1248: a failed copy removed the second backup');
+  } catch (error) { failures.push('section 1248 stopped early: ' + (error as Error).message); }
+  finally { await f.dispose(); }
+}
+
+// --- 1249. THE RESTORE ROUTE SAYS WHERE THE SHELF COPY GOES (kickoffs/s221 row 2). --------------------------------------
+// The restore's next names both returns and what each does with the Shelf copy; a refresh of a recalled Book says the copy
+// was kept and how it goes; and `publish --replace-existing` on the restore route returns the Book and deletes the copy,
+// the batch refusal's claim (publish.ts, "deskpost publish ... deletes it after") proved end to end.
+async function section1249(): Promise<void> {
+  const f = await recallFixture('s221-1249');
+  try {
+    f.put('shelf/demo/wiki/alpha.md', '# Alpha\n\nThe first page, edited on the Shelf.\n');
+    const cycle = (label: string) => {
+      const archived = f.gated(['shared', 'archive', 'demo']);
+      check(archived.ran.exit === 0, `1249: ${label} archive: ${f.said(archived.ran).slice(0, 300)}`);
+      const restored = f.gated(['shared', 'restore', 'demo']);
+      check(restored.ran.exit === 0, `1249: ${label} restore: ${f.said(restored.ran).slice(0, 300)}`);
+      return String(f.json(restored.ran)['next'] ?? '');
+    };
+    const next = cycle('first');
+    for (const words of ['deskpost publish demo --replace-existing --preflight returns the Book and deletes the Shelf copy after', 'deskpost publish refresh demo --preflight returns it and keeps the copy', 'deskpost shared list-entry demo --preflight']) {
+      check(next.includes(words), `1249: the restore next did not say "${words}": ${next}`);
+    }
+    check(!next.includes('--accept-drift'), `1249: a restore with no drift named --accept-drift: ${next}`);
+
+    // A REFRESH KEEPS THE COPY AND SAYS SO.
+    const id = String(f.json(f.cli(['publish', 'refresh', 'demo', '--preflight']))['refresh_plan_id'] ?? '');
+    const refreshed = f.cli(['publish', 'refresh', 'demo', '--user-confirmed', '--plan-id', id]);
+    const shelfCopy = String(f.json(refreshed)['shelf_copy'] ?? '');
+    check(refreshed.exit === 0 && shelfCopy === 'kept at shelf/demo; deskpost shelf remove demo --preflight removes it once the Book is home' && fs.existsSync(f.at('shelf/demo/wiki/alpha.md')),
+      `1249: the refresh of a recalled Book did not carry shelf_copy: ${f.said(refreshed).slice(0, 400)}`);
+
+    // `publish --replace-existing` ON THE RESTORE ROUTE RETURNS THE BOOK AND DELETES THE COPY.
+    cycle('second');
+    f.put('shelf/demo/wiki/alpha.md', '# Alpha\n\nEdited on the Shelf a second time.\n');
+    const plan = f.json(f.cli(['publish', 'demo', '--replace-existing', '--preflight']));
+    const published = f.cli(['publish', 'demo', '--replace-existing', '--user-confirmed', '--plan-id', String(plan['plan_id'] ?? '')]);
+    check(published.exit === 0 && !fs.existsSync(f.at('shelf/demo')) && f.read('collection/books/demo/wiki/alpha.md') === '# Alpha\n\nEdited on the Shelf a second time.\n' && !fs.existsSync(f.at('internal/shelf-recalls/demo.json')),
+      `1249: publish --replace-existing did not return the Book and delete the Shelf copy: ${f.said(published).slice(0, 400)}`);
+  } catch (error) { failures.push('section 1249 stopped early: ' + (error as Error).message); }
+  finally { await f.dispose(); }
+}
+
+// --- 1250. EVERY GATED SHELF PREVIEW NAMES ITS EXACT APPLY COMMAND, AND IT WORKS AS WRITTEN (kickoffs/s221 rows 3 and 4). --
+// The prevention of "A refusal or usage line that does not name its remedy" for the Shelf and restore verbs: in one fixture
+// Library, each gated preview's `next` (or a refusal's named command) is taken, split as a shell would split it, and run as
+// written; each must exit 0 and make its change.
+// The platform names the shell: on Windows (PowerShell) a doubled apostrophe inside quotes is one apostrophe; elsewhere
+// (sh) a backslash outside quotes takes the next character literally, which is how '\'' carries an apostrophe.
+function shellWords(line: string, platform: NodeJS.Platform = process.platform): string[] {
+  const words: string[] = [];
+  let current = '', quoted = false, started = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (quoted) {
+      if (char === "'" && platform === 'win32' && line[index + 1] === "'") { current += "'"; index += 1; }
+      else if (char === "'") quoted = false;
+      else current += char;
+    } else if (char === "'") { quoted = true; started = true; }
+    else if (char === '\\' && platform !== 'win32' && index + 1 < line.length) { current += line[index + 1]; index += 1; started = true; }
+    else if (char === ' ') { if (started) words.push(current); current = ''; started = false; }
+    else { current += char; started = true; }
+  }
+  if (started) words.push(current);
+  return words;
+}
+
+async function section1250(): Promise<void> {
+  // EACH SHELL'S QUOTING IS READ AS THAT SHELL READS IT (kickoffs/s221-r3 row 1): the platform is an argument, so the
+  // POSIX form of an apostrophe ('\'') is checked on Windows too, and the doubled form ('') on Linux.
+  const { quoteSharedCommandPath } = await import('../../src/sharedwrite.ts');
+  for (const platform of ['win32', 'linux'] as NodeJS.Platform[]) {
+    for (const value of ["A curated Book, the reader's own.", 'plain', 'two  spaces', "it's"]) {
+      const words = shellWords(`deskpost publish refresh demo --summary ${quoteSharedCommandPath(value, platform)} --plan-id x`, platform);
+      check(words.length === 8 && words[5] === value,
+        `1250: the ${platform} splitter reads ${JSON.stringify(value)} back as ${JSON.stringify(words)}`);
+    }
+  }
+  const f = await recallFixture('s221-1250');
+  // EACH `next` RUNS EXACTLY AS PRINTED (kickoffs/s221-r2 row 2): nothing appended, from a folder outside the fixture
+  // Library and with no Library registered, so a command that does not name its Library fails.
+  const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-s221-1250-elsewhere-')));
+  try {
+    const commandIn = (text: string) => { const at = text.indexOf('deskpost '); return at < 0 ? '' : text.substring(at); };
+    const unregistered = { LIBRARY_WORKSPACES: path.join(elsewhere, 'reg') };
+    const asPrinted = (next: string, extra: Record<string, string> = {}) =>
+      (next ? f.bare(shellWords(next).slice(1), elsewhere, { ...extra, ...unregistered }) : { exit: -1, stdout: '', stderr: 'no next' });
+    const runNext = (label: string, args: string[], extra: Record<string, string> = {}) => {
+      const preview = f.cli([...args, '--preflight', '--json'], extra);
+      const next = commandIn(String(f.json(preview)['next'] ?? ''));
+      check(preview.exit === 0 && next.startsWith(`deskpost ${args[0]} ${args[1]} `) && next.includes(`--plan-id ${String(f.json(preview)['plan_id'] ?? f.json(preview)['refresh_plan_id'] ?? '')}`),
+        `1250: the ${label} preview did not name its apply command: ${f.said(preview).slice(0, 400)}`);
+      const ran = asPrinted(next, extra);
+      check(ran.exit === 0, `1250: the ${label} next did not apply as written (${next}): ${f.said(ran).slice(0, 400)}`);
+      return next;
+    };
+
+    // THE RESTORE ROUTE: shared restore, then publish refresh of the recalled Book.
+    const archived = f.gated(['shared', 'archive', 'demo']);
+    check(archived.ran.exit === 0, `1250: archive: ${f.said(archived.ran).slice(0, 300)}`);
+    runNext('shared restore', ['shared', 'restore', 'demo']);
+    check(fs.existsSync(f.at('collection/books/demo/wiki/_book.md')), '1250: shared restore did not put the Book back');
+    f.put('shelf/demo/wiki/alpha.md', '# Alpha\n\nEdited on the Shelf before the refresh.\n');
+    const refreshNext = runNext('publish refresh', ['publish', 'refresh', 'demo', '--summary', "A curated Book, the reader's own."]);
+    check(refreshNext.includes('--summary') && refreshNext.includes('--user-confirmed'), `1250: the refresh next lost the preview's own arguments: ${refreshNext}`);
+    equal(f.read('collection/books/demo/wiki/alpha.md'), '# Alpha\n\nEdited on the Shelf before the refresh.\n', '1250: the refresh did not write the Shelf copy');
+
+    // THE SIX GATED SHELF VERBS, on a second Shelf Book.
+    equal(f.cli(['shelf', 'new', 'notes', '--title', 'Notes', '--summary', 'A second Book.', '--json']).exit, 0, '1250: second Shelf Book');
+    f.put('shelf/notes/wiki/page.md', '# Page\n\nA page to stub.\n');
+    f.setDesk('shelf/demo', 'shelf/notes');
+    runNext('shelf describe', ['shelf', 'describe', 'notes', '--summary', 'A summary with spaces, and a comma.']);
+    check(f.read('shelf/notes/_catalog-entry.md').includes('A summary with spaces, and a comma.'), '1250: describe did not change the summary');
+    // A RELATIVE `--workspace` (kickoffs/s221-r2 row 2): the preview runs from the fixture's root naming `lib`, and its
+    // next, run from another folder, applies to the same Library.
+    const relative = f.bare(['shelf', 'describe', 'notes', '--summary', 'Named from a relative path.', '--workspace', 'lib', '--preflight', '--json'], f.root);
+    const relativeNext = commandIn(String(f.json(relative)['next'] ?? ''));
+    check(relative.exit === 0 && relativeNext.startsWith('deskpost shelf describe '), `1250: the relative preview did not name its apply command: ${f.said(relative).slice(0, 400)}`);
+    const relativeRan = asPrinted(relativeNext);
+    check(relativeRan.exit === 0 && f.read('shelf/notes/_catalog-entry.md').includes('Named from a relative path.'),
+      `1250: the relative preview's next did not apply to the same Library (${relativeNext}): ${f.said(relativeRan).slice(0, 400)}`);
+    runNext('shelf rename', ['shelf', 'rename', 'notes', 'kept', '--new-title', 'Kept Notes']);
+    check(fs.existsSync(f.at('shelf/kept/wiki/page.md')) && !fs.existsSync(f.at('shelf/notes')), '1250: rename did not move the Book');
+    runNext('shelf stub', ['shelf', 'stub', 'kept', 'page', '--canonical', 'demo/alpha', '--reason', 'Moved to Demo.']);
+    check(f.read('shelf/kept/wiki/page.md').includes('Superseded'), '1250: stub did not write the stub');
+    f.setDesk('shelf/demo');
+    runNext('shelf archive', ['shelf', 'archive', 'kept', '--reason', 'Resting for now.']);
+    check(fs.existsSync(f.at('shelf/_archive/kept')) && !fs.existsSync(f.at('shelf/kept')), '1250: archive did not move the Book');
+    runNext('shelf restore', ['shelf', 'restore', 'kept']);
+    check(fs.existsSync(f.at('shelf/kept/wiki/page.md')), '1250: restore did not put the Book back');
+    // ROW 4: A SECOND SEAT HOLDS THE BOOK OPEN. The refusal names a command that seat can run, and it works.
+    // The second seat's own live session, held by a stand-in agent process, as the lane's fixture holds its first seat.
+    const agent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore' });
+    const asSecond = { LIBRARY_SEAT: 'second', CLAUDE_PID: String(agent.pid) };
+    try {
+      equal(f.cli(['hub', 'new', 'other', '--title', 'Other']).exit, 0, '1250: second Hub');
+      const enter = ['seat', 'enter', 'second', '--create', '--project', 'other', '--agent-pid', String(agent.pid), '--deadline-seconds', '10'];
+      const enterPlan = f.cli([...enter, '--preflight'], asSecond);
+      const entered = f.cli([...enter, '--plan-id', String(f.json(enterPlan)['plan_id'] ?? '')], asSecond);
+      check(entered.exit === 0, `1250: second seat: ${f.said(enterPlan).slice(0, 400)} / ${f.said(entered).slice(0, 300)}`);
+      f.put('.claude/seats/second/.open-books', 'shelf/kept\n');
+      const held = f.cli(['shelf', 'remove', 'kept', '--preflight', '--json']);
+      const close = (f.said(held).match(/deskpost desk close book kept --location shelf/) ?? [''])[0];
+      check(held.exit !== 0 && close !== '' && f.said(held).includes('ask second to run') && f.said(held).includes('deskpost capture letters --why for-seat --for second') && !held.stdout.includes('"plan_id"'),
+        `1250: the open-at-other-seats refusal named no command for the seat: ${f.said(held).slice(0, 500)}`);
+      const closed = close ? f.cli(shellWords(close).slice(1), asSecond) : { exit: -1, stdout: '', stderr: 'no command' };
+      check(closed.exit === 0 && !f.read('.claude/seats/second/.open-books').includes('shelf/kept'), `1250: the named close did not run for the second seat: ${f.said(closed).slice(0, 400)}`);
+    } finally { agent.kill(); }
+    runNext('shelf remove', ['shelf', 'remove', 'kept', '--reason', 'Done with it.']);
+    check(!fs.existsSync(f.at('shelf/kept')), '1250: remove did not delete the Book');
+  } catch (error) { failures.push('section 1250 stopped early: ' + (error as Error).message); }
+  finally { await f.dispose(); fs.rmSync(elsewhere, { recursive: true, force: true }); }
+
+  // ROW 5: `shared promote` SAYS IT IS WORKING, one standard error line per page in order, against the stand-in server.
+  const p = await fixture('s221-1250-promote');
+  try {
+    p.book('pages', '# Map\n\n- [[books/pages/wiki/one|One]]\n- [[books/pages/wiki/two|Two]]\n');
+    p.put('ws/collection/books/pages/wiki/one.md', '# One\n\nThe first page.\n');
+    p.put('ws/collection/books/pages/wiki/two.md', '# Two\n\nThe second page.\n');
+    const promoted = p.gated(['shared', 'promote', 'pages']);
+    const lines = promoted.stderr.split(/\r?\n/).filter((line) => line.startsWith('Writing page ') || line.startsWith('Wrote '));
+    const total = lines.length - 1;
+    const inOrder = total >= 4 && lines.slice(0, total).every((line, index) => line.startsWith(`Writing page ${index + 1} of ${total}: books/pages/`));
+    check(promoted.exit === 0 && inOrder && lines[total] === `Wrote ${total} pages and the Catalog line.` && ['one.md', 'two.md'].every((page) => lines.some((line) => line.endsWith(`books/pages/wiki/${page}`))),
+      `1250: promote did not write one progress line per page in order: ${promoted.exit} ${promoted.stderr.slice(0, 600)}`);
+    check(JSON.parse(promoted.stdout)['schema'] !== undefined, `1250: promote --json output is no longer one JSON document: ${promoted.stdout.slice(0, 200)}`);
+  } catch (error) { failures.push('section 1250 promote case stopped early: ' + (error as Error).message); }
+  finally { await p.dispose(); }
+}
+
+// --- 1251. THE BACKUP KEEPS EXACTLY THE PAGES THE RETURN WRITES OVER (kickoffs/s221-r2 row 3). ---------------------------
+// A recalled Book whose collection copy drifted three ways: beta.md removed from the Shelf copy and then changed in the
+// collection, alpha.md changed in the collection to exactly the Shelf copy's text, and the nested map changed in both to
+// different texts. An accepted refresh writes over only the map, so only the map is kept and listed in drift_kept, and
+// the collection's beta.md and alpha.md are left as they were.
+async function section1251(): Promise<void> {
+  const f = await recallFixture('s221r2-1251');
+  try {
+    const shelfAlpha = '# Alpha\n\nThe first page, edited on the Shelf.\n';
+    f.put('shelf/demo/wiki/alpha.md', shelfAlpha);
+    f.put('collection/books/demo/wiki/alpha.md', shelfAlpha);
+    fs.rmSync(f.at('shelf/demo/wiki/beta.md'));
+    const collectionBeta = '# Beta\n\nChanged in the collection after the Shelf copy let it go.\n';
+    f.put('collection/books/demo/wiki/beta.md', collectionBeta);
+    f.put('shelf/demo/wiki/topic/_index.md', '# Topic\n\n- [[alpha|Alpha]]\n');
+    const collectionIndex = '# Topic\n\n- [[beta|Beta]]\n\nChanged in the collection.\n';
+    f.put('collection/books/demo/wiki/topic/_index.md', collectionIndex);
+
+    const preview = f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--preflight', '--json']);
+    const id = String(f.json(preview)['refresh_plan_id'] ?? '');
+    check(preview.exit === 0 && id !== '', `1251: the refresh preview did not run: ${f.said(preview).slice(0, 400)}`);
+    const done = f.cli(['publish', 'refresh', 'demo', '--accept-drift', '--user-confirmed', '--plan-id', id, '--json']);
+    const kept = f.json(done)['drift_kept'] ?? {};
+    const folder = String(kept.folder ?? '');
+    check(done.exit === 0 && folder.startsWith('internal/shelf-recalls/demo-drift/'), `1251: the accepted refresh did not run and name its folder: ${f.said(done).slice(0, 400)}`);
+    equal(JSON.stringify(kept.pages ?? null), JSON.stringify(['topic/_index.md']), '1251: drift_kept did not list exactly the page the return wrote over');
+    if (folder) {
+      equal(f.read(`${folder}/topic/_index.md`), collectionIndex, '1251: the old map was not kept byte for byte');
+      check(!fs.existsSync(f.at(`${folder}/alpha.md`)) && !fs.existsSync(f.at(`${folder}/beta.md`)), '1251: a page the return left alone was kept');
+    }
+    equal(f.read('collection/books/demo/wiki/topic/_index.md'), '# Topic\n\n- [[alpha|Alpha]]\n', '1251: the return did not write the Shelf copy of the map');
+    equal(f.read('collection/books/demo/wiki/beta.md'), collectionBeta, '1251: the collection beta.md did not stay as it was');
+    equal(f.read('collection/books/demo/wiki/alpha.md'), shelfAlpha, '1251: the collection alpha.md did not stay as it was');
+  } catch (error) { failures.push('section 1251 stopped early: ' + (error as Error).message); }
+  finally { await f.dispose(); }
+}
+
 export async function runLane(h: Harness): Promise<void> {
   ({ selected, prerequisite, check, equal, same, failures, runCli, runCliAsync, HERE, PROGRAM_ROOT, KERNEL_COMMAND, isCompiled } = h);
 
@@ -1310,7 +1653,7 @@ if (selected(1230) && prerequisite(1230, () => !isCompiled(), 'requires source s
 
 if (selected(1231) && prerequisite(1231, () => !isCompiled(), 'requires source stand-in')) await section1231();
 
-if (selected(1232) && prerequisite(1232, () => process.platform === 'win32' && !isCompiled(), 'requires Windows PowerShell and the source stand-in')) await section1232();
+if (selected(1232) && prerequisite(1232, () => process.platform === 'win32' && !isCompiled(), 'requires Windows (the printed commands are the Windows form) and the source stand-in')) await section1232();
 
 if (selected(1233) && prerequisite(1233, () => !isCompiled(), 'requires source stand-in')) await section1233();
 
@@ -1336,5 +1679,9 @@ if (selected(1244) && prerequisite(1244, () => !isCompiled(), 'requires source s
 if (selected(1245)) await section1245();
 if (selected(1246)) await section1246();
 if (selected(1247)) await section1247();
+if (selected(1248) && prerequisite(1248, () => !isCompiled(), 'requires source stand-in')) await section1248();
+if (selected(1249) && prerequisite(1249, () => !isCompiled(), 'requires source stand-in')) await section1249();
+if (selected(1250) && prerequisite(1250, () => !isCompiled(), 'requires source stand-in')) await section1250();
+if (selected(1251) && prerequisite(1251, () => !isCompiled(), 'requires source stand-in')) await section1251();
 
 }

@@ -228,8 +228,13 @@ fenced block or an HTML comment is content, never a heading, an item or a Run po
 that opens at the start of a line hides everything up to its `-->`. A comment opened after text on
 its line hides only when it closes before the next blank line, as a Markdown viewer shows it
 (CommonMark); otherwise its `<!--` is plain text. `hub edit`, `hub status`, `kickoff next`,
-`kickoff check --open` and `kickoff receive` all read `## Next` this one way (`nextShownLines`), and
-`hub tidy` and `close-item` read the items they move and the `Closed items:` pointer this way too.
+`kickoff check --open` and `kickoff receive` all read `## Next` this one way (`nextShownLines`).
+Top-level item selection (`topLevelEntries`) uses this same reading for `hub tidy`, the Desk's
+ticked counts and `close-item`. Tidy and close-item also use it to find the `Closed items:` pointer.
+Repeat `hub tidy --item "<text>"` to move uniquely named, visible top-level items or lines to history
+word for word alongside the ticked items. Named items must be under a level-two heading outside
+Purpose, Decisions or a section selected by `--section`. Replace an unticked Run pointer in Next
+with `hub edit --mode append-section --supersedes "Run <id>:"`.
 One reader does not yet: the train register's Hub-item reader (`kernel/src/train.ts`) still skips
 only fenced lines, so an item inside a comment still counts there.
 
@@ -238,6 +243,11 @@ guessed at, and an edit that would produce the current text reports `unchanged` 
 An appended bullet continues the list it lands in, while appended prose gets its own paragraph
 break, so an edit reads like the section around it. `-SelfTest` covers the text handling offline:
 33 checks, no NAS access.
+
+For `hub edit --preflight`, each of `section_before`, `section_body_before` and `section_after`
+returns its text through 8,192 UTF-8 bytes. Above that bound the field is null and its
+`<field>_summary` gives the line count (`lines`), byte count (`bytes`) and SHA-256 (`sha256`).
+Add `--show-sections` to the preflight to see the full section text with the same plan ID.
 
 A refusal reports its reason as a clean terminating error rather than a raw script throw, so the
 message is not buried under the helper's own source position.
@@ -474,7 +484,8 @@ with its amendment; kickoffs/s213). On a Hub with `## Repo`, `hub edit` refuses 
 over 400 bytes or with no link. Only new text is judged, so no Hub breaks on upgrade, and other Hubs keep today's
 shape. What is done leaves with `hub edit --mode close-item`, which moves the item word for word, ticked, to the newest
 tidy-history page and keeps one `Closed items:` pointer per section. `deskpost hub status <slug>` shows each pointer's
-live state from the program's records, so nobody re-reads the page to find a stale item. A builder Hub's `## Next`
+live state from the program's records. A pending Run pointer with a higher revision on the same Hub
+shows `pending; newer revision kickoffs/<id>-r<n> posted` and names the highest revision. A builder Hub's `## Next`
 holds a queue of up to three pending Run pointers, run in page order.
 
 ## Deliberate exclusions

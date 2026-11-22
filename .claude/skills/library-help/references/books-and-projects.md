@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.7.0/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.7.1/docs/seats.md).
 
 ## Books
 
@@ -76,7 +76,7 @@ names unread, and names `library shelf rebuild <slug>` to write one.
 **Making a Book Shelf-only:** `shelf recall <slug>`, then `shared archive <slug> --kind book`. The recall copies the
 collection Book to the Shelf; the archive then retires the collection copy. The archive previews first, and applies
 only with `--user-confirmed --plan-id <id>`, the id its preflight issued; a Book changed since that preview is refused.
-A Book recalled to the Shelf whose collection copy was later archived goes home with `deskpost shared restore <slug>` (preview with `--preflight`, then apply on the reader's yes), followed by `deskpost publish refresh <slug>`.
+A Book recalled to the Shelf whose collection copy was later archived goes home with `deskpost shared restore <slug>` (preview with `--preflight`, then apply on the reader's yes), then one of two returns: `deskpost publish <slug> --replace-existing` returns the Book and deletes the Shelf copy after, and `deskpost publish refresh <slug>` returns it and keeps the Shelf copy, which `deskpost shelf remove <slug>` removes once the Book is home; if the collection copy changed after the recall, either return stops on that drift until `--accept-drift` is added, which keeps each drifted page under `internal/shelf-recalls` before writing over it.
 
 ### When two Books cover the same thing
 

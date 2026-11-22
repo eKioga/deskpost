@@ -1,12 +1,20 @@
 /** Shared save/closeout state and checks. Harnesses supply observations, never completion claims. */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { requireWorkspace, readMarker } from './workspace.ts';
+import { writingSeat } from './journal.ts';
+import { parseArguments } from './argv.ts';
+import { argumentTable, commandAction } from './verbs.ts';
 export type CheckpointKind = 'save' | 'closeout';
 export type OpenItem = { kind: 'book' | 'hub'; name: string; where?: string; root?: string };
-export type CheckpointWrite = { kind: 'book' | 'hub' | 'report'; name: string; page: string; where?: string; at: number; title?: string };
+export type CheckpointWrite = { kind: 'book' | 'hub' | 'report' | 'notebook'; name: string; page: string; where?: string; at: number; title?: string };
 export type CheckpointTrouble = { id: string; text: string; at: number };
 export type CheckpointRequest = {
   id: string; kind: CheckpointKind; at: number; since: number | null; open: OpenItem[];
   hub: string | null; trouble: string[]; turn?: string; writeCount?: number; troubleIds?: string[];
+  pendingReports?: string[];
+  decided?: 'tidied' | 'declined' | 'tidy-refused';
 };
 export type CheckpointState = {
   schema: 1; seatId: string; conversation: string; tracking: boolean;
@@ -15,6 +23,7 @@ export type CheckpointState = {
   saveState: 'none' | 'asked' | 'saved' | 'gaps' | 'waits';
   closeout: 'none' | 'asked' | 'done' | 'gaps' | 'waits' | 'stale';
   gaps: string[]; waits: string[]; saveGaps: string[]; saveWaits: string[]; turnsSince: number;
+  ledgerSeen?: string[]; ledgerGaps?: string[];
 };
 
 export function emptyCheckpoint(conversation: string, seatId = ''): CheckpointState {
@@ -57,7 +66,7 @@ export function parseCloseoutBlock(answer: string, fence: CheckpointKind = 'clos
   const body = lastBlock(answer, fence);
   if (body === undefined) return null;
   const values = new Map<string, Verdict>();
-  for (const line of body.split('\n')) {
+  for (const line of body.split(/\r?\n/)) {
     const m = /^\s*(book|hub)\s+([^:\s]+)\s*:\s*(updated|nothing new|needs update|waits for (?:eric|approval))\b\s*:?\s*(.*)$/i.exec(line);
     if (!m) continue;
     const word = m[3]!.toLowerCase();
@@ -68,7 +77,7 @@ export function parseCloseoutBlock(answer: string, fence: CheckpointKind = 'clos
 export function parseReportsLine(answer: string, fence: CheckpointKind = 'closeout'): ReportsVerdict | null {
   const body = lastBlock(answer, fence);
   if (body === undefined) return null;
-  for (const line of body.split('\n')) {
+  for (const line of body.split(/\r?\n/)) {
     const m = /^\s*reports\s*:\s*(filed|none)\b\s*:?\s*(.*)$/i.exec(line);
     if (m) return { verdict: m[1]!.toLowerCase() as ReportsVerdict['verdict'], detail: m[2]!.trim() };
   }
@@ -83,6 +92,7 @@ export function checkCheckpoint(state: CheckpointState, id: string, answer: stri
   if (!r || r.id !== id) throw Error('No matching pending checkpoint request; completed requests cannot be replayed.');
   if (r.turn !== undefined && r.turn !== turn) throw Error('The answer belongs to a different turn.');
   const gaps: string[] = [], waits: string[] = [];
+  gaps.push(...(state.ledgerGaps ?? []));
   if (!state.tracking) gaps.push('Tool-result tracking has not begun.');
   if (openSignature(open) !== openSignature(r.open)) gaps.push('The open Books and Hubs changed after the request.');
   const values = parseCloseoutBlock(answer, r.kind);
@@ -156,7 +166,18 @@ export function checkpointPrompt(request: CheckpointRequest, state?: CheckpointS
     state.writes.length > state.savedWrites ? `Written since then: ${[...new Set(state.writes.slice(state.savedWrites).map(w => `${w.kind === 'hub' ? 'Hub' : 'Book'} ${w.name}`))].join(', ')}.` : 'Nothing has been written since then.',
     'An item saved then with nothing written since is "nothing new: saved at the last save"; "updated" needs a write since the save.',
   ].join(' ') : null;
-  return command(fillText(displayed, request.hub, request.trouble, 0, since));
+  const writes = state?.writes.slice(state.savedWrites) ?? [];
+  let text = fillText(displayed, request.hub, request.trouble, 0, since);
+  if (request.decided === 'tidied' || request.decided === 'declined') text = text.replace('close what is done (`hub edit --mode close-item`) and ', '');
+  return command(text) + '\n' + [
+    ...writes.map(w => `Recorded write: ${w.kind} ${w.name}${w.where ? '@' + w.where : ''} ${w.page}.`),
+    ...displayed.filter(o => !writes.some(w => w.kind === o.kind && w.name === o.name && (!o.where || w.where === o.where)))
+      .map(o => `${o.kind} ${o.name}: nothing new: no write recorded`),
+    ...(state?.ledgerGaps?.length ? ['The write list is incomplete:', ...state.ledgerGaps,
+      ...new Set(state.trouble.flatMap(trouble => writers(trouble.text).map(hint => `Shell hint only: ${hint.kind} ${hint.name ?? 'unknown target'}.`)))] : []),
+    ...(request.pendingReports ?? []).map(title => `Pending Report filed this conversation: ${title}`),
+    'Use the closeout skill to finish this checkpoint.',
+  ].join('\n');
 }
 
 export const FILL_MARKER = 'Closeout before /clear.';
@@ -186,7 +207,7 @@ export function fillText(
     ...(lastSave === null ? [] : [lastSave]),
     '2. **Each open Book and Hub** (`library desk` names them): check that this session\'s work is saved where the next session will find it, and make any missing update. Give each one verdict:',
     ...lines,
-    '   - `updated <page>`: only if you actually wrote to it this session (a `hub edit`, `book add-page` / `replace-page` / `graduate`, `collection add-page` / `replace-page`, or a `capture` into that Book). A preflight is not a write.',
+    '   - `updated <page>`: only for a write the program recorded for this conversation. A preflight is not a write.',
     '   - `nothing new: <why>`.',
     '   - `needs update`: then make the update before you answer, and answer `updated`.',
     '   - `waits for Eric: <what needs his yes>`: for a gated edit you could not make. Never write "updated" with a note that it still waits.',
@@ -371,10 +392,15 @@ function writers(command: string): Writer[] {
     const opt=(name:string) => words.includes(name) ? option(name) : undefined;
     const [verb,action,name,page]=words;
     if(verb==='hub'&&action==='edit') return [{kind:'hub',name:literal(name)?.replace(/^projects\//,''),page:words.includes('--page') ? opt('--page') : '_project'}];
-    if((verb==='book'||verb==='collection') && ['add-page','replace-page','graduate'].includes(action ?? ''))
-      return [{kind:'book',name:literal(name),page:literal(page)?.startsWith('--') ? undefined : literal(page),where:verb==='collection'?'collection':'shelf'}];
+    if(verb==='book' && ['add-page','replace-page','graduate'].includes(action ?? ''))
+      return [{kind:'book',name:literal(name),page:literal(page)?.startsWith('--') ? undefined : literal(page),where:'shelf'}];
+    if(verb==='collection' && ['add-page','replace-page'].includes(action ?? ''))
+      return [{kind:'book',name:literal(name),page:literal(page)?.startsWith('--') ? undefined : literal(page),where:'collection'}];
+    if(verb==='shared' && ['add-page','replace-page'].includes(action ?? ''))
+      return [{kind:'book',name:literal(name),page:literal(page)?.startsWith('--') ? undefined : literal(page),where:'shared'}];
     if(verb==='capture') return [{kind:'capture',name:literal(action),where:'shelf'}];
     if(verb==='letters'&&action==='close') return [{kind:'letters',name:'letters',page:literal(name),where:'shelf'}];
+    if(verb==='reports'&&action==='amend') return [{kind:'book',name:'reports',page:literal(name),where:'shelf'}];
     if(verb==='triage'&&action==='batch') return [{kind:'triage'}];
     return [];
   });
@@ -386,6 +412,8 @@ function canonicalWrite(value: unknown, at: number): CheckpointWrite | null {
   if(/[\x00-\x1f\x7f]/.test(p) || p.startsWith('/') || /^[A-Za-z]:/.test(p) || p.split('/').some(s=>!s || s==='.' || s==='..')) return null;
   const hub=/^(?:collection\/)?(?:archive\/)?projects\/([a-z0-9][a-z0-9-]*)\/(.+)$/.exec(p);
   if(hub) return {kind:'hub',name:hub[1]!,page:hub[2]!.replace(/\.md$/,''),at};
+  const notebook = /^notebook\/(.+)$/.exec(p);
+  if (notebook) return { kind: 'notebook', name: 'notebook', page: notebook[1]!.replace(/\.md$/, ''), at };
   const book=/^(shelf(?:\/_archive)?|collection\/(?:books|archive)|books|archive|shared(?:\/archive)?)\/([a-z0-9][a-z0-9-]*)\/wiki\/(.+)$/.exec(p);
   if(!book) return null;
   return {kind:'book',name:book[2]!,page:book[3]!.replace(/\.md$/,''),where:book[1]!.startsWith('shelf')?'shelf':book[1]!.startsWith('collection/')?'collection':'shared',at};
@@ -398,13 +426,17 @@ export function checkpointWrites(value: unknown, at: number): CheckpointWrite[] 
   if((r.written!==undefined && typeof r.written!=='boolean') || (r.status!==undefined && typeof r.status!=='string')) return [];
   const status=String(r.status ?? '');
   if(['planned','preview','refused','failed','error','unchanged'].includes(status)) return [];
-  if(r.written!==true && !['added','written','captured','closed'].includes(status)) return [];
+  const shared=r.verdict==='written' && r.shared_library_write===true && typeof r.book==='string' && /^shared\/[a-z0-9][a-z0-9-]*$/.test(r.book);
+  if(typeof r.book==='string' && r.book.startsWith('shared/') && !shared) return [];
+  if(r.written!==true && !['added','written','captured','closed','amended'].includes(status) && !shared) return [];
   const paths=[r.page_path,r.page,r.note_page];
   if(status==='closed' && typeof r.book==='string' && typeof r.letter==='string') paths.push(r.book+'/wiki/'+r.letter);
+  if(status==='amended' && typeof r.book==='string' && typeof r.report==='string') paths.push(r.book+'/wiki/'+r.report);
   if(Array.isArray(r.pages)) for(const entry of r.pages) { const page=object(entry); if(page) paths.push(page.page ?? page.page_path); }
   const out: CheckpointWrite[]=[];
   for(const p of paths) {
     const w=canonicalWrite(p,at);
+    if(shared && (w?.where!=='shared' || r.book!=='shared/'+w.name)) continue;
     if(w && !out.some(x=>itemKey(x.kind,x.name,x.where)===itemKey(w.kind,w.name,w.where)&&x.page===w.page)) out.push(w);
   }
   if(status==='captured' && out.some(w=>w.kind==='book'&&w.name==='reports')) {
@@ -453,7 +485,7 @@ function codexExecCommands(value: unknown): string {
   return commands.join('\n');
 }
 
-export function observeCheckpointResult(state: CheckpointState, event: CheckpointToolResult, at: number): CheckpointState {
+export function observeCheckpointResult(state: CheckpointState, event: CheckpointToolResult, at: number, ledgerOnly = false): CheckpointState {
   for(const id of [event.tool_use_id,event.call_id,event.turn_id]) if(id!==undefined && typeof id!=='string') throw Error('Tool call and turn identities must be strings.');
   const conversation=event.conversation ?? event.session_id;
   if(conversation!==undefined && conversation!==state.conversation) throw Error('Tool result belongs to another conversation.');
@@ -478,7 +510,7 @@ export function observeCheckpointResult(state: CheckpointState, event: Checkpoin
   // Hash fallback is deterministic: c22 should pass a real tool-call id whenever the harness exposes one.
   const key=id || evidenceHash(JSON.stringify(event));
   if(state.seen.includes(key)) return state;
-  const intents=writers(command);
+  const intents=ledgerOnly ? [] : writers(command);
   const writes: CheckpointWrite[]=[];
   if(!failed && !pending) for(const document of checkpointResults(output)) {
     for(const w of [...checkpointWrites(document,at),...(intents.some(i=>i.kind==='triage')?triageWrites(document,at):[])]) {
@@ -503,4 +535,265 @@ export function observeCheckpointResult(state: CheckpointState, event: Checkpoin
 function evidenceHash(text: string): string {
   // Imported once by the kernel core; no dependency on either harness.
   return createHash('sha256').update(text).digest('hex');
+}
+
+/** The audit is deliberately independent of shell syntax: the process already has its arguments. */
+export const LEDGER_WRITERS: Record<string, readonly string[]> = {
+  // graduate has no apply half at this base; sources is read-only without its mutation flag.
+  book: ['add-page', 'replace-page', 'sources', 'reader-map'],
+  collection: ['add-page', 'replace-page'], capture: [''], compile: [''],
+  hub: ['edit', 'new', 'copy-pages', 'rename', 'tidy', 'archive'], kickoff: ['receive'],
+  letters: ['close'], reports: ['amend', 'withdraw', 'send-pending'], postbox: ['check'], notebook: ['render'],
+  publish: ['', 'batch', 'refresh'], reset: ['', 'restore'],
+  shared: ['add-page', 'replace-page', 'remove-page', 'new-book', 'promote', 'catalog-line', 'archive', 'restore', 'sources'],
+  shelf: ['new', 'rename', 'remove', 'stub', 'tidy', 'carry', 'recall', 'archive', 'restore', 'describe'],
+  triage: ['batch'], undo: [''], redo: [''], 'basic-memory': ['import'],
+};
+export type LedgerRecord = {
+  schema: 1; entry: string; state: 'started' | 'committed' | 'unchanged' | 'rolled-back' | 'failed'; at: number;
+  verb: string; action: string; mode: string | null; seat: string | null;
+  claude_session: string | null; codex_thread: string | null;
+  targets?: CheckpointWrite[] | null; unattributed?: boolean;
+  target?: string; settledJournal?: string;
+};
+type JournalSnapshot = { path: string; ctimeMs: number; mtimeMs: number; hash: string }[];
+export type LedgerRun = { workspace: string; record: LedgerRecord; receipts: unknown[]; journalEvidence?: { paths: string[]; snapshot: JournalSnapshot | null } };
+const LEDGER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function safeLedgerPath(workspace: string, components: string[]): string {
+  let current = workspace;
+  for (const component of components) {
+    current = path.join(current, component);
+    try { if (fs.lstatSync(current).isSymbolicLink()) throw Error('Ledger paths cannot contain symbolic links or junctions.'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  return current;
+}
+function ledgerPath(workspace: string, conversation: string): string {
+  if (!LEDGER_ID.test(conversation)) throw Error('Invalid ledger conversation identity.');
+  return safeLedgerPath(workspace, ['internal', 'checkpoints', 'ledger', conversation + '.jsonl']);
+}
+function ledgerFailure(workspace: string, conversation: string): string {
+  return safeLedgerPath(workspace, ['internal', 'checkpoints', 'ledger-unreadable-' + conversation]);
+}
+function appendLedger(run: LedgerRun, record: LedgerRecord): void {
+  for (const id of new Set([record.claude_session, record.codex_thread])) {
+    if (!id) continue;
+    try {
+      const file = ledgerPath(run.workspace, id);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.appendFileSync(file, JSON.stringify(record) + '\n', 'utf8');
+    } catch {
+      // This side channel survives a ledger directory that is unwritable. Never change a command's result.
+      try { fs.writeFileSync(ledgerFailure(run.workspace, id), 'unreadable\n', { flag: 'wx' }); } catch { /* The reader also probes accessibility. */ }
+    }
+  }
+}
+
+/** A failed probe or a link means unknown evidence, never an empty snapshot. */
+function ledgerJournalSnapshot(paths: string[]): JournalSnapshot | null {
+  try {
+    const rows: JournalSnapshot = [];
+    const safe = (file: string) => { const root = path.parse(file).root; return safeLedgerPath(root, file.slice(root.length).split(path.sep)); };
+    for (const file of paths) {
+      const full = safe(file);
+      let stat: fs.Stats;
+      try { stat = fs.statSync(full); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      const files = stat.isDirectory() ? fs.readdirSync(full).filter(name => name.endsWith('.json')).map(name => safe(path.join(full, name))) : [full];
+      for (const journal of files) {
+        const stat = fs.statSync(journal);
+        rows.push({ path: journal, ctimeMs: stat.ctimeMs, mtimeMs: stat.mtimeMs, hash: createHash('sha256').update(fs.readFileSync(journal)).digest('hex') });
+      }
+    }
+    return rows.sort((a, b) => a.path.localeCompare(b.path));
+  } catch { return null; }
+}
+
+/** Failure is advisory only, including resolution failures before the verb has selected a Library. */
+export function startWriteLedger(argv: string[]): LedgerRun | null {
+  try {
+    const claude_session = process.env['CLAUDE_CODE_SESSION_ID'] || null, codex_thread = process.env['CODEX_THREAD_ID'] || null;
+    if (!claude_session && !codex_thread) return null;
+    if ([claude_session, codex_thread].some(id => id !== null && !LEDGER_ID.test(id))) return null;
+    let args = argv;
+    if (args[0] === '--workspace') args = [...args.slice(2), '--workspace', args[1]!];
+    const verb = args[0] ?? '', actions = LEDGER_WRITERS[verb];
+    if (!actions) return null;
+    const action = actions.includes(args[1] ?? '') ? args[1] ?? '' : '';
+    if (!actions.includes(action)) return null;
+    const parsed = parseArguments(commandAction(verb, args.slice(1)).argv, argumentTable(verb, action));
+    if (['preflight', 'dry-run', 'help', 'list'].some(name => parsed.flags.has(name)) || parsed.positional.some(word => ['-h', '-?', '/?'].includes(word))) return null;
+    if (verb === 'book' && action === 'sources' && !parsed.flags.has('set') && !parsed.flags.has('mark-compiled')) return null;
+    const option = (name: string) => parsed.options.get(name);
+    const workspace = requireWorkspace({ explicit: option('workspace') });
+    const record: LedgerRecord = { schema: 1, entry: randomUUID(), state: 'started', at: Date.now(), verb, action,
+      mode: option('mode') ?? null, seat: writingSeat(workspace, option('seat'))?.name ?? null, claude_session, codex_thread,
+      ...(['book', 'hub'].includes(verb) && parsed.positional[0] ? { target: parsed.positional[0] } : {}) };
+    const paths = verb === 'book' ? [path.join(workspace, 'internal', 'shelf-journals')]
+      : verb === 'hub' && action === 'edit' ? [path.join(workspace, 'internal', 'publication-journals')]
+      : verb === 'publish' && action === 'refresh' && readMarker(workspace)?.['backend'] === 'local'
+        ? [path.join(workspace, 'internal', 'publication-journals'), ...(option('journal-path') ? [path.resolve(option('journal-path')!)] : [])] : null;
+    const run: LedgerRun = { workspace, record, receipts: [], ...(paths ? { journalEvidence: { paths, snapshot: ledgerJournalSnapshot(paths) } } : {}) };
+    appendLedger(run, record);
+    return run;
+  } catch { return null; }
+}
+
+/** Decodes the verb's emitted receipt, including compound receipts and undo/redo paths. */
+export function ledgerReceipt(value: unknown, at: number): { written: boolean; targets: CheckpointWrite[] } {
+  const r = object(value);
+  if (!r || r.written === false || r.preflight === true || r.error || r.refusal ||
+    ['planned', 'preview', 'refused', 'failed', 'error', 'unchanged'].includes(String(r.status))) return { written: false, targets: [] };
+  if (r.operation === 'Library Triage' && Array.isArray(r.outcomes)) {
+    const receipts = r.outcomes.flatMap(value => {
+      const outcome = object(value), result = object(outcome?.result);
+      if (!result || outcome?.state !== 'succeeded' || outcome.skipped !== false || outcome.error) return [];
+      const receipt = ledgerReceipt(['updated', 'stamped', 'copied', 'discarded'].includes(String(result.status)) ? { ...result, written: true } : result, at);
+      return [receipt, ledgerReceipt(result.note_close, at)];
+    });
+    return { written: receipts.some(receipt => receipt.written), targets: receipts.flatMap(receipt => receipt.targets) };
+  }
+  const triage = triageWrites(r, at);
+  const written = r.written === true || r.renamed === true || r.archive_complete === true || r.restored === true || r.created === true && Array.isArray(r.written) && r.written.length > 0 || r.verdict === 'written' || r.imported === true && Number(r.files_written) > 0 ||
+    r.operation === 'Render the Notebook master index' && typeof r.master_index_path === 'string' ||
+    r.publication_complete === true || Array.isArray(r.created_records) && r.created_records.length > 0 || Array.isArray(r.filed) && r.filed.length > 0 ||
+    ['added', 'written', 'captured', 'closed', 'amended', 'undone', 'redone', 'withdrawn', 'sent', 'rendered', 'complete', 'completed', 'published', 'refreshed', 'restored', 'archived', 'removed', 'deleted', 'renamed', 'created', 'carried', 'recalled', 'described', 'stubbed', 'tidied', 'sent-pending', 'received'].includes(String(r.status));
+  const targets = [...checkpointWrites(r, at), ...triage];
+  for (const candidate of [...(Array.isArray(r.paths) ? r.paths : []), ...(Array.isArray(r.written) ? r.written : []), r.note, r.capture_note, r.path, r.page_file, r.kickoff, r.reader_map, r.article_path, r.topic_index_path, r.master_index_path,
+    ...(r.status === 'withdrawn' && typeof r.book === 'string' && typeof r.report === 'string' ? [r.book + '/wiki/' + r.report] : [])]) {
+    const p = object(candidate);
+    const target = canonicalWrite(p ? p.path ?? p.page_path ?? p.page : candidate, at);
+    if (target) targets.push(target);
+  }
+  return { written: written || targets.length > 0, targets: targets.filter((w, index) =>
+    targets.findIndex(other => itemKey(other.kind, other.name, other.where) === itemKey(w.kind, w.name, w.where) && other.page === w.page) === index) };
+}
+
+export function finishWriteLedger(run: LedgerRun | null, exit: number, beforeDispatch = false): void {
+  if (!run) return;
+  try {
+    const at = Date.now(), receipts = run.receipts.map(value => ledgerReceipt(value, at));
+    const written = receipts.some(r => r.written), targets = receipts.flatMap(r => r.targets);
+    const evidence = run.journalEvidence, after = evidence ? ledgerJournalSnapshot(evidence.paths) : null;
+    const state = written ? 'committed' : exit === 0 || beforeDispatch ? 'unchanged' : evidence
+      ? evidence.snapshot !== null && after !== null && JSON.stringify(evidence.snapshot) === JSON.stringify(after) ? 'unchanged' : 'started' : 'started';
+    if (state === 'committed' && evidence?.snapshot && after) {
+      const beforeHashes = new Map(evidence.snapshot.map(journal => [journal.path, journal.hash]));
+      for (const journal of after) {
+        if (beforeHashes.get(journal.path) !== journal.hash) claimLedgerJournal(run.workspace, journal.path, run.record.entry);
+      }
+    }
+    appendLedger(run, { ...run.record, state, at: state === 'started' ? run.record.at : at, ...(written ? { targets: targets.length ? targets : null,
+      ...(targets.length ? {} : { unattributed: true }) } : {}) });
+  } catch { /* Ledger failures never become command failures. */ }
+}
+
+/** An exclusive claim also covers interrupted entries in other conversations. */
+function claimLedgerJournal(workspace: string, journal: string, entry: string): boolean {
+  try {
+    const root = safeLedgerPath(workspace, ['internal', 'checkpoints', 'ledger']);
+    for (const name of fs.readdirSync(root).filter(name => name.endsWith('.jsonl'))) {
+      const file = safeLedgerPath(workspace, ['internal', 'checkpoints', 'ledger', name]);
+      for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+        const record = JSON.parse(line) as LedgerRecord;
+        if (record.settledJournal === journal && record.entry !== entry) return false;
+      }
+    }
+    const relative = path.relative(workspace, journal).split(path.sep).join('/');
+    const file = safeLedgerPath(workspace, ['internal', 'checkpoints', 'journal-claims', evidenceHash(relative)]);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    try { fs.writeFileSync(file, entry, { flag: 'wx' }); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; return fs.readFileSync(file, 'utf8') === entry; }
+  } catch { return false; }
+}
+
+/** A journal is only completion evidence after its verified undo block was recorded. */
+function completedLedgerJournal(workspace: string, record: LedgerRecord, until: number, used: Set<string>): { targets: CheckpointWrite[]; journal: string } | null {
+  for (const directory of ['publication-journals', 'shelf-journals', 'triage-journals']) {
+    const root = path.join(workspace, 'internal', directory);
+    if (!fs.existsSync(root)) continue;
+    for (const name of fs.readdirSync(root).filter(name => name.endsWith('.json'))) {
+      const file = path.join(root, name), stat = fs.statSync(file);
+      if (used.has(file)) continue;
+      if (stat.birthtimeMs < record.at || Math.floor(stat.mtimeMs) > until) continue;
+      const journal = object(JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))), undo = object(journal?.undo);
+      if (!undo || undo.written_by_seat !== record.seat || !Array.isArray(undo.paths) || !undo.paths.length) continue;
+      // Only an explicit command identity can settle an interrupted writer. Unknown journal forms stay uncertain.
+      const identity = String(journal?.operation ?? '');
+      const named = identity === `${record.verb}-${record.action}` || record.verb === 'book' && (
+        record.action === 'add-page' && /^Add page .+/.test(identity) || record.action === 'replace-page' && /^Replace page .+/.test(identity)) ||
+        record.verb === 'hub' && record.action === 'edit' && identity === 'project-edit';
+      if (!named || record.mode && journal?.mode !== record.mode) continue;
+      if (record.target && journal?.book_root !== `shelf/${record.target}` && journal?.book_root !== `collection/books/${record.target}` && journal?.project_slug !== record.target) continue;
+      const targets: CheckpointWrite[] = [];
+      let verified = true;
+      for (const item of undo.paths) {
+        const entry = object(item), relative = entry?.path;
+        if (typeof relative !== 'string' || relative.includes('\\') || path.isAbsolute(relative) || relative.split('/').some(p => !p || p === '.' || p === '..')) { verified = false; break; }
+        const full = path.join(workspace, relative);
+        const hash = fs.existsSync(full) ? createHash('sha256').update(fs.readFileSync(full)).digest('hex') : null;
+        if (hash !== entry!.after_sha256) { verified = false; break; }
+        const target = canonicalWrite(relative, stat.mtimeMs);
+        if (target) targets.push(target);
+      }
+      if (verified && claimLedgerJournal(workspace, file, record.entry)) { used.add(file); return { targets, journal: file }; }
+    }
+  }
+  return null;
+}
+
+export function readWriteLedger(workspace: string, conversation: string): {
+  ledger: 'readable' | 'unreadable'; entries: (LedgerRecord | (Omit<LedgerRecord, 'state'> & { state: 'uncertain' }))[];
+} {
+  try {
+    const file = ledgerPath(workspace, conversation);
+    if (fs.existsSync(ledgerFailure(workspace, conversation))) throw Error('A ledger write failed.');
+    let probe = file;
+    while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
+    fs.accessSync(probe, fs.constants.R_OK | fs.constants.W_OK);
+    const latest = new Map<string, LedgerRecord>();
+    if (!fs.existsSync(file)) {
+      // A non-directory ledger is a damaged store, not an empty conversation.
+      const root = path.dirname(file);
+      if (fs.existsSync(root) && !fs.statSync(root).isDirectory()) throw Error('Unreadable ledger folder.');
+      return { ledger: 'readable', entries: [] };
+    }
+    for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+      const record = JSON.parse(line) as LedgerRecord;
+      if (record.schema !== 1 || typeof record.entry !== 'string' || !Number.isFinite(record.at) ||
+        !['started', 'committed', 'unchanged', 'rolled-back', 'failed'].includes(record.state) ||
+        ![record.claude_session, record.codex_thread].includes(conversation)) throw Error('Damaged ledger record.');
+      if (typeof record.verb !== 'string' || typeof record.action !== 'string' ||
+        record.targets != null && (!Array.isArray(record.targets) || !record.targets.every(target => target &&
+          ['hub', 'book', 'report', 'notebook'].includes(target.kind) && typeof target.name === 'string' && typeof target.page === 'string' && Number.isFinite(target.at)))) throw Error('Damaged ledger targets.');
+      latest.set(record.entry, record);
+    }
+    const used = new Set([...latest.values()].flatMap(record => record.settledJournal ? [record.settledJournal] : []));
+    const entries = [...latest.values()].map(record => {
+      if (record.state !== 'started') return record;
+      const completedJournal = completedLedgerJournal(workspace, record, Date.now(), used);
+      if (completedJournal !== null) {
+        const { targets, journal: settledJournal } = completedJournal;
+        const completed: LedgerRecord = { ...record, state: 'committed', targets: targets.length ? targets : null,
+          settledJournal,
+          ...(targets.length ? {} : { unattributed: true }) };
+        appendLedger({ workspace, record, receipts: [] }, completed);
+        return completed;
+      }
+      return { ...record, state: 'uncertain' as const };
+    });
+    return { ledger: 'readable', entries };
+  } catch { return { ledger: 'unreadable', entries: [] }; }
+}
+
+/** Import each committed entry once. Unsettled evidence cannot justify a claim of no new work. */
+export function checkpointLedger(state: CheckpointState, workspace: string): CheckpointState {
+  const read = readWriteLedger(workspace, state.conversation), seen = new Set(state.ledgerSeen ?? []);
+  const added = read.entries.filter(entry => entry.state === 'committed' && !seen.has(entry.entry));
+  const writes = added.flatMap(entry => entry.targets ?? []);
+  const gaps = read.ledger === 'unreadable' ? ['ledger: unreadable for this conversation.'] : read.entries
+    .filter(entry => entry.state === 'uncertain' || entry.at >= (state.savedAt ?? 0) && (entry.unattributed || entry.state === 'committed' && !entry.targets?.length))
+    .map(entry => `ledger entry ${entry.entry}: ${entry.state === 'uncertain' ? 'uncertain' : 'unattributed target'} (${entry.verb} ${entry.action}).`);
+  return { ...state, tracking: state.tracking || read.entries.length > 0, writes: [...state.writes, ...writes], ledgerSeen: [...seen, ...added.map(entry => entry.entry)], ledgerGaps: gaps,
+    closeout: writes.length && ['done', 'gaps', 'waits'].includes(state.closeout) ? 'stale' : state.closeout };
 }

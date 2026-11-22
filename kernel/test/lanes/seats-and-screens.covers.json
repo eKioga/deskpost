@@ -52,6 +52,26 @@
     "1014": ["kernel/src/librarymove.ts", "kernel/src/cli.ts", "kernel/src/verbs.ts"],
     "1015": ["kernel/src/librarymove.ts"],
     "1016": ["kernel/src/librarymove.ts"],
-    "1018": ["kernel/src/cli.ts"]
+    "1017": ["kernel/src/librarymove.ts"],
+    "1018": ["kernel/src/cli.ts"],
+    "1021": ["kernel/src/librarymove.ts"],
+    "1022": ["kernel/src/librarymove.ts"],
+    "1023": ["kernel/src/librarymove.ts"],
+    "1060": ["kernel/src/librarymove.ts", "kernel/src/cli.ts"],
+    "1030": ["kernel/src/dashboard.ts"],
+    "1031": ["kernel/src/dashboard.ts"],
+    "1032": ["kernel/src/dashboard.ts"],
+    "1033": ["kernel/src/dashboard.ts"],
+    "1034": ["kernel/src/dashboard.ts"],
+    "1035": ["kernel/src/dashboard.ts"],
+    "1036": ["kernel/src/dashboard.ts"],
+    "1037": ["kernel/src/dashboard.ts"],
+    "1038": ["kernel/src/dashboard.ts", "kernel/src/cli.ts", "kernel/src/verbs.ts"],
+    "1039": ["kernel/src/dashboard.ts", "kernel/src/cli.ts", "kernel/src/verbs.ts"],
+    "1040": ["kernel/src/seatmeta.ts", "kernel/src/seatcards.ts", "kernel/src/seatstartplan.ts"],
+    "1041": ["kernel/src/capture.ts", "kernel/src/shelfnote.ts", "kernel/src/desk.ts"],
+    "1042": ["kernel/src/menu.ts", "kernel/src/seat.ts", "kernel/src/deskcontext.ts"],
+    "1019": ["kernel/src/librarymove.ts"],
+    "1020": ["kernel/src/librarymove.ts"]
   }
 }

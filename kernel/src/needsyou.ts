@@ -318,7 +318,7 @@ export function refreshAfterCommand(argv: string[]): void {
   // read never rewrites the vault's needs-you page. `check` and `next` are not read actions of other verbs:
   // `checkpoint check` and `postbox check` keep refreshing.
   if (verb === undefined || !REFRESH_VERBS.has(verb) || READ_ACTIONS.has(action ?? '') || (verb === 'undo' && args.includes('--list'))
-    || (verb === 'kickoff' && (action === 'check' || action === 'next'))) return;
+    || (verb === 'kickoff' && (action === 'check' || action === 'next')) || (verb === 'checkpoint' && action === 'prepare')) return;
   if (args.some((item) => ['--preflight', '--help', '-h', '--dry-run'].includes(item))) return;
   let workspace: string;
   try {

@@ -119,6 +119,15 @@
         ],
         "PostToolUse": [
             {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node",
+                        "args": ["${CLAUDE_PROJECT_DIR}/kernel/src/cli.ts", "hook", "checkpoint"]
+                    }
+                ]
+            },
+            {
                 "matcher": "mcp__validated-book-reader__discover_book_pages|mcp__validated-book-reader__search_open_books|Bash|PowerShell",
                 "hooks": [
                     {
@@ -140,6 +149,15 @@
                 "hooks": [
                     {
                         "type": "command",
+                        "command": "node",
+                        "args": ["${CLAUDE_PROJECT_DIR}/kernel/src/cli.ts", "hook", "checkpoint"]
+                    }
+                ]
+            },
+            {
+                "hooks": [
+                    {
+                        "type": "command",
                         "command": "powershell.exe",
                         "args": [
                             "-NoProfile",
@@ -148,6 +166,17 @@
                             "-File",
                             "${CLAUDE_PROJECT_DIR}/.claude/hooks/Get-VirtualDeskContext.ps1"
                         ]
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node",
+                        "args": ["${CLAUDE_PROJECT_DIR}/kernel/src/cli.ts", "hook", "checkpoint"]
                     }
                 ]
             }

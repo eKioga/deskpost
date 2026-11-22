@@ -29,7 +29,7 @@ The next milestones are listed below.
 
 ## Next
 
-**1.7.0 is released:** Hubs show their live state, completed items move into history, and builders can queue their next Kickoffs. Next comes the remaining foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell**.
+**1.7.1 is released:** departments can have groups with their own orchestrator and letters, and Library moves are on. Next comes the remaining foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell**.
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -150,6 +150,13 @@ Set aside on purpose, not planned, until real use calls for them again:
 
 ## Released
 
+### 1.7.1: Groups for your seats, and Library moves (released 2026-11-22)
+
+- **Department groups:** a department can contain groups such as `games/sbox`, each with its own seats, orchestrator and letter destination. Letters to the parent stay with the parent.
+- **Library moves:** `deskpost library move` is available. Run `--preflight` first. The preview lists uncertain matches for hand edits and skips them. The move refuses files that may hold an unreadable old path until you edit them. The move only counts `.db` files. Reopen the workspace in Orca after moving. Comparing TOML keys across tables can block a safe move. A relative folder shaped like an option or ending in a space or quote can be rewritten when it directly precedes the path in the same value.
+- **Clearer Hub status and briefings:** completed items keep one history pointer, advice names each open item, and returning to a project shows the current state.
+- **Saves with a clearer account:** closeout counts the program's own writes as well as the assistant's and asks before saving them.
+
 ### 1.7.0: Hubs that show their state (released 2026-11-18)
 
 - **Live Hub status:** `deskpost hub status` reads the current state of the records named in Now and Next.
@@ -157,7 +164,7 @@ Set aside on purpose, not planned, until real use calls for them again:
 - **Builder queues:** up to three Kickoffs wait in order, and `kickoff next` starts the next only when its conditions hold.
 - **Returning to a project:** the briefing includes the Hub's live state. Hub readers agree on which lines are hidden inside comments.
 - **Your text stays as typed:** program output preserves reader wording, spelling and punctuation.
-- **Library moves wait:** `library move` is in the program but turned off because a known fault can rewrite unrelated paths; it returns in a later release.
+- **Library moves waited:** `library move` was turned off in 1.7.0; it is enabled in 1.7.1.
 
 ### 1.2.4: Tidy shelves (released in 1.2.5, 2026-09-30)
 

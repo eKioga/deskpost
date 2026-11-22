@@ -36,6 +36,7 @@
  * selftest.ts at <sha>), which is how S113 replayed S103's commits; every check still runs on this working tree.
  */
 import { pathChecks } from './section-select.mts';
+import { inventoryChecks } from './inventory.mts';
 import { estimateSeconds, parseTimes } from './section-times.mts';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -536,7 +537,6 @@ async function pushChecks(root: string, say: (outcome: Outcome) => void, note: (
 function releaseOnly(): Outcome[] {
   const later = (check: string, where: string): Outcome => ({ check, tier: 'release', status: 'skip', seconds: null, caught: 'see docs/releasing.md', detail: `not in gate.ts yet: ${where}` });
   return [
-    later('matrix (compiled arm)', 'tools/Invoke-AcceptanceMatrix.ps1 -All -Kernel <the release library.exe>, until tools/matrix.ts (session 4)'),
     later('built-release tests', 'tools/Test-BuiltRelease.ps1 -PreviousRelease <the previous rel>, until tools/test-built-release.ts (session 5)'),
     later('compiled self-test sections', "LIBRARY_SELFTEST_KERNEL=<the release library.exe>: 116, 117, 130-133, and 143, 144, 146, 147 on an unbumped build (docs/releasing.md)"),
     later('reader adapter checks', 'reader.launch-validation, .dispatch-selftest, .shelf-selftest, .project-pin-selftest, .shared-selftest: in the runner child today; the release tier beside the adapter exception (docs/powershell-inventory.md)'),
@@ -606,7 +606,13 @@ export async function settingsChecks(root: string, changed: string[]): Promise<O
     catch(error) { outcomes.push({check:`json.parse: ${file}`,tier:'commit',status:'fail',seconds:0,detail:String(error),caught:'malformed changed configuration'}); }
   }
   for (const name of settingsChecksForPaths(changed)) {
-    const ran = await runChild('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), '-Only', name, '-ProgramPath', root, '-Json'], root, CHECK_LIMIT);
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'tools', 'Invoke-LibraryChecks.ps1'), '-Only', name, '-ProgramPath', root, '-Json'];
+    let ran = await runChild('powershell.exe', args, root, CHECK_LIMIT);
+    const missingWindowsPowerShell = ran.status === null && ran.output.endsWith('spawn powershell.exe ENOENT');
+    if (missingWindowsPowerShell) {
+      const fallback = await runChild('pwsh', args, root, CHECK_LIMIT);
+      ran = { ...fallback, seconds: ran.seconds + fallback.seconds };
+    }
     const rows = runnerReport(ran.output)?.checks;
     const row = rows?.length === 1 && rows[0]?.check === name ? rows[0] : undefined;
     const status = row ? STATUS_OF[row.status] : undefined;
@@ -614,8 +620,8 @@ export async function settingsChecks(root: string, changed: string[]): Promise<O
     const absentRender = name === 'codex.project-access-config' && status === 'skip'
       && row?.detail.startsWith('both rendered Codex files are absent (a fresh clone or worktree);')
       && ['config.toml', 'hooks.json'].every(file => !fs.existsSync(path.join(root, '.codex', file)));
-    const detail = row?.detail ?? (ran.status === null && /ENOENT/.test(ran.output)
-      ? `powershell.exe is missing; ${name} cannot run.`
+    const detail = row?.detail ?? (missingWindowsPowerShell && ran.status === null && ran.output.endsWith('spawn pwsh ENOENT')
+      ? `powershell.exe is missing and so is pwsh; ${name} cannot run.`
       : `no matching settings verdict (exit ${ran.status}): ${lastLines(ran.output, 2)}`);
     outcomes.push({ check: name, tier: 'commit', status: ran.status === 0 && (status === 'pass' || status === 'warn' || absentRender) ? status! : 'fail', seconds: ran.seconds, detail, caught: 'settings that disabled their own hooks' });
   }
@@ -673,6 +679,7 @@ async function runTier(argv: string[], tierWait: GateWait | null = null, platfor
     }
     for (const outcome of await scanChecks(root)) say(outcome);
     for (const outcome of await settingsChecks(root, chosen.changed)) say(outcome);
+    for (const outcome of inventoryChecks(root, options.tier)) say(outcome);
     const earlyFailures = outcomes.filter(outcome => outcome.status === 'fail' && !outcome.diagnostic);
     if (!options.compare && earlyFailures.length) {
       say({ check: options.tier === 'push' ? 'kernel.selftest' : 'kernel.selftest (selected sections)', tier: options.tier,

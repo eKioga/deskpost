@@ -105,7 +105,7 @@ export function openVerdict(nextLines: readonly string[], hub: string, id: strin
   const pending = pendingRunIds(nextLines);
   const first = pending[0] ?? null;
   if (first === null) {
-    return { ok: false, first, pending, message: `projects/${hub} has no pending Run pointer in ## Next, so no Kickoff is ready to open. Wait for the next pointer to be posted.` };
+    return { ok: false, first, pending, message: `projects/${hub} has no pending Run pointer in ## Next, so no Kickoff is ready to open. A Kickoff from another Library arrives as a letter: run deskpost letters list, then deskpost kickoff receive notes/<letter page> for the one that carries it; otherwise wait for the next pointer to be posted.` };
   }
   if (first.toLowerCase() === id.trim().toLowerCase()) {
     const rest = pending.length - 1;
@@ -401,7 +401,8 @@ export function trainProblems(text: string, record: unknown): string[] {
   const listProblems = commaIds.length ? [`TRAIN lists ${commaIds.map(id => `'${id}'`).join(', ')} after a comma; write it as ${primary} (${place}; this unit also carries ${commaIds.join(', ')})`] : [];
   const carried = /;\s*this unit also carries\s+([^)]*)/.exec(train)?.[1];
   const malformed: string[] = [];
-  for (const part of carried?.split(/,\s*|\s+and\s+|\.\s+(?=`)/) ?? []) {
+  // A full stop before the next id, in backticks or bare, also splits (kickoffs/s219 row 9, review-nits-w28 part 4).
+  for (const part of carried?.split(/,\s*|\s+and\s+|\.\s+(?=`|[a-z0-9])/) ?? []) {
     const piece = part.trim().replace(/^and\s+/, '').replace(/\.$/, '');
     if (piece.includes('`') && !/^`[a-z0-9][a-z0-9-]*`$/.test(piece.trim())) {
       malformed.push("TRAIN carries a malformed id '" + piece.trim() + "'");

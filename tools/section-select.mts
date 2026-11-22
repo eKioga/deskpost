@@ -292,6 +292,25 @@ export interface Covers {
 export function parseCovers(text: string, file: string = COVERS_PATH): Covers {
   const parsed = JSON.parse(text.replace(/^﻿/, '')) as Partial<Covers>;
   if (parsed.schema !== 1 || typeof parsed.sections !== 'object' || parsed.sections === null) throw new Error(`${file} is not a schema-1 claim map`);
+  let depth = 0, sectionsDepth = -1;
+  const keys = new Set<string>();
+  for (const token of text.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]]/g)) {
+    const value = token[0];
+    if (value === '{' || value === '[') depth += 1;
+    else if (value === '}' || value === ']') {
+      if (depth === sectionsDepth) sectionsDepth = -1;
+      depth -= 1;
+    } else if (/^\s*:/.test(text.slice(token.index! + value.length))) {
+      const key = JSON.parse(value) as string;
+      if (depth === 1 && key === 'sections') {
+        sectionsDepth = depth + 1;
+        keys.clear();
+      } else if (depth === sectionsDepth) {
+        if (keys.has(key)) throw new Error(`${file}: section ${key} is claimed twice in this file; keep one claim`);
+        keys.add(key);
+      }
+    }
+  }
   for (const [section, files] of Object.entries(parsed.sections)) {
     if (!/^[1-9][0-9]*$/.test(section)) throw new Error(`${file}: '${section}' is not a section number`);
     if (!Array.isArray(files) || files.some((claim) => typeof claim !== 'string' || !/^kernel\/src\/[^/]+\.ts$/.test(claim))) {
@@ -360,17 +379,19 @@ export interface Hunk {
   start: number;
   count: number;
   oldCount?: number;
+  removedNonblank?: boolean;
 }
 
 /**
- * `@@ -a,b +c,d @@` headers of a `git diff -U0` of one file, as new-side hunks. `oldCount` is attached but not
- * enumerable, so a hunk serializes as `{start, count}` as it always has (section 215 pins that form).
+ * Hunks from a `git diff -U0` of one file. Old-side metadata is non-enumerable, so a hunk
+ * still serializes as `{start, count}` (section 215 pins that form).
  */
 export function parseHunks(diffText: string): Hunk[] {
   const hunks: Hunk[] = [];
-  for (const match of diffText.matchAll(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+  for (const match of diffText.matchAll(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[^\r\n]*((?:\r?\n(?:[-+ ]|\\)[^\r\n]*)*)/gm)) {
     const hunk: Hunk = { start: Number(match[2]), count: match[3] === undefined ? 1 : Number(match[3]) };
     Object.defineProperty(hunk, 'oldCount', { value: match[1] === undefined ? 1 : Number(match[1]), enumerable: false });
+    Object.defineProperty(hunk, 'removedNonblank', { value: /^-[^\S\r\n]*\S/m.test(match[4]!), enumerable: false });
     hunks.push(hunk);
   }
   return hunks;
@@ -493,27 +514,41 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
     const blank = (line: number) => (lines[line - 1] ?? '').trim() === '';
     const inside = (line: number) => ranges.find((range) => line >= range.start && line <= range.end);
     for (const hunk of source.hunks) {
+      if (hunk.count === 0 && hunk.removedNonblank === false) {
+        reasons.push(`no section: ${source.file} removed only blank lines after line ${hunk.start}`);
+        continue;
+      }
       // Blank lines at either end of a hunk belong to no section and change nothing: a new section arrives with one.
       let first = Math.max(hunk.start, 1);
-      let last = hunk.count === 0 ? first : hunk.start + hunk.count - 1;
+      let last = hunk.count === 0 ? (hunk.removedNonblank ? first - 1 : first) : hunk.start + hunk.count - 1;
       if (hunk.count > 0) {
         while (first <= last && blank(first)) first += 1;
         while (last >= first && blank(last)) last -= 1;
-        if (first > last) {
+        if (first > last && !hunk.removedNonblank) {
           reasons.push(`no section: ${source.file} lines ${hunk.start}-${hunk.start + hunk.count - 1} are blank`);
           continue;
         }
       }
-      const span = hunk.count === 0 ? `after line ${hunk.start}` : first === last ? `line ${first}` : `lines ${first}-${last}`;
+      const after = hunk.count === 0 ? hunk.start + 1 : hunk.start + hunk.count;
+      const before = hunk.count === 0 ? hunk.start : hunk.start - 1;
+      const removalHome = hunk.removedNonblank ? inside(before) : undefined;
+      const removalIsLocal = removalHome !== undefined && removalHome === inside(after);
+      const spanStart = first <= last ? first : hunk.start;
+      const spanEnd = first <= last ? last : after - 1;
+      const span = hunk.count === 0 ? `after line ${hunk.start}`
+        : spanStart === spanEnd ? `line ${spanStart}` : `lines ${spanStart}-${spanEnd}`;
       // Each nonblank line's section; the first line inside none runs every section and is named.
       const touched = new Set<number>();
+      if (removalIsLocal) {
+        touched.add(removalHome.section);
+        ownSections.add(removalHome.section);
+      }
       let stray: number | undefined;
       // A PURE ADDITION CAN BE SPLIT ANOTHER WAY (kickoffs/s210 row 4): git may count the unchanged line just after the
       // hunk as added and an equal line inside it as unchanged. The first section added to a lane file did that with
       // `runLane`'s closing `}`: the hunk held runLane's `}` and the new section's `}` lay just past it. So in a pure
       // addition, one line outside every section that equals the line just after the hunk is that line, unchanged, and
       // the line after is the added one; the swap is taken only when that line is inside a section.
-      const after = hunk.start + hunk.count;
       const swappable = hunk.count > 0 && (hunk.oldCount ?? 0) === 0 && inside(after) !== undefined ? lines[after - 1] : undefined;
       let swapped = false;
       for (let line = first; line <= last; line += 1) {
@@ -529,9 +564,11 @@ export function selectSections(input: { changed: readonly string[]; selftestHunk
       if (stray !== undefined) {
         all = true;
         reasons.push(`every section: ${source.file} line ${stray} is outside every section`);
+      } else if (hunk.removedNonblank && !removalIsLocal) {
+        all = true;
+        reasons.push(`every section: ${source.file} ${span} may have removed text outside a section`);
       } else if (touched.size > 1 && (hunk.oldCount ?? 0) > 0) {
-        // Only the new side is read, so any old line between two sections could have been a shared helper; only a
-        // pure addition (no `oldCount`, as hand-built hunks have, counts as one) selects each section it touches.
+        // Hunks without removed-line metadata can still describe a replacement spanning sections.
         all = true;
         reasons.push(`every section: ${source.file} ${span} replaces lines across ${listed(touched)}`);
       } else {

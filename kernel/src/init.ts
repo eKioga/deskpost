@@ -47,8 +47,9 @@ import {
   withMarkerLock,
 } from './workspace.ts';
 import { HOOK_VERB_FOR_SCRIPT } from './hookregistry.ts';
-import { COMMAND_NAME, entryInvocation } from './machine.ts';
+import { COMMAND_NAME, entryInvocation, sourceKernelScript, isKernelBinary, programOfBinary, programRelation } from './machine.ts';
 import { codexTurnedOn, codexUserConfig, type CodexConfigTables } from './doctor.ts';
+import { PROGRAM_ROOT_PROOF } from './programroot.ts';
 import { localDate } from './localdate.ts';
 import { SKILL_MANIFEST, skillPlans } from './skillcopy.ts';
 
@@ -397,17 +398,15 @@ function kernelBinary(programRoot: string): string {
 }
 
 /**
- * `.mcp.json` with the Library's OWN adapter entry taken out, so a compiled kernel's reader replaces it rather than
- * meeting it as a conflict (S46). An entry is the Library's when it is `powershell.exe` running the program's
- * `.claude/adapters/Validated-BookReader.ps1` -- what an earlier release's init wrote. Anything else under the same
- * name is someone's own, and the merge still refuses it.
+ * Take out an earlier release's adapter or this program's kernel reader before merging, so its arguments are replaced
+ * whole. The caller judges the kernel's program root; the adapter rule still accepts any earlier program folder.
  */
-function withoutLibraryAdapterEntry(existing: unknown): unknown {
+function withoutLibraryAdapterEntry(existing: unknown, ownKernel = false): unknown {
   if (!isPlainObject(existing) || !isPlainObject(existing['mcpServers'])) return existing;
   const servers = existing['mcpServers'] as Record<string, unknown>;
   const entry = servers['validated-book-reader'];
-  if (!isPlainObject(entry) || String(entry['command'] ?? '').toLowerCase() !== 'powershell.exe' || !Array.isArray(entry['args'])) return existing;
-  const ours = (entry['args'] as unknown[]).some((arg) => /(^|\/)\.claude\/adapters\/validated-bookreader\.ps1$/i.test(String(arg).replace(/\\/g, '/')));
+  const ours = ownKernel || (isPlainObject(entry) && String(entry['command'] ?? '').toLowerCase() === 'powershell.exe' && Array.isArray(entry['args']) &&
+    (entry['args'] as unknown[]).some((arg) => /(^|\/)\.claude\/adapters\/validated-bookreader\.ps1$/i.test(String(arg).replace(/\\/g, '/'))));
   if (!ours) return existing;
   const rest: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(servers)) if (name !== 'validated-book-reader') rest[name] = value;
@@ -415,44 +414,18 @@ function withoutLibraryAdapterEntry(existing: unknown): unknown {
 }
 
 /**
- * WHICH READER A WORKSPACE IS GIVEN (S46, ADR-0044). The PowerShell adapter reads Books and Hubs from Basic
- * Memory only, so a workspace attached to its LOCAL collection that is handed the adapter can open a seat and
- * never read its own Project: S7 in Windows Sandbox, a Claude session's first Project read refused "Virtual Desk
- * configuration is missing .library-project". So the kernel serves the reader wherever it can -- on a POSIX host,
- * which has no PowerShell, and on Windows for a local collection when this program is a compiled release, whose
- * binary is there to name. A Basic Memory workspace on Windows keeps the adapter, and so does a kernel run from
- * source, which has no binary to register.
- */
-function kernelServesReader(programRoot: string | undefined, mcpUrl: string): boolean {
-  if (POSIX_BINDINGS) return true;
-  if (!programRoot || mcpUrl.trim()) return false;
-  return fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
-}
-
-/**
- * WHICH HOOKS A WORKSPACE IS GIVEN (S48, the reader's ruling, ADR-0046). The kernel's own verbs wherever it can
- * name itself: on a POSIX host always, and on Windows when this program is a compiled release, whose
- * `bin/library.exe` is there to name. Until S48 Windows registered the guard scripts even from a release, so ADR-0045's
- * rewrite -- which lives in the kernel's hook verbs -- never ran on the default route, and S7's closed-Book denial in
- * Windows Sandbox named tools/Set-VirtualDesk.ps1. A kernel run from source has no binary and keeps the scripts.
- */
-function kernelRegistersHooks(programRoot: string): boolean {
-  return POSIX_BINDINGS || fs.existsSync(path.join(programRoot, 'bin', 'library.exe'));
-}
-
-/**
  * THE KERNEL AS A POSIX HOOK RUNS IT (kickoffs/s153 row 3): `"<program>/bin/library"` from a release, and from a source
  * checkout, which has no `bin/library`, the Node that runs this init and the kernel's front door, as the Codex checkpoint
  * hook already is. Until s153 a source init on Linux registered a binary that was not there, so every hook failed open
- * and doctor's guards-registered named each one. Windows never reaches this: a source init there keeps the scripts.
+ * and doctor's guards-registered named each one. Windows uses the same source invocation in exec form.
  * The validated reader is started by the same rule (kickoffs/s154 row 1), as the program and the arguments before
  * `mcp serve`: until s154 a source init on Linux registered the reader as the missing `bin/library`.
  */
 function posixKernelInvocation(programRoot: string): { command: string; args: string[] } {
   const binary = kernelBinary(programRoot);
   const source = path.join(programRoot, 'kernel', 'src', 'cli.ts');
-  if (fs.existsSync(binary) || !fs.existsSync(source)) return { command: binary, args: [] };
-  return { command: process.execPath.replace(/\\/g, '/'), args: [source.replace(/\\/g, '/')] };
+  if (fs.existsSync(binary) || (!POSIX_BINDINGS && fs.existsSync(`${binary}.exe`)) || !fs.existsSync(source)) return { command: binary, args: [] };
+  return { command: POSIX_BINDINGS ? process.execPath.replace(/\\/g, '/') : 'node', args: [source.replace(/\\/g, '/')] };
 }
 
 function posixKernelCommand(programRoot: string): string {
@@ -460,13 +433,13 @@ function posixKernelCommand(programRoot: string): string {
   return [command, ...args].map((part) => `"${part}"`).join(' ');
 }
 
-/** The reader's program and leading arguments: the POSIX rule above, and on Windows the binary, as before s154. */
+/** The reader uses the same binary or source invocation as the hooks. */
 function kernelReaderInvocation(programRoot: string): { command: string; args: string[] } {
-  return POSIX_BINDINGS ? posixKernelInvocation(programRoot) : { command: kernelBinary(programRoot), args: [] };
+  return posixKernelInvocation(programRoot);
 }
 
 function binaryHookCommand(programRoot: string, verb: string, readerToolPrefix: string): string {
-  const command = `${POSIX_BINDINGS ? posixKernelCommand(programRoot) : `"${kernelBinary(programRoot)}"`} hook ${verb}`;
+  const command = `${posixKernelCommand(programRoot)} hook ${verb}`;
   return readerToolPrefix ? `${command} --reader-tool-prefix ${readerToolPrefix}` : command;
 }
 
@@ -478,14 +451,15 @@ function binaryHookCommand(programRoot: string, verb: string, readerToolPrefix: 
  */
 function claudeKernelHook(programRoot: string, verb: string): Record<string, unknown> {
   if (POSIX_BINDINGS) return { type: 'command', command: binaryHookCommand(programRoot, verb, '') };
-  return { type: 'command', command: `${kernelBinary(programRoot)}.exe`, args: ['hook', verb] };
+  const reader = posixKernelInvocation(programRoot);
+  const command = reader.args.length ? reader.command : `${reader.command}.exe`;
+  return { type: 'command', command, args: [...reader.args, 'hook', verb] };
 }
 
 /**
  * The program's own registrations, each hook the kernel has ported re-spelled as its verb (the compaction clear, the
  * search-hit reminder and seat start since S82, when the playbook hook was retired: ADR-0064, so every hook the program
- * registers has a verb). One with no verb would be left out on POSIX rather than registered as a command that cannot
- * start, and kept on Windows, which has the PowerShell to run it (S48).
+ * registers has a verb). An entry with no verb is left out on every platform.
  * Matchers, timeouts and messages are kept.
  */
 function kernelHookRegistration(hooks: unknown, programRoot: string): Record<string, unknown> | null {
@@ -499,12 +473,10 @@ function kernelHookRegistration(hooks: unknown, programRoot: string): Record<str
       const entries: Record<string, unknown>[] = [];
       for (const entry of block['hooks']) {
         const text = hookEntryText(entry).toLowerCase();
-        const script = Object.keys(HOOK_VERB_FOR_SCRIPT).find((name) => text.includes(name.toLowerCase()));
+        const script = Object.keys(HOOK_VERB_FOR_SCRIPT).find((name) => name === 'checkpoint'
+          ? /(?:^|\s)hook\s+checkpoint(?:\s|$)/.test(text) : text.includes(name.toLowerCase()));
         if (!isPlainObject(entry)) continue;
-        if (!script) {
-          if (!POSIX_BINDINGS) entries.push(toProgramRootedValue(entry, programRoot) as Record<string, unknown>);
-          continue;
-        }
+        if (!script) continue;
         const rewritten: Record<string, unknown> = claudeKernelHook(programRoot, HOOK_VERB_FOR_SCRIPT[script]!);
         for (const key of ['timeout', 'statusMessage']) if (key in entry) rewritten[key] = entry[key];
         entries.push(rewritten);
@@ -520,23 +492,11 @@ function kernelHookRegistration(hooks: unknown, programRoot: string): Record<str
   return Object.keys(out).length ? out : null;
 }
 
-function desiredMcpServers(adapterPath: string, stateDirectory?: string, programRoot?: string, kernelReader: boolean = POSIX_BINDINGS): Record<string, unknown> {
-  if (kernelReader && programRoot) {
-    const serve = ['mcp', 'serve'];
-    if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory);
-    const reader = kernelReaderInvocation(programRoot);
-    return { mcpServers: { 'validated-book-reader': { command: reader.command, args: [...reader.args, ...serve] } } };
-  }
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', adapterPath];
-  if (stateDirectory && stateDirectory.trim()) args.push('-StateDirectory', stateDirectory);
-  return {
-    mcpServers: {
-      'validated-book-reader': {
-        command: 'powershell.exe',
-        args,
-      },
-    },
-  };
+function desiredMcpServers(programRoot: string, stateDirectory?: string): Record<string, unknown> {
+  const serve = ['mcp', 'serve'];
+  if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory);
+  const reader = kernelReaderInvocation(programRoot);
+  return { mcpServers: { 'validated-book-reader': { command: reader.command, args: [...reader.args, ...serve] } } };
 }
 
 /**
@@ -567,8 +527,7 @@ export function desiredHookRegistration(programRoot: string, render: string = pr
     return null;
   }
   if (!isPlainObject(document) || !('hooks' in document) || document['hooks'] === null) return null;
-  if (kernelRegistersHooks(programRoot)) return kernelHookRegistration(document['hooks'], render);
-  return toProgramRootedValue(document['hooks'], render);
+  return kernelHookRegistration(document['hooks'], render);
 }
 
 /**
@@ -592,7 +551,12 @@ function hookOwnership(existingHooks: unknown, hookDirectory: string): { kind: s
         // THE INVOCATION TOO, UNQUOTED (#11): a single-quoted render of a path holding `'` spells it `''` in the text.
         const invocation = entryInvocation(entry);
         const invoked = invocation === null ? '' : [invocation.program, ...invocation.args].join(' ').replace(/\\/g, '/');
-        if (!text.includes(ours) && !invoked.includes(ours)) foreign.push(`${eventName}: ${text}`);
+        const program = path.resolve(hookDirectory, '../..').replace(/\\/g, '/');
+        const executable = invocation?.program.replace(/\\/g, '/');
+        const checkpoint = invocation && (
+          (executable === `${program}/bin/library` || executable === `${program}/bin/library.exe`) && invocation.args.join(' ') === 'hook checkpoint' ||
+          ['node', process.execPath.replace(/\\/g, '/')].includes(executable ?? '') && invocation.args.map(arg => arg.replace(/\\/g, '/')).join(' ') === `${program}/kernel/src/cli.ts hook checkpoint`);
+        if (!text.includes(ours) && !invoked.includes(ours) && !checkpoint) foreign.push(`${eventName}: ${text}`);
       }
     }
   }
@@ -700,24 +664,9 @@ function expandCodexToken(text: string, token: string, replacement: string, expe
   return text.split(token).join(replacement);
 }
 
-function codexGuardCommand(scriptPath: string, readerToolPrefix: string): string {
-  const command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + scriptPath + '"';
-  return readerToolPrefix ? `${command} -ReaderToolPrefix ${readerToolPrefix}` : command;
-}
-
-/** A PowerShell single-quoted string literal: nothing inside expands, and `'` is doubled. */
+/** PowerShell about_Quoting_Rules: ASCII and smart single quotation marks must all be doubled. */
 export function powerShellLiteral(text: string): string {
-  return `'${text.replace(/'/g, "''")}'`;
-}
-
-/** The script a binding names (under `hookDirectory`), required present where the program is read (`readDirectory`). */
-function codexHookScriptPath(hookDirectory: string, fileName: string, readDirectory: string = hookDirectory): string {
-  const full = path.join(hookDirectory, fileName).replace(/\\/g, '/');
-  const read = path.join(readDirectory, fileName);
-  if (!fs.existsSync(read)) {
-    throw new Error(`Required Library hook is missing, so a Codex binding naming it would fail open: ${read.replace(/\\/g, '/')}`);
-  }
-  return full;
+  return `'${text.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'`;
 }
 
 export function newCodexHooksDocument(templatePath: string, hookDirectory: string, programRoot?: string, resources: string | undefined = programRoot): string {
@@ -731,20 +680,19 @@ export function newCodexHooksDocument(templatePath: string, hookDirectory: strin
     // A SINGLE-QUOTED LITERAL, NOT `& "<path>"` (PLAN-install-onboarding.md #11): inside double quotes PowerShell
     // expands `$`, so a program under `D:\$work` ran a path that does not exist. In single quotes nothing expands, and
     // a `'` (`C:\Users\O'Neil`) is written doubled. 1.0's double-quoted render is still recognised as Deskpost's.
-    const command =
-      programRoot && kernelRegistersHooks(resources ?? programRoot)
-        ? POSIX_BINDINGS
-          ? binaryHookCommand(programRoot, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
-          : `& ${powerShellLiteral(kernelBinary(programRoot))} hook ${HOOK_VERB_FOR_SCRIPT[entry.file]!}` + (prefix ? ` --reader-tool-prefix ${prefix}` : '')
-        : codexGuardCommand(codexHookScriptPath(hookDirectory, entry.file, resources !== undefined && programRoot !== undefined ? path.join(resources, '.claude', 'hooks') : hookDirectory), prefix);
+    const root = programRoot ?? path.resolve(hookDirectory, '../..');
+    const reader = posixKernelInvocation(root);
+    const command = POSIX_BINDINGS
+      ? binaryHookCommand(root, HOOK_VERB_FOR_SCRIPT[entry.file]!, prefix)
+      : `& ${[reader.command, ...reader.args].map(powerShellLiteral).join(' ')} hook ${HOOK_VERB_FOR_SCRIPT[entry.file]!}` + (prefix ? ` --reader-tool-prefix ${prefix}` : '');
     // Twice: `command` and `commandWindows` carry the same invocation, and a template that lost one
     // of them would leave Codex reading the other on one platform only.
     text = expandCodexToken(text, '"' + entry.token + '"', psJsonString(command), entry.token === '__COMPACT_CLEAR_COMMAND__' ? 4 : 2);
   }
-  // Checkpoint hooks belong only to Codex. Source init uses the kernel's Node front door;
+  // Both harnesses register checkpoint hooks. Source init uses the kernel's Node front door;
   // compiled installs use the same binary as the other kernel hooks, never a script hook.
   const checkpointRoot = programRoot ?? path.resolve(hookDirectory, '../..');
-  const compiled = kernelRegistersHooks(resources ?? checkpointRoot);
+  const compiled = fs.existsSync(kernelBinary(resources ?? checkpointRoot) + (POSIX_BINDINGS ? '' : '.exe'));
   const source = path.join(checkpointRoot, 'kernel', 'src', 'cli.ts').replace(/\\/g, '/');
   const shellLiteral = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
   // A POSIX host always "registers hooks", so a source checkout there, which has no binary, runs the Node that ran
@@ -831,7 +779,7 @@ export function newCodexWorkspaceConfigDocument(
   adapterPath: string,
   stateDirectory?: string,
   programRoot?: string,
-  kernelReader: boolean = POSIX_BINDINGS,
+  kernelReader: boolean = true,
   adapterReadPath: string = adapterPath,
   guards: CodexWorkspaceGuards = hostCodexWorkspaceGuards(),
 ): string {
@@ -842,28 +790,15 @@ export function newCodexWorkspaceConfigDocument(
     const extra = codexWorkspaceGuardsText(guards);
     return extra ? text.replace(/\s*$/, '\n') + extra : text;
   };
-  if (kernelReader && programRoot) {
-    const serve = ['mcp', 'serve'];
-    if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory.replace(/\\/g, '/'));
-    const reader = kernelReaderInvocation(programRoot);
-    let posix = fs.readFileSync(templatePath, 'utf8').replace(/^﻿/, '');
-    posix = expandCodexToken(posix, 'command = "powershell.exe"', 'command = ' + codexTomlString(reader.command), 1);
-    posix = expandCodexToken(posix, '"__VALIDATED_READER_ARGS__"', codexTomlArray([...reader.args, ...serve]), 1);
-    if (/__[A-Z0-9_]+__/.test(posix)) throw new Error('The rendered Codex config still contains a template token.');
-    return guarded(CODEX_MANAGED_MARKER + '\n' + posix);
-  }
-  if (!fs.existsSync(adapterReadPath)) {
-    throw new Error(
-      `The validated reader adapter is missing, so a Codex binding naming it would start no server: ${adapterPath}`,
-    );
-  }
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', adapterPath.replace(/\\/g, '/')];
-  if (stateDirectory && stateDirectory.trim()) args.push('-StateDirectory', stateDirectory.replace(/\\/g, '/'));
+  const root = programRoot ?? path.resolve(path.dirname(templatePath), '..');
+  const serve = ['mcp', 'serve'];
+  if (stateDirectory && stateDirectory.trim()) serve.push('--state-directory', stateDirectory.replace(/\\/g, '/'));
+  const reader = kernelReaderInvocation(root);
   let text = fs.readFileSync(templatePath, 'utf8').replace(/^\uFEFF/, '');
-  text = expandCodexToken(text, '"__VALIDATED_READER_ARGS__"', codexTomlArray(args), 1);
+  // The template still carries the old command until its separate retirement unit.
+  text = expandCodexToken(text, 'command = "powershell.exe"', 'command = ' + codexTomlString(reader.command), 1);
+  text = expandCodexToken(text, '"__VALIDATED_READER_ARGS__"', codexTomlArray([...reader.args, ...serve]), 1);
   if (/__[A-Z0-9_]+__/.test(text)) throw new Error('The rendered Codex config still contains a template token.');
-  // The ownership stamp goes on the OUTPUT rather than in the template: it is a statement about who
-  // wrote this copy, not about what the document says.
   return guarded(CODEX_MANAGED_MARKER + '\n' + text);
 }
 
@@ -1342,7 +1277,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
   // collection than this init names refuses rather than retargeting the workspace.
   const collectionPlans: FilePlan[] = [];
   let collectionRefusal: string | null = null;
-  const isProgramRootForCollection = fs.existsSync(path.join(workspace, 'tools', 'BookRootSchema.ps1'));
+  const isProgramRootForCollection = fs.existsSync(path.join(workspace, PROGRAM_ROOT_PROOF));
   if (backend === 'local' && !isProgramRootForCollection) {
     const collectionRoot = path.join(workspace, 'collection');
     const idFile = path.join(collectionRoot, '.library', 'collection.json');
@@ -1400,7 +1335,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
   // two are still one directory, CLAUDE.md is a tracked source file written by the program's
   // authors; appending the reader template to it duplicates the Librarian's opening paragraph and
   // dirties the working tree.
-  const isProgramRoot = fs.existsSync(path.join(workspace, 'tools', 'BookRootSchema.ps1'));
+  const isProgramRoot = fs.existsSync(path.join(workspace, PROGRAM_ROOT_PROOF));
   for (const name of INSTRUCTION_FILES) {
     const target = path.join(workspace, name);
     if (isProgramRoot) {
@@ -1415,28 +1350,24 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     plans.push({ path: target, name, action: plan.action, content: plan.content });
   }
 
-  // The adapter is only in a DIRECT install; a plugin brings its own server and needs no entry. Two
-  // direct layouts: in the workspace it binds on its own anchor, and in the PROGRAM it must be told
-  // which workspace it is serving, because the program is not a workspace at all.
-  const adapter = path.join(workspace, '.claude', 'adapters', 'Validated-BookReader.ps1');
-  const programAdapter = path.join(programRoot, '.claude', 'adapters', 'Validated-BookReader.ps1');
-  const renderAdapter = path.join(render, '.claude', 'adapters', 'Validated-BookReader.ps1');
-  let desiredServers: Record<string, unknown> | null = null;
-  // A Basic Memory backend keeps the adapter; the question is the backend's, not whether its endpoint file is there.
-  const kernelReader = kernelServesReader(programRoot, backend === 'basic-memory' ? resolvedMcpUrl || 'basic-memory' : '');
-  if (fs.existsSync(adapter)) {
-    desiredServers = desiredMcpServers('.claude/adapters/Validated-BookReader.ps1');
-  } else if (!isProgramRoot && (kernelReader || fs.existsSync(programAdapter))) {
-    desiredServers = desiredMcpServers(
-      renderAdapter.replace(/\\/g, '/'),
-      path.join(workspace, '.claude').replace(/\\/g, '/'),
-      render,
-      kernelReader,
-    );
-  }
-  if (desiredServers !== null) {
+  // Every direct Library runs the kernel reader, including a source or Basic Memory Library.
+  if (!isProgramRoot) {
+    const desiredServers = desiredMcpServers(render, path.join(workspace, '.claude').replace(/\\/g, '/'));
     const mcpPath = path.join(workspace, '.mcp.json');
-    const mcpPlan = jsonMergePlan(mcpPath, desiredServers, kernelReader ? withoutLibraryAdapterEntry : undefined);
+    const existing = readJsonFileOrRefusal(mcpPath);
+    const servers = existing.ok && isPlainObject(existing.value) ? existing.value['mcpServers'] : null;
+    const reader = isPlainObject(servers) ? entryInvocation(servers['validated-book-reader']) : null;
+    const kernel = reader === null ? null : isKernelBinary(reader.program) && reader.args[0] === 'mcp'
+      ? reader.program : reader.args[1] === 'mcp' ? sourceKernelScript(reader) : null;
+    const readerRoot = kernel === null ? null : programOfBinary(kernel);
+    const relation = readerRoot === null ? null : programRelation(readerRoot, render);
+    // Two Node servers can have the same command; merging their argument arrays would combine unrelated programs.
+    const foreignSource = reader?.program === 'node' && sourceKernelScript(reader) === null;
+    const mcpPlan: PlanResult = relation === 'other'
+      ? { action: 'refuse', content: null, reason: `${mcpPath} names the reader of another Deskpost program (${readerRoot}): run init from that program, or remove its validated-book-reader entry and re-run; nothing has been written.` }
+      : foreignSource
+      ? { action: 'refuse', content: null, reason: `${mcpPath} cannot be merged: it names a reader the Library did not write; nothing has been written.` }
+      : jsonMergePlan(mcpPath, desiredServers, existing => withoutLibraryAdapterEntry(existing, relation === 'same' || relation === 'version-folder'));
     if (mcpPlan.action === 'refuse') refusals.push(mcpPlan.reason!);
     else plans.push({ path: mcpPath, name: '.mcp.json', action: mcpPlan.action, content: mcpPlan.content });
   }
@@ -1445,7 +1376,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
     // WHAT MAKES A HOOK THE LIBRARY'S: a path into this program. Where the kernel registers itself that is the
     // program root, so a block an earlier init wrote with `.ps1` paths is still recognised as ours and replaced
     // (S42 on POSIX; S48 for a compiled Windows release, over what v0.2.1 wrote).
-    const hookDirectory = kernelRegistersHooks(programRoot) ? render : path.join(render, '.claude', 'hooks');
+    const hookDirectory = render;
     const settingsPath = path.join(workspace, '.claude', 'settings.json');
     const settingsPlan = workspaceSettingsPlan({
       filePath: settingsPath,
@@ -1492,14 +1423,6 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       else plans.push({ path: codexHooksPath, name: '.codex/hooks.json', action: plan.action, content: plan.content });
     }
     if (fs.existsSync(codexConfigTemplate)) {
-      let codexAdapter: string | null = null;
-      let codexStateDirectory: string | undefined;
-      if (fs.existsSync(adapter)) codexAdapter = adapter;
-      else if (kernelReader || fs.existsSync(programAdapter)) {
-        codexAdapter = renderAdapter;
-        codexStateDirectory = path.join(workspace, '.claude');
-      }
-      if (codexAdapter !== null) {
         const codexConfigPath = path.join(workspace, '.codex', 'config.toml');
         const guards = hostCodexWorkspaceGuards();
         // NEVER A REFUSAL (ruling 3): with no user config, or one the line reader cannot read, the turned-off section is
@@ -1508,7 +1431,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
         else if (guards.userConfig.tables!.skipped.length) codexUserConfigSkipped = guards.userConfig.tables!.skipped;
         const plan = codexConfigPlan(
           codexConfigPath,
-          newCodexWorkspaceConfigDocument(codexConfigTemplate, codexAdapter, codexStateDirectory, render, kernelReader, codexAdapter === renderAdapter ? programAdapter : codexAdapter, guards),
+          newCodexWorkspaceConfigDocument(codexConfigTemplate, '', path.join(workspace, '.claude'), render, true, '', guards),
         );
         if (plan.action === 'refuse') refusals.push(plan.reason!);
         else {
@@ -1519,7 +1442,6 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
             content: plan.content,
           });
         }
-      }
     }
 
     // SHIPPED SKILLS IN BOTH HARNESSES, OWNED FILE BY FILE (PLAN-assistant-onboarding.md step 7; skillcopy.ts).
@@ -1694,7 +1616,7 @@ export function planLibraryInit(options: InitOptions): LibraryInitPlan {
       files,
       ...(codexUserConfigNote !== null ? { codex_user_config: codexUserConfigNote } : {}),
       ...(codexUserConfigSkipped.length ? { codex_user_config_skipped: codexUserConfigSkipped as unknown as PsJsonValue } : {}),
-      ...(skillFiles.length || skillLeft.length ? { skill: { files: skillFiles.map((plan) => ({ file: plan.name, action: plan.action })), left: skillLeft } as unknown as PsJsonValue } : {}),
+      ...(skillFiles.length || skillLeft.length ? { skill: { files: skillFiles.map((plan) => ({ file: plan.name, action: plan.action, ...(plan.action === 'removed' ? { before: JSON.parse(plan.content!) } : {}) })), left: skillLeft } as unknown as PsJsonValue } : {}),
       ...(connectionRecorded !== null
         ? {
             connection: connectionRecorded as PsJsonValue,
@@ -1860,6 +1782,25 @@ function commitStandardBookManifests(plan: LibraryInitPlan): void {
   }
 }
 
+/** Compare real paths, including the existing ancestor of a registry not created yet. */
+export function skipTemporaryRegistration(workspace: string, root?: string): boolean {
+  const real = (value: string): string => {
+    try { return fs.realpathSync(value); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return path.join(real(path.dirname(value)), path.basename(value));
+    }
+  };
+  const temp = real(os.tmpdir());
+  const inside = (value: string): boolean => {
+    const target = real(path.resolve(value));
+    const relative = path.relative(process.platform === 'win32' ? temp.toLowerCase() : temp,
+      process.platform === 'win32' ? target.toLowerCase() : target);
+    return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+  };
+  return inside(workspace) && !inside(registryPath(root));
+}
+
 /** Write exactly what a plan lists, under the three-state rule, then register the Library. Re-running it finishes it. */
 export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?: boolean } = {}): Record<string, unknown> {
   // THE CONFLICT CHECK AND THE WRITES ARE ONE STEP UNDER THE MARKER LOCK (kickoffs/s161 row 1), so no other marker writer
@@ -1871,6 +1812,22 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
         `the Library at ${plan.workspace} changed after it was planned, so nothing was written: ${conflicts.join('; ')}. ` +
           'Plan it again to see what would change now.',
       );
+    }
+    // Recheck the whole retired folder before any mutation, including links and extra reader files.
+    const retired = ((plan.result['skill'] as { files?: { file: string; action: string; before?: Record<string, string> }[] } | undefined)?.files ?? []).filter(file => file.action === 'removed');
+    for (const item of retired) {
+      if (!/^\.(agents|claude)\/skills\/save$/.test(item.file) || !item.before) throw Error('Invalid retired skill plan.');
+      const folder = path.join(plan.workspace, ...item.file.split('/')), actual: Record<string, string> = {};
+      let current = plan.workspace;
+      for (const component of item.file.split('/')) { current = path.join(current, component); if (fs.lstatSync(current).isSymbolicLink()) throw Error('Retired skill folder changed after planning.'); }
+      const walk = (root: string) => { for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        const file = path.join(root, entry.name);
+        if (fs.lstatSync(file).isSymbolicLink()) throw Error('Retired skill folder changed after planning.');
+        if (entry.isDirectory()) { actual[path.relative(folder, file).replace(/\\/g, '/') + '/'] = 'directory'; walk(file); }
+        else if (entry.isFile()) actual[path.relative(folder, file).replace(/\\/g, '/')] = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+        else throw Error('Retired skill folder changed after planning.');
+      } }; walk(folder);
+      if (Object.keys(actual).length !== Object.keys(item.before).length || Object.entries(actual).some(([name, hash]) => item.before![name] !== hash)) throw Error('Retired skill folder changed after planning; nothing was written.');
     }
     ensureDirectory(plan.workspace);
     for (const directory of plan.directories) ensureDirectory(directory);
@@ -1885,6 +1842,7 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
       writeAtomicText(write.path, write.content);
       count += 1;
     }
+    for (const item of retired) fs.rmSync(path.join(plan.workspace, ...item.file.split('/')), { recursive: true });
     return count;
   });
   const fault = Number((process.env['LIBRARY_INIT_FAULT_AFTER'] ?? '').trim() || NaN);
@@ -1893,7 +1851,9 @@ export function applyLibraryInit(plan: LibraryInitPlan, options: { makeDefault?:
   commitStandardBookManifests(plan);
   // THE REGISTRY IS MERGED WHEN THE PLAN IS APPLIED, NOT FROZEN WITH IT: another Library registered meanwhile is not a
   // conflict, and registering is the same answer however often it runs.
-  const registration = registerWorkspace(plan.workspace, plan.id, plan.registry_root ?? undefined, options.makeDefault === true);
+  const registration = skipTemporaryRegistration(plan.workspace, plan.registry_root ?? undefined)
+    ? { path: registryPath(plan.registry_root ?? undefined), action: 'skipped-temporary' }
+    : registerWorkspace(plan.workspace, plan.id, plan.registry_root ?? undefined, options.makeDefault === true);
   const result = plan.result;
   return {
     status: result['status'],

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "buckets": {
+    "product": ["kernel/src/**", ".claude/hooks/**", "templates/**", "install.ps1", "install.sh"],
+    "tests": ["kernel/test/**", "tools/**/Test-*.ps1", "tools/seat-rules-check/**", "tools/mirror-fixture/**"],
+    "tools": ["tools/**", ".githooks/**", ".forgejo/**"],
+    "docs": ["docs/**", "**/*.md"]
+  },
+  "heavy": 3,
+  "bloated": 6
+}

@@ -33,7 +33,7 @@ export const SEAT_ROLES = ['performer', 'orchestrator'] as const;
 export type SeatRole = (typeof SEAT_ROLES)[number];
 
 export const CARD_MAX_CHARACTERS = 160;
-export const DEPARTMENT_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export const DEPARTMENT_PATTERN = /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)?$/;
 export const TEMPLATE_PATTERN = /^[a-z0-9][a-z0-9-]*@[0-9]+(\.[0-9]+)*$/;
 export const NICKNAME_MAX_CHARACTERS = 16;
 const NICKNAME_CHARACTERS = /^[A-Za-z0-9 _.-]+$/;
@@ -68,7 +68,9 @@ export interface SeatMetadataProjection {
 /** Why a department value is refused, or null when it is a slug. */
 export function departmentProblem(value: unknown): string | null {
   if (typeof value !== 'string') return 'a department is a slug (lowercase letters, digits and hyphens)';
-  return DEPARTMENT_PATTERN.test(value) ? null : 'a department is a slug: lowercase letters, digits and hyphens, starting with a letter or a digit';
+  if (DEPARTMENT_PATTERN.test(value)) return null;
+  const slug = 'a department is a slug: lowercase letters, digits and hyphens, starting with a letter or a digit';
+  return value.includes('/') ? `${slug}; use <department> or <department>/<group>, with a slug in each part` : slug;
 }
 
 /** Why a role value is refused, or null when it is one of the two. */
@@ -265,6 +267,17 @@ export function departmentOf(projection: SeatMetadataProjection, seat: string): 
   return department === null ? null : projection.departments.find((view) => view.department === department) ?? null;
 }
 
+/** A group's parent department, or null for a top-level department. */
+export function departmentParent(department: string): string | null {
+  const separator = department.indexOf('/');
+  return separator === -1 ? null : department.slice(0, separator);
+}
+
+/** The department's groups, in projection order. */
+export function groupsOf(projection: SeatMetadataProjection, parent: string): DepartmentView[] {
+  return projection.departments.filter((view) => departmentParent(view.department) === parent);
+}
+
 /**
  * ONE DESTINATION PER DEPARTMENT (kickoffs/s110 ruling 7; PLAN-seat-identity.md section 4; ADR-0073): its orchestrator,
  * else its only seat, else none, with its seats. `capture --for-department`, `seat cards`, the retire preview and the
@@ -273,7 +286,7 @@ export function departmentOf(projection: SeatMetadataProjection, seat: string): 
 export type DepartmentDestination =
   | { kind: 'orchestrator'; seat: string; seats: string[] }
   | { kind: 'only-seat'; seat: string; seats: string[] }
-  | { kind: 'none'; seat: null; seats: string[] };
+  | { kind: 'none'; seat: null; seats: string[]; groups?: { department: string; destination: DepartmentDestination }[] };
 
 export function departmentDestination(view: DepartmentView | null | undefined): DepartmentDestination {
   const seats = view?.seats ?? [];
@@ -284,7 +297,14 @@ export function departmentDestination(view: DepartmentView | null | undefined): 
 
 /** A department's destination in a projection, by name; a department no seat carries is `none` with no seats. */
 export function destinationOf(projection: SeatMetadataProjection, department: string): DepartmentDestination {
-  return departmentDestination(projection.departments.find((view) => view.department === department));
+  const view = projection.departments.find((entry) => entry.department === department);
+  const destination = departmentDestination(view);
+  if (destination.kind === 'orchestrator' || departmentParent(department) !== null) return destination;
+  const groups = groupsOf(projection, department).map((group) => ({
+    department: group.department,
+    destination: departmentDestination(group),
+  }));
+  return groups.length === 0 ? destination : { kind: 'none', seat: null, seats: destination.seats, groups };
 }
 
 /**

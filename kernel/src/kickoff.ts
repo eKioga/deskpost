@@ -36,7 +36,7 @@ import { fencedLineMask, hubEdit, nextShownLines, toLines } from './hubedit.ts';
 import { hubNewPage } from './hubnewpage.ts';
 import { buildEnvelope, KICKOFF_ID, parseEnvelope } from './kickoffenvelope.ts';
 import { chainHeader } from './kickoffcheck.ts';
-import { keptBody, readOutbox, resolveRemoteSeat, sendAfterCapture } from './postbox.ts';
+import { checkBeforeReading, keptBody, readOutbox, resolveRemoteSeat, sendAfterCapture } from './postbox.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { deskEntriesForSeat, resolveSeatName } from './seatdesk.ts';
 import { pageComparisonSha256 } from './sha.ts';
@@ -201,6 +201,7 @@ function nextLines(text: string): string[] | null {
  */
 export function seatHubNext(workspace: string, verb: string): { seat: string; hub: string; lines: string[] } {
   const { seat, hub } = seatAndHub(workspace, verb);
+  if (verb === 'check --open') checkBeforeReading(workspace);
   const next = nextLines(fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8'));
   if (next === null) refuse(`projects/${hub}/_project has no ## Next section, so it holds no Run pointer.`);
   return { seat, hub, lines: next };
@@ -304,7 +305,7 @@ function unitAttemptPages(hubDirectory: string, unit: string): { id: string; pag
  * Handback names the Kickoff it ran (`Ran: kickoffs/<id>`, a Kickoff of the same unit) and says `Outcome: pushed` or
  * `published`; the record's stored closeout is exactly `done` with a finite closedOutAt;
  * a next pending Run pointer exists and its Kickoff page's sha256 equals the one the pointer carries; both Kickoffs say
- * `CHAIN: yes`; and the context reading is below 60%, not `unknown`, with no compaction. Otherwise `stop`, naming the
+ * `CHAIN: yes`; and the context reading is below 60% or `unknown`, with no compaction. Otherwise `stop`, naming the
  * first condition that failed. The finished unit's Run pointer may be ticked, or gone because close-item closed it.
  *
  * THE CLAUDE CODE ROUTE (kickoffs/s214 row 1; section 1544): only Codex registers `hook checkpoint` (ADR 0079), so a
@@ -418,7 +419,6 @@ export function kickoffNext(options: { context: string; compacted: boolean }, wo
 
   // 7. Room in the window, read fresh after the closeout.
   if (options.compacted) return stop('This session was compacted, so the next Kickoff waits for a fresh session.', { finished: finished.id, next: next.id });
-  if (percent === undefined) return stop('The context reading is unknown, so the next Kickoff waits for a fresh session.', { finished: finished.id, next: next.id });
   if (Number(percent) >= CHAIN_CONTEXT_LIMIT) return stop(`The context reading is ${Number(percent)}%, at or over ${CHAIN_CONTEXT_LIMIT}%, so the next Kickoff waits for a fresh session.`, { finished: finished.id, next: next.id });
 
   return { ...answer, decision: 'start', id: next.id, finished: finished.id, attempt, sha256: nextSha,
@@ -545,7 +545,16 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
   // THE POINTER'S REFUSALS BEFORE THE PAGE (kickoffs/s198 row 1): a pointer the stage would refuse (the same link with
   // other text, or a Run line over `hub edit`'s pending cap: one, or three on a dev Hub, appended last; kickoffs/s213
   // row 4) leaves no Kickoff page and no stage done.
-  if (!done('pointer') && judge(pointerLines(workspace, hub, link)) === 'absent') await hubEdit([...pointerArgs, '--preflight'], workspace);
+  // A FULL QUEUE NAMES ITS REMEDY AND THE WAY BACK (kickoffs/s219 row 4): `hub edit`'s Run-pointer refusal names the
+  // `check-item` and `--supersedes` commands; receive passes it on with the one command it takes to try again.
+  const pointerEdit = async (args: string[]): ReturnType<typeof hubEdit> => {
+    try { return await hubEdit(args, workspace); } catch (error) {
+      const message = (error as Error).message ?? '';
+      if (/pending Run pointer/.test(message)) refuse(`${message} Then run deskpost kickoff receive ${letter} again.`);
+      throw error;
+    }
+  };
+  if (!done('pointer') && judge(pointerLines(workspace, hub, link)) === 'absent') await pointerEdit([...pointerArgs, '--preflight']);
 
   if (!done('page')) {
     if (fs.existsSync(pageFile)) {
@@ -565,11 +574,11 @@ export async function kickoffReceive(options: { letter: string }, workspace: str
       // THE CHECK AND THE APPEND BOUND TOGETHER: the preflight's plan id is over the page this check reads, and the apply
       // refuses a page that changed after it, so no other writer's pointer slips in between.
       const args = pointerArgs;
-      const preview = await hubEdit([...args, '--preflight'], workspace);
+      const preview = await pointerEdit([...args, '--preflight']);
       const pageNow = fs.readFileSync(path.join(workspace, 'collection', 'projects', hub, '_project.md'), 'utf8');
       if (pageComparisonSha256(pageNow) !== preview['current_sha256']) refuse(`projects/${hub}/_project changed while the pointer was being planned. Run deskpost kickoff receive ${letter} again.`);
       if (judge(pointerLines(workspace, hub, link)) === 'absent') {
-        await hubEdit([...args, '--plan-id', String(preview['plan_id'])], workspace);
+        await pointerEdit([...args, '--plan-id', String(preview['plan_id'])]);
         fault('pointer-write');
       }
     }

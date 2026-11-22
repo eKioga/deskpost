@@ -172,7 +172,7 @@ in the conversation.
 
 ## Returning to your project
 
-Ask "brief me on this project" to see its orientation and live Hub state. Ask the Librarian to close a completed Hub item into history. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170) for status and builder queues. `deskpost library move` is turned off in 1.7.0 and returns in a later release.
+Ask "brief me on this project" to see its orientation and live Hub state. Ask the Librarian to close a completed Hub item into history. See [Hubs that show their state](README.md#hubs-that-show-their-state-in-170) for status and builder queues. To move a Library with `deskpost library move`, run `--preflight` first. The preview lists uncertain matches for hand edits and skips them. The move refuses files that may hold an unreadable old path until you edit them. The move only counts `.db` files. Reopen the workspace in Orca after moving. Comparing TOML keys across tables can block a safe move. A relative folder shaped like an option or ending in a space or quote can be rewritten when it directly precedes the path in the same value.
 
 ## When something refuses you
 

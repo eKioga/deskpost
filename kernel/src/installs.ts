@@ -17,7 +17,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { entryInvocation, isKernelBinary, programOfBinary } from './machine.ts';
+import { entryInvocation, isKernelBinary, powerShellScript, programOfBinary } from './machine.ts';
+import { isThisInstallsEntry } from './lifecycle.ts';
 import { registryPath, toWorkspaceRoot } from './workspace.ts';
 
 export class DiscoveryRefusal extends Error {}
@@ -99,6 +100,44 @@ export function libraryKernelBinaries(library: string): string[] {
   return found;
 }
 
+/** Script registrations in the Library's own files, with their hook event or server named. */
+export function libraryScriptRegistrations(library: string): { label: string; entry: unknown; file: string }[] {
+  const found: { label: string; entry: unknown; file: string }[] = [];
+  const add = (entry: unknown, label: string) => {
+    const invocation = entryInvocation(entry);
+    const file = invocation === null ? null : powerShellScript(invocation);
+    if (file !== null) found.push({ label, entry, file });
+  };
+  const walk = (node: unknown, label: string): void => {
+    if (Array.isArray(node)) { node.forEach(item => walk(item, label)); return; }
+    if (node === null || typeof node !== 'object') return;
+    add(node, label);
+    for (const [key, value] of Object.entries(node)) walk(value, `${label} ${key}`);
+  };
+  for (const relative of ['.claude/settings.local.json', '.claude/settings.json', '.mcp.json', '.codex/hooks.json']) {
+    try { walk(JSON.parse(fs.readFileSync(path.join(library, relative), 'utf8').replace(/^\uFEFF/, '')), relative); }
+    catch { /* Unreadable files are reported by the existing doctor checks. */ }
+  }
+  // Init renders TOML commands and argument arrays as JSON strings, one key per line.
+  try {
+    const text = fs.readFileSync(path.join(library, '.codex/config.toml'), 'utf8');
+    let entry: Record<string, unknown> | null = null;
+    let label = '';
+    for (const raw of [...text.split(/\r?\n/), '[end]']) {
+      const line = raw.trim();
+      if (line.startsWith('[')) {
+        if (entry !== null) add(entry, `.codex/config.toml ${label}`);
+        label = line;
+        entry = /^\[mcp_servers\./.test(line) ? {} : null;
+      } else if (entry !== null) {
+        const match = /^(command|args)\s*=\s*(.+)$/.exec(line);
+        if (match) { try { entry[match[1]!] = JSON.parse(match[2]!); } catch { /* Not an init-rendered value. */ } }
+      }
+    }
+  } catch { /* An absent config registers nothing. */ }
+  return found;
+}
+
 /** A TOML basic string's value, or null when the text is not one. Only the escapes a rendered path can hold. */
 function tomlBasicString(text: string): string | null {
   const match = /^"((?:[^"\\]|\\.)*)"$/.exec(text.trim());
@@ -177,6 +216,12 @@ export function librariesServedByRoot(root: string, registryRoot?: string): { se
     libraryKernelBinaries(library).some((binary) => {
       const by = installRootByShape(binary);
       return by !== null && sameFolder(by, root);
+    }) || libraryScriptRegistrations(library).some(({ entry, file }) => {
+      const marker = file.replace(/\\/g, '/').lastIndexOf('/.claude/');
+      if (marker < 0) return false;
+      const program = file.replace(/\\/g, '/').slice(0, marker);
+      const by = installRootByShape(path.join(program, 'bin', 'library'));
+      return by !== null && sameFolder(by, root) && isThisInstallsEntry(entry, root);
     }),
   );
   return { served, unreached };

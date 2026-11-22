@@ -44,6 +44,20 @@ reader and the search helpers resolve the Desk independently.
 
 `LIBRARY_WORKSPACES` selects the machine registry folder used by `deskpost init` and workspace resolution; `--registry-root` selects it for one init call.
 
+## Groups inside a department
+
+Use a name such as `games/sbox` to put a group under a department. Each part is a slug and
+there is one level of groups. A group has its own seats, orchestrator and letter destination.
+To move a seat, preview `deskpost seat describe <seat> --department games/sbox --preflight`,
+then apply the approved preview with its exact `--plan-id`.
+
+`deskpost seat cards` shows the parent's seats followed by its groups and their destinations.
+Use `deskpost capture letters --for-department games/sbox` to reach the group's orchestrator
+or its only seat. A letter to `games` reaches the parent department's own orchestrator.
+If the parent has groups and lacks an orchestrator, capture refuses and lists the groups.
+
+An older Deskpost version reads a letter addressed to a group as malformed.
+
 ## Seat templates
 
 The five shipped templates give a new seat a starting purpose and registry role:

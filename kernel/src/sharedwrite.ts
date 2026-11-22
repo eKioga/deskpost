@@ -1216,8 +1216,14 @@ function bookPreview(opened: Opened, operation: string, steps: BookStep[], catal
 /** The steps not skipped, written in order through the safe path, each recorded first with `made_by`; the Catalog last. */
 async function writeBookSteps(opened: Opened, workspace: string, madeBy: MadeBy, steps: BookStep[], catalog: { plan: Plan; skip: boolean }): Promise<PsJsonValue[]> {
   const records: PsJsonValue[] = [];
+  // ONE LINE PER PAGE ON STANDARD ERROR (kickoffs/s221 row 5): a promote writes about one page every 20 seconds, and said
+  // nothing while it did. Standard output, and so --json, is unchanged.
+  const total = steps.filter((step) => !step.skip).length;
+  let written = 0;
   for (const step of steps) {
     if (step.skip) continue;
+    written += 1;
+    process.stderr.write(`Writing page ${written} of ${total}: ${step.notePath}\n`);
     const outcome = await writeChange(opened, workspace, { target: step.target, notePath: step.notePath, current: step.current, recordBase: step.current, proposed: step.proposed }, madeBy);
     if (outcome.form === 'conflict') conflictRefusal(step.notePath, outcome);
     records.push({ page: step.notePath, record_id: outcome.recordId });
@@ -1226,6 +1232,7 @@ async function writeBookSteps(opened: Opened, workspace: string, madeBy: MadeBy,
     const done = await writePlanned(opened, workspace, catalog.plan, madeBy);
     records.push({ page: CATALOG, record_id: done.form === 'written' ? done.outcome.recordId : done.recordId });
   }
+  process.stderr.write(catalog.skip ? `Wrote ${total} pages; the Catalog line already read as asked.\n` : `Wrote ${total} pages and the Catalog line.\n`);
   return records;
 }
 

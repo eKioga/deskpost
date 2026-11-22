@@ -62,7 +62,7 @@ and `internal/seat-registry-history.jsonl` records each change.
 
 ## The doorbell
 
-A Codex session has no `SendMessage`, so it sends no ring: the letter is the delivery, and the recipient hears of it at its next prompt or from its Desk.
+A Codex session has no `SendMessage`, so it sends no ring: the letter is the delivery, and the recipient hears of it at its next prompt or from its Desk. So a Codex writer's capture names no ring in `next`; when the recipient is a held Claude seat, it returns a `relay_line` for the writer to put in its reply for Eric.
 
 **The ring is mandatory when the recipient is open** (ADR-0071). Right after writing a letter, read the
 recipient's `message_name` again, from your Desk or from the `recipient_message_name` the capture

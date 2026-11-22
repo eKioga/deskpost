@@ -48,13 +48,13 @@ import {
 } from './seatclaim.ts';
 import { writeAtomicText } from './fsx.ts';
 import { notebookQuarantineInventory } from './notebook.ts';
-import { homeDirectory, readMarker } from './workspace.ts';
+import { readMarker } from './workspace.ts';
 import { openCollection } from './collection.ts';
 import { readNotebookLayout, seatNotebookRelative } from './notebooklayout.ts';
 import { BOOK_ROOT_ACCEPT_PATTERN, BOOK_ROOT_PATTERN, parseBookRoot, placeOfRoot, rootForPlace, type BookPlace, type BookRootParts } from './places.ts';
 import { markerConnection } from './basicmemory.ts';
 import { addedDirsStatus } from './seatdirs.ts';
-import { seatMessageAddress } from './conversation.ts';
+import { seatMessageAddress, seatConversationView, conversationCell, seatConversationRecord as conversationRecord } from './conversation.ts';
 import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
 import { deskAuditFacts } from './audit.ts';
@@ -173,7 +173,12 @@ function maintainedBy(workspace: string, stateDirectory: string, slug: string): 
   const names = Array.isArray(grant['names']) ? grant['names'].map(String) : [];
   const live = readSeatRegistry(stateDirectory);
   const retired = readSeatRetirementRecords(workspace).records;
-  return ids.map((id, at) => live.find((row) => row.seatId === id)?.seat ?? `${retired.find((record) => record.seat_id === id)?.seat ?? names[at] ?? id} (retired)`);
+  return ids.map((id, at) => {
+    const current = live.find((row) => row.seatId === id);
+    if (current) return current.seat;
+    const former = retired.find((record) => record.seat_id === id);
+    return former ? `${former.seat} (retired)` : `${names[at] ?? id} (unknown seat)`;
+  });
 }
 
 /** What to do about a missing open Book, in the full-text search's words (`fulltext.ts`). */
@@ -549,7 +554,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
         controls_refused:Array.isArray(state['controls_refused'])?state['controls_refused'].length:0,
         filed_conflicts_count:Array.isArray(state['filed_conflicts'])?(state['filed_conflicts'] as {disposition:unknown}[]).filter(row=>row.disposition===null).length:0,
         records_incomplete:listOutstanding(workspace).length,
-        outcomes_received:pendingNotes.filter(({book,note})=>book.slug==='letters' && isFromAnotherLibrary(note) && isAddressedTo(note,self) && noteFrontmatter(readUtf8(note.fullPath)).has('closes_delivery_id')).length,
+        outcome_letters_pending:pendingNotes.filter(({book,note})=>book.slug==='letters' && isFromAnotherLibrary(note) && isAddressedTo(note,self) && noteFrontmatter(readUtf8(note.fullPath)).has('closes_delivery_id')).length,
         ...((state['reports_triager'] as {library_id?:string}|null)?.library_id && (state['reports_triager'] as {library_id:string}).library_id !== state['library_id'] && reports.some(r=>!r.fields.has('delivery_id') && (!r.note.fromLibraryId || r.note.fromLibraryId === r.note.localLibraryId)) ? {send_pending_route:'deskpost reports send-pending --preflight'} : {}),
         last_check: (state['last_check'] as PsJsonValue | undefined) ?? null,
         late_deliveries_recent: postboxLateDeliveriesRecent(state),
@@ -570,18 +575,16 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   })();
   // NEVER BLANK, in the words the picker's own column uses. A blank here reads as an untitled
   // conversation and cannot be told from an old client, a pruned history or a redirected config dir.
-  thisSeat['conversation_line'] = formatSeatConversationCell(conversation);
+  thisSeat['conversation_line'] = conversationCell(conversation);
   // AND WHETHER THAT CONVERSATION IS THIS ONE, which is the difference between "your seat last held
   // X" and "you are X".
   // A LAUNCHER-HELD SEAT HAS NO BINDING (S85 row 4, ruling 5), so the binding rule said false of the very conversation
   // that ran this. There the recorded conversation is matched by session id against Claude Code's own
   // CLAUDE_CODE_SESSION_ID; a bound seat keeps the binding rule. The field keeps its name: the dashboard reads it.
-  // A CODEX SEAT (kickoffs/s199-r2 item 2): Codex sets no CLAUDE_CODE_SESSION_ID, but its CODEX_THREAD_ID is the id
-  // its hook reports and the launcher records (seen equal in a launcher-held Codex session, 2026-11-01), so it is read
-  // when the Claude variable is empty, and only for a conversation recorded as Codex's.
-  const claudeSessionId = (process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
-  const thisSessionId =
-    claudeSessionId !== '' ? claudeSessionId : String(thisActivity?.['assistant'] ?? '') === 'codex' ? (process.env['CODEX_THREAD_ID'] ?? '').trim() : '';
+  // The recorded assistant chooses its own conversation id, even when both harness variables are inherited.
+  const thisSessionId = (conversation.assistant === 'codex'
+    ? process.env['CODEX_THREAD_ID'] ?? ''
+    : process.env['CLAUDE_CODE_SESSION_ID'] ?? '').trim();
   thisSeat['is_this_conversation'] = launcherHeld
     ? thisSessionId !== '' && conversation.session_id === thisSessionId
     : thisClaim.thisAgent && conversation.conversation_source === 'binding';
@@ -652,6 +655,10 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
   // EACH OPEN HUB'S PAGES, MEASURED (kickoffs/s125 row 2; ADR-0082): sizes, kinds, limits and `_project`'s ticked Now and
   // Next counts, read from a local collection's files on this call; null on a shared backend. Names and numbers only.
   const hubPageRows = hubPages(workspace, openProjects.map(String));
+  if (Array.isArray(hubPageRows)) for (const value of hubPageRows) {
+    const row = value as Record<string, PsJsonValue>;
+    if (row['page'] === '_project' && row['over'] === true) row['remedy'] = `deskpost hub tidy ${row['hub']} --preflight`;
+  }
   // THE WEEK'S ASKS (kickoffs/s166 row 3): the newest `deskpost asks --write` count as one line, absent with none. The
   // Desk reads it and never runs the count.
   const asksThisWeek = asksDeskLine(workspace);
@@ -1153,216 +1160,15 @@ function seatRosterSentence(seats: string[]): string {
 
 // --- this seat's last conversation ------------------------------------------------------------------
 
-interface ConversationView {
-  session_id: string;
-  conversation_source: string;
-  recorded_utc: string;
-  title: string;
-  title_status: string;
-  title_note: string;
-  entry_action: string;
-  entry_note: string;
-}
-
-const CONVERSATION_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-// THE BOUND IS DERIVED FROM A MEASUREMENT: worst observed first title at line 282 and 682 KB, so
-// these are roughly 7x and 6x the worst real case.
-const TRANSCRIPT_LINE_BUDGET = 2000;
-const TRANSCRIPT_BYTE_BUDGET = 4194304;
-
-/**
- * One seat's last conversation, what it is called, AND what entering it would do.
- *
- * THE BRANCHING IS THE POINT, not the two lookups it wraps: a record that is present and unusable
- * gets its own status and no lookup at all, and a second copy of that three-arm decision is how
- * "malformed" quietly becomes "no title" on one surface only.
- */
-function seatConversationView(stateDirectory: string, seat: string): ConversationView {
-  const record = seatConversationRecord(stateDirectory, seat);
-  const view: ConversationView = {
-    session_id: record.sessionId,
-    conversation_source: record.source,
-    recorded_utc: record.recordedUtc,
-    title: '',
-    title_status: 'no-conversation',
-    title_note: '',
-    entry_action: 'none',
-    entry_note: '',
-  };
-  if (record.source === 'malformed') {
-    // NO LOOKUP AND NO RESUME, and the answer says which of the two blank-column facts this is: a
-    // record that is there and unusable, rather than no record at all.
-    view.title_status = 'malformed-conversation';
-    view.title_note = 'the conversation it records is not a uuid, so nothing was looked up';
-    view.entry_note = 'the conversation it records is not a uuid, so there is nothing to enter';
-    return view;
-  }
-  const answer = seatConversationTitle(seatTranscriptRoot(), record.sessionId);
-  view.title = answer.title;
-  view.title_status = answer.status;
-  view.title_note = answer.reason;
-  if (!record.sessionId.trim()) {
-    view.entry_action = 'none';
-    view.entry_note = 'nothing has recorded a conversation at this seat';
-  } else {
-    // THE TITLE LOOKUP'S OWN STATUS IS THE TRANSCRIPT FACT, not a proxy for it: `no-transcript` means
-    // the file was searched for by name across every project directory and not found. Every other
-    // status found the file, so the conversation is there to resume.
-    view.entry_action = 'resume';
-    view.entry_note = '';
-  }
-  return view;
-}
-
-function seatTranscriptRoot(): string {
-  const configured = process.env['CLAUDE_CONFIG_DIR'];
-  const root = configured && configured.trim() ? configured : path.join(homeDirectory(), '.claude');
-  return path.join(root, 'projects');
-}
-
-/**
- * The conversation a seat last recorded. THE NEWER OF TWO RECORDS, NOT THE MORE TRUSTED ONE: the
- * binding's id is verified identity, and the advisory one is written by the LAUNCHER, because a
- * launcher-started session can never hold a binding. Preferring the binding unconditionally would
- * offer a resume of the conversation BEFORE last at exactly the seat a terminal reader uses.
- */
+/** The shared record reader, retaining the return shape used by capture and Hub writers. */
 export function seatConversationRecord(
   stateDirectory: string,
   seat: string,
 ): { sessionId: string; source: string; recordedUtc: string } {
-  let record = { sessionId: '', source: 'none', recordedUtc: '' };
-  // A RECORD THAT IS PRESENT AND UNUSABLE IS NOT AN ABSENT RECORD. Reporting it as "nothing has
-  // recorded a conversation here" would be absence standing in for a fault.
-  let malformed = false;
-
-  const binding = readSeatBinding(stateDirectory, seat);
-  if (binding && binding.state === 'committed' && binding.session_id !== undefined) {
-    if (CONVERSATION_ID_PATTERN.test(binding.session_id)) {
-      record = { sessionId: binding.session_id, source: 'binding', recordedUtc: binding.bound_utc ?? '' };
-    } else if (binding.session_id.trim()) {
-      malformed = true;
-    }
-  }
-
-  const activity = readSeatActivity(stateDirectory, seat);
-  if (activity && 'session_id' in activity && 'conversation_recorded_utc' in activity) {
-    const advisoryId = String(activity['session_id']);
-    const advisoryAt = String(activity['conversation_recorded_utc']);
-    if (CONVERSATION_ID_PATTERN.test(advisoryId)) {
-      if (isRecordNewer(advisoryAt, record.recordedUtc)) {
-        record = { sessionId: advisoryId, source: 'activity', recordedUtc: advisoryAt };
-      }
-    } else if (advisoryId.trim()) {
-      malformed = true;
-    }
-  }
-  if (record.source === 'none' && malformed) record = { sessionId: '', source: 'malformed', recordedUtc: '' };
-  return record;
-}
-
-/** An unparseable or absent `than` is older than anything; an unparseable candidate is newer than nothing. */
-function isRecordNewer(candidate: string, than: string): boolean {
-  const candidateTime = Date.parse(candidate);
-  if (Number.isNaN(candidateTime)) return false;
-  const thanTime = Date.parse(than);
-  if (Number.isNaN(thanTime)) return true;
-  return candidateTime > thanTime;
-}
-
-/**
- * The title of one conversation, with a DISTINCT status for every way it can be absent. A single
- * empty string would collapse "an old client wrote none", "this configuration has no transcript for
- * that id", "the file is there and unreadable" and "nothing recorded a conversation here" into the
- * answer that happens to be commonest.
- */
-function seatConversationTitle(
-  transcriptRoot: string,
-  sessionId: string,
-): { status: string; title: string; reason: string } {
-  if (!sessionId.trim()) {
-    return { status: 'no-conversation', title: '', reason: 'nothing has recorded a conversation at this seat' };
-  }
-  if (!CONVERSATION_ID_PATTERN.test(sessionId)) {
-    return {
-      status: 'malformed-conversation',
-      title: '',
-      reason: 'the recorded conversation id is not a uuid, so no transcript was looked for',
-    };
-  }
-  if (!fs.existsSync(transcriptRoot)) {
-    return { status: 'no-transcript-root', title: '', reason: `no transcript directory at ${transcriptRoot}` };
-  }
-  // FOUND BY NAME ACROSS THE PROJECT DIRECTORIES RATHER THAN BY COMPOSING ONE. The client derives a
-  // project directory from the workspace path by a mangling rule it does not document, and a
-  // reimplementation of that rule would be a lookalike of the consumer whose files it reads.
-  let transcript: string | null = null;
-  for (const directory of listDirectories(transcriptRoot)) {
-    const candidate = path.join(transcriptRoot, directory, `${sessionId}.jsonl`);
-    if (fs.existsSync(candidate)) {
-      transcript = candidate;
-      break;
-    }
-  }
-  if (transcript === null) {
-    // A TRANSCRIPT NOT FOUND IS NOT A DELETED TRANSCRIPT. A different config dir, a different machine
-    // or a pruned history all land here, so this says what was searched rather than that it is gone.
-    return { status: 'no-transcript', title: '', reason: 'no transcript for it under this configuration' };
-  }
-
-  let title = '';
-  let lines = 0;
-  let bytes = 0;
-  let reachedEnd = false;
-  try {
-    const text = fs.readFileSync(transcript, 'utf8');
-    for (const line of text.split('\n')) {
-      if (lines >= TRANSCRIPT_LINE_BUDGET || bytes >= TRANSCRIPT_BYTE_BUDGET) break;
-      lines += 1;
-      bytes += line.length;
-      // THE MARKER TEST BEFORE THE PARSE, and it is not an optimisation for its own sake: a
-      // transcript line is a whole assistant turn, tens of kilobytes of it.
-      if (!line.includes('"ai-title"')) continue;
-      try {
-        const record = JSON.parse(line) as { type?: unknown; aiTitle?: unknown };
-        if (record.type !== 'ai-title' || record.aiTitle === undefined) continue;
-        const candidate = String(record.aiTitle);
-        if (candidate.trim()) title = candidate.trim();
-      } catch {
-        continue;
-      }
-    }
-    reachedEnd = lines < TRANSCRIPT_LINE_BUDGET && bytes < TRANSCRIPT_BYTE_BUDGET;
-  } catch (error) {
-    return { status: 'unreadable', title: '', reason: `its transcript could not be read: ${(error as Error).message}` };
-  }
-
-  if (title) return { status: 'titled', title, reason: '' };
-  // WHETHER THE FILE ENDED, not whether the budget was reached: a transcript of exactly the budget's
-  // length with no title has been read WHOLE.
-  if (!reachedEnd) return { status: 'budget-exhausted', title: '', reason: `no title in its first ${lines} lines` };
-  return { status: 'no-title', title: '', reason: 'its transcript records no title' };
-}
-
-/** The last column: the title in quotes, or the reason there is none. NEVER BLANK. */
-function formatSeatConversationCell(row: ConversationView, titleWidth = 52): string {
-  if (row.entry_action === 'restart' && row.entry_note.trim()) {
-    let cell = row.entry_note;
-    if (row.conversation_source === 'activity') cell += ' (advisory)';
-    return cell;
-  }
-  let cell: string;
-  if (row.title_status === 'titled') {
-    let title = row.title;
-    if (title.length > titleWidth) title = title.substring(0, titleWidth - 1).replace(/\s+$/, '') + '…';
-    cell = `"${title}"`;
-  } else {
-    cell = row.title_note.trim() ? row.title_note : row.title_status;
-  }
-  // ADVISORY IS LABELLED WHEREVER IT IS SHOWN: this conversation was recorded by a launcher rather
-  // than by a verified binding.
-  if (row.conversation_source === 'activity' && row.title_status !== 'no-conversation') cell += ' (advisory)';
-  return cell;
+  // Keep the old reader's damaged-binding error for capture, hub edit and kickoff.
+  readSeatBinding(stateDirectory, seat);
+  const record = conversationRecord(stateDirectory, seat);
+  return { sessionId: record.session_id, source: record.source, recordedUtc: record.recorded_utc };
 }
 
 // --- the writes -------------------------------------------------------------------------------------

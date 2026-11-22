@@ -357,6 +357,8 @@ function decodedCommand(command: string): string {
 }
 export function sectionEnvironment(section: number | 'whole', folder: string): NodeJS.ProcessEnv {
   const env = childEnv();
+  delete env['CLAUDE_CODE_SESSION_ID'];
+  delete env['CODEX_THREAD_ID'];
   if (section !== 'whole') {
     for (const key of ['TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']) {
       const value = path.join(folder, key.toLowerCase()); fs.mkdirSync(value); env[key] = value;

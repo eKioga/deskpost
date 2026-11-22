@@ -32,6 +32,7 @@ export const REQUIRED_HOOKS = [
   { file: 'Get-SeatStartContext.ps1', events: ['SessionStart'], optional: true, purpose: 'the seat roster and the ask, and the re-bind of a resumed conversation' },
   { file: 'Guard-SettingsIntegrity.ps1', events: ['ConfigChange'], optional: true, purpose: 'a settings edit cannot disable the guards' },
   { file: 'Add-SearchHitReminder.ps1', events: ['PostToolUse'], optional: true, purpose: 'a hit is a location, not a reading' },
+  { file: 'checkpoint', events: ['UserPromptSubmit', 'PostToolUse', 'Stop'], optional: true, purpose: 'checked closeout for this conversation' },
 ];
 
 /**
@@ -80,6 +81,7 @@ export const HOOK_VERB_FOR_SCRIPT: Readonly<Record<string, string>> = {
   'Restore-CompactedGuidance.ps1': 'compact-clear',
   'Add-SearchHitReminder.ps1': 'search-hit',
   'Get-SeatStartContext.ps1': 'seat-start',
+  checkpoint: 'checkpoint',
 };
 
 export const RECOGNISES_HOOK_VERBS = true;

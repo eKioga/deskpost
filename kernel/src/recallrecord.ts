@@ -173,7 +173,10 @@ export function hasDrift(drift: RecallDrift): boolean {
   return drift.added.length + drift.changed.length + drift.removed.length > 0;
 }
 
-/** The drift refusal, naming every page and both routes. */
+/**
+ * The drift refusal, naming every page and all three routes: `--accept-drift` first (kickoffs/s221 row 1), which
+ * takes the Shelf copy over the drifted pages and keeps each one first, then the two older routes, word for word.
+ */
 export function driftRefusal(bookSlug: string, shelfSlug: string, drift: RecallDrift): string {
   const parts = [
     drift.added.length ? `added: ${drift.added.join(', ')}` : '',
@@ -182,7 +185,9 @@ export function driftRefusal(bookSlug: string, shelfSlug: string, drift: RecallD
   ].filter((part) => part);
   return (
     `collection/books/${bookSlug} changed after shelf/${shelfSlug} was recalled from it (${parts.join('; ')}), so returning the ` +
-    'Shelf copy would overwrite work it never saw. Nothing was written. Either recall the Book again into a new Shelf slug ' +
+    'Shelf copy would overwrite work it never saw. Nothing was written. Either rerun this return with --accept-drift ' +
+    `(deskpost publish refresh ${shelfSlug} --accept-drift --preflight) to take the Shelf copy over these pages; each one is ` +
+    'kept under internal/shelf-recalls first. Or recall the Book again into a new Shelf slug ' +
     `(deskpost shelf recall ${bookSlug} --shelf-slug <new-slug>) and merge the two by hand, or discard this recall ` +
     `(deskpost shelf remove ${shelfSlug}).`
   );

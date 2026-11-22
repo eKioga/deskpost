@@ -440,10 +440,12 @@ export interface Entry {
 }
 
 export function topLevelEntries(lines: string[], start: number, end: number): Entry[] {
-  const fenced = fencedLineMask(lines);
+  const shown = shownText(lines);
   const entries: Entry[] = [];
   for (let i = start; i < end; i++) {
-    const match = fenced[i] ? null : /^(?:[-*+]|[0-9]+\.)[ \t]+(.*)$/.exec(lines[i]!);
+    const line = shown[i];
+    if (line == null) continue;
+    const match = /^(?:[-*+]|[0-9]+\.)[ \t]+(.*)$/.exec(line);
     if (match) entries.push({ index: i, line: lines[i]!, hasStatus: /^\[[ xX]\](?:[ \t]+|$)/.test(match[1]!) });
   }
   return entries;
@@ -548,15 +550,17 @@ function within(inner: Block, outer: Block): boolean {
   return inner.start >= outer.start && inner.end <= outer.end;
 }
 
-function findUniqueBlock(lines: string[], start: number, end: number, matchText: string, checkboxOnly = false): Block {
-  if (isBlank(matchText)) refuse('MatchText is required: give text that appears in exactly one item or line.');
+export function findUniqueBlock(lines: string[], start: number, end: number, matchText: string, checkboxOnly = false): Block {
+  if (isBlank(matchText)) refuse('MatchText is required: give text that appears in exactly one item or line. Nothing was written.');
   let matched = itemBlocks(lines, start, end).filter((block) => lines.slice(block.start, block.end + 1).join(' ').includes(matchText));
   if (checkboxOnly) {
-    matched = matched.filter(block => /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+\[[ xX]\]/.test(lines[block.start]!));
+    const checkboxes = matched.filter(block => /^[ \t]*(?:[-*+]|[0-9]+\.)[ \t]+\[[ xX]\]/.test(lines[block.start]!));
+    if (!checkboxes.length && matched.length === 1) setCheckboxState(lines[matched[0]!.start]!, true);
+    matched = checkboxes;
     const ownLine = matched.filter(block => lines[block.start]!.includes(matchText));
     if (ownLine.length) matched = ownLine;
   }
-  if (matched.length === 0) refuse(`No item or line contains '${matchText}'.`);
+  if (matched.length === 0) refuse(`No item or line contains '${matchText}'. Give text from one item of the section, or name the section with --section. Nothing was written.`);
   // TEXT IN A NESTED ITEM MATCHES ITS PARENTS TOO (S87): when the matches nest, one inside the next, the innermost is
   // the item meant, as it was before a block carried its sub-list. Siblings still refuse.
   const innermost = matched.find((block) => matched.every((other) => within(block, other)));
@@ -573,7 +577,7 @@ function findUniqueBlock(lines: string[], start: number, end: number, matchText:
 
 function setCheckboxState(line: string, checked: boolean): string {
   const match = /^([ \t]*(?:[-*+]|[0-9]+\.)[ \t]+)\[([ xX])\](.*)$/.exec(line);
-  if (!match) refuse(`That item is not a checkbox: ${line.trim()}`);
+  if (!match) refuse(`That item is not a checkbox: ${line.trim()}. check-item ticks a - [ ] item; edit this one with replace-item. Nothing was written.`);
   return `${match[1]}[${checked ? 'x' : ' '}]${match[3]}`;
 }
 
@@ -633,7 +637,15 @@ function newProjectBodyRaw(currentBody: string, mode: EditMode, section: string,
     }
     const block = findUniqueBlock(lines, start, end, matchText, mode === 'CheckItem');
     if (mode === 'InsertItem') {
-      if (!isListLine(lines[block.start]!) || !isListLine(addition[0]!)) refuse('insert-item matches a list item and needs content starting with a list marker.');
+      const anchor = lines[block.start]!;
+      if (!isListLine(anchor)) {
+        refuse(`The --after line '${anchor.trim().slice(0, 120)}' is not a list item. insert-item goes after a list item. ` +
+          'Use --mode append-section --section <name> to add the first item in a section. Nothing was written.');
+      }
+      const first = addition[0] ?? '';
+      if (!isListLine(first)) {
+        refuse(`The first content line '${first.trim().slice(0, 120)}' must start with a list marker (-, *, +, or 1.) for --mode insert-item. Nothing was written.`);
+      }
       const eol = currentBody.match(/\r\n|\r|\n/)?.[0] ?? '\n';
       const offset = (currentBody.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).slice(0, block.end + 1).join('').length;
       const prefix = currentBody.slice(0, offset);
@@ -766,6 +778,45 @@ function assertNowStructure(currentBody: string, proposedBody: string, mode: Edi
   }
 }
 
+/**
+ * APPEND-SECTION INTO ONE `###` SUBSECTION (kickoffs/s219 row 5): the lines go at the end of that subsection, before the
+ * next `###` or `##` heading, with its trailing blank lines kept after them. The section append's own checks run first
+ * (the content, the section, a fence or comment left open), then the subsection is found among the section's shown
+ * lines: absent or doubled, the edit is refused naming the subsections the section holds.
+ */
+function appendToSubsection(currentBody: string, section: string, subsection: string, content: string): string {
+  newProjectBody(currentBody, 'AppendSection', section, content, '', false);
+  const lines = toLines(currentBody);
+  const span = sectionSpan(lines, section);
+  if (span === null) refuse(`Section '${section}' was not found. Nothing was written.`);
+  const scan = scanShown(lines);
+  const headingText = (text: string) => text.trim().replace(/[ \t]+#+$/, '').trimEnd();
+  const wanted = headingText(subsection.trim().replace(/^#+/, ''));
+  const subheadings: { index: number; text: string }[] = [];
+  for (let i = span.start + 1; i < span.end; i++) {
+    const match = /^[ ]{0,3}###[ \t]+(.+?)[ \t]*$/.exec(scan.shown[i] ?? '');
+    if (match) subheadings.push({ index: i, text: headingText(match[1]!) });
+  }
+  const named = subheadings.filter((heading) => heading.text === wanted);
+  const held = subheadings.length ? subheadings.map((heading) => `'${heading.text}'`).join(', ') : 'none';
+  if (named.length === 0) refuse(`## ${section} holds no subsection '### ${wanted}'. Its subsections: ${held}. Nothing was written.`);
+  if (named.length > 1) refuse(`## ${section} holds the subsection '### ${wanted}' ${named.length} times; name a unique one. Its subsections: ${held}. Nothing was written.`);
+  const start = named[0]!.index;
+  const end = subheadings.find((heading) => heading.index > start)?.index ?? span.end;
+  let last = end - 1;
+  while (last > start && isBlank(lines[last])) last--;
+  const open = scanShown(lines.slice(0, last + 1)).open;
+  if (open !== null && open.index > start) {
+    refuse(`### ${wanted} ends inside a ${open.kind === 'fence' ? 'fence' : 'HTML comment'} that is never closed, so an appended line would be hidden in it. Close it, then append again. Nothing was written.`);
+  }
+  const addition = removeTrailingBlank(toLines(content));
+  const joins = (isListLine(lines[last]!) && isListLine(addition[0]!)) || (isTableLine(lines[last]!) && isTableLine(addition[0]!));
+  const result = [...lines.slice(0, last + 1), ...(joins ? [] : ['']), ...addition, ...lines.slice(last + 1)];
+  const proposed = joinLines(result);
+  assertNowStructure(currentBody, proposed, 'AppendSection', section, content, '');
+  return proposed;
+}
+
 /** `New-ProjectBody`: the proposed page, or the refusal that stops the edit before any write. */
 export function newProjectBody(currentBody: string, mode: EditMode, section: string, content: string, matchText: string, uncheck: boolean, checkNow = true): string {
   const proposed = newProjectBodyRaw(currentBody, mode, section, content, matchText, uncheck);
@@ -807,11 +858,13 @@ export function pageSizeRemedy(pagePath: string, body = ''): string {
   const normalized = pagePath.replace(/\\/g, '/');
   if (/(^|\/)connections\.md$/.test(normalized)) return 'Prune entries that no longer earn their place, or split them onto topic pages.';
   if (/(^|\/)_project\.md$/.test(normalized)) {
+    const slug = /(?:^|\/)projects\/([^/]+)\/_project\.md$/.exec(normalized)?.[1] ?? '<slug>';
+    const tidy = ` Run deskpost hub tidy ${slug} --preflight to move ticked and named items off the page word for word.`;
     const largest = sectionSizes(body).sort((a, b) => b.size_bytes - a.size_bytes)[0];
     if (largest?.section === 'Decisions') {
-      return 'Move whole entries from ## Decisions, word for word, to a dated notes/ record page with new-page; leave one grouped pointer line with replace-section.';
+      return 'Move whole entries from ## Decisions, word for word, to a dated notes/ record page with new-page; leave one grouped pointer line with replace-section.' + tidy;
     }
-    return 'Move history to a dated notes/ page, connections to the companion connections page, and accepted limits to the limits page (ADR-0013).';
+    return 'Move history to a dated notes/ page, connections to the companion connections page, and accepted limits to the limits page (ADR-0013).' + tidy;
   }
   return 'Move detail onto a linked page and keep this one to what a reader needs on arrival.';
 }
@@ -1029,11 +1082,18 @@ function pagesLinkingTo(workspace: string, slug: string, pageName: string): stri
     if (name === pageName) continue;
     const content = fs.readFileSync(full, 'utf8');
     const wikiLinks = [...content.matchAll(/\[\[([^|#\]]+)(?:[|#][^\]]*)?\]\]/g)];
-    if (wikiLinks.some(match => {
+    const hasWikiLink = wikiLinks.some(match => {
       const destination = match[1]!.trim().replace(/\.md$/i, '');
       return destination === target || destination === pageName ||
         path.posix.join(path.posix.dirname(name), destination) === pageName;
-    })) links.push(`projects/${slug}/${name}`);
+    });
+    const markdownLinks = content.matchAll(/(?<!!)\[[^\]\r\n]*\]\([ \t]*(?:<([^>\r\n]+)>|((?:[^\s()]|\([^\s()]*\))+))(?:[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'))?[ \t]*\)/g);
+    const hasMarkdownLink = Array.from(markdownLinks).some(match => {
+      const destination = (match[1] ?? match[2]!).split('#', 1)[0]!.replace(/\.md$/i, '');
+      return destination !== '' && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(destination) &&
+        path.posix.join(path.posix.dirname(name), destination) === pageName;
+    });
+    if (hasWikiLink || hasMarkdownLink) links.push(`projects/${slug}/${name}`);
   }
   return links.sort();
 }
@@ -1071,6 +1131,8 @@ export async function hubEdit(argv: string[], workspace: string): Promise<Record
 
 async function hubEditUnwarned(argv: string[], workspace: string, loadedContent: (content: string) => void): Promise<Record<string, PsJsonValue>> {
   const parsed = parseArguments(argv, argumentTable('hub', 'edit'));
+  const showSections = parsed.flags.has('show-sections');
+  if (showSections && !parsed.flags.has('preflight')) refuse('--show-sections requires --preflight. Nothing was written.');
   // ONE SLUG HELPER FOR EVERY HUB WRITER (PLAN-one-step-upgrade.md small fix 2): `projects/<slug>` is taken, and a
   // refusal names `<slug>`, not the PowerShell parameter. The oracle's order is kept: a blank slug, then the mode.
   const { slug, problem: slugProblem } = hubSlug(parsed.positional[0] ?? '');
@@ -1224,6 +1286,13 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   if (supersedes !== undefined && (mode !== 'AppendSection' || section !== 'Next' || pageName !== '_project')) {
     refuse('--supersedes is for append-section on the Hub root’s Next section only.');
   }
+  // --subsection (kickoffs/s219 row 5): append-section only, never with --supersedes.
+  const subsection = parsed.options.get('subsection');
+  if (subsection !== undefined) {
+    if (mode !== 'AppendSection') refuse('--subsection is for --mode append-section only. Nothing was written.');
+    if (supersedes !== undefined) refuse('--subsection cannot be used with --supersedes: a Run pointer goes in ## Next itself. Nothing was written.');
+    if (isBlank(subsection.replace(/^\s*#+/, ''))) refuse('--subsection needs the ### heading text. Nothing was written.');
+  }
   if (removingPage && (section || matchText || contentGiven || contentPathGiven || parsed.flags.has('uncheck'))) {
     refuse('remove-page takes --page and no section, match or content.');
   }
@@ -1331,6 +1400,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     ? [setCheckboxState(originalLines[block.start]!, !uncheck), ...originalLines.slice(block.start + 1, block.end + 1)]
     : replacementItemLines(originalLines[block.start]!, removeTrailingBlank(toLines(text)));
   const buildBody = (text: string): string => {
+    if (subsection !== undefined) return appendToSubsection(appendBase, section, subsection, text);
     if (!ordered.length) return newProjectBody(appendBase, mode, section, text, matchText, uncheck);
     const lines = [...originalLines];
     for (const block of ordered) {
@@ -1357,9 +1427,13 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     // `## Repo` may hold up to three pending pointers, run in page order; every other Hub keeps one, word for word.
     const queueCap = isDevHubBody(proposedBody) ? RUN_QUEUE_CAP : 1;
     if (after.length > queueCap && after.length >= pending(nextBefore).length) {
+      // THE REMEDY NAMES THE COMMANDS (kickoffs/s219 row 4): the first pending pointer's id where there is one.
+      const firstId = /Run ([A-Za-z0-9._-]+):/.exec(pending(nextBefore)[0] ?? '')?.[1] ?? '<id>';
+      const remedy = `Tick the one that is done first (deskpost hub edit ${slug} --mode check-item --section Next --match-text "Run ${firstId}:"), ` +
+        `or replace an unrun Kickoff (deskpost hub edit ${slug} --mode append-section --section Next --supersedes "Run <old id>:" --content-path <file>). Nothing was written.`;
       refuse(queueCap === 1
-        ? `## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first, or append with --supersedes to replace an unrun Kickoff. Nothing was written.`
-        : `## Next on a dev Hub holds at most three pending Run pointers, and this edit would leave ${after.length}: ${after.join(' | ')}. Tick the one that is done first, or append with --supersedes to replace an unrun Kickoff. Nothing was written.`);
+        ? `## Next holds one pending Run pointer, and this edit would leave ${after.length}: ${after.join(' | ')}. ${remedy}`
+        : `## Next on a dev Hub holds at most three pending Run pointers, and this edit would leave ${after.length}: ${after.join(' | ')}. ${remedy}`);
     }
     // ONE PENDING POINTER A UNIT (A1-07; kickoffs/s213 row 3): two unticked pointers naming one `<id>` or one
     // `kickoffs/<id>` page are refused; a revision replaces its pointer where it stands (replace-item keeps its place).
@@ -1373,7 +1447,7 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
     const doubledBefore = new Set(repeated(pending(nextBefore)));
     const doubled = repeated(pending(nextAfter)).filter((key) => !doubledBefore.has(key));
     if (doubled.length > 0) {
-      refuse(`This edit would leave a second pending Run pointer for ${doubled[0]!.replace(/^(id|page) /, '')} in ## Next. A revision replaces its pointer where it stands (hub edit --mode replace-item --match-text "Run <id>:"), or append with --supersedes. Nothing was written.`);
+      refuse(`This edit would leave a second pending Run pointer for ${doubled[0]!.replace(/^(id|page) /, '')} in ## Next. A revision replaces its pointer where it stands (deskpost hub edit ${slug} --mode replace-item --section Next --match-text "Run <id>:" --content-path <file>), or replace an unrun Kickoff (deskpost hub edit ${slug} --mode append-section --section Next --supersedes "Run <old id>:" --content-path <file>). Nothing was written.`);
     }
     // A RUN POINTER THE RULE CAN SEE (kickoffs/s181-r2 spare S1): a line this edit adds that names `Run <id>:` and a
     // `kickoffs/` link must be the canonical form (`kickoff.ts`), or the count above and /meanwhile miss it. A line already
@@ -1490,6 +1564,20 @@ async function hubEditUnwarned(argv: string[], workspace: string, loadedContent:
   };
 
   if (parsed.flags.has('preflight')) {
+    if (!showSections) {
+      for (const field of ['section_before', 'section_body_before', 'section_after']) {
+        const value = plan[field];
+        if (typeof value !== 'string') continue;
+        const bytes = Buffer.byteLength(value, 'utf8');
+        if (bytes <= 8192) continue;
+        plan[field] = null;
+        plan[field + '_summary'] = {
+          lines: toLines(value).length,
+          bytes,
+          sha256: sha256OfText(value),
+        };
+      }
+    }
     if (hasWritePlaceholders(content)) plan['time_placeholders'] = HUB_PLACEHOLDER_NOTE;
     plan['page_size_warning'] = sizeWarnings[0]!;
     plan['section_size_warning'] = sizeWarnings[1]!;
@@ -1681,7 +1769,25 @@ export const TIME_PLACEHOLDER_NOTE =
 
 function mapMarkdownProse(text: string, map: (prose: string) => string): string {
   const pieces = text.split(/(\r\n|\n|\r)/);
-  const fenced = fencedLineMask(pieces.filter((_, index) => index % 2 === 0));
+  const lines = pieces.filter((_, index) => index % 2 === 0);
+  const fenced = fencedLineMask(lines);
+  const quotes = lines.map((line, index) => {
+    const prefix = fenced[index] ? '' : /^(?:[ \t]*>[ \t]*)+/.exec(line)?.[0] ?? '';
+    return { depth: prefix.replace(/[ \t]/g, '').length, text: line.slice(prefix.length) };
+  });
+  // A quoted fence is scoped to consecutive lines at the same quote depth.
+  for (let start = 0; start < quotes.length;) {
+    const { depth } = quotes[start]!;
+    if (depth === 0) {
+      start++;
+      continue;
+    }
+    let end = start + 1;
+    while (quotes[end]?.depth === depth) end++;
+    const quotedFence = fencedLineMask(quotes.slice(start, end).map(line => line.text));
+    quotedFence.forEach((inside, index) => { fenced[start + index] = inside; });
+    start = end;
+  }
   const mapInline = (chunk: string): string => {
     const ticks = [...chunk.matchAll(/`+/g)];
     const nextByLength = new Map<number, number>();

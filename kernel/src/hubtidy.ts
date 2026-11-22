@@ -32,7 +32,7 @@ import { assertInsideRoot, lexists } from './pagepath.ts';
 import { resolveContentPath } from './contentpath.ts';
 import { strayControlRefusal } from './controlchars.ts';
 import { localDate } from './localdate.ts';
-import { entryLabel, headings, itemBlocks, joinLines, pageLimitBytes, pageSizeRemedy, pageSizeStatus, removeFrontmatter, sectionSpan, shownText, toLines, topLevelEntries } from './hubedit.ts';
+import { entryLabel, findUniqueBlock, headings, itemBlocks, joinLines, pageLimitBytes, pageSizeRemedy, pageSizeStatus, removeFrontmatter, sectionSpan, shownText, toLines, topLevelEntries } from './hubedit.ts';
 import { tickedEntries } from './hubpages.ts';
 import { capturePriorBytes, undoBlock, type UndoPathBefore } from './journal.ts';
 
@@ -180,7 +180,7 @@ function gate(workspace: string, options: Options, hubRoot: string, notesRelativ
 }
 
 /** Everything a tidy would do, from the page as it is now. Pure but for reads. */
-export function planTidy(workspace: string, options: Options, now: Date = new Date()): TidyPlan {
+export function planTidy(workspace: string, options: Options & { items?: string[] }, now: Date = new Date()): TidyPlan {
   if (/^kickoffs\//i.test(options.page)) refuse('kickoffs/ pages are written once: a revision is a new page made with --mode new-page. Nothing was written.');
   const hubRoot = path.join(workspace, 'collection', 'projects', options.slug);
   const pagePath = `projects/${options.slug}/${options.page}.md`;
@@ -197,6 +197,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
   const date = localDate(now);
 
   // Named sections are moved whole. Only the remaining sections can contribute individual items.
+  const regions = regionsOf(lines);
   const movedSections: { name: string; start: number; end: number }[] = [];
   const available = headings(lines).filter((heading) => heading.level === 2).map((heading) => heading.text);
   for (const given of options.sections) {
@@ -218,21 +219,59 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     movedSections.push({ name, start: span.start, end: span.end });
   }
 
-  const ticked: { section: string; start: number; end: number; line: string }[] = tickedEntries(currentBody).filter((entry) => shownTicked(entry.start));
+  const named: { section: string; start: number; end: number; line: string }[] = [];
+  const itemTexts = options.items ?? [];
+  if (itemTexts.length) {
+    // Each top-level block is one candidate. Match on shown text, then move the original lines.
+    const candidates: { section: string; start: number; end: number; line: string }[] = [];
+    for (const region of regions) {
+      if (region.name === null) continue;
+      let coveredThrough = region.heading;
+      for (const block of itemBlocks(lines, region.heading + 1, region.end)) {
+        if (block.start <= coveredThrough || shown[block.start] === null) continue;
+        candidates.push({ ...block, section: region.name, line: lines[block.start]! });
+        coveredThrough = block.end;
+      }
+    }
+    const visible = candidates.map(block => shown.slice(block.start, block.end + 1).join(' ').trimStart());
+    for (const text of itemTexts) {
+      const { start } = findUniqueBlock(visible, 0, visible.length, text);
+      const item = candidates[start]!;
+      if (item.section === 'Purpose' || item.section === 'Decisions') {
+        refuse(`--item matches a line in '${item.section}', which stays on the page. Nothing was written.`);
+      }
+      const run = item.section === 'Next'
+        ? shown.slice(item.start, item.end + 1)
+          .map(line => /^\s*- \[ \] (Run [A-Za-z0-9._-]+:)/.exec(line ?? ''))
+          .find(match => match !== null)
+        : undefined;
+      if (run) {
+        refuse(`--item cannot move an unticked Run pointer. Use hub edit --mode append-section --supersedes "${run[1]}". Nothing was written.`);
+      }
+      if (movedSections.some(section => item.start >= section.start && item.start < section.end)) {
+        refuse(`--item matches a line in '${item.section}', which is also named by --section. Nothing was written.`);
+      }
+      if (!named.includes(item)) named.push(item);
+    }
+  }
+
+  const movedItems: { section: string; start: number; end: number; line: string }[] = tickedEntries(currentBody).filter((entry) => shownTicked(entry.start));
   for (const section of new Set(available)) {
-    if (section === 'Now' || section === 'Next' || movedSections.some(entry => entry.name === section)) continue;
+    // EVERY SECTION BUT PURPOSE AND DECISIONS (kickoffs/s219 row 6): a section that mixes prose and lists gives up its
+    // ticked top-level items too, and its prose stays; Purpose and Decisions are never reached by the default.
+    if (section === 'Now' || section === 'Next' || section === 'Purpose' || section === 'Decisions' || movedSections.some(entry => entry.name === section)) continue;
     const span = sectionSpan(lines, section)!;
     const blocks = itemBlocks(lines, span.start + 1, span.end).filter(block => topLevelEntries(lines, block.start, block.start + 1).length);
-    const pointer = pointerPattern(options.slug);
-    const wholeList = lines.slice(span.start + 1, span.end).every((line, offset) => {
-      const index = span.start + 1 + offset;
-      return !line.trim() || pointer.test(line) || blocks.some(block => index >= block.start && index <= block.end);
-    });
-    if (!wholeList) continue;
     for (const block of blocks) {
       const line = lines[block.start]!;
-      if (shownTicked(block.start)) ticked.push({ ...block, section, line });
+      if (shownTicked(block.start)) movedItems.push({ ...block, section, line });
     }
+  }
+
+  if (named.length) {
+    const tickedStarts = new Set(movedItems.map(item => item.start));
+    movedItems.push(...named.filter(item => !tickedStarts.has(item.start)));
+    movedItems.sort((left, right) => left.start - right.start);
   }
 
   const word = pageWord(options.page);
@@ -251,7 +290,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     page_path: pagePath,
     page_file: `collection/${pagePath}`,
   };
-  if (ticked.length === 0 && movedSections.length === 0) {
+  if (movedItems.length === 0 && movedSections.length === 0) {
     const size = Buffer.byteLength(currentBody, 'utf8');
     const limit = pageLimitBytes(pagePath);
     return {
@@ -264,7 +303,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
         moved_sections: [],
         page_size_bytes: size,
         page_limit_bytes: limit,
-        message: `Nothing to move on '${pagePath}': no ticked item in a list section${options.sections.length ? '' : ', and no --section named'}. The page is ${size} bytes with a limit of ${limit} bytes. Nothing was written.`,
+        message: `Nothing to move on '${pagePath}': no ticked item in any section but Purpose and Decisions${options.sections.length ? '' : ', and no --section named'}. The page is ${size} bytes with a limit of ${limit} bytes. Nothing was written.`,
         confirmation_required: false,
       },
     };
@@ -273,7 +312,6 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
   if (lexists(notesFull)) refuse(`'${notesPath}' already exists, so this tidy's history page cannot be made. Nothing was written.`);
 
   // WHAT LEAVES, BY REGION. A region is the lines under one heading (or above the first).
-  const regions = regionsOf(lines);
   const regionOf = (index: number): Region => regions.find((region) => index >= region.start && index < region.end)!;
   const removed = new Set<number>();
   const pattern = pointerPattern(options.slug);
@@ -288,7 +326,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     if (known) known.count += count;
     else shortened.set(region.start, { region, count, at });
   };
-  for (const item of ticked) {
+  for (const item of movedItems) {
     for (let i = item.start; i <= item.end; i++) removed.add(i);
     touch(regionOf(item.start), 1, item.start);
   }
@@ -355,8 +393,8 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
   const notesLines: string[] = [`# ${title}: tidy ${number}`, '', `Moved from \`${options.page}\` on ${date} by \`deskpost hub tidy\`, word for word.`];
   if (previousLink !== null) notesLines.push('', `Previous history page: [[${previousLink}]]`);
   for (const pointer of replacedPointers) notesLines.push('', `Replaced pointer: ${pointer.line}`);
-  for (const section of new Set(ticked.map(item => item.section))) {
-    const blocks = ticked.filter((item) => item.section === section);
+  for (const section of new Set(movedItems.map(item => item.section))) {
+    const blocks = movedItems.filter((item) => item.section === section);
     if (!blocks.length) continue;
     notesLines.push('', `## From ## ${section}`, '');
     for (const block of blocks) notesLines.push(...lines.slice(block.start, block.end + 1));
@@ -374,7 +412,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
 
   // WHAT STAYS AND STILL NAMES WHAT LEFT.
   const needles = [
-    ...ticked.map((item) => entryLabel(item.line).replace(/\.\.\.$/, '')).filter((label) => label.length >= 8),
+    ...movedItems.map((item) => entryLabel(item.line).replace(/\.\.\.$/, '')).filter((label) => label.length >= 8),
     ...movedSections.map((section) => section.name),
   ];
   const dangling: PsJsonValue[] = [];
@@ -397,7 +435,8 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
   const currentSha = sha256OfText(currentBody);
   const proposedSha = sha256OfText(proposedBody);
   const notesSha = sha256OfText(notesBody);
-  const planId = 'project-tidy-' + sha256OfText(`${pagePath}|${notesPath}|${previousLink ?? ''}|${currentSha}|${proposedSha}|${notesSha}`);
+  const namedItems = itemTexts.length ? '|' + JSON.stringify(itemTexts) : '';
+  const planId = 'project-tidy-' + sha256OfText(`${pagePath}|${notesPath}|${previousLink ?? ''}|${currentSha}|${proposedSha}|${notesSha}${namedItems}`);
   const status = pageSizeStatus(proposedBody, pagePath, currentBody);
   const result: Record<string, PsJsonValue> = {
     ...base,
@@ -406,7 +445,7 @@ export function planTidy(workspace: string, options: Options, now: Date = new Da
     notes_page_file: `collection/${notesPath}`,
     tidy_number: number,
     previous_history_page: previousLink,
-    moved: ticked.map((item) => ({ section: item.section, label: entryLabel(item.line), size_bytes: lines.slice(item.start, item.end + 1).reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0) })),
+    moved: movedItems.map((item) => ({ section: item.section, label: entryLabel(item.line), size_bytes: lines.slice(item.start, item.end + 1).reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0) })),
     moved_sections: movedSections.map((section) => section.name),
     replaced_pointers: replacedPointers.map((pointer) => ({ section: pointer.section, line: pointer.line })),
     section_sizes: touchedNames.map((name) => ({ section: name, before: sizeOf(currentBody, name), after: sizeOf(proposedBody, name) })),
@@ -495,7 +534,7 @@ export async function hubTidy(argv: string[], workspace: string): Promise<Record
     if (split >= 0) refuse(`Line ${split + 1} of --note-path is a level-one or level-two heading; the note goes under '## Still open from them', so use ### inside it.`);
     note = text;
   }
-  const options: Options = { slug, page, sections: parsed.lists.get('section') ?? [], note, seat: parsed.options.get('seat') };
+  const options = { slug, page, sections: parsed.lists.get('section') ?? [], items: parsed.lists.get('item') ?? [], note, seat: parsed.options.get('seat') };
   const plan = planTidy(workspace, options);
   if (parsed.flags.has('preflight')) return plan.result;
   if (plan.nothing) refuse(String(plan.result['message']));
@@ -708,7 +747,7 @@ function applyTidy(workspace: string, options: Options, plan: TidyPlan, timeoutS
 // check-item's. The text survives on a page the root links to, so a close is not a deletion (ADR-0026).
 
 /** The root's one pointer per section to the history page closed items went to (HR-05). */
-const CLOSED_POINTER = /^Closed items: \[\[(projects\/[^\]]+)\]\]$/;
+const CLOSED_POINTER = /^Closed items: \[\[(projects\/[^\]]+)\]\]/;
 /** A top-level list item's first line, and a ticked one's, as read from its shown text (kickoffs/s214 row 3). */
 const LIST_ITEM = /^(?:[-*+]|[0-9]+\.)[ \t]+/;
 const TICKED_ITEM = /^(?:[-*+]|[0-9]+\.)[ \t]+\[[xX]\](?:[ \t]|$)/;
@@ -781,9 +820,10 @@ export function closedRoot(lines: string[], blockStart: number, blockEnd: number
   const present: number[] = [];
   for (let i = span.start + 1; i < span.end; i++) if (shown[i] === lines[i] && (i < blockStart || i > blockEnd) && CLOSED_POINTER.test(lines[i]!)) present.push(i);
   if (present.length > 1) return { lines: [], section: heading.text, change: 'none', replaced: null, pointers: present.length };
-  const change = present.length === 0 ? 'insert' : lines[present[0]!] === pointer ? 'none' : 'retarget';
+  const retargeted = present.length === 0 ? pointer : lines[present[0]!]!.replace(CLOSED_POINTER, () => pointer);
+  const change = present.length === 0 ? 'insert' : lines[present[0]!] === retargeted ? 'none' : 'retarget';
   const out = [...lines];
-  if (change === 'retarget') out[present[0]!] = pointer;
+  if (change === 'retarget') out[present[0]!] = retargeted;
   out.splice(blockStart, blockEnd - blockStart + 1);
   if (change === 'insert') {
     const after = sectionSpan(out, heading.text)!;

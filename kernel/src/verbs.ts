@@ -41,6 +41,8 @@ export interface VerbDeclaration {
   row: string;
   /** Lines `<verb> <action> --help` adds under the action's usage, one per mode or rule (S85 row 1). */
   details?: Record<string, string[]>;
+  /** Argument-check exit codes by action; other usage refusals exit 1. */
+  usageExitCode?: Record<string, number>;
   /**
    * WHAT EACH ACTION TAKES, keyed by action, with `''` for the verb without one (PLAN-correct-and-find.md D7,
    * kickoffs/s106). The parser reads its value names from here, the front door refuses whatever is not here, and the
@@ -278,20 +280,21 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   dashboard: {
     summary: 'A read-only Desk pane with inbox ages and open Books and Hubs.',
-    usage: 'library dashboard [--seat <name>] [--width <n>] [--json]; library dashboard --watch --seat <name> [--interval-seconds <n>] [--width <n>]',
+    usage: 'library dashboard [--seat <name>] [--width <n>] [--json] [--conversation <id>] [--columns <n>] [--reserve <n>]; library dashboard --watch --seat <name> [--interval-seconds <n>] [--width <n>]',
     actions: [],
     positional: false,
-    arguments: { '': { valued: ['seat', 'width', 'interval-seconds', 'iterations'], boolean: ['watch'], internal: ['iterations'], positionals: 0 } },
+    arguments: { '': { valued: ['seat', 'width', 'interval-seconds', 'iterations', 'conversation', 'columns', 'reserve'], boolean: ['watch'], internal: ['iterations'], positionals: 0 } },
     ported: true,
     row: 'c38',
   },
   checkpoint: {
     summary: 'Request, observe and check a save or closeout for this seat and conversation.',
-    usage: 'library checkpoint request <save|closeout> --conversation <id> [--seat <name>] [--turn <id>] [--harness <codex|claude>]; library checkpoint observe --conversation <id> [--seat <name>]; library checkpoint check <save|closeout> --conversation <id> [--seat <name>] [--request-id <id>] [--turn <id>]; library checkpoint status --conversation <id> [--seat <name>]; library checkpoint cancel --conversation <id> [--seat <name>]',
-    actions: ['request', 'observe', 'check', 'status', 'cancel'],
+    usage: 'library checkpoint prepare closeout --conversation <id> [--seat <name>]; library checkpoint request <save|closeout> --conversation <id> [--seat <name>] [--turn <id>] [--harness <codex|claude>] [--decided <tidied|declined|tidy-refused>]; library checkpoint observe --conversation <id> [--seat <name>]; library checkpoint check <save|closeout> --conversation <id> [--seat <name>] [--request-id <id>] [--turn <id>]; library checkpoint status --conversation <id> [--seat <name>]; library checkpoint cancel --conversation <id> [--seat <name>]',
+    actions: ['prepare', 'request', 'observe', 'check', 'status', 'cancel'],
     positional: false,
     arguments: {
-      request: { valued: ['conversation', 'seat', 'turn', 'harness'], positionals: 1 },
+      prepare: { valued: ['conversation', 'seat'], positionals: 1 },
+      request: { valued: ['conversation', 'seat', 'turn', 'harness', 'decided'], positionals: 1 },
       observe: { valued: ['conversation', 'seat'], positionals: 0 },
       check: { valued: ['conversation', 'seat', 'turn', 'request-id'], positionals: 1 },
       status: { valued: ['conversation', 'seat'], positionals: 0 },
@@ -413,15 +416,16 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library hub new <slug> --title <t> [--purpose <p>] [--next-action <a>] [--dev] [--preflight] [--json]; ' +
       'library hub edit <slug> --mode <add-section|append-section|remove-section|remove-page|replace-section|replace-body|check-item|close-item|replace-item|insert-item|new-page> [--title <t>] ' +
-      '[--section <s>] [--match-text <t>] [--supersedes <t>] [--after <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | [--user-confirmed] --plan-id <id>]; ' +
+      '[--section <s>] [--subsection <t>] [--match-text <t>] [--supersedes <t>] [--after <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | [--user-confirmed] --plan-id <id>]; ' +
       'library hub history <slug> <page> [--json]; ' +
       'library hub status <slug> [--json]; ' +
+      'library hub notes <slug> [--prefix <text>] [--match <text>] [--json]; ' +
       'library hub archive <slug> --preflight; ' +
       'library hub copy-pages <slug> --source <path> --title <t> --purpose <p> [--next-action <a>]... [--include-page <p>]... ' +
       '[--at-project-root | --destination-directory <d>] --preflight; ' +
       'library hub rename <old-slug> <new-slug> --title <t> [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]; ' +
-      'library hub tidy <slug> [--page <p>] [--section <s>]... [--note-path <f>] [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
-    actions: ['archive', 'copy-pages', 'edit', 'new', 'rename', 'tidy', 'history', 'status'],
+      'library hub tidy <slug> [--page <p>] [--section <s>]... [--item <text>]... [--note-path <f>] [--preflight | --user-confirmed --plan-id <id>] [--lock-timeout <s>]',
+    actions: ['archive', 'copy-pages', 'edit', 'new', 'rename', 'tidy', 'history', 'status', 'notes'],
     // ONE LINE PER MODE (S85 rows 1 and 3): the usage names eight modes and said nothing of what each takes, so a
     // seat put the section's own `## ` heading into its content and was told the page held the section twice.
     details: {
@@ -433,6 +437,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "letters) with each one's state, the Run queue, the Library train, letters, needs-you and page sizes. Read only;",
         "it reads only what this seat's Desk allows, and --json names each line's source.",
       ],
+      notes: [
+        "Lists a Hub's notes/ pages, newest first: each name, its size in bytes and when it last changed. Read only; the Hub",
+        "must be open on this seat's Desk. --prefix keeps names starting with the text (after notes/), --match names containing",
+        "it, both ignoring case.",
+      ],
       history: [
         "Lists this page's publication journals oldest first: time, operation, mode, state and written hash.",
         "A read-only action; the Hub must exist and be open on this seat's Desk. Plain text by default, --json for records.",
@@ -442,6 +451,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'Modes:',
         "  add-section      --section <s> --content-path <f>: a new level-two section at the page's end.",
         '  append-section   --section <s> --content-path <f>: lines added at the end of an existing section.',
+        '                   With --subsection <t>, at the end of that ### subsection of the section instead.',
         '  remove-page      --page notes/<p>: removes a local Hub note. Gated and undoable.',
         '  remove-section   --section <s>: removes a section other than Purpose, Now or Next. Gated.',
         "  replace-section  --section <s> --content-path <f>: the section's body replaced. Gated.",
@@ -469,9 +479,12 @@ export const VERBS: Record<string, VerbDeclaration> = {
       // ONE VERB FOR DECIDED HUB ITEMS (kickoffs/s125 row 3; ADR-0082): it moves, never ticks, rewrites or deletes.
       tidy: [
         'Moves decided items off a Hub page to a new history page, notes/<date>-<word>-history-tidy-<n>, word for word.',
-        '  (default)        every ticked top-level item of a list section, each whole with its nested lines.',
+        '  (default)        every ticked top-level item of every section but Purpose and Decisions, each whole with its nested lines.',
         '  --section <s>    also a whole named section, heading and all; repeatable. Refused for Purpose, Now, Next,',
         '                   Decisions, and any section still holding an unticked item.',
+        '  --item <text>    also a top-level item or line that uniquely matches shown text, ticked or unticked. Repeatable.',
+        '                   Refused in Purpose, Decisions or a section named by --section. For a pending Run pointer',
+        '                   in Next, use hub edit --mode append-section --supersedes "Run <id>:".',
         '  --page <p>       the page to tidy (default _project).',
         "  --note-path <f>  a file whose text goes under '## Still open from them' on the history page.",
         'Each shortened section keeps one pointer paragraph to the newest history page; each history page links the one before.',
@@ -483,13 +496,14 @@ export const VERBS: Record<string, VerbDeclaration> = {
     arguments: {
       history: { valued: ['seat'], positionals: 2 },
       status: { valued: ['seat'], positionals: 1 },
+      notes: { valued: ['seat', 'prefix', 'match'], positionals: 1 },
       new: { valued: ['title', 'purpose', 'next-action'], boolean: ['dev', 'preflight'], positionals: 1 },
       // EVERY MODE'S NAMES IN ONE TABLE; `--title` given to a mode but new-page is refused in hubedit.ts, and
       // `--user-confirmed` is accepted on every mode.
       edit: {
-        valued: ['mode', 'section', 'supersedes', 'after', 'content', 'content-path', 'page', 'title', 'plan-id', 'seat', 'lock-timeout'],
+        valued: ['mode', 'section', 'subsection', 'supersedes', 'after', 'content', 'content-path', 'page', 'title', 'plan-id', 'seat', 'lock-timeout'],
         repeatable: ['match-text'],
-        boolean: ['uncheck', 'preflight', 'user-confirmed'],
+        boolean: ['uncheck', 'preflight', 'user-confirmed', 'show-sections'],
         positionals: 1,
         // S97's own sentence refuses a second word, naming it.
         ownWords: true,
@@ -505,7 +519,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       rename: { valued: ['title', 'plan-id', 'lock-timeout'], boolean: ['preflight', 'user-confirmed'], positionals: 2 },
       tidy: {
         valued: ['page', 'note-path', 'plan-id', 'seat', 'lock-timeout'],
-        repeatable: ['section'],
+        repeatable: ['section', 'item'],
         boolean: ['preflight', 'user-confirmed'],
         positionals: 1,
         // hubtidy.ts refuses a second word in its own sentence, as hub edit does.
@@ -543,8 +557,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // one line to internal/audit-records.jsonl. No network: a repo is read with git rev-parse and git status only.
     usage:
       'library audit revision <target> [--json]; library audit record <target> --revision <r> --findings <n> [--report <page>] [--json]; ' +
-      'library audit due [--days <n>] [--json]',
+      'library audit due [--days <n>] [--json]; library audit balance <base> <tip> [--repo <path>] [--json]; library audit balance --since <date> [--tip <ref>] [--repo <path>] [--json]',
     details: {
+      balance: ['Reads a repository code balance setting and counts product, tests, tools and docs in a Git range; no Library needed.'],
       revision: [
         'A target is shelf/<slug>, collection/<slug>, projects/<slug> or repo:<absolute path>. A Book is book:<generation>:<digest>',
         'once its pages match its manifest, a Hub hub:<sha256>, a clean repo commit:<HEAD>; anything else is unknown, with why.',
@@ -556,30 +571,31 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'the last audit and that audit is older than --days (default 30). A target whose revision is unknown is due: unknown.',
       ],
     },
-    actions: ['due', 'record', 'revision'],
+    actions: ['due', 'record', 'revision', 'balance'],
     positional: false,
     arguments: {
       revision: { positionals: 1 },
       record: { valued: ['revision', 'findings', 'report'], positionals: 1 },
       due: { valued: ['days'], positionals: 0 },
+      balance: { valued: ['repo', 'since', 'tip'], positionals: 2 },
     },
     ported: true,
     row: 'S112',
   },
   kickoff: {
-    summary: "Check a Kickoff file or which queued Kickoff opens first, decide whether a builder chains on, send a Kickoff on this seat's Hub to a seat in another Library, byte for byte, or receive one onto this seat's Hub.",
+    summary: "Check a Kickoff file or which queued Kickoff opens first, decide whether a builder chains on, send a Kickoff on this seat's Hub to a seat in another Library, byte for byte, receive one onto this seat's Hub, or show every builder's run state.",
     // kickoffs/s159 rows 2 and 3 (PLAN-cross-office-build-loop.md steps 2.1 and 2.2); `check`, kickoffs/s174 row 2.
-    usage: 'library kickoff check <file> [--json] [--posted]; library kickoff check --open <id> [--json]; library kickoff next --context <percent|unknown> [--compacted] --json; library kickoff send kickoffs/<id> --library <id-or-card> --for <seat> [--json]; library kickoff receive notes/<letter page> [--json]',
+    usage: 'library kickoff check <file> [--json] [--posted]; library kickoff check --open <id> [--json]; library kickoff next --context <percent|unknown> [--compacted] --json; library kickoff send kickoffs/<id> --library <id-or-card> --for <seat> [--json]; library kickoff receive notes/<letter page> [--json]; library kickoff status [--seat <name>] [--json]',
     details: {
       check: [
         "--posted checks a page already posted to a Hub: single-brace time placeholders are literal; without it, draft files need doubled braces.",
-        "Judges a Kickoff file by docs/kickoff-template.md's rules, as hub edit does when it posts a kickoffs/ page, with the TRAIN id read from this Library's internal/train/register.json; it writes nothing. Exits 0 when complete, 1 naming each problem, 2 when the file cannot be read.",
+        "Judges a Kickoff file by docs/kickoff-template.md's rules, as hub edit does when it posts a kickoffs/ page, with the TRAIN id read from this Library's internal/train/register.json; it writes nothing. Exits 0 when complete, 1 naming each problem, 2 when the file cannot be read or a wrong word or flag is given.",
         "--open <id> takes no file: it reads this seat's own Hub and exits 0 only when Run <id> is the first pending Run pointer in ## Next, the one a builder's OPEN starts; otherwise 1, naming the first. A dev Hub queues up to three, run in page order.",
       ],
       next: [
         "Decides, after a Handback and its closeout, whether this builder starts the next queued Kickoff in the same session; it writes nothing.",
         "It answers start with the next id only when the finished unit's Handback says Outcome: pushed or published, this session's closeout record is complete,",
-        "the next pending Run pointer's page hashes to the sha256 it carries, both Kickoffs say CHAIN: yes, and --context is below 60% with no",
+        "the next pending Run pointer's page hashes to the sha256 it carries, both Kickoffs say CHAIN: yes, and --context is below 60% or unknown, with no",
         "--compacted; otherwise stop, naming the first condition that failed. --context takes a percent (42 or 42%) or unknown.",
       ],
       send: [
@@ -592,14 +608,21 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'the letter. A payload whose hash or size differs from its envelope is refused with nothing written. Run again after an',
         'interruption, it finishes what is left and never makes a second page or pointer.',
       ],
+      status: [
+        "Shows every builder's run state as a seat's Desk sees it, from each dev Hub's ## Next pointers and notes/ attempt pages,",
+        'as the dashboard report reads them: posted, running with its minutes, handed back or reviewed, or a problem such as a',
+        "Hub closed on this Desk. --seat names the seat whose Desk is read; without it, this session's seat. It writes nothing.",
+      ],
     },
-    actions: ['check', 'next', 'receive', 'send'],
+    actions: ['check', 'next', 'receive', 'send', 'status'],
+    usageExitCode: { check: 2 },
     positional: false,
     arguments: {
       check: { boolean: ['posted'], valued: ['open'], positionals: 1 },
       next: { boolean: ['compacted'], valued: ['context'], positionals: 0 },
       send: { valued: ['library', 'for'], positionals: 1 },
       receive: { positionals: 1 },
+      status: { valued: ['seat'], positionals: 0 },
     },
     ported: true,
     row: 'S159',
@@ -823,15 +846,17 @@ export const VERBS: Record<string, VerbDeclaration> = {
   publish: {
     summary: "Publish, batch-publish or refresh a Shelf Book into the Library's collection: collection/ on a local Library, Basic Memory on one attached to it.",
     usage:
-      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] ' +
+      'library publish <shelf-slug> --title <t> --summary <s> [--book-slug <s>] [--collection <c>] [--book-version <v>] [--replace-existing] [--accept-drift] ' +
       '(--preflight | --user-confirmed --plan-id <plan_id>); library publish batch --plan <path> (--preflight | --user-confirmed --plan-id <plan_id>); ' +
-      'library publish refresh <slug> --title <t> --summary <s> [--collection <c>] (--preflight | --user-confirmed --plan-id <refresh_plan_id>)',
+      'library publish refresh <slug> --title <t> --summary <s> [--collection <c>] [--accept-drift] (--preflight | --user-confirmed --plan-id <refresh_plan_id>)',
     // THE PROSE THAT ENDED THE USAGE (S106 row 3): a usage clause is grammar the docs check reads, so sentences live here.
     details: {
       '*': [
         'Each runs --preflight first, then --user-confirmed --plan-id <id> with the id the preflight issued.',
         "A recalled Book's --title and --summary default to its Shelf entry. On a local Library a refresh is approved by its",
         'refresh_plan_id, never its candidate_plan_id.',
+        "--accept-drift returns a recalled Book whose collection copy changed after its recall: each drifted page is kept",
+        'under internal/shelf-recalls first, and the approval binds each one.',
         'Basic Memory attached route: retired on 1.0 servers.',
       ],
     },
@@ -843,14 +868,14 @@ export const VERBS: Record<string, VerbDeclaration> = {
           'title', 'summary', 'book-slug', 'collection', 'topics', 'book-version', 'reason', 'lock-timeout', 'plan-id',
           'publication-journal-path', 'workflow-journal-path',
         ],
-        boolean: ['replace-existing', 'preflight', 'user-confirmed'],
+        boolean: ['replace-existing', 'accept-drift', 'preflight', 'user-confirmed'],
         internal: ['publication-journal-path', 'workflow-journal-path'],
         positionals: 1,
       },
       batch: { valued: ['plan', 'plan-id'], boolean: ['preflight', 'user-confirmed'], positionals: 0 },
       refresh: {
         valued: ['title', 'summary', 'book-slug', 'collection', 'lock-timeout', 'plan-id', 'journal-path'],
-        boolean: ['preflight', 'user-confirmed'],
+        boolean: ['accept-drift', 'preflight', 'user-confirmed'],
         internal: ['journal-path'],
         positionals: 1,
       },
@@ -1187,6 +1212,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       rebuild: { positionals: 1 },
     },
     details: {
+      '*': ["A gated Shelf verb applies with --plan-id alone: its preview's next is the command."],
       render: [
         "render rebuilds shelf/_catalog.md from each Book's shelf/<slug>/_catalog-entry.md. It takes no Book name: it",
         'renders the whole catalog. Run it after any _catalog-entry.md edit. It is safe to rerun: the same entries give the same catalog.',
@@ -1199,11 +1225,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
   },
   triage: {
     summary: 'The triage inventory, plan validation, and the resumable batch.',
-    usage: 'library triage <inventory [--pending [--for-seat <seat>] [--book <slug>]]|validate|batch> [--actions <json> | --actions-path <file>] [--preflight | [--user-confirmed] --plan-id <id>] [arguments]',
+    usage: 'library triage <inventory [--pending [--for-seat <seat>] [--book <slug>]]|prepare|validate|batch> [--actions <json> | --actions-path <file>] [--preflight | [--user-confirmed] --plan-id <id>] [arguments]',
     // THE SOURCES, AND HOW A LETTER IS CLOSED (S85 row 5, backlog Row C): `source_slug` was nowhere in the help.
     details: {
       '*': [
-        'A review close of a Report received from another Library requires outcome (confirmed, confirmed-by-design, not-reproduced, already-fixed, declined) and outcome_note (text, at most 2 KB). Hold sends nothing; close with an outcome before filing or discarding.',
+        'A review close of a Report received from another Library requires outcome (confirmed, confirmed-by-design, not-reproduced, already-fixed, declined) and outcome_note (text, at most 2 KB). A local Report\'s close takes neither; its verdict goes on the triaging seat\'s Hub record, which triage prepare names. Hold sends nothing; close with an outcome before filing or discarding.',
         'Sources:',
         "  holding    a note in a capture Book: the Holding Shelf, or the Book source_slug names (reports, letters).",
         '  notebook   a Notebook article.',
@@ -1211,6 +1237,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         'inventory names each note\'s from_seat and for_seat; --pending lists only the notes still waiting, and no Notebook page.',
         '--for-seat <seat>, with --pending, lists only the notes addressed to that seat, as the Desk counts its letters.',
         '--book <slug>, with --pending, lists only notes in reports, letters or holding; counts remain whole.',
+        "prepare lists, from this Library's own records, what a triage needs: the seat that triages Reports, each pending Report with its hold and the train items that name it, the version to check against, and where verdicts are recorded. It writes nothing.",
         'A batch of only review actions, none with other_seat, needs no yes; every other batch requires --user-confirmed.',
         'validate is always a preview: it writes nothing, and --preflight changes nothing there.',
         '--actions-path <file> reads the actions as UTF-8 JSON from a file, in place of --actions: Windows PowerShell strips the',
@@ -1221,10 +1248,11 @@ export const VERBS: Record<string, VerbDeclaration> = {
         `  --actions '[{"kind":"review","source":"holding","source_slug":"letters","source_page":"notes/<page>"}]'`,
       ],
     },
-    actions: ['batch', 'inventory', 'validate'],
+    actions: ['batch', 'inventory', 'prepare', 'validate'],
     positional: false,
     arguments: {
       inventory: { valued: ['for-seat', 'book'], boolean: ['pending'], positionals: 0 },
+      prepare: { valued: [], boolean: [], positionals: 0 },
       // `--preflight` IS ACCEPTED AND CHANGES NOTHING (kickoffs/s106 ruling 3): validation is always a preview, and a
       // matrix row passes it.
       validate: { valued: ['actions', 'actions-path', 'capture-date', 'seat'], boolean: ['preflight'], internal: ['capture-date'], positionals: 0 },
@@ -1236,7 +1264,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
         positionals: 0,
       },
     },
-    // All three answer. `batch` (S43) runs and resumes a plan for the local kinds and refuses a project or
+    // `batch` (S43) runs and resumes a plan for the local kinds and refuses a project or
     // book action by name; the old `resume` action is gone, because a resume IS the same batch run again.
     ported: true,
     row: 'S15',
@@ -1269,6 +1297,21 @@ export const VERBS: Record<string, VerbDeclaration> = {
     arguments: { '': { boolean: ['write'], positionals: 0 } },
     ported: true,
     row: 'S161',
+  },
+  meanwhile: {
+    summary: "Prepare a side-work request from a seat's Desk and the builders' run states.",
+    usage: 'library meanwhile prepare [--seat <name>] [--json]',
+    details: {
+      prepare: [
+        "Reads the builders' Kickoffs, attempts and waiting work, and this seat's Desk, Hub and closeout.",
+        'Prints the request, or with --json returns the same text with its facts and any read problems. It writes nothing.',
+      ],
+    },
+    actions: ['prepare'],
+    positional: false,
+    arguments: { prepare: { valued: ['seat'], positionals: 0 } },
+    ported: true,
+    row: 'w46',
   },
   vault: {
     summary: "This Library's connection to the Obsidian vault it writes its own pages into: make it, remove it, or see it.",

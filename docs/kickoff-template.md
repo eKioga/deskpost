@@ -11,6 +11,7 @@ The builder follows [the session loop](dev-session-loop.md) for OPEN, the yes, d
 Revision: **r1**. Base and docs/dev-session-loop.md as committed at `<SHA>`; branch `<unit branch>`.
 
 TRAIN: <open train item id>
+DELIVERABLE: <slug>
 
 WHY NOW:
 - <goal, evidence at the base, and what already does it>
@@ -30,6 +31,7 @@ ROWS:
 
 CHARTER (effective on the posted Run pointer's hash, Eric's standing yes, or on Eric's yes at OPEN): <rows as commits; named merges and one private push if assigned>.
 
+STANDING ANSWERS: the stop list in dev-session-loop.md applies.
 CLOSE: <`node tools/land.mts --open int/<unit> --token-item "<item>"` (the unit ends at "pull request open"); handback with the pull request's number, row outcomes, proofs, timings, choices, Needs you and letter to the orchestrator>.
 **Stop.**
 ```

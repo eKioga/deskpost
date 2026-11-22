@@ -1,8 +1,8 @@
 {
   "name": "@deskpost/library-kernel",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
-  "description": "The TypeScript kernel of the Library: the implementation PLAN-public-release.md step 24 ports the PowerShell tools into, judged row by row by tools/Invoke-AcceptanceMatrix.ps1.",
+  "description": "The TypeScript kernel of the Library, judged by its self-test, compiled sections, built-release tests and real harness sessions.",
   "type": "module",
   "engines": { "node": ">=22" },
   "bin": { "library": "./src/cli.ts" },
@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "22.20.4",
+    "smol-toml": "1.9.1",
     "typescript": "5.9.3"
   }
 }

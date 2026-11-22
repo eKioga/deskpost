@@ -87,6 +87,39 @@ export function hubPageNames(hubRoot: string): string[] {
   return names.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 
+/** One `notes/` page of a Hub, as `hub notes` lists it. */
+export interface HubNotePage {
+  page: string;
+  size_bytes: number;
+  modified_utc: string;
+}
+
+/**
+ * A Hub's `notes/` pages, newest first (kickoffs/s219 row 7): each page's name, size in bytes and modification time,
+ * read from the files themselves; no page text is read. `prefix` keeps names starting with it after `notes/`, `match`
+ * keeps names containing it, both ignoring case. A Hub with no `notes/` folder has none.
+ */
+export function hubNotesPages(hubRoot: string, filter: { prefix?: string; match?: string } = {}): HubNotePage[] {
+  const folder = path.join(hubRoot, 'notes');
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const prefix = (filter.prefix ?? '').replace(/^notes\//i, '').toLowerCase();
+  const match = (filter.match ?? '').toLowerCase();
+  const pages: (HubNotePage & { at: number })[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+    const name = entry.name.slice(0, -3);
+    if (!name.toLowerCase().startsWith(prefix) || !name.toLowerCase().includes(match)) continue;
+    const stat = fs.statSync(path.join(folder, entry.name));
+    pages.push({ page: `notes/${name}`, size_bytes: stat.size, modified_utc: stat.mtime.toISOString(), at: stat.mtimeMs });
+  }
+  pages.sort((left, right) => right.at - left.at || (left.page < right.page ? -1 : left.page > right.page ? 1 : 0));
+  return pages.map(({ at: _at, ...page }) => page);
+}
+
 /**
  * The Desk's `hub_pages` (kickoffs/s125 row 2): for each `projects/<slug>` open at this seat, every non-exempt page's
  * `{ hub, page, kind, size_bytes, limit_bytes, over }`, and for `_project` its `ticked_now`, `ticked_next`, `sections_over`

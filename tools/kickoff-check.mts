@@ -59,7 +59,17 @@ async function main(argv: string[]): Promise<number> {
   try {
     const select = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'section-select.mts')).href) as typeof import('./section-select.mts');
     const repo = path.join(adrFolder, '..', '..');
-    covers = select.mergeCovers(select.coversFiles(name => fs.existsSync(path.join(repo, name)) ? fs.readFileSync(path.join(repo, name), 'utf8') : null)).sections;
+    const {spawnSync} = await import('node:child_process');
+    const mergeBase = spawnSync('git', ['-C', repo, 'merge-base', 'HEAD', 'origin/master'], {encoding: 'utf8', windowsHide: true});
+    const head = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], {encoding: 'utf8', windowsHide: true});
+    const base = mergeBase.status === 0 && head.status === 0 && mergeBase.stdout.trim() !== head.stdout.trim() ? mergeBase.stdout.trim() : null;
+    covers = select.mergeCovers(select.coversFiles(name => {
+      if (base !== null) {
+        const shown = spawnSync('git', ['-C', repo, 'show', `${base}:${name}`], {encoding: 'utf8', windowsHide: true});
+        return shown.status === 0 ? shown.stdout : null;
+      }
+      return fs.existsSync(path.join(repo, name)) ? fs.readFileSync(path.join(repo, name), 'utf8') : null;
+    })).sections;
     newPathMapped = file => {
       if (fs.existsSync(path.join(repo, file)) || select.pathChecks([file]).length) return true;
       // Mapped documents and section-only rules can have no named checks. The selector distinguishes them from absence.
@@ -108,13 +118,56 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write(`kickoff-check: warning: ${envelope.bytes} bytes exceeds the ${KICKOFF_SIZE_LIMIT} bytes limit; kickoff send to another office will refuse it.\n`);
   }
   const verdict = kc.kickoffVerdict(text, { adrFiles, train, covers, areas, numbering, newPathMapped });
+  const lines = text.split(/\r?\n/);
+  const trainLine = lines.findIndex(line => line.startsWith('TRAIN:'));
+  const head = lines.slice(0, Math.max(0, trainLine)).join('\n');
+  const { kickoffTitleUnit, branchUnit } = await import('./owns.mts');
+  const unit = kickoffTitleUnit(text);
+  const branches = [...new Set(Array.from(head.matchAll(/\bint\/[\w/-]+(?:\.[\w/-]+)*/g), match => match[0]))];
+  if (unit) {
+    if (branches.length > 1) {
+      verdict.problems.push(`BRANCH: header names ${branches.join(' and ')}; a Kickoff continues one branch; keep only the branch for ${unit}.`);
+    }
+    for (const branch of branches) {
+      const owner = branchUnit(branch);
+      if (owner !== unit) verdict.problems.push(`BRANCH: header names ${branch}, which belongs to ${owner}, but the title names ${unit}; name a branch for ${unit}.`);
+    }
+  }
+  const { textIdentityHits } = await import('./scan.ts');
+  for (const { line, kind } of textIdentityHits(text).hits) {
+    const label = kind === 'identity' ? 'identity term' : 'deployment value';
+    process.stderr.write(`kickoff-check: warning: line ${line} names a private ${label}; name where the value comes from instead (a token item, a setting, a file the builder reads)\n`);
+  }
+  const smokeFile = path.join(checkout, 'kernel', 'test', 'smoke-sections.json');
+  if (fs.existsSync(smokeFile)) {
+    const smoke = new Set(Object.keys(JSON.parse(fs.readFileSync(smokeFile, 'utf8')).sections));
+    for (const [index, line] of lines.entries()) {
+      const catches = /\bCatches here:\s*(.*)/i.exec(line)?.[1];
+      if (!catches || /\b(?:runners?|push tier|Linux check)\b/i.test(catches)) continue;
+      const selection = /\bcommit tier runs\s+(?:(?:the\s+)?(?:(?:new|changed|smoke)\s+)?sections?\s+)?(`?\d+`?(?:\s*(?:,\s*(?:and\s+)?|and\s+|to\s+)\s*`?\d+`?)*)/i.exec(catches)?.[1];
+      if (!selection) continue;
+      const deferred = new Set<number | string>();
+      for (const match of selection.matchAll(/(\d+)`?(?:\s+to\s+`?(\d+))?/gi)) {
+        const first = Number(match[1]), last = Number(match[2] ?? match[1]);
+        if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last)) continue;
+        if (last - first > 10_000) {
+          deferred.add(`${first} to ${last}`);
+          continue;
+        }
+        for (let section = first; section <= last; section++) {
+          if (!smoke.has(String(section))) deferred.add(section);
+        }
+      }
+      if (deferred.size) {
+        process.stderr.write(`kickoff-check: warning: line ${index + 1}: the bounded commit tier may leave section(s) ${[...deferred].join(', ')} to the runners (tools/gate.ts boundedCommitSelection); say "the commit tier or, when it defers them, the runners"\n`);
+      }
+    }
+  }
   if (unreadable !== null) verdict.problems.push(unreadable);
   const { readSlots } = await import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'test', 'gate-lock.ts')).href) as typeof import('../kernel/test/gate-lock.ts');
   const slots = readSlots(line => process.stderr.write(line + '\n'));
   if (slots) {
     // The header is the lines before the first required heading (TRAIN:); a body quoting the phrase is not a base (s186).
-    const lines = text.split(/\r?\n/);
-    const head = lines.slice(0, Math.max(0, lines.findIndex(line => line.startsWith('TRAIN:')))).join('\n');
     const at = head.indexOf('as committed at');
     const base = at < 0 ? undefined : /^as committed at\s*`([a-f0-9]{40})`/.exec(head.slice(at))?.[1];
     if (!base) {

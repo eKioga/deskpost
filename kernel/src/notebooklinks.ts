@@ -133,6 +133,10 @@ export function notebookLinks(workspace: string): NotebookLink[] {
       lines.forEach((line, index) => {
         if (index <= frontmatterEnd) return;
         for (const match of line.matchAll(LINK_PATTERN)) {
+          const before = line.slice(0, match.index).replace(/\\/g, '/').toLowerCase();
+          // Bare Notebook paths and paths through this Library's root count; longer relative paths
+          // such as lib/notebook/t/n.md belong elsewhere and do not count.
+          if (before.endsWith('/') && !before.endsWith(path.resolve(workspace).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') + '/')) continue;
           // A trailing full stop ends a sentence, not a name.
           const named = `notebook${match[1]!.replace(/\\/g, '/')}`.replace(/\.+$/, '');
           links.push({ page, line: index + 1, path: named });

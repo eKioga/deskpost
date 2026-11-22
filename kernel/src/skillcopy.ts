@@ -22,9 +22,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 export const SKILL_MANIFEST = '.deskpost-managed.json';
 /** Released workspace skills only; prototypes enter this inventory when their command ships. */
-export const SHIPPED_SKILLS = ['library-help', 'save', 'closeout'] as const;
+export const SHIPPED_SKILLS = ['library-help', 'closeout', 'triage'] as const;
 export const SKILLS_BY_LOCATION = {
-  '.claude/skills': ['library-help'],
+  '.claude/skills': SHIPPED_SKILLS,
   '.agents/skills': SHIPPED_SKILLS,
 } as const;
 function skillsAt(location: string): readonly string[] {
@@ -39,7 +39,7 @@ export const SKILL_LOCATIONS = ['.claude/skills', '.agents/skills'] as const;
 export interface SkillFilePlan {
   path: string;
   name: string;
-  action: 'created' | 'updated' | 'unchanged' | 'left';
+  action: 'created' | 'updated' | 'unchanged' | 'left' | 'removed';
   content: string | null;
 }
 
@@ -175,9 +175,43 @@ export function skillPlans(workspace: string, programRoot: string): { plans: Ski
       plans.push(...result.plans);
       left.push(...result.left);
     }
+    const save = retiredSave(workspace, location);
+    plans.push(...save.plans); left.push(...save.left);
     left.push(...retiredSkills(workspace, location));
   }
   return { plans, left, refusal: null };
+}
+
+/** Retire only a completely unchanged owned save folder, including every file and directory. */
+function retiredSave(workspace: string, location: string): { plans: SkillFilePlan[]; left: string[] } {
+  const name = `${location}/save`, folder = path.join(workspace, ...name.split('/'));
+  const keep = (why: string) => ({ plans: [], left: [`${name}/ (kept: ${why})`] });
+  try { fs.lstatSync(folder); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { plans: [], left: [] };
+    return keep('the folder cannot be read');
+  }
+  for (const slot of [path.dirname(path.dirname(folder)), path.dirname(folder), folder]) if (isReparsePoint(slot)) return keep('a linked folder is reader owned');
+  const manifestPath = path.join(folder, SKILL_MANIFEST);
+  if (isReparsePoint(manifestPath)) return keep('the ownership record is linked');
+  const manifest = readManifest(manifestPath);
+  if (!manifest) return keep('reader owned save folder; no valid ownership record');
+  const before: Record<string, string> = {};
+  const allowedDirectories = new Set(Object.keys(manifest.files).flatMap(file => file.split('/').slice(0, -1).map((_, i) => file.split('/').slice(0, i + 1).join('/'))));
+  let owned = true;
+  const walk = (root: string) => {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const file = path.join(root, entry.name), relative = path.relative(folder, file).replace(/\\/g, '/');
+      if (isReparsePoint(file)) { owned = false; continue; }
+      if (entry.isDirectory()) { before[relative + '/'] = 'directory'; if (!allowedDirectories.has(relative)) owned = false; walk(file); }
+      else if (entry.isFile()) {
+        const hash = createHash('sha256').update(fs.readFileSync(file)).digest('hex'); before[relative] = hash;
+        if (relative !== SKILL_MANIFEST && !manifest.files[relative]?.includes(hash)) owned = false;
+      } else owned = false;
+    }
+  };
+  try { walk(folder); } catch { return keep('the folder cannot be read'); }
+  if (!owned || Object.keys(manifest.files).some(file => !(file in before))) return keep('changed since Deskpost wrote it');
+  return { plans: [{ path: folder, name, action: 'removed', content: JSON.stringify(before) }], left: [] };
 }
 
 function retiredSkills(workspace: string, location: string): string[] {
@@ -185,7 +219,7 @@ function retiredSkills(workspace: string, location: string): string[] {
   if (!fs.existsSync(root) || isReparsePoint(root) || isReparsePoint(path.dirname(root))) return [];
   const retired: string[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || skillsAt(location).some((skill) => skill === entry.name)) continue;
+    if (entry.name === 'save' || !entry.isDirectory() || skillsAt(location).some((skill) => skill === entry.name)) continue;
     const folder = path.join(root, entry.name);
     const manifest = path.join(folder, SKILL_MANIFEST);
     if (!isReparsePoint(folder) && !isReparsePoint(manifest) && readManifest(manifest)) {
@@ -212,6 +246,8 @@ export function skillInstallationStatus(workspace: string, programRoot: string, 
   // An unsafe slot prevents the whole install. Report that barrier before missing files
   // in other skills, which cannot be installed until the slot is fixed either.
   if (refusals.length) return `WARN: ${refusals.map(reason => reason.replace(/[.]+$/, '')).join('; ')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.`;
+  const save = retiredSave(workspace, location);
+  problems.push(...save.left, ...save.plans.map(plan => `${plan.name}/ needs removal (unchanged retired skill)`));
   problems.push(...retiredSkills(workspace, location));
   return problems.length ? `WARN: ${problems.join('; ').replace(/[.]+$/, '')}. Run deskpost init after resolving links or user collisions; reader edits are preserved.` : `${skillsAt(location).join(', ')} installed in ${location}; structural check only, live discovery not tested`;
 }

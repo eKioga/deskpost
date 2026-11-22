@@ -161,6 +161,12 @@ whole. Combine it with `--for-seat <seat>` to narrow the same list by recipient.
 Never read a capture Book's map `_index` for that list, since a map listing every closed note can be too large
 for one reader call.
 
+Before a triage, library triage prepare checks the Postbox record to tell you whether this seat
+triages Reports. It lists each pending Report with its hold, its filer and the train items that name
+its page. It gives the version tag to check against and the Hub where verdicts go, with the classes
+when the Hub keeps a classes page. It writes nothing. A source it cannot read is a named problem
+with a next step.
+
 Then read `notes/…` pages through `read_open_book_page` and act. A triage action is JSON, validated
 first and then run as a batch, on one approval unless every action is a `review` and none carries `other_seat`:
 
@@ -273,6 +279,7 @@ There are two capture Books, and which one a note belongs in is decided by **wha
 An agent at any seat that hits a Library defect files it here instead of interrupting its own task
 or asking the reader to carry it. Examples are a refusal that names the wrong thing, a check that
 fails wrongly, or a gap where a verb should exist.
+File a Report only when a tool stopped your run, gave a wrong answer, or would mislead a seat in real use; anything else is a line in your handback or review.
 
 **Who triages it.** A local Report Inbox stays unaddressed. For cross-Library Reports, the triaging
 seat is named in that Library's Postbox entry and the filer pins it; `postbox status` shows the cached
@@ -301,7 +308,7 @@ so whoever reads it verifies it against the code before acting. It licenses an i
 it is never a task. Reading one means opening `reports` on the Desk, like any other Shelf Book.
 Triage reaches it as `source: "holding"` with `source_slug: "reports"` (the slug defaults to `holding`),
 for example `{"kind":"review","source":"holding","source_slug":"reports","source_match":"<title>"}`.
-Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.7.0/docs/cross-seat-reports.md).
+Full design: [cross-seat reports](https://github.com/eKioga/deskpost/blob/v1.7.1/docs/cross-seat-reports.md).
 
 ## Reports across Libraries
 
@@ -337,7 +344,7 @@ a withdrawal adds a `Withdrawal asked` section. The triage disposition stays as 
 letters with no closing effect, and generated Reports are never dispatched (`kernel/src/capture.ts`, `reportsend.ts`).
 
 Only a review close of a Report received from another Library takes `outcome` and `outcome_note`.
-A local Report's close refuses those fields. A received Report's terminal close requires both. The five verdicts are
+A local Report's close refuses those fields; its verdict goes on the triaging seat's Hub record, which `library triage prepare` names (`record.hub`). A received Report's terminal close requires both. The five verdicts are
 `confirmed`, `confirmed-by-design`, `not-reproduced`, `already-fixed` and `declined`. Other terminal actions
 on a pending received Report are refused; a hold sends nothing. The outcome letter closes only the matching
 copy at a newer generation, using its recorded address even if the current pin changed. It is still a
@@ -349,7 +356,7 @@ letter to read when it cannot match a copy (`kernel/src/triage.ts`, `triagebatch
 | `reports_awaiting_sender` | unauthored claims marked as awaiting a sender |
 | `reports_awaiting_outcome` | pending sent copies waiting for their verdict |
 | `unexpected_reports` | received Reports filed even though this Library did not advertise a triager |
-| `outcomes_received` | pending outcome letters addressed to this seat |
+| `outcome_letters_pending` | pending outcome letters addressed to this seat |
 | `controls_deferred` | controls waiting for a parent or predecessor, as last checked |
 | `records_incomplete` | intent records with a stage still pending |
 

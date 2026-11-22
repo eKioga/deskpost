@@ -51,7 +51,7 @@ import { readStrictUtf8 } from './notebook.ts';
 import { getShelfBook, listFilesRecursive } from './shelfbook.ts';
 import { ENTRY_NAME, invokeShelfCatalogRender, shelfCatalogEntryPath, singleTrailingNewline, testShelfCatalogEntryText } from './shelfcatalog.ts';
 import { assertShelfBookOpen } from './triage.ts';
-import { removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
+import { applyCommand, removeVerb, shelfDeletePreflight } from './shelfwriters.ts';
 import { judgeWriteResult, McpSession, readExactOrNull, refuseRetiredWriter, resolveCollectionId, resolveMcpUrl } from './basicmemory.ts';
 import type { NoteRecord } from './basicmemory.ts';
 import { programRoot } from './programroot.ts';
@@ -71,6 +71,7 @@ import {
   recallRecordDigest,
   recallRecordLabel,
   writeRecallRecord,
+  type RecallDrift,
   type RecallRecord,
 } from './recallrecord.ts';
 import {
@@ -158,6 +159,8 @@ interface CandidateInput {
   expectedRecallDigest?: string;
   /** A local refresh only: the confirmed run also writes the summary to the Shelf Book's catalog entry (S87, ruling 2). */
   keepShelfSummary?: boolean;
+  /** `--accept-drift` (kickoffs/s221 row 1): a recalled Book returns over its drifted pages, each kept first. */
+  acceptDrift?: boolean;
 }
 
 /** `--lock-timeout <seconds>`, twenty when absent or unreadable, as `library hub edit` reads it. */
@@ -187,7 +190,14 @@ interface CandidatePlan {
   /** Local only: pages already in the collection Book that no planned record names. Empty for Basic Memory. */
   leftBehind: LeftBehind;
   /** Local only: the Shelf Book's recall record and its digest, when it was recalled (S70). */
-  recall: { record: RecallRecord; digest: string } | null;
+  recall: { record: RecallRecord; digest: string; drift: RecallDrift | null } | null;
+}
+
+/** One drifted collection page an `--accept-drift` return covers: its path, how it drifted, and its bytes' hash now. */
+interface DriftPage {
+  path: string;
+  change: 'added' | 'changed' | 'removed';
+  sha256: string | null;
 }
 
 /**
@@ -195,7 +205,12 @@ interface CandidatePlan {
  * Book it came from, and only while that Book's pages are as the recall found them. Checked at every preview and
  * again under the Book lock; `_book` and `_index` are regenerated, so a change to either is reported, never refused.
  */
-function recallCheck(workspace: string, shelfSlug: string, bookSlug: string): { record: RecallRecord; digest: string; regenerated: string[] } | null {
+function recallCheck(
+  workspace: string,
+  shelfSlug: string,
+  bookSlug: string,
+  acceptDrift = false,
+): { record: RecallRecord; digest: string; regenerated: string[]; drift: RecallDrift | null; driftPages: DriftPage[] } | null {
   const record = readRecallRecord(workspace, shelfSlug);
   if (record === null) return null;
   if (record.book_slug !== bookSlug) {
@@ -208,12 +223,93 @@ function recallCheck(workspace: string, shelfSlug: string, bookSlug: string): { 
   const wiki = path.join(workspace, 'collection', 'books', bookSlug, 'wiki');
   const now = fs.existsSync(wiki) ? collectionPageManifest(wiki) : { pages: [], book_sha256: '', index_sha256: '' };
   const drift = recallDrift(record, now);
-  if (hasDrift(drift)) refuse(driftRefusal(bookSlug, shelfSlug, drift));
+  if (hasDrift(drift) && !acceptDrift) refuse(driftRefusal(bookSlug, shelfSlug, drift));
   const regenerated = [
     ...(now.book_sha256 !== record.book_sha256 ? [`collection/books/${bookSlug}/wiki/_book.md`] : []),
     ...(now.index_sha256 !== record.index_sha256 ? [`collection/books/${bookSlug}/wiki/_index.md`] : []),
   ];
-  return { record, digest: recallRecordDigest(record), regenerated };
+  // ACCEPTED DRIFT IS BOUND, PAGE BY PAGE (kickoffs/s221 row 1): each drifted page's bytes join the digest the approval
+  // carries, so a page that changes again after the preview voids it, here and again under the Book lock.
+  if (!hasDrift(drift)) return { record, digest: recallRecordDigest(record), regenerated, drift: null, driftPages: [] };
+  const hashes = new Map(now.pages.map((page) => [page.path.toLowerCase(), page.sha256]));
+  const driftPages: DriftPage[] = [
+    ...drift.added.map((page) => ({ path: page, change: 'added' as const })),
+    ...drift.changed.map((page) => ({ path: page, change: 'changed' as const })),
+    ...drift.removed.map((page) => ({ path: page, change: 'removed' as const })),
+  ].map((page) => ({
+    path: `collection/books/${bookSlug}/wiki/${page.path}`,
+    change: page.change,
+    sha256: page.change === 'removed' ? null : (hashes.get(page.path.toLowerCase()) ?? null),
+  }));
+  const digest = sha256OfText([recallRecordDigest(record), ...driftPages.map((page) => `drift=${page.change}|${page.path}|${page.sha256 ?? ''}`)].join('\n'));
+  return { record, digest, regenerated, drift, driftPages };
+}
+
+/**
+ * THE DRIFTED PAGES A RETURN WOULD WRITE OVER (kickoffs/s221 row 1): each `changed` page, and each `added` page whose path
+ * the Shelf copy also holds -- "added" means absent from the recall record, not absent from the Shelf, and the writer
+ * replaces a differing planned page. An added page the Shelf copy does not hold is left behind, never written over.
+ *
+ * ONLY THE PAGES IT REALLY WRITES OVER (kickoffs/s221-r2 row 3): a drifted page, changed or added, is kept only when the
+ * Shelf copy plans a page at its path and that page's text differs from the collection page's current text, as the
+ * writer below compares them. A page the Shelf copy no longer holds, or already matches, is left alone and not kept.
+ */
+function driftPagesWrittenOver(bookSlug: string, drift: RecallDrift, records: CandidateRecord[], current: (relative: string) => string | null): string[] {
+  const fold = (value: string) => (process.platform === 'win32' || process.platform === 'darwin' ? value.toLowerCase() : value);
+  const planned = new Map(records.map((record) => [fold(record.path), record]));
+  return [...drift.changed, ...drift.added].filter((page) => {
+    const record = planned.get(fold(`books/${bookSlug}/wiki/${page}`));
+    if (record === undefined) return false;
+    const existing = current(record.path);
+    return existing !== null && existing !== record.content;
+  });
+}
+
+/**
+ * EACH DRIFTED PAGE KEPT BEFORE THE FIRST WRITE (kickoffs/s221 row 1): copied byte for byte to
+ * `internal/shelf-recalls/<shelf-slug>-drift/<UTC stamp>/<page path>` and read back. Any failure throws, so the return
+ * writes nothing.
+ *
+ * EACH RETURN GETS A FOLDER OF ITS OWN (kickoffs/s221-r2 row 1): the stamp runs to the millisecond, the folder is made
+ * only if it is new (`<stamp>-2`, `-3`, ... when that name is taken), each copy refuses to write over a file, and a
+ * failure removes only the folder this call made. A backup is never the thing that loses a page. `now` is for tests.
+ */
+export function keepDriftedPages(workspace: string, shelfSlug: string, bookSlug: string, pages: string[], now: Date = new Date()): { folder: string; pages: string[] } {
+  const stamp = now.toISOString().replace(/[-:.]/g, '');
+  const parent = `internal/shelf-recalls/${shelfSlug}-drift`;
+  const wiki = path.join(workspace, 'collection', 'books', bookSlug, 'wiki');
+  let folder = `${parent}/${stamp}`;
+  let root: string | null = null;
+  try {
+    fs.mkdirSync(path.join(workspace, ...parent.split('/')), { recursive: true });
+    for (let attempt = 1; root === null; attempt += 1) {
+      folder = attempt === 1 ? `${parent}/${stamp}` : `${parent}/${stamp}-${attempt}`;
+      const candidate = path.join(workspace, ...folder.split('/'));
+      try {
+        fs.mkdirSync(candidate);
+        root = candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 1000) throw error;
+      }
+    }
+    for (const page of pages) {
+      const from = path.join(wiki, ...page.split('/'));
+      const to = path.join(root, ...page.split('/'));
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+      if (sha256OfBytes(fs.readFileSync(to)) !== sha256OfBytes(fs.readFileSync(from))) throw new Error(`${folder}/${page} did not read back as copied`);
+    }
+  } catch (error) {
+    if (root !== null) {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // The refusal below names the folder; a leftover copy is never the collection.
+      }
+    }
+    refuse(`The drifted pages could not be kept under ${folder} (${(error as Error).message}), so the return wrote nothing.`);
+  }
+  return { folder, pages };
 }
 
 interface LeftBehind {
@@ -295,7 +391,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     .sort(psSortCompare);
   if (files.length === 0) refuse('The selected Shelf Book contains no publishable Markdown pages.');
   if (local) assertNotArchivedAway(workspace, input.bookSlug);
-  const recall = local ? recallCheck(workspace, shelfSlug, input.bookSlug) : null;
+  const recall = local ? recallCheck(workspace, shelfSlug, input.bookSlug, input.acceptDrift === true) : null;
 
   const bookRoot = `books/${input.bookSlug}/wiki`;
   const sources = files.map((file) => {
@@ -340,7 +436,7 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
     sourceBoundary,
     records,
     leftBehind,
-    recall: recall === null ? null : { record: recall.record, digest: recall.digest },
+    recall: recall === null ? null : { record: recall.record, digest: recall.digest, drift: recall.drift },
     plan: {
       ...(local ? { pages_left_behind: leftBehind.pages as unknown as PsJsonValue } : {}),
       ...(recall !== null
@@ -351,6 +447,14 @@ function candidatePreflight(workspace: string, input: CandidateInput): Candidate
             recall_regenerates: recall.regenerated,
             ...(recall.regenerated.length
               ? { recall_note: `${recall.regenerated.join(' and ')} changed after the recall; the return regenerates them, so that change will not survive.` }
+              : {}),
+            ...(recall.driftPages.length
+              ? {
+                  drift_accepted: recall.driftPages as unknown as PsJsonValue,
+                  drift_note:
+                    `${recall.driftPages.length} page(s) changed in collection/books/${recall.record.book_slug} after the recall. The return writes the ` +
+                    `Shelf copy over each one it holds, and keeps each such page's current text under internal/shelf-recalls/${shelfSlug}-drift/ first.`,
+                }
               : {}),
           }
         : {}),
@@ -836,11 +940,13 @@ async function localCandidateConfirmed(
     // THE RECALL, AGAIN, UNDER THE LOCK (S70): the record the approval covered, and no drift since. An `add-page`
     // between the preview and the yes waits on this lock, so it is either seen here or lands after the return. First,
     // because a page added to a recalled Book is drift, and the drift refusal names it and the routes.
+    let acceptedDrift: RecallDrift | null = null;
     if (input.expectedRecallDigest !== undefined) {
-      const recall = recallCheck(workspace, input.shelfSlug, input.bookSlug);
+      const recall = recallCheck(workspace, input.shelfSlug, input.bookSlug, input.acceptDrift === true);
       if ((recall?.digest ?? '') !== input.expectedRecallDigest) {
         refuse(`The recall record for shelf/${input.shelfSlug} changed after the preview, so the approval no longer describes this return. Rerun --preflight. Nothing was written.`);
       }
+      acceptedDrift = recall?.drift ?? null;
     }
     // THE PAGES LEFT BEHIND, AGAIN, UNDER THE LOCK (S67): the approval covered a list read with nobody excluded.
     if (input.expectedLeftBehindDigest !== undefined) {
@@ -871,6 +977,8 @@ async function localCandidateConfirmed(
         collection: 'collection',
       });
       saveJournal('copying', '');
+      // THE DRIFTED PAGES, KEPT BEFORE THE FIRST WRITE (kickoffs/s221 row 1): a failure here refuses the whole return.
+      const driftKept = acceptedDrift ? keepDriftedPages(workspace, input.shelfSlug, input.bookSlug, driftPagesWrittenOver(input.bookSlug, acceptedDrift, records, readFile)) : null;
 
       // THE ROOT: created, resumed or replaced, by the shared publisher's rule.
       const existingRoot = readFile(rootRecord.path);
@@ -994,6 +1102,7 @@ async function localCandidateConfirmed(
         reused_records: reused,
         discovery_manifest: manifest.summary,
         ...(recallRecord !== null ? { recall_record: recallRecord } : {}),
+        ...(driftKept !== null ? { drift_kept: { folder: driftKept.folder, pages: driftKept.pages } } : {}),
         ...(shelfSummary !== null ? { shelf_summary: shelfSummary } : {}),
         pages_left_behind: candidate.leftBehind.pages as unknown as PsJsonValue,
         ...(candidate.leftBehind.pages.length
@@ -1174,6 +1283,7 @@ async function publishVerb(argv: string[], workspace: string): Promise<Record<st
     replaceExisting: parsed.flags.has('replace-existing'),
     deleteReason: parsed.options.get('reason') ?? DEFAULT_DELETE_REASON,
     lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
+    acceptDrift: parsed.flags.has('accept-drift'),
   };
   const plan = publishPlan(workspace, input);
   if (parsed.flags.has('preflight')) return { schema: 1, ...plan };
@@ -1294,6 +1404,7 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
     summary: defaults.summary,
     collection: collectionOption(parsed.options.get('collection')),
     lockTimeoutSeconds: lockTimeoutOption(parsed.options.get('lock-timeout')),
+    acceptDrift: parsed.flags.has('accept-drift'),
   };
   const candidate = candidatePreflight(workspace, input);
   // A LOCAL REFRESH THAT LEAVES PAGES BEHIND HAS AN APPROVAL OF ITS OWN (S67, Eric's Q4): the candidate plan_id stays the
@@ -1312,6 +1423,7 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
         ? [`the ${candidate.leftBehind.pages.length} page(s) listed in pages_left_behind, which the refresh leaves on disk and does not remove`]
         : []),
       ...(candidate.recall ? [`the recall record ${recallRecordLabel(shelfSlug)}, which the refresh checks for drift again under the Book lock`] : []),
+      ...(candidate.recall?.drift ? ['each page listed in drift_accepted, whose current text is kept before the refresh writes over it'] : []),
     ];
     const plan = Object.fromEntries(Object.entries(candidate.plan).map(([key, value]) => [key === 'plan_id' ? 'candidate_plan_id' : key, value]));
     return {
@@ -1320,6 +1432,8 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
       refresh_plan_id: refreshPlanId,
       approve_with:
         `--user-confirmed --plan-id ${refreshPlanId}: this id covers the planned records` + (covers.length ? `, and ${covers.join(', and ')}.` : '.'),
+      // THE EXACT COMMAND THAT APPLIES IT (kickoffs/s221 row 3), approve_with kept as it is.
+      next: applyCommand('publish refresh', argv, argumentTable('publish', 'refresh'), refreshPlanId, true),
     };
   }
   if (!parsed.flags.has('user-confirmed')) refuse('Shared publication is not yet performed: review the manifest and rerun with --user-confirmed.');
@@ -1341,7 +1455,10 @@ async function refreshVerb(argv: string[], workspace: string): Promise<Record<st
     input.expectedRecallDigest = candidate.recall?.digest ?? '';
   }
   // THE CONFIRMED HALF (S39): the candidate with -ReplaceExisting, its result under Publish-BookCopy's `schema`.
-  return { schema: 1, ...(await candidateConfirmed(workspace, input, candidate, true, parsed.options.get('journal-path') ?? '')) };
+  const result = await candidateConfirmed(workspace, input, candidate, true, parsed.options.get('journal-path') ?? '');
+  // A REFRESH KEEPS THE SHELF COPY BY DESIGN (kickoffs/s221 row 2), so a recalled Book's result says where it is and how it goes.
+  const shelfCopy: Record<string, PsJsonValue> = candidate.recall ? { shelf_copy: `kept at shelf/${shelfSlug}; deskpost shelf remove ${shelfSlug} --preflight removes it once the Book is home` } : {};
+  return { schema: 1, ...result, ...shelfCopy };
 }
 
 // --- library publish batch ------------------------------------------------------------------------------------

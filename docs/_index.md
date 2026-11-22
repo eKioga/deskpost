@@ -108,6 +108,9 @@ that decides where any given decision belongs.
 * [ADR-0092](adr/0092-bounded-commit-hooks-share-three-gate-slots.md) - Bounded commit hooks take one slot and at most two workers; the machine has three slots.
 * [ADR-0093](adr/0093-a-letter-may-carry-the-readers-go-checked-against-the-senders-transcript.md) - A letter may carry the reader's go, checked against the sender's transcript; it removes a wait and opens no gate.
 * [ADR-0094](adr/0094-a-letters-ring-and-relay-lines-come-from-the-program-and-a-follow-up-answer-keeps-its-thread.md) - Ring and Codex relay lines come from capture; reopened letters show their remedy; a follow-up answer keeps its thread.
+* [ADR-0095](adr/0095-a-refusal-asked-for-as-json-is-also-one-object-on-standard-output.md) - A refusal asked for as JSON is also one object on standard output, after standard error, with the exit code unchanged.
+* [ADR-0096](adr/0096-the-kernel-is-judged-by-its-own-tests.md) - The kernel is judged by its self-test, compiled sections, built-release tests and harness looks; the frozen PowerShell comparison is retired.
+* [ADR-0097](adr/0097-a-department-may-hold-groups-each-a-department-of-its-own.md) - A department may hold groups, each a department of its own.
 
 ## Guides
 
@@ -131,7 +134,6 @@ freeze. The `library-help` Skill offers the same five.
 * [Notebook and Desk Model](notebook-and-desk-model.md) - volatile Notebook boundary, desk overview, reset scope, and acceptance evidence
 * [Seats](seats.md) - one Library and many Desks, why there is no default seat, the session claim that is not a lock, the two questions that look alike and are not, and what measuring Codex's apply_patch corrected
 * [Derived Indexes](derived-indexes.md) - why `notebook/_master-index.md` and `shelf/_catalog.md` are rendered rather than authored, the render locks and why their critical sections are tiny, the atomic-replacement primitive chosen by measurement, and the day-one split of the catalog into per-Book entry files
-* [The Supported-Operation Matrix](supported-operation-matrix.md) - the acceptance oracle for the TypeScript port: every operation the kernel must carry with the fixture it runs over, why "zero diffs" is neither achievable nor sufficient, exactly what is normalised away before two implementations are compared, the deltas approved in advance, and why a row with no kernel attached reports `pending` rather than green
 * [Helper Write and Output Contracts](helper-write-and-output-contracts.md) - the per-Book lock taken before prior state is read, the rollback journal that records absence as well as content, the five journal kinds under `internal/` and their five different jobs, and why `-Json` is opt-in
 * [Shelf and Catalog Symmetry](shelf-desk-symmetry.md) - Shelf Books opening and closing exactly as shared Books do, and the guard that makes closed mean closed
 * [Hook-Enforced Boundaries](hook-enforced-boundaries.md) - what the hook layer guards and what it merely delivers, the shell hole measured on 2026-09-06, the Codex hooks file that never loaded because valid JSON was the wrong bar, the serve ledger's contract with compaction, and the two windows on a broken settings file

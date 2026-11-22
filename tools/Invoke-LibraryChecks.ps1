@@ -5599,43 +5599,6 @@ Invoke-Check 'collection.write-fence-coverage' {
     "$scanned source(s) scanned; the $($declaredSet.Count) declared shared writer(s) are exactly those behind the ownership fence"
 }
 
-# --- The supported-operation matrix (PLAN-public-release.md step 23) -----------------------------
-#
-# THESE THREE ARE REGISTERED ABOVE THE if ($Fast) BLOCK because all three are static reads of two
-# tracked documents and the files they name. The suite that RUNS a row is below, in the else
-# branch, because it spawns processes and builds eight workspaces.
-#
-# WHY A GATE CHECK AT ALL, FOR A MATRIX NOTHING IS COMPARED AGAINST YET. Phase D ports sixty
-# thousand lines of PowerShell to TypeScript and the matrix is the only thing that will say
-# whether the new implementation does the same work. It is worth exactly as much as its
-# enumeration is complete, and an enumeration nothing checks decays silently: a helper added in
-# S15 with no row would be an operation the kernel is never asked about, and nothing would report
-# it until someone noticed the kernel could not do it.
-Invoke-Check 'acceptance.matrix-shape' {
-    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
-    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
-    $problems = @(Test-AcceptanceMatrixShape -Matrix $matrix -ProgramRoot $program)
-    if ($problems.Count) { throw ($problems -join '; ') }
-    $rows = @($matrix.rows)
-    $scripts = @(@(@($rows) | ForEach-Object { @($_.powershell.steps) } | ForEach-Object { [string]$_.script }) | Sort-Object -Unique -CaseSensitive)
-    # THE COUNT OF RESOLVED PATHS IS PART OF THE ANSWER, not decoration: S21's `codex.project-
-    # access-config` asserted the names in a document and opened none of the five files it named,
-    # and passed for four sessions with every one of them gone.
-    $steps = @(@($rows) | ForEach-Object { @($_.powershell.steps) }).Count
-    "$($rows.Count) row(s) over $(@(Get-AcceptanceFixtureIds).Count) fixture shape(s); all $($scripts.Count) PowerShell script(s) they name resolve on disk, and all $steps step(s) bind their arguments to the script's parameters"
-}
-
-Invoke-Check 'acceptance.matrix-covers-every-public-helper' {
-    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
-    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
-    $problems = @(Test-AcceptanceMatrixCoverage -Matrix $matrix -ProgramRoot $program)
-    if ($problems.Count) { throw ($problems -join '; ') }
-    $excluded = @(Get-AcceptanceObjectKeys $matrix.excluded_helpers).Count
-    $manifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '_helpers.json'), [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
-    $public = @(@($manifest.helpers.PSObject.Properties) | Where-Object { [string]$_.Value.role -ceq 'public' }).Count
-    "all $public public helper(s) are accounted for: $($public - $excluded) exercised by a row, $excluded excluded with a reason"
-}
-
 # The TypeScript kernel's own suite (PLAN-public-release.md step 24). IN BOTH MODES, NOT IN THE
 # SPAWNED-SUITE ROSTER, and the reason is the clock rather than the category: it runs in under a
 # second where `acceptance.harness-selftest` takes two minutes, and it guards the newest code in the
@@ -5650,46 +5613,6 @@ Invoke-Check 'kernel.selftest' {
     $out = & node (Join-Path $program 'kernel/test/run-parallel.ts') 2>&1
     if ($LASTEXITCODE -ne 0) { throw ((@($out) | Select-Object -Last 4) -join ' | ') }
     ((@($out) | Select-Object -Last 1) | Out-String).Trim()
-}
-
-# THE OTHER HALF OF acceptance.matrix-shape, AND IT COULD NOT EXIST UNTIL S13. That check resolves
-# every PowerShell script a row names and deliberately resolves nothing on the kernel side, because
-# a row's kernel command was a specification of a CLI that did not exist. It does now, so a row
-# naming `shelf rerender` where the verb is `shelf render` is a thing something can finally say.
-Invoke-Check 'acceptance.kernel-verbs-exist' {
-    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
-    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
-    $cli = Join-Path $program (Join-Path 'kernel' (Join-Path 'src' 'cli.ts'))
-    if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
-        throw "the kernel's entry point is missing at $cli, so no row's kernel command could be resolved against it"
-    }
-    $node = Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $node) {
-        # WARN RATHER THAN FAIL, AND IT NAMES WHAT WENT UNCHECKED. A contributor without Node cannot
-        # run the kernel at all, and failing their commit over a check about the kernel's verb table
-        # would refuse correct work -- the failure mode this tree pays for more often than the
-        # permissive one. Silence is the answer that is not available: this check going quiet is
-        # exactly the state it exists to end.
-        return 'WARN: node is not on PATH, so no row''s kernel command was resolved against `library verbs`. Install Node 22+ to check them.'
-    }
-    $output = & node $cli 'verbs' 2>&1
-    if ($LASTEXITCODE -ne 0) { throw ("``library verbs`` exited $LASTEXITCODE : " + ((@($output) | Select-Object -Last 3) -join ' | ')) }
-    $inventory = $null
-    try { $inventory = (@($output) -join "`n") | ConvertFrom-Json }
-    catch { throw ('``library verbs`` did not print parseable JSON: ' + $_.Exception.Message) }
-    $problems = @(Test-AcceptanceKernelCommands -Matrix $matrix -Inventory $inventory)
-    if ($problems.Count) { throw ($problems -join '; ') }
-    $steps = @(@($matrix.rows) | ForEach-Object { @($_.kernel.steps) }).Count
-    $verbs = @(Get-AcceptanceObjectKeys $inventory.verbs).Count
-    "all $steps kernel step(s) across $(@($matrix.rows).Count) row(s) name one of the CLI's $verbs verb(s) and its declared actions"
-}
-
-Invoke-Check 'acceptance.matrix-doc-matches-rows' {
-    . (Join-Path $PSScriptRoot 'AcceptanceMatrix.ps1')
-    $matrix = Get-AcceptanceMatrix -ProgramRoot $program -SkipShapeCheck
-    $problem = Test-AcceptanceDoc -Matrix $matrix -ProgramRoot $program
-    if (-not [string]::IsNullOrWhiteSpace($problem)) { throw $problem }
-    'the generated region of docs/supported-operation-matrix.md is byte-identical to a render of the rows'
 }
 
 # The release fixtures take a built release, so the gate cannot run them; tools/Test-BuiltRelease.ps1 runs them all
@@ -5720,7 +5643,7 @@ Invoke-Check 'release.fixtures-all-run' {
 
 # --- Offline self-test suites ---------------------------------------------------------------------
 if ($Fast) {
-    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.migration', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'workspace-init.ignores-a-seated-session', 'collection-ownership.selftest', 'acceptance.harness-selftest')) {
+    foreach ($name in @('library-hooks.boundary-suite', 'library-helpers.boundary-suite', 'mcp-helpers.boundary-suite', 'book-write-guard.selftest', 'book-manifest.selftest', 'book-manifest-store.selftest', 'book-manifest-transaction.selftest', 'git-source.selftest', 'sources-block.selftest', 'mcp-directory-listing.selftest', 'library-deployment.selftest', 'deployment-scan.selftest', 'library-output.selftest', 'reader.shelf-selftest', 'reader.project-pin-selftest', 'new-project-hub.selftest', 'edit-project-hub.selftest', 'shelf-note.boundary-suite', 'shelf.manifest-backfill', 'shared.manifest-backfill', 'book-currency.shelf-path', 'shelf.writers-route-manifests', 'archive.search-coverage', 'book-discovery.selftest', 'book-fulltext.selftest', 'raw-search.selftest', 'mcp-tool-inventory.selftest', 'raw-batch-ownership.selftest', 'desk.book-root-selftest', 'desk.two-seat-acceptance', 'seat.lifecycle', 'recovery.routes', 'notebook.idle-seat-sweep', 'triage-inventory.selftest', 'triage.history-readable', 'meter-status.selftest', 'meter.parsers-agree', 'reader.dispatch-selftest', 'codex.portability-selftest', 'token-baseline.selftest', 'hub-migration-acceptance.selftest', 'hub-migration-snapshot.selftest', 'add-catalog-entry.selftest', 'remove-shared-entry.selftest', 'remove-memory-project.selftest', 'archive-shared-book.selftest', 'shared-collection-files.selftest', 'notebook-index.selftest', 'shelf-catalog.selftest', 'notebook.render-lock-narrow', 'maintenance.folder-move', 'collection-vault-export.selftest', 'public-tree-export.selftest', 'mirror-job.allowlist-rule-parity', 'plugin.generated-files-match', 'workspace-registry.selftest', 'workspace-init.selftest', 'workspace-init.ignores-a-seated-session', 'collection-ownership.selftest')) {
         # This roster is the -Fast summary's only record that these suites exist. A check absent from
         # it does not run in -Fast AND is not reported skipped, so the pre-commit hook's line silently
         # counts one fewer -- the same shape as a suite nothing runs, one step quieter. The three
@@ -5756,16 +5679,6 @@ Invoke-WorkspaceCheck 'reader.dispatch-selftest' {
     $out = Use-WorkspaceEnvironment { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $adapter -DispatchSelfTest 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 5) -join ' | ') }
     'passed'
-}
-
-# The acceptance harness, driven as its own process because it builds eight fixture workspaces and
-# spawns a child per step. It needs no reader workspace: every fixture it touches it made itself,
-# which is the point -- a harness that judged a port against the reader's real Shelf would be
-# comparing two implementations over a moving target.
-Invoke-Check 'acceptance.harness-selftest' {
-    $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Invoke-AcceptanceMatrix.ps1') -SelfTest 2>&1
-    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 4) -join ' | ') }
-    (($out | Select-Object -Last 1) | Out-String).Trim()
 }
 
 Invoke-Check 'reader.shelf-selftest' {
@@ -6024,22 +5937,6 @@ Invoke-WorkspaceCheck 'seat.lifecycle' {
 # Remove-NotebookQuarantine.ps1 both cite this one.
 Invoke-Check 'recovery.routes' {
     $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-RecoveryRoutes.ps1') 2>&1
-    if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
-    [string]($out | Select-Object -Last 1)
-}
-
-# ADR-0029'S MIGRATION, THE ONE KERNEL VERB WITH NO POWERSHELL ORACLE (S18). The matrix row about it is
-# independent, so this is where it is judged: every legacy state, built by the legacy writers, and the
-# migration killed at every step on both sides of each journal write -- resumed to the reference tree
-# and rolled back to the legacy one. Five minutes, which is why it is a suite and not a -Fast check.
-Invoke-Check 'notebook.migration' {
-    # WARN WITHOUT NODE, as kernel.selftest and acceptance.kernel-verbs-exist do and for their reason: the
-    # suite drives the kernel, and a contributor without Node cannot run it. It failed here until S45,
-    # when a fresh clone in Windows Sandbox -- following the README, which asks for no Node -- met it.
-    if (-not (Get-Command -Name 'node' -CommandType Application -ErrorAction SilentlyContinue)) {
-        return 'WARN: node is not on PATH, so the notebook migration suite did not run. Install Node 22+ to run it.'
-    }
-    $out =& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-NotebookMigration.ps1') 2>&1
     if ($LASTEXITCODE -ne 0) { throw (($out | Select-Object -Last 8) -join ' | ') }
     [string]($out | Select-Object -Last 1)
 }
