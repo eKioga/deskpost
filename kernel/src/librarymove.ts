@@ -2,41 +2,50 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { windowsProcesses } from './lifecycle.ts';
-import { nativeProcessCalls, nativeProcessTable } from './win32proc.ts';
-import { findWorkspaceByMarker, readMarker, registryPath, homeDirectory } from './workspace.ts';
+import { spawnSync } from 'node:child_process';
+import { nativeProcessCalls, nativeProcessTable, nativeProcessCommandLine, nativeProcessCurrentDirectory, nativeFileHolders, runInstalledProcess } from './win32proc.ts';
+import { findWorkspaceByMarker, readMarker, registryPath, homeDirectory, readRegistry } from './workspace.ts';
 import { relocateWorkspace } from './init.ts';
 import { quoteSharedCommandPath } from './sharedwrite.ts';
 import { readSeatRegistry } from './desk.ts';
 import { assertNoMaintenanceBarrier, getSeatClaimState, launcherProofForThisAgent } from './seatclaim.ts';
 import type { PsJsonValue } from './psjson.ts';
+import type { ScreenTerminal } from './menuscreen.ts';
+
+export interface MoveControl {
+  cancelled(): boolean;
+  progress(event: { phase: string; file?: string; bytes?: number }): void;
+}
+const silentControl: MoveControl = { cancelled: () => false, progress: () => {} };
+const yieldMove = () => new Promise<void>(resolve => setImmediate(resolve));
 
 export interface MoveOptions {
+  cleanup?: boolean; cleanupSelected?: string[];
+  plain?: boolean; details?: boolean; json?: boolean;
   destination?: string; workspace?: string; registryRoot?: string; preflight: boolean;
   historyByteLimit?: number;
   destinationRule?: 'any';
   processTable?: () => MoveProcess[];
   userConfirmed?: boolean; planId?: string; resume?: string; rollback?: string;
   faultAt?: string; faultMarker?: string; faultRelease?: string;
+  control?: MoveControl;
+  /** Test-only creation of the legacy journal order; never exposed through command arguments. */
+  legacyOrder?: boolean;
+  chooseWorkspace?: ((roots: string[]) => Promise<string | null>) | null;
+  holderScan?: (roots: string[], processes: MoveProcess[]) => HolderScan;
 }
 export type MoveProcess = { pid: number; parentPid: number; name: string; commandLine?: string | null };
+export const MOVE_AGENT_VARIABLES = ['CLAUDECODE', 'CODEX_SANDBOX', 'CODEX_THREAD_ID', 'LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'DESKPOST_LAUNCHER_PID'] as const;
+export function moveRunsAsPreflight(env: NodeJS.ProcessEnv = process.env): boolean { return MOVE_AGENT_VARIABLES.some(name => Boolean(env[name])); }
 
 function processTable(): MoveProcess[] {
   if (process.platform === 'win32') {
-    let rows: MoveProcess[] = nativeProcessCalls() ? nativeProcessTable() : windowsProcesses().map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, name: row.ExecutablePath ? path.win32.basename(row.ExecutablePath) : '' }));
-    // Image paths can be denied although the image name remains readable.
-    if (rows.some(row => !row.name)) {
-      const names = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Process | Select-Object Id,ProcessName | ConvertTo-Json -Compress'], { encoding: 'utf8', windowsHide: true }));
-      for (const row of rows) if (!row.name) row.name = ([] as { Id: number; ProcessName: string }[]).concat(names).find(p => p.Id === row.pid)?.ProcessName ?? '';
-      rows = rows.filter(row => {
-        if (row.name || row.pid <= 4) return true;
-        try { process.kill(row.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; }
-        throw new Error(`the image name for process ${row.pid} could not be read`);
-      });
-    }
-    const commands = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'], { encoding: 'utf8', windowsHide: true }).trim() || '[]');
-    for (const row of rows) if (/^node(?:\.exe)?$/i.test(row.name)) row.commandLine = ([] as { ProcessId: number; CommandLine: string | null }[]).concat(commands).find(p => p.ProcessId === row.pid)?.CommandLine ?? null;
+    if (nativeProcessCalls()) return nativeProcessTable().map(row => ({ ...row, ...(/^node(?:\.exe)?$/i.test(row.name) ? { commandLine: nativeProcessCommandLine(row.pid) } : {}) }));
+    const rows: MoveProcess[] = runInstalledProcess(['list']).processes.map((row: { pid: number; parent_pid: number; name?: string; path: string | null }) => ({ pid: row.pid, parentPid: row.parent_pid, name: row.name || (row.path ? path.win32.basename(row.path) : '') }));
+    const unnamed = rows.find(row => !row.name);
+    if (unnamed) throw new Error(`the image name for process ${unnamed.pid} could not be read: the installed program is older than this process reader; install the current Deskpost, or set DESKPOST_KERNEL to its .exe.`);
+    const commands = runInstalledProcess(['list', '--name', 'node.exe']).processes as { pid: number; command_line?: string | null }[];
+    for (const row of rows) if (/^node(?:\.exe)?$/i.test(row.name)) row.commandLine = commands.find(p => p.pid === row.pid)?.command_line ?? null;
     return rows;
   }
   if (process.platform !== 'linux') throw new Error('the process table is not supported on this platform');
@@ -57,15 +66,147 @@ export function quietCheck(options: { processTable?: () => MoveProcess[]; inside
     const byPid = new Map(rows.map(row => [row.pid, row]));
     const excludedPids = new Set<number>();
     for (let pid: number | undefined = process.pid; pid && !excludedPids.has(pid); pid = byPid.get(pid)?.parentPid) excludedPids.add(pid);
+    const codexOpen = rows.some(row => !excludedPids.has(row.pid) && /^codex(?!-windows-sandbox-service(?:\.exe)?$)/i.test(row.name));
     const writers = rows.filter(row => {
       if (excludedPids.has(row.pid)) return false;
       const image = row.name.toLowerCase().replace(/\.exe$/, '');
+      if (image === 'codex-windows-sandbox-service') return codexOpen;
       if (image === 'node') return !row.commandLine || /(?:(?:^|[\\/\s"'])(?:cli|library)\.ts|(?:^|[\\/\s"'])library(?:\.exe)?)(?:["'\s]|$)|claude|codex|orca/i.test(row.commandLine);
       return /^(?:claude|orca|library|deskpost)$/.test(image) || image.startsWith('codex') || (image === 'obsidian' && options.inside_obsidian_vault === true);
     });
-    return { writers, refusal: writers.length ? writers.map(row => `${row.name} (process ${row.pid}): close it, then run the command again`).join('\n') : null };
+    return { writers, refusal: writers.length ? writers.map(row => `${row.name} (process ${row.pid}): ${/^codex-windows-sandbox-service(?:\.exe)?$/i.test(row.name) ? 'closes when Codex closes' : 'close it, then run the command again'}`).join('\n') : null };
   } catch (error) { return { writers: [] as MoveProcess[], refusal: `The process table could not be read: ${(error as Error).message}; close the applications and repair process-table access, then run the command again` }; }
 }
+
+export type Blocker = { kind: 'process' | 'holder' | 'folder' | 'reason'; name: string; pid?: number; detail: string; fix: string };
+type Holder = { pid: number; name: string; detail: string; service?: string };
+interface HolderScan { holders: Holder[]; uninspectable: number; resources: string[]; errors?: string[] }
+
+/** A bounded Restart Manager resource set: database, Obsidian and top-level regular files, without following links. */
+function holderResources(roots: string[]): string[] {
+  const files: string[] = [];
+  const visit = (folder: string, nested: boolean) => {
+    if (files.length >= 512) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= 512) break;
+      if (entry.isSymbolicLink()) continue;
+      const file = path.join(folder, entry.name);
+      if (entry.isFile() && (!nested || /\.db$/i.test(entry.name) || folder.split(path.sep).includes('.obsidian'))) files.push(file);
+      else if (entry.isDirectory()) visit(file, true);
+    }
+  };
+  for (const root of roots) visit(root, false);
+  return files;
+}
+
+/** Reads only OS metadata. Callers supply the already-read process table and remove this process and its ancestors. */
+export function scanMoveHolders(roots: string[], processes: MoveProcess[]): HolderScan {
+  const result: HolderScan = { holders: [], uninspectable: 0, resources: holderResources(roots), errors: [] };
+  for (const row of processes) {
+    if (process.platform === 'win32') {
+      const directory = nativeProcessCurrentDirectory(row.pid);
+      if (directory === null) { result.uninspectable++; continue; }
+      if (roots.some(root => within(directory, root))) result.holders.push({ pid: row.pid, name: row.name, detail: 'working folder: ' + directory });
+    } else if (process.platform === 'linux') {
+      let inspected = false;
+      try {
+        const directory = fs.readlinkSync(`/proc/${row.pid}/cwd`); inspected = true;
+        if (roots.some(root => within(directory, root))) result.holders.push({ pid: row.pid, name: row.name, detail: 'working folder: ' + directory });
+      } catch { /* protected or exited processes are counted below */ }
+      try {
+        for (const descriptor of fs.readdirSync(`/proc/${row.pid}/fd`)) {
+          try {
+            const file = fs.readlinkSync(`/proc/${row.pid}/fd/${descriptor}`).replace(/ \(deleted\)$/, '');
+            if (path.isAbsolute(file) && roots.some(root => within(file, root))) result.holders.push({ pid: row.pid, name: row.name, detail: 'open file: ' + file });
+          } catch { /* descriptor closed during enumeration */ }
+        }
+        inspected = true;
+      } catch { /* protected or exited processes are counted below */ }
+      if (!inspected) result.uninspectable++;
+    }
+  }
+  if (process.platform === 'win32') {
+    try {
+      const allowed = new Set(processes.map(row => row.pid));
+      for (const holder of nativeFileHolders(result.resources)) if (allowed.has(holder.pid)) result.holders.push({ ...holder, name: holder.name || processes.find(row => row.pid === holder.pid)!.name, detail: 'open file' + (holder.service ? '; service: ' + holder.service : '') });
+    } catch (error) { result.errors!.push((error as Error).message); }
+  }
+  return result;
+}
+
+async function inspectMoveBlockers(operation: 'move' | 'rollback' | 'resume', options: MoveOptions, prepared?: Awaited<ReturnType<typeof movePlan>>, journal?: MoveJournal) {
+  const blockers: Blocker[] = [], addReason = (detail: string) => blockers.push({ kind: 'reason', name: 'Library', detail, fix: detail.split('; ').slice(1).join('; ') || 'Check the named path or record, repair it, then run the preview again.' });
+  let roots: string[] = [], insideVault = false;
+  if (operation === 'move') {
+    try {
+      const plan = prepared ?? await movePlan(options, undefined, false);
+      roots = [plan.root]; insideVault = plan.recorded.vault !== null;
+      for (const reason of plan.reasons) addReason(reason);
+      for (const warning of plan.warnings) if (warning.includes('close each session first')) addReason(warning);
+    } catch (error) {
+      addReason((error as Error).message);
+      const root = options.workspace ? path.resolve(options.workspace) : findWorkspaceByMarker(process.cwd());
+      if (root && readMarker(root)) { roots = [root]; insideVault = obsidianVault(root) !== null; }
+    }
+  } else {
+    try {
+      journal ??= readMoveJournal(options);
+      const locations = await verifyRecovery(journal, options.control);
+      roots = [journal.root, journal.target, journal.aside, journal.staging, locations.rolled].filter(pathExists);
+      insideVault = journal.insideVault;
+      refuseForeignBarriers(roots, journal.run_id);
+      if (operation === 'resume' && options.resume && (locations.source !== journal.aside || locations.destination !== journal.target || ['rolled-back', 'aborted'].includes(journal.state))) addReason('Only a move past its commit point can resume; run its --rollback <run-id> --preflight instead');
+    } catch (error) { addReason((error as Error).message); }
+  }
+  if (roots.some(root => within(process.cwd(), root))) blockers.push({ kind: 'folder', name: 'This window', detail: `run it from a folder outside ${roots[0]}`, fix: `This window is in the Library folder. Run: cd ${path.parse(roots[0]!).root.replace(/\\/g, '/')}dev then the same command again.` });
+  let rows: MoveProcess[] = [], excludedPids = new Set<number>();
+  try {
+    rows = (options.processTable ?? processTable)();
+    const byPid = new Map(rows.map(row => [row.pid, row]));
+    for (let pid: number | undefined = process.pid; pid && !excludedPids.has(pid); pid = byPid.get(pid)?.parentPid) excludedPids.add(pid);
+    const quiet = quietCheck({ processTable: () => rows, inside_obsidian_vault: insideVault });
+    for (const row of quiet.writers) blockers.push({ kind: 'process', name: row.name, pid: row.pid, detail: `${row.name} (process ${row.pid})`, fix: /^codex-windows-sandbox-service(?:\.exe)?$/i.test(row.name) ? 'closes when Codex closes' : 'close it, then run the command again' });
+  } catch (error) { addReason(`The process table could not be read: ${(error as Error).message}; close the applications and repair process-table access, then run the command again`); }
+  let scan: HolderScan = { holders: [], uninspectable: 0, resources: [] };
+  let delegatedSnapshot = false;
+  if (roots.length) {
+    try {
+      if (options.holderScan) scan = options.holderScan(roots, rows);
+      else if (options.processTable) { /* An injected process table is an isolated fixture, never the OS. */ }
+      else if (process.platform === 'win32' && !nativeProcessCalls()) {
+        // Source callers use the same compiled move preview, which owns the native APIs. There is no second command surface.
+        const executable = runInstalledProcess(null);
+        const args = ['library', 'move', ...(operation === 'move' ? [options.destination!] : [`--${operation}`, options[operation]!]), '--workspace', roots[0]!, '--preflight', '--json', ...(options.registryRoot ? ['--registry-root', options.registryRoot] : [])];
+        const child = spawnSync(executable, args, { encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+        if (child.error) throw child.error;
+        if (![0, 3].includes(child.status ?? -1)) throw new Error(child.stderr || 'The compiled holder reader refused');
+        const value = JSON.parse(child.stdout);
+        if (!Array.isArray(value.blockers)) throw new Error('The installed program is older than this holder reader; set DESKPOST_KERNEL to this branch\'s .exe.');
+        scan.holders = value.blockers.filter((row: Blocker) => row.kind === 'holder');
+        for (const blocker of value.blockers.filter((row: Blocker) => row.kind === 'reason' && /(?:process table|folder holders) could not be read/.test(row.detail))) blockers.push(blocker);
+        // The compiled inspection already saved its complete OS table in this registry.
+        delegatedSnapshot = value.blockers.length > 0;
+      } else scan = scanMoveHolders(roots, rows.filter(row => !excludedPids.has(row.pid)));
+      for (const error of scan.errors ?? []) addReason(`The folder holders could not be read: ${error}; repair holder access, then run the preview again`);
+      for (const holder of scan.holders) blockers.push({ kind: 'holder', name: /^explorer(?:\.exe)?$/i.test(holder.name) ? 'File Explorer' : holder.name, pid: holder.pid, detail: holder.detail, fix: /sandbox-service/i.test(holder.name) ? 'Stop the named service after closing Codex, then check again.' : /^explorer(?:\.exe)?$/i.test(holder.name) ? 'Close the File Explorer window showing the folder.' : 'Close the window or program using the named folder or file.' });
+    } catch (error) { addReason(`The folder holders could not be read: ${(error as Error).message}; repair holder access, then run the preview again`); }
+  }
+  const processes = rows.map(row => ({ ...row, excluded: excludedPids.has(row.pid), reason: excludedPids.has(row.pid) ? 'this process or its ancestor' : blockers.filter(b => b.pid === row.pid).map(b => b.kind).join(', ') || 'not a named writer or holder' }));
+  if (blockers.length && !delegatedSnapshot) {
+    const folder = path.join(path.dirname(registryPath(options.registryRoot)), 'move-journals/refusals');
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+    atomic(path.join(folder, `refusal-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.json`), JSON.stringify({ operation, roots, processes, holders: scan.holders, uninspectable: scan.uninspectable, resources: scan.resources, blockers }, null, 2) + '\n');
+  }
+  return { blockers, rows: processes, scan };
+}
+
+export async function moveBlockers(operation: 'move' | 'rollback' | 'resume', options: MoveOptions): Promise<Blocker[]> {
+  return (await inspectMoveBlockers(operation, options)).blockers;
+}
+
+const blockerText = (blockers: Blocker[]) => blockers.map(row => `${row.detail}: ${row.fix}`).join('\n');
 type ManifestEntry = { relative: string; type: 'file' | 'folder'; size: number; sha256: string };
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const within = (child: string, parent: string) => {
@@ -78,43 +219,60 @@ const longPath = (file: string) => process.platform === 'win32' && file.length >
 function pathExists(file: string) {
   try { fs.lstatSync(longPath(file)); return true; } catch (error) { if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; throw error; }
 }
-function fileDigest(file: string) {
-  const handle = fs.openSync(longPath(file), 'r'), hash = createHash('sha256'), buffer = Buffer.allocUnsafe(1024 * 1024);
+async function fileDigest(file: string, control: MoveControl) {
+  const handle = await fs.promises.open(longPath(file), 'r'), hash = createHash('sha256'), buffer = Buffer.allocUnsafe(1024 * 1024);
   let size = 0;
   try {
-    for (let count = fs.readSync(handle, buffer); count; count = fs.readSync(handle, buffer)) { hash.update(buffer.subarray(0, count)); size += count; }
-  } finally { fs.closeSync(handle); }
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer);
+      if (!bytesRead) break;
+      hash.update(buffer.subarray(0, bytesRead)); size += bytesRead;
+      control.progress({ phase: 'hash', file, bytes: size });
+      await yieldMove();
+    }
+  } finally { await handle.close(); }
   return { size, sha256: hash.digest('hex') };
 }
 
-function manifest(root: string, reasons: string[] = []): ManifestEntry[] {
+async function manifest(root: string, reasons: string[] = [], control: MoveControl = silentControl, includeAll = false): Promise<ManifestEntry[]> {
   const rows: ManifestEntry[] = [];
-  const visit = (relative: string) => {
+  const visit = async (relative: string) => {
     for (const entry of fs.readdirSync(longPath(path.join(root, relative)), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const name = relative ? relative + '/' + entry.name : entry.name;
-      if (excluded(name)) continue;
+      if (!includeAll && excluded(name)) continue;
       const file = path.join(root, name);
       if (entry.isSymbolicLink()) { reasons.push(`${file} is a symbolic link or junction; resolve it by hand, then run the preview again`); continue; }
       try {
-        if (entry.isDirectory()) { rows.push({ relative: name, type: 'folder', size: 0, sha256: '' }); visit(name); }
-        else if (entry.isFile()) rows.push({ relative: name, type: 'file', ...fileDigest(file) });
+        if (entry.isDirectory()) { rows.push({ relative: name, type: 'folder', size: 0, sha256: '' }); (await visit(name)); }
+        else if (entry.isFile()) rows.push({ relative: name, type: 'file', ...(await fileDigest(file, control)) });
         else reasons.push(`${file} is not a regular file; move it by hand, then run the preview again`);
-      } catch (error) { reasons.push(`${file}: ${(error as Error).message}; repair it, then run the preview again`); }
+      } catch (error) { if (error instanceof MoveCancellation) throw error; reasons.push(`${file}: ${(error as Error).message}; repair it, then run the preview again`); }
+      await yieldMove();
     }
   };
-  visit('');
+  (await visit(''));
   return rows.sort((a, b) => a.relative.localeCompare(b.relative));
 }
 
+/** Clean-up covers the recovery records too; copying and recovery retain their exclusions. */
+async function journalManifest(root: string): Promise<ManifestEntry[]> {
+  const relative = 'internal/move-journals', directory = path.join(root, relative);
+  if (!pathExists(directory)) return [];
+  safeFolder(directory);
+  const reasons: string[] = [], rows = await manifest(directory, reasons, silentControl, true);
+  if (reasons.length) throw new Error(reasons.join('\n'));
+  return [{ relative, type: 'folder', size: 0, sha256: '' }, ...rows.map(row => ({ ...row, relative: relative + '/' + row.relative }))];
+}
+
 const displayPath = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase());
-function movePlan(options: MoveOptions, barrierRun?: string, includeWarnings = true) {
+async function movePlan(options: MoveOptions, barrierRun?: string, includeWarnings = true) {
     const started = performance.now();
     const destination = options.destination ?? '';
     if (!destination) throw new Error('Run deskpost library move <destination> --preflight [--workspace <path>] [--json].');
     if (!path.isAbsolute(destination) || (process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(destination))) throw new Error('Give a full path, such as P:\\dev\\Deskpost\\Library.');
     if (/[\u0000-\u001f\u007f]/.test(destination)) throw new Error(`${displayPath(destination)} holds a control character, which the settings files that name this Library cannot hold; choose a folder name without one`);
     if (/['"`]/.test(destination)) throw new Error(`${displayPath(destination)} holds a quote character, which the settings files that name this Library cannot hold unescaped; choose a folder name without quotes`);
-    const root = options.workspace ? path.resolve(options.workspace) : findWorkspaceByMarker(process.cwd());
+    const root = await resolveMoveWorkspace(options);
     if (!root || !readMarker(root)) throw new Error('No Library marker found. Run inside a Library, or give --workspace <path>.');
     const target = path.resolve(destination);
     let ancestor = target;
@@ -141,7 +299,7 @@ function movePlan(options: MoveOptions, barrierRun?: string, includeWarnings = t
     const reasons: string[] = [];
     if (!pathExists(path.join(root, 'internal'))) reasons.push(`${path.join(root, 'internal')} is missing; create it as an empty folder, then run the preview again`);
     else if (fs.lstatSync(path.join(root, 'internal')).isSymbolicLink() || !fs.statSync(path.join(root, 'internal')).isDirectory()) reasons.push(`${path.join(root, 'internal')} is not a folder; move it aside and create an empty folder named internal, then run the preview again`);
-    const sourceManifest = manifest(root, reasons);
+    const sourceManifest = (await manifest(root, reasons, options.control));
     const recorded = recordedPaths(root, options.registryRoot, target, reasons);
     if (includeWarnings) {
       const quiet = quietCheck({ processTable: options.processTable, inside_obsidian_vault: recorded.vault !== null });
@@ -167,10 +325,15 @@ type MoveJournal = {
   registryRoot: string; registryFile: string; registryBefore: string; registryOutputSha: string; registryRow: { path: string; id: string };
   pointers: SavedPointer[]; programPointers: { relative: string; after: string }[]; listed: string[];
   steps: Record<string, 'intent' | 'done'>; state: string; emptyDestination: boolean;
+  order?: 'copy-first' | 'aside-first'; sourceIdentity?: string; sourceStats?: string[];
+  retainedIdentity?: string;
+  thingsForYou?: string[];
+  aside_drift?: string[]; asideManifest?: ManifestEntry[];
   rollbackManifest?: ManifestEntry[];
+  sourceJournals?: ManifestEntry[]; retainedJournals?: ManifestEntry[];
   rollbackCommitted?: boolean;
 };
-type MoveResult = { refusal: string | null; value: PsJsonValue | null; humanText?: string };
+type MoveResult = { refusal: string | null; value: PsJsonValue | null; humanText?: string; exitCode?: number; screenShown?: boolean; uninspectable?: number };
 
 /** Stage beside the file, flush its bytes, then replace with a single filesystem rename. */
 function atomic(file: string, bytes: Buffer | string, mode = pathExists(file) ? fs.statSync(longPath(file)).mode & 0o7777 : 0o600) {
@@ -210,18 +373,30 @@ function liftBarrier(root: string, runId: string) {
   if (JSON.parse(fs.readFileSync(file, 'utf8')).run_id !== runId) throw new Error(`${file} belongs to another run; inspect its journal before continuing`);
   fs.unlinkSync(file); // Only this run's maintenance flag; reader files are retained.
 }
-function verifyTree(root: string, expected: ManifestEntry[]) {
+async function verifyTree(root: string, expected: ManifestEntry[], control: MoveControl = silentControl) {
   const reasons: string[] = [];
-  const actual = manifest(root, reasons);
+  const actual = (await manifest(root, reasons, control));
   const wanted = new Map(expected.map(row => [row.relative, JSON.stringify(row)]));
   const seen = new Set(actual.map(row => row.relative));
   const changed = actual.filter(row => wanted.get(row.relative) !== JSON.stringify(row)).map(row => row.relative);
   changed.push(...expected.filter(row => !seen.has(row.relative)).map(row => row.relative), ...reasons);
   if (changed.length) throw new Error(`${root} differs from its manifest: ${changed.join(', ')}; keep both trees and inspect these files before recovery`);
 }
-function requireQuiet(journal: Pick<MoveJournal, 'insideVault'>, options: MoveOptions) {
-  const quiet = quietCheck({ processTable: options.processTable, inside_obsidian_vault: journal.insideVault });
-  if (quiet.refusal) throw new Error(quiet.refusal);
+async function recordAsideDrift(journal: MoveJournal, source: string, control: MoveControl = silentControl) {
+  if (folderIdentity(source) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+  const reasons: string[] = [], actual = await manifest(source, reasons, control);
+  const wanted = new Map(journal.sourceManifest.map(row => [row.relative, JSON.stringify(row)]));
+  const seen = new Set(actual.map(row => row.relative));
+  journal.aside_drift = [...new Set((journal.aside_drift ?? []).concat(actual.filter(row => wanted.get(row.relative) !== JSON.stringify(row)).map(row => row.relative)
+    .concat(journal.sourceManifest.filter(row => !seen.has(row.relative)).map(row => row.relative), reasons)))];
+  if (journal.aside_drift.length) {
+    journal.asideManifest = actual;
+    listOnce(journal, `${journal.aside_drift.length} files changed in the old folder after it was copied: ${journal.aside_drift.slice(0, 3).join(', ')}. They are not in the new Library; compare them and copy over what you need.`);
+  }
+}
+async function requireQuiet(journal: MoveJournal, options: MoveOptions) {
+  const inspection = await inspectMoveBlockers(options.rollback ? 'rollback' : 'resume', options, undefined, journal);
+  if (inspection.blockers.length) throw new Error(blockerText(inspection.blockers));
 }
 function obsidianVault(root: string, unreadable?: (file: string, error: unknown) => void): string | null {
   for (let folder = path.resolve(root); ; folder = path.dirname(folder)) {
@@ -243,18 +418,19 @@ function fault(options: MoveOptions, point: string) {
   }
   throw new Error('Injected move fault at ' + point);
 }
-function step(journal: MoveJournal, name: string, effect: () => void, options: MoveOptions) {
+async function step(journal: MoveJournal, name: string, effect: () => void | Promise<void>, options: MoveOptions) {
+  await checkpoint(options, name);
   journal.steps[name] = 'intent'; saveJournal(journal);
   fault(options, name + ':before');
-  effect();
+  await effect();
   fault(options, name + ':before-done');
   journal.steps[name] = 'done'; saveJournal(journal);
   fault(options, name + ':after-done');
 }
-function copyTree(journal: MoveJournal, options: MoveOptions) {
+async function copyTree(journal: MoveJournal, options: MoveOptions) {
   fs.mkdirSync(longPath(journal.staging), { recursive: true });
   for (const entry of journal.sourceManifest) {
-    const from = longPath(path.join(journal.root, entry.relative)), to = longPath(path.join(journal.staging, entry.relative));
+    const from = longPath(path.join(journal.order === 'aside-first' ? journal.aside : journal.root, entry.relative)), to = longPath(path.join(journal.staging, entry.relative));
     if (entry.type === 'folder') { fs.mkdirSync(to, { recursive: true }); continue; }
     fs.mkdirSync(longPath(path.dirname(to)), { recursive: true });
     if (options.faultAt === 'copy-file:before-done') {
@@ -262,71 +438,97 @@ function copyTree(journal: MoveJournal, options: MoveOptions) {
       fault(options, 'copy-file:before-done');
     }
     for (let attempt = 0; ; attempt++) {
-      try { fs.copyFileSync(from, to); break; }
+      try { await fs.promises.copyFile(from, to); break; }
       catch (error) {
         if (attempt >= 3 || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw new Error(`${from} could not be copied after three retries: ${(error as Error).message}; close its reader, then roll back this move`);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);
+        await new Promise<void>(resolve => setTimeout(resolve, 120));
       }
     }
+    (options.control ?? silentControl).progress({ phase: 'copy', file: entry.relative, bytes: entry.size });
+    await yieldMove();
   }
+  await checkpoint(options, 'rewrite');
   for (const pointer of journal.programPointers) atomic(path.join(journal.staging, pointer.relative), Buffer.from(pointer.after, 'base64'));
   barrier(journal.staging, journal.run_id);
 }
 function listOnce(journal: MoveJournal, text: string) { if (!journal.listed.includes(text)) journal.listed.push(text); }
-function finishMove(journal: MoveJournal, options: MoveOptions) {
-  requireQuiet(journal, options);
-  step(journal, 'cutover', () => {
+async function finishMove(journal: MoveJournal, options: MoveOptions) {
+  await requireQuiet(journal, options);
+  (await step(journal, 'cutover', async () => {
     if (fs.existsSync(journal.aside)) {
       if (fs.existsSync(journal.root)) throw new Error(`${journal.root} and ${journal.aside} both exist; inspect the move journal before recovery`);
-      verifyTree(journal.aside, journal.sourceManifest); return;
+      if (journal.order === 'aside-first') {
+        if (folderIdentity(journal.aside) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+      } else await verifyTree(journal.aside, journal.sourceManifest, options.control);
+      return;
     }
-    verifyTree(journal.root, journal.sourceManifest);
+    (await verifyTree(journal.root, journal.sourceManifest, options.control));
     fs.renameSync(longPath(journal.root), longPath(journal.aside));
-  }, options);
-  requireQuiet(journal, options);
-  for (const [index, pointer] of journal.pointers.entries()) step(journal, 'pointer-' + index, () => {
+  }, options));
+  await requireQuiet(journal, options);
+  for (const [index, pointer] of journal.pointers.entries()) (await step(journal, 'pointer-' + index, () => {
     let actual = '';
     try { if (!fs.lstatSync(pointer.file).isSymbolicLink()) actual = digest(fs.readFileSync(pointer.file)); } catch { /* drift is left and listed */ }
     if (actual === pointer.outputSha) return;
     if (actual !== pointer.priorSha) { listOnce(journal, `${pointer.file}: changed since the preview; left as written`); return; }
     atomic(pointer.file, Buffer.from(pointer.after, 'base64'));
     if (digest(fs.readFileSync(pointer.file)) !== pointer.outputSha) throw new Error(`${pointer.file} did not read back; resume or roll back this move`);
-  }, options);
-  requireQuiet(journal, options);
-  step(journal, 'registry', () => {
+  }, options));
+  await requireQuiet(journal, options);
+  (await step(journal, 'registry', () => {
     const current = fs.readFileSync(journal.registryFile);
     if (digest(current) === journal.registryOutputSha) return;
     if (digest(current) !== digest(Buffer.from(journal.registryBefore, 'base64'))) throw new Error(`the registry row for ${journal.root} changed since the preview; run the preview again after recovering this move`);
     relocateWorkspace(journal.registryRoot, journal.registryRow, journal.target);
     if (digest(fs.readFileSync(journal.registryFile)) !== journal.registryOutputSha) throw new Error('The registry relocation did not read back; resume or roll back this move');
-  }, options);
-  step(journal, 'verify', () => { verifyTree(journal.aside, journal.sourceManifest); verifyTree(journal.target, journal.expectedManifest); }, options);
-  step(journal, 'complete', () => { liftBarrier(journal.target, journal.run_id); }, options);
-  step(journal, 'journal-copy', () => {
+  }, options));
+  (await step(journal, 'verify', async () => {
+    await verifyTree(journal.target, journal.expectedManifest, options.control);
+    if (journal.order === 'aside-first') await recordAsideDrift(journal, journal.aside, options.control);
+    else await verifyTree(journal.aside, journal.sourceManifest, options.control);
+  }, options));
+  (await step(journal, 'complete', () => { liftBarrier(journal.target, journal.run_id); }, options));
+  (await step(journal, 'journal-copy', () => {
     const copy = path.join(journal.target, 'internal/move-journals', journal.run_id);
     fs.mkdirSync(copy, { recursive: true, mode: 0o700 }); fs.chmodSync(copy, 0o700);
     for (const [index, file] of fs.readdirSync(journal.directory).entries()) {
       atomic(path.join(copy, file), fs.readFileSync(path.join(journal.directory, file)), 0o600);
       if (index === 0) fault(options, 'journal-copy:file');
     }
-  }, options);
+  }, options));
   journal.state = 'complete'; saveJournal(journal);
 }
 function moveValue(journal: MoveJournal): MoveResult {
+  const things = [...new Set([...(journal.thingsForYou ?? []), ...moveThingsForYou({ destination: journal.target, source: journal.root, listed: journal.listed })])];
   return { refusal: null, value: { operation: 'Library move', run_id: journal.run_id, state: journal.state, workspace: journal.target, aside: journal.aside, journal: journal.directory, left_and_listed: journal.listed, written: true,
+    things_for_you: things, aside_drift: journal.aside_drift ?? [],
     rollback: `deskpost library move --rollback ${journal.run_id} --preflight` },
-    humanText: `Library moved to ${journal.target}. The source stays at ${journal.aside}.\n${journal.listed.join('\n')}\nRollback preview: deskpost library move --rollback ${journal.run_id} --preflight` };
+    humanText: `Moved. The Library is now at ${journal.target}\n${things.length ? 'Things for you:\n' + things.map((line, index) => `${index + 1}. ${line}`).join('\n') : 'Nothing left for you to do.'}\nThe old folder is kept at ${journal.aside}.\nOnce all is well: deskpost library move --clean-up` };
 }
 
-export function moveLibrary(options: MoveOptions): MoveResult {
-  if (options.resume || options.rollback) return recoverMove(options);
-  if (options.preflight) return previewLibraryMove(options);
+export async function moveLibrary(options: MoveOptions): Promise<MoveResult> {
+  if (options.cleanup) return cleanupMove(options);
+  if (options.resume || options.rollback) return (await recoverMove(options));
+  if (options.preflight) return (await previewLibraryMove(options));
   if (!options.userConfirmed) return { refusal: `run the preview first: deskpost library move ${options.destination ?? '<destination>'} --preflight`, value: null };
   let journal: MoveJournal | undefined;
+  const requestedControl = options.control ?? silentControl;
+  let promoting = false;
+  options = { ...options, control: {
+    cancelled: () => !promoting && requestedControl.cancelled(),
+    progress: event => {
+      if (event.phase === 'promote') promoting = true;
+      requestedControl.progress(event);
+      if (!promoting && requestedControl.cancelled()) throw new MoveCancellation();
+    },
+  } };
   try {
-    const insideVault = obsidianVault(options.workspace ?? findWorkspaceByMarker(process.cwd()) ?? process.cwd()) !== null;
-    requireQuiet({ insideVault }, options);
-    const plan = movePlan(options, undefined, false);
+    const selectedPlan = await movePlan(options, undefined, false);
+    options = { ...options, workspace: selectedPlan.root };
+    const inspection = await inspectMoveBlockers('move', options, selectedPlan);
+    if (requestedControl.cancelled()) throw new MoveCancellation();
+    if (inspection.blockers.length) throw new Error(blockerText(inspection.blockers));
+    const plan = (await movePlan(options, undefined, false));
     if (within(fs.realpathSync.native(process.cwd()), fs.realpathSync.native(plan.root))) throw new Error(`run it from a folder outside ${plan.root}`);
     if (plan.reasons.length) throw new Error(plan.reasons.join('\n'));
     if (options.planId !== plan.planId) throw new Error('the Library changed since the preview; run the preview again');
@@ -340,7 +542,10 @@ export function moveLibrary(options: MoveOptions): MoveResult {
     refuseForeignBarriers([plan.root, plan.target], runId);
     const priorRow = { ...registryRow }; registryRow.path = plan.target;
     journal = { schema: 1, run_id: runId, root: plan.root, target: plan.target, staging: plan.target + '.partial-' + runId, aside: plan.root + '.moved-' + runId,
+      thingsForYou: moveThingsForYou({ destination: plan.target, source: plan.root, pointers: plan.recorded.pointers }),
+      ...(options.legacyOrder ? {} : { order: 'aside-first' as const, sourceIdentity: folderIdentity(plan.root), sourceStats: statRows(plan.root) }),
       directory, sourceManifest: plan.sourceManifest, expectedManifest: plan.expectedManifest, insideVault: plan.recorded.vault !== null,
+      sourceJournals: await journalManifest(plan.root),
       registryRoot: path.dirname(registryFile), registryFile, registryBefore: registryBefore.toString('base64'), registryOutputSha: digest(JSON.stringify(registryDocument, null, 2) + '\n'), registryRow: priorRow,
       pointers: [], programPointers: [], listed: [], steps: {}, state: 'phase-a', emptyDestination: fs.existsSync(plan.target) };
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700);
@@ -359,20 +564,59 @@ export function moveLibrary(options: MoveOptions): MoveResult {
     atomic(path.join(directory, 'destination-manifest.json'), JSON.stringify(plan.expectedManifest));
     atomic(path.join(directory, 'registry-before'), registryBefore);
     for (const [index, pointer] of journal.pointers.entries()) atomic(path.join(directory, 'pointer-' + index + '-before'), Buffer.from(pointer.before, 'base64'));
-    step(journal, 'barrier', () => {
+    await checkpoint(options, 'before-rename');
+    if (journal.order === 'aside-first') {
+      await step(journal, 'aside', () => {
+        safeFolder(journal!.root);
+        fs.renameSync(longPath(journal!.root), longPath(journal!.aside));
+        if (folderIdentity(journal!.aside) !== journal!.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+      }, options);
+      journal.state = 'aside'; saveJournal(journal);
+      const held = await inspectMoveBlockers('resume', options, undefined, journal);
+      if (held.blockers.length) {
+        await abortAside(journal, options);
+        return { refusal: null, value: { state: 'held', blockers: held.blockers, written: false }, exitCode: 3 };
+      }
+      await step(journal, 'barrier', () => barrier(journal!.aside, runId), options);
+    } else {
+    (await step(journal, 'barrier', async () => {
       barrier(plan.root, runId);
-      try { if (movePlan(options, runId, false).planId !== plan.planId) throw new Error('the Library changed since the preview; run the preview again'); }
+      try { if ((await movePlan(options, runId, false)).planId !== plan.planId) throw new Error('the Library changed since the preview; run the preview again'); }
       catch (error) { liftBarrier(plan.root, runId); throw error; }
-    }, options);
-    step(journal, 'copy', () => copyTree(journal!, options), options);
-    step(journal, 'copy-verify', () => { verifyTree(journal!.staging, journal!.expectedManifest); verifyTree(journal!.root, journal!.sourceManifest); }, options);
-    step(journal, 'promote', () => {
+    }, options));
+    }
+    (await step(journal, 'copy', async () => (await copyTree(journal!, options)), options));
+    (await step(journal, 'copy-verify', async () => { (await verifyTree(journal!.staging, journal!.expectedManifest, options.control)); (await verifyTree(journal!.order === 'aside-first' ? journal!.aside : journal!.root, journal!.sourceManifest, options.control)); }, options));
+    if (journal.order === 'aside-first') {
+      await checkpoint(options, 'before-stat');
+      const actual = statRows(journal.aside);
+      const wanted = new Set(journal.sourceStats), current = new Set(actual);
+      const changed = actual.filter(row => !wanted.has(row)).concat(journal.sourceStats!.filter(row => !current.has(row)));
+      if (changed.length) throw new Error('The old folder changed before copying finished: ' + changed.map(row => row.split('\t')[0]).join(', ') + '; keep both trees and inspect these files before recovery');
+    }
+    (await step(journal, 'promote', () => {
       if (journal!.emptyDestination) fs.renameSync(journal!.target, journal!.target + '.empty-' + journal!.run_id);
       fs.renameSync(longPath(journal!.staging), longPath(journal!.target));
-    }, options);
-    finishMove(journal, options);
+    }, options));
+    (await finishMove(journal, options));
     return moveValue(journal);
   } catch (error) {
+    if (!promoting && requestedControl.cancelled()) error = new MoveCancellation();
+    if (journal?.order === 'aside-first' && !promoting && !String((error as Error).message).includes('Injected move fault')) {
+      try {
+        if (pathExists(journal.aside)) await abortAside(journal, options);
+        else if (pathExists(journal.root) && folderIdentity(journal.root) === journal.sourceIdentity) {
+          // Only the outside record made by this invocation; no Library bytes were changed.
+          fs.rmSync(journal.directory, { recursive: true });
+        }
+        if (error instanceof MoveCancellation) return { refusal: null, value: { state: journal.state === 'aborted' ? 'aborted' : 'cancelled', written: false, retained: journal.target + '.rolled-back-' + journal.run_id }, exitCode: 130 };
+        if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '') && !pathExists(journal.aside)) return { refusal: null, value: { state: 'held', written: false, blockers: [{ kind: 'holder', name: 'A program', detail: 'A program still has the folder open.', fix: 'Close File Explorer windows, terminals and editors showing it.' }] }, exitCode: 3 };
+        return { refusal: (error as Error).message + '\nThe old folder was restored; any partial copy was kept.', value: null };
+      } catch (restoration) {
+        return { refusal: (error as Error).message + '\nRestoration stopped: ' + (restoration as Error).message + '; keep every copy and inspect ' + journal.directory + '\nClose its reader, then run deskpost library move --rollback ' + journal.run_id + ' --preflight', value: null };
+      }
+    }
+    if (error instanceof MoveCancellation && !journal) return { refusal: null, value: { state: 'cancelled', written: false }, exitCode: 130 };
     let recovery = '';
     if (journal) {
       journal.state = fs.existsSync(journal.aside) ? 'phase-b-failed' : 'phase-a-failed';
@@ -384,13 +628,228 @@ export function moveLibrary(options: MoveOptions): MoveResult {
   }
 }
 
+/** Move alone adds a registry fallback; all other commands keep their existing resolution. */
+export async function resolveMoveWorkspace(options: MoveOptions): Promise<string> {
+  if (options.workspace) return path.resolve(options.workspace);
+  const marker = findWorkspaceByMarker(process.cwd());
+  if (marker) return marker;
+  const roots = [...new Set(readRegistry(options.registryRoot).map(row => row.root))];
+  if (roots.length === 1) return roots[0]!;
+  if (!roots.length) throw new Error('No Library marker found. Run inside a Library, or give --workspace <path>.');
+  const choose = options.chooseWorkspace === undefined && process.stdin.isTTY && process.stdout.isTTY && !moveRunsAsPreflight() && !options.plain && !options.json
+    ? async () => { const { askScreen } = await import('./menuscreen.ts'); return (await askScreen({ title: 'Which Library do you want to move?', items: roots.map(root => ({ id: root, text: root })), esc: 'quit' })).id; }
+    : options.chooseWorkspace;
+  if (!choose) throw new Error('Several Libraries are registered. Choose one, then run:\n' + roots.map(root => `deskpost library move ${quoteSharedCommandPath(options.destination ?? '<destination>')} --workspace ${quoteSharedCommandPath(root)} --preflight`).join('\n'));
+  const chosen = await choose(roots);
+  if (!chosen || chosen === 'back' || chosen === 'interrupt') throw new MoveCancellation();
+  if (!roots.includes(chosen)) throw new Error('The chosen Library is not registered; run the preview again with --workspace <path>.');
+  return chosen;
+}
+
+export function moveThingsForYou(options: { destination: string; source?: string; pointers?: Pick<Pointer, 'file' | 'place' | 'rewrite' | 'occurrences' | 'ambiguous' | 'reason'>[]; listed?: string[] }): string[] {
+  const lines: string[] = [], add = (line: string) => { if (!lines.includes(line)) lines.push(line); };
+  for (const row of options.pointers ?? []) {
+    const file = options.source && within(row.file, options.source) ? path.join(options.destination, path.relative(options.source, row.file)) : row.file;
+    if (row.place === 'Orca store') { add(`Open ${options.destination} in Orca.`); continue; }
+    if (row.rewrite === 'unknown') add(`${file} could not be read; check it names the new folder.`);
+    else if (row.ambiguous) add(`${file}: ${row.ambiguous} places still name the old folder. ${row.reason ?? 'Check these lines and change what needs the new folder.'}`);
+    else if (row.reason) add(`${file}: ${row.reason}`);
+  }
+  for (const line of options.listed ?? []) {
+    const drift = /^(.+?): changed (?:since|after) /.exec(line);
+    if (drift) { add(`${drift[1]} changed during the move and was left alone; check it names the new folder.`); continue; }
+    const ambiguous = /^(.+?): (\d+) ambiguous occurrences; (.*)$/.exec(line);
+    if (/\.db:/.test(line) && line.includes('Orca')) { add(`Open ${options.destination} in Orca.`); continue; }
+    if (ambiguous) {
+      const file = options.source && within(ambiguous[1]!, options.source) ? path.join(options.destination, path.relative(options.source, ambiguous[1]!)) : ambiguous[1]!;
+      if (Number(ambiguous[2])) add(`${file}: ${ambiguous[2]} places still name the old folder. ${ambiguous[3] === 'left as written' ? 'Check these lines and change what needs the new folder.' : ambiguous[3]}`);
+      else add(`${file} could not be read; check it names the new folder.`);
+      continue;
+    }
+    add(line);
+  }
+  return lines;
+}
+function plainMovePreview(value: any, command: string, uninspectable = 0): string {
+  const lines = [`Move the Library: ${value.ready ? 'ready.' : 'not ready yet.'}`, 'From  ' + (value.workspace ?? value.source), 'To    ' + value.destination];
+  if (typeof value.files === 'number') lines.push(`${value.files} files, ${value.bytes.toLocaleString('en-US')} bytes; ${value.destination_free_bytes.toLocaleString('en-US')} bytes free.`);
+  if (value.obsidian_vault) lines.push('It leaves your Obsidian vault ' + value.obsidian_vault + '.');
+  if (value.blockers?.length) lines.push('Close or fix these first:', ...value.blockers.map((row: Blocker, index: number) => `${index + 1}. ${row.name}: ${row.detail}. ${row.fix}`));
+  if (uninspectable) lines.push(`${uninspectable} programs could not be checked.`);
+  lines.push('Nothing was written in the Library. More detail: add --details');
+  if (value.ready) lines.push(command);
+  else lines.push('Then run the same command again.');
+  return lines.join('\n');
+}
+
+export async function runLibraryMoveCommand(options: MoveOptions, screen: { terminal?: ScreenTerminal; refreshMilliseconds?: number } = {}): Promise<MoveResult> {
+  const explicitApply = options.userConfirmed || options.planId;
+  const output = screen.terminal?.output ?? process.stdout;
+  const terminal = (screen.terminal || (process.stdin.isTTY && process.stdout.isTTY)) && (output.columns ?? 60) >= 60 && (output.rows ?? 24) >= 14;
+  const interactive = terminal && !moveRunsAsPreflight() && !options.preflight && !explicitApply && !options.plain && !options.json && !options.details;
+  if (interactive) {
+    const { MoveSession, preserveConsoleModes } = await import('./librarymovescreen.ts');
+    const restoreModes = screen.terminal ? undefined : preserveConsoleModes();
+    try {
+      // The source question owns input before the controller, and its answer binds the entire run.
+      const resolved = options.cleanup || options.resume || options.rollback ? options : { ...options, workspace: await resolveMoveWorkspace(options) };
+      const result = await new MoveSession({ check: selected => moveLibrary({ ...resolved, cleanupSelected: options.cleanup ? selected ?? [] : undefined, preflight: true }),
+        apply: (planId, control, selected) => moveLibrary({ ...resolved, cleanupSelected: options.cleanup ? selected : undefined, preflight: false, userConfirmed: true, planId, control }) }, screen).run();
+      return { ...result, screenShown: true };
+    } catch (error) {
+      if (error instanceof MoveCancellation) return { refusal: null, value: { state: 'cancelled', written: false }, humanText: 'Cancelled. Nothing was moved.', exitCode: 130 };
+      throw error;
+    } finally { restoreModes?.(); }
+  }
+  const result = await moveLibrary({ ...options, preflight: options.preflight || !explicitApply });
+  if (!result.refusal && result.exitCode === 130) result.humanText = 'Cancelled. Nothing was moved. The old folder is restored.';
+  return result;
+}
+
+export type CleanupCandidate = { path: string; identity: string; digest: string; bytes: number };
+export function cleanupPlanId(candidates: CleanupCandidate[], selected = candidates.map(row => row.path)): string {
+  return digest(JSON.stringify([...new Set(selected)].sort().map(file => {
+    const row = candidates.find(candidate => candidate.path === file);
+    return row ? { path: row.path, identity: row.identity, digest: row.digest } : { path: file, missing: true };
+  })));
+}
+async function cleanupSnapshot(options: MoveOptions) {
+  const hold: (reason: string) => never = reason => { throw new Error('Keep this copy: ' + reason + '; look inside before removing it by hand.'); };
+  const directory = path.join(path.dirname(registryPath(options.registryRoot)), 'move-journals');
+  const records: MoveJournal[] = [];
+  if (pathExists(directory)) {
+    safeFolder(directory);
+    for (const id of fs.readdirSync(directory).filter(name => /^move-[a-z0-9]+-[a-z0-9]+$/.test(name))) {
+      safeFolder(path.join(directory, id));
+      records.push(readMoveJournal({ ...options, rollback: id, resume: undefined }));
+    }
+  }
+  const libraries = readRegistry(options.registryRoot).map(row => { try { return fs.realpathSync.native(row.root); } catch { return path.resolve(row.root); } });
+  const unfinished = records.filter(row => !['complete', 'rolled-back', 'aborted'].includes(row.state));
+  const candidates: CleanupCandidate[] = [], held: { path: string; reason: string }[] = [];
+  for (const journal of records) {
+    const copy = journal.state === 'complete' ? journal.aside : journal.target + '.rolled-back-' + journal.run_id;
+    if (!pathExists(copy)) continue;
+    try {
+      if (!['complete', 'rolled-back', 'aborted'].includes(journal.state)) hold('unfinished recovery still needs this copy');
+      if (journal.aside_drift?.length) hold('files changed in the old folder: ' + journal.aside_drift.join(', '));
+      safeFolder(copy);
+      if (libraries.some(root => within(copy, root) || within(root, copy))) hold('this folder is a registered Library, inside one, or contains one');
+      for (let ancestor = path.dirname(copy); ; ancestor = path.dirname(ancestor)) {
+        if (fs.existsSync(path.join(ancestor, '.library/workspace.json'))) hold('this folder is inside a marked Library');
+        if (path.dirname(ancestor) === ancestor) break;
+      }
+      if (unfinished.some(row => [row.root, row.target, row.aside, row.staging, row.target + '.rolled-back-' + row.run_id].some(needed => within(copy, needed) || within(needed, copy)))) hold('unfinished recovery still needs this folder');
+      const identity = folderIdentity(copy), recordedIdentity = journal.state === 'complete' ? journal.sourceIdentity : journal.retainedIdentity;
+      if (recordedIdentity && recordedIdentity !== identity) hold('a different folder now occupies this path');
+      const expected = journal.state === 'complete' ? journal.sourceManifest : journal.rollbackManifest;
+      if (!expected) hold('the move did not record the kept copy manifest');
+      const journals = await journalManifest(copy), recordedJournals = journal.state === 'complete' ? journal.sourceJournals : journal.retainedJournals;
+      if (!recordedJournals && journals.length) hold('the move did not record these recovery-record bytes');
+      const allExpected = [...expected, ...(recordedJournals ?? [])];
+      const reasons: string[] = [], actual = [...await manifest(copy, reasons, options.control), ...journals];
+      const wanted = new Map(allExpected.map(row => [row.relative, JSON.stringify(row)])), seen = new Set(actual.map(row => row.relative));
+      const changed = [...new Set(actual.filter(row => wanted.get(row.relative) !== JSON.stringify(row)).map(row => row.relative)
+        .concat(allExpected.filter(row => !seen.has(row.relative)).map(row => row.relative), reasons))];
+      if (changed.length) hold('changed since the move: ' + changed.join(', '));
+      candidates.push({ path: copy, identity, digest: digest(JSON.stringify(actual)), bytes: actual.reduce((sum, row) => sum + row.size, 0) });
+    } catch (error) { held.push({ path: copy, reason: (error as Error).message }); }
+  }
+  candidates.sort((a, b) => a.path.localeCompare(b.path));
+  const selected = options.cleanupSelected ?? candidates.map(row => row.path);
+  return { operation: 'Library move clean-up', cleanup: true, candidates, held, selected, plan_id: cleanupPlanId(candidates, selected), ready: true,
+    things_for_you: held.map(row => row.path + ': ' + row.reason + '; look inside before removing it by hand.') };
+}
+async function cleanupMove(options: MoveOptions): Promise<MoveResult> {
+  const deleted: string[] = [];
+  try {
+    if (options.destination || options.workspace || options.resume || options.rollback) throw new Error('Clean-up refused: choose --clean-up by itself; run --clean-up --preflight again');
+    const plan = await cleanupSnapshot(options);
+    const text = [plan.candidates.length ? 'Old copies you can delete:' : 'No unchanged old copies can be deleted.', ...plan.candidates.map((row, index) => `${index + 1}. ${row.path} (${row.bytes.toLocaleString('en-US')} bytes)`), ...plan.things_for_you,
+      'Only the selected copies are deleted. Your Library is kept.', `deskpost library move --clean-up --user-confirmed --plan-id ${plan.plan_id}`].join('\n');
+    if (options.preflight) return { refusal: null, value: { ...plan, written: false }, humanText: text, exitCode: 0 };
+    if (!options.userConfirmed || options.planId !== plan.plan_id || plan.selected.some(file => !plan.candidates.some(row => row.path === file))) throw new Error('Clean-up refused: approval no longer matches these paths and bytes; run --clean-up --preflight again');
+    const approved = plan.candidates.filter(row => plan.selected.includes(row.path));
+    for (const row of approved) {
+      await checkpoint(options, 'cleanup-check');
+      const current = (await cleanupSnapshot(options)).candidates.find(candidate => candidate.path === row.path);
+      if (!current || current.identity !== row.identity || current.digest !== row.digest) throw new Error('Clean-up refused: ' + row.path + ' changed since the preview; run --clean-up --preflight again');
+      safeFolder(row.path);
+      if (folderIdentity(row.path) !== row.identity) throw new Error('Clean-up refused: ' + row.path + ' changed identity; run --clean-up --preflight again');
+      fs.rmSync(longPath(row.path), { recursive: true }); deleted.push(row.path);
+      (options.control ?? silentControl).progress({ phase: 'promote' });
+    }
+    return { refusal: null, value: { operation: 'Library move clean-up', cleanup: true, deleted, things_for_you: plan.things_for_you, written: deleted.length > 0 },
+      humanText: deleted.length ? 'Deleted only these old copies:\n' + deleted.join('\n') : 'Nothing was deleted.', exitCode: 0 };
+  } catch (error) {
+    if (error instanceof MoveCancellation && !deleted.length) return { refusal: null, value: { cleanup: true, state: 'cancelled', deleted, written: false }, humanText: 'Nothing was deleted.', exitCode: 130 };
+    return { refusal: 'Clean-up refused: ' + (error as Error).message + '; keep the remaining copies and run --clean-up --preflight again.', value: { cleanup: true, deleted, written: deleted.length > 0 }, exitCode: 1 };
+  }
+}
+
+class MoveCancellation extends Error {
+  constructor() { super('Move cancelled before promotion'); }
+}
+async function checkpoint(options: MoveOptions, phase: string) {
+  const control = options.control ?? silentControl;
+  control.progress({ phase }); await yieldMove();
+  if (control.cancelled()) throw new MoveCancellation();
+}
+function safeFolder(folder: string) {
+  for (let current = path.resolve(folder); ; current = path.dirname(current)) {
+    const stat = fs.lstatSync(longPath(current));
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(current + ' is not a real folder; keep every copy and inspect the move journal');
+    if (path.dirname(current) === current) return;
+  }
+}
+function folderIdentity(folder: string): string {
+  safeFolder(folder);
+  const stat = fs.statSync(longPath(folder), { bigint: true });
+  return stat.dev.toString() + ':' + stat.ino.toString();
+}
+function statRows(root: string): string[] {
+  const rows: string[] = [];
+  const walk = (relative: string) => {
+    for (const entry of fs.readdirSync(longPath(path.join(root, relative)), { withFileTypes: true })) {
+      const name = relative ? relative + '/' + entry.name : entry.name;
+      if (excluded(name)) continue;
+      const file = path.join(root, name), stat = fs.lstatSync(longPath(file), { bigint: true });
+      if (stat.isSymbolicLink()) throw new Error(file + ' is a symbolic link or junction; resolve it by hand, then run the preview again');
+      rows.push([name, stat.dev, stat.ino, stat.isDirectory() ? 'folder' : stat.size, stat.isDirectory() ? '' : stat.mtimeNs].join('\t'));
+      if (stat.isDirectory()) walk(name);
+    }
+  };
+  walk(''); return rows.sort();
+}
+async function abortAside(journal: MoveJournal, options: MoveOptions) {
+  const source = pathExists(journal.aside) ? journal.aside : journal.root;
+  if (folderIdentity(source) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+  if (source === journal.aside && pathExists(journal.root)) throw new Error('The source path is occupied; keep both trees and inspect the move journal');
+  refuseForeignBarriers([source], journal.run_id);
+  journal.state = 'abort-intent'; saveJournal(journal); fault(options, 'abort-intent:after-done');
+  if (source === journal.aside) fs.renameSync(longPath(journal.aside), longPath(journal.root));
+  fault(options, 'abort-source:after-done');
+  liftBarrier(journal.root, journal.run_id);
+  if (pathExists(journal.staging)) {
+    const rolled = journal.target + '.rolled-back-' + journal.run_id;
+    if (pathExists(rolled)) throw new Error('The retained copy path is occupied; keep every copy and inspect the move journal');
+    const reasons: string[] = []; journal.rollbackManifest = await manifest(journal.staging, reasons);
+    if (reasons.length) throw new Error(reasons.join('\n'));
+    journal.retainedIdentity = folderIdentity(journal.staging); saveJournal(journal);
+    fs.renameSync(longPath(journal.staging), longPath(rolled));
+  }
+  const retained = journal.target + '.rolled-back-' + journal.run_id;
+  if (pathExists(retained) && journal.retainedJournals === undefined) journal.retainedJournals = await journalManifest(retained);
+  journal.state = 'aborted'; saveJournal(journal);
+}
+
 function readMoveJournal(options: MoveOptions): MoveJournal {
   const id = options.resume ?? options.rollback ?? '';
   if (!/^move-[a-z0-9]+-[a-z0-9]+$/.test(id)) throw new Error('Give the run id printed by the move; preview the rollback with --rollback <run-id> --preflight');
   const directory = path.join(path.dirname(registryPath(options.registryRoot)), 'move-journals', id);
   const journal = JSON.parse(fs.readFileSync(path.join(directory, 'journal.json'), 'utf8')) as MoveJournal;
   if (journal.schema !== 1 || journal.run_id !== id || journal.directory !== directory || journal.aside !== journal.root + '.moved-' + id || journal.staging !== journal.target + '.partial-' + id || within(journal.root, journal.target) || within(journal.target, journal.root)) throw new Error('The move journal is inconsistent; inspect it before recovery');
-  for (const row of [...journal.sourceManifest, ...journal.expectedManifest, ...(journal.rollbackManifest ?? [])]) {
+  for (const row of [...journal.sourceManifest, ...journal.expectedManifest, ...(journal.rollbackManifest ?? []), ...(journal.sourceJournals ?? []), ...(journal.retainedJournals ?? [])]) {
     if (path.isAbsolute(row.relative) || row.relative.split(/[\\/]/).includes('..')) throw new Error('The move manifest has an unsafe path; inspect the journal before recovery');
   }
   for (const pointer of journal.pointers) if (digest(Buffer.from(pointer.before, 'base64')) !== pointer.priorSha || digest(Buffer.from(pointer.after, 'base64')) !== pointer.outputSha) throw new Error(`${pointer.file}: saved pointer bytes do not match their hashes; inspect the journal before recovery`);
@@ -406,26 +865,33 @@ function recoveryLocations(journal: MoveJournal) {
   if (fs.existsSync(journal.target) && !targetIsOriginalEmpty && fs.existsSync(rolled)) throw new Error('Both destination copies exist; inspect the move journal before recovery');
   return { rolled, emptyAside, destination, source };
 }
-function recoverySnapshot(journal: MoveJournal) {
+async function recoverySnapshot(journal: MoveJournal, control: MoveControl = silentControl) {
   const locations = recoveryLocations(journal);
-  const trees = [journal.root, journal.aside, journal.target, journal.staging, locations.rolled, locations.emptyAside].map(root => {
+  const trees = await Promise.all([journal.root, journal.aside, journal.target, journal.staging, locations.rolled, locations.emptyAside].map(async root => {
     if (!fs.existsSync(root)) return { root, manifest: null };
-    const reasons: string[] = []; const rows = manifest(root, reasons); return { root, manifest: rows, reasons };
-  });
+    const reasons: string[] = []; const rows = (await manifest(root, reasons, control)); return { root, manifest: rows, reasons };
+  }));
   const hashFile = (file: string) => { try { return digest(fs.readFileSync(file)); } catch { return 'unreadable'; } };
   return digest(JSON.stringify({ journal, trees, registry: hashFile(journal.registryFile), pointers: journal.pointers.map(row => [row.file, hashFile(row.file)]) }));
 }
-function verifyRecovery(journal: MoveJournal) {
+async function verifyRecovery(journal: MoveJournal, control: MoveControl = silentControl) {
   const locations = recoveryLocations(journal);
   const committed = locations.source === journal.aside || journal.steps['cutover'] === 'done' || journal.rollbackCommitted === true;
-  if (committed) verifyTree(locations.source, journal.sourceManifest);
-  if (locations.destination && locations.destination !== journal.staging) verifyTree(locations.destination, journal.rollbackManifest ?? journal.expectedManifest);
+  if (journal.order === 'aside-first') {
+    if (folderIdentity(locations.source) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+  } else if (committed) (await verifyTree(locations.source, journal.sourceManifest, control));
+  if (locations.destination && locations.destination !== journal.staging) (await verifyTree(locations.destination, journal.rollbackManifest ?? journal.expectedManifest, control));
   return locations;
 }
 /** One key for a registry row's path, used by the rollback's judgement and its readback alike: an alias of a path is that path. */
 const registryKey = (value: unknown) => process.platform === 'win32' ? path.resolve(String(value)).toLowerCase() : path.resolve(String(value));
-function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () => void) {
-  const locations = verifyRecovery(journal); // Refusals here change no bytes, including barriers and the journal.
+async function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () => void) {
+  const locations = (await verifyRecovery(journal, options.control)); // Refusals here change no bytes, including barriers and the journal.
+  if (journal.order === 'aside-first' && journal.steps['promote'] !== 'done' && locations.destination !== journal.target) {
+    validated();
+    if (journal.state !== 'aborted') await abortAside(journal, options);
+    return;
+  }
   if (journal.state === 'rolled-back') return;
   const registryBytes = fs.readFileSync(journal.registryFile), registryBefore = Buffer.from(journal.registryBefore, 'base64');
   let registryState: 'before' | 'output' | 'moved' | 'restored';
@@ -440,76 +906,91 @@ function rollbackMove(journal: MoveJournal, options: MoveOptions, validated: () 
     else throw new Error('The moved registry row changed; inspect it before retrying the rollback');
   }
   refuseForeignBarriers([locations.source, locations.destination], journal.run_id);
+  if (journal.order === 'aside-first') await recordAsideDrift(journal, locations.source, options.control);
   validated();
   journal.rollbackCommitted ??= locations.source === journal.aside || journal.steps['cutover'] === 'done';
-  step(journal, 'rollback-barriers', () => {
+  (await step(journal, 'rollback-barriers', () => {
     barrier(locations.source, journal.run_id);
     if (locations.destination && journal.rollbackCommitted) barrier(locations.destination, journal.run_id);
-  }, options);
+  }, options));
   if (!journal.rollbackManifest && locations.destination) {
-    const reasons: string[] = []; journal.rollbackManifest = manifest(locations.destination, reasons);
+    journal.retainedIdentity = folderIdentity(locations.destination);
+    const reasons: string[] = []; journal.rollbackManifest = (await manifest(locations.destination, reasons, options.control));
     if (reasons.length) throw new Error(reasons.join('\n')); saveJournal(journal);
   }
-  step(journal, 'rollback-destination', () => {
+  (await step(journal, 'rollback-destination', async () => {
     const current = recoveryLocations(journal);
     if (current.destination === current.rolled || !current.destination) return;
-    verifyTree(current.destination, journal.rollbackManifest!);
+    (await verifyTree(current.destination, journal.rollbackManifest!, options.control));
     fs.renameSync(longPath(current.destination), longPath(current.rolled));
-  }, options);
-  step(journal, 'rollback-source', () => {
+  }, options));
+  (await step(journal, 'rollback-source', async () => {
     const current = recoveryLocations(journal);
     if (current.source === journal.root) return;
-    verifyTree(journal.aside, journal.sourceManifest);
+    if (journal.order === 'aside-first') {
+      if (folderIdentity(journal.aside) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+    } else await verifyTree(journal.aside, journal.sourceManifest, options.control);
     fs.renameSync(longPath(journal.aside), longPath(journal.root));
-    verifyTree(journal.root, journal.sourceManifest);
-  }, options);
-  step(journal, 'rollback-registry', () => {
+    if (journal.order === 'aside-first') {
+      if (folderIdentity(journal.root) !== journal.sourceIdentity) throw new Error('The source folder identity changed; keep every copy and inspect the move journal');
+    } else await verifyTree(journal.root, journal.sourceManifest, options.control);
+  }, options));
+  (await step(journal, 'rollback-registry', () => {
     if (registryState === 'before') return;
     if (registryState === 'output') atomic(journal.registryFile, registryBefore);
     else if (registryState === 'moved') relocateWorkspace(journal.registryRoot, { path: journal.target, id: journal.registryRow.id }, journal.root);
     const rows = (JSON.parse(fs.readFileSync(journal.registryFile, 'utf8')) as { workspaces: { path: string; id: string }[] }).workspaces;
     if (!rows.some(row => registryKey(row.path) === registryKey(journal.root) && row.id === journal.registryRow.id) || rows.some(row => registryKey(row.path) === registryKey(journal.target))) throw new Error('The restored registry did not read back; inspect it before retrying the rollback');
-  }, options);
-  for (const [index, pointer] of journal.pointers.entries()) step(journal, 'rollback-pointer-' + index, () => {
+  }, options));
+  for (const [index, pointer] of journal.pointers.entries()) (await step(journal, 'rollback-pointer-' + index, () => {
     let actual = '';
     try { if (!fs.lstatSync(pointer.file).isSymbolicLink()) actual = digest(fs.readFileSync(pointer.file)); } catch { /* drift stays untouched */ }
     if (actual === pointer.priorSha) return;
     if (actual !== pointer.outputSha) { listOnce(journal, `${pointer.file}: changed after the move; left as written`); return; }
     atomic(pointer.file, Buffer.from(pointer.before, 'base64'));
     if (digest(fs.readFileSync(pointer.file)) !== pointer.priorSha) throw new Error(`${pointer.file}: restored bytes did not read back; retry the rollback`);
-  }, options);
-  step(journal, 'rollback-empty', () => {
+  }, options));
+  (await step(journal, 'rollback-empty', () => {
     const current = recoveryLocations(journal);
     if (fs.existsSync(current.emptyAside) && !fs.existsSync(journal.target)) fs.renameSync(current.emptyAside, journal.target);
-  }, options);
-  step(journal, 'rollback-complete', () => { liftBarrier(journal.root, journal.run_id); }, options);
-  journal.state = 'rolled-back'; saveJournal(journal);
+  }, options));
+  (await step(journal, 'rollback-complete', () => { liftBarrier(journal.root, journal.run_id); }, options));
+  // Freeze the retained record bytes only after complete-state mirroring has stopped.
+  journal.state = 'rolled-back';
+  if (pathExists(locations.rolled) && journal.retainedJournals === undefined) journal.retainedJournals = await journalManifest(locations.rolled);
+  saveJournal(journal);
 }
-function recoverMove(options: MoveOptions): MoveResult {
+async function recoverMove(options: MoveOptions): Promise<MoveResult> {
   let active: MoveJournal | undefined;
   try {
     if (options.resume && options.rollback) throw new Error('Choose --resume or --rollback, then preview that recovery');
     const journal = readMoveJournal(options);
-    const locations = verifyRecovery(journal);
-    const planId = recoverySnapshot(journal);
-    if (options.preflight) return { refusal: null, value: { operation: options.rollback ? 'Library move rollback preview' : 'Library move resume preview', run_id: journal.run_id, plan_id: planId, written: false, source: locations.source, destination: locations.destination, nothing_deleted: true },
-      humanText: `Nothing is deleted. Recovery keeps a copy at ${locations.rolled}.\ndeskpost library move --${options.rollback ? 'rollback' : 'resume'} ${journal.run_id} --user-confirmed --plan-id ${planId}` };
+    const locations = (await verifyRecovery(journal, options.control));
+    const planId = (await recoverySnapshot(journal, options.control));
+    const inspection = await inspectMoveBlockers(options.rollback ? 'rollback' : 'resume', options, undefined, journal);
+    if (options.preflight) {
+      const value = { operation: options.rollback ? 'Library move rollback preview' : 'Library move resume preview', run_id: journal.run_id, plan_id: planId, written: false, source: locations.source, destination: locations.destination, nothing_deleted: true, blockers: inspection.blockers, ready: !inspection.blockers.length, things_for_you: moveThingsForYou({ destination: journal.target, listed: journal.listed }),
+        past_promotion: Boolean(options.resume && locations.source === journal.aside && locations.destination === journal.target && journal.state !== 'rolled-back') };
+      const command = `deskpost library move --${options.rollback ? 'rollback' : 'resume'} ${journal.run_id} --user-confirmed --plan-id ${planId}`;
+      return { refusal: null, value, exitCode: value.ready ? 0 : 3, humanText: plainMovePreview(value, command) + (options.details ? `\nNothing is deleted. Recovery keeps a copy at ${locations.rolled}.\n${blockerText(inspection.blockers)}\n${command}` : '') };
+    }
     if (!options.userConfirmed || (options.rollback && !options.planId)) throw new Error(`Run deskpost library move --${options.rollback ? 'rollback' : 'resume'} ${journal.run_id} --preflight, then its --user-confirmed --plan-id command`);
     if (options.planId && options.planId !== planId) throw new Error('The recovery changed since the preview; run the recovery preview again');
     if ([journal.root, journal.target, journal.aside, journal.staging, locations.rolled].some(root => within(fs.realpathSync.native(process.cwd()), root))) throw new Error(`run it from a folder outside ${journal.root} and its move copies`);
-    requireQuiet(journal, options);
-    if (options.rollback) rollbackMove(journal, options, () => { active = journal; });
+    await requireQuiet(journal, options);
+    if (options.rollback) (await rollbackMove(journal, options, () => { active = journal; }));
     else {
       if (locations.source !== journal.aside || locations.destination !== journal.target || journal.state === 'rolled-back') throw new Error('Only a move past its commit point can resume; run its --rollback <run-id> --preflight instead');
       refuseForeignBarriers([journal.aside, journal.target], journal.run_id);
       active = journal;
-      step(journal, 'resume-barriers', () => { barrier(journal.aside, journal.run_id); barrier(journal.target, journal.run_id); }, options);
-      finishMove(journal, options);
+      (await step(journal, 'resume-barriers', () => { barrier(journal.aside, journal.run_id); barrier(journal.target, journal.run_id); }, options));
+      (await finishMove(journal, options));
     }
     const value = moveValue(journal);
     if (options.rollback) {
-      value.humanText = `Library restored to ${journal.root}. The move copy stays at ${locations.rolled}.\n${journal.listed.join('\n')}`;
-      value.value = { operation: 'Library move rollback', state: journal.state, run_id: journal.run_id, workspace: journal.root, retained: locations.rolled, left_and_listed: journal.listed, written: true };
+      const things = moveThingsForYou({ destination: journal.root, listed: journal.listed });
+      value.humanText = `Library restored to ${journal.root}. The move copy stays at ${locations.rolled}.\n${things.length ? things.map((line, index) => `${index + 1}. ${line}`).join('\n') : 'Nothing left for you to do.'}`;
+      value.value = { operation: 'Library move rollback', state: journal.state, run_id: journal.run_id, workspace: journal.root, retained: locations.rolled, left_and_listed: journal.listed, written: true, things_for_you: moveThingsForYou({ destination: journal.root, listed: journal.listed }) };
     }
     return value;
   } catch (error) {
@@ -524,7 +1005,7 @@ function recoverMove(options: MoveOptions): MoveResult {
   }
 }
 
-export function previewLibraryMove(options: MoveOptions): { refusal: string | null; value: PsJsonValue | null; humanText?: string } {
+export async function previewLibraryMove(options: MoveOptions): Promise<MoveResult> {
   const no = (refusal: string) => ({ refusal, value: null });
   const destination = options.destination ?? '';
   if (!destination) return no('Run deskpost library move <destination> --preflight [--workspace <path>] [--json].');
@@ -533,7 +1014,8 @@ export function previewLibraryMove(options: MoveOptions): { refusal: string | nu
   }
   if (!options.preflight) return no(`run the preview first: deskpost library move ${destination} --preflight`);
   try {
-    const plan = movePlan(options);
+    const plan = (await movePlan(options));
+    const inspection = await inspectMoveBlockers('move', options, plan);
     const { root, target, recorded } = plan;
     const history = historyPaths(root, options.historyByteLimit ?? 8 * 1024 * 1024);
     const value = { operation: 'Library move preview', workspace: root, destination: target, written: false,
@@ -542,14 +1024,17 @@ export function previewLibraryMove(options: MoveOptions): { refusal: string | nu
       plan_id: plan.planId, executable: !plan.reasons.length, not_executable_reasons: plan.reasons, warnings: plan.warnings,
       source_manifest: plan.sourceManifest, expected_destination_manifest: plan.expectedManifest,
       files: plan.sourceManifest.filter(row => row.type === 'file').length, bytes: plan.bytes, seconds: plan.seconds, destination_free_bytes: plan.free, room: plan.room,
-      cwd_inside_library: within(process.cwd(), root), search_limits: recorded.didNotSearch };
-    return { refusal: null, value, humanText: `Library move preview: ${root} -> ${target}. Nothing was written.\n` +
+      cwd_inside_library: within(process.cwd(), root), search_limits: recorded.didNotSearch,
+      blockers: inspection.blockers, ready: !inspection.blockers.length, things_for_you: moveThingsForYou({ destination: target, source: root, pointers: recorded.pointers }) };
+    const legacyText = `Library move preview: ${root} -> ${target}. Nothing was written.\n` +
       (process.platform === 'win32' ? '' : "The drive's dev folder check does not apply on this platform.\n") +
       `Obsidian vault above the Library: ${recorded.vault ?? 'none found'}.\n` +
       `Current folder inside the Library: ${value.cwd_inside_library ? 'yes; run the move from outside it' : 'no'}.\n` +
       recorded.humanText + '\n' + history.humanText + '\n' + recorded.didNotSearch + '\n' +
-      [...plan.warnings, ...plan.reasons].join('\n') + `\n${value.files} files; ${plan.bytes} bytes; ${plan.seconds.toFixed(2)} seconds; ${plan.free} bytes free.\n` +
-      `deskpost library move ${quoteSharedCommandPath(target)} --workspace ${quoteSharedCommandPath(root)} --user-confirmed --plan-id ${plan.planId}` };
+      [...plan.warnings, ...plan.reasons, blockerText(inspection.blockers), `${inspection.scan.uninspectable} programs could not be checked`].filter(Boolean).join('\n') + `\n${value.files} files; ${plan.bytes} bytes; ${plan.seconds.toFixed(2)} seconds; ${plan.free} bytes free.\n` +
+      `deskpost library move ${quoteSharedCommandPath(target)} --workspace ${quoteSharedCommandPath(root)} --user-confirmed --plan-id ${plan.planId}`;
+    const command = `deskpost library move ${quoteSharedCommandPath(target)} --workspace ${quoteSharedCommandPath(root)} --user-confirmed --plan-id ${plan.planId}`;
+    return { refusal: null, value, exitCode: value.ready ? 0 : 3, uninspectable: inspection.scan.uninspectable, humanText: plainMovePreview(value, command, inspection.scan.uninspectable) + (options.details ? '\n\n' + legacyText : '') };
   } catch (error) {
     return no(`${(error as Error).message} Check the named path or record, repair it, then run the preview again.`);
   }

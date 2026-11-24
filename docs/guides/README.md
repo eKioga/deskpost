@@ -101,7 +101,9 @@ From 1.6.0, shared Books support previewed, recorded writes, new Books, promotio
 
 A department can have groups such as `games/sbox`, each with its own seats, orchestrator and letter destination. Ask the Librarian to preview moving a seat into a group. `deskpost seat cards` lists the groups and who receives their letters. A letter to `games/sbox` reaches that group; a letter to `games` stays with the parent department. Older Deskpost versions cannot read group-addressed letters. See [Groups inside a department](../seats.md#groups-inside-a-department).
 
-`deskpost library move` is enabled in 1.7.1. Run `--preflight` before approving a move; the preview and limits below still apply.
+Library moves began in 1.7.1. In 1.7.2, choose the Library once before the checklist for moving in one run described below. Releases also include Linux arm64 zip files, alongside Windows x64 and Linux x64.
+
+Seats can now share default Books by role or department. Ask the Librarian to preview a rule. New seats can decline a default, and closing a default Book keeps it closed across later launches; opening it again restores that choice. See [Default Books](../seats.md#default-books).
 
 ## Hubs that show their state in 1.7.0
 
@@ -109,7 +111,21 @@ Ask "what is open on this project?" for the Hub's live state: `deskpost hub stat
 
 When an item is finished, ask the Librarian to close it. `deskpost hub edit <slug> --mode close-item --match-text "<unique text>"` moves the whole item word for word into history and leaves a pointer; it does not discard the record. Builder Hubs can queue up to three Kickoffs in order. `deskpost kickoff next` continues only when the finished unit, closeout, matching approval and context checks allow it; a queue never approves a new action by itself.
 
-Program output keeps your wording and punctuation as typed. Use `deskpost library move` to move a Library. Run `--preflight` first. The preview lists uncertain matches for hand edits and skips them. The move refuses files that may hold an unreadable old path until you edit them. The move only counts `.db` files. Reopen the workspace in Orca after moving. Comparing TOML keys across tables can block a safe move. A relative folder shaped like an option or ending in a space or quote can be rewritten when it directly precedes the path in the same value.
+Program output keeps your wording and punctuation as typed.
+
+Before moving: save your files and use an independent terminal outside the Library folder, rather than a terminal that closes with Orca. Leave Orca and Obsidian closed while the move runs.
+
+```
+deskpost library move <destination>
+```
+
+The move finds an explicit `--workspace` first, then the nearest Library marker, then the registered Libraries. One registration works from any folder; several require a choice. The checklist names blockers together and updates as they close. Choose **Move it now** when ready. `--plain`, a nonterminal, and `--preflight` use numbered text; `--details` adds the complete rewrite and History inventory. Agents prepare a preview and give you its command. A ready preview exits 0, a not-ready preview exits 3, and a refusal exits 1.
+
+Esc or Ctrl+C before promotion cancels with exit 130, restores the old folder and retains any partial copy. After promotion, the move acknowledges cancellation and finishes. If another program prevents restoration, close it and use the printed recovery command. Preview `--rollback <run-id>` to restore a move, or `--resume <run-id>` to finish one past promotion; apply only the command that preview gives you.
+
+Detection and kept copies protect bytes; rename does not exclude all writers. A retained handle can write into the old folder. Changes detected before promotion stop the move; later changes are named in the receipt and kept for comparison. Once all is well, `deskpost library move --clean-up` offers only unchanged copies recorded by a move. Tick the copies and type `delete`; plain use takes `--preflight` followed by its exact `--user-confirmed --plan-id` command. Changed, replaced, linked, live or unfinished copies are kept.
+
+The move counts old-path matches in `.db` contents and never rewrites those files. Reopen the workspace in Orca afterwards. Uncertain matches are listed for hand edits; unreadable path forms refuse the move. Comparing TOML keys across tables can block a safe move. A relative folder shaped like an option or ending in a space or quote can be rewritten when it directly precedes the path in the same value.
 
 ## Shared moves and letters in 1.6.1
 

@@ -924,15 +924,16 @@ async function main(argv: string[]): Promise<number> {
     // WHICH LIBRARY BARE `deskpost` OPENS (step 5a): the list, and `default <folder>`.
     case 'library': {
       if (rest[0] === 'move') {
-        const { moveLibrary } = await import('./librarymove.ts');
+        const { runLibraryMoveCommand } = await import('./librarymove.ts');
         const parsed = parseArguments(rest, table);
-        const preview = moveLibrary({ destination: parsed.positional[1],
+        const preview = (await runLibraryMoveCommand({ destination: parsed.positional[1],
           workspace: parsed.options.get('workspace'), registryRoot: parsed.options.get('registry-root'),
           preflight: parsed.flags.has('preflight'), userConfirmed: parsed.flags.has('user-confirmed'),
-          planId: parsed.options.get('plan-id'), resume: parsed.options.get('resume'), rollback: parsed.options.get('rollback') });
-        if (preview.refusal !== null) refuse(preview.refusal);
-        emit(preview.value!, rest.includes('--json'), preview.humanText);
-        return 0;
+          planId: parsed.options.get('plan-id'), resume: parsed.options.get('resume'), rollback: parsed.options.get('rollback'),
+          plain: parsed.flags.has('plain'), details: parsed.flags.has('details'), json: parsed.flags.has('json'), cleanup: parsed.flags.has('clean-up') }));
+        if (preview.refusal !== null && !preview.screenShown) refuse(preview.refusal);
+        if (!preview.screenShown) emit(preview.value!, rest.includes('--json'), preview.humanText);
+        return preview.exitCode ?? (preview.refusal ? 1 : 0);
       }
       // FORGET (kickoffs/s146 row 1) is the registry's own writer, so it lives beside the registry, not the menu.
       if (rest[0] === 'forget') {

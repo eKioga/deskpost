@@ -7,8 +7,8 @@
  * its claim through it), so each is now one kernel32 call, and a reader's machine starts no PowerShell for them.
  *
  * ONLY UNDER BUN ON WINDOWS. `nativeProcessCalls()` answers null anywhere else, and every caller then keeps its
- * PowerShell (or POSIX) path: a kernel run from source under Node has no FFI, and that fallback is what the
- * acceptance matrix's source arm measures (Q2). The "one code path" rule procstart.ts kept until S83 is revoked.
+ * POSIX path off Windows. Source runs under Node on Windows ask the installed program's process verbs,
+ * found by DESKPOST_KERNEL or PATH, and refuse with installation advice when neither names an executable.
  *
  * THE START TIME IS THE ORACLE'S INSTANT. `Process.StartTime` is `GetProcessTimes`' creation FILETIME made local, and
  * the oracle turns it back to UTC with `ToUniversalTime().ToString('o')`; this reads the same FILETIME and formats it
@@ -16,6 +16,32 @@
  */
 
 import { roundTripFromHundredNanoseconds } from './procstart.ts';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+/** Find the installed executable, or run its process verb. A null argument only resolves the path for a waiter. */
+export function runInstalledProcess(args: null, env?: NodeJS.ProcessEnv): string;
+export function runInstalledProcess<T = any>(args: string[], env?: NodeJS.ProcessEnv): T;
+export function runInstalledProcess(args: string[] | null, env: NodeJS.ProcessEnv = process.env): any {
+  const executable = (file: string) => { try { return /\.exe$/i.test(file) && fs.statSync(file).isFile(); } catch { return false; } };
+  const entries = (env['PATH'] ?? env['Path'] ?? '').split(path.delimiter).filter(Boolean).map(entry => entry.replace(/^"|"$/g, ''));
+  let file = env['DESKPOST_KERNEL'] ?? '';
+  if (!file) {
+    file = entries.map(entry => ['deskpost.cmd', 'library.cmd'].some(shim => fs.existsSync(path.join(entry, shim))) ? path.resolve(entry, '..', 'current', 'bin', 'library.exe') : '').find(candidate => candidate && executable(candidate))
+      ?? entries.map(entry => path.join(entry, 'library.exe')).find(executable) ?? '';
+  }
+  if (!executable(file)) throw new Error('Set DESKPOST_KERNEL to an existing Deskpost .exe, or install Deskpost and put its bin folder on PATH.');
+  file = path.resolve(file);
+  if (args === null) return file;
+  const child = spawnSync(file, ['process', ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (child.error) throw child.error;
+  if (child.status !== 0) throw new Error(`Process reader exited with code ${child.status}${child.signal ? ` (${child.signal})` : ''}: ${child.stderr.split(/\r?\n/)[0]}`);
+  const result = JSON.parse(child.stdout);
+  // The snapshot includes its reader, which has exited before callers judge live processes.
+  if (args[0] === 'list') result.processes = result.processes.filter((row: { pid: number }) => row.pid !== child.pid);
+  return result;
+}
 
 /** One row of the process table: what Toolhelp32 says a process is, and its image path where it can be read. */
 export interface NativeProcessRow {
@@ -130,6 +156,99 @@ export function nativeProcessTable(): NativeProcessRow[] {
     api.CloseHandle(snapshot);
   }
   return rows;
+}
+
+/** A command line through ntdll class 60, or null for a protected, exited or otherwise unreadable process. */
+export function nativeProcessCommandLine(pid: number): string | null {
+  const api = nativeProcessCalls()!;
+  const handle = api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (!validHandle(handle)) return null;
+  try {
+    const ffi = (import.meta as unknown as { require(name: string): any }).require('bun:ffi');
+    if (ntdll === null) ntdll = ffi.dlopen('ntdll.dll', { NtQueryInformationProcess: { args: [ffi.FFIType.i64_fast, ffi.FFIType.u32, ffi.FFIType.ptr, ffi.FFIType.u32, ffi.FFIType.ptr], returns: ffi.FFIType.i32 } });
+    const buffer = new Uint8Array(131088), size = new Uint32Array(1);
+    if (ntdll!.symbols.NtQueryInformationProcess(handle, 60, buffer, buffer.length, size) !== 0) return null;
+    const view = new DataView(buffer.buffer), length = view.getUint16(0, true);
+    const offset = Number(view.getBigUint64(8, true) - BigInt(ffi.ptr(buffer)));
+    if (length % 2 || offset < 16 || offset + length > buffer.length) return null;
+    return Buffer.from(buffer.buffer, offset, length).toString('utf16le');
+  } finally { api.CloseHandle(handle); }
+}
+let ntdll: { symbols: { NtQueryInformationProcess(handle: number, kind: number, buffer: Uint8Array, length: number, size: Uint32Array): number } } | null = null;
+
+/** Best-effort x64 PEB read. A missing/protected/exited process is uninspectable, never itself a blocker. */
+export function nativeProcessCurrentDirectory(pid: number): string | null {
+  const api = nativeProcessCalls();
+  if (!api || process.arch !== 'x64') return null;
+  const handle = api.OpenProcess(0x0400 | 0x0010, 0, pid);
+  if (!validHandle(handle)) return null;
+  try {
+    const ffi = ffiOrRefuse('the working-folder reader');
+    if (ntdll === null) ntdll = ffi.dlopen('ntdll.dll', { NtQueryInformationProcess: { args: [ffi.FFIType.i64_fast, ffi.FFIType.u32, ffi.FFIType.ptr, ffi.FFIType.u32, ffi.FFIType.ptr], returns: ffi.FFIType.i32 } });
+    if (processMemory === null) processMemory = ffi.dlopen('kernel32.dll', { ReadProcessMemory: { args: [ffi.FFIType.i64_fast, ffi.FFIType.u64_fast, ffi.FFIType.ptr, ffi.FFIType.u64_fast, ffi.FFIType.ptr], returns: ffi.FFIType.i32 } });
+    const read = (address: bigint, length: number) => {
+      if (address <= 0n || address > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      const bytes = new Uint8Array(length), count = new BigUint64Array(1);
+      return processMemory!.symbols.ReadProcessMemory(handle, Number(address), bytes, length, count) && count[0] === BigInt(length) ? new DataView(bytes.buffer) : null;
+    };
+    const basic = new Uint8Array(48), returned = new Uint32Array(1);
+    if (ntdll!.symbols.NtQueryInformationProcess(handle, 0, basic, basic.length, returned) !== 0) return null;
+    // x64 PEB.ProcessParameters is at 0x20; RTL_USER_PROCESS_PARAMETERS.CurrentDirectory at 0x38.
+    // These undocumented offsets are best effort. The rename and manifest checks remain the protection.
+    const peb = read(new DataView(basic.buffer).getBigUint64(8, true), 0x28);
+    if (!peb) return null;
+    const parameters = read(peb.getBigUint64(0x20, true), 0x48);
+    if (!parameters) return null;
+    const length = parameters.getUint16(0x38, true), maximum = parameters.getUint16(0x3a, true);
+    if (!length || length % 2 || length > maximum || length > 65534) return null;
+    const directory = read(parameters.getBigUint64(0x40, true), length);
+    return directory ? Buffer.from(directory.buffer).toString('utf16le').replace(/\0+$/, '') : null;
+  } finally { api.CloseHandle(handle); }
+}
+let processMemory: { symbols: { ReadProcessMemory(handle: number, address: number, bytes: Uint8Array, length: number, read: BigUint64Array): number } } | null = null;
+
+export interface NativeFileHolder { pid: number; name: string; service: string }
+/** Restart Manager names file holders without closing or restarting any application. At most 512 files are registered. */
+export function nativeFileHolders(files: readonly string[]): NativeFileHolder[] {
+  const ffi = ffiOrRefuse('the open-file reader'), { FFIType: t } = ffi;
+  const library = ffi.dlopen('rstrtmgr.dll', {
+    RmStartSession: { args: [t.ptr, t.u32, t.ptr], returns: t.u32 },
+    RmRegisterResources: { args: [t.u32, t.u32, t.ptr, t.u32, t.ptr, t.u32, t.ptr], returns: t.u32 },
+    RmGetList: { args: [t.u32, t.ptr, t.ptr, t.ptr, t.ptr], returns: t.u32 },
+    RmEndSession: { args: [t.u32], returns: t.u32 },
+  });
+  const api = library.symbols, session = new Uint32Array(1), key = new Uint8Array(66);
+  let started = false;
+  try {
+    const start = api.RmStartSession(session, 0, key);
+    if (start !== 0) throw new Error('Restart Manager could not start (Windows error ' + start + ')');
+    started = true;
+    const paths = [...new Set(files)].slice(0, 512).map(wide);
+    if (!paths.length) return [];
+    const pointers = new BigUint64Array(paths.map(bytes => BigInt(ffi.ptr(bytes))));
+    const registered = api.RmRegisterResources(session[0], paths.length, pointers, 0, null, 0, null);
+    if (registered !== 0) throw new Error('Restart Manager could not register files (Windows error ' + registered + ')');
+    const needed = new Uint32Array(1), count = new Uint32Array(1), reasons = new Uint32Array(1);
+    let buffer: Uint8Array | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const status = api.RmGetList(session[0], needed, count, buffer, reasons);
+      if (status === 0) {
+        if (!buffer) return [];
+        const rows: NativeFileHolder[] = [], view = new DataView(buffer.buffer);
+        for (let index = 0; index < count[0]!; index++) {
+          const offset = index * 668; // sizeof(RM_PROCESS_INFO), including the 12-byte RM_UNIQUE_PROCESS.
+          rows.push({ pid: view.getUint32(offset, true), name: readWide(buffer, offset + 12, 256), service: readWide(buffer, offset + 524, 64) });
+        }
+        return rows;
+      }
+      if (status !== 234 || !needed[0] || needed[0] > 65536) throw new Error('Restart Manager could not list holders (Windows error ' + status + ')');
+      count[0] = needed[0]; buffer = new Uint8Array(needed[0] * 668);
+    }
+    throw new Error('Restart Manager holder list kept changing; check again');
+  } finally {
+    if (started) api.RmEndSession(session[0]);
+    library.close();
+  }
 }
 
 /** A process's full image path, or null where it cannot be opened or read -- as Win32_Process's ExecutablePath is null. */

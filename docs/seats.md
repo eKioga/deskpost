@@ -58,6 +58,38 @@ If the parent has groups and lacks an orchestrator, capture refuses and lists th
 
 An older Deskpost version reads a letter addressed to a group as malformed.
 
+## Default Books
+
+A default Books rule names one role or one department and the Book roots it shares. A department
+rule for `games` also applies to `games/sbox` and other groups under `games`. A seat with several
+matching rules gets their combined Book list.
+
+- `deskpost seat defaults` lists rules and each seat's missing Books, declines, and upkeep grants to
+  check. Use `--json` for structured output. The list uses the Library's local copies of upkeep grants.
+- `deskpost seat defaults add --role orchestrator --book shelf/handbook --preflight` previews a rule.
+  Use `--department games` instead of a role to share with a department. Repeat `--book` to include
+  more roots. Add `--keep` to include the rule in upkeep-grant planning.
+- `deskpost seat defaults remove <rule-id> --preflight` previews removing a rule. Books already open
+  and grants already issued stay in place.
+- `deskpost seat defaults grants --preflight` checks active shared Books in keep rules against the
+  remote upkeep notes. It shows missing seat IDs and missing or stale local copies. Applying adds
+  live seats to eligible grants and refreshes local copies where needed. Each Book has its own
+  result and existing grant entries are preserved.
+  A confirmed remote grant is reported as written even if the result also reports a history failure.
+
+To apply an add, remove, or grants preview, rerun the same command with `--user-confirmed --plan-id
+<id>` in place of `--preflight`, using the ID from the approved preview.
+
+New seats open their defaults when created. The wizard lets you unselect them, and
+`--no-default-books` on `seat start` skips the defaults. The selection is part of the creation
+preview. At launch, an existing seat opens eligible defaults it has yet to open. Closing a default
+with `deskpost desk close book <slug>` records your choice across launches and department moves.
+Open it again with `deskpost desk open book <slug>` to clear that choice. Use `deskpost desk` to see
+defaults still waiting to open.
+
+The launcher opens defaults for both Claude Code and Codex. Codex lacks the per-turn Desk context
+that lists the Books for Claude Code. Use `deskpost desk` from Codex to see its open Books.
+
 ## Seat templates
 
 The five shipped templates give a new seat a starting purpose and registry role:

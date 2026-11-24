@@ -46,6 +46,7 @@ import type { PsJsonValue } from './psjson.ts';
 import { parseArguments } from './argv.ts';
 import type { ParsedArguments } from './argv.ts';
 import { argumentTable } from './verbs.ts';
+import { appendHistoryCommit, appendHistoryRecords, newAttemptId } from './seathistory.ts';
 import { BasicMemoryRefusal, field, isLocalBackend, listFolderNodes, markerConnection, noteBody, readExactOrNull, readListedRecord, text } from './basicmemory.ts';
 import type { BmVerdict, McpSession } from './basicmemory.ts';
 import { createNote, deleteNote, replaceNote } from './bmwrite.ts';
@@ -1782,6 +1783,119 @@ async function runUpkeep(parsed: ParsedArguments, workspace: string, connection:
     seat_ids: seatIds, any_seat: anySeat, names: anySeat ? ['any seat'] : names, book_record: making, time }, null, 2) + '\n');
   return { ...base, operation: preview['operation']!, verdict: 'written', book_record: making, time, shared_library_write: true,
     next: `Granted: ${anySeat ? 'any seat of this Library' : names.join(', ')} may keep shared/${slug} up to date without a yes for each write. Turn it off with deskpost shared upkeep ${slug} --off --preflight.` };
+}
+
+
+/** Prepare or apply one additive grant against the exact remote note and local receipt. */
+export async function additiveUpkeep(
+  workspace: string,
+  parsed: ParsedArguments,
+  slug: string,
+  seats: { seat: string; seatId: string }[],
+  expected?: string,
+) {
+  const connection = optedIn('upkeep', workspace);
+  const opened = await connect(connection, parsed, workspace, slug, expected !== undefined);
+  const { context } = opened;
+  const note = upkeepNote(slug);
+  const listed = await listedRead(context, note);
+  const blocks = listed ? upkeepBlocks(bodyOf(listed.text)) : [];
+  if (new Set(blocks.map(block => block.libraryId)).size !== blocks.length) {
+    refuse(`Invalid upkeep note ${note}: duplicate Library blocks.`);
+  }
+  const mine = blocks.find(block => block.libraryId === opened.libraryId);
+  const missing = mine?.anySeat ? [] : seats.filter(seat => !mine?.seatIds.includes(seat.seatId));
+  const copy = upkeepCopy(workspace, slug);
+  let priorCopy: string | null = null;
+  try {
+    priorCopy = fs.readFileSync(copy, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const digest = sha256(JSON.stringify({
+    library: opened.libraryId, collection: context.project, slug, seats,
+    note: listed?.checksum ?? null, copy: digestOf(priorCopy),
+  }));
+  const makeCopy = (block: Pick<UpkeepBlock, 'seatIds' | 'names' | 'anySeat' | 'bookRecord'>, time: string) =>
+    JSON.stringify({ schema: 1, slug, book: `shared/${slug}`, collection_id: context.project, library_id: opened.libraryId,
+      seat_ids: block.seatIds, any_seat: block.anySeat, names: block.names, book_record: block.bookRecord, time }, null, 2) + '\n';
+  const priorTime = mine && /^- time:[ \t]*(\S+)\s*$/m.exec(mine.raw)?.[1];
+  if (mine && !priorTime) refuse(`Invalid upkeep note ${note}: this Library's block has no time.`);
+  const currentCopy = mine && priorTime ? makeCopy(mine, priorTime) : null;
+  const localCopy = priorCopy === null ? 'missing' : priorCopy === currentCopy ? 'current' : 'stale';
+  const details = { digest, missing_seat_ids: missing.map(seat => seat.seatId), local_copy: localCopy };
+  if (expected !== undefined && digest !== expected) {
+    return { ...details, outcome: 'refused', reason: 'The grant note or local copy changed since preflight.' };
+  }
+  if (!missing.length && (!currentCopy || localCopy === 'current')) return { ...details, outcome: 'unchanged', reason: '' };
+  let making = mine?.bookRecord ?? '';
+  if (missing.length) {
+    if (!(await listedFiles(context, `books/${slug}/wiki`)).has(`books/${slug}/wiki/_book.md`)) {
+      return { ...details, outcome: 'not written', reason: 'The shared Book is absent.' };
+    }
+    const files = await listedFiles(context, `_deskpost/changes/${slug}`);
+    making = '';
+    for (const id of recordIds(files, slug)) {
+      if (makesBook((await loadRecord(context, files, id, false))?.record, slug)) {
+        making = id;
+        break;
+      }
+    }
+    if (!making) return { ...details, outcome: 'not written', reason: 'The Book was made before the shared writers in 1.6.0.' };
+  }
+  const publishCopy = (text: string) => {
+    fs.mkdirSync(path.dirname(copy), { recursive: true });
+    writeAtomicText(copy, text);
+  };
+  if (expected === undefined) return { ...details, outcome: missing.length ? 'would write' : 'would refresh local copy', reason: '' };
+  if (!missing.length && currentCopy) {
+    publishCopy(currentCopy);
+    return { ...details, outcome: 'local copy refreshed', reason: '' };
+  }
+
+  const registered = readSeatRegistry(path.join(workspace, '.claude'));
+  if (missing.some(wanted => !registered.some(live => live.seatId === wanted.seatId && live.seat === wanted.seat))) {
+    return { ...details, outcome: 'refused', reason: 'One of the proposed seat ids is no longer live with the previewed name.' };
+  }
+  if (mine && mine.seatIds.length !== mine.names.length) refuse(`Invalid upkeep note ${note}: existing seat ids and names do not pair.`);
+  const next = {
+    seatIds: [...(mine?.seatIds ?? []), ...missing.map(seat => seat.seatId)],
+    names: [...(mine?.names ?? []), ...missing.map(seat => seat.seat)],
+    bookRecord: making,
+    anySeat: false,
+  };
+  const time = new Date().toISOString();
+  const block = [`## library ${opened.libraryId}`, `- card: ${opened.libraryCard}`, `- seat_ids: ${next.seatIds.join(',')}`,
+    '- any_seat: false', `- names: ${next.names.join(',')}`, `- book_record: ${making}`, `- time: ${time}`, ''].join('\n');
+  const otherBlocks = blocks.map(one => one === mine ? block : one.raw);
+  if (!mine) {
+    if (blocks.length && !otherBlocks.at(-1)!.endsWith('\n')) otherBlocks.unshift(block);
+    else otherBlocks.push(block);
+  }
+  await writeUpkeepNote(context, note, listed, upkeepText(slug, otherBlocks));
+  const faults: string[] = [];
+  const fixtureFault = process.env['LIBRARY_DEFAULT_GRANTS_FAULT'];
+  try {
+    const attempt = newAttemptId();
+    const history = {
+      attempt, when: time, verb: 'seat defaults grants', seat: opened.seat, seat_id: opened.seatId,
+      from_seat: null, plan_id: expected, before: {}, after: {}, book: `shared/${slug}`,
+      added_seat_ids: details.missing_seat_ids,
+    };
+    if (fixtureFault === 'history') throw new Error('Fixture interruption before history append.');
+    appendHistoryRecords(workspace, [history]);
+    appendHistoryCommit(workspace, attempt);
+  } catch (error) {
+    faults.push(`History not recorded: ${(error as Error).message}`);
+  }
+  try {
+    if (fixtureFault === 'local-copy') throw new Error('Fixture interruption before publication.');
+    publishCopy(makeCopy(next, time));
+  } catch (error) {
+    faults.push(`Local copy publication failed: ${(error as Error).message}`);
+  }
+  const reason = faults.length ? 'Remote grant written. ' + faults.join(' ') : '';
+  return { ...details, outcome: 'written', reason };
 }
 
 // --- the readers (r12 point 3) ---------------------------------------------------------------------------------------

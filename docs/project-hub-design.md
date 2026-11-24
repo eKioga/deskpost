@@ -192,11 +192,13 @@ The helper takes a `-Mode` and edits one page of one open active Hub:
 | --- | --- | --- |
 | `AddSection` | appends a new level-two section | applies directly |
 | `AppendSection` | adds text at the end of an existing section | applies directly |
-| `CheckItem` | ticks or unticks one checklist item | applies directly |
+| `CheckItem` | ticks or unticks one checklist item, optionally selected with `--occurrence <n>` | applies directly |
 | `CloseItem` (`close-item`) | moves one top-level item of the root's `## Now` or `## Next`, ticked, word for word to the newest tidy-history page, and keeps one `Closed items:` pointer per section | applies directly (local Hubs only) |
-| `ReplaceItem` | replaces one list item or line | preflight `plan_id` + `-UserConfirmed` |
+| `ReplaceItem` | replaces one list item or line, optionally selected with `--occurrence <n>`. A single-target replacement cannot duplicate a sibling in its section | preflight `plan_id` + `-UserConfirmed` |
 | `ReplaceSection` | replaces one section's body, keeping its heading | preflight `plan_id` + `-UserConfirmed` |
 | `ReplaceBody` | replaces the whole page body | preflight `plan_id` + `-UserConfirmed` |
+
+With a single `--match-text`, `--occurrence <n>` selects a match in page order, starting at 1.
 
 The split follows the rule this design already set: an ordinary Project write is not a ceremony, so
 the modes that cannot lose text apply directly. The ones that do remove text carry the same
@@ -481,7 +483,9 @@ template produces, never any Hub's content.
 with its amendment; kickoffs/s213). On a Hub with `## Repo`, `hub edit` refuses an added or replaced top-level item of
 `## Now` or `## Next` over 600 bytes or naming no record (a train id in backticks, a `[[projects/...]]` or
 `[[books/...]]` link, a `kickoffs/` id, a letter or Report path, or a `PLAN-*.md`), and an added `## Decisions` entry
-over 400 bytes or with no link. Only new text is judged, so no Hub breaks on upgrade, and other Hubs keep today's
+over 400 bytes or with no link. A refusal quotes the first line of each rejected entry in its section,
+using an ellipsis when it cuts a line after 120 characters. Only Now and Next refusals suggest `close-item`.
+Only new text is judged, so no Hub breaks on upgrade, and other Hubs keep today's
 shape. What is done leaves with `hub edit --mode close-item`, which moves the item word for word, ticked, to the newest
 tidy-history page and keeps one `Closed items:` pointer per section. `deskpost hub status <slug>` shows each pointer's
 live state from the program's records. A pending Run pointer with a higher revision on the same Hub

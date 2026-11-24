@@ -29,7 +29,7 @@ The next milestones are listed below.
 
 ## Next
 
-**1.7.1 is released:** departments can have groups with their own orchestrator and letters, and Library moves are on. Next comes the remaining foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell**.
+**1.7.2 is released:** move a Library in one run, with one source question, a live blocker checklist, safe cancellation and recovery, a complete receipt, and confirmed clean-up of unchanged old copies. Releases include Linux arm64 zip files. Next comes the remaining foundation for builders working side by side and from Webtop, then the rest of **Development without PowerShell**.
 
 ### Development without PowerShell (0 of 6 sessions; plan signed off 2026-10-09)
 
@@ -149,6 +149,16 @@ Set aside on purpose, not planned, until real use calls for them again:
   may see your material.
 
 ## Released
+
+### 1.7.2: Move a Library in one run (released 2026-11-23)
+
+- **One move screen:** choose the Library once before the checklist; see every blocker together and choose **Move it now** when ready. Nothing moves while a blocker remains.
+- **Cancellation and recovery:** cancellation before promotion restores the old folder and keeps a partial copy; after promotion it is acknowledged while the move finishes. The receipt names kept copies and recovery commands. Detection and retained copies protect bytes; renaming does not exclude every writer.
+- **Confirmed clean-up:** select unchanged old copies recorded by a move and confirm their deletion. Changed, replaced, linked, live or unfinished copies are kept, including copies whose recovery records changed.
+- **Linux arm64 zip files** join Windows x64 and Linux x64 in each release.
+- **Default Books:** share Books by role or department, let new seats decline them, and keep a Book closed across launches when a seat closes it. Upkeep-grant previews add eligible seats while preserving existing grants.
+- **Clearer Hub refusals:** every entry needing attention is quoted; repeated entries can be selected by occurrence, and previews preserve literal placeholders in code.
+- **For builders:** the installed `meanwhile` skill reads builder progress in either assistant; Windows process checks and the gate's checks run without starting PowerShell.
 
 ### 1.7.1: Groups for your seats, and Library moves (released 2026-11-22)
 

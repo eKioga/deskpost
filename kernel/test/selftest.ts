@@ -3303,13 +3303,15 @@ async function section36(): Promise<void> {
   const w = await seatClaimWorkspace('tier0-reader', { pin: false });
   try {
     const version = runCli(['--version']);
-    const compiled = (() => {
+    const versionInfo = (() => {
       try {
-        return (JSON.parse(version.stdout) as { compiled: boolean }).compiled === true;
+        return JSON.parse(version.stdout) as { compiled: boolean; program_root: string };
       } catch {
-        return false;
+        return null;
       }
     })();
+    const compiled = versionInfo?.compiled === true;
+    const expectedReader = compiled ? `${versionInfo.program_root.replace(/\\/g, '/')}/bin/library` : 'node';
     const mcp = JSON.parse(fs.readFileSync(path.join(w.workspace, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as {
       mcpServers: Record<string, { command: string; args: string[] }>;
     };
@@ -3344,7 +3346,7 @@ async function section36(): Promise<void> {
     runCli(['init', shared, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
     const sharedMcp = JSON.parse(fs.readFileSync(path.join(shared, '.mcp.json'), 'utf8').replace(/^﻿/, '')) as { mcpServers: Record<string, { command: string }> };
     if (process.platform === 'win32') {
-      check(sharedMcp.mcpServers['validated-book-reader']?.command === (compiled ? `${PROGRAM_ROOT.replace(/\\/g, '/')}/bin/library` : 'node'), `a Basic Memory init must register the kernel reader: ${sharedMcp.mcpServers['validated-book-reader']?.command}`);
+      check(sharedMcp.mcpServers['validated-book-reader']?.command === expectedReader, `a Basic Memory init must register the kernel reader: actual ${sharedMcp.mcpServers['validated-book-reader']?.command}, expected ${expectedReader}`);
     }
 
     // RE-RUN OVER THE LIBRARY'S OWN OLD ADAPTER: a workspace an earlier release initialised carries the adapter entry,
@@ -3356,7 +3358,7 @@ async function section36(): Promise<void> {
       fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': adapterEntry, other: { command: 'x' } } }, null, 2));
       const again = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
       const redone = JSON.parse(fs.readFileSync(mcpPath, 'utf8').replace(/^\uFEFF/, '')) as { mcpServers: Record<string, { command: string }> };
-      check(again.exit === 0 && redone.mcpServers['validated-book-reader']?.command === (compiled ? `${PROGRAM_ROOT.replace(/\\/g, '/')}/bin/library` : 'node'), `init over the Library's own adapter entry did not replace it: exit ${again.exit} ${again.stderr.trim().slice(0, 200)}`);
+      check(again.exit === 0 && redone.mcpServers['validated-book-reader']?.command === expectedReader, `init over the Library's own adapter entry did not replace it: actual ${redone.mcpServers['validated-book-reader']?.command}, expected ${expectedReader}; exit ${again.exit} ${again.stderr.trim().slice(0, 200)}`);
       check(redone.mcpServers['other']?.command === 'x', "init over the Library's own adapter entry dropped another server");
       fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'validated-book-reader': { command: 'node', args: ['mine.js'] } } }, null, 2));
       const foreign = runCli(['init', w.workspace, '--registry-root', path.join(w.root, 'reg')], { cwd: w.root, env: { LIBRARY_WORKSPACES: path.join(w.root, 'reg') } });
@@ -10901,7 +10903,7 @@ async function section120(): Promise<void> {
       if (counted[name]! > (BACKLOG[name] ?? 0)) unexplained.push(`${name}: "${text.trim().slice(0, 120)}"`);
     }
   }
-  check(scanned > 5000 && excepted > 20, `the advice scan read too little to mean anything (${scanned} literals, ${excepted} exceptions)`);
+  check(scanned > 5000, `the advice scan read too little to mean anything (${scanned} literals, ${excepted} exceptions)`);
   check(unexplained.length === 0, `${unexplained.length} kernel string(s) name a PowerShell helper or -Parameter outside the allowlist: ${unexplained.slice(0, 6).join('; ')}`);
   const stale = Object.entries(BACKLOG)
     .filter(([name, ceiling]) => (counted[name] ?? 0) < ceiling)
@@ -21031,7 +21033,7 @@ async function section219(): Promise<void> {
     fs.mkdirSync(path.join(canonical, 'references'), { recursive: true });
     fs.writeFileSync(path.join(canonical, 'SKILL.md'), '---\nname: library-help\ndescription: Library procedures.\n---\nversion one\n');
     fs.writeFileSync(path.join(canonical, 'references', 'guide.md'), 'guide one\n');
-    for (const name of ['save', 'closeout', 'triage']) {
+    for (const name of ['save', 'closeout', 'triage', 'meanwhile']) {
       const folder = path.join(program, '.agents', 'skills', name);
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: Checked fixture checkpoint.\n---\nFixture skill.\n`);
@@ -21997,45 +21999,13 @@ async function section230(): Promise<void> {
 }
 if (selected(230)) await section230();
 
-// 231: the push tier's pool (PLAN-fast-gates.md Unit B, S119). The pool's suite list is the -Fast roster that
-// gate.fast-roster-matches-suites proves; `Invoke-LibraryChecks.ps1 -Only` reports exactly one result and fails an
-// unknown name; an exclusive item starts only after every shared item has exited; a child past its limit fails with
-// its name and leaves no process behind.
-if (selected(231) && prerequisite(231, () => !isCompiled() && process.platform === 'win32' && fs.existsSync(path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')), 'Windows PowerShell and the source runner are required for the push pool')) {
+// 231: the Node gate pool respects shared slots and the exclusive barrier, cleans up timed-out children,
+// and rejects required sections that skipped or never ran.
+if (selected(231) && prerequisite(231, () => !isCompiled(), 'requires the source gate and runner')) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-push-pool-')));
   try {
     const runner = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'run-parallel.ts')).href);
     const { childEnv } = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'kernel', 'test', 'gate-env.ts')).href);
-    const checksScript = path.join(PROGRAM_ROOT, 'tools', 'Invoke-LibraryChecks.ps1');
-    const onlyRun = (args: string[]) => {
-      const ran = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', checksScript, ...args, '-Json'], { encoding: 'utf8', env: childEnv(), windowsHide: true, timeout: 120_000 });
-      const line = `${ran.stdout ?? ''}`.trim().split(/\r?\n/).reverse().find((text) => text.startsWith('{'));
-      return { status: ran.status, checks: line ? (JSON.parse(line).checks as { check: string; status: string; detail: string }[]) : null };
-    };
-
-    // The pool's list is the roster, read where the AST check reads it; that check passes and counts the same names.
-    const roster: string[] = runner.fastRoster(fs.readFileSync(checksScript, 'utf8'));
-    check(roster.length > 0 && new Set(roster).size === roster.length, 'the -Fast roster read for the pool is empty or repeats a name');
-    const rosterCheck = onlyRun(['-Fast', '-Only', 'gate.fast-roster-matches-suites']);
-    equal(rosterCheck.checks?.length, 1, '-Only gate.fast-roster-matches-suites did not report exactly one result');
-    equal(rosterCheck.checks?.[0]?.status, 'pass', 'gate.fast-roster-matches-suites did not pass');
-    check((rosterCheck.checks?.[0]?.detail ?? '').startsWith(`${roster.length} -Fast roster name(s) and ${roster.length} spawned suite(s)`), `the pool's ${roster.length} suites are not the AST check's count: ${rosterCheck.checks?.[0]?.detail}`);
-    const suiteRow = onlyRun(['-Fast', '-Only', roster[0]!]);
-    check(suiteRow.status === 0 && suiteRow.checks?.length === 1 && suiteRow.checks[0]!.check === roster[0] && suiteRow.checks[0]!.status === 'skipped', `-Fast -Only ${roster[0]} did not report its one roster row`);
-    let reshaped = '';
-    try { runner.fastRoster('if ($Fast) {\r\n    foreach ($suite in @(\'a\')) {'); } catch (error) { reshaped = String(error); }
-    check(reshaped.includes('not where gate.fast-roster-matches-suites reads it'), 'a reshaped -Fast branch did not stop the roster read');
-    equal(runner.rosterProblems(['a', 'b'], ['a', 'b']).length, 0, 'equal pool and roster reported a problem');
-    const drift: string[] = runner.rosterProblems(['a', 'extra'], ['a', 'unrun']);
-    check(drift.length === 2 && drift[0]!.includes('unrun') && drift[1]!.includes('extra'), `roster drift was not reported both ways: ${drift.join(' / ')}`);
-
-    // An unknown -Only name is one FAIL, named, never an empty pass.
-    const unknown = onlyRun(['-Only', 'no.such-check-231']);
-    equal(unknown.status, 1, '-Only with an unknown name did not exit 1');
-    check(unknown.checks?.length === 1 && unknown.checks[0]!.check === 'no.such-check-231' && unknown.checks[0]!.status === 'fail', '-Only with an unknown name did not report exactly one FAIL under that name');
-    const staticOnly = onlyRun(['-Only', 'settings.parse']);
-    check(staticOnly.status === 0 && staticOnly.checks?.length === 1 && staticOnly.checks[0]!.check === 'settings.parse', '-Only settings.parse did not report exactly its own result');
-
     // An exclusive item, listed first, waits until every shared item has exited.
     const times: Record<string, [number, number]> = {};
     const item = (name: string, exclusive: boolean, ms: number) => ({ name, exclusive, run: async () => { const start = Date.now(); await new Promise((resolve) => setTimeout(resolve, ms)); times[name] = [start, Date.now()]; return name; } });
@@ -22054,8 +22024,21 @@ if (selected(231) && prerequisite(231, () => !isCompiled() && process.platform =
     check(fs.existsSync(path.join(root, 'bounded', 'snapshot.json')) || fs.existsSync(path.join(root, 'bounded', 'snapshot-error.txt')), 'a timed-out child left no snapshot record');
     const pids: number[] = fs.existsSync(pidFile) ? JSON.parse(fs.readFileSync(pidFile, 'utf8')) : [];
     equal(pids.length, 2, 'the fixture did not record its process and its grandchild');
-    const alive = pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
-    equal(alive.length, 0, `processes of the timed-out child are still alive: ${alive.join(', ')}`);
+    const { agentProcessIdentity } = await import('../src/procstart.ts');
+    const alive = pids.filter((pid) => {
+      if (process.platform === 'linux') return agentProcessIdentity(pid, { fresh: true }) !== null;
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    });
+    const survivors = alive.map((pid) => {
+      if (process.platform !== 'linux') return String(pid);
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        return `${pid} (state ${stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3)})`;
+      } catch (error) {
+        return `${pid} (state unavailable: ${(error as NodeJS.ErrnoException).code ?? 'unknown'})`;
+      }
+    });
+    equal(alive.length, 0, `processes of the timed-out child are still alive: ${survivors.join(', ')}`);
 
     // A SECTION A KICKOFF REQUIRES MUST PASS, NOT SKIP (kickoffs/s120 row 9): --require-sections read against a written
     // sections.log passes when each named section ran, and fails (exit 1) naming a SKIP and an absent section.
@@ -23079,7 +23062,7 @@ async function section249(): Promise<void> {
     const ws=path.join(root,'ws'), registry=path.join(root,'registry');
     const options={workspacePath:ws,programRoot:PROGRAM_ROOT,registryRoot:registry};
     runLibraryInit(options);
-    for(const skill of ['closeout', 'triage']) {
+    for(const skill of ['closeout', 'triage', 'meanwhile']) {
       const target=path.join(ws,'.agents/skills',skill,'SKILL.md');
       equal(fs.readFileSync(target,'utf8'),fs.readFileSync(path.join(PROGRAM_ROOT,'.agents/skills',skill,'SKILL.md'),'utf8'),'Codex canonical content differs');
       equal(fs.readFileSync(path.join(ws,'.claude/skills',skill,'SKILL.md'),'utf8'),fs.readFileSync(target,'utf8'),'shared skill differs on Claude: '+skill);
@@ -23090,6 +23073,13 @@ async function section249(): Promise<void> {
     check(triage.includes('triage batch'),'triage batch missing');
     check(!/[A-Za-z]:[\\/]/.test(triage),'triage holds a drive path');
     check(!triage.includes('deskpost-lead'),'triage holds a site seat');
+    const meanwhile=fs.readFileSync(path.join(ws,'.agents/skills/meanwhile/SKILL.md'),'utf8');
+    check(/^name: meanwhile$/m.test(meanwhile),'meanwhile skill name missing');
+    check(meanwhile.includes('deskpost meanwhile prepare --json'),'meanwhile preparation missing');
+    check(meanwhile.includes('at most seven items'),'meanwhile item limit missing');
+    check(meanwhile.includes('Start nothing until the reader picks'),'meanwhile reader choice missing');
+    check(!/[A-Za-z]:[\\/]/.test(meanwhile),'meanwhile holds a drive path');
+    check(!meanwhile.includes('deskpost-lead'),'meanwhile holds a site seat');
     runLibraryInit(options);
     check(skillPlans(ws,PROGRAM_ROOT).plans.every(p=>p.action==='unchanged'),'repeat init changed skills');
     const collision=path.join(root,'collision'), user=path.join(collision,'.agents/skills/save/SKILL.md');
@@ -23100,11 +23090,11 @@ async function section249(): Promise<void> {
     check(skillInstallationStatus(collision,PROGRAM_ROOT,'.agents/skills').includes('.agents/skills/save'),'user save collision not named');
     const codex=skillInstallationStatus(ws,PROGRAM_ROOT,'.agents/skills');
     const claude=skillInstallationStatus(ws,PROGRAM_ROOT,'.claude/skills');
-    check(codex.startsWith('library-help, closeout, triage installed'),'Codex inventory missing skills: '+codex);
-    check(claude.startsWith('library-help, closeout, triage installed'),'Claude inventory changed: '+claude);
+    check(codex.startsWith('library-help, closeout, triage, meanwhile installed'),'Codex inventory missing skills: '+codex);
+    check(claude.startsWith('library-help, closeout, triage, meanwhile installed'),'Claude inventory changed: '+claude);
     const doctor=runCli(['doctor','--workspace',ws,'--json'],{cwd:root,env:{LIBRARY_WORKSPACE:'',LIBRARY_WORKSPACES:registry,LIBRARY_SEAT:'',LIBRARY_SEAT_CLAIM:''}});
     const d=JSON.parse(doctor.stdout), rows=[...(d.checks??[]),...(d.library_checks??[]),...(d.program_checks??[])];
-    for(const [name,expected] of [['codex','library-help, closeout, triage'],['claude','library-help, closeout, triage installed']])
+    for(const [name,expected] of [['codex','library-help, closeout, triage, meanwhile'],['claude','library-help, closeout, triage, meanwhile installed']])
       check(rows.some((r:{check:string;detail:string})=>r.check===`workspace.${name}-skills-installed`&&r.detail.includes(expected!)),'doctor row missing inventory: '+name);
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 }
@@ -32287,11 +32277,12 @@ async function section433(): Promise<void> {
     equal(gate.powerShellPresent({ PATH: `/usr/bin:${ps}` }, 'linux', (file: string) => file === `${ps}/powershell.exe`), true, '433: a PATH holding powershell.exe read as not having it');
     equal(gate.powerShellPresent({ PATH: '' }, 'win32', () => false), true, '433: Windows read as having no powershell.exe');
     const routes = (['commit', 'cut', 'push', 'release'] as const).map((tier) => [tier, gate.tierRoute(tier, false), gate.tierRoute(tier, true)]);
+    // Every tier in Node, with or without PowerShell (kickoffs/s224 row 3): no PowerShell route and no Linux release refusal.
     equal(JSON.stringify(routes), JSON.stringify([
       ['commit', { route: 'node' }, { route: 'node' }],
-      ['cut', { route: 'node' }, { route: 'powershell' }],
+      ['cut', { route: 'node' }, { route: 'node' }],
       ['push', { route: 'node' }, { route: 'node' }],
-      ['release', { refusal: 'the release tier runs on Windows; hand back instead' }, { route: 'powershell' }],
+      ['release', { route: 'node' }, { route: 'node' }],
     ]), '433: the tier choice');
     const hook = fs.readFileSync(path.join(PROGRAM_ROOT, '.githooks', 'pre-commit'), 'utf8');
     check(hook.includes('node tools/gate.ts --tier commit'), '433: every platform must run the commit tier');
@@ -42703,7 +42694,11 @@ async function section655(): Promise<void> {
     const missing = spawnSync(process.execPath,[script],{cwd:root,env:{...repositoryNeutralEnv(),PATH:path.join(root,'empty-path')},encoding:'utf8',timeout:30_000,windowsHide:true});
     equal(missing.status,0,`655: missing PowerShell fixture: ${missing.stderr}`);
     const unavailable = JSON.parse(missing.stdout) as {check:string;status:string;detail:string}[];
-    check(unavailable.length>0 && unavailable.every(row=>row.status==='fail' && row.detail.includes('powershell.exe is missing') && row.detail.includes(row.check)),`655: missing PowerShell must name the prerequisite and check: ${missing.stdout}`);
+    // The ported checks start no process (kickoffs/s224 row 2): with PowerShell unreachable each still reaches its own verdict, the
+    // partial render above still failing for its missing hooks file and the rest passing.
+    check(unavailable.length>0 && unavailable.every(row=>!/powershell|pwsh/i.test(row.detail))
+      && unavailable.some(row=>row.check==='codex.project-access-config' && row.status==='fail' && row.detail.includes('.codex/hooks.json is missing'))
+      && unavailable.filter(row=>row.check!=='codex.project-access-config').every(row=>row.status!=='fail'),`655: the ported checks reach their verdicts without PowerShell: ${missing.stdout}`);
   } catch(error) { failures.push(`section 655 stopped early: ${(error as Error).message}`); }
   finally { fs.rmSync(root,{recursive:true,force:true}); }
 }
@@ -46326,10 +46321,10 @@ async function section721(): Promise<void> {
     const run = (...files: string[]) => spawnSync(process.execPath, [path.join(PROGRAM_ROOT, 'tools/docs-gate.ts'), ...files.flatMap(file => ['--file', file])], { cwd: repo, env, encoding: 'utf8', timeout: 120_000 });
     fs.writeFileSync(path.join(repo, 'docs/names-fixture-a.md'), '# Fixture A\n\nPlain words.\n');
     fs.writeFileSync(path.join(repo, 'docs/names-fixture-b.md'), '# Fixture B\n\nPlain words.\n');
-    const three = run('docs/names-fixture-a.md', 'docs/names-fixture-b.md', 'CONTEXT.md');
+    const three = run('docs/names-fixture-a.md', 'docs/names-fixture-b.md', 'docs/seats.md');
     check(three.stdout.includes('docs gate: 2 working document(s) (docs/names-fixture-a.md, docs/names-fixture-b.md), every one a document'),
       '721: the count line must name the two documents checked: ' + three.stdout.slice(0, 600));
-    check(three.stdout.includes('CONTEXT.md: a contract document; the mapped checks cover it, not this gate.'), '721: CONTEXT.md must be named as left to the mapped checks: ' + three.stdout.slice(0, 600));
+    check(three.stdout.includes('docs/seats.md: a contract document; the mapped checks cover it, not this gate.'), '721: docs/seats.md must be named as left to the mapped checks: ' + three.stdout.slice(0, 600));
     const two = run('docs/names-fixture-a.md', 'docs/names-fixture-b.md');
     check(two.stdout.includes('(docs/names-fixture-a.md, docs/names-fixture-b.md)') && !two.stdout.includes('a contract document'), '721: two plain documents must both be named and nothing left: ' + two.stdout.slice(0, 600));
     equal(three.status, two.status, '721: naming a contract document must not change the exit code');

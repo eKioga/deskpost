@@ -57,6 +57,7 @@ import { addedDirsStatus } from './seatdirs.ts';
 import { seatMessageAddress, seatConversationView, conversationCell, seatConversationRecord as conversationRecord } from './conversation.ts';
 import { seatInboundPolicy } from './seatinbound.ts';
 import { metadataFor, metadataJson, readSeatMetadata } from './seatmeta.ts';
+import { matchingDefaultBooks } from './seatdefaults.ts';
 import { deskAuditFacts } from './audit.ts';
 import { hubPages } from './hubpages.ts';
 // A CYCLE, SAFE AT LOAD (kickoffs/s199-r2 item 1): shelftidy.ts reaches desk.ts through capture.ts, and neither uses the
@@ -390,6 +391,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
 
   // ONE READ OF THE REGISTRY'S FIELDS AND OF THE LETTERS (1.3.8, kickoffs/s96 rows 1 and 4), used for every row below.
   const projection = readSeatMetadata(stateDirectory);
+  const absentDefaults = unopenedDefaultBooks(workspace, seat, openBookRoots);
   const letterCounts = pendingLetterCounts(workspace);
   const otherSeats = seatDirectoryNames(stateDirectory)
     .filter((other) => other !== seat)
@@ -712,6 +714,7 @@ export function deskOverview(options: DeskOptions): Record<string, PsJsonValue> 
     directory,
     ...(auditFacts !== null && auditFacts.auditsDue !== null ? { audits_due: auditFacts.auditsDue } : {}),
     seat_consistency: seatRegistryConsistency(workspace, stateDirectory),
+    ...(absentDefaults.length ? { default_books_not_open: defaultBooksLine(absentDefaults) } : {}),
     open_books: auditFacts === null ? openBooks : openBooks.map((book) => (auditFacts!.dueTargets.has(auditTargetOf(book) ?? '') ? { ...book, audit_due: true } : book)),
     ...(stillOpen.length ? { moved_books_still_open: stillOpen } : {}),
     open_projects: openProjects,
@@ -1197,6 +1200,24 @@ export function seatOpenBooks(workspace: string, seat: string): string[] {
   return readStateLines(deskFilePath(path.join(workspace, '.claude'), seat, 'books'), BOOK_ROOT_ACCEPT_PATTERN, 'open-book', true).map(convertToBookRoot);
 }
 
+function declinedBooksPath(workspace: string, seat: string): string {
+  return path.join(deskStateDirectory(path.join(workspace, '.claude'), seat), '.declined-books');
+}
+
+export function seatDeclinedBooks(workspace: string, seat: string): string[] {
+  return readStateLines(declinedBooksPath(workspace, seat), BOOK_ROOT_ACCEPT_PATTERN, 'declined-book', true).map(convertToBookRoot);
+}
+
+export function unopenedDefaultBooks(workspace: string, seat: string, opened = seatOpenBooks(workspace, seat)) {
+  const metadata = metadataFor(readSeatMetadata(path.join(workspace, '.claude')), seat);
+  const unavailable = new Set([...opened, ...seatDeclinedBooks(workspace, seat)]);
+  return matchingDefaultBooks(workspace, metadata).filter(book => !unavailable.has(book.root));
+}
+
+export function defaultBooksLine(books: { root: string }[]): string {
+  return 'Default Books not open: ' + books.map(book => splitBookRoot(book.root).slug).join(', ');
+}
+
 /**
  * Open, close or clear this seat's Desk.
  *
@@ -1247,6 +1268,7 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
       assertBookSlug(options.slug);
     }
 
+    let reopened: string | undefined;
     if (options.action === 'clear') {
       openBooks = [];
       openProjects = [];
@@ -1256,26 +1278,10 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
         options.location === 'shelf' ? 'shelf' : options.location === 'shared' && (!local || connected) ? 'shared' : 'collection';
       const bookRoot = rootForPlace(place, options.shelf, options.slug, local);
       bookPlace = placeOfRoot(parseBookRoot(bookRoot)!, local);
+      const before = openBooks.slice();
       if (options.action === 'open') {
-        // A Shelf Book is local, so its existence is checkable here; a shared Book -- active or
-        // archived -- is validated by the reader against the collection at read time.
-        if (options.location === 'shelf') {
-          // wiki_root FROM THE SCHEMA, never composed here. An archived Shelf Book's pages are at
-          // shelf/_archive/<slug>/wiki, and the composed path tested the wrong directory -- which
-          // survived its own self-test because that fixture also held an ACTIVE Book of the same name.
-          const wikiRelative = splitBookRoot(bookRoot).wikiRoot;
-          if (!fs.existsSync(path.join(workspace, ...wikiRelative.split('/')))) {
-            refuse(`No Shelf Book '${options.slug}' exists at ${wikiRelative}.`);
-          }
-        } else if (localCollection && place === 'collection') {
-          // A LOCAL COLLECTION IS AS CHECKABLE AS THE SHELF, so a Book it does not hold is refused here
-          // rather than opened and refused at every read. A `shared/` Book is the connection's, and like a
-          // Basic Memory backend's it is validated by the reader at read time.
-          const wikiRelative = splitBookRoot(bookRoot).wikiRoot;
-          if (!fs.existsSync(path.join(localCollection.root, ...wikiRelative.split('/')))) {
-            refuse(`No Book '${options.slug}' exists in this workspace's local collection at collection/${wikiRelative}.`);
-          }
-        }
+        reopened = bookRoot;
+        assertDeskBookExists(workspace, bookRoot, localCollection?.root);
         const at = options.replacing === undefined ? -1 : openBooks.indexOf(options.replacing);
         if (at >= 0) openBooks = openBooks.includes(bookRoot) ? openBooks.filter((entry) => entry !== options.replacing) : openBooks.map((entry, index) => (index === at ? bookRoot : entry));
         else if (!openBooks.includes(bookRoot)) openBooks.push(bookRoot);
@@ -1312,6 +1318,14 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
         }
         openBooks = kept;
       }
+      if (options.action === 'close') {
+        const metadata = metadataFor(readSeatMetadata(stateDirectory), seat);
+        const defaults = new Set(matchingDefaultBooks(workspace, metadata).map(book => book.root));
+        const closed = before.filter(root => defaults.has(root) && !openBooks.includes(root));
+        if (closed.length) {
+          writeDeskFile(declinedBooksPath(workspace, seat), [...new Set([...seatDeclinedBooks(workspace, seat), ...closed])]);
+        }
+      }
     } else {
       const projectRoot = options.shelf === 'archive' ? `archive/projects/${options.slug}` : `projects/${options.slug}`;
       if (options.action === 'open') {
@@ -1328,6 +1342,12 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
 
     writeDeskFile(openBooksPath, openBooks);
     writeDeskFile(openProjectsPath, openProjects);
+    if (reopened) {
+      const declined = seatDeclinedBooks(workspace, seat);
+      if (declined.includes(reopened)) {
+        writeDeskFile(declinedBooksPath(workspace, seat), declined.filter(root => root !== reopened));
+      }
+    }
   } finally {
     exitBookLock(deskLock);
   }
@@ -1357,6 +1377,28 @@ export function deskWrite(options: DeskWriteOptions): Record<string, PsJsonValue
     same_session_note:
       'This changes future Library reads only, at this seat. Start a new Claude session for a clean conversation context.',
   };
+}
+
+/** Validate the exact root as a Desk open would, without a Desk write. */
+export function validateDeskBookRoot(workspace: string, root: string): void {
+  const book = parseBookRoot(root);
+  if (book === null || book.root !== root) refuse(`Invalid Book root '${root}'.`);
+  const local = readMarker(workspace)?.['backend'] === 'local';
+  if (book.form === 'shared' && (!local || markerConnection(workspace) === null)) {
+    refuse(`Book root '${root}' requires a shared connection on a local Library.`);
+  }
+  assertDeskBookExists(workspace, root, local ? openCollection(workspace).root : undefined);
+}
+
+function assertDeskBookExists(workspace: string, root: string, collectionRoot?: string): void {
+  const book = splitBookRoot(root);
+  const wiki = book.wikiRoot;
+  if (book.form === 'shelf' && !fs.existsSync(path.join(workspace, ...wiki.split('/')))) {
+    refuse(`No Shelf Book '${book.slug}' exists at ${wiki}.`);
+  }
+  if (book.form === 'books' && collectionRoot && !fs.existsSync(path.join(collectionRoot, ...wiki.split('/')))) {
+    refuse(`No Book '${book.slug}' exists in this workspace's local collection at collection/${wiki}.`);
+  }
 }
 
 function writeDeskFile(file: string, entries: string[]): void {

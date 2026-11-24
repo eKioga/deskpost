@@ -22,12 +22,14 @@
   "areas": {
     "seats": [
       "kernel/src/librarymove.ts",
+      "kernel/src/librarymovescreen.ts",
       "kernel/src/conversation.ts",
       "kernel/src/processverb.ts",
       "kernel/src/procstart.ts",
       "kernel/src/seat.ts",
       "kernel/src/seatcards.ts",
       "kernel/src/seatclaim.ts",
+      "kernel/src/seatdefaults.ts",
       "kernel/src/seatdescribe.ts",
       "kernel/src/seatdesk.ts",
       "kernel/src/seatdirs.ts",
@@ -376,6 +378,7 @@
       "tools/commit-subject.mts",
       "tools/docs-gate.ts",
       "tools/gate-ledger.mts",
+      "tools/gate-checks.ts",
       "tools/gate.ts",
       "tools/INVENTORY.md",
       "tools/inventory.mts",

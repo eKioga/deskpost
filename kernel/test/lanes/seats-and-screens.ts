@@ -322,7 +322,7 @@ async function section1010(): Promise<void> {
     LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', DESKPOST_LAUNCHER_PID: '', LIBRARY_WORKSPACES: registry };
   const run = (args: string[], cwd = root) => runCli(['library', 'move', ...args, '--registry-root', registry, '--workspace', workspace], { cwd, env });
   const snapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
-    const file = join(folder, entry.name);
+    const file = join(folder, entry.name); if (file === join(registry, 'move-journals/refusals')) return [];
     if (entry.isDirectory()) return snapshot(file);
     try { return [file + ':' + createHash('sha256').update(fs.readFileSync(file)).digest('hex')]; }
     catch (error) { return [file + ':' + (error as NodeJS.ErrnoException).code]; }
@@ -342,7 +342,6 @@ async function section1010(): Promise<void> {
       ['quoted destination', [process.platform === 'win32' ? "D:\\dev\\Eric's Library" : join(root, "Eric's Library"), '--preflight'], 'holds a quote character, which the settings files that name this Library cannot hold unescaped; choose a folder name without quotes'],
       ['child destination', [join(workspace, 'child'), '--preflight'], 'Choose a folder outside'],
       ['parent destination', [root, '--preflight'], 'Choose a folder outside'],
-      ['no preview flag', [destination], 'run the preview first: deskpost library move'],
       ['missing marker', [destination, '--preflight'], 'give --workspace', () => {
         const marker = join(workspace, '.library/workspace.json'), before = fs.readFileSync(marker); fs.unlinkSync(marker);
         return () => fs.writeFileSync(marker, before);
@@ -385,21 +384,21 @@ async function section1010(): Promise<void> {
       try {
         const before = snapshot(root), result = run(args);
         const warning = label === 'held seats' || label === 'orphaned seat';
-        equal(result.exit, warning ? 0 : 1, '1010: refusal or warning: ' + label);
-        const text = warning && result.exit === 0 ? JSON.parse(result.stdout).warnings.join('\n') : result.stderr;
+        equal(result.exit, warning ? 3 : 1, '1010: refusal or warning: ' + label);
+        const text = warning && result.exit === 3 ? JSON.parse(result.stdout).warnings.join('\n') : result.stderr;
         check(text.includes(remedy), `1010: ${label} names remedy ${remedy}: ${text}`);
         if (label === 'held seats') check(text.includes('busy') && text.includes('other'), '1010: names every held seat');
         same(snapshot(root), before, '1010: refusal writes nothing: ' + label);
       } finally { restore?.(); }
     }
     const before = snapshot(root), good = run([destination, '--preflight', '--json']);
-    equal(good.exit, 0, '1010: good preview: ' + good.stderr);
-    if (good.exit === 0) check(JSON.parse(good.stdout).written === false, '1010: preview never claims a write');
+    check([0, 3].includes(good.exit), '1010: good preview: ' + good.stderr);
+    if ([0, 3].includes(good.exit)) check(JSON.parse(good.stdout).written === false, '1010: preview never claims a write');
     same(snapshot(root), before, '1010: preview leaves Library, registry and home byte-identical');
     check(!fs.existsSync(destination), '1010: destination not created');
     const inside = runCli(['library', 'move', destination, '--preflight', '--registry-root', registry], { cwd: workspace, env });
-    equal(inside.exit, 0, '1010: resolves source from current folder marker');
-    if (process.platform !== 'win32') check(run([destination, '--preflight']).stdout.includes('check does not apply'), '1010: explains POSIX rule');
+    equal(inside.exit, 3, '1010: resolves source from current folder marker');
+    if (process.platform !== 'win32') check(run([destination, '--preflight', '--details']).stdout.includes('check does not apply'), '1010: details explains POSIX rule');
     const help = run(['--help']); equal(help.exit, 0, '1010: help succeeds');
     for (const flag of ['--preflight', '--user-confirmed', '--plan-id', '--resume', '--rollback']) check(help.stdout.includes(flag), '1010: help names ' + flag);
     for (const quote of ['"', '`']) {
@@ -407,17 +406,29 @@ async function section1010(): Promise<void> {
       check(quoted.exit !== 0 && quoted.stderr.includes('choose a folder name without quotes'), '1010: other quote characters refused: ' + quote);
     }
     const move = await import('../../src/librarymove.ts');
-    const mixed = move.previewLibraryMove({ destination: destination + "\t'name", workspace: join(root, 'no-library'), preflight: true });
+    const mixed = (await move.previewLibraryMove({ destination: destination + "\t'name", workspace: join(root, 'no-library'), preflight: true }));
     check(mixed.refusal?.includes(destination + "\\u0009'name holds a control character") === true && !mixed.refusal.includes('\t'), '1010: quote and tab destination escapes its control character');
     for (const character of ['\n', '\t', '\0', '\x7f']) {
       const escaped = '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase();
       const invalid = destination + character + 'control';
       const before = snapshot(root);
-      const result = move.previewLibraryMove({ destination: invalid, workspace: join(root, 'no-library'), preflight: true, processTable: () => { throw new Error('must not read the process table'); } });
+      const result = (await move.previewLibraryMove({ destination: invalid, workspace: join(root, 'no-library'), preflight: true, processTable: () => { throw new Error('must not read the process table'); } }));
       check(result.refusal?.includes(destination + escaped + 'control holds a control character') === true && result.refusal.includes('choose a folder name without one'), '1010: control character refused before reading: ' + escaped);
       check(!result.refusal?.includes(character), '1010: diagnostic escapes control character ' + escaped);
       same(snapshot(root), before, '1010: control refusal writes nothing ' + escaped);
     }
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1010: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1010: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1010: snapshot explains both included and excluded rows');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
   // AST inventory: every refusal site must have a case and a remedy, including delegated diagnostics.
   // The behavioural cases above and sections 1013 to 1016 exercise the corresponding paths.
@@ -441,7 +452,20 @@ async function section1010(): Promise<void> {
     ['The maintenance barrier changed', 'inspect the move journal'],
     ['belongs to another run', 'inspect its journal'],
     ['differs from its manifest', 'keep both trees and inspect'],
-    ['quiet.refusal', 'close it, then run the command again'],
+    ['The source folder identity changed', 'keep every copy and inspect the move journal'],
+    ['The old folder changed before copying finished', 'keep both trees and inspect these files before recovery'],
+    ['The old folder was restored', 'any partial copy was kept'],
+    ['Restoration stopped', '--rollback'],
+    ['is not a real folder', 'keep every copy and inspect the move journal'],
+    ['The source path is occupied', 'keep both trees and inspect the move journal'],
+    ['The retained copy path is occupied', 'keep every copy and inspect the move journal'],
+    ['Keep this copy:', 'look inside before removing it by hand'],
+    ['Clean-up refused:', 'run --clean-up --preflight again'],
+    ['Several Libraries are registered', '--workspace'],
+    ['The chosen Library is not registered', 'run the preview again with --workspace'],
+    ['blockerText(inspection.blockers)', 'close it, then run the command again'],
+    ['child.stderr', 'repair holder access'],
+    ['older than this holder reader', 'set DESKPOST_KERNEL'],
     ['Injected move fault', '--rollback'],
     ['could not be copied after three retries', 'close its reader, then roll back'],
     ['both exist', 'inspect the move journal'],
@@ -495,7 +519,7 @@ async function section1010(): Promise<void> {
   const initSource = ts.createSourceFile('init.ts', fs.readFileSync(join(PROGRAM_ROOT, 'kernel/src/init.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
   const relocate = initSource.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'relocateWorkspace')?.getText(initSource) ?? '';
   const messages = diagnostics(source + '\n' + relocate);
-  const delegated = new Set(['image name for process', 'process table is not supported', 'quiet.refusal', 'Injected move fault', 'plan.reasons.join', "reasons.join('\\n')", '(error as Error).message + recovery']);
+  const delegated = new Set(['image name for process', 'process table is not supported', 'blockerText(inspection.blockers)', 'child.stderr', 'Injected move fault', 'plan.reasons.join', "reasons.join('\\n')", '(error as Error).message + recovery']);
   for (const message of messages) {
     const entry = remedies.find(([label]) => message.includes(label));
     check(Boolean(entry), '1010: refusal has a remedy case: ' + message);
@@ -554,8 +578,8 @@ async function section1011(): Promise<void> {
       else if (!planted.has(unreadable)) planted.set(unreadable, 'program');
       const run = (cwd: string) => runCli(['library', 'move', destination, '--preflight', '--workspace', workspace, '--registry-root', registry, '--json'], { cwd, env });
       const result = run(root);
-      equal(result.exit, 0, '1011: preview: ' + result.stderr);
-      if (result.exit !== 0) return;
+      equal(result.exit, 3, '1011: not-ready preview: ' + result.stderr);
+      if (![0, 3].includes(result.exit)) return;
       const value = JSON.parse(result.stdout);
       same(value.pointers?.map((row: { file: string }) => row.file).sort(), [...planted.keys()].sort(), '1011: exactly the planted pointer files');
       for (const [file, rewrite] of planted) {
@@ -569,9 +593,9 @@ async function section1011(): Promise<void> {
       equal(value.obsidian_vault, join(root, 'vault'), '1011: vault folder named');
       equal(value.cwd_inside_library, false, '1011: outside current folder');
       const inside = run(workspace);
-      equal(inside.exit, 0, '1011: inside preview');
-      if (inside.exit === 0) equal(JSON.parse(inside.stdout).cwd_inside_library, true, '1011: inside current folder');
-      const human = runCli(['library', 'move', destination, '--preflight', '--workspace', workspace, '--registry-root', registry], { cwd: root, env });
+      equal(inside.exit, 3, '1011: inside preview');
+      if ([0, 3].includes(inside.exit)) equal(JSON.parse(inside.stdout).cwd_inside_library, true, '1011: inside current folder');
+      const human = runCli(['library', 'move', destination, '--preflight', '--details', '--workspace', workspace, '--registry-root', registry], { cwd: root, env });
       check(human.stdout.includes('Who may rewrite: program') && human.stdout.includes('Who may rewrite: eric') && human.stdout.includes('Not searched:'), '1011: human groups owners and closes with search limits');
       check(human.stdout.includes('Check any rewritten value whose earlier text is not a command word: a relative folder named like an option, or ending in a space or a quote, before the Library path is rewritten too.'), '1011: human names the accepted risk');
       if (process.platform === 'win32') check(human.stdout.includes('Who may rewrite: orca') && human.stdout.includes('Who may rewrite: unknown'), '1011: human names Orca and unreadable files');
@@ -583,7 +607,7 @@ async function section1011(): Promise<void> {
     equal(rawLines?.ambiguous, 3, '1011: raw-text lines in .mcp.json, outside any string: ambiguous count');
     for (const suffix of ['(backup)', '-DSH']) {
       put(join(workspace, '.mcp.json'), workspace + suffix);
-      const result = runPreview(); equal(result.exit, 0, '1011: ambiguous preview');
+      const result = runPreview(); check([0, 3].includes(result.exit), '1011: ambiguous preview');
       const row = JSON.parse(result.stdout).pointers.find((p: { file: string }) => p.file === join(workspace, '.mcp.json'));
       equal(row?.occurrences, 0, '1011: no rewrite of ' + suffix); equal(row?.ambiguous, 1, '1011: counts ambiguous ' + suffix);
     }
@@ -712,7 +736,7 @@ async function section1011(): Promise<void> {
         const label = `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')} ${char}`, starts = pathStarts.has(char);
         const original = 'run ' + char + tableLibrary + '"\n';
         put(join(tableLibrary, '.agents/table.md'), original);
-        const preview = move.previewLibraryMove({ workspace: tableLibrary, destination: tableDestination, registryRoot: tableRegistry, destinationRule: 'any', processTable: () => [], preflight: true });
+        const preview = (await move.previewLibraryMove({ workspace: tableLibrary, destination: tableDestination, registryRoot: tableRegistry, destinationRule: 'any', processTable: () => [], preflight: true }));
         equal(preview.refusal, null, '1011: start table preview: ' + label);
         const value = preview.value as Record<string, any>;
         if (!value) continue;
@@ -734,7 +758,7 @@ async function section1011(): Promise<void> {
         const expected = !rewrites ? original : row.rewritten ? row.rewritten(library, destination) : original.split(library).join(destination);
         put(join(library, row.file), original);
         const options = { workspace: library, destination, registryRoot, destinationRule: 'any' as const, processTable: () => [], preflight: true };
-        const preview = move.previewLibraryMove(options);
+        const preview = (await move.previewLibraryMove(options));
         equal(preview.refusal, null, '1011: boundary preview: ' + row.name);
         const value = preview.value as Record<string, any>;
         if (!value) continue;
@@ -743,7 +767,7 @@ async function section1011(): Promise<void> {
         equal(pointer?.ambiguous, rewrites ? 0 : 1, '1011: boundary ambiguous count: ' + row.name);
         const sha = (text: string) => createHash('sha256').update(text).digest('hex');
         equal(value.expected_destination_manifest.find((r: { relative: string }) => r.relative === row.file)?.sha256, sha(expected), '1011: boundary expected manifest: ' + row.name);
-        const stopped = move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: value.plan_id, faultAt: 'promote:before' });
+        const stopped = (await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: value.plan_id, faultAt: 'promote:before' }));
         if (row.refused) { check(stopped.refusal?.includes(join(library, row.file) + ': the old path may be written here in a form the move cannot read; change it by hand, then run the preview again') === true, '1011: boundary move refuses the file it cannot read: ' + row.name + ': ' + stopped.refusal); continue; }
         check(stopped.refusal?.includes('Injected move fault') === true, '1011: boundary move reaches the staged copy: ' + row.name + ': ' + stopped.refusal);
         const staging = fs.readdirSync(folder).find(name => name.startsWith('destination.partial-'));
@@ -758,7 +782,7 @@ async function section1011(): Promise<void> {
         put(join(library, '.library/workspace.json'), JSON.stringify({ id: 'binary' })); fs.mkdirSync(join(library, 'internal'));
         put(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ path: library, id: 'binary' }] }));
         put(join(folder, 'home', 'orca', 'store.db'), Buffer.concat([Buffer.from([1, lead]), Buffer.from(library), Buffer.from([0])]));
-        const preview = move.previewLibraryMove({ workspace: library, destination: join(folder, 'destination'), registryRoot, destinationRule: 'any', processTable: () => [], preflight: true });
+        const preview = (await move.previewLibraryMove({ workspace: library, destination: join(folder, 'destination'), registryRoot, destinationRule: 'any', processTable: () => [], preflight: true }));
         const pointer = (preview.value as Record<string, any> | undefined)?.pointers?.find((p: { file: string }) => p.file === join(folder, 'home', 'orca', 'store.db'));
         equal(pointer?.occurrences, after === 'rewrite' ? 1 : 0, '1011: binary occurrences after ' + name);
         equal(pointer?.ambiguous, after === 'rewrite' ? 0 : 1, '1011: binary ambiguous count after ' + name);
@@ -775,7 +799,7 @@ async function section1012(): Promise<void> {
   const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
   const put = (relative: string, text: string) => { const file = join(workspace, relative); fs.mkdirSync(join(file, '..'), { recursive: true }); fs.writeFileSync(file, text); };
   const snapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
-    const file = join(folder, entry.name); return entry.isDirectory() ? snapshot(file) : [file + ':' + fs.readFileSync(file).toString('base64')];
+    const file = join(folder, entry.name); if (file === join(registry, 'move-journals/refusals')) return []; return entry.isDirectory() ? snapshot(file) : [file + ':' + fs.readFileSync(file).toString('base64')];
   });
   try {
     for (const [key] of saved) process.env[key] = home;
@@ -788,7 +812,7 @@ async function section1012(): Promise<void> {
     put('shelf/unrelated.md', 'A different path');
     put('raw/large.txt', workspace + 'x'.repeat(2048));
     const before = snapshot(root);
-    const result = previewLibraryMove({ destination, workspace, registryRoot: registry, preflight: true, historyByteLimit: 1024 });
+    const result = (await previewLibraryMove({ destination, workspace, registryRoot: registry, preflight: true, details: true, historyByteLimit: 1024 }));
     equal(result.refusal, null, '1012: history preview: ' + result.refusal);
     const value = result.value as Record<string, unknown> | null;
     same(value?.history, [{ folder: 'collection', files: 1 }, { folder: 'internal/journals', files: 2 }, { folder: 'internal/other', files: 1 }], '1012: history grouped by folder and counts files rather than occurrences');
@@ -797,6 +821,18 @@ async function section1012(): Promise<void> {
     check(result.humanText?.includes('left as written and readable by their old path in the aside copy') === true, '1012: explains history remains readable');
     check(result.humanText?.includes('History skipped: raw: 1 files') === true, '1012: human skipped count');
     same(snapshot(root), before, '1012: history, home and registry byte-identical');
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1012: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1012: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1012: snapshot explains both included and excluded rows');
   } finally {
     for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(root, { recursive: true, force: true });
@@ -861,8 +897,9 @@ async function section1014(): Promise<void> {
   const saved = ['HOME', 'USERPROFILE', 'APPDATA', 'LIBRARY_WORKSPACES'].map(key => [key, process.env[key]] as const);
   try {
     for (const [key] of saved) process.env[key] = join(root, key === 'LIBRARY_WORKSPACES' ? 'registry' : 'home');
-    const fixture = (label: string) => {
-      const folder = join(root, label), workspace = join(folder, 'source'), destination = join(folder, 'destination'), registryRoot = join(folder, 'registry');
+    const fixture = async (label: string) => {
+      const folder = join(root, label), workspace = join(folder, 'source'), registryRoot = join(folder, 'registry');
+      const destination = process.platform === 'win32' && label === 'real-table' ? join(root.slice(0, 3), 'dev', 'c183-writer-' + root.split(/[\\/]/).pop()) : join(folder, 'destination');
       const put = (file: string, text: string | Buffer) => { fs.mkdirSync(join(file, '..'), { recursive: true }); fs.writeFileSync(file, text); };
       put(join(workspace, '.library/workspace.json'), JSON.stringify({ id: label }));
       fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(join(workspace, 'empty'));
@@ -874,17 +911,17 @@ async function section1014(): Promise<void> {
       put(join(root, 'home/orca/store.db'), Buffer.concat([Buffer.from(workspace), Buffer.from([0, 255])]));
       let calls = 0;
       const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => { calls++; return []; } };
-      const preview = move.previewLibraryMove(options); equal(preview.refusal, null, '1014: preview ' + label);
+      const preview = (await move.previewLibraryMove(options)); equal(preview.refusal, null, '1014: preview ' + label);
       const plan = preview.value as Record<string, any>; calls = 0;
       return { folder, workspace, destination, registryRoot, options, plan, put, calls: () => calls };
     };
     const snapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
       if (entry.isSymbolicLink()) return [join(folder, entry.name) + ':link:' + fs.readlinkSync(join(folder, entry.name))];
-      const file = join(folder, entry.name); return entry.isDirectory() ? snapshot(file) : [file + ':' + sha(fs.readFileSync(file))];
+      const file = join(folder, entry.name); if (file === join(root, file.slice(root.length + 1).split(/[\\/]/)[0]!, 'registry/move-journals/refusals')) return []; return entry.isDirectory() ? snapshot(file) : [file + ':' + sha(fs.readFileSync(file))];
     });
-    const success = fixture('success');
+    const success = (await fixture('success'));
     const pointer = join(root, 'home/.claude.json'), beforePointer = fs.readFileSync(pointer);
-    const result = move.moveLibrary({ ...success.options, preflight: false, userConfirmed: true, planId: success.plan.plan_id });
+    const result = (await move.moveLibrary({ ...success.options, preflight: false, userConfirmed: true, planId: success.plan.plan_id }));
     equal(result.refusal, null, '1014: success ' + result.refusal);
     if (!result.refusal) {
       const value = result.value as Record<string, any>, journal = JSON.parse(fs.readFileSync(join(value.journal, 'journal.json'), 'utf8'));
@@ -903,76 +940,91 @@ async function section1014(): Promise<void> {
       check(value.left_and_listed.some((line: string) => line.includes('ambiguous')), '1014: ambiguous occurrence listed');
       if (process.platform === 'win32') check(value.left_and_listed.some((line: string) => line.includes('open the workspace again in Orca')), '1014: database remedy listed');
     }
-    const drift = fixture('drift'); drift.put(join(drift.workspace, 'changed'), 'changed'); const before = snapshot(root);
-    check(move.moveLibrary({ ...drift.options, preflight: false, userConfirmed: true, planId: drift.plan.plan_id }).refusal?.includes('changed since the preview') === true, '1014: stale plan refused');
+    const drift = (await fixture('drift')); drift.put(join(drift.workspace, 'changed'), 'changed'); const before = snapshot(root);
+    check((await move.moveLibrary({ ...drift.options, preflight: false, userConfirmed: true, planId: drift.plan.plan_id })).refusal?.includes('changed since the preview') === true, '1014: stale plan refused');
     same(snapshot(root), before, '1014: stale plan writes nothing');
-    const missingInternal = fixture('missing-internal');
+    const missingInternal = (await fixture('missing-internal'));
     fs.rmdirSync(join(missingInternal.workspace, 'internal')); // This fixture's empty folder only.
     const missingBefore = snapshot(missingInternal.workspace);
-    const missingPlan = move.previewLibraryMove(missingInternal.options).value as Record<string, any>;
-    const missingResult = move.moveLibrary({ ...missingInternal.options, preflight: false, userConfirmed: true, planId: missingPlan.plan_id });
+    const missingPlan = (await move.previewLibraryMove(missingInternal.options)).value as Record<string, any>;
+    const missingResult = (await move.moveLibrary({ ...missingInternal.options, preflight: false, userConfirmed: true, planId: missingPlan.plan_id }));
     check(missingResult.refusal?.includes(join(missingInternal.workspace, 'internal') + ' is missing') === true, '1014: missing internal refuses an in-process move');
     same(snapshot(missingInternal.workspace), missingBefore, '1014: missing internal move leaves source bytes unchanged');
     check(!fs.existsSync(join(missingInternal.workspace, 'internal')), '1014: missing internal move creates no folder');
     // Exercise barrier itself after the plan: remove the empty folder at its step's fault seam.
-    const missingBarrier = fixture('missing-barrier');
+    const missingBarrier = (await fixture('missing-barrier'));
     const barrierBefore = snapshot(missingBarrier.workspace);
-    const barrierResult = move.moveLibrary({ ...missingBarrier.options, preflight: false, userConfirmed: true, planId: missingBarrier.plan.plan_id,
+    const barrierResult = (await move.moveLibrary({ ...missingBarrier.options, preflight: false, userConfirmed: true, planId: missingBarrier.plan.plan_id,
       get faultAt() {
         // step() reads this immediately before barrier's effect. Remove this fixture's empty folder only.
         if (fs.existsSync(join(missingBarrier.workspace, 'internal'))) fs.rmdirSync(join(missingBarrier.workspace, 'internal'));
         return undefined;
       },
-    });
+    }));
     check(barrierResult.refusal?.includes(join(missingBarrier.workspace, 'internal') + ' is missing') === true, '1014: barrier refuses its missing internal folder');
     check(!fs.existsSync(join(missingBarrier.workspace, 'internal')), '1014: barrier creates no missing internal folder');
     same(snapshot(missingBarrier.workspace), barrierBefore, '1014: missing barrier leaves source bytes unchanged');
-    const fileInternal = fixture('file-internal'), internal = join(fileInternal.workspace, 'internal');
+    const fileInternal = (await fixture('file-internal')), internal = join(fileInternal.workspace, 'internal');
     fs.rmdirSync(internal); // Replace only this fixture's empty folder with a file.
     fs.writeFileSync(internal, 'keep this file');
     const fileBefore = snapshot(fileInternal.workspace);
-    const filePlan = move.previewLibraryMove(fileInternal.options).value as Record<string, any>;
-    const fileResult = move.moveLibrary({ ...fileInternal.options, preflight: false, userConfirmed: true, planId: filePlan.plan_id });
+    const filePlan = (await move.previewLibraryMove(fileInternal.options)).value as Record<string, any>;
+    const fileResult = (await move.moveLibrary({ ...fileInternal.options, preflight: false, userConfirmed: true, planId: filePlan.plan_id }));
     check(fileResult.refusal?.includes(internal + ' is not a folder; move it aside') === true, '1014: file internal refuses an in-process move');
     same(snapshot(fileInternal.workspace), fileBefore, '1014: file internal move leaves source bytes unchanged');
     for (const kind of ['file', 'link', 'dangling-link']) {
-      const w = fixture('barrier-' + kind), internal = join(w.workspace, 'internal');
+      const w = (await fixture('barrier-' + kind)), internal = join(w.workspace, 'internal');
       const replaceInternal = () => {
         fs.rmdirSync(internal); // Replace only this fixture's empty folder at the barrier seam.
         if (kind === 'file') fs.writeFileSync(internal, 'keep this file');
         else fs.symlinkSync(join(root, kind === 'link' ? 'home' : 'missing-link-target'), internal, process.platform === 'win32' ? 'junction' : 'dir');
       };
       let replaced = false, before: string[] = [];
-      const result = move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id,
+      const result = (await move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id,
         get faultAt() {
           if (!replaced) { replaceInternal(); replaced = true; before = snapshot(w.workspace); }
           return undefined;
         },
-      });
+      }));
       check(result.refusal?.includes(internal + ' is not a folder; move it aside') === true, '1014: barrier refuses internal ' + kind);
       same(snapshot(w.workspace), before, '1014: barrier refusal leaves source bytes unchanged: ' + kind);
     }
     for (let quietAt = 1; quietAt <= 4; quietAt++) {
-      const w = fixture('writer-' + quietAt); let calls = 0;
-      const refused = move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id, processTable: () => ++calls === quietAt ? [{ name: 'codex', pid: 990001, parentPid: 0 }] : [] });
-      check(refused.refusal?.includes('990001') === true, '1014: writer refused at quiet check ' + quietAt);
+      const w = (await fixture('writer-' + quietAt)); let calls = 0;
+      const refused = (await move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id, processTable: () => ++calls === quietAt ? [{ name: 'codex', pid: 990001, parentPid: 0 }] : [] }));
+      check(refused.refusal?.includes('990001') === true || (refused.value as any)?.blockers?.some((row: any) => row.pid === 990001), '1014: writer refused or returned held at quiet check ' + quietAt);
     }
-    const changedOutside = fixture('outside-drift'); let calls = 0;
-    const outsideResult = move.moveLibrary({ ...changedOutside.options, preflight: false, userConfirmed: true, planId: changedOutside.plan.plan_id, processTable: () => {
+    const changedOutside = (await fixture('outside-drift')); let calls = 0;
+    const outsideResult = (await move.moveLibrary({ ...changedOutside.options, preflight: false, userConfirmed: true, planId: changedOutside.plan.plan_id, processTable: () => {
       if (++calls === 2) changedOutside.put(pointer, 'reader changed this'); return [];
-    } });
+    } }));
     equal(outsideResult.refusal, null, '1014: outside drift leaves move valid');
     equal(fs.readFileSync(pointer, 'utf8'), 'reader changed this', '1014: outside drift kept');
     check((outsideResult.value as Record<string, any>)?.left_and_listed.some((line: string) => line.includes('changed since the preview')), '1014: outside drift listed');
-    const inside = fixture('inside'); const previous = process.cwd();
-    try { process.chdir(inside.workspace); check(move.moveLibrary({ ...inside.options, preflight: false, userConfirmed: true, planId: inside.plan.plan_id }).refusal?.includes('run it from a folder outside') === true, '1014: inside current folder refused'); } finally { process.chdir(previous); }
-    const linked = fixture('linked'); fs.symlinkSync(join(root, 'home'), join(linked.workspace, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
-    const linkedPreview = move.previewLibraryMove(linked.options);
-    check(move.moveLibrary({ ...linked.options, preflight: false, userConfirmed: true, planId: (linkedPreview.value as Record<string, any>).plan_id }).refusal?.includes('symbolic link or junction') === true, '1014: link inside refused');
-    const real = fixture('real-table');
+    const inside = (await fixture('inside')); const previous = process.cwd();
+    try { process.chdir(inside.workspace); check((await move.moveLibrary({ ...inside.options, preflight: false, userConfirmed: true, planId: inside.plan.plan_id })).refusal?.includes('run it from a folder outside') === true, '1014: inside current folder refused'); } finally { process.chdir(previous); }
+    const linked = (await fixture('linked')); fs.symlinkSync(join(root, 'home'), join(linked.workspace, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    const linkedPreview = (await move.previewLibraryMove(linked.options));
+    check((await move.moveLibrary({ ...linked.options, preflight: false, userConfirmed: true, planId: (linkedPreview.value as Record<string, any>).plan_id })).refusal?.includes('symbolic link or junction') === true, '1014: link inside refused');
+    const real = (await fixture('real-table'));
     const command = runCli(['library', 'move', real.destination, '--workspace', real.workspace, '--registry-root', real.registryRoot, '--user-confirmed', '--plan-id', real.plan.plan_id], { cwd: root, env: { HOME: join(root, 'home'), USERPROFILE: join(root, 'home'), APPDATA: join(root, 'home'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' } });
-    if (process.platform === 'win32') check(command.exit !== 0 && /(?:codex|library).*process \d+/i.test(command.stderr), '1014: real Windows writer table refuses: ' + command.stderr);
+    if (process.platform === 'win32') {
+      check(command.exit !== 0 && /(?:codex|library).*process \d+/i.test(command.stderr), '1014: real Windows writer table refuses: ' + command.stderr);
+      check(!fs.existsSync(real.destination), '1014: real writer refusal starts no copy');
+    }
     else check((command.exit === 0 || command.exit === 1) && !command.stderr.includes('The process table could not be read'), '1014: real Linux table is read and judged');
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1014: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1014: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1014: snapshot explains both included and excluded rows');
   } finally {
     for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(root, { recursive: true, force: true });
@@ -989,11 +1041,13 @@ async function section1015(): Promise<void> {
     const bytes = (file: string) => fs.readFileSync(file).toString('base64');
     const tree = (folder: string, relative = ''): string[] => fs.readdirSync(join(folder, relative), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
       const name = relative ? relative + '/' + entry.name : entry.name;
+      const absolute = join(folder, name);
+      if (absolute === join(root, absolute.slice(root.length + 1).split(/[\\/]/)[0]!, 'registry/move-journals/refusals')) return [];
       if (name === 'internal/maintenance-barrier.json' || name === 'internal/move-journals') return [];
       return entry.isDirectory() ? ['folder:' + name, ...tree(folder, name)] : [name + ':' + bytes(join(folder, name))];
     });
     let serial = 0;
-    const fixture = () => {
+    const fixture = async () => {
       const folder = join(root, String(++serial)), workspace = join(folder, 'source'), destination = join(folder, 'destination'), registryRoot = join(folder, 'registry'), home = join(folder, 'home');
       for (const [key] of saved) process.env[key] = home;
       put(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'fixture-' + serial })); fs.mkdirSync(join(workspace, 'internal'));
@@ -1002,25 +1056,26 @@ async function section1015(): Promise<void> {
       const pointers = [join(home, '.claude.json'), join(home, '.claude/settings.json'), join(home, '.codex/config.toml')];
       for (const file of pointers) put(file, JSON.stringify({ path: workspace }));
       const registry = join(registryRoot, 'workspaces.json'); put(registry, JSON.stringify({ workspaces: [{ id: 'fixture-' + serial, path: workspace, default: true }] }));
-      const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
-      const plan = move.previewLibraryMove(options).value as Record<string, any>;
+      const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [], legacyOrder: true };
+      fs.mkdirSync(join(registryRoot, 'move-journals'), { recursive: true });
+      const plan = (await move.previewLibraryMove(options)).value as Record<string, any>;
       const original = tree(workspace), priorRegistry = bytes(registry), priorPointers = pointers.map(bytes);
       return { folder, workspace, destination, registryRoot, pointers, registry, options, plan, original, priorRegistry, priorPointers };
     };
-    const failedMove = (w: ReturnType<typeof fixture>, faultAt: string) => {
-      const result = move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id, faultAt });
+    const failedMove = async (w: Awaited<ReturnType<typeof fixture>>, faultAt: string) => {
+      const result = (await move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id, faultAt }));
       check(result.refusal?.includes('Injected move fault') === true, '1015: fault reached: ' + faultAt + ': ' + result.refusal);
       const journals = fs.readdirSync(join(w.registryRoot, 'move-journals'));
       equal(journals.length, 1, '1015: one journal per interrupted move');
       return journals[0]!;
     };
-    const rollback = (w: ReturnType<typeof fixture>, id: string, faultAt?: string) => {
-      const preview = move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true });
+    const rollback = async (w: Awaited<ReturnType<typeof fixture>>, id: string, faultAt?: string) => {
+      const preview = (await move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true }));
       equal(preview.refusal, null, '1015: rollback preview: ' + preview.refusal);
       if (preview.refusal) return preview;
-      return move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id, faultAt });
+      return (await move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id, faultAt }));
     };
-    const restored = (w: ReturnType<typeof fixture>, label: string) => {
+    const restored = (w: Awaited<ReturnType<typeof fixture>>, label: string) => {
       same(tree(w.workspace), w.original, '1015: source byte-equal after ' + label);
       equal(bytes(w.registry), w.priorRegistry, '1015: registry byte-equal after ' + label);
       same(w.pointers.map(bytes), w.priorPointers, '1015: outside pointers byte-equal after ' + label);
@@ -1029,11 +1084,11 @@ async function section1015(): Promise<void> {
     for (const point of ['copy-file:before-done', 'promote:before', 'promote:before-done', 'cutover:before-done', 'cutover:after-done', 'pointer-0:after-done', 'pointer-0:before-done', 'registry:before-done', 'complete:before-done', 'journal-copy:before-done']) {
       const phaseB = !point.startsWith('copy') && !point.startsWith('promote');
       for (const recovery of phaseB ? ['resume', 'rollback'] : ['rollback']) {
-        const w = fixture(), id = failedMove(w, point);
-        if (recovery === 'rollback') { const result = rollback(w, id); equal(result.refusal, null, '1015: rollback at ' + point + ': ' + result.refusal); if (!result.refusal) restored(w, point); }
+        const w = (await fixture()), id = (await failedMove(w, point));
+        if (recovery === 'rollback') { const result = (await rollback(w, id)); equal(result.refusal, null, '1015: rollback at ' + point + ': ' + result.refusal); if (!result.refusal) restored(w, point); }
         else {
           if (point === 'journal-copy:before-done') put(join(w.destination, 'internal/move-journals', id, 'registry-before'), 'a partial journal copy');
-          const result = move.moveLibrary({ ...w.options, destination: undefined, resume: id, preflight: false, userConfirmed: true });
+          const result = (await move.moveLibrary({ ...w.options, destination: undefined, resume: id, preflight: false, userConfirmed: true }));
           equal(result.refusal, null, '1015: resume at ' + point + ': ' + result.refusal);
           if (!result.refusal) {
             const value = result.value as Record<string, any>;
@@ -1050,18 +1105,18 @@ async function section1015(): Promise<void> {
       }
     }
     for (const rename of ['rollback-destination', 'rollback-source']) for (const timing of ['before-done', 'after-done']) {
-      const w = fixture(), id = failedMove(w, 'pointer-0:before-done');
-      const interrupted = rollback(w, id, rename + ':' + timing);
+      const w = (await fixture()), id = (await failedMove(w, 'pointer-0:before-done'));
+      const interrupted = (await rollback(w, id, rename + ':' + timing));
       check(interrupted.refusal?.includes('Injected move fault') === true, '1015: rollback rename fault reached ' + rename + ':' + timing);
-      const resumed = rollback(w, id); equal(resumed.refusal, null, '1015: interrupted rollback resumes: ' + resumed.refusal);
+      const resumed = (await rollback(w, id)); equal(resumed.refusal, null, '1015: interrupted rollback resumes: ' + resumed.refusal);
       if (!resumed.refusal) { restored(w, rename + ':' + timing); check(!fs.existsSync(w.destination), '1015: recovery never recreates renamed destination'); }
     }
     for (const name of ['rollback-barriers', 'rollback-pointer-0', 'rollback-empty', 'rollback-complete']) {
-      const w = fixture(); fs.mkdirSync(w.destination);
-      w.plan = move.previewLibraryMove(w.options).value as Record<string, any>;
-      const id = failedMove(w, 'registry:before-done'), point = name + ':before-done';
-      check(rollback(w, id, point).refusal?.includes('Injected move fault at ' + point) === true, '1015: recovery step effect interrupted: ' + point);
-      const result = rollback(w, id);
+      const w = (await fixture()); fs.mkdirSync(w.destination);
+      w.plan = (await move.previewLibraryMove(w.options)).value as Record<string, any>;
+      const id = (await failedMove(w, 'registry:before-done')), point = name + ':before-done';
+      check((await rollback(w, id, point)).refusal?.includes('Injected move fault at ' + point) === true, '1015: recovery step effect interrupted: ' + point);
+      const result = (await rollback(w, id));
       equal(result.refusal, null, '1015: same rollback completes after ' + point + ': ' + result.refusal);
       if (!result.refusal) {
         restored(w, point);
@@ -1069,60 +1124,72 @@ async function section1015(): Promise<void> {
       }
     }
     for (const timing of ['before-done', 'after-done']) {
-      const w = fixture(), id = failedMove(w, 'copy-file:before-done');
-      check(rollback(w, id, 'rollback-destination:' + timing).refusal?.includes('Injected move fault') === true, '1015: partial staging rename fault');
-      const result = rollback(w, id); equal(result.refusal, null, '1015: partial staging rollback continues: ' + result.refusal); if (!result.refusal) restored(w, 'partial staging rename');
+      const w = (await fixture()), id = (await failedMove(w, 'copy-file:before-done'));
+      check((await rollback(w, id, 'rollback-destination:' + timing)).refusal?.includes('Injected move fault') === true, '1015: partial staging rename fault');
+      const result = (await rollback(w, id)); equal(result.refusal, null, '1015: partial staging rollback continues: ' + result.refusal); if (!result.refusal) restored(w, 'partial staging rename');
     }
-    const registryInterrupted = fixture();
+    const registryInterrupted = (await fixture());
     const registryDocument = JSON.parse(fs.readFileSync(registryInterrupted.registry, 'utf8'));
     registryDocument.workspaces.push({ path: join(registryInterrupted.folder, 'unrelated'), id: 'unrelated', note: 'before' });
     put(registryInterrupted.registry, JSON.stringify(registryDocument));
-    registryInterrupted.plan = move.previewLibraryMove(registryInterrupted.options).value as Record<string, any>;
-    const registryId = failedMove(registryInterrupted, 'registry:before-done');
-    check(rollback(registryInterrupted, registryId, 'rollback-registry:before-done').refusal?.includes('Injected move fault') === true, '1015: registry restore interrupted before done');
+    registryInterrupted.plan = (await move.previewLibraryMove(registryInterrupted.options)).value as Record<string, any>;
+    const registryId = (await failedMove(registryInterrupted, 'registry:before-done'));
+    check((await rollback(registryInterrupted, registryId, 'rollback-registry:before-done')).refusal?.includes('Injected move fault') === true, '1015: registry restore interrupted before done');
     const restoredDocument = JSON.parse(fs.readFileSync(registryInterrupted.registry, 'utf8'));
     restoredDocument.workspaces.find((row: { id: string }) => row.id === 'unrelated').note = 'reader changed this';
     put(registryInterrupted.registry, JSON.stringify(restoredDocument));
-    const registryRetry = rollback(registryInterrupted, registryId);
+    const registryRetry = (await rollback(registryInterrupted, registryId));
     equal(registryRetry.refusal, null, '1015: registry restore resumes after unrelated row changed: ' + registryRetry.refusal);
     same(JSON.parse(fs.readFileSync(registryInterrupted.registry, 'utf8')), restoredDocument, '1015: restored identity, default flag and unrelated edit kept');
     same(tree(registryInterrupted.workspace), registryInterrupted.original, '1015: registry retry restores original source tree');
     same(registryInterrupted.pointers.map(bytes), registryInterrupted.priorPointers, '1015: registry retry restores outside pointers');
     check(!fs.existsSync(join(registryInterrupted.workspace, 'internal/maintenance-barrier.json')), '1015: registry retry lifts source barrier');
-    const changedRegistry = fixture(), changedRegistryId = failedMove(changedRegistry, 'registry:before-done');
+    const changedRegistry = (await fixture()), changedRegistryId = (await failedMove(changedRegistry, 'registry:before-done'));
     const changedDocument = JSON.parse(fs.readFileSync(changedRegistry.registry, 'utf8'));
     changedDocument.workspaces[0].default = false;
     put(changedRegistry.registry, JSON.stringify(changedDocument));
     const changedBytes = bytes(changedRegistry.registry), changedPointers = changedRegistry.pointers.map(bytes);
     const recoverySnapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
-      const file = join(folder, entry.name);
+      const file = join(folder, entry.name); if (file === join(root, file.slice(root.length + 1).split(/[\\/]/)[0]!, 'registry/move-journals/refusals')) return [];
       return entry.isDirectory() ? ['folder:' + file, ...recoverySnapshot(file)] : [file + ':' + bytes(file)];
     });
     const changedSnapshot = recoverySnapshot(changedRegistry.folder);
-    const changedResult = rollback(changedRegistry, changedRegistryId);
+    const changedResult = (await rollback(changedRegistry, changedRegistryId));
     check(changedResult.refusal?.includes('The moved registry row changed; inspect it before retrying the rollback') === true, '1015: changed moved row still refused');
     equal(bytes(changedRegistry.registry), changedBytes, '1015: changed moved row is not written');
     same(changedRegistry.pointers.map(bytes), changedPointers, '1015: changed moved row refusal leaves outside pointers alone');
     same(recoverySnapshot(changedRegistry.folder), changedSnapshot, '1015: changed moved row refusal leaves whole fixture unchanged');
     for (const changed of ['aside', 'destination']) {
-      const w = fixture(), id = failedMove(w, 'cutover:after-done');
+      const w = (await fixture()), id = (await failedMove(w, 'cutover:after-done'));
       const journalFile = join(w.registryRoot, 'move-journals', id, 'journal.json');
       const journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
       put(join(changed === 'aside' ? journal.aside : w.destination, 'history.md'), 'reader changed this');
       const before = tree(w.folder);
-      const result = move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true });
+      const result = (await move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true }));
       check(result.refusal?.includes('history.md') === true, '1015: changed ' + changed + ' refused by file name'); same(tree(w.folder), before, '1015: changed tree refusal writes nothing');
     }
-    const drifted = fixture(), driftId = failedMove(drifted, 'pointer-0:before-done');
-    put(drifted.pointers[0]!, 'outside edit'); const driftResult = rollback(drifted, driftId);
+    const drifted = (await fixture()), driftId = (await failedMove(drifted, 'pointer-0:before-done'));
+    put(drifted.pointers[0]!, 'outside edit'); const driftResult = (await rollback(drifted, driftId));
     equal(driftResult.refusal, null, '1015: rollback leaves outside drift'); equal(fs.readFileSync(drifted.pointers[0]!, 'utf8'), 'outside edit', '1015: drifted outside bytes kept');
     check((driftResult.value as Record<string, any>)?.left_and_listed.some((line: string) => line.includes('changed after the move')), '1015: outside drift listed on rollback');
-    const changedSource = fixture(); let quiet = 0;
-    const sourceFault = move.moveLibrary({ ...changedSource.options, preflight: false, userConfirmed: true, planId: changedSource.plan.plan_id, processTable: () => { if (++quiet === 2) put(join(changedSource.workspace, 'history.md'), 'saved after copy'); return []; } });
+    const changedSource = (await fixture()); let quiet = 0;
+    const sourceFault = (await move.moveLibrary({ ...changedSource.options, preflight: false, userConfirmed: true, planId: changedSource.plan.plan_id, processTable: () => { if (++quiet === 2) put(join(changedSource.workspace, 'history.md'), 'saved after copy'); return []; } }));
     check(sourceFault.refusal?.includes('history.md') === true && fs.existsSync(changedSource.workspace), '1015: source saved after copy caught before commit');
     const sourceId = fs.readdirSync(join(changedSource.registryRoot, 'move-journals'))[0]!;
-    equal(rollback(changedSource, sourceId).refusal, null, '1015: phase A rollback preserves a later source save');
+    equal((await rollback(changedSource, sourceId)).refusal, null, '1015: phase A rollback preserves a later source save');
     equal(fs.readFileSync(join(changedSource.workspace, 'history.md'), 'utf8'), 'saved after copy', '1015: later source save never overwritten');
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1015: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1015: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1015: snapshot explains both included and excluded rows');
   } finally {
     for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(root, { recursive: true, force: true });
@@ -1138,7 +1205,7 @@ async function section1016(): Promise<void> {
   const put = (file: string, text: string) => { fs.mkdirSync(join(file, '..'), { recursive: true }); fs.writeFileSync(file, text); };
   let serial = 0;
   try {
-    const fixture = () => {
+    const fixture = async () => {
       const folder = join(root, String(++serial)), workspace = join(folder, 'source'), destination = join(folder, 'destination'), home = join(folder, 'home'), registryRoot = join(folder, 'registry');
       for (const [key] of saved) process.env[key] = home;
       put(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'fixture' })); fs.mkdirSync(join(workspace, 'internal'));
@@ -1149,13 +1216,13 @@ async function section1016(): Promise<void> {
       const pointer = join(home, '.claude.json'); put(pointer, JSON.stringify({ path: workspace }));
       const registryFile = join(registryRoot, 'workspaces.json'); put(registryFile, JSON.stringify({ workspaces: [{ id: 'fixture', path: workspace, default: true }] }));
       const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
-      const plan = move.previewLibraryMove(options).value as Record<string, any>;
+      const plan = (await move.previewLibraryMove(options)).value as Record<string, any>;
       return { folder, workspace, destination, home, registryRoot, registryFile, pointer, options, plan, longFile, registryBefore: fs.readFileSync(registryFile, 'utf8'), pointerBefore: fs.readFileSync(pointer, 'utf8') };
     };
-    const childAt = async (w: ReturnType<typeof fixture>, faultAt: string, release = false) => {
+    const childAt = async (w: Awaited<ReturnType<typeof fixture>>, faultAt: string, release = false) => {
       const marker = join(w.folder, 'marker'), releaseFile = join(w.folder, 'release'), resultFile = join(w.folder, 'result.json'), script = join(w.folder, 'child.mjs');
       const options = { ...w.options, processTable: undefined, preflight: false, userConfirmed: true, planId: w.plan.plan_id, faultAt, faultMarker: marker, ...(release ? { faultRelease: releaseFile } : {}) };
-      put(script, `import { moveLibrary } from ${JSON.stringify(pathToFileURL(join(PROGRAM_ROOT, 'kernel/src/librarymove.ts')).href)};\nimport fs from 'node:fs';\nconst result = moveLibrary({...${JSON.stringify(options)}, processTable: () => []});\nfs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(result));\n`);
+      put(script, `import { moveLibrary } from ${JSON.stringify(pathToFileURL(join(PROGRAM_ROOT, 'kernel/src/librarymove.ts')).href)};\nimport fs from 'node:fs';\nconst result = await moveLibrary({...${JSON.stringify(options)}, processTable: () => []});\nfs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(result));\n`);
       const child = spawn(process.execPath, [script], { cwd: w.folder, windowsHide: true, stdio: 'ignore', env: { ...process.env, HOME: w.home, USERPROFILE: w.home, APPDATA: w.home, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' } });
       const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
       try {
@@ -1165,17 +1232,17 @@ async function section1016(): Promise<void> {
         return { child, exited, marker, releaseFile, resultFile };
       } catch (error) { child.kill('SIGKILL'); await exited; throw error; }
     };
-    const rollBack = (w: ReturnType<typeof fixture>, id: string) => {
-      const preview = move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true });
+    const rollBack = async (w: Awaited<ReturnType<typeof fixture>>, id: string) => {
+      const preview = (await move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: true }));
       equal(preview.refusal, null, '1016: rollback preview: ' + preview.refusal);
       if (preview.refusal) return preview;
-      return move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id });
+      return (await move.moveLibrary({ ...w.options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id }));
     };
     for (const [point, recovery] of [['copy-file:before-done', 'rollback'], ['pointer-0:before-done', 'resume'], ['pointer-0:before-done', 'rollback']]) {
-      const w = fixture(), worker = await childAt(w, point!);
+      const w = (await fixture()), worker = await childAt(w, point!);
       worker.child.kill('SIGKILL'); await worker.exited;
       const id = fs.readdirSync(join(w.registryRoot, 'move-journals'))[0]!;
-      const result = recovery === 'rollback' ? rollBack(w, id) : move.moveLibrary({ ...w.options, destination: undefined, resume: id, preflight: false, userConfirmed: true });
+      const result = recovery === 'rollback' ? (await rollBack(w, id)) : (await move.moveLibrary({ ...w.options, destination: undefined, resume: id, preflight: false, userConfirmed: true }));
       equal(result.refusal, null, '1016: killed child ' + recovery + ': ' + result.refusal);
       if (result.refusal) continue;
       const home = recovery === 'rollback' ? w.workspace : w.destination;
@@ -1192,9 +1259,11 @@ async function section1016(): Promise<void> {
       }
     }
     if (process.platform === 'win32') {
-      const w = fixture(), worker = await childAt(w, 'copy:before', true);
+      const w = (await fixture()), worker = await childAt(w, 'copy:before', true);
       const { openShareNothing } = await import('../../src/seatclaim.ts');
-      const handle = openShareNothing(join(w.workspace, '.mcp.json'));
+      const currentId = fs.readdirSync(join(w.registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      const currentJournal = JSON.parse(fs.readFileSync(join(w.registryRoot, 'move-journals', currentId, 'journal.json'), 'utf8'));
+      const handle = openShareNothing(join(currentJournal.order === 'aside-first' ? currentJournal.aside : w.workspace, '.mcp.json'));
       try {
         put(worker.releaseFile, 'continue');
         const finished = await Promise.race([worker.exited.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10000))]);
@@ -1203,34 +1272,34 @@ async function section1016(): Promise<void> {
       } finally { handle.close(); if (worker.child.exitCode === null) { worker.child.kill('SIGKILL'); await worker.exited; } }
       const result = JSON.parse(fs.readFileSync(worker.resultFile, 'utf8'));
       check(result.refusal.includes('.mcp.json') && result.refusal.includes('after three retries') && result.refusal.includes('--rollback'), '1016: sharing violation names file and rollback');
-      check(fs.existsSync(w.workspace), '1016: sharing failure is before commit');
-      const id = fs.readdirSync(join(w.registryRoot, 'move-journals'))[0]!; equal(rollBack(w, id).refusal, null, '1016: sharing failure rolls back');
+      check(!fs.existsSync(w.destination) && (fs.existsSync(w.workspace) || fs.existsSync(currentJournal.aside)), '1016: sharing failure preserves the source before promotion');
+      const id = fs.readdirSync(join(w.registryRoot, 'move-journals'))[0]!; equal((await rollBack(w, id)).refusal, null, '1016: sharing failure rolls back');
     } else check(true, '1016: Windows sharing violation does not apply on POSIX');
-    const empty = fixture(); fs.mkdirSync(empty.destination);
-    const result = move.moveLibrary({ ...empty.options, preflight: false, userConfirmed: true, planId: empty.plan.plan_id }); equal(result.refusal, null, '1016: empty destination moved: ' + result.refusal);
+    const empty = (await fixture()); fs.mkdirSync(empty.destination);
+    const result = (await move.moveLibrary({ ...empty.options, preflight: false, userConfirmed: true, planId: empty.plan.plan_id })); equal(result.refusal, null, '1016: empty destination moved: ' + result.refusal);
     if (!result.refusal) {
-      equal(rollBack(empty, (result.value as Record<string, any>).run_id).refusal, null, '1016: empty destination restored');
+      equal((await rollBack(empty, (result.value as Record<string, any>).run_id)).refusal, null, '1016: empty destination restored');
       same(fs.readdirSync(empty.destination), [], '1016: original empty destination remains empty');
     }
     for (const timing of ['before-done', 'after-done']) {
-      const w = fixture(); fs.mkdirSync(w.destination);
-      const moved = move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id });
+      const w = (await fixture()); fs.mkdirSync(w.destination);
+      const moved = (await move.moveLibrary({ ...w.options, preflight: false, userConfirmed: true, planId: w.plan.plan_id }));
       equal(moved.refusal, null, '1016: empty-folder rollback fault setup');
       if (moved.refusal) continue;
       const id = (moved.value as Record<string, any>).run_id;
-      const preview = move.moveLibrary({ ...w.options, rollback: id, preflight: true });
-      const stopped = move.moveLibrary({ ...w.options, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id, faultAt: 'rollback-empty:' + timing });
+      const preview = (await move.moveLibrary({ ...w.options, rollback: id, preflight: true }));
+      const stopped = (await move.moveLibrary({ ...w.options, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id, faultAt: 'rollback-empty:' + timing }));
       check(stopped.refusal?.includes('Injected move fault') === true, '1016: empty destination rollback rename fault reached');
-      equal(rollBack(w, id).refusal, null, '1016: empty destination rollback rename continues');
+      equal((await rollBack(w, id)).refusal, null, '1016: empty destination rollback rename continues');
       same(fs.readdirSync(w.destination), [], '1016: interrupted empty destination restored');
     }
-    const stale = fixture();
-    const stopped = move.moveLibrary({ ...stale.options, preflight: false, userConfirmed: true, planId: stale.plan.plan_id, faultAt: 'cutover:after-done' }); check(stopped.refusal !== null, '1016: recovery plan drift setup');
+    const stale = (await fixture());
+    const stopped = (await move.moveLibrary({ ...stale.options, preflight: false, userConfirmed: true, planId: stale.plan.plan_id, faultAt: 'cutover:after-done' })); check(stopped.refusal !== null, '1016: recovery plan drift setup');
     const id = fs.readdirSync(join(stale.registryRoot, 'move-journals'))[0]!;
-    const preview = move.moveLibrary({ ...stale.options, rollback: id, preflight: true });
+    const preview = (await move.moveLibrary({ ...stale.options, rollback: id, preflight: true }));
     put(stale.pointer, 'changed after recovery preview');
-    check(move.moveLibrary({ ...stale.options, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id }).refusal?.includes('recovery changed since the preview') === true, '1016: rollback approval binds current outside bytes');
-    equal(rollBack(stale, id).refusal, null, '1016: fresh rollback preview accepts drift and lists it');
+    check((await move.moveLibrary({ ...stale.options, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id })).refusal?.includes('recovery changed since the preview') === true, '1016: rollback approval binds current outside bytes');
+    equal((await rollBack(stale, id)).refusal, null, '1016: fresh rollback preview accepts drift and lists it');
     equal(fs.readFileSync(stale.pointer, 'utf8'), 'changed after recovery preview', '1016: fresh rollback preserves outside edit');
     const cli = runCli(['library', 'move', '--fault-at', 'copy:before', '--preflight'], { cwd: root, env: { HOME: root, USERPROFILE: root, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '' } });
     check(cli.exit !== 0 && cli.stderr.includes('--fault-at'), '1016: command line cannot inject a fault');
@@ -1246,13 +1315,14 @@ async function section1018(): Promise<void> {
   const env = { HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, TEMP: root, TMP: root,
     LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry, DESKPOST_LIBRARY_MOVE: '' };
   const snapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
-    const file = join(folder, entry.name);
+    const file = join(folder, entry.name); if (file === join(registry, 'move-journals/refusals')) return [];
     return entry.isDirectory() ? [file + '/', ...snapshot(file)] : [file + ':' + fs.readFileSync(file).toString('base64')];
   });
   const destination = process.platform === 'win32'
     ? join(root.slice(0, 3), 'dev', 'w48-preview-' + root.split(/[\\/]/).pop()) : join(root, 'destination');
   try {
     equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, '1018: fixture initialized');
+    fs.mkdirSync(join(registry, 'move-journals'), { recursive: true });
     const forms: [string[], RegExp | null][] = [
       [[destination, '--preflight'], null],
       [[destination, '--user-confirmed', '--plan-id', 'fixture'], /run the preview again|close it, then run the command again/],
@@ -1265,14 +1335,26 @@ async function section1018(): Promise<void> {
       if (remedy) {
         check(result.exit !== 0 && remedy.test(result.stderr), '1018: refusal gives its remedy: ' + result.stderr);
       } else {
-        equal(result.exit, 0, '1018: preview succeeds without the switch: ' + result.stderr);
-        if (result.exit === 0 && json) equal(JSON.parse(result.stdout).written, false, '1018: JSON preview records no write');
-        if (!json) check(result.stdout.includes('Nothing was written.'), '1018: plain preview reports no write');
+        check([0, 3].includes(result.exit), '1018: preview succeeds without the switch: ' + result.stderr);
+        if ([0, 3].includes(result.exit) && json) equal(JSON.parse(result.stdout).written, false, '1018: JSON preview records no write');
+        if (!json) check(result.stdout.includes('Nothing was written in the Library.'), '1018: plain preview reports no write');
       }
       check(!(result.stdout + result.stderr).includes('turned off'), '1018: move no longer reports an off switch');
       check(JSON.stringify(snapshot(root)) === JSON.stringify(before), '1018: whole fixture stays unchanged');
       check(!fs.existsSync(destination), '1018: destination stays absent');
     }
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1018: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1018: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1018: snapshot explains both included and excluded rows');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -1281,13 +1363,13 @@ async function section1017(): Promise<void> {
   const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c164-1017-')));
   const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
   const put = (file: string, text: string) => { fs.mkdirSync(join(file, '..'), { recursive: true }); fs.writeFileSync(file, text); };
-  // No exclusions: folders, empty folders, barriers, journal backups and copied journals all count.
+  // Only machine refusal diagnostics are excluded; all other folders, barriers, backups and copied journals count.
   const snapshot = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
-    const file = join(folder, entry.name);
+    const file = join(folder, entry.name); if (file === join(root, file.slice(root.length + 1).split(/[\\/]/)[0]!, 'registry/move-journals/refusals')) return [];
     return entry.isDirectory() ? ['folder:' + file, ...snapshot(file)] : [file + ':' + fs.readFileSync(file).toString('base64')];
   });
   let serial = 0;
-  const fixture = (point = 'registry:after-done', vault = false) => {
+  const fixture = async (point = 'registry:after-done', vault = false) => {
     const folder = join(root, String(++serial)), workspace = join(folder, 'source'), destination = join(folder, 'destination'), registryRoot = join(folder, 'registry'), home = join(folder, 'home');
     for (const [key] of saved) process.env[key] = home;
     put(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'fixture' })); fs.mkdirSync(join(workspace, 'internal'));
@@ -1297,21 +1379,22 @@ async function section1017(): Promise<void> {
     if (process.platform !== 'win32') fs.chmodSync(join(home, '.claude.json'), 0o600);
     const registry = join(registryRoot, 'workspaces.json'); put(registry, JSON.stringify({ workspaces: [{ id: 'fixture', path: workspace }] }));
     const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, processTable: () => [], preflight: false, userConfirmed: true };
-    const plan = move.previewLibraryMove({ ...options, preflight: true }).value as Record<string, any>;
-    const stopped = move.moveLibrary({ ...options, planId: plan.plan_id, faultAt: point });
+    fs.mkdirSync(join(registryRoot, 'move-journals'), { recursive: true });
+    const plan = (await move.previewLibraryMove({ ...options, preflight: true })).value as Record<string, any>;
+    const stopped = (await move.moveLibrary({ ...options, planId: plan.plan_id, faultAt: point }));
     check(stopped.refusal?.includes('Injected move fault') === true, '1017: setup reaches ' + point);
     const id = fs.readdirSync(join(registryRoot, 'move-journals'))[0]!;
     const journalFile = join(registryRoot, 'move-journals', id, 'journal.json');
     const journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
     const writeJournal = () => put(journalFile, JSON.stringify(journal));
-    const rollback = () => {
-      const preview = move.moveLibrary({ ...options, rollback: id, preflight: true });
-      return move.moveLibrary({ ...options, rollback: id, planId: (preview.value as Record<string, any>)?.plan_id });
+    const rollback = async () => {
+      const preview = (await move.moveLibrary({ ...options, rollback: id, preflight: true }));
+      return (await move.moveLibrary({ ...options, rollback: id, planId: (preview.value as Record<string, any>)?.plan_id }));
     };
     return { folder, workspace, destination, registry, options, id, journalFile, journal, writeJournal, rollback, plan };
   };
-  type Fixture = ReturnType<typeof fixture>;
-  type Case = { name: string; expected: string; point?: string; prepare?: (w: Fixture) => void; command?: (w: Fixture) => Parameters<typeof move.moveLibrary>[0]; cwd?: boolean };
+  type Fixture = Awaited<ReturnType<typeof fixture>>;
+  type Case = { name: string; expected: string; point?: string; prepare?: (w: Fixture) => void | Promise<void>; command?: (w: Fixture) => Parameters<typeof move.moveLibrary>[0] | Promise<Parameters<typeof move.moveLibrary>[0]>; cwd?: boolean };
   // One row per explicit refusal before recovery's first step, plus filesystem/JSON failures.
   // verifyRecovery's verifyTree delegates its manifest refusal; requireQuiet delegates its table refusal.
   const cases: Case[] = [
@@ -1325,7 +1408,7 @@ async function section1017(): Promise<void> {
     { name: 'missing source', expected: 'The source tree location is unclear', prepare: w => fs.renameSync(w.journal.aside, w.journal.aside + '.saved') },
     { name: 'two sources', expected: 'The source tree location is unclear', prepare: w => fs.mkdirSync(w.workspace) },
     { name: 'two destinations', expected: 'Both destination copies exist', prepare: w => fs.mkdirSync(w.destination + '.rolled-back-' + w.id) },
-    { name: 'source manifest differs', expected: 'differs from its manifest', prepare: w => put(join(w.journal.aside, 'page.md'), 'changed') },
+    { name: 'source manifest differs', expected: 'differs from its manifest', prepare: w => { delete w.journal.order; w.writeJournal(); put(join(w.journal.aside, 'page.md'), 'changed'); } },
     { name: 'destination manifest differs', expected: 'differs from its manifest', prepare: w => put(join(w.destination, 'page.md'), 'changed') },
     { name: 'confirmation missing', expected: '--preflight, then its --user-confirmed', command: w => ({ ...w.options, resume: w.id, userConfirmed: false }) },
     { name: 'rollback plan missing', expected: '--preflight, then its --user-confirmed', command: w => ({ ...w.options, rollback: w.id }) },
@@ -1333,34 +1416,34 @@ async function section1017(): Promise<void> {
     { name: 'inside current folder', expected: 'run it from a folder outside', cwd: true },
     { name: 'writer running', expected: 'close it, then run the command again', command: w => ({ ...w.options, resume: w.id, processTable: () => [{ pid: 990001, parentPid: 0, name: 'codex' }] }) },
     { name: 'unreadable process table', expected: 'The process table could not be read', command: w => ({ ...w.options, resume: w.id, processTable: () => { throw new Error('fixture table'); } }) },
-    { name: 'invalid resume location', expected: 'Only a move past its commit point', point: 'promote:after-done' },
-    { name: 'resume after rollback', expected: 'Only a move past its commit point', prepare: w => equal(w.rollback().refusal, null, '1017: completed rollback setup') },
-    { name: 'changed registry row', expected: 'The moved registry row changed', prepare: w => { const doc = JSON.parse(fs.readFileSync(w.registry, 'utf8')); doc.workspaces[0].id = 'changed'; put(w.registry, JSON.stringify(doc)); }, command: w => {
-      const preview = move.moveLibrary({ ...w.options, rollback: w.id, preflight: true });
+    { name: 'invalid resume location', expected: 'Only a move past its commit point', point: 'copy-verify:after-done' },
+    { name: 'resume after rollback', expected: 'Only a move past its commit point', prepare: async w => equal((await w.rollback()).refusal, null, '1017: completed rollback setup') },
+    { name: 'changed registry row', expected: 'The moved registry row changed', prepare: w => { const doc = JSON.parse(fs.readFileSync(w.registry, 'utf8')); doc.workspaces[0].id = 'changed'; put(w.registry, JSON.stringify(doc)); }, command: async w => {
+      const preview = (await move.moveLibrary({ ...w.options, rollback: w.id, preflight: true }));
       return { ...w.options, rollback: w.id, planId: (preview.value as Record<string, any>).plan_id };
     } },
-    { name: 'invalid registry JSON', expected: 'JSON', prepare: w => put(w.registry, '{'), command: w => {
-      const preview = move.moveLibrary({ ...w.options, rollback: w.id, preflight: true });
+    { name: 'invalid registry JSON', expected: 'JSON', prepare: w => put(w.registry, '{'), command: async w => {
+      const preview = (await move.moveLibrary({ ...w.options, rollback: w.id, preflight: true }));
       return { ...w.options, rollback: w.id, planId: (preview.value as Record<string, any>).plan_id };
     } },
   ];
   // s215 row 3: a foreign barrier where recovery would place its own refuses before the first step, so neither the
   // journal nor the destination's journal copy is written.
   const foreign = (folder: string) => put(join(folder, 'internal/maintenance-barrier.json'), JSON.stringify({ run_id: 'move-other-run', operation: 'Library move', reason: 'fixture' }) + '\n');
-  cases.push({ name: 'foreign barrier at a completed destination, rolled back', expected: 'belongs to another run', point: 'journal-copy:after-done', prepare: w => {
-    equal(move.moveLibrary({ ...w.options, resume: w.id }).refusal, null, '1017: completed move setup');
+  cases.push({ name: 'foreign barrier at a completed destination, rolled back', expected: 'belongs to another run', point: 'journal-copy:after-done', prepare: async w => {
+    equal((await move.moveLibrary({ ...w.options, resume: w.id })).refusal, null, '1017: completed move setup');
     check(fs.existsSync(join(w.destination, 'internal/move-journals', w.id, 'journal.json')), '1017: completed move keeps a destination journal copy');
     foreign(w.destination);
-  }, command: w => {
-    const preview = move.moveLibrary({ ...w.options, rollback: w.id, preflight: true });
+  }, command: async w => {
+    const preview = (await move.moveLibrary({ ...w.options, rollback: w.id, preflight: true }));
     return { ...w.options, rollback: w.id, planId: (preview.value as Record<string, any>).plan_id };
   } });
   cases.push({ name: 'foreign barrier at the aside of a stopped move, resumed', expected: 'belongs to another run', prepare: w => foreign(w.journal.aside) });
   // s215 row 2: a row that is neither the source's nor the destination's still refuses before any rename.
   cases.push({ name: 'registry row for another folder', expected: 'The moved registry row changed', prepare: w => {
     const doc = JSON.parse(fs.readFileSync(w.registry, 'utf8')); doc.workspaces[0].path = join(w.folder, 'elsewhere'); put(w.registry, JSON.stringify(doc));
-  }, command: w => {
-    const preview = move.moveLibrary({ ...w.options, rollback: w.id, preflight: true });
+  }, command: async w => {
+    const preview = (await move.moveLibrary({ ...w.options, rollback: w.id, preflight: true }));
     return { ...w.options, rollback: w.id, planId: (preview.value as Record<string, any>).plan_id };
   } });
   for (const kind of ['duplicate-target', 'duplicate-source', 'case-alias']) {
@@ -1370,19 +1453,19 @@ async function section1017(): Promise<void> {
       if (kind === 'duplicate-source') doc.workspaces = [{ ...w.journal.registryRow }, { ...w.journal.registryRow }];
       else doc.workspaces.push({ ...doc.workspaces[0], path: kind === 'case-alias' ? w.destination.toUpperCase() : w.destination });
       put(w.registry, JSON.stringify(doc));
-    }, command: w => {
-      const preview = move.moveLibrary({ ...w.options, rollback: w.id, preflight: true });
+    }, command: async w => {
+      const preview = (await move.moveLibrary({ ...w.options, rollback: w.id, preflight: true }));
       return { ...w.options, rollback: w.id, planId: (preview.value as Record<string, any>).plan_id };
     } });
   }
   try {
     for (const row of cases) {
-      const w = fixture(row.point); row.prepare?.(w);
-      const options = row.command?.(w) ?? { ...w.options, resume: w.id };
+      const w = (await fixture(row.point)); await row.prepare?.(w);
+      const options = (await row.command?.(w)) ?? { ...w.options, resume: w.id };
       const previous = process.cwd();
       try {
         if (row.cwd) process.chdir(w.journal.aside);
-        const before = snapshot(w.folder), result = move.moveLibrary(options);
+        const before = snapshot(w.folder), result = (await move.moveLibrary(options));
         check(result.refusal?.includes(row.expected) === true, '1017: ' + row.name + ' refuses: ' + result.refusal);
         same(snapshot(w.folder), before, '1017: ' + row.name + ' changes no byte');
       } finally { process.chdir(previous); }
@@ -1391,27 +1474,27 @@ async function section1017(): Promise<void> {
     // alias of the source (a trailing separator; a case alias on Windows), beside an unrelated registry edit.
     for (const alias of ['trailing separator', 'case alias']) {
       if (alias === 'case alias' && process.platform !== 'win32') { check(true, '1017: Windows case-alias restored row skipped on POSIX'); continue; }
-      const w = fixture();
+      const w = (await fixture());
       const doc = JSON.parse(fs.readFileSync(w.registry, 'utf8'));
       doc.workspaces[0].path = alias === 'case alias' ? w.workspace.toUpperCase() : w.workspace + (process.platform === 'win32' ? '\\' : '/');
       doc.workspaces.push({ id: 'unrelated', path: join(w.folder, 'unrelated') });
       put(w.registry, JSON.stringify(doc));
-      const result = w.rollback();
+      const result = (await w.rollback());
       equal(result.refusal, null, '1017: rollback with a restored ' + alias + ' row completes');
       equal((result.value as Record<string, any> | null)?.state, 'rolled-back', '1017: ' + alias + ' rollback reaches rolled-back');
       check(fs.existsSync(join(w.workspace, 'page.md')) && !fs.existsSync(w.destination), '1017: ' + alias + ' rollback restores the source and moves the destination aside');
       same(JSON.parse(fs.readFileSync(w.registry, 'utf8')), doc, '1017: ' + alias + ' rollback leaves the restored registry as written');
     }
     for (const action of ['start', 'resume', 'rollback'] as const) {
-      const w = fixture('registry:after-done', true);
+      const w = (await fixture('registry:after-done', true));
       equal(w.plan.inside_obsidian_vault, true, '1017: Library itself is a vault at ' + action + ' preview');
       equal(w.plan.obsidian_vault, w.workspace, '1017: preview names the Library vault');
-      if (action === 'start') equal(w.rollback().refusal, null, '1017: vault start restores setup');
-      const preview = action === 'start' ? move.previewLibraryMove({ ...w.options, preflight: true }) : move.moveLibrary({ ...w.options, [action]: w.id, preflight: true });
+      if (action === 'start') equal((await w.rollback()).refusal, null, '1017: vault start restores setup');
+      const preview = action === 'start' ? (await move.previewLibraryMove({ ...w.options, preflight: true })) : (await move.moveLibrary({ ...w.options, [action]: w.id, preflight: true }));
       equal(preview.refusal, null, '1017: vault recovery preview');
       const before = snapshot(w.folder);
-      const result = move.moveLibrary({ ...w.options, ...(action === 'start' ? {} : { [action]: w.id }), planId: (preview.value as Record<string, any>).plan_id,
-        processTable: () => [{ pid: 990001, parentPid: 0, name: 'Obsidian' }] });
+      const result = (await move.moveLibrary({ ...w.options, ...(action === 'start' ? {} : { [action]: w.id }), planId: (preview.value as Record<string, any>).plan_id,
+        processTable: () => [{ pid: 990001, parentPid: 0, name: 'Obsidian' }] }));
       check(result.refusal?.includes('Obsidian') === true, '1017: Library vault refuses Obsidian at ' + action);
       same(snapshot(w.folder), before, '1017: Library vault ' + action + ' refusal changes no byte');
     }
@@ -1419,8 +1502,8 @@ async function section1017(): Promise<void> {
       console.log('1017: private-file permission assertions skipped on Windows; the Linux check proves them');
       check(true, '1017: POSIX pointer and journal modes skipped on Windows');
     } else {
-      const w = fixture('journal-copy:after-done');
-      equal(move.moveLibrary({ ...w.options, resume: w.id }).refusal, null, '1017: private-file move completes');
+      const w = (await fixture('journal-copy:after-done'));
+      equal((await move.moveLibrary({ ...w.options, resume: w.id })).refusal, null, '1017: private-file move completes');
       const mode = (file: string) => fs.statSync(file).mode & 0o7777;
       const pointer = join(w.folder, 'home/.claude.json');
       equal(mode(pointer), 0o600, '1017: private pointer stays 0600 after move');
@@ -1428,11 +1511,23 @@ async function section1017(): Promise<void> {
         equal(mode(folder), 0o700, '1017: private journal folder is 0700');
         for (const file of fs.readdirSync(folder)) equal(mode(join(folder, file)), 0o600, '1017: private journal file is 0600: ' + file);
       }
-      equal(w.rollback().refusal, null, '1017: private-file rollback completes');
+      equal((await w.rollback()).refusal, null, '1017: private-file rollback completes');
       equal(mode(pointer), 0o600, '1017: private pointer stays 0600 after rollback');
     }
     // rollbackMove's rolled-back branch returns without a step; it has no refusal of its own.
     // Later barrier, rename and readback throws are effects after step(), covered by 1015 and 1016.
+    // The no-write exception is paired with a positive, isolated refusal-diagnostic proof.
+    const diagnosticRoot = join(root, 'diagnostic-source'), diagnosticRegistry = join(root, 'diagnostic-registry');
+    fs.mkdirSync(join(diagnosticRoot, '.library'), { recursive: true }); fs.mkdirSync(join(diagnosticRoot, 'internal'));
+    fs.writeFileSync(join(diagnosticRoot, '.library/workspace.json'), JSON.stringify({ id: 'diagnostic' }));
+    const diagnosticMove = await import('../../src/librarymove.ts');
+    await diagnosticMove.moveBlockers('move', { workspace: diagnosticRoot, destination: join(root, 'diagnostic-target'), registryRoot: diagnosticRegistry,
+      destinationRule: 'any', preflight: true, processTable: () => [{ pid: process.pid, parentPid: 0, name: 'node' }, { pid: 990001, parentPid: 0, name: 'orca' }] });
+    const diagnosticFolder = join(diagnosticRegistry, 'move-journals/refusals'), diagnosticFiles = fs.readdirSync(diagnosticFolder);
+    equal(diagnosticFiles.length, 1, '1017: one blocked inspection writes exactly one refusal snapshot');
+    const diagnostic = JSON.parse(fs.readFileSync(join(diagnosticFolder, diagnosticFiles[0]!), 'utf8'));
+    check(diagnostic.processes.every((row: any) => Number.isInteger(row.pid) && Number.isInteger(row.parentPid) && typeof row.name === 'string' && typeof row.reason === 'string' && row.reason.length > 0), '1017: every snapshot row names pid, parent, name and classification reason');
+    check(diagnostic.processes.some((row: any) => row.pid === process.pid && row.excluded && row.reason.includes('ancestor')) && diagnostic.processes.some((row: any) => row.pid === 990001 && !row.excluded && row.reason.includes('process')), '1017: snapshot explains both included and excluded rows');
   } finally {
     for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(root, { recursive: true, force: true });
@@ -2270,7 +2365,7 @@ async function section1019(): Promise<void> {
       const expected = row.after !== 'rewrite' ? original : row.rewritten ? row.rewritten(library, destination) : original.split(library).join(destination);
       put(join(library, row.file), original);
       const options = { workspace: library, destination, registryRoot, destinationRule: 'any' as const, processTable: () => [], preflight: true };
-      const preview = move.previewLibraryMove(options);
+      const preview = (await move.previewLibraryMove(options));
       equal(preview.refusal, null, '1019: preview: ' + row.name);
       const value = preview.value as Record<string, any>;
       if (!value) continue;
@@ -2278,7 +2373,7 @@ async function section1019(): Promise<void> {
       equal(pointer?.occurrences ?? 0, row.after === 'rewrite' ? 1 : 0, '1019: occurrences: ' + row.name);
       equal(pointer?.ambiguous ?? 0, row.after === 'ambiguous' ? 1 : 0, '1019: ambiguous count: ' + row.name);
       equal(value.expected_destination_manifest.find((r: { relative: string }) => r.relative === row.file)?.sha256, sha(expected), '1019: expected manifest: ' + row.name);
-      const stopped = move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: value.plan_id, faultAt: 'promote:before' });
+      const stopped = (await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: value.plan_id, faultAt: 'promote:before' }));
       check(stopped.refusal?.includes('Injected move fault') === true, '1019: move reaches the staged copy: ' + row.name + ': ' + stopped.refusal);
       const staging = fs.readdirSync(folder).find(name => name.startsWith('destination.partial-'));
       equal(staging ? fs.readFileSync(join(folder, staging, row.file), 'utf8') : 'no staged copy', expected, '1019: staged bytes: ' + row.name);
@@ -2311,24 +2406,24 @@ async function section1020(): Promise<void> {
       put(join(workspace, '.mcp.json'), JSON.stringify({ path: workspace })); put(join(home, '.claude.json'), JSON.stringify({ path: workspace }));
       const registry = join(registryRoot, 'workspaces.json'); put(registry, JSON.stringify({ workspaces: [{ id: 'fixture-' + recovery, path: workspace, default: true }] }));
       const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
-      const plan = move.previewLibraryMove(options).value as Record<string, any>;
+      const plan = (await move.previewLibraryMove(options)).value as Record<string, any>;
       const original = tree(workspace), priorRegistry = bytes(registry), priorPointer = bytes(join(home, '.claude.json'));
-      const stopped = move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: plan.plan_id, faultAt: 'journal-copy:file' });
+      const stopped = (await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: plan.plan_id, faultAt: 'journal-copy:file' }));
       check(stopped.refusal?.includes('Injected move fault at journal-copy:file') === true, '1020: fault reached inside the journal copy: ' + stopped.refusal);
       const id = fs.readdirSync(join(registryRoot, 'move-journals'))[0]!, outside = join(registryRoot, 'move-journals', id), copy = join(destination, 'internal/move-journals', id);
       check(fs.readdirSync(outside).length > 1, '1020: the outside journal holds more than one file');
       equal(fs.readdirSync(copy).length, 1, '1020: the move stopped after the journal copy\'s first file');
       if (recovery === 'resume') {
-        const result = move.moveLibrary({ ...options, destination: undefined, resume: id, preflight: false, userConfirmed: true });
+        const result = (await move.moveLibrary({ ...options, destination: undefined, resume: id, preflight: false, userConfirmed: true }));
         equal(result.refusal, null, '1020: resume inside the journal copy: ' + result.refusal);
         same(tree(copy), tree(outside), '1020: resumed journal copy equals the outside journal folder');
         same(JSON.parse(fs.readFileSync(registry, 'utf8')).workspaces, [{ id: 'fixture-resume', path: destination, default: true }], '1020: resumed registry row names the destination');
         check(!fs.existsSync(join(destination, 'internal/maintenance-barrier.json')), '1020: resumed destination barrier lifted');
       } else {
-        const preview = move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: true });
+        const preview = (await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: true }));
         equal(preview.refusal, null, '1020: rollback preview: ' + preview.refusal);
         if (preview.refusal) continue;
-        const result = move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id });
+        const result = (await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id }));
         equal(result.refusal, null, '1020: rollback inside the journal copy: ' + result.refusal);
         same(tree(workspace), original, '1020: source byte-equal after rollback');
         equal(bytes(registry), priorRegistry, '1020: registry byte-equal after rollback');
@@ -2375,7 +2470,7 @@ async function section1022(): Promise<void> {
     const before = new Map(files.map(file => [file, bytes(join(workspace, file))]));
     const original = tree(workspace), priorRegistry = bytes(registry);
     const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
-    const plan = move.previewLibraryMove(options);
+    const plan = (await move.previewLibraryMove(options));
     equal(plan.refusal, null, '1022: preview: ' + plan.refusal);
     if (plan.refusal) return;
     const planned = plan.value as Record<string, any>;
@@ -2383,7 +2478,7 @@ async function section1022(): Promise<void> {
       const pointer = planned.pointers.find((row: { file: string }) => row.file === join(workspace, file));
       equal(pointer?.occurrences, process.platform === 'win32' ? 3 : 2, '1022: occurrences planned in ' + file);
     }
-    const moved = move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: planned.plan_id });
+    const moved = (await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: planned.plan_id }));
     equal(moved.refusal, null, '1022: the move ran to the end: ' + moved.refusal);
     if (moved.refusal) return;
     equal((moved.value as Record<string, any>).state, 'complete', '1022: the move is complete');
@@ -2393,10 +2488,10 @@ async function section1022(): Promise<void> {
         '1022: the move rewrote the run of separators in ' + file + ', so no inverse of the rewrite gives its bytes back');
     }
     const id = (moved.value as Record<string, any>).run_id as string;
-    const preview = move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: true });
+    const preview = (await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: true }));
     equal(preview.refusal, null, '1022: rollback preview: ' + preview.refusal);
     if (preview.refusal) return;
-    const result = move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id });
+    const result = (await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (preview.value as Record<string, any>).plan_id }));
     equal(result.refusal, null, '1022: rollback: ' + result.refusal);
     for (const file of files) equal(bytes(join(workspace, file)), before.get(file), '1022: ' + file + ' byte for byte after rollback');
     same(tree(workspace), original, '1022: source byte-equal after rollback');
@@ -2428,8 +2523,8 @@ async function section1023(): Promise<void> {
       put(join(registry, 'workspaces.json'), JSON.stringify({ workspaces: [{ path: workspace, id: 'fixture-1023-' + name }] }));
       for (const [relative, text] of Object.entries(files(workspace, destination))) put(join(workspace, relative), text);
       const result = runCli(['library', 'move', destination, '--preflight', '--workspace', workspace, '--registry-root', registry, '--json'], { cwd: root, env });
-      equal(result.exit, 0, `1023: ${name} preview: ${result.stderr}`);
-      const value = result.exit === 0 ? JSON.parse(result.stdout) as Record<string, any> : {};
+      check([0, 3].includes(result.exit), `1023: ${name} preview: ${result.stderr}`);
+      const value = [0, 3].includes(result.exit) ? JSON.parse(result.stdout) as Record<string, any> : {};
       return { value, workspace, pointer: (relative: string) => value['pointers']?.find((row: { file: string }) => row.file === join(workspace, relative)) as Record<string, any> | undefined };
     };
 
@@ -2866,6 +2961,15 @@ if (selected(1021)) await section1021();
 if (selected(1022)) await section1022();
 if (selected(1023)) await section1023();
 if (selected(1060)) await section1060();
+if (selected(1061)) await sectionDefaultRules(1061);
+if (selected(1062)) await sectionDefaultRules(1062);
+if (selected(1063)) await sectionDefaultCreation(1063);
+if (selected(1064)) await sectionDefaultCreation(1064);
+if (selected(1065)) await sectionDefaultLaunch(1065);
+if (selected(1066)) await sectionDefaultLaunch(1066);
+if (selected(1067)) await sectionDefaultDescribe();
+if (selected(1068)) await section1068();
+if (selected(1069)) await section1069();
 if (selected(1030)) await section1030();
 if (selected(1031)) await section1031();
 if (selected(1032)) await section1032();
@@ -2881,6 +2985,389 @@ if (selected(1041)) await section1041();
 if (selected(1042)) await section1042();
 if (selected(1019)) await section1019();
 if (selected(1020)) await section1020();
+if (selected(1050) && prerequisite(1050, () => process.platform === 'win32', 'requires Windows')) await section1050();
+if (selected(1051) && prerequisite(1051, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1051();
+if (selected(1052)) await section1052();
+if (selected(1053) && prerequisite(1053, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1053();
+if (selected(1070)) await section1070();
+if (selected(1071)) await section1071();
+if (selected(1074)) await section1074();
+if (selected(1075)) await section1075();
+if (selected(1076)) await section1076();
+if (selected(1077)) await section1077();
+if (selected(1078)) await section1078();
+if (selected(1079)) await section1079();
+if (selected(1080)) await section1080();
+if (selected(1081)) await section1081();
+if (selected(1082)) await section1082();
+if (selected(1083)) await section1083();
+if (selected(1084)) await section1084();
+if (selected(1085)) await section1085();
+if (selected(1086)) await section1086();
+if (selected(1087)) await section1087();
+if (selected(1088) && prerequisite(1088, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1088();
+if (selected(1089) && prerequisite(1089, () => process.platform === 'linux', 'requires Linux')) await section1089();
+if (selected(1090)) await section1090();
+if (selected(1091)) await section1091();
+if (selected(1092)) await section1092();
+if (selected(1093) && prerequisite(1093, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1093();
+if (selected(1094) && prerequisite(1094, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1094();
+if (selected(1095) && prerequisite(1095, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1095();
+if (selected(1072) && prerequisite(1072, () => process.platform === 'win32' && KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!), 'requires Windows compiled kernel')) await section1072();
+if (selected(1073) && prerequisite(1073, () => process.platform === 'linux', 'requires Linux')) await section1073();
+}
+
+async function section1070(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const { createHash } = await import('node:crypto');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-1070-')));
+  const workspace = join(root, 'source'), destination = join(root, 'destination'), registryRoot = join(root, 'registry');
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    fs.mkdirSync(join(workspace, '.library'), { recursive: true });
+    fs.mkdirSync(join(workspace, 'internal'));
+    fs.mkdirSync(registryRoot);
+    fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'yield-fixture' }));
+    fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'yield-fixture', path: workspace }] }));
+    const payload = Buffer.alloc(32 * 1024 * 1024, 73);
+    fs.writeFileSync(join(workspace, 'large.bin'), payload);
+    for (let index = 0; index < 8; index++) fs.writeFileSync(join(workspace, `file-${index}.txt`), `keep ${index}`);
+    const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
+    const preview = await move.previewLibraryMove(options);
+    equal(preview.refusal, null, '1070: preview');
+    if (preview.refusal) return;
+    const plan = preview.value as Record<string, any>;
+    let inputRan = false, progressAfterInput = false, hashInput = false, hashYielded = false, hashStarted = false;
+    const events: { phase: string; file?: string }[] = [];
+    const input = new Promise<void>(resolve => setImmediate(() => { inputRan = true; resolve(); }));
+    const result = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: plan.plan_id,
+      control: { cancelled: () => false, progress: (event: { phase: string; file?: string }) => {
+        events.push(event); progressAfterInput ||= inputRan;
+        if (event.phase === 'hash' && event.file?.endsWith('large.bin')) {
+          if (!hashStarted) { hashStarted = true; setImmediate(() => { hashInput = true; }); }
+          else hashYielded ||= hashInput;
+        }
+      } } });
+    await input;
+    equal(result.refusal, null, '1070: async move: ' + result.refusal);
+    check(progressAfterInput, '1070: input executes while the engine reports progress');
+    check(events.some(event => event.phase === 'copy' && event.file === 'large.bin'), '1070: copy reports large-file progress');
+    check(events.some(event => event.phase === 'hash'), '1070: hashing reports progress');
+    check(hashYielded, '1070: event-loop input runs between chunks of one large file');
+    const copied = events.findIndex(event => event.phase === 'copy');
+    check(copied >= 0 && events.slice(copied + 1).some(event => event.phase === 'hash'), '1070: verification hashing also reports progress');
+    if (!result.refusal) {
+      const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+      equal(sha(fs.readFileSync(join(destination, 'large.bin'))), sha(payload), '1070: yielded hashing and copying preserve bytes');
+      for (let index = 0; index < 8; index++) equal(fs.readFileSync(join(destination, `file-${index}.txt`), 'utf8'), `keep ${index}`, '1070: small-file bytes preserved');
+      same((result.value as Record<string, any>).left_and_listed, [], '1070: silent move adds no unresolved outcome');
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1071(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const blockers = (move as any).moveBlockers;
+  check(typeof blockers === 'function', '1071: operation-aware blocker collector exists');
+  if (typeof blockers !== 'function') return;
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-1071-')));
+  const workspace = join(root, 'source'), destination = join(root, 'destination'), registryRoot = join(root, 'registry');
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  const previous = process.cwd();
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+    fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'blockers' }));
+    fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'blockers', path: workspace }] }));
+    const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any', processTable: () => [], holderScan: () => ({ holders: [], uninspectable: 0, resources: [] }) };
+    same(await blockers('move', options), [], '1071: clear fixture has no blocker');
+    const refusals = join(registryRoot, 'move-journals/refusals');
+    check(!fs.existsSync(refusals), '1071: a ready preview writes no refusal snapshot');
+    const resources = join(root, 'resource-cap'); fs.mkdirSync(resources);
+    for (let index = 0; index < 513; index++) fs.writeFileSync(join(resources, String(index).padStart(4, '0') + '.txt'), 'fixture');
+    const capped = move.scanMoveHolders([resources], []);
+    equal(capped.resources.length, 512, '1071: 513 eligible resources stop at the 512-path boundary');
+    check(!capped.resources.includes(join(resources, '0512.txt')), '1071: the first path beyond the cap is excluded');
+    process.chdir(workspace);
+    const many = await blockers('move', { ...options, processTable: () => [{ pid: 990001, parentPid: 0, name: 'orca' }, { pid: 990002, parentPid: 0, name: 'codex' }], holderScan: () => ({ holders: [{ pid: 990003, name: 'editor', detail: 'open file' }], uninspectable: 3, resources: [] }) });
+    check(many.some((b: any) => b.kind === 'folder'), '1071: current folder is a blocker');
+    const snapshots = fs.existsSync(refusals) ? fs.readdirSync(refusals) : [];
+    equal(snapshots.length, 1, '1071: one refusal writes one snapshot');
+    if (snapshots.length === 1) {
+      const snapshot = JSON.parse(fs.readFileSync(join(refusals, snapshots[0]!), 'utf8'));
+      check(snapshot.processes.some((row: any) => row.pid === 990001 && row.parentPid === 0 && row.name === 'orca' && row.reason.includes('process')), '1071: snapshot records process identity and classification');
+      check(snapshot.holders.some((row: any) => row.pid === 990003), '1071: snapshot records holders');
+    }
+    for (const pid of [990001, 990002, 990003]) check(many.some((b: any) => b.pid === pid), '1071: every writer and holder is aggregated: ' + pid);
+    check(!many.some((b: any) => /could not be checked/.test(b.detail)), '1071: uninspectable processes are counted, not blockers');
+    process.chdir(previous);
+    same(await blockers('move', options), [], '1071: clearing the table clears all blockers');
+    const arrived = await blockers('move', { ...options, processTable: () => [{ pid: 990004, parentPid: 0, name: 'deskpost' }] });
+    check(arrived.some((b: any) => b.pid === 990004), '1071: an arriving writer is seen');
+    const unreadable = await blockers('move', { ...options, processTable: () => { throw new Error('fixture table denied'); } });
+    check(unreadable.some((b: any) => /process table could not be read/i.test(b.detail)), '1071: unreadable table fails closed');
+    const service = { pid: 990005, parentPid: 0, name: 'codex-windows-sandbox-service.exe' };
+    same(await blockers('move', { ...options, processTable: () => [service] }), [], '1071: sandbox service alone is not a named-application blocker');
+    const coupled = await blockers('move', { ...options, processTable: () => [service, { pid: 990006, parentPid: 0, name: 'codex.exe' }] });
+    check(coupled.some((b: any) => b.pid === service.pid && b.fix.includes('Codex closes')), '1071: service with Codex has the precise remedy');
+    const heldService = await blockers('move', { ...options, processTable: () => [service], holderScan: () => ({ holders: [{ ...service, detail: 'working folder' }], uninspectable: 0, resources: [] }) });
+    check(heldService.some((b: any) => b.kind === 'holder' && b.pid === service.pid), '1071: a service holding the folder remains a holder');
+    fs.rmdirSync(join(workspace, 'internal'));
+    const reasons = await blockers('move', { ...options, processTable: () => [{ pid: 990007, parentPid: 0, name: 'orca' }] });
+    check(reasons.some((b: any) => b.kind === 'reason' && /internal.*missing/.test(b.detail)) && reasons.some((b: any) => b.pid === 990007), '1071: structural reasons and processes appear together');
+  } finally {
+    process.chdir(previous);
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1072(): Promise<void> {
+  const { spawn, spawnSync } = await import('node:child_process');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-1072-')));
+  const workspace = join(root, 'source'), registry = join(root, 'registry');
+  const env = { HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry };
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const init = spawnSync(process.execPath, [join(PROGRAM_ROOT, 'kernel/src/cli.ts'), 'init', workspace, '--registry-root', registry], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    equal(init.status, 0, '1072: fixture init: ' + init.stderr); if (init.status !== 0) return;
+    const file = join(workspace, 'held.txt'); fs.writeFileSync(file, 'keep bytes');
+    for (const kind of ['folder', 'file']) {
+      const ready = join(root, kind + '-ready');
+      const script = join(root, kind + '-child.mjs');
+      fs.writeFileSync(script, `import fs from 'node:fs'; ${kind === 'file' ? `const handle = fs.openSync(${JSON.stringify(file)}, 'r');` : ''} fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000);`);
+      const child = spawn(process.execPath, [script], { cwd: kind === 'folder' ? workspace : root, env: { ...process.env, ...env }, windowsHide: true, stdio: 'ignore' }); children.push(child);
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        const deadline = Date.now() + 15000;
+        while (!fs.existsSync(ready) && child.exitCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        check(fs.existsSync(ready), '1072: real holder ready: ' + kind);
+        const destination = join(root.slice(0, 3), 'dev', 'c183-' + root.split(/[\\/]/).pop());
+        const result = runCli(['library', 'move', destination, '--workspace', workspace, '--registry-root', registry, '--preflight', '--json'], { cwd: root, env });
+        check([0, 3].includes(result.exit), '1072: blocked preview is readable: ' + result.stderr);
+        if ([0, 3].includes(result.exit)) {
+          const value = JSON.parse(result.stdout);
+          check(value.blockers?.some((b: any) => b.kind === 'holder' && b.pid === child.pid), '1072: native reader names real ' + kind + ' holder');
+        }
+        equal(fs.readFileSync(file, 'utf8'), 'keep bytes', '1072: holder preview preserves source');
+        check(!fs.existsSync(destination), '1072: holder preview makes no copy');
+      } finally { child.kill(); await exited; }
+    }
+    await section1074('held');
+  } finally {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1073(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const scan = (move as any).scanMoveHolders;
+  check(typeof scan === 'function', '1073: holder reader exists'); if (typeof scan !== 'function') return;
+  const { spawn } = await import('node:child_process');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-1073-')));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: root, stdio: 'ignore' });
+  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+  try {
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const found = scan([root], [{ pid: child.pid!, parentPid: process.pid, name: 'node' }]);
+    check(found.holders.some((b: any) => b.pid === child.pid && b.detail.includes('working folder')), '1073: real Linux working-folder holder');
+    const heldFile = join(root, 'held.txt'), ready = join(root, 'descriptor-ready'), script = join(root, 'descriptor.mjs');
+    fs.writeFileSync(heldFile, 'keep these bytes');
+    fs.writeFileSync(script, `import fs from 'node:fs'; const handle = fs.openSync(${JSON.stringify(heldFile)}, 'r'); fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000);`);
+    const descriptorChild = spawn(process.execPath, [script], { cwd: os.tmpdir(), stdio: 'ignore' });
+    const descriptorExit = new Promise<void>(resolve => descriptorChild.once('exit', () => resolve()));
+    try {
+      const deadline = Date.now() + 15000;
+      while (!fs.existsSync(ready) && descriptorChild.exitCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      check(fs.existsSync(ready), '1073: real file-descriptor holder is ready');
+      const fileScan = scan([root], [{ pid: descriptorChild.pid!, parentPid: process.pid, name: 'node' }]);
+      check(fileScan.holders.some((b: any) => b.pid === descriptorChild.pid && b.detail === 'open file: ' + heldFile), '1073: real Linux file-descriptor holder outside the Library');
+      equal(fs.readFileSync(heldFile, 'utf8'), 'keep these bytes', '1073: holder scan preserves file bytes');
+    } finally { descriptorChild.kill(); await descriptorExit; }
+  } finally { child.kill(); await exited; fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1050(): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const proc = await import('../../src/procstart.ts');
+  const { windowsProcesses } = await import('../../src/lifecycle.ts');
+  const { waitForAgentExit } = await import('../../src/seat.ts');
+  const { quietCheck } = await import('../../src/librarymove.ts');
+  const api = await import('../../src/win32proc.ts');
+  const run = (api as any).runInstalledProcess;
+  check(typeof run === 'function', '1050: installed process route exists');
+  if (typeof run !== 'function') return;
+  const saved = { ...process.env };
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'c176-source-'));
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    for (const key of Object.keys(process.env)) if (/^path$/i.test(key)) delete process.env[key];
+    process.env['PATH'] = (saved['PATH'] ?? saved['Path'] ?? '').split(';').filter(p => p && !fs.existsSync(join(p, 'powershell.exe')) && !fs.existsSync(join(p, 'pwsh.exe'))).join(';');
+    if (KERNEL_COMMAND.length === 1 && /\.exe$/i.test(KERNEL_COMMAND[0]!)) process.env['DESKPOST_KERNEL'] = KERNEL_COMMAND[0];
+    let installed = '';
+    try { installed = run(null); } catch (error) { console.log('1050: only refusal half judged: ' + (error as Error).message); }
+    if (installed) {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true }); children.push(child);
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      const pid = child.pid!;
+      const start = run(['start', String(pid)]).start_utc;
+      check(typeof start === 'string' && start !== proc.UNREADABLE_IDENTITY, '1050: fixture has a readable start time');
+      equal(proc.agentProcessIdentity(pid, { fresh: true }), start, '1050: source start equals installed start');
+      const ancestry = proc.readProcessAncestry(pid);
+      check(ancestry.some(row => row.pid === process.pid), '1050: ancestry reaches this parent');
+      equal(proc.readProcessAncestry(pid, 0).length, 1, '1050: ancestry respects depth');
+      check(windowsProcesses().some(row => row.ProcessId === pid && row.ExecutablePath?.toLowerCase() === process.execPath.toLowerCase()), '1050: source table holds fixture name and path');
+      const agent = join(root, 'codex.exe'); fs.copyFileSync(process.execPath, agent);
+      const client = spawn(agent, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true }); children.push(client);
+      await new Promise<void>((resolve, reject) => { client.once('spawn', resolve); client.once('error', reject); });
+      equal(proc.launcherChildAgent(process.pid)?.pid, client.pid, '1050: launcher finds agent child');
+      const wait = waitForAgentExit(pid, start, 25);
+      let returned = false; void wait.then(() => { returned = true; });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      check(!returned, '1050: wait holds while fixture lives');
+      child.kill(); await wait;
+      check(returned, '1050: wait returns after fixture exits');
+    }
+    process.env['DESKPOST_KERNEL'] = join(root, 'missing.exe'); process.env['PATH'] = root;
+    equal(proc.agentProcessIdentity(process.pid, { fresh: true }), proc.UNREADABLE_IDENTITY, '1050: missing route preserves unreadable identity');
+    same(proc.readProcessAncestry(process.pid), [], '1050: missing route stops walk');
+    equal(proc.launcherChildAgent(process.pid), null, '1050: missing route finds no agent');
+    let tableError = ''; try { windowsProcesses(); } catch (error) { tableError = (error as Error).message; }
+    check(tableError.includes('DESKPOST_KERNEL'), '1050: table refusal names repair');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true }); children.push(child);
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const wait = waitForAgentExit(child.pid!, '', 25);
+    let returned = false; void wait.then(() => { returned = true; });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    check(!returned, '1050: wait holds while missing-route fixture lives');
+    child.kill(); await wait;
+    check(returned, '1050: wait returns after missing-route fixture exits');
+    check(quietCheck().refusal?.includes('DESKPOST_KERNEL') === true, '1050: move refusal names repair');
+  } finally {
+    for (const child of children) { if (child.exitCode === null && child.signalCode === null) { const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited; } }
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1051(): Promise<void> {
+  const { spawn, spawnSync } = await import('node:child_process');
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'c176-release-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: join(root, 'registry'), DESKPOST_LIBRARY_MOVE: '1' };
+  for (const key of Object.keys(env)) if (/^path$/i.test(key)) delete env[key];
+  env['PATH'] = (process.env['PATH'] ?? process.env['Path'] ?? '').split(';').filter(p => p && !fs.existsSync(join(p, 'powershell.exe')) && !fs.existsSync(join(p, 'pwsh.exe'))).join(';');
+  const run = (args: string[]) => {
+    const result = spawnSync(KERNEL_COMMAND[0]!, args, { env, cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    equal(result.status, args[0] === 'library' && args[1] === 'move' ? 3 : 0, '1051: ' + args.slice(0, 2).join(' ') + ': ' + result.stderr);
+    return JSON.parse(result.stdout || '{}');
+  };
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    const script = join(root, 'cli.ts'); fs.writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    for (const args of [[script], ['-e', 'setInterval(() => {}, 1000)']]) {
+      const child = spawn(process.execPath, args, { env, stdio: 'ignore', windowsHide: true }); children.push(child);
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    }
+    const all = run(['process', 'list']);
+    equal(all.route, 'bun-ffi', '1051: compiled native route');
+    check(all.processes?.length > 0 && all.processes.every((row: any) => typeof row.name === 'string' && row.name.length > 0), '1051: every process has an image name');
+    const nodes = run(['process', 'list', '--name', 'node.exe']);
+    check(nodes.processes?.find((row: any) => row.pid === children[0]!.pid)?.command_line?.includes(script), '1051: native command line holds fixture script path');
+    const workspace = join(root, 'Library');
+    const init = spawnSync(process.execPath, [join(PROGRAM_ROOT, 'kernel/src/cli.ts'), 'init', workspace, '--registry-root', env['LIBRARY_WORKSPACES']!], { env, cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    equal(init.status, 0, '1051: scratch init: ' + init.stderr);
+    const path = await import('node:path');
+    const destination = join(path.parse(root).root, 'dev', path.basename(root) + '-destination');
+    const preview = run(['library', 'move', destination, '--workspace', workspace, '--preflight', '--json']);
+    const text = JSON.stringify(preview);
+    check(!/process table could not be read/i.test(text), '1051: move reads process table without PowerShell');
+    check(text.includes(`(process ${children[0]!.pid})`), '1051: move lists cli.ts fixture as a writer');
+    check(!text.includes(`(process ${children[1]!.pid})`), '1051: plain node expression is not a writer');
+    console.log('1051: preview ' + JSON.stringify({ written: preview.written, warnings: preview.warnings, writer: children[0]!.pid, plain: children[1]!.pid }));
+  } finally {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1052(): Promise<void> {
+  const api = await import('../../src/win32proc.ts');
+  const run = (api as any).runInstalledProcess;
+  check(typeof run === 'function', '1052: installed process discovery exists');
+  if (typeof run !== 'function') return;
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'c176-discovery-'));
+  try {
+    const exe = join(root, 'chosen.exe'); fs.writeFileSync(exe, 'fixture');
+    equal(run(null, { DESKPOST_KERNEL: exe, PATH: '' }), exe, '1052: explicit executable');
+    const notExe = join(root, 'chosen.cmd'); fs.writeFileSync(notExe, 'fixture');
+    for (const env of [{ DESKPOST_KERNEL: notExe, PATH: '' }, { DESKPOST_KERNEL: join(root, 'missing.exe'), PATH: '' }, { PATH: '' }]) {
+      let message = ''; try { run(null, env); } catch (error) { message = (error as Error).message; }
+      check(message.includes('DESKPOST_KERNEL') && /install/i.test(message), '1052: missing executable names both repairs');
+    }
+    const bin = join(root, 'bin'), current = join(root, 'current', 'bin'); fs.mkdirSync(bin); fs.mkdirSync(current, { recursive: true });
+    const linked = join(current, 'library.exe'); fs.writeFileSync(linked, 'fixture');
+    const direct = join(bin, 'library.exe'); fs.writeFileSync(direct, 'fixture');
+    equal(run(null, { DESKPOST_KERNEL: exe, PATH: bin }), exe, '1052: explicit executable takes precedence');
+    for (const shim of ['deskpost.cmd', 'library.cmd']) {
+      fs.writeFileSync(join(bin, shim), 'fixture');
+      equal(run(null, { PATH: bin }), linked, '1052: ' + shim + ' resolves installed executable');
+      fs.unlinkSync(join(bin, shim));
+    }
+    equal(run(null, { PATH: bin }), direct, '1052: executable on PATH');
+    fs.mkdirSync(join(root, 'folder.exe'));
+    let refused = false; try { run(null, { DESKPOST_KERNEL: join(root, 'folder.exe'), PATH: '' }); } catch { refused = true; }
+    check(refused, '1052: a directory is not an executable');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1053(): Promise<void> {
+  const kernel = KERNEL_COMMAND.length === 1 ? KERNEL_COMMAND[0] : '';
+  if (!prerequisite(1053, () => Boolean(kernel && /\.exe$/i.test(kernel) && fs.existsSync(kernel)), 'requires a compiled kernel through LIBRARY_SELFTEST_KERNEL')) return;
+  const { spawn } = await import('node:child_process');
+  const { runInstalledProcess } = await import('../../src/win32proc.ts');
+  const { quietCheck } = await import('../../src/librarymove.ts');
+  const { liveSessions } = await import('../../src/lifecycle.ts');
+  const saved = { ...process.env };
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'c176-reader-'));
+  const copy = join(root, 'current', 'bin', 'library.exe');
+  const children: ReturnType<typeof spawn>[] = [];
+  try {
+    fs.mkdirSync(join(root, 'current', 'bin'), { recursive: true });
+    fs.copyFileSync(kernel!, copy);
+    for (const key of Object.keys(process.env)) if (/^path$/i.test(key)) delete process.env[key];
+    process.env['PATH'] = (saved['PATH'] ?? saved['Path'] ?? '').split(';').filter(p => p && !fs.existsSync(join(p, 'powershell.exe')) && !fs.existsSync(join(p, 'pwsh.exe'))).join(';');
+    process.env['DESKPOST_KERNEL'] = copy;
+    const rows = () => runInstalledProcess<{ processes: { pid: number; path: string | null }[] }>(['list']).processes;
+    const isCopy = (row: { path: string | null }) => row.path?.toLowerCase() === copy.toLowerCase();
+    check(!rows().some(isCopy), '1053: source list excludes its installed process reader');
+    const quiet = quietCheck();
+    check(!quiet.refusal?.includes('process table could not be read'), '1053: quiet check reads the process table');
+    const gone = quiet.writers.filter(row => /^library\.exe$/i.test(row.name)).filter(row => {
+      try { process.kill(row.pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    });
+    same(gone, [], '1053: quiet check lists no finished library reader');
+    const empty = liveSessions(root);
+    same(empty.processes, [], '1053: install sees no process reader session');
+    check(!empty.unreadable.some(text => text.includes('process list')), '1053: install reads the process table');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true }); children.push(child);
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const reader = spawn(copy, ['process', 'wait', String(child.pid)], { stdio: 'ignore', windowsHide: true }); children.push(reader);
+    await new Promise<void>((resolve, reject) => { reader.once('spawn', resolve); reader.once('error', reject); });
+    check(rows().some(row => row.pid === reader.pid && isCopy(row)), '1053: source list keeps a live installed process');
+    check(liveSessions(root).processes.some(row => row.pid === reader.pid), '1053: install keeps a live installed process');
+  } finally {
+    // Remove only this section's children and copied executable after every child exits.
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited; }
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 async function section1060(): Promise<void> {
@@ -2893,8 +3380,8 @@ async function section1060(): Promise<void> {
   const { pathToFileURL } = await import('node:url');
   const actual = pathToFileURL(join(PROGRAM_ROOT, 'kernel/src/librarymove.ts')).href;
   const wrapper = 'data:text/javascript,' + encodeURIComponent(
-    'import { moveLibrary as actual } from ' + JSON.stringify(actual) + '; ' +
-    'export const moveLibrary = options => actual({ ...options, processTable: () => [] });');
+    'import { runLibraryMoveCommand as actual } from ' + JSON.stringify(actual) + '; ' +
+    'export const runLibraryMoveCommand = options => actual({ ...options, processTable: () => [] });');
   const preload = join(root, 'quiet-move.mjs');
   // Stand in for the machine-wide process list only in the scratch command's Node process.
   fs.writeFileSync(preload, 'import { registerHooks } from "node:module";\n' +
@@ -2908,8 +3395,9 @@ async function section1060(): Promise<void> {
   });
   const preview = (file: string) => {
     const result = run(['--preflight', '--json']);
-    equal(result.exit, 0, '1060: preview succeeds: ' + result.stderr);
-    const plan = result.exit === 0 ? JSON.parse(result.stdout) : {};
+    check([0, 3].includes(result.exit), '1060: preview succeeds: ' + result.stderr);
+    const plan = [0, 3].includes(result.exit) ? JSON.parse(result.stdout) : {};
+    equal(result.exit, plan.ready ? 0 : 3, '1060: preview exit agrees with readiness');
     return { plan, pointer: plan.pointers?.find((row: { file: string }) => row.file === file) };
   };
   const refuseMove = (file: string, reason: string, planId: string) => {
@@ -2947,4 +3435,1165 @@ async function section1060(): Promise<void> {
     equal(colliding.pointer?.reason, collision, '1060: colliding keys are listed with their reason');
     if (colliding.plan.executable === false) refuseMove(json, collision, colliding.plan.plan_id);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function sectionDefaultRules(section: number): Promise<void> {
+  const { matchingDefaultBooks } = await import('../../src/seatdefaults.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'w51-default-rules-')));
+  const workspace = join(root, 'library');
+  const registry = join(root, 'registry');
+  const home = join(root, 'home');
+  const env = { HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+    LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry };
+  const run = (args: string[]) => runCli(['seat', 'defaults', ...args, '--workspace', workspace, '--json'], { cwd: root, env });
+  const rules = join(workspace, '.claude', 'seats', '_book-defaults.json');
+  const history = join(workspace, 'internal', 'seat-registry-history.jsonl');
+  const add = (department: string) => ['add', '--department', department, '--book', 'shelf/handbook'];
+  const plan = (args: string[]) => {
+    const result = run([...args, '--preflight']);
+    equal(result.exit, 0, 'default rules preview succeeds: ' + result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const apply = (args: string[], id: string) => run([...args, '--user-confirmed', '--plan-id', id]);
+  try {
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'scratch Library initialized');
+    fs.mkdirSync(join(workspace, 'shelf', 'handbook', 'wiki'), { recursive: true });
+    const empty = run([]);
+    equal(empty.exit, 0, 'default rules list succeeds');
+    equal(JSON.parse(empty.stdout).rules.length, 0, 'no rules at initialization');
+    if (section === 1061) {
+      const preview = plan(add('games'));
+      check(!fs.existsSync(rules) && !fs.existsSync(history), 'preflight publishes neither rules nor history');
+      equal(apply(add('games'), preview.plan_id).exit, 0, 'department rule added');
+      const group = plan(add('games/sbox'));
+      equal(apply(add('games/sbox'), group.plan_id).exit, 0, 'group rule added');
+      const matches = matchingDefaultBooks(workspace, { department: 'games/valheim', role: null });
+      equal(matches.length, 1, 'parent but not sibling rule matches');
+      equal(matches[0]?.source, 'department games', 'parent rule supplies source');
+      const removal = ['remove', preview.rule.id];
+      equal(apply(removal, plan(removal).plan_id).exit, 0, 'rule removed');
+      equal(matchingDefaultBooks(workspace, { department: 'games/valheim', role: null }).length, 0, 'no sibling match remains');
+      equal(fs.readFileSync(history, 'utf8').trim().split('\n').length, 6, 'three history attempts committed');
+    } else {
+      for (const refused of [
+        ['add', '--book', 'shelf/handbook'],
+        [...add('games'), '--role', 'performer'],
+        ['add', '--role', 'unknown', '--book', 'shelf/handbook'],
+        add('games/bad/extra'),
+        [...add('games'), '--book', 'shelf/missing'],
+      ]) {
+        check(run([...refused, '--preflight']).exit !== 0, 'invalid default rule is refused');
+        check(!fs.existsSync(rules) && !fs.existsSync(history), 'refusal writes neither rules nor history');
+      }
+      const stale = plan(add('games'));
+      const other = add('office');
+      equal(apply(other, plan(other).plan_id).exit, 0, 'a concurrent rule was published');
+      const snapshot = [fs.readFileSync(rules, 'utf8'), fs.readFileSync(history, 'utf8')];
+      check(apply(add('games'), stale.plan_id).exit !== 0, 'stale rule plan refused');
+      check(run([...other, '--preflight']).exit !== 0, 'duplicate rule refused');
+      equal(fs.readFileSync(rules, 'utf8'), snapshot[0], 'refused actions preserve rules');
+      equal(fs.readFileSync(history, 'utf8'), snapshot[1], 'refused actions preserve history');
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function sectionDefaultCreation(section: number): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'w51-default-creation-')));
+  const workspace = join(root, 'library'), registry = join(root, 'registry'), home = join(root, 'home');
+  const env = { HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+    LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry };
+  const run = (args: string[]) => runCli([...args, '--workspace', workspace, '--json'], { cwd: root, env });
+  const add = (book: string) => {
+    fs.mkdirSync(join(workspace, 'shelf', book, 'wiki'), { recursive: true });
+    const args = ['seat', 'defaults', 'add', '--department', 'games', '--book', 'shelf/' + book];
+    const preview = run([...args, '--preflight']);
+    equal(preview.exit, 0, 'rule preview succeeds: ' + preview.stderr);
+    const applied = run([...args, '--user-confirmed', '--plan-id', JSON.parse(preview.stdout).plan_id]);
+    equal(applied.exit, 0, 'rule applied: ' + applied.stderr);
+  };
+  const file = (seat: string, name: string) => join(workspace, '.claude', 'seats', seat, name);
+  try {
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'scratch Library initialized');
+    add('handbook');
+    if (section === 1063) {
+      const start = (seat: string, folder: string, extra: string[] = []) => [
+        'seat', 'start', seat, '--project', seat, '--department', 'games/' + folder, '--role', 'orchestrator', '--no-launch', ...extra,
+      ];
+      const prepare = (args: string[]) => {
+        const seat = args[2]!;
+        equal(run(['hub', 'new', seat, '--title', seat]).exit, 0, 'Project created');
+        const result = run([...args, '--preflight']);
+        equal(result.exit, 0, 'seat preview succeeds: ' + result.stderr);
+        return JSON.parse(result.stdout);
+      };
+      const enabled = start('enabled', 'valheim');
+      const disabled = start('disabled', 'sbox', ['--no-default-books']);
+      const pending = start('pending', 'other');
+      const enabledPlan = prepare(enabled);
+      check(enabledPlan.open_books.includes('handbook'), 'preview includes the default Book');
+      equal(run([...enabled, '--plan-id', enabledPlan.plan_id]).exit, 0, 'seat with default created');
+      check(fs.readFileSync(file('enabled', '.open-books'), 'utf8').includes('shelf/handbook'), 'default Book opened');
+      const disabledPlan = prepare(disabled);
+      equal(run([...disabled, '--plan-id', disabledPlan.plan_id]).exit, 0, 'seat without defaults created');
+      equal(fs.readFileSync(file('disabled', '.open-books'), 'utf8').trim(), '', 'no defaults open');
+      equal(fs.readFileSync(file('disabled', '.declined-books'), 'utf8').trim(), 'shelf/handbook', 'default recorded declined');
+      const pendingPlan = prepare(pending);
+      add('new-book');
+      check(run([...pending, '--plan-id', pendingPlan.plan_id]).exit !== 0, 'new rule makes the creation preview stale');
+      check(!fs.existsSync(file('pending', '.open-books')), 'stale creation opens nothing');
+    } else {
+      const script = join(root, 'answers.txt');
+      fs.writeFileSync(script, ['+', 'Line Project', 'games/valheim', '', 'line-seat', '', 'none', '', ''].join('\n'));
+      const line = runCli(['menu', '--script', script, '--width', '200', '--workspace', workspace],
+        { cwd: root, env: { ...env, PATH: root } });
+      equal(line.exit, 0, 'line wizard completed: ' + line.stderr + line.stdout);
+      check(line.stdout.includes('handbook (default: department games)'), 'line wizard labels the default');
+      equal(fs.readFileSync(file('line-seat', '.declined-books'), 'utf8').trim(), 'shelf/handbook', 'line wizard persists the decline');
+
+      const bin = join(root, 'bin');
+      fs.mkdirSync(bin);
+      if (process.platform === 'win32') {
+        fs.writeFileSync(join(bin, 'codex.cmd'), '@echo off\r\nexit /b 0\r\n');
+      } else {
+        fs.writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      }
+      const { delimiter } = await import('node:path');
+      const { screenWizard } = await import('../../src/menu.ts');
+      const saved = { ...process.env };
+      try {
+        Object.assign(process.env, env, { PATH: [bin, saved.PATH].filter(Boolean).join(delimiter) });
+        const replies = ['codex', 'work', 'more', 'department', 'none', 'shelf/handbook', 'done', 'submit', 'make'];
+        const labels: string[] = [];
+        await screenWizard({
+          workspace, options: { cwd: workspace }, claude: true, codex: true, assistant: 'codex',
+          talk: {
+            scripted: false, say: () => {},
+            ask: async () => { throw new Error('Unexpected line prompt'); },
+            screen: async (model: any) => {
+              const screen = typeof model === 'function' ? model('') : model;
+              labels.push(...screen.items.map((item: { text: string }) => item.text));
+              const id = replies.shift();
+              if (!id) throw new Error(['Unexpected screen ' + screen.title, ...(screen.before ?? [])].join('\n'));
+              return id === 'department' ? { id: 'submit', text: 'games/valheim' } : { id, text: '' };
+            },
+          },
+        } as unknown as Parameters<typeof screenWizard>[0], 'wizard-seat');
+        equal(replies.length, 0, 'wizard consumed its inputs');
+        check(labels.some(label => label === '[x] handbook (default: department games)'), 'wizard labels the preselected default');
+        check(labels.some(label => label === '[ ] handbook (default: department games)'), 'unticked default is shown');
+        equal(fs.readFileSync(file('wizard-seat', '.declined-books'), 'utf8').trim(), 'shelf/handbook', 'wizard persists the decline');
+      } finally {
+        for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+        Object.assign(process.env, saved);
+      }
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function sectionDefaultLaunch(section: number): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'w51-default-launch-')));
+  const workspace = join(root, 'library'), registry = join(root, 'registry'), home = join(root, 'home');
+  const { programRoot } = await import('../../src/programroot.ts');
+  const standIn = join(root, 'agent.cjs');
+  const env = { HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+    LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry };
+  const run = (args: string[]) => runCli([...args, '--workspace', workspace], { cwd: root, env });
+  const plan = (args: string[]) => {
+    const result = run([...args, '--preflight', '--json']);
+    equal(result.exit, 0, 'preview succeeds: ' + result.stderr);
+    return JSON.parse(result.stdout).plan_id;
+  };
+  const add = (book: string) => {
+    fs.mkdirSync(join(workspace, 'shelf', book, 'wiki'), { recursive: true });
+    const args = ['seat', 'defaults', 'add', '--role', 'orchestrator', '--book', 'shelf/' + book];
+    equal(run([...args, '--user-confirmed', '--plan-id', plan(args)]).exit, 0, 'default rule added');
+  };
+  const launch = (action = '', seat = 'reader') => runCli(['seat', 'start', 'reader', '--workspace', workspace, '--command', process.execPath, '--', standIn, action, seat], { cwd: root, env });
+  const desk = (seat: string, file = '.open-books') => fs.readFileSync(join(workspace, '.claude', 'seats', seat, file), 'utf8').trim();
+  try {
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'scratch Library initialized');
+    for (const seat of ['reader', 'other']) {
+      equal(run(['hub', 'new', seat, '--title', seat]).exit, 0, 'Project created');
+      const args = ['seat', 'start', seat, '--project', seat, '--no-launch',
+        ...(seat === 'reader' ? ['--department', 'games/sbox', '--role', 'orchestrator'] : [])];
+      equal(run([...args, '--plan-id', plan(args)]).exit, 0, 'seat created before adding any rules');
+    }
+    fs.writeFileSync(standIn, `const { spawnSync } = require('node:child_process');
+const [, , action, seat] = process.argv;
+if (action) {
+  const ran = spawnSync(process.execPath, [${JSON.stringify(join(programRoot(), 'kernel', 'src', 'cli.ts'))}, 'desk', action, 'book', 'handbook', '--location', 'shelf', '--seat', seat], { stdio: 'inherit' });
+  process.exitCode = ran.status ?? 1;
+}
+`);
+    add('handbook');
+    if (section === 1065) {
+      add('missing-book');
+      fs.rmSync(join(workspace, 'shelf', 'missing-book'), { recursive: true });
+      const overview = run(['desk', '--seat', 'reader']);
+      check(overview.stdout.includes('Default Books not open: handbook, missing-book'), 'desk says which defaults are missing');
+      const started = launch();
+      equal(started.exit, 0, 'launch continues after a failed open: ' + started.stderr);
+      check(started.stderr.includes('Opened default Book handbook (role orchestrator)'), 'launch prints the opened default');
+      check(started.stderr.includes('Could not open default Book missing-book'), 'launch prints failed default');
+      equal(desk('reader'), 'shelf/handbook', 'launcher opens only the available default');
+      const other = launch('open', 'other');
+      check(other.exit !== 0, 'the launch claim cannot open Books at another seat');
+      equal(desk('other'), '', 'other seat Desk untouched');
+    } else {
+      equal(launch('close').exit, 0, 'default opened and closed by its seat');
+      equal(desk('reader', '.declined-books'), 'shelf/handbook', 'close records the decline');
+      equal(desk('reader'), '', 'Book closed');
+      const move = ['seat', 'describe', 'reader', '--department', 'games/valheim'];
+      equal(run([...move, '--plan-id', plan(move)]).exit, 0, 'seat moved to a sibling department');
+      add('new-book');
+      equal(launch().exit, 0, 'seat relaunched');
+      equal(desk('reader'), 'shelf/new-book', 'new default opens and declined Book stays closed across move');
+      equal(launch('open').exit, 0, 'seat manually reopens default');
+      equal(desk('reader', '.declined-books'), '', 'reopening clears the decline');
+      check(desk('reader').includes('shelf/handbook'), 'handbook is open again');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function sectionDefaultDescribe(): Promise<void> {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'w51-default-describe-')));
+  const workspace = join(root, 'library'), registry = join(root, 'registry'), home = join(root, 'home');
+  const env = { HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home,
+    LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry };
+  const run = (args: string[]) => {
+    const result = runCli([...args, '--workspace', workspace, '--json'], { cwd: root, env });
+    equal(result.exit, 0, 'command succeeds: ' + result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const description = (args: string[]) => run(['seat', 'describe', ...args, '--preflight']);
+  try {
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'scratch Library initialized');
+    for (const name of ['lead', 'crew']) {
+      run(['hub', 'new', name, '--title', name]);
+      const start = ['seat', 'start', name, '--project', name, '--department', 'games/sbox', '--role', name === 'lead' ? 'orchestrator' : 'performer', '--no-launch'];
+      run([...start, '--plan-id', run([...start, '--preflight']).plan_id]);
+    }
+    const move = ['crew', '--department', 'games/valheim'];
+    const handover = ['crew', '--role', 'orchestrator', '--from', 'lead'];
+    const beforeMove = description(move);
+    const beforeHandover = description(handover);
+    fs.mkdirSync(join(workspace, 'shelf', 'handbook', 'wiki'), { recursive: true });
+    for (const selector of [['--role', 'orchestrator'], ['--department', 'games/valheim']]) {
+      const add = ['seat', 'defaults', 'add', ...selector, '--book', 'shelf/handbook', '--keep'];
+      run([...add, '--user-confirmed', '--plan-id', run([...add, '--preflight']).plan_id]);
+    }
+    const moved = description(move);
+    equal(moved.plan_id, beforeMove.plan_id, 'default rules are outside the describe plan id');
+    check(moved.default_books[0].includes('crew: default Books at next start: shelf/handbook'), 'move previews default open');
+    check(moved.default_books[0].includes('Upkeep grants to add (from local copies): shelf/handbook'), 'move previews keep rule');
+    const changed = description(handover);
+    equal(changed.plan_id, beforeHandover.plan_id, 'handover approval unchanged');
+    check(changed.default_books.some((line: string) => line.startsWith('lead: default Books at next start: none')), 'handover shows outgoing seat');
+    check(changed.default_books.some((line: string) => line.startsWith('crew: default Books at next start: shelf/handbook')), 'handover shows incoming seat');
+    run(['seat', 'describe', ...handover, '--plan-id', changed.plan_id]);
+    for (const seat of ['lead', 'crew']) {
+      const dir = join(workspace, '.claude', 'seats', seat);
+      equal(fs.readFileSync(join(dir, '.open-books'), 'utf8').trim(), '', 'describe does not open defaults');
+      check(!fs.existsSync(join(dir, '.declined-books')), 'describe records no declines');
+    }
+    check(!fs.existsSync(join(workspace, 'internal', 'shared-upkeep')), 'describe writes no grants');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1068(): Promise<void> {
+  await sectionDefaultGrants(1068);
+}
+
+async function section1069(): Promise<void> {
+  await sectionDefaultGrants(1069);
+}
+
+async function sectionDefaultGrants(section: number): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const { setTimeout: sleep } = await import('node:timers/promises');
+  const { McpSession } = await import('../../src/basicmemory.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'w51-default-grants-')));
+  const workspace = join(root, 'library'), registry = join(root, 'registry'), storage = join(root, 'server');
+  const agent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore' });
+  const env = { HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, CLAUDE_PID: String(agent.pid),
+    LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '', LIBRARY_WORKSPACES: registry,
+    AI_LIBRARY_MCP_URL: '', AI_LIBRARY_PROJECT_ID: '', LIBRARY_SHARED_COLLECTION_ROOT: '' };
+  const portFile = join(root, 'port');
+  const put = (file: string, body: string) => {
+    const full = join(root, file);
+    fs.mkdirSync(join(full, '..'), { recursive: true });
+    fs.writeFileSync(full, body);
+  };
+  const answer = (args: string[], more: Record<string, string> = {}) => {
+    const result = runCli([...args, '--workspace', workspace, '--json'], { cwd: root, env: { ...env, ...more } });
+    equal(result.exit, 0, args.slice(0, 3).join(' ') + ': ' + result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const gated = (args: string[]) => {
+    const preview = answer([...args, '--preflight']);
+    return answer([...args, '--user-confirmed', '--plan-id', preview.plan_id]);
+  };
+  put('server/books/README.md', '# Books\n\n## Open a Book\n');
+  put('server/projects/README.md', '# Projects\n\n## Projects\n');
+  const server = spawn(process.execPath, [join(HERE, 'fake-basic-memory.ts'), storage, portFile, '--call-log'], { stdio: 'ignore' });
+  const libraryId = 'bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb';
+  const noteName = (slug: string) => `server/_deskpost/upkeep/${slug}.md`;
+  const read = (file: string) => fs.readFileSync(join(root, file), 'utf8');
+  const grants = ['seat', 'defaults', 'grants', '--seat', 'first'];
+  const preview = () => answer([...grants, '--preflight']);
+  const apply = (id: string, more?: Record<string, string>) => answer([...grants, '--user-confirmed', '--plan-id', id], more);
+  const outcome = (value: any, slug: string) => value.books.find((book: { book: string }) => book.book === 'shared/' + slug);
+  const make = (slug: string) => gated(['shared', 'new-book', slug, '--title', slug, '--summary', 'Default Books fixture.', '--seat', 'first']);
+  const keep = (slug: string) => gated(['seat', 'defaults', 'add', '--role', 'performer', '--book', 'shared/' + slug, '--keep']);
+  try {
+    const until = Date.now() + 15000;
+    while (!fs.existsSync(portFile) || !read('port').trim()) {
+      if (Date.now() > until) throw new Error('The fixture Basic Memory server did not start.');
+      await sleep(50);
+    }
+    equal(runCli(['init', workspace, '--registry-root', registry], { cwd: root, env }).exit, 0, 'scratch Library initialized');
+    answer(['hub', 'new', 'alpha', '--title', 'Alpha']);
+    const enter = ['seat', 'enter', 'first', '--create', '--project', 'alpha', '--agent-pid', String(agent.pid), '--deadline-seconds', '10'];
+    answer([...enter, '--plan-id', answer([...enter, '--preflight']).plan_id]);
+    const describe = ['seat', 'describe', 'first', '--role', 'performer', '--department', 'games'];
+    answer([...describe, '--plan-id', answer([...describe, '--preflight']).plan_id]);
+    const url = 'http://127.0.0.1:' + read('port').trim() + '/mcp';
+    const session = new McpSession(url, 'default-books-test');
+    await session.initialize();
+    put('library/internal/postbox/state.json', JSON.stringify({ schema: 1, url, project_name: 'deskpost',
+      project_id: 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa', library_id: libraryId, library_card: 'Home',
+      server_tools_fingerprint: session.toolsFingerprint, server_tools_proven_fingerprint: session.toolsFingerprint }));
+    answer(['basic-memory', 'setup', '--url', url, '--collection', 'stand-in-collection', '--shared-writes', 'on']);
+    make('demo');
+    keep('demo');
+    const historyFile = 'library/internal/seat-registry-history.jsonl';
+    if (section === 1068) {
+      const retired = '11111111111111111111111111111111';
+      const renamed = '22222222222222222222222222222222';
+      gated(['shared', 'upkeep', 'demo', '--seats', 'first', '--seat', 'first']);
+      put(noteName('demo'), read(noteName('demo')).replace(/^- seat_ids: .*$/m, `- seat_ids: ${retired},${renamed}`).replace(/^- names: .*$/m, '- names: retired,old-name'));
+      make('all');
+      gated(['shared', 'upkeep', 'all', '--any-seat', '--seat', 'first']);
+      keep('all');
+      const any = read(noteName('all'));
+      put('server/books/old/wiki/_book.md', '# Old Book\n');
+      keep('old');
+      const savedHistory = read(historyFile);
+      const checked = preview();
+      equal(outcome(checked, 'demo').missing_seat_ids.length, 1, 'preview proposes only the new live id');
+      equal(outcome(checked, 'demo').local_copy, 'stale', 'preview sees stale local copy');
+      const result = apply(checked.plan_id);
+      equal(outcome(result, 'demo').outcome, 'written', 'additive grant written');
+      check(read(noteName('demo')).includes(`- seat_ids: ${retired},${renamed},`) && read(noteName('demo')).includes('- names: retired,old-name,first'), 'existing ids retain their names');
+      equal(read(noteName('all')), any, 'any-seat grant unchanged');
+      equal(outcome(result, 'old').outcome, 'not written', 'pre-1.6.0 Book cannot gain an upkeep grant');
+      const lines = read(historyFile).slice(savedHistory.length).trim().split('\n').map(line => JSON.parse(line));
+      equal(lines.length, 2, 'one grant history attempt and commit');
+      equal(lines[0].verb, 'seat defaults grants', 'history names grant');
+      check(lines[1].attempt === lines[0].attempt && lines[1].committed === true, 'history commit names its attempt');
+      equal(outcome(preview(), 'demo').outcome, 'unchanged', 'rerun has nothing to write');
+    } else {
+      const stale = preview();
+      gated(['shared', 'upkeep', 'demo', '--any-seat', '--seat', 'first']);
+      const before = read(historyFile);
+      equal(outcome(apply(stale.plan_id), 'demo').outcome, 'refused', 'changed remote note refused');
+      equal(read(historyFile), before, 'refused grant records no history');
+      make('recovery');
+      keep('recovery');
+      const interrupted = apply(preview().plan_id, { LIBRARY_DEFAULT_GRANTS_FAULT: 'local-copy' });
+      check(outcome(interrupted, 'recovery').reason.includes('Local copy publication failed'), 'remote write and local copy failure distinguished');
+      check(fs.existsSync(join(root, noteName('recovery'))), 'grant landed remotely');
+      put('server/.calls.log', '');
+      const refresh = preview();
+      equal(outcome(refresh, 'recovery').outcome, 'would refresh local copy', 'rerun detects missing receipt');
+      equal(outcome(apply(refresh.plan_id), 'recovery').outcome, 'local copy refreshed', 'rerun repairs the local receipt');
+      check(!/bm_write|bm_edit|bm_delete/.test(read('server/.calls.log')), 'refresh does not write remotely');
+
+      make('history-gap');
+      keep('history-gap');
+      const historyPlan = preview();
+      const plannedIds = outcome(historyPlan, 'history-gap').missing_seat_ids;
+      const withoutHistory = outcome(apply(historyPlan.plan_id, { LIBRARY_DEFAULT_GRANTS_FAULT: 'history' }), 'history-gap');
+      equal(withoutHistory.outcome, 'written', 'confirmed grant stays written after history failure');
+      equal(withoutHistory.reason, 'Remote grant written. History not recorded: Fixture interruption before history append.', 'reported failure names history');
+      equal(plannedIds.length, 1, 'one seat receives the grant');
+      check(read(noteName('history-gap')).includes('- seat_ids: ' + plannedIds[0]), 'remote grant contains the previewed seat ID');
+      equal(outcome(preview(), 'history-gap').outcome, 'unchanged', 'local receipt was published despite the history failure');
+    }
+  } finally {
+    server.kill();
+    agent.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function section1074(kind = 'order'): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const { spawn } = await import('node:child_process');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-aside-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const timing of kind === 'cancel' ? ['before-rename', 'barrier', 'copy', 'rewrite', 'copy-verify', 'before-stat', 'promote'] : ['copy']) {
+      const folder = join(root, timing), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: timing }));
+      fs.writeFileSync(join(workspace, 'payload.txt'), 'original');
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: timing, path: workspace }] }));
+      const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+      const preview = await move.previewLibraryMove(options); equal(preview.refusal, null, '1074: fixture preview');
+      if (kind === 'held') {
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: workspace, windowsHide: true, stdio: 'ignore' });
+        const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+        try {
+          await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+          const held = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id });
+          equal((held.value as any)?.state, 'held', '1074: a real Windows working-folder hold is met before copying');
+          equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original', '1074: held source bytes are unchanged');
+          check(!fs.readdirSync(folder).some(name => name.startsWith('target') || name.startsWith('source.moved-')), '1074: held rename leaves no copied files or aside');
+        } finally { child.kill(); await exited; }
+      }
+      let cancelled = false, copiedAside = false, changed = false;
+      const result = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id,
+        control: { cancelled: () => cancelled, progress: event => {
+          if (event.phase === 'copy') {
+            copiedAside = !fs.existsSync(workspace) && fs.readdirSync(folder).some(name => name.startsWith('source.moved-'));
+            if (kind === 'drift' && !changed) {
+              const aside = join(folder, fs.readdirSync(folder).find(name => name.startsWith('source.moved-')) ?? 'source');
+              fs.appendFileSync(join(aside, 'payload.txt'), ' retained write'); changed = true;
+            }
+          }
+          if (kind === 'stat-drift' && event.phase === 'before-stat') {
+            const aside = join(folder, fs.readdirSync(folder).find(name => name.startsWith('source.moved-'))!);
+            fs.appendFileSync(join(aside, 'payload.txt'), ' retained write');
+          }
+          if (kind === 'cancel' && event.phase === timing) cancelled = true;
+        } } });
+      if (kind === 'order' || kind === 'held') {
+        equal(result.refusal, null, '1074: new move completes: ' + result.refusal);
+        check(copiedAside, '1074: source is set aside before the first copied file');
+        if (result.value) {
+          const journal = JSON.parse(fs.readFileSync(join((result.value as any).journal, 'journal.json'), 'utf8'));
+          equal(journal.order, 'aside-first', '1074: new journals explicitly record their order');
+          check(typeof journal.sourceIdentity === 'string' && journal.sourceIdentity.length > 0, '1074: journal binds the source folder identity');
+        }
+      } else if (kind === 'cancel') {
+        if (timing === 'promote') { equal(result.refusal, null, '1075: cancellation from promotion finishes safely'); check(fs.existsSync(destination), '1075: post-promotion destination remains'); }
+        else {
+          equal((result as any).exitCode, 130, '1075: pre-promotion cancellation exit at ' + timing);
+          equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original', '1075: cancelled source restored at ' + timing);
+          check(!fs.existsSync(destination), '1075: no promoted destination after cancellation at ' + timing);
+          check(!fs.existsSync(join(workspace, 'internal/maintenance-barrier.json')), '1075: source barrier removed at ' + timing);
+        }
+      } else {
+        check(result.refusal?.includes('payload.txt') === true, '1076: changed source is named');
+        equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original retained write', '1076: abort restores the changed source bytes');
+        check(!fs.existsSync(destination), '1076: drift prevents promotion');
+      }
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+async function section1075(): Promise<void> {
+  await section1074('cancel');
+  const move = await import('../../src/librarymove.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-abort-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const variant of ['aside', 'restored', 'identity', 'occupied', 'link', 'foreign']) {
+      const folder = join(root, variant), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: variant }));
+      fs.writeFileSync(join(workspace, 'payload.txt'), 'original');
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: variant, path: workspace }] }));
+      const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+      const preview = await move.previewLibraryMove(options); let cancelled = false;
+      const failed = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id,
+        faultAt: variant === 'restored' ? 'abort-source:after-done' : 'abort-intent:after-done',
+        control: { cancelled: () => cancelled, progress: event => { if (event.phase === 'copy') cancelled = true; } } });
+      check(failed.refusal?.includes('Injected move fault') === true, '1075: interrupted abort: ' + variant);
+      const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      const journalFile = join(registryRoot, 'move-journals', id, 'journal.json');
+      const journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+      equal(journal.state, 'abort-intent', '1075: crash retains abort intent');
+      const actual = fs.existsSync(journal.aside) ? journal.aside : workspace;
+      fs.appendFileSync(join(actual, 'payload.txt'), ' after crash');
+      if (variant === 'identity' || variant === 'link') {
+        fs.renameSync(actual, actual + '.saved');
+        if (variant === 'link') fs.symlinkSync(actual + '.saved', actual, process.platform === 'win32' ? 'junction' : 'dir');
+        else fs.mkdirSync(actual);
+      }
+      if (variant === 'occupied') { fs.mkdirSync(workspace); fs.writeFileSync(join(workspace, 'keep'), 'foreign bytes'); }
+      if (variant === 'foreign') fs.writeFileSync(join(actual, 'internal/maintenance-barrier.json'), JSON.stringify({ run_id: 'foreign' }));
+      const recovery = await move.moveLibrary({ ...options, rollback: id, destination: undefined, preflight: true });
+      if (['identity', 'occupied', 'link', 'foreign'].includes(variant)) {
+        check(recovery.refusal !== null || (recovery.value as any)?.ready === false, '1075: unsafe restoration is refused: ' + variant);
+        check(!fs.existsSync(destination), '1075: unsafe restoration never promotes a copy');
+        if (variant === 'occupied') equal(fs.readFileSync(join(workspace, 'keep'), 'utf8'), 'foreign bytes', '1075: occupied source is untouched');
+      } else {
+        equal(recovery.refusal, null, '1075: interrupted abort can be previewed');
+        const restored = await move.moveLibrary({ ...options, rollback: id, destination: undefined, preflight: false, userConfirmed: true, planId: (recovery.value as any)?.plan_id });
+        equal(restored.refusal, null, '1075: interrupted abort completes: ' + variant + ': ' + restored.refusal);
+        equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original after crash', '1075: interrupted abort preserves later source bytes');
+        equal(JSON.parse(fs.readFileSync(journalFile, 'utf8')).state, 'aborted', '1075: completed abort is recorded');
+      }
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+}
+async function section1076(): Promise<void> {
+  await section1074('drift');
+  await section1074('stat-drift');
+  const move = await import('../../src/librarymove.ts'), { spawn, spawnSync } = await import('node:child_process');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-retained-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const phase of ['copy', 'before-stat']) {
+      const folder = join(root, phase), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: phase }));
+      const file = join(workspace, 'payload.txt'); fs.writeFileSync(file, 'original');
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: phase, path: workspace }] }));
+      const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+      const preview = await move.previewLibraryMove(options);
+      const ready = join(folder, 'ready'), trigger = join(folder, 'trigger'), done = join(folder, 'done'), script = join(folder, 'writer.mjs'), waiter = join(folder, 'waiter.mjs');
+      const nativeWriter = `const {dlopen,FFIType:t,ptr}=await import('bun:ffi'); const api=dlopen('kernel32.dll',{CreateFileW:{args:[t.ptr,t.u32,t.u32,t.ptr,t.u32,t.u32,t.i64_fast],returns:t.i64_fast},WriteFile:{args:[t.i64_fast,t.ptr,t.u32,t.ptr,t.ptr],returns:t.i32},FlushFileBuffers:{args:[t.i64_fast],returns:t.i32}}).symbols; const name=Buffer.from(${JSON.stringify(file)}+'\0','utf16le'); const handle=api.CreateFileW(ptr(name),4,7,null,3,128,0); if(handle===-1)throw new Error('retained writer open failed'); const append=()=>{const bytes=Buffer.from(' retained write'),written=new Uint32Array(1);if(!api.WriteFile(handle,ptr(bytes),bytes.length,ptr(written),null))throw new Error('retained write failed');api.FlushFileBuffers(handle);};`;
+      fs.writeFileSync(script, `import fs from 'node:fs'; ${process.platform === 'win32' ? nativeWriter : `const fd=fs.openSync(${JSON.stringify(file)},'a'); const append=()=>{fs.writeSync(fd,' retained write');fs.fsyncSync(fd);};`} fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); const poll=setInterval(()=>{if(fs.existsSync(${JSON.stringify(trigger)})){clearInterval(poll);append();fs.writeFileSync(${JSON.stringify(done)},'done');}},10); setInterval(()=>{},1000);`);
+      fs.writeFileSync(waiter, `import fs from 'node:fs'; const until=Date.now()+15000; while(!fs.existsSync(${JSON.stringify(done)}) && Date.now()<until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); process.exit(fs.existsSync(${JSON.stringify(done)})?0:1);`);
+      const child = spawn(process.platform === 'win32' ? 'bun' : process.execPath, [script], { cwd: folder, windowsHide: true, stdio: 'ignore' });
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        const deadline = Date.now() + 15000;
+        while (!fs.existsSync(ready) && child.exitCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        check(fs.existsSync(ready), '1076: real retained-handle writer is ready');
+        let written = false;
+        const result = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id,
+          control: { cancelled: () => false, progress: event => {
+            if (!written && event.phase === phase && (phase !== 'copy' || event.file)) {
+              written = true; fs.writeFileSync(trigger, 'write');
+              equal(spawnSync(process.execPath, [waiter], { windowsHide: true, timeout: 20000 }).status, 0, '1076: retained child appended at ' + phase);
+            }
+          } } });
+        if (process.platform === 'win32' && (result.value as any)?.state === 'held') {
+          console.log('1076: Windows denied the folder rename with a FILE_SHARE_DELETE writer; retained-writer append proof is incomplete on this route. Linux must prove it.');
+          equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original', '1076: Windows held rename preserves the source');
+          check(!written, '1076: Windows hold prevents the copy checkpoint');
+        } else {
+          check(result.refusal?.includes('payload.txt') === true, '1076: retained writer names the changed file at ' + phase + ': ' + JSON.stringify(result));
+          equal(fs.readFileSync(join(workspace, 'payload.txt'), 'utf8'), 'original retained write', '1076: retained child bytes survive restoration at ' + phase);
+        }
+        check(!fs.existsSync(destination), '1076: retained writer prevents promotion at ' + phase);
+      } finally { child.kill(); await exited; }
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+}
+
+async function section1077(drift = false): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-orders-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  let serial = 0;
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const legacyOrder of [true, false]) for (const point of drift ? ['promote:before-done', 'registry:after-done', 'complete'] : ['barrier:before-done', 'copy-file:before-done', 'promote:before-done', 'cutover:after-done', 'pointer-0:before-done', 'registry:after-done']) for (const recovery of ['rollback', 'resume'] as const) {
+      if (legacyOrder && point === 'promote:before-done' && (drift || recovery === 'resume')) continue;
+      if (recovery === 'resume' && ['barrier:before-done', 'copy-file:before-done'].includes(point)) continue;
+      const folder = join(root, String(++serial)), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'orders' }));
+      fs.writeFileSync(join(workspace, 'payload.txt'), 'original');
+      const registry = join(registryRoot, 'workspaces.json'), registryBefore = JSON.stringify({ workspaces: [{ id: 'orders', path: workspace }] });
+      fs.writeFileSync(registry, registryBefore);
+      const pointer = join(root, 'home/.claude.json'); fs.mkdirSync(join(pointer, '..'), { recursive: true }); fs.writeFileSync(pointer, JSON.stringify({ path: workspace }));
+      const options = { workspace, destination, registryRoot, legacyOrder, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+      const preview = await move.previewLibraryMove(options);
+      let appended = false;
+      const stopped = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id, faultAt: point === 'complete' ? undefined : point,
+        control: { cancelled: () => false, progress: event => {
+          if (drift && !legacyOrder && event.phase === 'promote' && !appended) {
+            const aside = join(folder, fs.readdirSync(folder).find(name => name.startsWith('source.moved-'))!);
+            fs.appendFileSync(join(aside, 'payload.txt'), ' late'); appended = true;
+          }
+        } } });
+      const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      const journalFile = join(registryRoot, 'move-journals', id, 'journal.json'), journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+      if (drift && legacyOrder) fs.appendFileSync(join(fs.existsSync(journal.aside) ? journal.aside : workspace, 'payload.txt'), ' late');
+      if (point === 'complete' && !legacyOrder) {
+        equal(stopped.refusal, null, '1078: a late old-folder write does not strand completion: ' + stopped.refusal);
+        check(journal.aside_drift?.includes('payload.txt'), '1078: completed journal records late drift');
+      }
+      const recoverPreview = await move.moveLibrary({ ...options, destination: undefined, [recovery]: id, preflight: true });
+      if (drift && legacyOrder) {
+        check(recoverPreview.refusal?.includes('payload.txt') === true, '1078: legacy recovery keeps strict source drift refusal');
+        continue;
+      }
+      equal(recoverPreview.refusal, null, '1077: recovery preview ' + point + ': ' + recoverPreview.refusal);
+      const result = await move.moveLibrary({ ...options, destination: undefined, [recovery]: id, preflight: false, userConfirmed: true, planId: (recoverPreview.value as any)?.plan_id });
+      equal(result.refusal, null, '1077: ' + recovery + ' ' + point + ' legacy=' + legacyOrder + ': ' + result.refusal);
+      if (result.refusal) continue;
+      const active = recovery === 'rollback' ? workspace : destination;
+      equal(fs.readFileSync(join(active, 'payload.txt'), 'utf8'), 'original' + (drift && recovery === 'rollback' ? ' late' : ''), '1077: correct active bytes survive recovery');
+      if (recovery === 'rollback') equal(fs.readFileSync(registry, 'utf8'), registryBefore, '1077: exact original registry restored');
+      else equal(JSON.parse(fs.readFileSync(registry, 'utf8')).workspaces[0].path, destination, '1077: resumed registry names destination');
+      if (drift) check(JSON.parse(fs.readFileSync(journalFile, 'utf8')).aside_drift?.includes('payload.txt'), '1078: recovery records old-folder drift');
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+async function section1078(): Promise<void> {
+  await section1077(true);
+}
+
+async function section1079(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const resolve = (move as any).resolveMoveWorkspace;
+  check(typeof resolve === 'function', '1079: move-specific resolution exists'); if (!resolve) return;
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-resolution-'))), registryRoot = join(root, 'registry');
+  const previous = process.cwd();
+  try {
+    process.chdir(root); fs.mkdirSync(registryRoot);
+    const options = { destination: join(root, 'destination'), registryRoot, preflight: true };
+    const registry = join(registryRoot, 'workspaces.json');
+    let refused = '';
+    try { await resolve(options); } catch (error) { refused = (error as Error).message; }
+    check(refused.includes('No Library marker'), '1079: absent registry and no marker refuse');
+    const first = join(root, 'first'), second = join(root, 'second');
+    for (const folder of [first, second]) { fs.mkdirSync(join(folder, '.library'), { recursive: true }); fs.mkdirSync(join(folder, 'internal')); fs.writeFileSync(join(folder, '.library/workspace.json'), JSON.stringify({ id: folder })); }
+    fs.writeFileSync(registry, JSON.stringify({ workspaces: [{ path: first, id: first }] }));
+    equal(await resolve(options), first, '1079: one registered Library is found outside any Library');
+    fs.writeFileSync(registry, '{'); process.chdir(second);
+    equal(await resolve(options), second, '1079: nearest marker wins before reading a malformed registry');
+    equal(await resolve({ ...options, workspace: first }), first, '1079: explicit workspace overrides the nearest marker');
+    process.chdir(root);
+    try { await resolve(options); } catch (error) { refused = (error as Error).message; }
+    check(refused.includes('JSON'), '1079: malformed registry is an honest refusal');
+    fs.writeFileSync(registry, JSON.stringify({ workspaces: [{ path: first, id: first }, { path: second, id: second }] }));
+    const before = fs.readFileSync(registry, 'utf8');
+    try { await resolve({ ...options, chooseWorkspace: null }); } catch (error) { refused = (error as Error).message; }
+    check(refused.includes(first) && refused.includes(second) && refused.includes('--workspace'), '1079: plain multi-Library refusal lists both ready commands');
+    let asked = 0;
+    equal(await resolve({ ...options, chooseWorkspace: async (choices: string[]) => { asked++; same(choices, [first, second], '1079: picker receives every registration'); return second; } }), second, '1079: terminal choice selects the requested source');
+    equal(asked, 1, '1079: source selection asks once');
+    try { await resolve({ ...options, chooseWorkspace: async () => join(root, 'not-registered') }); } catch (error) { refused = (error as Error).message; }
+    check(refused.includes('not registered') && refused.includes('--workspace'), '1079: an unregistered picker result is refused');
+    equal(fs.readFileSync(registry, 'utf8'), before, '1079: resolution leaves registry bytes unchanged');
+  } finally { process.chdir(previous); fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1080(): Promise<void> {
+  const moduleFile = join(PROGRAM_ROOT, 'kernel/src/librarymovescreen.ts');
+  check(fs.existsSync(moduleFile), '1080: move session controller exists'); if (!fs.existsSync(moduleFile)) return;
+  const { MoveSession } = await import('../../src/librarymovescreen.ts'), { EventEmitter } = await import('node:events');
+  for (const action of ['success', 'waiting', 'escape', 'cancel', 'interrupt', 'moving', 'promoted', 'error', 'end', 'stale']) {
+    const input = new EventEmitter() as any, output = new EventEmitter() as any;
+    const modes: boolean[] = []; let transcript = '', applied = 0, ready = 0, checks = 0;
+    input.isRaw = false; input.setRawMode = (raw: boolean) => { modes.push(raw); input.isRaw = raw; }; input.resume = () => {}; input.pause = () => {};
+    output.columns = 80; output.rows = 24;
+    output.write = (text: string) => {
+      transcript += text;
+      if (/Moved\.|Cancelled\.|The Library could not be moved/.test(text)) setImmediate(() => input.emit('data', '\r'));
+      if (text.includes('Ready.')) {
+        ready++;
+        setImmediate(() => {
+          if (action === 'escape') input.emit('data', '\x1b');
+          else if (action === 'interrupt') input.emit('data', '\x03');
+          else if (action === 'cancel') input.emit('data', '\x1b[B\r');
+          else if (action === 'end') input.emit('end');
+          else input.emit('data', '\r');
+        });
+      }
+    };
+    const session = new MoveSession({ check: async () => {
+      checks++;
+      if (action === 'waiting' && checks === 1) return { refusal: null, value: { ready: false, plan_id: 'one', blockers: [{ kind: 'process', name: 'Editor', detail: 'still open', fix: 'Close it.' }] } };
+      return { refusal: null, value: { ready: true, plan_id: action === 'stale' && checks > 1 ? 'changed' : 'one', workspace: '/source', destination: '/target', blockers: [] } };
+    }, apply: async (_id, control) => {
+      applied++; equal(input.listenerCount('data'), 1, '1080: one input listener through apply');
+      if (action === 'error') throw new Error('fixture engine failed');
+      for (const phase of ['barrier', 'copy', 'rewrite', 'copy-verify', 'before-stat', 'promote', 'registry']) {
+        control.progress({ phase });
+        if (action === 'moving' && phase === 'copy') input.emit('data', '\x03');
+        if (action === 'promoted' && phase === 'promote') { input.emit('data', '\x03'); input.emit('data', '\x03'); }
+        equal(input.listenerCount('data'), 1, '1080: no input gap at ' + phase);
+        if (control.cancelled() && phase !== 'promote' && action !== 'promoted') return { refusal: null, value: { state: 'aborted', written: false }, exitCode: 130 };
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      return { refusal: null, value: { workspace: '/target', things_for_you: [] } };
+    } }, { terminal: { input, output }, colour: false, refreshMilliseconds: 1 });
+    let result: any, failure = '';
+    try { result = await session.run(); } catch (error) { failure = (error as Error).message; }
+    same(modes, [true, false], '1080: raw mode restored: ' + action);
+    equal(input.listenerCount('data'), 0, '1080: input listener removed: ' + action);
+    check(transcript.includes('\x1b[?25h') && !input.isRaw, '1080: terminal restored: ' + action);
+    if (['escape', 'cancel', 'interrupt', 'end'].includes(action)) { equal(applied, 0, '1080: cancellation before write: ' + action); equal(result?.exitCode, 130, '1080: cancellation exit: ' + action); }
+    if (action === 'moving') equal(result?.exitCode, 130, '1080: live cancellation reaches engine');
+    if (action === 'promoted') check(transcript.includes('Almost done; this cannot stop safely now'), '1080: repeated post-promotion interrupt is acknowledged');
+    if (action === 'error') equal(failure, 'fixture engine failed', '1080: thrown engine error is restored and returned');
+    if (action === 'stale') check(checks >= 3 && ready >= 2 && applied === 1, '1080: changed confirmation returns to checking before applying');
+    if (action === 'waiting') check(checks >= 3 && applied === 1 && transcript.includes('Editor'), '1080: waiting blockers refresh and the same controller reaches ready');
+  }
+}
+
+async function section1088(linux = false, scenario: 'cancel-copy' | 'pick-move' | 'pick-escape' | 'resume' = 'cancel-copy'): Promise<void> {
+  const section = scenario === 'pick-move' ? 1093 : scenario === 'pick-escape' ? 1094 : scenario === 'resume' ? 1095 : linux ? 1089 : 1088;
+  const { spawnSync } = await import('node:child_process'), { pathToFileURL } = await import('node:url');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-terminal-')));
+  const workspace = join(root, 'source'), destination = join(root, 'target'), registryRoot = join(root, 'registry');
+  try {
+    fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+    fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'terminal' }));
+    fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'terminal', path: workspace }] }));
+    for (let index = 0; index < 96; index++) fs.writeFileSync(join(workspace, 'payload-' + index + '.bin'), Buffer.alloc(1024 * 1024, 73));
+    const second = join(root, 'second'), home = join(root, 'home');
+    const { createHash } = await import('node:crypto');
+    const snapshot = (directory: string): string => {
+      if (!fs.existsSync(directory)) return 'absent';
+      return JSON.stringify(fs.readdirSync(directory, { recursive: true }).map(String).sort().map(name => {
+        const file = join(directory, name), stat = fs.lstatSync(file);
+        return [name, stat.isDirectory() ? 'directory' : createHash('sha256').update(fs.readFileSync(file)).digest('hex')];
+      }));
+    };
+    if (scenario.startsWith('pick-')) {
+      fs.mkdirSync(join(second, '.library'), { recursive: true }); fs.mkdirSync(join(second, 'internal'));
+      fs.writeFileSync(join(second, '.library/workspace.json'), JSON.stringify({ id: 'chosen' })); fs.writeFileSync(join(second, 'chosen.txt'), 'chosen Library bytes');
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'terminal', path: workspace }, { id: 'chosen', path: second }] }));
+    }
+    const before = [workspace, second, registryRoot, home].map(snapshot);
+    const driver = join(root, 'driver.ts'), resultFile = join(root, 'result.json'), transcript = join(root, 'transcript.log'), host = join(root, 'host.py'), config = join(root, 'host.json');
+    const importPath = (name: string) => linux ? pathToFileURL(join(PROGRAM_ROOT, 'kernel/src', name)).href : join(PROGRAM_ROOT, 'kernel/src', name);
+    const modeReader = `let consoleApi=null;if(process.platform==='win32'){const {dlopen,FFIType:t}=await import('bun:ffi');consoleApi=dlopen('kernel32.dll',{GetStdHandle:{args:[t.i32],returns:t.i64_fast},GetConsoleMode:{args:[t.i64_fast,t.ptr],returns:t.i32}}).symbols;}const modes=()=>{if(!consoleApi)return null;return [-10,-11].map(which=>{const mode=new Uint32Array(1);if(!consoleApi.GetConsoleMode(consoleApi.GetStdHandle(which),mode))throw new Error('console mode unreadable');return mode[0];}).join(',');};`;
+    const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' };
+    fs.writeFileSync(driver, `import fs from 'node:fs';import {MoveSession} from ${JSON.stringify(importPath('librarymovescreen.ts'))};import {moveLibrary} from ${JSON.stringify(importPath('librarymove.ts'))};${modeReader}const before=modes();const options=${JSON.stringify(options)};options.processTable=()=>[];const raw=process.stdin.isRaw??false;const session=new MoveSession({check:()=>moveLibrary({...options,preflight:true}),apply:(planId,control)=>moveLibrary({...options,preflight:false,userConfirmed:true,planId,control})},{colour:false});const reply=await session.run();fs.writeFileSync(${JSON.stringify(resultFile)},JSON.stringify({reply,raw_before:raw,raw_after:process.stdin.isRaw,tty:process.stdin.isTTY,modes_before:before,modes_after:modes()}));console.log('SMOKE_RESTORED');`);
+    if (scenario !== 'cancel-copy') {
+      // Real command, picker, controller and engine. Only process observations are isolated.
+      const commandOptions = { destination, registryRoot, preflight: false, destinationRule: 'any' };
+      const setupResume = `const plan=await moveLibrary({...options,workspace:${JSON.stringify(workspace)},preflight:true});const stopped=await moveLibrary({...options,workspace:${JSON.stringify(workspace)},preflight:false,userConfirmed:true,planId:plan.value.plan_id,faultAt:'registry:after-done'});if(!stopped.refusal?.includes('Injected move fault'))throw new Error('resume setup did not stop');options.resume=fs.readdirSync(${JSON.stringify(join(registryRoot, 'move-journals'))}).find(name=>name.startsWith('move-'));delete options.destination;`;
+      fs.writeFileSync(driver, `import fs from 'node:fs';import {runLibraryMoveCommand,moveLibrary} from ${JSON.stringify(importPath('librarymove.ts'))};${modeReader}const before=modes();const raw=process.stdin.isRaw??false;let adds=0,max=0,checks=0;process.stdin.on('newListener',event=>{if(event==='data'){adds++;max=Math.max(max,process.stdin.listenerCount('data')+1);}});const options=${JSON.stringify(commandOptions)};options.processTable=()=>${scenario === 'pick-move' ? "++checks<=2?[{pid:990099,parentPid:0,name:'orca'}]:[]" : '[]'};${scenario === 'resume' ? setupResume : ''}const reply=await runLibraryMoveCommand(options);fs.writeFileSync(${JSON.stringify(resultFile)},JSON.stringify({reply,raw_before:raw,raw_after:process.stdin.isRaw??false,tty:process.stdin.isTTY,modes_before:before,modes_after:modes(),data_adds:adds,max_listeners:max,listeners_after:process.stdin.listenerCount('data'),checks}));console.log('SMOKE_RESTORED');process.exitCode=reply.exitCode??(reply.refusal?1:0);`);
+    }
+    let command: string[];
+    if (linux) command = [process.execPath, driver];
+    else {
+      const executable = join(root, 'deskpost.exe');
+      const built = spawnSync('bun', ['build', '--compile', driver, '--outfile', executable], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+      equal(built.status, 0, section + ': compiled real-engine terminal fixture: ' + built.stderr); if (built.status !== 0) return;
+      command = [executable];
+    }
+    // Fixture host follows Microsoft's pseudoconsole startup and redirected-handle guidance.
+    // https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session
+    // https://github.com/microsoft/terminal/discussions/15814
+    fs.writeFileSync(host, "import ctypes, json, os, subprocess, sys, threading, time\n\ncfg = json.load(open(sys.argv[1], encoding='utf-8'))\nos.environ.update(cfg.get('env', {}))\ncaptured = bytearray()\nsent_enter = sent_escape = sent_receipt = picked = False\n\ndef drive(chunk, send):\n    global sent_enter, sent_escape, sent_receipt, picked\n    captured.extend(chunk)\n    scenario = cfg.get('scenario', 'cancel-copy')\n    if scenario.startswith('pick-') and not picked and b'Which Library do you want to move?' in captured:\n        picked = True\n        if scenario == 'pick-escape':\n            send(b'\\x1b'); sent_escape = True\n        else:\n            send(b'\\x1b[B\\r')\n    if not sent_enter and b'Ready.' in captured:\n        send(b'\\r'); sent_enter = True\n    trigger = b'Moving the Library' if scenario == 'resume' else b'Step 2 of 4: copying files'\n    if scenario in ('cancel-copy', 'resume') and sent_enter and not sent_escape and trigger in captured:\n        send(b'\\x1b'); sent_escape = True\n    if (sent_enter or sent_escape) and not sent_receipt and (b'Cancelled.' in captured or b'Moved.' in captured or b'The Library could not be moved' in captured):\n        send(b'\\r'); sent_receipt = True\n\nif os.name == 'nt':\n    from ctypes import wintypes as w\n    k = ctypes.WinDLL('kernel32', use_last_error=True)\n    class COORD(ctypes.Structure):\n        _fields_ = [('X', ctypes.c_short), ('Y', ctypes.c_short)]\n    class STARTUPINFO(ctypes.Structure):\n        _fields_ = [('cb', w.DWORD), ('lpReserved', w.LPWSTR), ('lpDesktop', w.LPWSTR), ('lpTitle', w.LPWSTR), ('dwX', w.DWORD), ('dwY', w.DWORD), ('dwXSize', w.DWORD), ('dwYSize', w.DWORD), ('dwXCountChars', w.DWORD), ('dwYCountChars', w.DWORD), ('dwFillAttribute', w.DWORD), ('dwFlags', w.DWORD), ('wShowWindow', w.WORD), ('cbReserved2', w.WORD), ('lpReserved2', ctypes.c_void_p), ('hStdInput', w.HANDLE), ('hStdOutput', w.HANDLE), ('hStdError', w.HANDLE)]\n    class STARTUPINFOEX(ctypes.Structure):\n        _fields_ = [('StartupInfo', STARTUPINFO), ('lpAttributeList', ctypes.c_void_p)]\n    class PROCESSINFO(ctypes.Structure):\n        _fields_ = [('hProcess', w.HANDLE), ('hThread', w.HANDLE), ('dwProcessId', w.DWORD), ('dwThreadId', w.DWORD)]\n    signatures = {\n        'CreatePipe': ([ctypes.POINTER(w.HANDLE), ctypes.POINTER(w.HANDLE), ctypes.c_void_p, w.DWORD], w.BOOL),\n        'CreatePseudoConsole': ([COORD, w.HANDLE, w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)], ctypes.c_long),\n        'ClosePseudoConsole': ([w.HANDLE], None),\n        'CloseHandle': ([w.HANDLE], w.BOOL),\n        'InitializeProcThreadAttributeList': ([ctypes.c_void_p, w.DWORD, w.DWORD, ctypes.POINTER(ctypes.c_size_t)], w.BOOL),\n        'UpdateProcThreadAttribute': ([ctypes.c_void_p, w.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p], w.BOOL),\n        'DeleteProcThreadAttributeList': ([ctypes.c_void_p], None),\n        'CreateProcessW': ([w.LPCWSTR, w.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, w.BOOL, w.DWORD, ctypes.c_void_p, w.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(PROCESSINFO)], w.BOOL),\n        'ReadFile': ([w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p], w.BOOL),\n        'WriteFile': ([w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p], w.BOOL),\n        'WaitForSingleObject': ([w.HANDLE, w.DWORD], w.DWORD),\n        'GetExitCodeProcess': ([w.HANDLE, ctypes.POINTER(w.DWORD)], w.BOOL),\n        'TerminateProcess': ([w.HANDLE, w.UINT], w.BOOL),\n    }\n    for name, (args, result) in signatures.items():\n        getattr(k, name).argtypes = args; getattr(k, name).restype = result\n    def require(ok):\n        if not ok: raise ctypes.WinError(ctypes.get_last_error())\n    ir, iw, or_, ow, console = w.HANDLE(), w.HANDLE(), w.HANDLE(), w.HANDLE(), w.HANDLE()\n    require(k.CreatePipe(ctypes.byref(ir), ctypes.byref(iw), None, 0)); require(k.CreatePipe(ctypes.byref(or_), ctypes.byref(ow), None, 0))\n    status = k.CreatePseudoConsole(COORD(80, 24), ir, ow, 0, ctypes.byref(console))\n    if status: raise RuntimeError('CreatePseudoConsole HRESULT ' + str(status))\n    size = ctypes.c_size_t(); k.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))\n    attributes = ctypes.create_string_buffer(size.value)\n    require(k.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)))\n    require(k.UpdateProcThreadAttribute(attributes, 0, 0x20016, console, ctypes.sizeof(w.HANDLE), None, None))\n    startup = STARTUPINFOEX(); startup.StartupInfo.cb = ctypes.sizeof(startup); startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)\n    # Null standard handles plus STARTF_USESTDHANDLES prevent inheriting the host's redirected pipes.\n    # https://github.com/microsoft/terminal/discussions/15814\n    startup.StartupInfo.dwFlags = 0x100\n    info = PROCESSINFO(); command = ctypes.create_unicode_buffer(subprocess.list2cmdline(cfg['command']))\n    require(k.CreateProcessW(None, command, None, None, False, 0x80000 | 0x400, None, cfg['cwd'], ctypes.byref(startup), ctypes.byref(info)))\n    k.CloseHandle(ir); k.CloseHandle(ow)\n    k.CloseHandle(info.hThread)\n    def send(data):\n        count = w.DWORD(); require(k.WriteFile(iw, data, len(data), ctypes.byref(count), None))\n    errors = []\n    def read_output():\n        try:\n            buffer = ctypes.create_string_buffer(65536); count = w.DWORD()\n            while k.ReadFile(or_, buffer, len(buffer), ctypes.byref(count), None) and count.value:\n                drive(buffer.raw[:count.value], send)\n        except Exception as error: errors.append(str(error))\n    reader = threading.Thread(target=read_output, daemon=True); reader.start()\n    if k.WaitForSingleObject(info.hProcess, 60000) == 258:\n        k.TerminateProcess(info.hProcess, 1); k.WaitForSingleObject(info.hProcess, 10000); open(cfg['transcript'], 'wb').write(captured); raise RuntimeError('terminal smoke deadline')\n    code = w.DWORD(); require(k.GetExitCodeProcess(info.hProcess, ctypes.byref(code)))\n    k.ClosePseudoConsole(console); k.CloseHandle(iw); reader.join(5); k.CloseHandle(or_); k.CloseHandle(info.hProcess); k.DeleteProcThreadAttributeList(attributes)\n    if errors: raise RuntimeError('; '.join(errors))\n    child_exit = code.value\nelse:\n    import fcntl, pty, select, struct, termios\n    master, slave = pty.openpty(); fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))\n    before = termios.tcgetattr(slave)\n    child = subprocess.Popen(cfg['command'], cwd=cfg['cwd'], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)\n    deadline = time.monotonic() + 60\n    try:\n        while time.monotonic() < deadline:\n            ready, _, _ = select.select([master], [], [], 0.05)\n            if ready:\n                try: chunk = os.read(master, 65536)\n                except OSError: break\n                if not chunk: break\n                drive(chunk, lambda data: os.write(master, data))\n            if child.poll() is not None: break\n        if child.poll() is None: child.kill(); child.wait(); open(cfg['transcript'], 'wb').write(captured); raise RuntimeError('terminal smoke deadline')\n        child_exit = child.returncode\n        cfg['host_modes_restored'] = before == termios.tcgetattr(slave)\n    finally:\n        if child.poll() is None: child.kill(); child.wait()\n        os.close(master); os.close(slave)\n\nopen(cfg['transcript'], 'wb').write(captured)\nprint(json.dumps({'child_exit': child_exit, 'entered': sent_enter, 'cancelled': sent_escape, 'host_modes_restored': cfg.get('host_modes_restored')}))\nscenario = cfg.get('scenario', 'cancel-copy')\nvalid = child_exit == (130 if scenario == 'pick-escape' else 0) and (sent_escape if scenario == 'pick-escape' else sent_enter and (scenario == 'pick-move' or sent_escape))\nsys.exit(0 if valid else 1)\n");
+    const env = { HOME: join(root, 'home'), USERPROFILE: join(root, 'home'), APPDATA: join(root, 'home'), LOCALAPPDATA: join(root, 'home'), LIBRARY_WORKSPACE: '', LIBRARY_SEAT: '', LIBRARY_SEAT_CLAIM: '' };
+    fs.writeFileSync(config, JSON.stringify({ command, cwd: root, transcript, env, scenario }));
+    const result = spawnSync(linux ? 'python3' : 'python', ['-I', host, config], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 75000 });
+    const evidence = process.env['DESKPOST_MOVE_TERMINAL_EVIDENCE'];
+    if (evidence) {
+      fs.mkdirSync(evidence, { recursive: true });
+      for (const file of [transcript, resultFile, config, driver, host]) if (fs.existsSync(file)) fs.copyFileSync(file, join(evidence, section + '-' + file.split(/[\\/]/).pop()));
+    }
+    equal(result.status, 0, section + ': real terminal Enter and Esc: ' + result.stdout + result.stderr); if (result.status !== 0 || !fs.existsSync(resultFile)) return;
+    const reply = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+    if (scenario !== 'cancel-copy') {
+      const text = fs.readFileSync(transcript, 'utf8');
+      equal(reply.max_listeners, 1, section + ': picker and controller never overlap input ownership');
+      equal(reply.data_adds, scenario === 'pick-escape' || scenario === 'resume' ? 1 : 2, section + ': one question then one controller');
+      equal(reply.listeners_after, 0, section + ': all input listeners restored');
+      check(reply.tty && reply.raw_before === reply.raw_after, section + ': real raw state restored');
+      equal(reply.modes_after, reply.modes_before, section + ': exact console modes restored across the source question');
+      if (scenario === 'pick-escape') {
+        equal(reply.reply.exitCode, 130, section + ': source-question Escape exits 130');
+        same([workspace, second, registryRoot, home].map(snapshot), before, section + ': question Escape preserves both Libraries, home and registry');
+        check(!fs.existsSync(destination) && !fs.existsSync(join(registryRoot, 'move-journals')), section + ': question Escape creates no destination or move record');
+      } else {
+        equal(reply.reply.refusal, null, section + ': real command reaches a successful receipt');
+        check(text.includes('Moved.') && text.includes('SMOKE_RESTORED'), section + ': receipt acknowledged without input workaround');
+        const rows = JSON.parse(fs.readFileSync(join(registryRoot, 'workspaces.json'), 'utf8')).workspaces;
+        equal(rows.find((row: any) => row.id === (scenario === 'resume' ? 'terminal' : 'chosen')).path, destination, section + ': chosen registry row agrees');
+        if (scenario === 'pick-move') {
+          equal(snapshot(workspace), before[0], section + ': other registered Library stays byte-identical');
+          equal(fs.readFileSync(join(destination, 'chosen.txt'), 'utf8'), 'chosen Library bytes', section + ': chosen bytes reach destination');
+          check(!fs.existsSync(second) && reply.checks >= 4 && text.includes('orca'), section + ': one selection survives blocker refresh, confirmation and apply');
+        } else {
+          check(text.includes('Almost done; this cannot stop safely now'), section + ': real resumed Escape acknowledged');
+          check(fs.readFileSync(join(destination, 'payload-0.bin')).equals(Buffer.alloc(1024 * 1024, 73)), section + ': real resumed bytes agree');
+        }
+        const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+        equal(JSON.parse(fs.readFileSync(join(registryRoot, 'move-journals', id, 'journal.json'), 'utf8')).state, 'complete', section + ': completed journal agrees');
+      }
+      console.log(section + ': native terminal evidence ' + JSON.stringify(reply));
+      return;
+    }
+    equal(reply.reply.exitCode, 130, section + ': Esc cancels the real fixture copy');
+    check(reply.tty && reply.raw_before === reply.raw_after, section + ': real input raw state restored');
+    if (!linux) equal(reply.modes_after, reply.modes_before, section + ': real Windows console input/output modes restored');
+    else check(JSON.parse(result.stdout.trim()).host_modes_restored === true, section + ': real Linux terminal modes restored');
+    check(fs.existsSync(workspace) && !fs.existsSync(destination), section + ': source restored before promotion');
+    check(fs.readFileSync(join(workspace, 'payload-0.bin')).equals(Buffer.alloc(1024 * 1024, 73)), section + ': source bytes preserved');
+    check(fs.existsSync(reply.reply.value.retained), section + ': partial copy retained as rolled-back');
+    const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+    const journal = JSON.parse(fs.readFileSync(join(registryRoot, 'move-journals', id, 'journal.json'), 'utf8'));
+    equal(journal.state, 'aborted', section + ': cancellation is durably recorded');
+    check(journal.rollbackManifest?.some((entry: any) => entry.type === 'file'), section + ': recorded partial-copy bytes are real');
+    check(fs.readFileSync(transcript, 'utf8').includes('SMOKE_RESTORED'), section + ': driver reached the restored receipt');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+async function section1089(): Promise<void> {
+  await section1088(true);
+}
+
+async function section1081(): Promise<void> {
+  const screen = await import('../../src/librarymovescreen.ts');
+  const phases = ['checking', 'waiting', 'ready', 'moving', 'done', 'refused'] as const;
+  for (const [width, height] of [[60, 24], [80, 24], [40, 10]] as const) for (const colour of [false, true]) for (const phase of phases) {
+    const lines = screen.drawMoveScreen({ phase, value: { workspace: '/source', destination: '/target', ready: phase === 'ready', files: 12, bytes: 4096, destination_free_bytes: 8192,
+      blockers: [{ kind: 'process', name: 'Orca', pid: 1, detail: 'still open', fix: 'Close Orca.' }], things_for_you: [] }, progress: { phase: 'copy', file: 'page.md', bytes: 100 }, refusal: 'The destination is full. Choose another folder.' }, width, height, colour);
+    const plain = lines.map(line => line.replace(/\x1b\[[0-9;]*m/g, ''));
+    check(plain.every(line => line.length <= width), '1081: frame fits ' + phase + ' ' + width);
+    check(plain.join('\n').includes('Library'), '1081: frame names the Library: ' + phase);
+    if (width < 60) check(plain.join('\n').includes('1.'), '1081: small terminal uses numbered plain form');
+    if (phase === 'waiting' && width >= 60) check(plain.join('\n').includes('[ ] Orca'), '1081: checklist carries meaning without colour');
+    if (phase === 'done' && width >= 60) check(plain.join('\n').includes('Nothing left for you to do.'), '1081: empty receipt is explicit');
+  }
+  same(screen.drawMoveScreen({ phase: 'ready', value: { workspace: '/source', destination: '/target' } }, 60, 24, false).map(line => line.trimEnd()), [
+    ' Ready. Nothing else is using the Library.', '', 'From  /source', 'To    /target', ' > Move it now', '   Cancel', '', '   Arrows move   Enter choose   Esc quit',
+  ], '1081: ready frame golden');
+  const held = screen.drawMoveScreen({ phase: 'waiting', cleared: ['Obsidian'], value: { blockers: [
+    { kind: 'holder', name: 'Orca', pid: 1, detail: 'working folder', fix: 'Close Orca.' },
+    { kind: 'holder', name: 'Orca', pid: 2, detail: 'open file', fix: 'Close Orca.' },
+  ] } }, 60, 24, false).join('\n');
+  check(held.includes('Waiting.') && held.includes('[x] Obsidian') && held.includes('2 processes'), '1081: held frame names closed applications and counts observed processes');
+}
+async function section1082(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-output-'))), workspace = join(root, 'source'), registryRoot = join(root, 'registry');
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+    fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'output' }));
+    fs.writeFileSync(join(workspace, 'history.md'), workspace);
+    fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'output', path: workspace }] }));
+    const options = { workspace, destination: join(root, 'target'), registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
+    const ready = await move.previewLibraryMove(options);
+    equal(ready.exitCode, 0, '1082: ready preview exits zero');
+    check(ready.humanText?.startsWith('Move the Library: ready.') === true, '1082: default plain starts with readiness');
+    check(!ready.humanText?.includes('Who may rewrite:'), '1082: verbose inventory is behind details');
+    const details = await move.previewLibraryMove({ ...options, details: true });
+    check(details.humanText?.includes('Not searched:') === true && details.humanText.includes('History:'), '1082: details retains old preview information');
+    const blocked = await move.previewLibraryMove({ ...options, processTable: () => [{ pid: 990001, parentPid: 0, name: 'orca' }] });
+    equal(blocked.exitCode, 3, '1082: blocked preview exits three');
+    check(blocked.humanText?.includes('1.') === true && blocked.humanText.includes('orca'), '1082: all plain blockers are numbered');
+    const data = blocked.value as any;
+    for (const key of ['history', 'pointers', 'source_manifest', 'expected_destination_manifest', 'plan_id', 'warnings', 'executable', 'blockers', 'ready', 'things_for_you']) check(key in data, '1082: preview retains JSON field ' + key);
+    check(!data.ready && data.blockers.some((row: any) => row.pid === 990001), '1082: blocked JSON exposes readiness');
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+async function section1083(): Promise<void> {
+  const move = await import('../../src/librarymove.ts'), things = (move as any).moveThingsForYou;
+  check(typeof things === 'function', '1083: complete receipt builder exists'); if (!things) return;
+  const rows = things({ destination: '/new', pointers: [
+    { file: '/source/.mcp.json', rewrite: 'program', place: 'Library configuration', occurrences: 0, ambiguous: 1, reason: 'the old path is written here with an escaped character; change it by hand' },
+    { file: '/home/settings.json', rewrite: 'unknown', place: 'Home configuration', occurrences: 0, ambiguous: 0, reason: 'EACCES' },
+    { file: '/home/orca/store.db', rewrite: 'orca', place: 'Orca store', occurrences: 4, ambiguous: 0, reason: 'open the workspace again in Orca after the move' },
+  ], listed: ['/home/changed.json: changed since the preview; left as written', '1 files changed in the old folder after it was copied: late.txt. They are not in the new Library; compare them and copy over what you need.'] });
+  for (const name of ['.mcp.json', 'settings.json', 'changed.json', 'late.txt', 'Orca']) check(rows.some((line: string) => line.includes(name)), '1083: receipt includes ' + name);
+  same(things({ destination: '/new', pointers: [], listed: [] }), [], '1083: empty outcome has no invented work');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-receipt-'))), workspace = join(root, 'source'), destination = join(root, 'target'), registryRoot = join(root, 'registry'), home = join(root, 'home');
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = home;
+    fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+    fs.mkdirSync(join(home, '.claude/settings.json'), { recursive: true });
+    fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'receipt' }));
+    fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'receipt', path: workspace }] }));
+    const encoded = JSON.stringify(workspace).slice(1, -1), escaped = encoded.slice(0, -1) + '\\u' + encoded.charCodeAt(encoded.length - 1).toString(16).padStart(4, '0');
+    fs.writeFileSync(join(workspace, '.mcp.json'), '{"path":"' + escaped + '"}');
+    const outside = join(home, '.claude.json'); fs.writeFileSync(outside, JSON.stringify({ path: workspace }));
+    const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+    const preview = await move.previewLibraryMove(options); let changed = false;
+    const result = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id,
+      control: { cancelled: () => false, progress: event => { if (event.phase === 'copy' && event.file && !changed) { changed = true; fs.writeFileSync(outside, 'outside edit'); } } } });
+    equal(result.refusal, null, '1083: real receipt move succeeds: ' + result.refusal);
+    const receipt = (result.value as any)?.things_for_you ?? [];
+    for (const name of [join(destination, '.mcp.json'), join(home, '.claude/settings.json'), outside]) check(receipt.some((line: string) => line.includes(name)), '1083: actual receipt retains unresolved file ' + name);
+    equal(fs.readFileSync(outside, 'utf8'), 'outside edit', '1083: changed outside bytes remain untouched');
+    check(receipt.every((line: string) => !line.includes('ambiguous occurrences')), '1083: default receipt uses reader wording');
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+}
+async function section1084(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const guard = (move as any).moveRunsAsPreflight;
+  check(typeof guard === 'function', '1084: agent guard exists'); if (!guard) return;
+  const names = (move as any).MOVE_AGENT_VARIABLES as string[];
+  for (const name of ['CLAUDECODE', 'CODEX_SANDBOX', 'CODEX_THREAD_ID', 'LIBRARY_SEAT', 'LIBRARY_SEAT_CLAIM', 'DESKPOST_LAUNCHER_PID']) check(names.includes(name), '1084: agent guard includes ' + name);
+  for (const name of names) check(guard({ [name]: 'set' }), '1084: each agent variable prevents confirmation: ' + name);
+  check(!guard({}), '1084: ordinary terminal is not an agent');
+}
+
+async function section1085(aborted = false): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  check(typeof (move as any).cleanupPlanId === 'function', '1085: clean-up planner exists'); if (!(move as any).cleanupPlanId) return;
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-cleanup-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const variant of ['valid', 'rolled-back', 'added', 'changed', 'reused', 'link', 'parent-link', 'registered', 'inside', 'containing', 'unfinished', 'drift', 'unconfirmed', 'selected', 'late-change']) {
+      const folder = join(root, variant), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: variant })); fs.writeFileSync(join(workspace, 'payload.txt'), 'original');
+      const registry = join(registryRoot, 'workspaces.json'); fs.writeFileSync(registry, JSON.stringify({ workspaces: [{ id: variant, path: workspace }] }));
+      const options = { workspace, destination, registryRoot, preflight: true, destinationRule: 'any' as const, processTable: () => [] };
+      const preview = await move.previewLibraryMove(options); let cancelled = false;
+      const result = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id,
+        control: { cancelled: () => cancelled, progress: event => { if (aborted && event.phase === 'copy' && event.file) cancelled = true; } } });
+      equal(result.refusal, null, '1085: fixture move ' + variant);
+      const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      const journalFile = join(registryRoot, 'move-journals', id, 'journal.json'), journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+      if (variant === 'rolled-back' && !aborted) {
+        const recovery = await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: true });
+        equal((await move.moveLibrary({ ...options, destination: undefined, rollback: id, preflight: false, userConfirmed: true, planId: (recovery.value as any).plan_id })).refusal, null, '1085: completed fixture rolls back');
+      }
+      const restored = aborted || variant === 'rolled-back';
+      const copy = restored ? destination + '.rolled-back-' + id : journal.aside;
+      const cleanup = { registryRoot, cleanup: true, preflight: true };
+      let plan = await move.moveLibrary(cleanup);
+      check((plan.value as any)?.candidates?.some((row: any) => row.path === copy), '1085: terminal-state copy is offered');
+      if (variant === 'added') fs.writeFileSync(join(copy, 'added.txt'), 'new bytes');
+      if (variant === 'changed') fs.writeFileSync(join(copy, '.library/workspace.json'), 'changed bytes');
+      if (variant === 'reused' || variant === 'link') {
+        fs.renameSync(copy, copy + '.saved');
+        if (variant === 'link') fs.symlinkSync(copy + '.saved', copy, process.platform === 'win32' ? 'junction' : 'dir');
+        else fs.cpSync(copy + '.saved', copy, { recursive: true });
+      }
+      if (variant === 'parent-link') { fs.renameSync(folder, folder + '.saved'); fs.symlinkSync(folder + '.saved', folder, process.platform === 'win32' ? 'junction' : 'dir'); }
+      if (['registered', 'inside', 'containing'].includes(variant)) {
+        const document = JSON.parse(fs.readFileSync(registry, 'utf8'));
+        document.workspaces.push({ id: 'live', path: variant === 'registered' ? copy : variant === 'inside' ? folder : join(copy, 'nested') });
+        fs.writeFileSync(registry, JSON.stringify(document));
+      }
+      if (variant === 'unfinished' || variant === 'drift') {
+        if (variant === 'unfinished') for (const state of ['phase-a', 'aside', 'phase-a-failed', 'phase-b-failed', 'abort-intent', 'unknown-state']) {
+          journal.state = state; fs.writeFileSync(journalFile, JSON.stringify(journal));
+          const peek = await move.moveLibrary(cleanup);
+          check(!(peek.value as any)?.candidates?.some((row: any) => row.path === copy), '1085: unfinished state is never eligible: ' + state);
+          check(fs.existsSync(copy), '1085: unfinished state retains its bytes: ' + state);
+        }
+        if (variant === 'unfinished') journal.state = 'abort-intent'; else journal.aside_drift = ['payload.txt'];
+        fs.writeFileSync(journalFile, JSON.stringify(journal));
+      }
+      if (variant === 'selected') {
+        plan = await move.moveLibrary({ ...cleanup, cleanupSelected: [] });
+        const applied = await move.moveLibrary({ ...cleanup, cleanupSelected: [], preflight: false, userConfirmed: true, planId: (plan.value as any).plan_id });
+        equal(applied.refusal, null, '1085: empty selection is a harmless confirmed action'); check(fs.existsSync(copy), '1085: unticked copy survives'); continue;
+      }
+      const applied = await move.moveLibrary({ ...cleanup, preflight: false, userConfirmed: variant !== 'unconfirmed', planId: (plan.value as any).plan_id,
+        control: { cancelled: () => false, progress: event => { if (variant === 'late-change' && event.phase === 'cleanup-check') fs.writeFileSync(join(copy, 'late.txt'), 'late bytes'); } } });
+      if (variant === 'valid' || variant === 'rolled-back') { equal(applied.refusal, null, '1085: approved unchanged copy can be deleted'); check(!fs.existsSync(copy), '1085: selected copy deleted'); }
+      else { check(applied.refusal !== null, '1085: unsafe or unconfirmed clean-up refuses: ' + variant); check(fs.existsSync(copy), '1085: refused copy survives: ' + variant); }
+      check(fs.existsSync(restored ? workspace : destination), '1085: live Library survives every clean-up');
+    }
+  } finally {
+    for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+async function section1086(): Promise<void> {
+  await section1085(true);
+  const { MoveSession } = await import('../../src/librarymovescreen.ts'), { cleanupPlanId } = await import('../../src/librarymove.ts'), { EventEmitter } = await import('node:events');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-cleanup-keys-')));
+  try {
+    for (const word of ['delete', 'dele', '']) {
+      const folder = join(root, word || 'missing'), first = join(folder, 'first'), second = join(folder, 'second');
+      fs.mkdirSync(first, { recursive: true }); fs.mkdirSync(second); fs.writeFileSync(join(first, 'keep'), 'first'); fs.writeFileSync(join(second, 'keep'), 'second');
+      const candidates = [first, second].map(path => ({ path, identity: 'fixture:' + path, digest: 'fixture', bytes: 5 }));
+      const input = new EventEmitter() as any, output = new EventEmitter() as any; let stage = 0, applied = 0;
+      input.isRaw = false; input.setRawMode = (raw: boolean) => { input.isRaw = raw; }; input.resume = () => {}; input.pause = () => {};
+      output.columns = 80; output.rows = 24; output.write = (text: string) => {
+        if (stage === 0 && text.includes('Delete old Library copies')) { stage = 1; setImmediate(() => { input.emit('data', '\r'); input.emit('data', '\x1b[B\x1b[B\r'); }); }
+        else if (stage === 1 && text.includes('Type delete')) { stage = 2; setImmediate(() => { input.emit('data', word + '\r'); if (word !== 'delete') setImmediate(() => input.emit('data', '\x03')); }); }
+        else if (text.includes('Old Library copies deleted.')) setImmediate(() => input.emit('data', '\r'));
+      };
+      const session = new MoveSession({ check: async (selected = []) => ({ refusal: null, value: { cleanup: true, candidates, selected, ready: true, plan_id: cleanupPlanId(candidates, selected) } }),
+        apply: async (_id, _control, selected = []) => {
+          applied++; same(selected, [first], '1086: only the ticked fixture reaches deletion');
+          for (const file of selected) fs.rmSync(file, { recursive: true });
+          return { refusal: null, value: { cleanup: true, deleted: selected, things_for_you: [] }, exitCode: 0 };
+        } }, { terminal: { input, output }, colour: false });
+      const result = await session.run();
+      equal(applied, word === 'delete' ? 1 : 0, '1086: exact typed word is required: ' + word);
+      check(fs.existsSync(second), '1086: unticked copy is never deleted');
+      equal(fs.existsSync(first), word !== 'delete', '1086: missing or invalid typed word keeps the selected copy');
+      equal(result.exitCode, word === 'delete' ? 0 : 130, '1086: clean-up confirmation outcome');
+      check(!input.isRaw && input.listenerCount('data') === 0, '1086: clean-up restores the terminal');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+
+}
+
+async function section1090(): Promise<void> {
+  const move = await import('../../src/librarymove.ts'), { EventEmitter } = await import('node:events');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-command-'))), previous = process.cwd();
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    process.chdir(root); for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const cancel of [false, true]) {
+      const folder = join(root, String(cancel)), first = join(folder, 'first'), second = join(folder, 'second'), registryRoot = join(folder, 'registry'), destination = join(folder, 'target');
+      for (const workspace of [first, second]) {
+        fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal'));
+        fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: workspace })); fs.writeFileSync(join(workspace, 'payload'), workspace);
+      }
+      fs.mkdirSync(registryRoot); const registry = join(registryRoot, 'workspaces.json');
+      fs.writeFileSync(registry, JSON.stringify({ workspaces: [first, second].map(path => ({ path, id: path })) })); const before = fs.readFileSync(registry, 'utf8');
+      const input = new EventEmitter() as any, output = new EventEmitter() as any;
+      input.isTTY = output.isTTY = true; input.isRaw = false; input.setRawMode = (raw: boolean) => { input.isRaw = raw; }; input.resume = () => {}; input.pause = () => {};
+      output.columns = 80; output.rows = 24; let asked = 0, checks = 0, transcript = '';
+      output.write = (text: string) => { transcript += text; if (text.includes('Ready.') || text.includes('Moved.')) setImmediate(() => input.emit('data', '\r')); };
+      const reply = await (move.runLibraryMoveCommand as any)({ destination, registryRoot, destinationRule: 'any', preflight: false,
+        chooseWorkspace: async () => { asked++; equal(input.listenerCount('data'), 0, '1090: source question precedes controller input'); return cancel ? null : second; },
+        processTable: () => { checks++; equal(input.listenerCount('data'), 1, '1090: controller owns input during each engine check/apply'); return []; },
+      }, { terminal: { input, output }, refreshMilliseconds: 1 });
+      equal(asked, 1, '1090: command chooses once through confirmation and apply');
+      equal(input.listenerCount('data'), 0, '1090: command leaves no input listener'); check(!input.isRaw, '1090: command restores raw mode');
+      equal(fs.readFileSync(join(first, 'payload'), 'utf8'), first, '1090: unchosen Library unchanged');
+      if (cancel) { equal(reply.exitCode, 130, '1090: question Escape cancels'); equal(checks, 0, '1090: question cancellation never checks engine'); equal(fs.readFileSync(registry, 'utf8'), before, '1090: cancelled registry unchanged'); check(!fs.existsSync(destination), '1090: cancelled destination absent'); }
+      else { equal(reply.refusal, null, '1090: chosen move succeeds'); check(transcript.includes('Moved.'), '1090: command reaches receipt'); check(checks >= 3, '1090: check, confirmation and apply use resolved source'); check(fs.existsSync(join(destination, 'payload')), '1090: chosen bytes reach destination'); if (fs.existsSync(join(destination, 'payload'))) equal(fs.readFileSync(join(destination, 'payload'), 'utf8'), second, '1090: moved bytes belong to chosen Library'); check(!fs.existsSync(second), '1090: chosen source moved'); }
+    }
+  } finally { process.chdir(previous); for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1091(): Promise<void> {
+  const move = await import('../../src/librarymove.ts');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-journal-cleanup-')));
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const state of ['complete', 'rolled-back', 'aborted']) for (const change of ['none', 'added', 'changed', 'after-preview', 'checkpoint', 'legacy']) {
+      const folder = join(root, state + '-' + change), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal/move-journals/prior'), { recursive: true }); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'journal-proof' })); fs.writeFileSync(join(workspace, 'payload'), 'reader bytes');
+      fs.writeFileSync(join(workspace, 'internal/move-journals/prior/record'), 'prior evidence');
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'journal-proof', path: workspace }] }));
+      const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
+      const preview = await move.moveLibrary(options); let cancel = false;
+      const moved = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (preview.value as any).plan_id, control: { cancelled: () => cancel, progress: event => { if (state === 'aborted' && event.phase === 'copy' && event.file?.endsWith('payload')) cancel = true; } } });
+      equal(moved.refusal, null, '1091: fixture move ' + state);
+      const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      if (state === 'rolled-back') {
+        const p = await move.moveLibrary({ registryRoot, rollback: id, preflight: true, processTable: () => [] });
+        equal((await move.moveLibrary({ registryRoot, rollback: id, preflight: false, userConfirmed: true, planId: (p.value as any).plan_id, processTable: () => [] })).refusal, null, '1091: fixture rollback');
+      }
+      const journalFile = join(registryRoot, 'move-journals', id, 'journal.json'), journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+      const copy = state === 'complete' ? journal.aside : destination + '.rolled-back-' + id;
+      const cleanup = { registryRoot, cleanup: true, preflight: true };
+      let plan = await move.moveLibrary(cleanup);
+      check((plan.value as any)?.candidates.some((row: any) => row.path === copy), '1091: unchanged ' + state + ' copy is eligible');
+      const mutate = () => {
+        fs.mkdirSync(join(copy, 'internal/move-journals'), { recursive: true });
+        const files = fs.readdirSync(join(copy, 'internal/move-journals'), { recursive: true }).map(String).filter(name => fs.statSync(join(copy, 'internal/move-journals', name)).isFile());
+        const file = change === 'changed' && files.length ? join(copy, 'internal/move-journals', files[0]!) : join(copy, 'internal/move-journals/unseen');
+        fs.writeFileSync(file, 'unseen reader bytes'); return file;
+      };
+      let unseen: string | undefined;
+      if (['added', 'changed', 'after-preview'].includes(change)) unseen = mutate();
+      if (change === 'legacy') { delete journal.sourceJournals; delete journal.retainedJournals; fs.writeFileSync(journalFile, JSON.stringify(journal)); if (!fs.existsSync(join(copy, 'internal/move-journals'))) unseen = mutate(); }
+      if (['added', 'changed', 'legacy'].includes(change)) {
+        plan = await move.moveLibrary(cleanup);
+        check(!(plan.value as any)?.candidates.some((row: any) => row.path === copy), '1091: unproved journal bytes are held: ' + state + ' ' + change);
+      }
+      const result = await move.moveLibrary({ ...cleanup, preflight: false, userConfirmed: true, planId: (plan.value as any).plan_id, cleanupSelected: [copy], control: { cancelled: () => false, progress: event => { if (change === 'checkpoint' && event.phase === 'cleanup-check') unseen = mutate(); } } });
+      if (change === 'none') { equal(result.refusal, null, '1091: unchanged journal evidence permits deletion: ' + state); check(!fs.existsSync(copy), '1091: unchanged selected copy removed'); }
+      else { check(result.refusal !== null, '1091: changed journal refuses deletion: ' + state + ' ' + change); check(fs.existsSync(copy), '1091: changed copy survives'); if (unseen && fs.existsSync(unseen)) equal(fs.readFileSync(unseen, 'utf8'), 'unseen reader bytes', '1091: unseen bytes survive'); }
+      check(fs.existsSync(state === 'complete' ? destination : workspace), '1091: live Library survives');
+    }
+  } finally { for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1092(): Promise<void> {
+  const move = await import('../../src/librarymove.ts'), { EventEmitter } = await import('node:events');
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'c183-resume-escape-'))), previous = process.cwd();
+  const saved = ['HOME', 'USERPROFILE', 'APPDATA'].map(key => [key, process.env[key]] as const);
+  try {
+    process.chdir(root); for (const [key] of saved) process.env[key] = join(root, 'home');
+    for (const key of ['\x1b', '\x03']) {
+      const folder = join(root, key === '\x1b' ? 'escape' : 'interrupt'), workspace = join(folder, 'source'), destination = join(folder, 'target'), registryRoot = join(folder, 'registry');
+      fs.mkdirSync(join(workspace, '.library'), { recursive: true }); fs.mkdirSync(join(workspace, 'internal')); fs.mkdirSync(registryRoot);
+      fs.writeFileSync(join(workspace, '.library/workspace.json'), JSON.stringify({ id: 'resume' })); fs.writeFileSync(join(workspace, 'payload'), Buffer.alloc(64 * 1024 * 1024, 83));
+      fs.writeFileSync(join(registryRoot, 'workspaces.json'), JSON.stringify({ workspaces: [{ id: 'resume', path: workspace }] }));
+      const pointer = join(root, 'home/.claude.json'); fs.mkdirSync(join(pointer, '..'), { recursive: true }); fs.writeFileSync(pointer, JSON.stringify({ path: workspace }));
+      const options = { workspace, destination, registryRoot, destinationRule: 'any' as const, preflight: true, processTable: () => [] };
+      const plan = await move.moveLibrary(options);
+      const stopped = await move.moveLibrary({ ...options, preflight: false, userConfirmed: true, planId: (plan.value as any).plan_id, faultAt: 'registry:after-done' });
+      check(stopped.refusal?.includes('Injected move fault') === true, '1092: fixture is interrupted past promotion');
+      const id = fs.readdirSync(join(registryRoot, 'move-journals')).find(name => name.startsWith('move-'))!;
+      const input = new EventEmitter() as any, output = new EventEmitter() as any; let sent = false, transcript = '';
+      input.isRaw = false; input.setRawMode = (raw: boolean) => { input.isRaw = raw; }; input.resume = () => {}; input.pause = () => {};
+      output.columns = 80; output.rows = 24; output.write = (text: string) => {
+        transcript += text;
+        if (text.includes('Ready.')) setImmediate(() => input.emit('data', '\r'));
+        if (text.includes('Moving the Library') && !sent) { sent = true; input.emit('data', key); }
+        if (text.includes('Moved.') || text.includes('The Library could not be moved')) setImmediate(() => input.emit('data', '\r'));
+      };
+      const reply = await move.runLibraryMoveCommand({ registryRoot, resume: id, preflight: false, processTable: () => [] }, { terminal: { input, output } });
+      equal(reply.refusal, null, '1092: post-promotion Escape cannot strand recovery: ' + reply.refusal);
+      check(sent && transcript.includes('Almost done; this cannot stop safely now'), '1092: resumed Escape is acknowledged');
+      equal(JSON.parse(fs.readFileSync(join(registryRoot, 'move-journals', id, 'journal.json'), 'utf8')).state, 'complete', '1092: resumed journal completes');
+      equal(JSON.parse(fs.readFileSync(join(registryRoot, 'workspaces.json'), 'utf8')).workspaces[0].path, destination, '1092: resumed registry agrees');
+      equal(JSON.parse(fs.readFileSync(pointer, 'utf8')).path, destination, '1092: resumed outside pointer agrees');
+      check(fs.readFileSync(join(destination, 'payload')).equals(Buffer.alloc(64 * 1024 * 1024, 83)), '1092: resumed destination bytes agree');
+      check(!input.isRaw && input.listenerCount('data') === 0, '1092: resumed controller restores input');
+    }
+  } finally { process.chdir(previous); for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function section1087(): Promise<void> {
+  const read = (file: string) => fs.readFileSync(join(PROGRAM_ROOT, file), 'utf8');
+  const guide = (read('docs/guides/README.md').split('Before moving:')[1] ?? '').split('\n## Shared moves')[0] ?? '';
+  const quick = (read('docs/guides/quick-start.md').split('Before moving,')[1] ?? '').split('\n## When something')[0] ?? '';
+  const skill = read('.claude/skills/library-help/SKILL.md');
+  const moveHelp = skill.match(/\*\*Moving a Library\.\*\*[\s\S]*?(?=\n\n\*\*|$)/)?.[0] ?? '';
+  for (const [name, text] of [['guide', guide], ['quick start', quick], ['help skill', moveHelp]] as const) {
+    check(/outside the Library/i.test(text), '1087: ' + name + ' puts the terminal outside the Library');
+    check(text.includes('--workspace') && /registered/i.test(text), '1087: ' + name + ' explains resolution');
+    for (const flag of ['--preflight', '--plain', '--details', '--resume', '--rollback', '--clean-up']) check(text.includes(flag), '1087: ' + name + ' documents ' + flag);
+    check(text.includes('130') && /\b3\b/.test(text), '1087: ' + name + ' documents cancellation and not-ready exits');
+    check(/counts old-path matches in `\.db` contents and never rewrites those files/.test(text), '1087: ' + name + ' states the database boundary');
+    check(/rename does not exclude all writers/i.test(text), '1087: ' + name + ' states the retained-handle limit');
+    check(text.includes('delete'), '1087: ' + name + ' explains gated clean-up');
+  }
+  check(!moveHelp.includes('turned off'), '1087: help no longer says moving is disabled');
+  const help = runCli(['library', 'move', '--help']);
+  for (const flag of ['--plain', '--details', '--clean-up']) check(help.stdout.includes(flag), '1087: actual command help includes ' + flag);
+  check(help.stdout.includes('130') && help.stdout.includes('3'), '1087: actual help includes readiness exits');
+  check(/(Next release|\d+\.\d+\.\d+ is released)[^\n]*one run/i.test(read('docs/roadmap.md')), '1087: roadmap names this change as the next release or as released');
+}
+
+async function section1093(): Promise<void> {
+  await section1088(false, 'pick-move');
+}
+async function section1094(): Promise<void> {
+  await section1088(false, 'pick-escape');
+}
+async function section1095(): Promise<void> {
+  await section1088(false, 'resume');
 }

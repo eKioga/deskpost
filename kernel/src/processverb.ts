@@ -10,18 +10,17 @@ import { verbTable } from './verbs.ts';
 import type { PsJsonValue } from './psjson.ts';
 import { agentProcessIdentity, readProcessAncestry } from './procstart.ts';
 import { waitForAgentExit } from './seat.ts';
-import { windowsProcesses } from './lifecycle.ts';
-import { nativeProcessCalls } from './win32proc.ts';
+import { nativeProcessCalls, nativeProcessTable, nativeProcessImagePath, nativeProcessCommandLine, runInstalledProcess } from './win32proc.ts';
 
 export interface ProcessVerbResult {
   refusal: string | null;
   value: PsJsonValue | null;
 }
 
-/** Which spelling answered: kernel32 through `bun:ffi`, the PowerShell fallback under Node, or the POSIX reads. */
+/** Which route answered: native calls, the installed program under Node, or POSIX reads. */
 function route(): string {
   if (process.platform !== 'win32') return 'posix';
-  return nativeProcessCalls() !== null ? 'bun-ffi' : 'powershell';
+  return nativeProcessCalls() !== null ? 'bun-ffi' : 'installed';
 }
 
 function pidArgument(value: string | undefined): number | null {
@@ -35,10 +34,14 @@ export async function runProcessVerb(argv: string[]): Promise<ProcessVerbResult>
   if (action === 'list') {
     if (process.platform !== 'win32') return { refusal: 'library process list reads the Windows process table; it is not used elsewhere.', value: null };
     const name = (parsed.options.get('name') ?? '').toLowerCase();
-    const rows = windowsProcesses().filter((row) => !name || (row.ExecutablePath ?? '').toLowerCase().endsWith('\\' + name));
+    if (nativeProcessCalls() === null) {
+      try { return { refusal: null, value: runInstalledProcess(['list', ...(name ? ['--name', name] : [])]) }; }
+      catch (error) { return { refusal: (error as Error).message, value: null }; }
+    }
+    const rows = nativeProcessTable().filter(row => !name || row.name.toLowerCase() === name);
     return {
       refusal: null,
-      value: { route: route(), processes: rows.map((row) => ({ pid: row.ProcessId, parent_pid: row.ParentProcessId, path: row.ExecutablePath })) },
+      value: { route: route(), processes: rows.map(row => ({ pid: row.pid, parent_pid: row.parentPid, name: row.name, path: nativeProcessImagePath(row.pid), ...(name ? { command_line: /^node\.exe$/i.test(row.name) ? nativeProcessCommandLine(row.pid) : null } : {}) })) },
     };
   }
   const pid = pidArgument(pidText);

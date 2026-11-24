@@ -38,6 +38,7 @@ import { isLocalBackend } from './basicmemory.ts';
 import { readNotebookLayout } from './notebooklayout.ts';
 import { sha256OfText } from './sha.ts';
 import { asList, hookEntryText, isObject } from './hookregistry.ts';
+import { defaultBooksLine, unopenedDefaultBooks } from './desk.ts';
 import { departmentOf, metadataFor, readSeatMetadata } from './seatmeta.ts';
 
 /**
@@ -337,6 +338,13 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
     const missingEntries = bookEntries.filter((entry) => missingSinceOpened(workspace, convertToBookRoot(entry), localBackend));
     const openBooks = bookEntries.filter((entry) => !missingEntries.includes(entry)).map((entry) => bookRootLabel(entry, localBackend, workspace));
     const openProjects = readStateLines(path.join(deskDirectory!, deskFileName('projects')), PROJECT_PATTERN, 'open-project', true);
+    let defaultBooksWarning = '';
+    try {
+      const absent = unopenedDefaultBooks(workspace, seat, bookEntries.map(convertToBookRoot));
+      if (absent.length) defaultBooksWarning = ' ' + defaultBooksLine(absent) + '.';
+    } catch {
+      // An unreadable default rules file must not suppress the Desk context.
+    }
     const books = openBooks.length ? openBooks.join(', ') : '(none)';
     const missingBooks = missingEntries.length
       ? ` Missing: ${missingEntries.map((entry) => `${bookRootLabel(entry, localBackend, workspace)}: ${missingBookRepair(splitBookRoot(convertToBookRoot(entry)).slug)}`).join('; ')}.`
@@ -404,7 +412,7 @@ export function deskContext(options: DeskContextOptions, stdinText: string): str
         }
       }
     } catch { /* An unavailable Hub advertises no work to start. */ }
-    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}.${missingBooks} Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${handbackLine}${startLine}${seatWarning}${notebookWarning}`;
+    const text = `Virtual Desk (seat ${seat}${seatNote}) - Books: ${books}.${missingBooks}${defaultBooksWarning} Projects: ${projects}. Read Book and Project pages only through the validated reader, and only these open ones. Shelf Book pages are not readable with the Read tool while closed.${capability}${roleLine}${letterLine}${handbackLine}${startLine}${seatWarning}${notebookWarning}`;
     // Keep only the last delivered snapshot. Returning A after B sends A again, on either harness,
     // only where the registered compaction clear reaches this conversation's serve ledger.
     try {

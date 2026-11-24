@@ -23,6 +23,9 @@ export function childEnv(): NodeJS.ProcessEnv {
     .filter((entry) => {
       if (!entry) return false;
       if (!fs.existsSync(path.join(entry, 'deskpost.cmd')) && !fs.existsSync(path.join(entry, 'deskpost'))) return true;
+      // Keep the installed program available for process reads after dropping its CLI from PATH.
+      const kernel = path.resolve(entry, '../current/bin', process.platform === 'win32' ? 'library.exe' : 'library');
+      if (!env['DESKPOST_KERNEL'] && fs.statSync(kernel, { throwIfNoEntry: false })?.isFile()) env['DESKPOST_KERNEL'] = kernel;
       if (!env['DESKPOST_GITLEAKS']) {
         const scanner = path.resolve(entry, process.platform === 'win32' ? 'gitleaks.exe' : 'gitleaks');
         if (fs.statSync(scanner, { throwIfNoEntry: false })?.isFile()) env['DESKPOST_GITLEAKS'] = scanner;

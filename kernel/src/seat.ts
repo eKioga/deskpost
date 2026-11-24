@@ -69,7 +69,7 @@ import {
   type HeldClaim,
 } from './seatclaim.ts';
 import { currentAgentAssistant, currentAgentProcessId } from './procstart.ts';
-import { nativeProcessCalls, nativeWaitForExit } from './win32proc.ts';
+import { nativeProcessCalls, nativeWaitForExit, runInstalledProcess } from './win32proc.ts';
 import { agentExecutable, findAssistant, installRootOf, resolveOnPath } from './machine.ts';
 import { ASSISTANT_LABEL, isConversationId, seatConversationView, newConversationId, recordAssistant, seatMessageAddress, type Assistant } from './conversation.ts';
 import { isCompiled, programRoot } from './programroot.ts';
@@ -78,6 +78,9 @@ import { seatStatusText } from './human.ts';
 import { carriesMetadata, metadataFor, metadataJson, rawMetadata, readSeatMetadata, seatLabel, seatMetadata, destinationOf } from './seatmeta.ts';
 import { readRegistryRows, writeSeatRegistry } from './seatregistry.ts';
 import { appendHistoryCommit, appendHistoryRecords, newAttemptId, readSeatHistory, seatHistoryState } from './seathistory.ts';
+import { seatDefaultsResult } from './seatdefaults.ts';
+import { deskWrite, unopenedDefaultBooks, validateDeskBookRoot } from './desk.ts';
+import { parseBookRoot } from './places.ts';
 import { seatDescribeResult } from './seatdescribe.ts';
 import {
   isWrappedPlanId,
@@ -1127,8 +1130,8 @@ async function seatHold(argv: string[]): Promise<number> {
  * pid being reused while we wait, which a poll cannot promise. A compiled kernel (S83, D7) opens it through
  * `bun:ffi`, checks its start time, and asks `WaitForSingleObject` with a zero timeout between short sleeps,
  * so the event loop is never blocked; an agent it cannot open for waiting falls back to the poll below.
- * Under Node the same is one waiting `powershell.exe` child blocked in `WaitForExit` -- a start-time read
- * there is a PowerShell spawn, and polling it for an hours-long session would spend a fifth of a core. If
+ * If no installed program is found, keep the seat held with the poll below.
+ * Under Node one installed-program process wait child holds that same native handle. If
  * that waiter dies, the seat is released: that reads `orphaned`, which the same agent's next enter repairs,
  * and is the safe direction. Elsewhere the read is a file or a `ps`, and the oracle's poll is kept.
  */
@@ -1136,21 +1139,19 @@ export async function waitForAgentExit(agentPid: number, agentStartUtc: string, 
   if (process.platform === 'win32' && nativeProcessCalls() !== null) {
     if ((await nativeWaitForExit(agentPid, agentStartUtc, Math.min(pollMs, 250))) !== 'unopenable') return;
   } else if (process.platform === 'win32') {
-    const expected = agentStartUtc.replace(/'/g, "''");
-    const script =
-      `$p = $null; try { $p = Get-Process -Id ${agentPid} -ErrorAction Stop } catch { exit 3 }; ` +
-      `$s = $null; try { $s = $p.StartTime.ToUniversalTime().ToString('o') } catch { $s = 'unreadable' }; ` +
-      `if ('${expected}'.Trim() -and $s -cne 'unreadable' -and $s -cne '${expected}') { exit 4 }; ` +
-      `$p.WaitForExit(); exit 0`;
-    await new Promise<void>((resolve) => {
-      const waiter = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-        stdio: 'ignore',
-        windowsHide: true,
+    let file = '';
+    try { file = runInstalledProcess(null); } catch { /* Fall through to the poll. */ }
+    if (file) {
+      await new Promise<void>((resolve) => {
+        const waiter = spawn(file, ['process', 'wait', String(agentPid), '--start-utc', agentStartUtc], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        waiter.on('exit', () => resolve());
+        waiter.on('error', () => resolve());
       });
-      waiter.on('exit', () => resolve());
-      waiter.on('error', () => resolve());
-    });
-    return;
+      return;
+    }
   }
   while (testSeatAgentAlive(agentPid, agentStartUtc, { fresh: true })) await sleep(pollMs);
 }
@@ -1236,7 +1237,7 @@ function plannedStart(
   rows: Record<string, PsJsonValue>[],
   seat: string,
   project: string,
-  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; openProjects?: string[]; inbound?: string | undefined; recordAssistant?: Assistant | undefined },
+  options: { department?: string | undefined; role?: string | undefined; card?: string | undefined; template?: string | undefined; openBooks: string[]; noDefaultBooks?: boolean; declineDefaultBooks?: string[]; openProjects?: string[]; inbound?: string | undefined; recordAssistant?: Assistant | undefined },
   registryFile: string,
   workspace: string,
 ): SeatStartPlan {
@@ -1253,7 +1254,7 @@ function plannedStart(
 /** What a plan's options set, as `seat start` reports it: the four fields, then the Books. */
 function planJson(plan: SeatStartPlan): Record<string, PsJsonValue> {
   // THE INBOUND POLICY THE PREVIEW NAMES (kickoffs/s108 ruling 6), only when one was given.
-  return { ...planFields(plan), open_books: plan.books, ...(plan.projects.length ? { open_projects: plan.projects } : {}), ...(plan.inbound !== null ? { inbound_policy: plan.inbound === 'unset' ? 'unset' : `seat file: ${plan.inbound}` } : {}) };
+  return { ...planFields(plan), open_books: plan.books.map(root => root.startsWith('shelf/') && root.split('/').length === 2 ? root.slice(6) : root), ...(plan.declinedBooks.length ? { declined_books: plan.declinedBooks } : {}), ...(plan.projects.length ? { open_projects: plan.projects } : {}), ...(plan.inbound !== null ? { inbound_policy: plan.inbound === 'unset' ? 'unset' : `seat file: ${plan.inbound}` } : {}) };
 }
 
 /**
@@ -1329,6 +1330,8 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
     card: parsed.options.get('card'),
     template: parsed.options.get('template'),
     openBooks: parsed.lists.get('open-book') ?? [],
+    noDefaultBooks: parsed.flags.has('no-default-books'),
+    declineDefaultBooks: parsed.lists.get('decline-default-book') ?? [],
     openProjects: parsed.lists.get('open-project') ?? [],
     // kickoffs/s108 ruling 6: a new seat's inbound policy, under the same preview and wrapped plan id.
     inbound: parsed.options.get('inbound'),
@@ -1340,7 +1343,7 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
   if (requestedAssistant && startOptions.recordAssistant && requestedAssistant !== startOptions.recordAssistant) {
     refuse(`--command names ${requestedAssistant}, but --record-assistant names ${startOptions.recordAssistant}; give the same assistant for both. Nothing was written.`);
   }
-  const withOptions = !!startOptions.recordAssistant || SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
+  const withOptions = !!startOptions.recordAssistant || startOptions.noDefaultBooks || startOptions.declineDefaultBooks.length > 0 || SEAT_START_OPTIONS.some((option) => parsed.options.has(option));
   if (withOptions && !parsed.flags.has('preflight')) {
     if (!planId) {
       refuse(
@@ -1584,9 +1587,12 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       }
       setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'projects', entry: `projects/${bound}`, action: 'Add' });
       // THE BOOKS OPEN BEFORE ANY LAUNCH: `seat start` blocks until its agent exits, so nothing could open them after.
-      for (const slug of plan!.books) {
+      for (const root of plan!.books) {
         seatStartFault('book-open');
-        setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'books', entry: `shelf/${slug}`, action: 'Add' });
+        setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'books', entry: root, action: 'Add' });
+      }
+      if (plan!.declinedBooks.length) {
+        writeAtomicText(path.join(deskDirectory, '.declined-books'), plan!.declinedBooks.join('\r\n') + '\r\n');
       }
       for (const slug of plan!.projects) {
         setDeskEntryForSeat({ workspace, stateDirectory, seat, kind: 'projects', entry: `projects/${slug}`, action: 'Add' });
@@ -1746,6 +1752,26 @@ async function seatStart(argv: string[], options: { human?: boolean } = {}): Pro
       ...(existing === null && plan !== null && plan.options ? planJson(plan) : {}),
     };
     if (noLaunch) return { result, exitCode: 0 };
+    if (existing !== null) {
+      try {
+        for (const book of unopenedDefaultBooks(workspace, seat)) {
+          const parts = parseBookRoot(book.root)!;
+          try {
+            validateDeskBookRoot(workspace, book.root);
+            deskWrite({
+              workspace, seat, kind: 'book', action: 'open', slug: parts.slug, shelf: parts.shelf,
+              location: parts.form === 'books' ? 'collection' : parts.form, claimToken: claim!.token,
+            });
+            process.stderr.write(`Opened default Book ${parts.slug} (${book.source})\n`);
+          } catch (error) {
+            process.stderr.write(`Could not open default Book ${parts.slug} (${book.source}): ${(error as Error).message}\n`);
+          }
+        }
+      } catch (error) {
+        process.stderr.write(`Could not read default Books: ${(error as Error).message}\n`);
+      }
+    }
+
     if (unreadableDirs) process.stderr.write(`Seat '${seat}' was started without its added folders: ${unreadableDirs}\n`);
     if (inbound.state === 'invalid') {
       process.stderr.write(`Seat '${seat}' was started without its inbound policy: ${inbound.reason}, so nothing in that file was passed. Set it again with deskpost seat settings ${seat} --inbound accept|hold|refuse|unset.\n`);
@@ -2220,6 +2246,7 @@ export interface SeatStartChoices {
   card?: string | undefined;
   template?: string | undefined;
   openBooks: string[];
+  declineDefaultBooks?: string[];
   openProjects?: string[];
   /** The new seat's inbound policy (kickoffs/s108 ruling 6): the wizard's preview offers `accept` for Claude Code. */
   inbound?: string | undefined;
@@ -2235,6 +2262,7 @@ export function seatStartChoiceArguments(choices: SeatStartChoices): string[] {
     ...(choices.role !== undefined ? ['--role', choices.role] : []),
     ...(choices.card !== undefined ? ['--card', choices.card] : []),
     ...choices.openBooks.flatMap((slug) => ['--open-book', slug]),
+    ...(choices.declineDefaultBooks ?? []).flatMap(root => ['--decline-default-book', root]),
     ...(choices.openProjects ?? []).flatMap((slug) => ['--open-project', slug]),
     ...(choices.inbound !== undefined ? ['--inbound', choices.inbound] : []),
     ...(choices.recordAssistant ? ['--record-assistant', choices.recordAssistant] : []),
@@ -2322,6 +2350,19 @@ export async function runSeatVerb(
     // THE RENAME BARRIER AT EVERY VERB THAT ACTS AT A SEAT (kickoffs/s109 ruling 8), by either name, before anything else.
     if (Object.keys(REDIRECT_DONE).includes(action)) assertNoRenameAt(action, rest);
     switch (action) {
+      case 'defaults': {
+        const result = await seatDefaultsResult(rest);
+        const human = 'rules' in result
+          ? [result.rules?.length ? 'Default Books rules:' : 'No default Books rules.',
+            ...(result.rules ?? []).map(rule => `${rule.id} (${'role' in rule ? rule.role : rule.department}): ${rule.books.join(', ')}${rule.keep ? ' [keep]' : ''}`),
+            ...(result.seats ?? []).map(seat => `${seat.seat}: ${seat.missing.length ? 'missing ' + seat.missing.join(', ') : seat.declined.length ? 'no outstanding opens' : 'all defaults open'}${seat.declined.length ? '; declined ' + seat.declined.join(', ') : ''}${seat.grants_missing.length ? '; grants to check ' + seat.grants_missing.join(', ') : ''}`)].join('\n')
+          : 'books' in result
+            ? [...result.books.map(book => `${book.book}: ${book.outcome}${book.reason ? ': ' + book.reason : ''} (missing seats: ${book.missing_seat_ids.join(', ') || 'none'}; local copy: ${book.local_copy})`),
+              ...(result.preflight ? ['Plan id: ' + result.plan_id] : [])].join('\n')
+            : undefined;
+        emitResult(result, rest.includes('--json') ? undefined : human);
+        return 0;
+      }
       case 'rename':
         emitResult(seatRenameResult(rest));
         return 0;
@@ -2421,7 +2462,7 @@ export async function runSeatVerb(
         return 0;
       }
       default:
-        onRefusal(`library seat has no action '${action}'. It has: cards, describe, dirs, enter, rename, retire, settings, start, status.`);
+        onRefusal(`library seat has no action '${action}'. It has: cards, defaults, describe, dirs, enter, rename, retire, settings, start, status.`);
     }
   } catch (error) {
     let message = (error as Error).message;

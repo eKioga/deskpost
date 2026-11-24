@@ -44,7 +44,7 @@ How a reviewed release candidate goes to the public download, and the exact comm
    - copies the allowlisted files over it and checks every staged blob against the program commit;
    - runs the deployment, identity and gitleaks scans over the staged change;
    - commits with `pub-commit.txt` and makes the annotated tag `v<version>`;
-   - clones that tag with `-c core.autocrlf=false` and builds win-x64 and linux-x64 from it. The build refuses any
+   - clones that tag with `-c core.autocrlf=false` and builds win-x64, linux-x64 and linux-arm64 from it. The build refuses any
      file whose bytes differ from its blob, and audits the archives against the blobs
      (`kernel/src/releaseaudit.ts`);
    - audits and scans the extracted archives, and runs `tools/Test-BuiltRelease.ps1` against the previous release;
@@ -105,7 +105,8 @@ and `pub-tag.txt` (`Deskpost <new>`). The scripts change only in the lines that 
 against `v<prev>`'s copies:
 
 - `prepare.ps1`: the header line (the session and `v<new>`), `$d` (`<pf>\v<new>`), `$tag` (`v<new>`), and
-  `-PreviousRelease` (`<pf>\v<prev>\rel`);
+  `-PreviousRelease` (`<pf>\v<prev>\rel`), and, from 1.7.2, the build line's targets
+  (`-Target 'win-x64','linux-x64','linux-arm64'`);
 - **`prepare.ps1`'s `$app`**: the checkout the release is built from. The script takes the program commit as
   `git -C $app rev-parse HEAD` and loads `DeploymentScan.ps1`, `Build-KernelRelease.ps1` and `Test-BuiltRelease.ps1`
   from it. Earlier copies name `D:\deskpost\app`; a release from any other checkout names that checkout, and checks
@@ -117,8 +118,8 @@ against `v<prev>`'s copies:
 core.autocrlf=false`) in the session's scratch folder:
 
 1. `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '<clone>\tools\Build-KernelRelease.ps1' -SourceRoot
-   '<clone>' -Target 'win-x64','linux-x64' -Destination '<scratch>\rel'"` (`-Target` takes a list only through
-   `-Command`); `byte_audit` clean; eight files in `rel` (both versioned zips, the two unversioned twins, `SHA256SUMS`,
+   '<clone>' -Target 'win-x64','linux-x64','linux-arm64' -Destination '<scratch>\rel'"` (`-Target` takes a list only through
+   `-Command`); `byte_audit` clean; ten files in `rel` (three versioned zips, their three unversioned twins, `SHA256SUMS`,
    `install.ps1`, `install.sh`, `llms-install.md`).
 2. `tools/Test-BuiltRelease.ps1 -Release <scratch>\rel -PreviousRelease <pf>\v<prev>\rel -Work <scratch>\fx` to
    "All N release fixtures passed", run from a neutral folder.
@@ -193,7 +194,7 @@ a registered distribution's disk; `wsl.exe -l -v` lists them.
 Both `HOME`s deleted afterwards by the program that made them; the distro stopped again if it was stopped.
 
 **`prepare.ps1` to READY**: run it from `<pf>\v<new>` to `READY: main <sha>, tag v<new>, refs/releases/v<new>; nothing
-pushed`. Then check: its `library.exe` byte-identical to the one judged; eight files in `rel`; `git ls-tree
+pushed`. Then check: its `library.exe` byte-identical to the one judged; ten files in `rel`; `git ls-tree
 refs/releases/v<new>` gives each versioned zip and its twin the same blob; the public README (read from the clean
 clone, not a CRLF checkout) says "The current release is **<new>**" (no backticks), which
 `node tools/release-readme-check.ts <public tree folder> <version>` checks (exit 0 PASS, 1 FAIL naming the line it

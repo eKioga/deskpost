@@ -23,6 +23,10 @@ one orchestrator. A seat may also carry a **seat card**: one line saying what it
 - A nickname (`seat describe <seat> --nickname "<n>"`, under the same yes) only labels the menu row and the
   tab; a letter or a verb given a nickname is refused with the seat's name to use instead.
 
+`deskpost seat defaults` lists Books shared by role or department. New seats can decline a default
+in the wizard, and closing a default on your Desk keeps it closed at later launches. See
+the Default Books section of the repository document `docs/seats.md` for the rule and upkeep commands.
+
 ## Letters to a department
 
 `deskpost capture letters --for-department <department> --title "..." --body "..."` writes a letter to

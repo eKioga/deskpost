@@ -95,6 +95,7 @@
     "1893": [],
     "1894": [],
     "1895": [],
+    "1990": [],
     "1896": [],
     "1898": [],
     "1899": [],
@@ -104,6 +105,18 @@
     "1952": [],
     "1953": [],
     "1954": ["kernel/src/migrate.ts"],
+    "1960": ["kernel/src/hookregistry.ts"],
+    "1961": [],
+    "1962": ["kernel/src/doctor.ts", "kernel/src/hookregistry.ts"],
+    "1963": ["kernel/src/hookseatstart.ts"],
+    "1964": [],
+    "1965": [],
+    "1966": ["kernel/src/hookregistry.ts"],
+    "1967": ["kernel/src/init.ts", "kernel/src/seattemplates.ts"],
+    "1968": [],
+    "1969": ["kernel/src/hookregistry.ts", "kernel/src/verbs.ts"],
+    "1970": ["kernel/src/doctor.ts", "kernel/src/hookregistry.ts"],
+    "1971": [],
     "1980": []
   }
 }

@@ -26,7 +26,7 @@ import { readRegistry } from './workspace.ts';
 import { readSeatRegistry } from './desk.ts';
 import { getSeatClaimState, openShareNothing, readSeatClaimHolderPid, type ExclusiveHandle } from './seatclaim.ts';
 import { agentProcessIdentity, UNREADABLE_IDENTITY } from './procstart.ts';
-import { nativeProcessCalls, nativeProcessImagePath, nativeProcessTable, nativeStartDetached } from './win32proc.ts';
+import { nativeProcessCalls, nativeProcessImagePath, nativeProcessTable, nativeStartDetached, runInstalledProcess } from './win32proc.ts';
 import { COMMAND_NAME, entryInvocation, installRootOf, isKernelBinary, powerShellScript, sourceKernelScript } from './machine.ts';
 import { isCompiled, programRoot } from './programroot.ts';
 import { askAtTerminal } from './prompt.ts';
@@ -242,19 +242,13 @@ interface ProcessRow {
 /**
  * Every process with its parent and image path, the rows Win32_Process gives. A compiled kernel reads them from one
  * Toolhelp32 snapshot and `QueryFullProcessImageNameW` (S83, ruling 3 of kickoffs/s83), with a null path where a
- * process cannot be opened, as the CIM row has; under Node the CIM query stays as the fallback.
+ * process cannot be opened; under Node the installed program supplies the same process facts.
  */
 export function windowsProcesses(): ProcessRow[] {
   if (nativeProcessCalls() !== null) {
     return nativeProcessTable().map((row) => ({ ProcessId: row.pid, ParentProcessId: row.parentPid, ExecutablePath: nativeProcessImagePath(row.pid) }));
   }
-  const text = execFileSync(
-    'powershell.exe',
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, ExecutablePath | ConvertTo-Json -Compress'],
-    { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 },
-  );
-  const parsed = JSON.parse(text) as ProcessRow | ProcessRow[];
-  return Array.isArray(parsed) ? parsed : [parsed];
+  return runInstalledProcess(['list']).processes.map((row: { pid: number; parent_pid: number; path: string | null }) => ({ ProcessId: row.pid, ParentProcessId: row.parent_pid, ExecutablePath: row.path }));
 }
 
 /**

@@ -2213,7 +2213,8 @@ async function section1519(): Promise<void> {
     const bare = add(0, 'first', 'Next', '- [ ] Remember to look at the thing later');
     check(bare.exit !== 0 && (bare.stdout + bare.stderr).includes('names no record') && namesPointerRemedy(bare.stdout + bare.stderr), '1519: an item naming no record is refused');
     const unknown = add(0, 'first', 'Now', '- [ ] Waits on `not-a-train-item`');
-    check(unknown.exit !== 0, '1519: a backticked word that is no train item is no record');
+    check(unknown.exit !== 0 && (unknown.stdout + unknown.stderr).includes("`not-a-train-item` is not in this Library's train register"),
+      '1519: the refusal distinguishes an unregistered train id');
     for (const form of ['`known-item`', '[[projects/first/notes/a-page]]', '[[books/handbook/page]]', 'kickoffs/s5', 'notes/2026-11-17-a-letter-page', 'PLAN-hub-redesign.md']) {
       equal(add(0, 'first', 'Now', `- [ ] Waits on ${form}`).exit, 0, `1519: the record form ${form} is accepted`);
     }
@@ -2222,8 +2223,12 @@ async function section1519(): Promise<void> {
       equal(w.cli(0, ['hub', 'edit', 'first', '--mode', 'add-section', '--section', 'Decisions', '--content', '- 2026-11-17: a short one ([[projects/first/notes/decision]])', '--json']).exit, 0, '1519: a short linked Decisions entry is accepted');
     }
     const longDecision = add(0, 'first', 'Decisions', `- 2026-11-17: ${'a reason '.repeat(50)}[[projects/first/notes/decision]]`);
-    check(longDecision.exit !== 0 && (longDecision.stdout + longDecision.stderr).includes('over 400'), '1519: a long Decisions entry is refused');
-    check(add(0, 'first', 'Decisions', '- 2026-11-17: no link here').exit !== 0, '1519: a Decisions entry with no link is refused');
+    check(longDecision.exit !== 0 && (longDecision.stdout + longDecision.stderr).includes('over 400') &&
+      (longDecision.stdout + longDecision.stderr).includes('point to it here with a [[...]] link') &&
+      !(longDecision.stdout + longDecision.stderr).includes('--mode close-item'), '1519: a long Decisions entry is refused');
+    const bareDecision = add(0, 'first', 'Decisions', '- 2026-11-17: no link here');
+    check(bareDecision.exit !== 0 && (bareDecision.stdout + bareDecision.stderr).includes('point to it here with a [[...]] link') &&
+      !(bareDecision.stdout + bareDecision.stderr).includes('--mode close-item'), '1519: an unlinked Decisions entry gets only record advice');
     // The same items on a Hub without ## Repo: accepted, as today.
     for (const line of [sized(601), '- [ ] Remember to look at the thing later']) equal(add(1, 'second', 'Now', line).exit, 0, '1519: a Hub without ## Repo accepts ' + line.slice(0, 30));
     // An old long item is never judged: an unrelated edit, and ticking it, both pass and leave it alone.
@@ -2383,12 +2388,12 @@ async function section1530(): Promise<void> {
     if (!/^## Decisions/m.test(fs.readFileSync(root, 'utf8'))) {
       equal(w.cli(0, ['hub', 'edit', 'first', '--mode', 'add-section', '--section', 'Decisions', '--content', '- 2026-11-17: a short one ([[projects/first/notes/decision]])', '--json']).exit, 0, '1530: a short linked Decisions entry is accepted');
     }
-    // Both refusals carry the remedy: the wording goes in the linked record, and close-item closes what is finished.
+    // The Now refusal offers record advice and close-item. A Decisions entry gets the record advice alone.
     const remedy = (message: string) => /wording[^.]* in the (linked )?record/.test(message) && message.includes('deskpost hub edit first --mode close-item --match-text');
     const nowItem = add('Now', '- [ ] Remember to look at the thing later');
     check(nowItem.exit !== 0 && remedy(nowItem.stdout + nowItem.stderr), '1530: the Now refusal names the record and close-item: ' + (nowItem.stdout + nowItem.stderr).slice(0, 400));
     const decision = add('Decisions', '- 2026-11-17: no link here');
-    check(decision.exit !== 0 && remedy(decision.stdout + decision.stderr), '1530: the Decisions refusal names the linked record and close-item: ' + (decision.stdout + decision.stderr).slice(0, 400));
+    check(decision.exit !== 0 && /wording[^.]* in a dated record/.test(decision.stdout + decision.stderr) && !(decision.stdout + decision.stderr).includes('--mode close-item'), '1530: the Decisions refusal names the dated record and no close-item: ' + (decision.stdout + decision.stderr).slice(0, 400));
     check(!remedy("On a dev Hub, a ## Decisions entry is a one-line pointer. Put the decision's wording in a dated record page and link it here. Nothing was written."), '1530: the control: the old Decisions refusal fails the check');
   } finally { await w.dispose(); }
 }
@@ -3362,6 +3367,154 @@ async function section1572(): Promise<void> {
     equal(book?.maintained_by?.[2], 'Remembered (unknown seat)', '1572: an unknown seat keeps its recorded name');
     equal(book?.maintained_by?.[3], `${unnamed} (unknown seat)`, '1572: an unknown seat without a name keeps its id');
     equal(book?.maintained_by?.length, 4, '1572: the grant has exactly four names');
+  } finally { await w.dispose(); }
+}
+
+async function section1574(): Promise<void> {
+  const w = await letterWorkspace('w52-pointer-quotes');
+  try {
+    makeDevHub(w.ws, 'first');
+    const root = path.join(w.ws, 'collection/projects/first/_project.md');
+    const before = fs.readFileSync(root, 'utf8');
+    const short = '- [ ] Vérifier la note';
+    const long = '- [ ] ' + 'é'.repeat(130);
+    const decision = '- 2026-11-22: Vérifier le dossier';
+    const body = ['# First', '', '## Repo', 'Fixture', '', '## Now', short, long, '',
+      '## Next', '- [ ] Next without a pointer', '', '## Decisions', decision].join('\n');
+    const result = w.cli(0, ['hub', 'edit', 'first', '--mode', 'replace-body', '--content', body, '--preflight', '--json']);
+    const message = result.stdout + result.stderr;
+    check(result.exit !== 0, '1574: the edit refuses the new pointers');
+    for (const [section, quote] of [['Now', short], ['Now', long.slice(0, 120) + '…'],
+      ['Next', '- [ ] Next without a pointer'], ['Decisions', decision]]) {
+      check(message.split('\n').some(line => line.includes('## ' + section) && line.includes('“' + quote + '”')),
+        '1574: refusal quotes each entry in its section: ' + quote + ': ' + message);
+    }
+    equal(fs.readFileSync(root, 'utf8'), before, '1574: refusal leaves the page untouched');
+  } finally { await w.dispose(); }
+}
+
+async function section1575(): Promise<void> {
+  const w = await letterWorkspace('w52-train-pointers');
+  try {
+    makeDevHub(w.ws, 'first');
+    writeTrain(w.ws, [['known-item', 'open', 'car:one']], null);
+    const preview = (text: string) => w.cli(0, ['hub', 'edit', 'first', '--mode', 'append-section', '--section',
+      'Now', '--content', '- [ ] ' + text, '--preflight', '--json']);
+    const unknown = preview('Waits on `missing-one`');
+    const message = unknown.stdout + unknown.stderr;
+    check(unknown.exit !== 0 && message.includes("`missing-one` is not in this Library's train register") &&
+      message.includes('deskpost train add missing-one ...'), '1575: refusal names the missing id and its repair route');
+    const two = preview('Waits on `missing-one` and `missing-two`');
+    check(two.exit !== 0 && ['missing-one', 'missing-two'].every(id =>
+      (two.stdout + two.stderr).includes('deskpost train add ' + id + ' ...')), '1575: both unknown ids get their repair routes');
+    const bare = preview('Waits for a record');
+    check(bare.exit !== 0 && (bare.stdout + bare.stderr).includes('names no record'), '1575: bare prose keeps the record advice');
+    equal(preview('Waits on `known-item`').exit, 0, '1575: registered id passes');
+    equal(preview('See [[projects/first/notes/example]] and `missing-one`').exit, 0, '1575: valid link passes beside an absent id');
+  } finally { await w.dispose(); }
+}
+
+async function section1576(): Promise<void> {
+  const w = await letterWorkspace('w52-item-occurrence');
+  try {
+    const short = 'Closed items: [[projects/first/notes/history]]';
+    const long = short + ' and more';
+    const fixture = closeFixture(w, ['- [ ] Same task', '- [ ] Same task'], ['- [ ] Existing Next item']);
+    const edit = (args: string[]) => w.cli(0, ['hub', 'edit', 'first', ...args, '--json']);
+    const tick = ['--mode', 'check-item', '--section', 'Now', '--match-text', 'Same task'];
+    const preview = (args: string[]) => {
+      const result = edit([...args, '--preflight']);
+      check(result.exit === 0, '1576: preview selects the requested item: ' + result.stdout + result.stderr);
+      return result.exit === 0 ? w.json(result) : null;
+    };
+    const apply = (args: string[], id: unknown) => edit([...args, '--user-confirmed', '--plan-id', String(id)]);
+    const ambiguous = edit([...tick, '--preflight']);
+    check(ambiguous.exit !== 0 && (ambiguous.stdout + ambiguous.stderr).includes(
+      "'Same task' matches 2 items; give text unique to one. Matches begin: - [ ] Same task | - [ ] Same task"),
+      '1576: no selector preserves the ambiguity refusal');
+    const original = fixture.rootText();
+    for (const value of ['0', '-1', '1.5', '3']) {
+      const invalid = edit([...tick, '--occurrence', value, '--preflight']);
+      const problem = value === '3' ? 'out of range' : 'positive whole number';
+      check(invalid.exit !== 0 && (invalid.stdout + invalid.stderr).includes(problem),
+        '1576: refuses invalid occurrence ' + value);
+    }
+    check(edit([...tick, '--match-text', 'another', '--occurrence', '1', '--preflight']).exit !== 0,
+      '1576: occurrence and repeated matches cannot be combined');
+    for (const order of ['1', '2']) {
+      const args = [...tick, '--occurrence', order];
+      const plan = preview(args);
+      if (!plan) continue;
+      equal(plan.item_before, '- [ ] Same task', '1576: checkbox preview locates the block');
+      equal(plan.item_after, '- [x] Same task', '1576: checkbox preview describes the change');
+      check(apply([...tick, '--occurrence', order === '1' ? '2' : '1'], plan.plan_id).exit !== 0,
+        '1576: a plan cannot switch occurrences');
+      equal(fixture.rootText(), original, '1576: refused apply writes nothing');
+      equal(apply(args, plan.plan_id).exit, 0, '1576: selected checkbox applies');
+      const checked = order === '1' ? '- [x] Same task\n- [ ] Same task' : '- [ ] Same task\n- [x] Same task';
+      check(fixture.rootText().includes(checked), '1576: ticks just occurrence ' + order);
+      const untick = [...args, '--uncheck'];
+      const undo = preview(untick);
+      if (undo) equal(apply(untick, undo.plan_id).exit, 0, '1576: restores checkbox for the next case');
+    }
+
+    const next = ['--section', 'Next'];
+    const append = edit(['--mode', 'append-section', ...next, '--content', short + '\n' + long]);
+    equal(append.exit, 0, '1576: add two paragraph lines');
+    const replace = ['--mode', 'replace-item', ...next, '--match-text', short];
+    const duplicate = [...replace, '--occurrence', '1', '--content', long];
+    const beforeDuplicate = fixture.rootText();
+    const refused = edit([...duplicate, '--preflight']);
+    check(refused.exit !== 0 && (refused.stdout + refused.stderr).includes('duplicate'),
+      '1576: refuses a replacement identical to a sibling');
+    equal(fixture.rootText(), beforeDuplicate, '1576: duplicate refusal writes nothing');
+    const noop = preview([...replace, '--occurrence', '1', '--content', short]);
+    if (noop) equal(noop.unchanged, true, '1576: the selected item is not its own sibling');
+    for (const [order, expected] of [['2', long], ['1', short]]) {
+      const args = [...replace, '--occurrence', order!, '--content', short + ' changed ' + order];
+      const plan = preview(args);
+      if (!plan) continue;
+      equal(plan.item_before, expected, '1576: preview picks the intended paragraph line');
+      equal(apply(args, plan.plan_id).exit, 0, '1576: applies the selected paragraph replacement');
+    }
+    const now = ['--mode', 'replace-item', '--section', 'Now', '--match-text', 'Same task',
+      '--occurrence', '2', '--content', 'Changed task [[projects/first/notes/history]]'];
+    const plan = preview(now);
+    if (plan) {
+      equal(apply(now, plan.plan_id).exit, 0, '1576: Now validation uses the requested block');
+      check(fixture.rootText().includes('- [ ] Same task\n- [ ] Changed task'), '1576: replaces only the second Now item');
+    }
+  } finally { await w.dispose(); }
+}
+
+async function section1577(): Promise<void> {
+  const w = await letterWorkspace('w52-code-placeholders');
+  try {
+    const fixture = closeFixture(w, [], []);
+    const edit = (args: string[]) => w.cli(0, ['hub', 'edit', 'first', ...args, '--json']);
+    const inline = 'Inline `{{now}}`';
+    const fence = '~~~\n{{today}}\n~~~';
+    const quoted = '> ~~~\n> {{session}}\n> ~~~';
+    const literal = [inline, fence, quoted].join('\n\n');
+    const append = ['--mode', 'append-section', '--section', 'Next', '--content', 'Date {today}\n\n' + literal];
+    const preview = w.json(edit([...append, '--preflight']));
+    const advice = String(preview.time_placeholders);
+    check(advice.includes('filled') && advice.includes('stored as written') &&
+      ['{{now}}', '{{today}}', '{{session}}'].every(word => advice.includes(word)),
+      '1577: mixed preview describes prose filling and lists the literal code placeholders');
+    equal(edit([...append, '--plan-id', String(preview.plan_id)]).exit, 0, '1577: mixed edit applies');
+    check(fixture.rootText().includes(literal) && /Date \d{4}-\d{2}-\d{2}/.test(fixture.rootText()),
+      '1577: mixed edit fills prose and preserves every code byte');
+    const file = 'notes/literal';
+    const newPage = ['--mode', 'new-page', '--page', file, '--title', 'Literal', '--content', literal];
+    const plan = w.json(edit([...newPage, '--preflight']));
+    const note = String(plan.time_placeholders);
+    check(note.includes('stored as written') && !note.includes('filled') &&
+      ['{{now}}', '{{today}}', '{{session}}'].every(word => note.includes(word)),
+      '1577: new-page warns about code even without prose placeholders');
+    equal(edit([...newPage, '--plan-id', String(plan.plan_id)]).exit, 0, '1577: new-page applies');
+    check(fs.readFileSync(path.join(w.ws, 'collection/projects/first', file + '.md'), 'utf8').includes(literal),
+      '1577: new-page stores every code byte');
   } finally { await w.dispose(); }
 }
 
@@ -4884,6 +5037,10 @@ if (selected(1549)) await section1549();
 if (selected(1570) && prerequisite(1570, () => !isCompiled(), 'requires the source launcher stand-in')) await section1570();
 if (selected(1571) && prerequisite(1571, () => !isCompiled(), 'requires source fixtures')) await section1571();
 if (selected(1572) && prerequisite(1572, () => !isCompiled(), 'requires source fixtures')) await section1572();
+if (selected(1575) && prerequisite(1575, () => !isCompiled(), 'requires source fixtures')) await section1575();
+if (selected(1576) && prerequisite(1576, () => !isCompiled(), 'requires source fixtures')) await section1576();
+if (selected(1577) && prerequisite(1577, () => !isCompiled(), 'requires source fixtures')) await section1577();
+if (selected(1574) && prerequisite(1574, () => !isCompiled(), 'requires source fixtures')) await section1574();
 if (selected(1573) && prerequisite(1573, () => !isCompiled(), 'requires source fixtures')) await section1573();
 if (selected(1550)) await section1550();
 if (selected(1551)) await section1551();

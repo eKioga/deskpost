@@ -34,6 +34,8 @@ import { resolveSeatName } from './seatdesk.ts';
 import { readRegistryRows, registryFilePath, writeSeatRegistry } from './seatregistry.ts';
 import { identityRowsOfRegistry } from './seatincarnation.ts';
 import { assertNoSeatRename } from './seatpaths.ts';
+import { seatDeclinedBooks, seatOpenBooks } from './desk.ts';
+import { defaultGrantsMissing, matchingDefaultBooks } from './seatdefaults.ts';
 import {
   METADATA_FIELDS,
   OPTIONAL_FIELDS,
@@ -374,11 +376,28 @@ export function seatDescribeResult(options: { workspace: string; seat: string; r
       const rows = readRegistryRows(file);
       const plan = describePlan(rows, seat, request, retiredSeatNames(workspace));
       const digest = registryDigest(file);
+      const metadata = (fields: RowChange['after']) => ({
+        role: fields.role === 'performer' || fields.role === 'orchestrator' ? fields.role : null,
+        department: typeof fields.department === 'string' ? fields.department : null,
+      } as const);
+      const defaults = plan.changes.map(change => ({
+        change,
+        after: matchingDefaultBooks(workspace, metadata(change.after)),
+        before: matchingDefaultBooks(workspace, metadata(change.before)),
+      }));
+      const defaultLines = defaults.some(entry => entry.after.length || entry.before.length) ? defaults.map(({ change, after }) => {
+        const unavailable = new Set([...seatOpenBooks(workspace, change.seat), ...seatDeclinedBooks(workspace, change.seat)]);
+        const opens = after.filter(book => !unavailable.has(book.root)).map(book => book.root);
+        const grants = defaultGrantsMissing(workspace, after, change.seat_id);
+        return `${change.seat}: default Books at next start: ${opens.join(', ') || 'none'}. Upkeep grants to add (from local copies): ${grants.join(', ') || 'none'}.`;
+      }) : [];
+
       return {
         schema: 1,
         operation: 'Describe a Library seat (preflight)',
         seat,
         rows: changesJson(plan.changes),
+        ...(defaultLines.length ? { default_books: defaultLines } : {}),
         change: plan.changes.length ? 'write' : 'none',
         ...(plan.department !== null ? { department: plan.department, creates_department: plan.createsDepartment } : {}),
         ...(plan.changes.some((change) => change.purpose_review_advised) ? { purpose_review_advised: true, advice: plan.changes.flatMap((change) => (change.advice ? [change.advice] : [])) } : {}),

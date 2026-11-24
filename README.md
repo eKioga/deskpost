@@ -23,7 +23,7 @@ of `docs/` is design records, written for whoever is changing the code.
 
 ## Prerequisites
 
-- **Windows 10 or 11**, or **Linux on x64** with `curl` and either `unzip` or `python3`. macOS is
+- **Windows 10 or 11**, or **Linux on x64 or arm64** with `curl` and either `unzip` or `python3`. macOS is
   not supported yet.
 - **Claude Code or Codex**, installed and signed in. Both are supported, and both read through the
   same validated reader.
@@ -204,7 +204,7 @@ what is in them.
 
 ## Roadmap
 
-The current release is **1.7.1**, "Groups for your seats, and Library moves": departments can have groups with their own orchestrator and letters, and `library move` is on with a preview before any change. Hub status and briefings give a clearer view of current work. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
+The current release is **1.7.2**, "Move a Library in one run": choose the Library once, see every blocker on one checklist, and move when ready, with safe cancellation, recovery and confirmed clean-up of unchanged old copies. Releases include Linux arm64 zip files. Seats can share default Books by role or department, and Hub refusals quote the entries that need attention. The full roadmap is [`docs/roadmap.md`](docs/roadmap.md).
 In short:
 
 - **Next: builders working from Webtop**, reading and writing the shared collection, alongside the remaining work for builders to share the gate.

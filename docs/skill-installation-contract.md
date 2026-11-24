@@ -16,7 +16,7 @@ Parity plan step 4d. Reader benefit: the same Library procedures are available i
 
 Doctor's `workspace.claude-skills-installed` and `workspace.codex-skills-installed` rows report missing, outdated, edited, unowned, linked, blocked and retired copies. Doctor never writes. Structural success proves installation; it does not prove that a live harness discovered a skill.
 
-Both the Claude and Codex rows name `library-help, closeout, triage`.
+Both the Claude and Codex rows name `library-help, closeout, triage, meanwhile`.
 Section 249 proves installation in both locations, user collision preservation, repeat init and both doctor rows.
 
 Self-test section 219 covers both locations, canonical content, collisions, invalid ownership records, old-hash upgrades, reader edits, missing-file repair, interrupted installation, missing shipped sources, retirement, blocked file slots, linked roots/directories/file slots, actual init and uninstall retention. Section 107 compares interrupted init with a clean init in both skill locations. Existing section 55 retains its front-door ownership checks.

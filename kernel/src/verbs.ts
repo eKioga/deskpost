@@ -416,7 +416,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     usage:
       'library hub new <slug> --title <t> [--purpose <p>] [--next-action <a>] [--dev] [--preflight] [--json]; ' +
       'library hub edit <slug> --mode <add-section|append-section|remove-section|remove-page|replace-section|replace-body|check-item|close-item|replace-item|insert-item|new-page> [--title <t>] ' +
-      '[--section <s>] [--subsection <t>] [--match-text <t>] [--supersedes <t>] [--after <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | [--user-confirmed] --plan-id <id>]; ' +
+      '[--section <s>] [--subsection <t>] [--match-text <t>] [--occurrence <n>] [--supersedes <t>] [--after <t>] [--content <c> | --content-path <f>] [--page <p>] [--uncheck] [--preflight | [--user-confirmed] --plan-id <id>]; ' +
       'library hub history <slug> <page> [--json]; ' +
       'library hub status <slug> [--json]; ' +
       'library hub notes <slug> [--prefix <text>] [--match <text>] [--json]; ' +
@@ -457,17 +457,19 @@ export const VERBS: Record<string, VerbDeclaration> = {
         "  replace-section  --section <s> --content-path <f>: the section's body replaced. Gated.",
         '  replace-body     --content-path <f>: the whole page replaced. Gated.',
         '                   With --section Next, --supersedes "Run <old id>:" ticks the old pointer and adds the new one.',
-        '  check-item       --match-text <t> [--section <s>] [--uncheck]: ticks or unticks one checkbox item.',
+        '  check-item       --match-text <t> [--occurrence <n>] [--section <s>] [--uncheck]: ticks or unticks one checkbox item.',
         '  close-item       --match-text <t> [--section Now|Next]: moves one top-level item of the root, ticked, to the newest',
         "                   tidy-history page and leaves a Closed items pointer there; ungated, local Hubs only.",
         '  insert-item      --after <t> [--section <s>] --content-path <f>: adds a list item after one unique match; additive, with an optional preflight plan id.',
-        '  replace-item     --match-text <t> [--section <s>] --content-path <f>: one item replaced. Gated if it drops existing text.',
+        '  replace-item     --match-text <t> [--occurrence <n>] [--section <s>] --content-path <f>: one item replaced. Gated if it drops existing text.',
         "  new-page         --page <p> --content-path <f>: a new page in a local Library's Hub; never overwrites.",
         '                   Its --preflight issues a plan_id: the apply takes it with --plan-id <id>, or runs without one.',
         '',
         'Every mode but new-page acts on --page <p> when given (a notes/ page included), _project otherwise.',
         "For the section modes, --content and --content-path are the section's body only: leave out the '## <section>' line, and use ### for a heading inside it (a '## ' line is refused).",
-        'Repeat --match-text for check-item and replace-item to edit several distinct matches in one plan.',
+        'For check-item or replace-item, --occurrence <n> selects the nth match in page order, starting at 1.',
+        'Repeat --match-text for check-item and replace-item to edit several distinct matches in one plan without --occurrence.',
+        'A single-target replace-item refuses a replacement identical to a sibling in the same section.',
         'replace-item on a paragraph line replaces that line only; on a list item it replaces the item with its nested sub-items.',
         "replace-item keeps the replaced item's own marker (its bullet and any checkbox) when the content starts without one.",
         "Gated means --preflight first, then --user-confirmed --plan-id <id> after reading the preflight; deskpost undo <journal-id> restores it.",
@@ -501,7 +503,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       // EVERY MODE'S NAMES IN ONE TABLE; `--title` given to a mode but new-page is refused in hubedit.ts, and
       // `--user-confirmed` is accepted on every mode.
       edit: {
-        valued: ['mode', 'section', 'subsection', 'supersedes', 'after', 'content', 'content-path', 'page', 'title', 'plan-id', 'seat', 'lock-timeout'],
+        valued: ['mode', 'section', 'subsection', 'supersedes', 'after', 'occurrence', 'content', 'content-path', 'page', 'title', 'plan-id', 'seat', 'lock-timeout'],
         repeatable: ['match-text'],
         boolean: ['uncheck', 'preflight', 'user-confirmed', 'show-sections'],
         positionals: 1,
@@ -706,8 +708,8 @@ export const VERBS: Record<string, VerbDeclaration> = {
     row: 's130',
   },
   library: {
-    summary: "The Libraries registered on this machine, which one bare `deskpost` opens from anywhere, and a Library's card.",
-    usage: 'library library [list] [--json]; library library default <folder> [--json]; library library card [--set <name> (--preflight | --user-confirmed --plan-id <id>)] [--workspace <path>] [--json]; library library forget <folder-or-id> (--preflight | --user-confirmed --plan-id <id>) [--json]; library library move <destination> --preflight [--workspace <path>] [--json]; library library move <destination> --user-confirmed --plan-id <id> [--workspace <path>] [--json]; library library move --resume <run-id> --user-confirmed [--json]; library library move --rollback <run-id> (--preflight | --user-confirmed --plan-id <id>) [--json]',
+    summary: "The Libraries registered on this machine, which one bare `deskpost` opens from anywhere, and a Library's card. Move previews exit 0 when ready and 3 when not ready; refusals exit 1; pre-write cancellation exits 130.",
+    usage: 'library library [list] [--json]; library library default <folder> [--json]; library library card [--set <name> (--preflight | --user-confirmed --plan-id <id>)] [--workspace <path>] [--json]; library library forget <folder-or-id> (--preflight | --user-confirmed --plan-id <id>) [--json]; library library move <destination> [--plain] [--details]; library library move <destination> --preflight [--workspace <path>] [--plain] [--details] [--json]; library library move <destination> --user-confirmed --plan-id <id> [--workspace <path>] [--json]; library library move --resume <run-id> --user-confirmed [--json]; library library move --rollback <run-id> (--preflight | --user-confirmed --plan-id <id>) [--json]; library library move --clean-up [--plain] [--details] [--preflight | --user-confirmed --plan-id <id>] [--json]',
     actions: ['card', 'default', 'forget', 'list', 'move'],
     positional: false,
     arguments: {
@@ -716,7 +718,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
       default: { valued: ['registry-root'], internal: ['registry-root'], positionals: 1 },
       // FORGET ONE ROW (kickoffs/s146 row 1): the registry's row goes on its plan id's yes; the folder is never touched.
       forget: { valued: ['registry-root', 'plan-id'], boolean: ['preflight', 'user-confirmed'], internal: ['registry-root'], positionals: 1 },
-      move: { valued: ['registry-root', 'workspace', 'plan-id', 'resume', 'rollback'], boolean: ['preflight', 'user-confirmed'], internal: ['registry-root'], positionals: 1 },
+      move: { valued: ['registry-root', 'workspace', 'plan-id', 'resume', 'rollback'], boolean: ['preflight', 'user-confirmed', 'plain', 'details', 'clean-up'], internal: ['registry-root'], positionals: 1 },
       // THE LIBRARY CARD (kickoffs/s121 row 8; PLAN-many-libraries.md Stage 1 item 1). The verb is machine-wide, so the
       // card action names its own --workspace: argumentTable adds one only to a verb that runs against a workspace.
       card: { valued: ['registry-root', 'set', 'plan-id', 'workspace'], boolean: ['preflight', 'user-confirmed'], internal: ['registry-root'], positionals: 0 },
@@ -928,10 +930,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
   seat: {
     summary: 'Seat creation, the claim by verified process identity, and binding.',
     usage:
-      'library seat <cards|describe|dirs|enter|rename|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
+      'library seat <cards|defaults|describe|dirs|enter|rename|settings|start|status|retire> [<name>] [arguments]; library seat start <name> [--project <slug>] [--command claude|codex] ' +
       '[--session-id <id> | --resume <id>] [--plan-id <id>] [--no-launch] [--preflight] [-- <agent arguments>]; ' +
       'library seat start <name> --project <slug> [--template performer|orchestrator] [--department <slug>] [--role performer|orchestrator] ' +
-      '[--card "<one line>"] [--open-book <shelf-slug>]... [--open-project <slug>]... [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>]; ' +
+      '[--card "<one line>"] [--open-book <shelf-slug-or-root>]... [--no-default-books] [--open-project <slug>]... [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>]; ' +
       'library seat dirs <name> [--list | --add <folder> | --remove <folder>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> [--inbound accept|hold|refuse|unset] [--preflight | --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat settings <name> --assistant claude|codex|none; ' +
@@ -939,6 +941,10 @@ export const VERBS: Record<string, VerbDeclaration> = {
       'library seat settings <name> --flags claude|codex [--preflight | --plan-id <id>] -- <flags...>; ' +
       'library seat settings <name> (--clear-flags claude|codex | --reset-launch) [--preflight | --plan-id <id>]; ' +
       'library seat describe <name> [--department <slug>] [--role performer|orchestrator] [--card "<one line>"] [--nickname "<n>"] [--clear-department] [--clear-role] [--clear-card] [--clear-nickname] [--from <seat>] [--preflight | --plan-id <id>] [--workspace <path>]; ' +
+      'library seat defaults [--json]; ' +
+      'library seat defaults add (--role <role> | --department <slug>) --book <root> [--book <root>] [--keep] (--preflight | --user-confirmed --plan-id <id>); ' +
+      'library seat defaults remove <rule-id> (--preflight | --user-confirmed --plan-id <id>); ' +
+      'library seat defaults grants (--preflight | --user-confirmed --plan-id <id>); ' +
       'library seat cards [--all] [--seat <name>] [--json] [--workspace <path>]; ' +
       'library seat rename <old> <new> [--preflight | --user-confirmed --plan-id <id>] [--workspace <path>] [--json]; ' +
       'library seat rename (--resume <seat> | --rollback <seat>) [--workspace <path>] [--json]; ' +
@@ -949,7 +955,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     // `enter` spawns, never run by hand. `dirs` is the seat's own added folders (1.2.5, ADR-0061), and `settings` its
     // inbound policy (1.3.1, ADR-0062), both applied by `start`. `describe` sets a seat's department, role and card under
     // the reader's gate (1.3.8, ADR-0069), and `cards` lists them as the directory, computed and read only.
-    actions: ['cards', 'describe', 'dirs', 'enter', 'hold', 'rename', 'retire', 'settings', 'start', 'status'],
+    actions: ['cards', 'defaults', 'describe', 'dirs', 'enter', 'hold', 'rename', 'retire', 'settings', 'start', 'status'],
     positional: false,
     details: {
       cards: [
@@ -979,6 +985,7 @@ export const VERBS: Record<string, VerbDeclaration> = {
     },
     arguments: {
       cards: { valued: ['seat'], boolean: ['all'], positionals: 0 },
+      defaults: { valued: ['role', 'department', 'plan-id', 'seat'], internal: ['seat'], repeatable: ['book'], boolean: ['keep', 'preflight', 'user-confirmed'], positionals: 2 },
       describe: {
         valued: ['department', 'role', 'card', 'nickname', 'from', 'plan-id'],
         boolean: ['clear-department', 'clear-role', 'clear-card', 'clear-nickname', 'preflight'],
@@ -1007,9 +1014,9 @@ export const VERBS: Record<string, VerbDeclaration> = {
           'project', 'command', 'plan-id', 'assistant', 'resume', 'session-id', 'department', 'role', 'card', 'template', 'inbound',
           'deadline-seconds', 'restore-desk-from-archive', 'intent', 'fallback-assistant', 'record-assistant', 'transcript-root',
         ],
-        repeatable: ['open-book', 'open-project'],
-        boolean: ['no-launch', 'preflight', 'retire-legacy-desk'],
-        internal: ['deadline-seconds', 'restore-desk-from-archive', 'retire-legacy-desk'],
+        repeatable: ['open-book', 'open-project', 'decline-default-book'],
+        boolean: ['no-launch', 'preflight', 'no-default-books', 'retire-legacy-desk'],
+        internal: ['deadline-seconds', 'restore-desk-from-archive', 'retire-legacy-desk', 'decline-default-book'],
         positionals: 1,
         passthrough: true,
       },

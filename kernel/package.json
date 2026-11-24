@@ -1,6 +1,6 @@
 {
   "name": "@deskpost/library-kernel",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": true,
   "description": "The TypeScript kernel of the Library, judged by its self-test, compiled sections, built-release tests and real harness sessions.",
   "type": "module",

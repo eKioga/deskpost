@@ -17,10 +17,8 @@
  *            FILETIME for the start time, and Toolhelp32 for the parents. The same FILETIME the
  *            oracle's expression formats, to 100 ns, so a binding either writer made compares equal.
  *            Self-test section 115 judges it against a compiled kernel with no PowerShell on PATH.
- *   Windows, source (Node)   spawn `powershell.exe` with THE ORACLE'S OWN EXPRESSION, `StartTime
- *            .ToUniversalTime().ToString('o')`, kept as the fallback because Node has no FFI.
- *            Measured 191-209 ms per read, which is why a gone pid is answered by
- *            `process.kill(pid, 0)` first and costs no spawn at all.
+ *   Windows, source (Node)   ask the installed program's process verbs, through DESKPOST_KERNEL or PATH.
+ *            A missing executable keeps the unreadable sentinel; install Deskpost or set DESKPOST_KERNEL.
  *   Linux    `/proc/<pid>/stat` field 22 (clock ticks since boot), spelled from 1970-01-01 rather than from
  *            `btime`, which moves with the wall clock (kickoffs/s152). A file read; 10 ms precision at 100 Hz.
  *   macOS    `/bin/ps -o lstart=`, one second of precision. There is no PowerShell writer on a Mac
@@ -32,7 +30,7 @@
 
 import * as fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { nativeProcessCalls, nativeProcessStartUtc, nativeProcessTable } from './win32proc.ts';
+import { nativeProcessCalls, nativeProcessStartUtc, nativeProcessTable, runInstalledProcess } from './win32proc.ts';
 
 /** The sentinel for a process that exists and whose start time cannot be read. Alive, never gone. */
 export const UNREADABLE_IDENTITY = 'unreadable';
@@ -99,24 +97,11 @@ function readIdentity(pid: number): string | null {
   return UNREADABLE_IDENTITY;
 }
 
-function runPowerShell(script: string): string {
-  return execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-    encoding: 'utf8',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-}
-
 function readWindowsIdentity(pid: number): string | null {
   if (nativeProcessCalls() !== null) return nativeProcessStartUtc(pid, UNREADABLE_IDENTITY);
-  // UNDER NODE, THE ORACLE'S EXPRESSION, VERBATIM, and its two exits: a process Get-Process cannot find is gone,
-  // and one whose StartTime throws (another user's elevated process) is the unreadable sentinel.
-  const answer = runPowerShell(
-    `$p = $null; try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'gone'; exit 0 }; ` +
-      `try { $p.StartTime.ToUniversalTime().ToString('o') } catch { '${UNREADABLE_IDENTITY}' }`,
-  ).trim();
-  if (answer === 'gone') return null;
-  return answer || UNREADABLE_IDENTITY;
+  // Node reads the same native instant through the installed program; failures remain unreadable.
+  const start = runInstalledProcess(['start', String(pid)]).start_utc;
+  return start === null || typeof start === 'string' && start.length > 0 ? start : UNREADABLE_IDENTITY;
 }
 
 let linuxClockTicks: number | null = null;
@@ -192,19 +177,9 @@ export function readProcessAncestry(pid: number, depth = AGENT_ANCESTRY_MAX_DEPT
   try {
     if (process.platform === 'win32' && nativeProcessCalls() !== null) return readNativeAncestry(pid, depth);
     if (process.platform === 'win32') {
-      // UNDER NODE, Win32_Process, as Get-ProcessAncestryRecord reads it: .NET exposes no parent at all.
-      const text = runPowerShell(
-        `$id = ${pid}; $rows = @(); for ($i = 0; $i -le ${depth}; $i++) { ` +
-          `$r = @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue); ` +
-          `if ($r.Count -lt 1 -or $null -eq $r[0]) { break }; $r = $r[0]; ` +
-          `$c = $null; try { if ($null -ne $r.CreationDate) { $c = ([DateTime]$r.CreationDate).ToUniversalTime().ToString('o') } } catch { $c = $null }; ` +
-          `$rows += [pscustomobject]@{ pid = [int]$r.ProcessId; parent_pid = [int]$r.ParentProcessId; name = [string]$r.Name; created_utc = $c }; ` +
-          `if ([int]$r.ParentProcessId -le 0 -or [int]$r.ParentProcessId -eq [int]$r.ProcessId) { break }; $id = [int]$r.ParentProcessId }; ` +
-          `ConvertTo-Json -InputObject @($rows) -Compress`,
-      ).trim();
-      if (!text) return [];
-      const parsed = JSON.parse(text) as { pid: number; parent_pid: number; name: string; created_utc: string | null }[];
-      return (Array.isArray(parsed) ? parsed : [parsed]).map((row) => ({
+      // One installed-program read for the chain, bounded as the native walk is.
+      const parsed = runInstalledProcess(['ancestry', String(pid)]).records as { pid: number; parent_pid: number; name: string; created_utc: string | null }[];
+      return parsed.slice(0, depth + 1).map((row) => ({
         pid: row.pid,
         parentPid: row.parent_pid,
         name: row.name,
@@ -366,12 +341,8 @@ export function launcherChildAgent(launcherPid: number): { pid: number } | null 
     if (process.platform === 'win32' && nativeProcessCalls() !== null) {
       rows = nativeProcessTable().map((row) => ({ pid: row.pid, parentPid: row.parentPid, name: row.name }));
     } else if (process.platform === 'win32') {
-      const text = runPowerShell(
-        `ConvertTo-Json -Compress -InputObject @(@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId=${launcherPid}" -ErrorAction SilentlyContinue) | ` +
-          `ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name } })`,
-      ).trim();
-      const parsed = text ? (JSON.parse(text) as { pid: number; name: string }[] | { pid: number; name: string }) : [];
-      rows = (Array.isArray(parsed) ? parsed : [parsed]).map((row) => ({ pid: row.pid, parentPid: launcherPid, name: row.name }));
+      // Node asks the installed program; old rows may still supply an image path instead of a name.
+      rows = runInstalledProcess(['list']).processes.map((row: { pid: number; parent_pid: number; name?: string; path: string | null }) => ({ pid: row.pid, parentPid: row.parent_pid, name: row.name || (row.path?.split(/[\\/]/).pop() ?? '') }));
     } else {
       rows = execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,comm='], { encoding: 'utf8' })
         .split('\n')

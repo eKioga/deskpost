@@ -93,48 +93,36 @@ gates" in [The Dev Session Loop](docs/dev-session-loop.md). A builder unit ends 
 `node tools/land.mts --open int/<unit> --token-item "<item>"`; the queued lander checks and merges it. The push tier,
 `node tools/gate.ts --tier push` (about 13 minutes since S119; the same checks and verdicts as the serial run), is for
 release and cut units only.
-The full command below is that serial reference and the acceptance test outside a Kickoff, run from the
-checkout with the seat variables blank and the installed `bin` off PATH:
+Outside a Kickoff, the acceptance test is the cut tier, run from the checkout:
 
 ```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Invoke-LibraryChecks.ps1
+node tools/gate.ts --tier cut
 ```
 
-**From a seated session, run the gate by hand as `node tools/gate.ts --tier cut`** (or `--tier push`
-before a release or cut unit's push). It blanks `LIBRARY_WORKSPACE`, `LIBRARY_SEAT` and `LIBRARY_SEAT_CLAIM` and drops the
-installed shim from PATH for each child itself (`childEnv`, `kernel/test/gate-env.ts`). Never edit
-those variables or PATH yourself: auto mode refuses it, and run bare, `Invoke-LibraryChecks.ps1`
-attaches the seat's Library before it clears them.
+**From a seated session too, run the gate as `node tools/gate.ts --tier commit` or `--tier cut`.** It blanks
+`LIBRARY_WORKSPACE`, `LIBRARY_SEAT` and `LIBRARY_SEAT_CLAIM` and drops the installed shim from PATH for each child
+itself (`childEnv`, `kernel/test/gate-env.ts`). Never edit those variables or PATH yourself: auto mode refuses it.
+No tier starts PowerShell (kickoffs/s224): the checks the old runner gave the gate are TypeScript in
+`tools/gate-checks.ts` or retired. `tools/Invoke-LibraryChecks.ps1` keeps only those few checks and the
+`acceptance.*` ones, by hand, until the PowerShell is deleted; no gate or Kickoff asks for it.
 
-**No `-WorkspacePath` from the checkout.** That flag attaches a folder as a reader's Library, and the
-checkout is not one: three workspace checks then FAIL on its missing `shelf/` and `notebook/` (S115,
-2026-10-11). Pass it only to check a real Library workspace.
+Outside a Kickoff, run the commit tier after any change to a tool, a hook, or the reader, and the cut tier before
+reporting done; inside one, the pass mark above replaces both runs. Paste the final summary line. `WARN` is
+acceptable; `FAIL` is not. This gate is the acceptance test — it is more authoritative than your own reading of
+the diff, and it is why your report can be short. A fix without a regression check that proves it stays fixed is
+a fix that comes back.
 
-Outside a Kickoff, run it after any change to a tool, a hook, or the reader, and again before reporting
-done; inside one, the pass mark above replaces both runs and the full command is run only where the
-Kickoff's CHARTER names a push. Paste
-the final summary line. `WARN` is acceptable; `FAIL` is not. This suite is the acceptance test —
-it is more authoritative than your own reading of the diff, and it is why your report can be
-short. A fix without a regression check that proves it stays fixed is a fix that comes back.
+**The commit tier while you work; the cut tier is a phase gate, and NEVER an interactive wait.** The commit tier
+is exactly what the pre-commit hook runs: the checks the staged paths select. The cut tier runs every section
+(about 8 minutes on eight workers since S118; `docs/dev-session-loop.md`, "Measured times", keeps the figures) and
+takes the whole PC, so finish a change before committing it rather than committing to test it. When the cut tier
+is genuinely warranted, background it and keep working; do not make the reader sit through it, and never start
+it merely to orient.
 
-**`-Fast` while you work; the full run is a phase gate, and NEVER an interactive wait.** `-Fast` is
-exactly what the pre-commit hook fires. It took 23 seconds for 98 checks on 2026-09-17. Since c2
-(2026-10-11), the kernel self-test uses eight isolated section workers; its first commit and
-quick gate took **8 minutes 47 seconds** (the target is 8 minutes), so
-finish a change before committing it rather than committing to test it. The bare command above
-spawns ~50 helper self-tests as child processes and takes **about 27 minutes** (S118, 2026-10-12, at `35f09b3`; `docs/dev-session-loop.md`, "Measured times", keeps the figures). Every static check is registered above the `if ($Fast)` branch and therefore runs in
-*both* modes, so `-Fast` answers almost any question worth asking mid-session — including whether a
-static check you just added passes. When the full run is genuinely warranted, background it and keep
-working; do not make the reader sit through it, and never start either variant merely to orient. On
-2026-09-17 a session ran the full suite twice while reading a Project Hub, discarded the first result
-to a mis-read JSON property, and cost the reader roughly forty minutes for an answer `-Fast` returns
-then in twenty-three seconds.
-
-**Codex Desktop runs the full gate outside the sandbox by default.** Several suites launch child
-processes or loopback listeners, and a sandboxed run can produce environmental failures that are
-not defects in the Library. Small, explicitly known-pure self-tests may run inside the sandbox;
-`tools/Invoke-LibraryChecks.ps1` should not. If the outside-sandbox route is unavailable, report the
-run as partial rather than treating sandbox failures or skips as product evidence.
+**Codex Desktop runs the cut tier outside the sandbox by default.** Several sections launch child processes or
+loopback listeners, and a sandboxed run can produce environmental failures that are not defects in the Library.
+Small, explicitly known-pure self-test sections may run inside the sandbox. If the outside-sandbox route is
+unavailable, report the run as partial rather than treating sandbox failures or skips as product evidence.
 
 **Say which suites you could not execute.** Two suites stand up a loopback HTTP stub and need
 `[Net.HttpListener]`, which some sandboxes report as unsupported: `mcp-helpers.boundary-suite` and

@@ -22,7 +22,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 export const SKILL_MANIFEST = '.deskpost-managed.json';
 /** Released workspace skills only; prototypes enter this inventory when their command ships. */
-export const SHIPPED_SKILLS = ['library-help', 'closeout', 'triage'] as const;
+export const SHIPPED_SKILLS = ['library-help', 'closeout', 'triage', 'meanwhile'] as const;
 export const SKILLS_BY_LOCATION = {
   '.claude/skills': SHIPPED_SKILLS,
   '.agents/skills': SHIPPED_SKILLS,

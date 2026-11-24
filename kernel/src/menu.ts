@@ -51,6 +51,7 @@ import { askAtTerminal, Interrupted } from './prompt.ts';
 import { browseData, browseEntries, browseEntryLines, browseLines, filterBrowse } from './browse.ts';
 import { changeSeatDirs, launchLine, planSeatDirs, readAddedDirs, seatDirsSentence } from './seatdirs.ts';
 import { cardProblem, departmentProblem, destinationOf, metadataFor, roleLabel, seatLabel, seatMetadata, type DepartmentDestination } from './seatmeta.ts';
+import { matchingDefaultBooks } from './seatdefaults.ts';
 import { loadSeatTemplate, type SeatTemplate } from './seattemplates.ts';
 import { pendingLetterCounts } from './desk.ts';
 import { seatNameHistory } from './seatincarnation.ts';
@@ -730,6 +731,12 @@ function newSeatBooks(workspace: string): string[] {
   return fs.existsSync(path.join(workspace, 'shelf', 'letters', 'wiki')) ? ['letters'] : [];
 }
 
+function wizardDefaultBooks(workspace: string, choices: SeatStartChoices) {
+  const role = choices.template ? loadSeatTemplate(programRoot(), choices.template).role : null;
+  return matchingDefaultBooks(workspace, { role, department: choices.department ?? null })
+    .map(book => ({ ...book, value: /^shelf\/[a-z0-9-]+$/.test(book.root) ? book.root.slice(6) : book.root }));
+}
+
 /** A group uses its own slug in a proposed seat name. */
 function seatNameBase(department: string): string {
   return department.slice(department.indexOf('/') + 1);
@@ -839,19 +846,26 @@ async function seatChoices(state: MenuState, projectSeat: string, slug: string, 
   } catch (error) {
     talk.say(`The Shelf could not be listed, so no Book is opened: ${(error as Error).message}`);
   }
+  const defaults = wizardDefaultBooks(workspace, choices);
+  books = [...new Set([...books, ...defaults.map(book => book.value)])];
+  choices.openBooks = [...new Set([...choices.openBooks, ...defaults.map(book => book.value)])];
   if (books.length) {
     talk.say('  Shelf Books:');
-    books.forEach((slug, index) => talk.say(`  ${String(index + 1).padStart(3)}  ${slug}`));
+    books.forEach((slug, index) => {
+      const match = defaults.find(book => book.value === slug);
+      talk.say(`  ${String(index + 1).padStart(3)}  ${slug}${match ? ` (default: ${match.source})` : ''}`);
+    });
     for (;;) {
       const typed = await talk.ask(`Books to open at the first launch, by number (such as 1 3)   [Enter] ${choices.openBooks.length ? choices.openBooks.join(' ') : 'none'} › `);
       if (!typed) break;
-      const numbers = typed.split(/[\s,]+/).filter((part) => part.length > 0);
+      const numbers = typed === 'none' && defaults.length ? [] : typed.split(/[\s,]+/).filter((part) => part.length > 0);
       const bad = numbers.filter((part) => !/^\d+$/.test(part) || Number(part) < 1 || Number(part) > books.length);
       if (bad.length) {
         talk.say(`${bad.join(', ')} ${bad.length === 1 ? 'is' : 'are'} not ${books.length === 1 ? 'the number 1' : `a number from 1 to ${books.length}`}.`);
         continue;
       }
       choices.openBooks = [...new Set(numbers.map((part) => books[Number(part) - 1]!))];
+      choices.declineDefaultBooks = defaults.filter(book => !choices.openBooks.includes(book.value)).map(book => book.root);
       break;
     }
   }
@@ -909,7 +923,7 @@ async function preview(
     talk.say(`  Role       ${planned.role ?? 'none'}`);
     talk.say(`  Card       ${planned.card ?? 'none'}`);
     talk.say(`  Template   ${planned.templateId ?? 'none'}`);
-    talk.say(`  Books      ${planned.books.length ? planned.books.map((slug) => `shelf/${slug}`).join(', ') : 'none'}`);
+    talk.say(`  Books      ${planned.books.length ? planned.books.join(', ') : 'none'}`);
     if (state.assistant === 'claude') {
       talk.say(`  Messages   ${acceptRings ? "other seats' rings reach it at once (inbound accept)" : 'Claude Code decides (inbound unset): a seat that skips permission prompts holds each ring for you'}`);
     }
@@ -1693,6 +1707,25 @@ export async function screenWizard(state: MenuState, initialName = ''): Promise<
           const changed = await inputScreen(state, 'Seat name', 'Name', proposed, '', 'Project stays ' + projectName + '.', false);
           if (changed.id !== 'back') name = changed.text;
         }
+      }
+      const defaults = wizardDefaultBooks(state.workspace, choices);
+      if (defaults.length) {
+        const declined = new Set<string>();
+        for (;;) {
+          const pickedBook = await chooseScreen(state, { title: 'Books', items: [
+            { id: 'done', text: 'Keep these choices' },
+            ...defaults.map(book => ({
+              id: book.root,
+              text: `${declined.has(book.root) ? '[ ]' : '[x]'} ${book.value} (default: ${book.source})`,
+            })),
+          ] });
+          if (pickedBook.id === 'done' || pickedBook.id === 'back') break;
+          if (declined.has(pickedBook.id)) declined.delete(pickedBook.id);
+          else declined.add(pickedBook.id);
+        }
+        choices.declineDefaultBooks = [...declined];
+        const skipped = new Set(defaults.filter(book => declined.has(book.root)).map(book => book.value));
+        choices.openBooks = choices.openBooks.filter(book => !skipped.has(book));
       }
       // THE CARD (kickoffs/s146 row 5): one line, checked as `seat describe --card` checks it; empty leaves none.
       for (let problem = ''; ;) {

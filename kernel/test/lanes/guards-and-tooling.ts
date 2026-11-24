@@ -95,6 +95,7 @@ if (selected(1892)) await section1892();
 if (selected(1893) && prerequisite(1893, () => process.platform === 'linux' && !isCompiled(), 'requires Linux and the source reaper')) await section1893();
 if (selected(1894) && prerequisite(1894, () => !isCompiled(), 'requires source tools and Git')) await section1894();
 if (selected(1895) && prerequisite(1895, () => !isCompiled(), 'requires the source worker environment')) await section1895();
+if (selected(1990) && prerequisite(1990, () => !isCompiled(), 'requires the source worker environment')) await section1990();
 if (selected(1896) && prerequisite(1896, () => process.platform === 'linux' && !isCompiled(), 'requires Linux and source landing tools')) await section1896();
 if (selected(1898) && prerequisite(1898, () => !isCompiled(), 'requires the source section selector')) await section1898();
 if (selected(1899) && prerequisite(1899, () => !isCompiled(), 'requires the source section selector')) await section1899();
@@ -104,6 +105,18 @@ if (selected(1951)) await section1951();
 if (selected(1952) && prerequisite(1952, () => !isCompiled(), 'requires source inventory checker and real Git')) await section1952();
 if (selected(1953) && prerequisite(1953, () => !isCompiled(), 'requires source inventory command and real Git')) await section1953();
 if (selected(1954)) await section1954();
+if (selected(1960) && prerequisite(1960, () => !isCompiled(), 'requires source tools/gate-checks.ts')) await section1960();
+if (selected(1961) && prerequisite(1961, () => !isCompiled(), 'requires source tools/gate.ts and tools/gate-checks.ts')) await section1961();
+if (selected(1962) && prerequisite(1962, () => !isCompiled(), 'requires source tools/gate-checks.ts')) await section1962();
+if (selected(1963) && prerequisite(1963, () => !isCompiled(), 'requires source tools/gate-checks.ts and docs/seats.md')) await section1963();
+if (selected(1964) && prerequisite(1964, () => !isCompiled(), 'requires source tools/gate-checks.ts and the library-help Skill')) await section1964();
+if (selected(1965) && prerequisite(1965, () => !isCompiled(), 'requires source tools/gate-checks.ts')) await section1965();
+if (selected(1966) && prerequisite(1966, () => !isCompiled(), 'requires source tools/gate-checks.ts and the plugin folders')) await section1966();
+if (selected(1967) && prerequisite(1967, () => !isCompiled(), 'requires source tools/gate-checks.ts and templates/')) await section1967();
+if (selected(1968) && prerequisite(1968, () => !isCompiled(), 'requires source tools/gate.ts')) await section1968();
+if (selected(1969) && prerequisite(1969, () => !isCompiled(), 'requires source tools/gate-checks.ts and the plugin folders')) await section1969();
+if (selected(1970) && prerequisite(1970, () => !isCompiled(), 'requires source tools/gate-checks.ts')) await section1970();
+if (selected(1971) && prerequisite(1971, () => !isCompiled(), 'requires source tools/gate-checks.ts')) await section1971();
 if (selected(1980)) await section1980();
 }
 
@@ -2484,7 +2497,7 @@ async function section1874(): Promise<void> {
   equal(lines.length, 0, '1874: an already closed child needs no hold notice');
 }
 
-// --- 1875. Commit settings checks fall back to PowerShell 7 and report when both executables are absent.
+// --- 1875. Commit settings checks never ask PowerShell: a pwsh on PATH is ignored and none is needed (kickoffs/s224).
 async function section1875(): Promise<void> {
   const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
   const { spawnSync } = await import('node:child_process');
@@ -2515,46 +2528,31 @@ exit 1
       equal(result.status, 0, `1875: settings child exited: ${result.error ?? result.stderr}`);
       return result.status === 0 ? JSON.parse(result.stdout) as { check: string; status: string; detail: string }[] : [];
     };
+    // Since kickoffs/s224 the settings checks are TypeScript (tools/gate-checks.ts): a pwsh on PATH is never asked, and with no
+    // PowerShell at all each check still judges the files itself (here: no .claude/settings.json in this folder, so each fails saying so).
     const available = run(withPwsh);
-    check(available.length > 0 && available.every(row => row.status === 'pass' && row.detail === 'stand-in'),
-      `1875: each settings check passes through pwsh: ${JSON.stringify(available)}`);
+    check(available.length > 0 && available.every(row => row.status === 'fail' && row.detail !== 'stand-in' && row.detail.includes('No .claude/settings.json')),
+      `1875: each settings check judges the folder itself, never the pwsh stand-in: ${JSON.stringify(available)}`);
     const missing = run(empty);
-    check(missing.length > 0 && missing.every(row => row.status === 'fail'
-      && row.detail.includes('powershell.exe is missing') && row.detail.includes('pwsh') && row.detail.includes(row.check)),
-      `1875: each failure names both executables and the check: ${JSON.stringify(missing)}`);
+    equal(JSON.stringify(missing.map(row => [row.check, row.status, row.detail])), JSON.stringify(available.map(row => [row.check, row.status, row.detail])),
+      '1875: the same verdicts with PowerShell unreachable');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
-// --- 1876. Each PowerShell script with a matching self-test selects it when changed.
+// --- 1876. A changed PowerShell script selects no PowerShell check: its helper's self-test retired (kickoffs/s224).
 async function section1876(): Promise<void> {
   const fs = await import('node:fs'), path = await import('node:path');
   const { pathToFileURL } = await import('node:url');
   const { settingsChecksForPaths } = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
-  const hubChecks = settingsChecksForPaths(['tools/New-ProjectHub.ps1']);
-  for (const name of ['new-project-hub.selftest', 'hub.dev-template-seeds-sections']) {
-    check(hubChecks.includes(name), `1876: tools/New-ProjectHub.ps1 must select ${name}`);
-  }
-
+  // Since kickoffs/s224 a PowerShell helper's own self-test is retired with the frozen helpers: a changed tools/*.ps1 selects
+  // only the sections that name it, and no PowerShell check, in every case.
   const toolsDir = path.join(PROGRAM_ROOT, 'tools');
-  const runner = fs.readFileSync(path.join(toolsDir, 'Invoke-LibraryChecks.ps1'), 'utf8');
-  const selfTests = new Set(Array.from(runner.matchAll(/\bInvoke-Check\s+'([\w-]+\.selftest)'/g), match => match[1]));
-  const pairs: string[] = [], missing: string[] = [];
-  for (const file of fs.readdirSync(toolsDir).sort()) {
-    if (!file.endsWith('.ps1')) continue;
-    const name = file.slice(0, -4)
-      .replace(/([A-Z])([A-Z][a-z])/g, '$1-$2')
-      .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-      .toLowerCase() + '.selftest';
-    if (!selfTests.has(name)) continue;
-    const source = `tools/${file}`;
-    const pair = `${source} -> ${name}`;
-    pairs.push(pair);
-    if (!settingsChecksForPaths([source]).includes(name)) missing.push(pair);
-  }
-  check(pairs.length >= 25, `1876: found ${pairs.length} PowerShell script and self-test pairs (expected at least 25): ${pairs.join(', ')}`);
-  check(missing.length === 0, `1876: missing self-test mappings: ${missing.join(', ')}. All pairs: ${pairs.join(', ')}`);
+  const scripts = fs.readdirSync(toolsDir).filter(file => file.endsWith('.ps1')).sort();
+  check(scripts.length >= 25, `1876: found only ${scripts.length} PowerShell scripts in tools/`);
+  const selecting = scripts.filter(file => settingsChecksForPaths([`tools/${file}`]).length > 0);
+  check(selecting.length === 0, `1876: a changed PowerShell script still selects a check: ${selecting.map(file => `tools/${file} -> ${settingsChecksForPaths([`tools/${file}`]).join(', ')}`).join('; ')}`);
 }
 
 // --- 1884. The source checker and ownership command agree on the title's unit.
@@ -3272,6 +3270,360 @@ async function section1954(): Promise<void> {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+// --- 1960. The settings checks, ported from the PowerShell runner (kickoffs/s224 row 2): tools/gate-checks.ts's settings.parse
+// and settings.hooks-registered are green on this checkout and red on a broken copy of .claude/settings.json.
+async function section1960(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-settings-'));
+  try {
+    for (const run of [checks.settingsParse, checks.settingsHooksRegistered]) {
+      const green = await run(PROGRAM_ROOT);
+      check(green.status === 'pass' || green.status === 'warn', `1960: ${green.check} green on this checkout: ${green.detail}`);
+    }
+    fs.mkdirSync(path.join(root, '.claude'));
+    const settings = path.join(root, '.claude', 'settings.json');
+    const tracked = JSON.parse(fs.readFileSync(path.join(PROGRAM_ROOT, '.claude', 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const missing = await checks.settingsParse(root);
+    check(missing.status === 'fail' && missing.detail.includes('No .claude/settings.json'), `1960: settings.parse red with no settings file: ${missing.detail}`);
+    fs.writeFileSync(settings, '{broken');
+    for (const run of [checks.settingsParse, checks.settingsHooksRegistered]) {
+      const red = await run(root);
+      check(red.status === 'fail' && red.detail.includes('not valid JSON'), `1960: ${red.check} red on unparseable settings: ${red.detail}`);
+    }
+    fs.writeFileSync(settings, JSON.stringify({ ...tracked, hooks: {} }));
+    const unregistered = await checks.settingsHooksRegistered(root);
+    check(unregistered.status === 'fail' && unregistered.detail.includes('Guard-BasicMemoryRead.ps1 is not registered'), `1960: settings.hooks-registered red with no guard registered: ${unregistered.detail}`);
+    const event = tracked.hooks.PreToolUse;
+    fs.writeFileSync(settings, JSON.stringify({ ...tracked, hooks: { ...tracked.hooks, PreToolUse: Array.isArray(event) ? event[0] : event } }));
+    const shaped = await checks.settingsHooksRegistered(root);
+    check(shaped.status === 'fail' && /skipped ENTIRELY|not registered|registered under/.test(shaped.detail), `1960: settings.hooks-registered red on a hooks event that is an object, not a list: ${shaped.detail}`);
+    for (const row of [missing, unregistered, shaped]) check(row.caught.length > 0 && row.caught !== 'none found', `1960: ${row.check} names the defect it guards`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1961. tools/check-map.json names only checks tools/gate-checks.ts defines (c174's acceptance.* aside), and settingsChecks reaches
+// every verdict with PowerShell unreachable: an empty PATH, where the old route failed every check as "powershell.exe is missing".
+async function section1961(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+  const map = JSON.parse(fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/check-map.json'), 'utf8')) as { paths: { pattern: string; checks: string[] }[] };
+  const named = [...new Set(map.paths.flatMap(row => row.checks))].sort();
+  const unported = named.filter(name => !(name in checks.PORTED_CHECKS) && !name.startsWith('acceptance.'));
+  equal(unported.join(', '), '', '1961: every check the map names (but c174\'s acceptance.*) is a function in tools/gate-checks.ts');
+  for (const retired of ['powershell.defect-families', 'context.seat-vocabulary', 'library-hooks.boundary-suite', 'hub.dev-template-seeds-sections', 'new-project-hub.selftest', 'codex.delegation-runs-hooks'])
+    check(!named.includes(retired), `1961: the map still names the retired ${retired}`);
+  const surfaces = ['.claude/settings.json', '.claude/rules/library-development.md', '.claude/skills/library-help/SKILL.md', '.codex/hooks.template.json',
+    '.claude-plugin/plugin.json', '.agents/plugins/marketplace.json', 'docs/seats.md', 'docs/templates/shelf-catalog-header.md', 'templates/workspace-instructions.md'];
+  const selected = gate.settingsChecksForPaths(surfaces) as string[];
+  equal(selected.join(','), Object.keys(checks.PORTED_CHECKS).sort().join(','), '1961: the mapped surfaces select every ported check');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-nops-'));
+  try {
+    fs.mkdirSync(path.join(root, 'empty-path'));
+    const script = path.join(root, 'settings.mjs');
+    fs.writeFileSync(script, `const gate = await import(${JSON.stringify(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href)}); console.log(JSON.stringify(await gate.settingsChecks(${JSON.stringify(PROGRAM_ROOT)}, ${JSON.stringify(surfaces)})));`);
+    const ran = spawnSync(process.execPath, [script], { cwd: root, env: { ...process.env, PATH: path.join(root, 'empty-path') }, encoding: 'utf8', timeout: 60_000, windowsHide: true });
+    equal(ran.status, 0, `1961: settingsChecks with an empty PATH: ${ran.stderr}`);
+    const rows = ran.status === 0 ? JSON.parse(ran.stdout) as { check: string; status: string; detail: string }[] : [];
+    equal(rows.map(row => row.check).sort().join(','), selected.join(','), '1961: one row per selected check');
+    check(rows.every(row => row.status !== 'fail' && !/powershell|pwsh/i.test(row.detail)), `1961: every check reaches its verdict without PowerShell: ${JSON.stringify(rows)}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1962. codex.project-access-config, ported: green on this checkout, a skip with both rendered files absent, red on a partial
+// render, on a machine path in a template, and on a render missing a required table.
+async function section1962(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-codex-'));
+  try {
+    const green = await checks.codexProjectAccessConfig(PROGRAM_ROOT);
+    check(['pass', 'warn', 'skip'].includes(green.status), `1962: green (or the absent-render skip) on this checkout: ${green.detail}`);
+    fs.mkdirSync(path.join(root, '.codex'));
+    for (const file of ['config.template.toml', 'hooks.template.json']) fs.copyFileSync(path.join(PROGRAM_ROOT, '.codex', file), path.join(root, '.codex', file));
+    const absent = await checks.codexProjectAccessConfig(root);
+    check(absent.status === 'skip' && absent.detail.includes('both rendered Codex files are absent'), `1962: both rendered files absent is a skip: ${absent.detail}`);
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '# Partial render\n');
+    const partial = await checks.codexProjectAccessConfig(root);
+    check(partial.status === 'fail' && partial.detail.includes('.codex/hooks.json is missing'), `1962: red on a partial render: ${partial.detail}`);
+    fs.writeFileSync(path.join(root, '.codex', 'hooks.json'), '{"hooks":{}}\n');
+    const tables = await checks.codexProjectAccessConfig(root);
+    check(tables.status === 'fail' && tables.detail.includes('missing [features]'), `1962: red on a render with no [features] table: ${tables.detail}`);
+    const template = path.join(root, '.codex', 'config.template.toml');
+    fs.writeFileSync(template, fs.readFileSync(template, 'utf8') + '\n# C:/Users/someone/library\n');
+    const machine = await checks.codexProjectAccessConfig(root);
+    check(machine.status === 'fail' && machine.detail.includes('machine-specific filesystem binding'), `1962: red on a machine path in a template: ${machine.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1963. seats.session-start-section-resolves, ported: the section kernel/src/hookseatstart.ts serves from docs/seats.md resolves,
+// stays bounded and carries the ask; red on a copy with the heading renamed, the ask removed, or the cut running on.
+async function section1963(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-seats-'));
+  try {
+    const green = await checks.seatsSessionStartSectionResolves(PROGRAM_ROOT);
+    equal(green.status, 'pass', `1963: green on this checkout: ${green.detail}`);
+    fs.mkdirSync(path.join(root, 'docs'));
+    const original = fs.readFileSync(path.join(PROGRAM_ROOT, 'docs', 'seats.md'), 'utf8').replace(/\r\n/g, '\n');
+    const doc = path.join(root, 'docs', 'seats.md');
+    for (const [label, text, expected] of [
+      ['a renamed heading', original.replace('## Sitting down at a seat', '## Sitting at a seat'), 'does not resolve'],
+      ['the ask removed', original.split('Ask the reader which seat').join('Pick a seat'), 'no longer tells a seatless session to ask'],
+      ['a cut that runs on', original.replace('## Sitting down at a seat\n', '## Sitting down at a seat\n\n### Where a Desk lives\n'), 'ran past its own section'],
+    ] as const) {
+      fs.writeFileSync(doc, text);
+      const red = await checks.seatsSessionStartSectionResolves(root);
+      check(red.status === 'fail' && red.detail.includes(expected), `1963: red on ${label}: ${red.detail}`);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1964. skill.library-help-pointers-resolve, ported: green on this checkout; red on a copy with a reference nothing names, a dead
+// link out of the Skill, and a guide the Skill offers that docs/_index.md does not list.
+async function section1964(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-skill-'));
+  try {
+    const green = await checks.skillLibraryHelpPointersResolve(PROGRAM_ROOT);
+    equal(green.status, 'pass', `1964: green on this checkout: ${green.detail}`);
+    for (const folder of ['.claude/skills/library-help', 'docs', '.codex-plugin']) fs.cpSync(path.join(PROGRAM_ROOT, folder), path.join(root, folder), { recursive: true });
+    const copy = await checks.skillLibraryHelpPointersResolve(root);
+    equal(copy.status, 'pass', `1964: green on an unchanged copy: ${copy.detail}`);
+    const skill = path.join(root, '.claude/skills/library-help/SKILL.md');
+    const text = fs.readFileSync(skill, 'utf8').replace(/\r\n/g, '\n');
+    fs.writeFileSync(path.join(root, '.claude/skills/library-help/references/unnamed.md'), '# Unnamed\n');
+    const unnamed = await checks.skillLibraryHelpPointersResolve(root);
+    check(unnamed.status === 'fail' && unnamed.detail.includes('references/unnamed.md exists but SKILL.md never names it'), `1964: red on a reference nothing names: ${unnamed.detail}`);
+    fs.rmSync(path.join(root, '.claude/skills/library-help/references/unnamed.md'));
+    fs.writeFileSync(skill, text + '\nSee [nowhere](references/nowhere.md).\n');
+    const dead = await checks.skillLibraryHelpPointersResolve(root);
+    check(dead.status === 'fail' && dead.detail.includes('references/nowhere.md does not resolve'), `1964: red on a dead link: ${dead.detail}`);
+    fs.writeFileSync(skill, text.replace('## Guides to hand the reader\n', '## Guides to hand the reader\n\n- [Extra](../../../docs/guides/extra.md)\n'));
+    const guide = await checks.skillLibraryHelpPointersResolve(root);
+    check(guide.status === 'fail' && guide.detail.includes('docs/guides/extra.md'), `1964: red on a guide docs/_index.md does not list: ${guide.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1965. context.always-on-budget, ported for .claude/rules and .claude/skills: green on this checkout; red on a copy with a Skill
+// description that breaks the budget and a path-scoped rule whose pattern matches nothing.
+async function section1965(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-budget-'));
+  try {
+    const green = await checks.contextAlwaysOnBudget(PROGRAM_ROOT);
+    check(green.status === 'pass' || green.status === 'warn', `1965: green on this checkout: ${green.detail}`);
+    fs.copyFileSync(path.join(PROGRAM_ROOT, 'CLAUDE.md'), path.join(root, 'CLAUDE.md'));
+    for (const folder of ['.claude/rules', '.claude/skills']) fs.cpSync(path.join(PROGRAM_ROOT, folder), path.join(root, folder), { recursive: true });
+    // The copied rules are scoped to this checkout's folders; each named folder exists in the copy too.
+    for (const folder of ['tools', 'kernel/test', 'docs', '.githooks']) fs.mkdirSync(path.join(root, folder), { recursive: true });
+    equal((await checks.contextAlwaysOnBudget(root)).status, green.status, '1965: an unchanged copy reads as this checkout does');
+    fs.mkdirSync(path.join(root, '.claude/skills/wordy'));
+    fs.writeFileSync(path.join(root, '.claude/skills/wordy/SKILL.md'), `---\nname: wordy\ndescription: ${'word '.repeat(400)}\n---\n\nBody.\n`);
+    const over = await checks.contextAlwaysOnBudget(root);
+    check(over.status === 'fail' && over.detail.includes('over the 1100-word budget') && over.detail.includes('skill:wordy'), `1965: red on a Skill description over the budget: ${over.detail}`);
+    fs.rmSync(path.join(root, '.claude/skills/wordy'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.claude/rules/scoped.md'), '---\npaths:\n  - "nowhere/**"\n---\n\nA rule.\n');
+    const scoped = await checks.contextAlwaysOnBudget(root);
+    check(scoped.status === 'fail' && scoped.detail.includes("scoped to 'nowhere/**', which matches nothing"), `1965: red on a rule scoped to nothing: ${scoped.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1966. plugin.generated-files-match, ported: the committed Claude plugin files equal what the canonical .codex-plugin files generate;
+// red on a copy with a hand-edited generated file, a canonical change not regenerated, and a hooks event that is not a list.
+async function section1966(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-plugin-'));
+  try {
+    const green = await checks.pluginGeneratedFilesMatch(PROGRAM_ROOT);
+    equal(green.status, 'pass', `1966: green on this checkout: ${green.detail}`);
+    const reset = () => { for (const folder of ['.codex-plugin', '.claude-plugin', '.agents/plugins', '.claude/settings.json', '.codex/hooks.template.json', '.claude/skills']) { fs.rmSync(path.join(root, folder), { recursive: true, force: true }); fs.cpSync(path.join(PROGRAM_ROOT, folder), path.join(root, folder), { recursive: true }); } };
+    const edit = (file: string, change: (value: Record<string, unknown>) => void) => { const target = path.join(root, file); const value = JSON.parse(fs.readFileSync(target, 'utf8')); change(value); fs.writeFileSync(target, JSON.stringify(value, null, 2)); };
+    reset();
+    equal((await checks.pluginGeneratedFilesMatch(root)).status, 'pass', '1966: green on an unchanged copy');
+    edit('.claude-plugin/plugin.json', value => { value['version'] = '0.0.0-hand-edited'; });
+    const hand = await checks.pluginGeneratedFilesMatch(root);
+    check(hand.status === 'fail' && hand.detail.includes('.claude-plugin/plugin.json does not match'), `1966: red on a hand-edited generated file: ${hand.detail}`);
+    reset();
+    edit('.codex-plugin/plugin.json', value => { value['description'] = 'A canonical change nobody regenerated.'; });
+    const stale = await checks.pluginGeneratedFilesMatch(root);
+    check(stale.status === 'fail' && stale.detail.includes('.claude-plugin/marketplace.json does not match'), `1966: red on a canonical change not regenerated: ${stale.detail}`);
+    reset();
+    edit('.claude-plugin/hooks/hooks.json', value => { const hooks = value['hooks'] as Record<string, unknown[]>; hooks['PreToolUse'] = hooks['PreToolUse']![0] as unknown as unknown[]; });
+    const shape = await checks.pluginGeneratedFilesMatch(root);
+    check(shape.status === 'fail' && shape.detail.includes("Claude's generated hooks file"), `1966: red on a hooks event that is an object: ${shape.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1967. workspace-init.selftest, ported as its repository-file half: the templates init, seat creation and the Shelf render read are
+// there and usable; red on a copy whose instructions carry a managed-section marker, whose seat template is malformed, or with no header.
+async function section1967(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224-templates-'));
+  try {
+    const green = await checks.workspaceInitTemplates(PROGRAM_ROOT);
+    equal(green.status, 'pass', `1967: green on this checkout: ${green.detail}`);
+    const reset = () => { for (const folder of ['templates', 'docs/templates']) { fs.rmSync(path.join(root, folder), { recursive: true, force: true }); fs.cpSync(path.join(PROGRAM_ROOT, folder), path.join(root, folder), { recursive: true }); } };
+    reset();
+    equal((await checks.workspaceInitTemplates(root)).status, 'pass', '1967: green on an unchanged copy');
+    fs.appendFileSync(path.join(root, 'templates/workspace-instructions.md'), '\n<!-- library:end -->\n');
+    const marker = await checks.workspaceInitTemplates(root);
+    check(marker.status === 'fail' && marker.detail.includes('the next init refuses'), `1967: red on instructions carrying a marker: ${marker.detail}`);
+    reset();
+    const seat = fs.readdirSync(path.join(root, 'templates/seats'))[0]!;
+    fs.writeFileSync(path.join(root, 'templates/seats', seat), '{not json');
+    const malformed = await checks.workspaceInitTemplates(root);
+    check(malformed.status === 'fail' && malformed.detail.includes(`templates/seats/${seat}`) && malformed.detail.includes('malformed'), `1967: red on a malformed seat template: ${malformed.detail}`);
+    reset();
+    fs.rmSync(path.join(root, 'docs/templates/shelf-catalog-header.md'));
+    const header = await checks.workspaceInitTemplates(root);
+    check(header.status === 'fail' && header.detail.includes('shelf-catalog-header.md is missing'), `1967: red with no Shelf catalog header: ${header.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1968. Every tier is routed to Node, on Windows and Linux, with PowerShell present or not, and tools/gate.ts holds no PowerShell
+// pool or child: no static run, no suite children, no roster read, no settings child (kickoffs/s224 rows 3 and 4b).
+async function section1968(): Promise<void> {
+  const fs = await import('node:fs'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const gate = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate.ts')).href);
+  for (const platform of ['win32', 'linux']) {
+    for (const present of [true, false]) {
+      const powerShell = gate.powerShellPresent({ PATH: present ? '/opt/ps' : '/usr/bin' }, platform, (file: string) => present && file === '/opt/ps/powershell.exe');
+      if (platform === 'linux') equal(powerShell, present, `1968: ${platform} reads PowerShell ${present ? 'present' : 'absent'}`);
+      for (const tier of ['commit', 'cut', 'push', 'release']) {
+        equal(JSON.stringify(gate.tierRoute(tier, powerShell)), '{"route":"node"}', `1968: the ${tier} tier on ${platform} with PowerShell ${powerShell ? 'present' : 'absent'} runs in Node`);
+        equal(JSON.stringify(gate.tierRoute(tier, !powerShell)), '{"route":"node"}', `1968: the ${tier} tier on ${platform} runs in Node either way`);
+      }
+    }
+  }
+  const source = fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/gate.ts'), 'utf8') + fs.readFileSync(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts'), 'utf8');
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(line => line.replace(/\/\/.*$/, '')).join('\n');
+  for (const [label, pattern] of [['a PowerShell child', /(?:spawn|spawnSync|runChild|runBounded)\(\s*'(?:powershell\.exe|pwsh)'/], ['a PowerShell command field', /command:\s*'(?:powershell\.exe|pwsh)'/],
+    ['the old runner', /Invoke-LibraryChecks\.ps1/], ['the -Fast roster read', /fastRoster|rosterProblems/], ['the static run', /staticRun|STATIC_RUN_SECTION/], ['suite children', /suiteChild|SLOW_SUITES/]] as const)
+    check(!pattern.test(code), `1968: tools/gate.ts or tools/gate-checks.ts still holds ${label}`);
+}
+
+// --- 1969. plugin.generated-files-match checks this repository as tools/PluginPackage.ps1 -SelfTest did (kickoffs/s224-r3 row 1):
+// green on this checkout and on an unchanged copy; red, naming the fault, on a copy whose canonical hooks were changed and the
+// generated files rewritten to match, so the comparison alone would pass.
+async function section1969(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224r3-plugin-'));
+  try {
+    const green = await checks.pluginGeneratedFilesMatch(PROGRAM_ROOT);
+    check(green.status === 'pass' && green.detail.includes('12 guarded tool pairs'), `1969: green on this checkout, with the 12 guarded pairs: ${green.detail}`);
+    const copied = ['.codex-plugin', '.claude-plugin', '.agents/plugins', '.claude/settings.json', '.codex/hooks.template.json', '.claude/skills'];
+    const reset = () => { for (const item of copied) { fs.rmSync(path.join(root, item), { recursive: true, force: true }); fs.cpSync(path.join(PROGRAM_ROOT, item), path.join(root, item), { recursive: true }); } };
+    const canonicalFile = path.join(root, '.codex-plugin', 'hooks.json');
+    type Block = { matcher?: string; hooks: { command: string }[] };
+    // Change the canonical hooks, then write every generated file from it, as tools/PluginPackage.ps1 -Write would.
+    const regenerate = (change: (hooks: Record<string, Block[]>) => void) => {
+      const document = JSON.parse(fs.readFileSync(canonicalFile, 'utf8'));
+      change(document.hooks);
+      fs.writeFileSync(canonicalFile, JSON.stringify(document, null, 2));
+      for (const [relative, value] of Object.entries(checks.generatedPluginFiles(root) as Record<string, unknown>)) fs.writeFileSync(path.join(root, relative), JSON.stringify(value, null, 2));
+    };
+    const blockFor = (hooks: Record<string, Block[]>, event: string, verb: string) => hooks[event]!.find(block => block.hooks.some(hook => hook.command.includes(` hook ${verb}`)))!;
+    reset();
+    const copy = await checks.pluginGeneratedFilesMatch(root);
+    equal(copy.status, 'pass', `1969: green on an unchanged copy: ${copy.detail}`);
+    const cases: [string, () => void, string[]][] = [
+      ['a canonical guard renamed to a verb the kernel does not declare', () => regenerate(hooks => { const hook = blockFor(hooks, 'PreToolUse', 'basic-memory-read').hooks[0]!; hook.command = hook.command.replace('hook basic-memory-read', 'hook nonexistent-guard'); }),
+        ["'hook nonexistent-guard'", 'a verb the kernel does not declare']],
+      ['shelf-read removed from the canonical PreToolUse', () => regenerate(hooks => { hooks['PreToolUse'] = hooks['PreToolUse']!.filter(block => !block.hooks.some(hook => hook.command.includes(' hook shelf-read'))); }),
+        ['does not register hook shelf-read under PreToolUse']],
+      ['the canonical shelf-read matcher without Edit', () => regenerate(hooks => { blockFor(hooks, 'PreToolUse', 'shelf-read').matcher = '^(Read|Grep|Glob|Write|apply_patch)$'; }),
+        [".claude/settings.json guards 'Edit' with shelf-read", 'does not fire on it']],
+      ['the canonical desk-context without its prefix', () => regenerate(hooks => { const hook = blockFor(hooks, 'UserPromptSubmit', 'desk-context').hooks[0]!; hook.command = hook.command.replace(/ --reader-tool-prefix \S+$/, ''); }),
+        ["hook desk-context is not handed Codex's name for the reader", 'the Desk hook is not exactly']],
+      ['the skills folder missing', () => fs.rmSync(path.join(root, '.claude/skills'), { recursive: true, force: true }),
+        ["names 'skills' as ./.claude/skills/, which is not there"]],
+      ['.codex-plugin/mcp.json declaring a server', () => { const file = path.join(root, '.codex-plugin', 'mcp.json'); const value = JSON.parse(fs.readFileSync(file, 'utf8')); value.mcpServers = { stray: { command: 'stray' } }; fs.writeFileSync(file, JSON.stringify(value, null, 2)); },
+        ['.codex-plugin/mcp.json declares stray', 'must declare no MCP server']],
+    ];
+    for (const [label, breakIt, expected] of cases) {
+      reset();
+      breakIt();
+      const red = await checks.pluginGeneratedFilesMatch(root);
+      check(red.status === 'fail' && expected.every(text => red.detail.includes(text)) && !red.detail.includes('does not match what the canonical package generates'),
+        `1969: red on ${label}, naming the fault and not a drift: ${red.detail}`);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1970. codex.project-access-config: an absolute .ps1 a generated Codex hook names must be a file; a directory of that name is
+// red (kickoffs/s224-r3 row 2; the PowerShell check used Test-Path -PathType Leaf), and a real file is not.
+async function section1970(): Promise<void> {
+  const fs = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deskpost-s224r3-codex-'));
+  try {
+    // The copy section 1962 starts from: the two templates. Then a render of them, every hook in the binary's spelling but the
+    // Basic Memory guard, which names an absolute .ps1.
+    fs.mkdirSync(path.join(root, '.codex'));
+    for (const file of ['config.template.toml', 'hooks.template.json']) fs.copyFileSync(path.join(PROGRAM_ROOT, '.codex', file), path.join(root, '.codex', file));
+    const slash = (file: string) => file.split(path.sep).join('/');
+    const reader = path.join(root, 'reader.ps1');
+    fs.writeFileSync(reader, '# The reader this render names.\n');
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), fs.readFileSync(path.join(root, '.codex', 'config.template.toml'), 'utf8')
+      .replace('"__BASIC_MEMORY_URL__"', '"http://127.0.0.1:9/mcp"').replace('"__BASIC_MEMORY_ENABLED__"', 'true').replace('"__BASIC_MEMORY_REQUIRED__"', 'true')
+      .replace('__VALIDATED_READER_PATH__', slash(reader)));
+    const verbs: Record<string, string> = { COMPUTER_USE_GUARD: 'computer-use', SHELL_GUARD: 'shell-shelf-read', PATCH_GUARD: 'shelf-read', CHECKPOINT: 'checkpoint',
+      CHECKPOINT_WINDOWS: 'checkpoint', DESK_CONTEXT: 'desk-context', COMPACT_CLEAR: 'compact-clear', SEAT_START: 'seat-start', SEARCH_HIT: 'search-hit' };
+    const render = (guard: string) => {
+      const template = fs.readFileSync(path.join(root, '.codex', 'hooks.template.json'), 'utf8');
+      const text = template.replace(/__([A-Z_]+)_COMMAND__/g, (whole, name: string) =>
+        name === 'BASIC_MEMORY_GUARD' ? `powershell.exe -NoProfile -File ${slash(guard)}` : verbs[name] ? `library hook ${verbs[name]}` : whole);
+      fs.writeFileSync(path.join(root, '.codex', 'hooks.json'), text);
+    };
+    const directory = path.join(root, 'folder', 'Guard-BasicMemoryRead.ps1');
+    fs.mkdirSync(directory, { recursive: true });
+    render(directory);
+    const red = await checks.codexProjectAccessConfig(root);
+    check(red.status === 'fail' && red.detail.includes('names a file that is not there') && red.detail.includes(slash(directory)), `1970: red on a hook naming a directory that ends .ps1: ${red.detail}`);
+    const file = path.join(root, 'real', 'Guard-BasicMemoryRead.ps1');
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, '# A real guard file.\n');
+    render(file);
+    const real = await checks.codexProjectAccessConfig(root);
+    check(real.status !== 'fail' && !real.detail.includes('names a file that is not there'), `1970: a hook naming a real .ps1 file is not red for it: ${real.status} ${real.detail}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+// --- 1971. The matcher expansion plugin.generated-files-match reads the guarded tools with (kickoffs/s224-r3 row 1 (d)), as
+// tools/PluginPackage.ps1's Get-MatcherToolNames read them: anchors and one outer pair of parentheses stripped, split on |, .* as read_note.
+async function section1971(): Promise<void> {
+  const path = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const checks = await import(pathToFileURL(path.join(PROGRAM_ROOT, 'tools/gate-checks.ts')).href);
+  for (const [matcher, expected] of [
+    ['^(Read|Grep)$', ['Read', 'Grep']],
+    ['Bash|PowerShell', ['Bash', 'PowerShell']],
+    ['mcp__basic-memory__.*', ['mcp__basic-memory__read_note']],
+    ['(a|b)', ['a', 'b']],
+    ['', []],
+  ] as const) equal(JSON.stringify(checks.matcherToolNames(matcher)), JSON.stringify(expected), `1971: ${JSON.stringify(matcher)} names ${expected.join(', ') || 'no tool'}`);
+}
+
 // --- 1980. No self-test section starts PowerShell outside its allowed list (kickoffs/s225 row 3; PLAN-powershell-retirement.md
 // U2 items 4 and 6). Every code file under kernel/test/ is read for a PowerShell launch: a spawn, spawnSync, execFile,
 // execFileSync or boundedCommand whose program is powershell or pwsh, by name or by a WindowsPowerShell path, written in
@@ -3290,7 +3642,6 @@ async function section1980(): Promise<void> {
     {file: 'selftest.ts', owner: 's39', who: "c175's follow-up (pull request 107 changes section 39)"},
     {file: 'selftest.ts', owner: 's132', who: 'stays: it runs install.ps1, the plan\'s one exception'},
     {file: 'selftest.ts', owner: 's137', who: 'stays: it runs install.ps1, the plan\'s one exception'},
-    {file: 'selftest.ts', owner: 's231', who: "s224's follow-up (pull request 108)"},
     {file: 'selftest.ts', owner: 's625', who: "s224's follow-up: its check moves to tools/gate-checks.ts in pull request 108"},
     {file: 'selftest.ts', owner: 's754', who: "s224's follow-up for the check (pull request 108); U4 for Initialize-CodexLibrary.ps1"},
     {file: 'lanes/notebook-and-install.ts', owner: 's1612', who: 'U4 (the notebook-and-install lane is c175\'s file)'},
@@ -3443,4 +3794,44 @@ async function section1980(): Promise<void> {
     check(real.stale.length === 0, `1980: allowed entries with no launch left; remove them: ${real.stale.map(entry => `${entry.file} ${entry.owner} (${entry.who})`).join('; ')}`);
     console.log(`1980: ${real.files} files read; ${real.launches.length} launches, ${real.unlisted.length} outside the list: ${shown(real.launches)}`);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
+}
+
+// --- 1990. Filtering an installed Deskpost directory preserves its process reader.
+async function section1990(): Promise<void> {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'deskpost-worker-process-reader-'));
+  const dropped = join(root, 'bin'), kept = join(root, 'kept');
+  const current = join(root, 'current', 'bin');
+  const installedKernel = join(current, process.platform === 'win32' ? 'library.exe' : 'library');
+  const explicitKernel = join(root, 'explicit-reader');
+  try {
+    mkdirSync(dropped);
+    mkdirSync(kept);
+    mkdirSync(current, { recursive: true });
+    writeFileSync(join(dropped, process.platform === 'win32' ? 'deskpost.cmd' : 'deskpost'), '');
+    writeFileSync(installedKernel, '');
+    const module = pathToFileURL(join(HERE, 'gate-env.ts')).href;
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH' || key === 'DESKPOST_KERNEL') delete env[key];
+    const run = (override?: string): NodeJS.ProcessEnv => {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+        'import { childEnv } from ' + JSON.stringify(module) + '; console.log(JSON.stringify(childEnv()));'],
+      { env: { ...env, PATH: [dropped, kept].join(delimiter), ...(override === undefined ? {} : { DESKPOST_KERNEL: override }) }, encoding: 'utf8', timeout: 10_000 });
+      if (result.status !== 0) throw Error(result.stderr || String(result.error ?? result.status));
+      return JSON.parse(result.stdout);
+    };
+    const filtered = run();
+    const entries = filtered.PATH?.split(delimiter) ?? [];
+    check(!entries.includes(dropped) && entries.includes(kept), '1990: the worker drops only the installed directory');
+    equal(filtered.DESKPOST_KERNEL, installedKernel, '1990: the worker retains the installed process reader');
+    equal(run(explicitKernel).DESKPOST_KERNEL, explicitKernel, '1990: an explicit process reader wins');
+    rmSync(installedKernel);
+    equal(run().DESKPOST_KERNEL, undefined, '1990: a missing installed program leaves the override absent');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }

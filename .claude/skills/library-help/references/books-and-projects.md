@@ -9,7 +9,7 @@ fix, so pass it on rather than working around it.
 
 **Browsing and listing are reads and need none of that.** Both catalogs, `library desk`, and every
 validated-reader tool work at any seat or none. So "which Books are there?" is always answerable,
-while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.7.1/docs/seats.md).
+while "open one" is not. The contract is in [Seats](https://github.com/eKioga/deskpost/blob/v1.7.2/docs/seats.md).
 
 ## Books
 
@@ -189,6 +189,9 @@ control, the decision goes in *that repository's* `docs/adr/`. Otherwise it goes
 way the Hub carries only the pointer, and pointers are **operative only**. Reasoning:
 `docs/adr/0003-decisions-follow-their-subject.md`.
 
+On a dev Hub, `hub edit` quotes each new pointer it refuses in Now, Next or Decisions. Now and Next
+refusals also suggest `close-item` for completed work.
+
 `hub edit` has **seven** modes. `add-section`, `append-section` and `check-item` apply directly and
 are checked so they cannot lose text. `replace-item`, `replace-section`, `remove-section` and
 `replace-body` need a `--preflight` plan id and one clear approval (`--user-confirmed --plan-id`).
@@ -212,9 +215,12 @@ refuses while a seat is bound to the old Hub, or while a session holds a seat th
 - **Text comes from a file** written as UTF-8 with LF line endings (`--content-path`). A script that builds Hub text
   stays plain ASCII: Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark as ANSI, so an em dash in it
   arrives as `â€”`. Python on Windows writes CRLF in text mode unless told `newline='\n'`.
+- Hub edit previews name doubled-brace time and session placeholders in inline or fenced code that will be stored as written.
 - **One edit at a time.** Every edit changes the page's hash, so preview and apply one before planning the next.
 - **What `replace-item` replaces:** on a paragraph line, that one line; on a list item, the item with its nested
-  sub-items. `check-item` ticks the item's first line only.
+  sub-items. `check-item` ticks the item's first line only. With one `--match-text`, either mode takes
+  `--occurrence <n>` to select a match in page order starting at 1. A single-target `replace-item`
+  refuses a replacement identical to a sibling in the same section.
 - **`## Now` takes checkboxes or paragraphs.** A list entry at column zero without `- [ ]` or `- [x]` is refused.
 - **Ticked items leave `## Now` and `## Next` with `deskpost hub tidy <slug>`.** Its `--preflight` lists what moves
   and the history page it makes, and runs the kernel's proof; the apply takes `--user-confirmed --plan-id <id>`. It
